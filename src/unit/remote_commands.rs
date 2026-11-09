@@ -336,3 +336,26 @@ fn web_status_clears_inherited_remote_without_contact() {
     dispatch(&mut opts).unwrap();
     assert!(opts.remote.is_none());
 }
+
+#[test]
+fn closeout_requests_route_to_the_selected_session() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            for tail in [
+                vec!["closeout-support"],
+                vec!["closeout-snapshot", "terminal_7"],
+                vec!["closeout-close", "--fence", "{}"],
+            ] {
+                let argv: Vec<_> = ["yinz", "--remote", "host", "--session", "original", "agent"]
+                    .into_iter()
+                    .chain(tail)
+                    .collect();
+                let opts = parse(&argv);
+                assert_eq!(route(opts.command.as_ref()), Route::Session);
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

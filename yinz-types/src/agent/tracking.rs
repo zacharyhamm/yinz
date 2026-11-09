@@ -44,6 +44,8 @@ pub struct LifecycleState {
     /// the idle agent busy again. `Stop` is not an end here: a blocking Stop hook continues
     /// the same turn.
     pub ended_turn: Option<String>,
+    #[serde(default)]
+    pub closeout_turn: Option<String>,
     pub claude_prompt_id: Option<String>,
     pub claude_confirmation: Option<bool>,
     pub claude_previous_prompt_id: Option<String>,

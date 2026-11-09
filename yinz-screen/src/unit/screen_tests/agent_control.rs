@@ -16422,3 +16422,227 @@ fn claude_permission_registry_recovery_passive_reports_do_not_answer_unacted_wai
         assert!(finish_paste(&writes).is_empty());
     }
 }
+
+fn closeout_snapshot(
+    screen: &mut Screen,
+    messages: &CapturedClientMessages,
+) -> yinz_types::agent::control::CloseoutFence {
+    screen.agent_control(AgentRequest::CloseoutSnapshot { pane_id: PANE }, CLIENT);
+    let reply = replies(messages, CLIENT).pop().unwrap();
+    assert_eq!(reply.outcome, AgentOutcome::Ok, "{:?}", reply.message);
+    reply.closeout_target.unwrap()
+}
+
+#[test]
+fn closeout_busy_controller_closes_only_the_correlated_pane() {
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+    finish_paste(&writes);
+    report(&mut screen, hook("UserPromptSubmit"));
+    replies(&messages, CLIENT);
+    let neighbor = PaneId::Terminal(TerminalId::new(1));
+    assert!(screen.tab_containing_pane(neighbor).is_some());
+    let fence = closeout_snapshot(&mut screen, &messages);
+    assert_eq!(
+        screen.agent_status(PANE, None).unwrap().agent.state,
+        AgentState::Busy
+    );
+    screen.agent_control(AgentRequest::CloseoutClose { fence }, CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Ok
+    );
+    assert!(screen.tab_containing_pane(PANE).is_none());
+    assert!(screen.tab_containing_pane(neighbor).is_some());
+}
+
+#[test]
+fn closeout_rejects_stale_incarnation_conversation_provider_turn_and_input() {
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+    finish_paste(&writes);
+    report(&mut screen, hook("UserPromptSubmit"));
+    replies(&messages, CLIENT);
+    let original = closeout_snapshot(&mut screen, &messages);
+    for field in 0..5 {
+        let mut fence = original.clone();
+        match field {
+            0 => fence.server_instance.push_str("-stale"),
+            1 => fence.conversation.push_str("-stale"),
+            2 => fence.provider.push_str("-stale"),
+            3 => fence.turn.push_str("-stale"),
+            _ => fence.input_revision += 1,
+        }
+        screen.agent_control(AgentRequest::CloseoutClose { fence }, CLIENT);
+        assert_eq!(
+            replies(&messages, CLIENT).pop().unwrap().outcome,
+            AgentOutcome::TargetChanged
+        );
+        assert!(screen.tab_containing_pane(PANE).is_some());
+    }
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .write_to_active_terminal(&None, b"keep draft".to_vec(), false, CLIENT, None)
+        .unwrap();
+    screen.agent_control(AgentRequest::CloseoutClose { fence: original }, CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Rejected
+    );
+    assert!(screen.tab_containing_pane(PANE).is_some());
+}
+
+#[test]
+fn closeout_unavailable_turn_background_and_other_control_work_fail_closed() {
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    screen.agent_control(AgentRequest::CloseoutSnapshot { pane_id: PANE }, CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Rejected
+    );
+    screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+    finish_paste(&writes);
+    report(&mut screen, hook("UserPromptSubmit"));
+    replies(&messages, CLIENT);
+    let fence = closeout_snapshot(&mut screen, &messages);
+    screen.agent_worker_waits.insert(
+        PANE,
+        yinz_types::agent::tracking::WorkerWaits {
+            parent: screen.agent_status(PANE, None).unwrap().agent,
+            waits: [("worker".into(), None)].into(),
+        },
+    );
+    screen.agent_control(
+        AgentRequest::CloseoutClose {
+            fence: fence.clone(),
+        },
+        CLIENT,
+    );
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Rejected
+    );
+    screen.agent_worker_waits.remove(&PANE);
+    screen.agent_control(
+        AgentRequest::Wait {
+            pane_id: PANE,
+            expected_session_id: Some("conversation".into()),
+            until: AgentState::Idle,
+            timeout_ms: 60_000,
+        },
+        CLIENT,
+    );
+    screen.agent_control(AgentRequest::CloseoutClose { fence }, CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Rejected
+    );
+    assert!(screen.tab_containing_pane(PANE).is_some());
+}
+
+#[test]
+fn closeout_absence_observation_is_qualified_by_server_incarnation() {
+    let (mut screen, messages, _writes) = setup("bash");
+    screen.agent_control(AgentRequest::CloseoutSupport, CLIENT);
+    let support = replies(&messages, CLIENT).pop().unwrap();
+    screen.agent_control(
+        AgentRequest::CloseoutSnapshot {
+            pane_id: PaneId::Terminal(TerminalId::new(999)),
+        },
+        CLIENT,
+    );
+    let absent = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(absent.outcome, AgentOutcome::TargetNotFound);
+    assert_eq!(absent.server_instance, support.server_instance);
+    assert!(absent.server_instance.is_some());
+}
+
+#[test]
+fn closeout_controller_preserves_related_panes() {
+    use yinz_types::multipane::{MultipaneDirection, MultipaneSplit};
+    use yinz_types::pane_tabs::{PaneTabDescriptor, PaneTabsLayout};
+
+    for composition in ["editor", "multipane", "pane_tabs"] {
+        let (mut screen, messages, writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+        finish_paste(&writes);
+        report(&mut screen, hook("UserPromptSubmit"));
+        let fence = closeout_snapshot(&mut screen, &messages);
+        replies(&messages, CLIENT);
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        let editor = PaneId::Terminal(TerminalId::new(99));
+        let (sender, _plugins) = channels::unbounded();
+        tab.senders
+            .replace_to_plugin(SenderWithContext::new(sender));
+        match composition {
+            "editor" => tab.replace_pane_with_editor_pane(editor, PANE).unwrap(),
+            "multipane" => {
+                tab.create_multipane(
+                    [PaneId::Terminal(TerminalId::new(1)), PANE],
+                    MultipaneSplit {
+                        direction: MultipaneDirection::LeftRight,
+                        ratio: 5000,
+                    },
+                    0,
+                    OverlayPlacement::dismissible(Some(FloatingPaneCoordinates::default())),
+                )
+                .unwrap();
+            },
+            _ => {
+                tab.mount_pane_tabs(
+                    PANE,
+                    PaneTabsLayout {
+                        active: 0,
+                        tabs: ["Conversation", "Overview"]
+                            .map(|label| PaneTabDescriptor {
+                                label: label.into(),
+                                location: "yinz:fixture-plugin-for-tests".into(),
+                                configuration: BTreeMap::new(),
+                                initial_cwd: None,
+                            })
+                            .to_vec(),
+                    },
+                    0,
+                    CLIENT,
+                )
+                .unwrap();
+            },
+        }
+        screen.agent_control(AgentRequest::CloseoutClose { fence }, CLIENT);
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(response.outcome, AgentOutcome::Rejected, "{composition}");
+        assert_eq!(
+            response.message.as_deref(),
+            Some("Controller closeout would affect other panes")
+        );
+        let tab = screen.tab_containing_pane(PANE).unwrap();
+        match composition {
+            "editor" => assert!(tab.has_pane_with_pid(&editor)),
+            "multipane" => assert!(tab.multipane_info(PANE).is_some()),
+            _ => assert!(tab.pane_tabs_of(PANE).is_some()),
+        }
+    }
+}
+
+#[test]
+fn closeout_claude_busy_controller_uses_the_native_prompt_identity() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    replies(&messages, CLIENT);
+    let fence = closeout_snapshot(&mut screen, &messages);
+    assert_eq!(fence.turn, "prompt");
+    screen.agent_control(AgentRequest::CloseoutClose { fence }, CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Ok
+    );
+    assert!(screen.tab_containing_pane(PANE).is_none());
+}

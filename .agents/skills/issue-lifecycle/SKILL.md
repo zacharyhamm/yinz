@@ -75,7 +75,7 @@ inspection/dialogs.
 | `implementing` | `drive` implements/commits with focused tests, then runs technical code review followed by separate UX review; completed implementation or rollback to `review_code` routes to review. Both current reviews yield `address_review_findings` when findings remain, regardless of severity. Ask which findings to repair or ignore. Selected repairs run a planner, yield `approve_review_fixes`, then run an implementation worker only after approval. Fresh reviews follow repairs. Accepted findings permit checks at the same full commit and plan version. UX-only rollback retains technical review and repeats UX. Stale evidence or failed verification blocks; passing gate yields `authorize_merge`. |
 | `ready` | Active merge failure: `blocked`, read log and repair. Otherwise `integrate`. |
 | `merged` | `summarize` compares outcome to original requirements using landed receipt. |
-| `done` | `complete`: report recorded outcome without repeating work/merge. |
+| `done` | `authorize_closeout`: present the optional exact bundled deletion/pane-close offer. Declined or confirmed cleanup yields `complete`; pending cleanup yields `resume_closeout`. |
 
 | Handoff decision | Controller action |
 | --- | --- |
@@ -87,7 +87,9 @@ inspection/dialogs.
 | `authorize_merge` | Show change, technical review, UX assessment/findings and verification; `ready {commit, mergeRequest}` records explicit merge authorization, including an existing explicit request and acceptance of remaining findings for this commit. Plan approval does not authorize merge. |
 | `integrate` | `merge` from control checkout serializes rebase onto current local `main`, full `cargo x ci check` and local fast-forward merge. |
 | `summarize` | `summarize {outcomeMet: true, summary}` only after merge and met outcome; otherwise keep Agenda open and explain remaining work. |
-| `complete` | Present completed result. |
+| `authorize_closeout` | Present the exact worktree (including build outputs), local branch and original controller session/pane, and explain that acceptance ends the conversation. Obtain a separate explicit accept/decline request; `closeout {handoffId, decision, request}` records it. Plan/merge approval never grants deletion. Decline retains resources and completion without repeated offers. Unavailable origin/capability retains resources; use the exact binding procedure in the guide before offering consent. |
+| `resume_closeout` | Run `resume-closeout` from a surviving pane; inspect saved Git/pane progress and failure. Never substitute the recovery pane. An expired fence needs a fresh presented offer and explicit acceptance; completed Git deletion is retained. |
+| `complete` | Present completed result and retained cleanup decision/results. |
 | `blocked` | Read matching recovery section below, resolve deliberately, then `drive`. |
 
 ## Review and authorization

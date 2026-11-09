@@ -4999,6 +4999,7 @@ fn test_server_messages() {
         test_server_roundtrip!(ServerToClientMsg::AgentControl(AgentResponse {
             launch: None,
             server_instance: None,
+            closeout_target: None,
             outcome,
             agents: vec![status.clone()],
             spawned: Some(yinz_types::agent::SpawnedAgent {
@@ -6338,6 +6339,7 @@ fn warp_agent_tracking_roundtrip_preserves_provider_evidence() {
                 kind: kind.into(),
                 conversation: "conversation".into(),
                 input_revision: Some(90),
+                closeout_turn: Some("turn".into()),
                 claude: ClaudeActivity {
                     worker_wait_tools: [("worker".into(), ["question-2".into()].into())].into(),
                     uncorrelated_worker_waits: ["legacy-worker".into()].into(),
@@ -6512,4 +6514,38 @@ fn agent_launch_transaction_v2_contract_roundtrip() {
             ..Default::default()
         }));
     }
+}
+
+#[test]
+fn closeout_agent_control_json_roundtrip_is_additive() {
+    use yinz_types::agent::control::{AgentRequest, AgentResponse, CloseoutFence};
+    let fence = CloseoutFence {
+        server_instance: "incarnation".into(),
+        pane_id: yinz_types::pane_id::PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(
+            7,
+        )),
+        provider: "codex".into(),
+        conversation: "conversation".into(),
+        input_revision: 19,
+        turn: "turn".into(),
+    };
+    test_client_roundtrip!(ClientToServerMsg::AgentControl(
+        AgentRequest::CloseoutSupport
+    ));
+    test_client_roundtrip!(ClientToServerMsg::AgentControl(
+        AgentRequest::CloseoutSnapshot {
+            pane_id: fence.pane_id
+        }
+    ));
+    test_client_roundtrip!(ClientToServerMsg::AgentControl(
+        AgentRequest::CloseoutClose {
+            fence: fence.clone()
+        }
+    ));
+    test_server_roundtrip!(ServerToClientMsg::AgentControl(AgentResponse {
+        closeout_target: Some(fence),
+        ..Default::default()
+    }));
+    let legacy: AgentResponse = serde_json::from_value(serde_json::json!({"outcome":"ok", "agents":[], "spawned":null, "output":null,"message":null,"acknowledged":false,"turn_id":null})).unwrap();
+    assert!(legacy.closeout_target.is_none());
 }

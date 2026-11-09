@@ -1056,15 +1056,18 @@ Deno.test("review pair rejects direct verification before any subprocess", async
     }
     const fixture = fakeContext("/tmp/fixture", test);
     let subprocesses = 0;
-    await rejects(() =>
-      runVerification(fixture.context, test, {
-        gitOperation: () => {
-          subprocesses++;
-          return Promise.resolve({});
-        },
-        id: () => "a6da10b0-c980-4b82-b920-640238095f1a",
-        now: () => "2026-11-03T12:00:00.000Z",
-      }), kind === "blocking" ? "Resolve high/critical" : "Current UX review");
+    await rejects(
+      () =>
+        runVerification(fixture.context, test, {
+          gitOperation: () => {
+            subprocesses++;
+            return Promise.resolve({});
+          },
+          id: () => "a6da10b0-c980-4b82-b920-640238095f1a",
+          now: () => "2026-11-03T12:00:00.000Z",
+        }),
+      kind === "blocking" ? "Present review findings" : "Current UX review",
+    );
     equal(subprocesses, 0);
     equal(fixture.writes.length, 0);
   }

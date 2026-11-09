@@ -1277,3 +1277,68 @@ fn remote_agent_spawn_needs_a_directory_on_the_remote_machine() {
     // The pane's own machine resolves this one, as it does for a local session.
     assert!(check_remote_spawn_directory(relative, false, true).is_ok());
 }
+
+#[test]
+fn closeout_request_translation_preserves_every_fence_field() {
+    let fence = yinz_types::agent::control::CloseoutFence {
+        server_instance: "incarnation".into(),
+        pane_id: PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7)),
+        provider: "codex".into(),
+        conversation: "conversation".into(),
+        input_revision: 19,
+        turn: "turn".into(),
+    };
+    let response = AgentResponse {
+        closeout_target: Some(fence.clone()),
+        ..Default::default()
+    };
+    let mut output = Vec::new();
+    write_response(&response, true, &mut output).unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(document["closeout_target"]["pane_id"], "terminal_7");
+    let (from_cli_json, _, _) = request(
+        Agent::CloseoutClose {
+            fence: document["closeout_target"].to_string(),
+            json: true,
+        },
+        &mut &b""[..],
+    )
+    .unwrap();
+    assert_eq!(
+        from_cli_json,
+        AgentRequest::CloseoutClose {
+            fence: fence.clone()
+        }
+    );
+    output.clear();
+    write_response(&response, false, &mut output).unwrap();
+    let human_snapshot: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(human_snapshot["conversation"], "conversation");
+    let (wire, json, _) = request(
+        Agent::CloseoutClose {
+            fence: serde_json::to_string(&fence).unwrap(),
+            json: true,
+        },
+        &mut &b""[..],
+    )
+    .unwrap();
+    assert_eq!(wire, AgentRequest::CloseoutClose { fence });
+    assert!(json);
+    assert!(request(
+        Agent::CloseoutClose {
+            fence: "{}".into(),
+            json: true
+        },
+        &mut &b""[..]
+    )
+    .is_err());
+    let (wire, _, _) = request(
+        Agent::CloseoutSnapshot {
+            target: PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7)),
+            json: true,
+        },
+        &mut &b""[..],
+    )
+    .unwrap();
+    assert!(matches!(wire, AgentRequest::CloseoutSnapshot { .. }));
+}

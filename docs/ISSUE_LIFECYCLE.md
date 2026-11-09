@@ -591,9 +591,92 @@ integration would bypass protection.
 
 The lifecycle advances local `main` only. Fetch, push, PR creation, remote merge,
 deployment and notifications to others are outside its scope and require their
-own user instruction. Branch/worktree cleanup is separate from issue completion;
+own user instruction. Optional close-out follows successful issue completion;
 failed worktrees remain for diagnosis. Completion requires local merge and
 `outcomeMet: true`; unmet issues remain open with remaining work recorded.
+
+## Optional resource close-out
+
+After local merge, recorded `outcomeMet: true`, and Agenda completion, `drive`
+returns `authorize_closeout` when the targets can be validated. `summarize` also
+publishes this offer after saving completion; an unavailable offer reports
+completed outcome and retained resources. Completion itself deletes nothing. Present the exact
+bundled offer and obtain a separate explicit decision. Plan approval and merge
+authorization never authorize deletion. For example:
+
+> Delete `/work/yinz/.worktrees/issue-77` including its build outputs, delete local
+> branch `issue-77`, then close the original controller `development/terminal_7`.
+> Accepting ends that conversation. Decline retains all resources and the completed
+> outcome.
+
+Use the returned handoff ID with the actual user request in an input file:
+
+```json
+{"handoffId":"<returned offer ID>","decision":"accept","request":"<actual user authorization>"}
+```
+
+```sh
+scripts/issue-lifecycle --item 77 closeout --input-file /tmp/issue-77-closeout.json
+scripts/issue-lifecycle --item 77 resume-closeout
+```
+
+These launcher methods dispatch directly to Swamp's issue behavior (`closeout`
+and `resume_closeout`). `decision: "decline"` records retention and ends the
+automatic offer for that completion. Omitting a decision creates or presents an
+offer; it grants no deletion permission. `status` shows the offer, targets and
+results. A decline leaves the merged/done outcome and all resources intact.
+
+The first successfully observed controller binding is stored independently of
+later worker placement. An offer pins that session, server incarnation, terminal
+pane, provider and conversation. Acceptance samples a fresh fence for the
+accepting turn. Recovery never substitutes its invoking pane, an active pane or
+a worker. Old states, missing origin records and servers without
+`agent-controller-closeout-v1` retain resources with a diagnostic. To explicitly
+bind an unavailable legacy origin, inspect the exact intended controller using
+`yinz --session development agent closeout-snapshot terminal_7 --json`, then call
+`closeout` with `bind: {session, paneId, server_instance, provider, conversation}`.
+This creates an offer only; present it before a separate accept/decline request.
+An existing qualified original binding cannot be replaced by this operation.
+
+Before deletion, the behavior checks completed, unchanged Agenda requirements,
+the durable local merge receipt, unresolved workers/recovery/reservations, and
+known session pane working directories. Unknown or active users of the issue
+directory block deletion. The Git helper validates the exact registered linked
+worktree, filesystem/registration identities, ownership, clean tracked/untracked
+state, unchanged merged HEAD, local-main ancestry and branch checkouts. It
+protects control/main/store and containing directories, and refuses locks,
+unfinished operations and submodules requiring manual handling.
+
+Lock order is issue, repository merge, then worktree ownership. The helper
+reserves ownership with the cleanup UUID, writes durable intent before each
+step, removes the worktree with non-force Git removal, then compare-and-deletes
+the expected local branch OID. It retains a helper receipt after releasing the
+exact ownership entry. Arbitrary manual Git and external processes do not share
+these locks; uncertain or changed targets fail closed. No remote Git is used.
+
+Git results are saved in Swamp before the final pane-close intent. The server
+compares the exact fence and closes within the same screen-thread operation;
+it refuses later input/turns, background or additional control work and closes
+that would affect another pane. The correlated executing controller turn may
+end without becoming idle. The existing completed-worker close guards remain
+separate.
+
+A failure can read: `Git closeout failed; pane retained. Use resume-closeout:
+Worktree is not clean: /work/yinz/.worktrees/issue-77`. Fix the reported cause,
+then resume the saved cleanup. A removed worktree need not be reopened to finish
+branch deletion. Recreated paths/branches, changed claims and moved commits block
+replay. A pane-close problem never undoes completion or successful Git deletion.
+
+Self-close may terminate the caller before its reply. The saved pane result stays
+`unknown` until observation; run `resume-closeout` from another pane. Only absence
+of the exact pane in the same server incarnation reconciles as absent. Changed
+incarnation/conversation or unobservable state cannot prove success or authorize
+closing a replacement. A later turn/input expires the fence, producing a fresh
+offer ID; present it and record fresh explicit acceptance for the same controller.
+Git deletion is retained and not repeated. No background close job is scheduled.
+Rollback/refresh preserve historical cleanup facts while invalidating unused
+authority. After accepted cleanup, implementation must deliberately select a new
+valid worktree; repeated start/status/drive/summarize do not inspect a removed one.
 
 ## Validation boundaries
 

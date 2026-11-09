@@ -252,4 +252,28 @@ If local merge landed but Agenda close-out failed, verify the recorded merge and
 resume close-out using its receipt rather than merging again. Compare delivered
 outcome to the original requirements. Complete only after merge and
 `outcomeMet: true`; keep an unmet issue open and describe the remaining work.
-Branch/worktree cleanup is separate from completion.
+After successful completion, `authorize_closeout` offers optional bundled cleanup.
+Present the directory (including build outputs), local branch and original
+controller session/pane. Acceptance ends that conversation; record separate
+explicit consent with `closeout {handoffId, decision: "accept", request}`.
+Decline retains everything and is terminal for automatic drive.
+
+On a Git failure the pane stays open. Read the saved `closeout.failure`, repair
+its cause, then run `resume-closeout`. The Swamp behavior reconciles its exact
+helper receipt and completes worktree removal before branch deletion. It never
+forces dirty/locked/moved/reused resources. Do not manually recycle a reserved
+ownership entry or infer absence from a parent checkout.
+
+If self-close lost its acknowledgement, recover in another pane with
+`resume-closeout`; it observes the frozen original session/pane, never the
+recovery caller. Same-incarnation exact absence can be reconciled; a new server,
+conversation, input or turn cannot authorize closing a replacement. Unknown
+observations remain unconfirmed. An expired fence yields a fresh offer ID: present
+it and obtain fresh explicit acceptance for the still-pending original pane.
+Successful Git deletion and the completed issue remain recorded.
+
+Legacy/missing origins and older servers retain resources. Use the explicit
+exact-target `bind` procedure in the [lifecycle guide](../../../../docs/ISSUE_LIFECYCLE.md#optional-resource-close-out)
+to create an offer before consent; never choose the latest worker or invoking
+pane. Accepted cleanup facts survive rollback/refresh. Before restarting
+implementation after cleanup, deliberately select a new valid worktree.

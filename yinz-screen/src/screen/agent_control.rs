@@ -42,6 +42,7 @@ pub(super) struct Lifecycle {
     /// the idle agent busy again. `Stop` is not an end here: a blocking Stop hook continues
     /// the same turn.
     ended_turn: Option<String>,
+    closeout_turn: Option<String>,
     claude_prompt_id: Option<String>,
     claude_confirmation: Option<bool>,
     claude_previous_prompt_id: Option<String>,
@@ -107,6 +108,7 @@ impl Lifecycle {
             claude,
             input_revision: self.input_revision,
             ended_turn: self.ended_turn.clone(),
+            closeout_turn: self.closeout_turn.clone(),
             claude_prompt_id: self.claude_prompt_id.clone(),
             claude_confirmation: self.claude_confirmation,
             claude_previous_prompt_id: self.claude_previous_prompt_id.clone(),
@@ -127,6 +129,7 @@ impl From<LifecycleState> for Lifecycle {
             claude: state.claude,
             input_revision: state.input_revision,
             ended_turn: state.ended_turn,
+            closeout_turn: state.closeout_turn,
             claude_prompt_id: state.claude_prompt_id,
             claude_confirmation: state.claude_confirmation,
             claude_previous_prompt_id: state.claude_previous_prompt_id,
@@ -1563,6 +1566,141 @@ impl Screen {
         response
     }
 
+    /// No readiness/idle requirement: consent may end the exact executing controller turn.
+    /// All observations and the close itself occur in this same screen-thread operation.
+    fn closeout_fence(
+        &self,
+        pane: PaneId,
+    ) -> std::result::Result<yinz_types::agent::control::CloseoutFence, String> {
+        let status = self
+            .agent_status(pane, None)
+            .ok_or("Controller identity unavailable; inspect the original pane")?;
+        let lifecycle = self
+            .agent_lifecycle
+            .get(&pane)
+            .ok_or("Controller hooks unavailable")?;
+        let revision = self.agent_input_revision(pane);
+        let turn = lifecycle
+            .closeout_turn
+            .as_ref()
+            .filter(|turn| !turn.is_empty())
+            .ok_or("Provider has no current turn identity; retain the pane")?;
+        if !matches!(pane, PaneId::Terminal(_))
+            || !status.status_available
+            || status.agent.session_id.as_ref() != Some(&lifecycle.conversation)
+            || lifecycle.conversation.is_empty()
+            || status.agent.kind != lifecycle.kind
+            || status.background
+            || lifecycle.event_background()
+            || !lifecycle.claude_notifications.is_empty()
+            || self
+                .agent_worker_waits
+                .get(&pane)
+                .is_some_and(|waits| !waits.waits.is_empty())
+            || self.agent_draft_clears.contains_key(&pane)
+            || self.agent_dialog_inputs.contains_key(&pane)
+            || self.agent_clear_inputs.contains_key(&pane)
+            || self
+                .draft_composer(pane, &status.agent.kind)
+                .is_some_and(|c| !c.empty)
+            || (lifecycle.input_revision != Some(revision)
+                && self
+                    .draft_composer(pane, &status.agent.kind)
+                    .is_none_or(|c| !c.empty))
+        {
+            return Err("Controller has background work, a draft or unverified input; inspect before closeout".into());
+        }
+        let pending: Vec<_> = self
+            .agent_controls
+            .iter()
+            .filter(|p| p.pane == pane)
+            .collect();
+        if pending.len() > 1
+            || pending.iter().any(|p| {
+                p.delivery.is_some()
+                    || p.enter_at.is_some()
+                    || p.clear
+                    || p.steering
+                    || p.input_revision != revision
+                    || p.conversation.as_ref() != Some(&lifecycle.conversation)
+                    || p.prompt.as_ref().is_none_or(|prompt| {
+                        !prompt.acknowledged()
+                            || (if status.agent.kind == "claude" {
+                                prompt.prompt_id()
+                            } else {
+                                prompt.turn_id()
+                            }) != Some(turn.as_str())
+                    })
+            })
+        {
+            return Err(
+                "Controller has additional in-flight control work; resolve it before closeout"
+                    .into(),
+            );
+        }
+        if !self
+            .tab_containing_pane(pane)
+            .is_some_and(|tab| tab.explicit_close_is_single_pane(pane))
+        {
+            return Err("Controller closeout would affect other panes".into());
+        }
+        Ok(yinz_types::agent::control::CloseoutFence {
+            server_instance: yinz_bus::agent_launch::server_instance().to_owned(),
+            pane_id: pane,
+            provider: status.agent.kind,
+            conversation: lifecycle.conversation.clone(),
+            input_revision: revision,
+            turn: turn.clone(),
+        })
+    }
+
+    fn controller_closeout(&mut self, request: AgentRequest, client: &Reply) {
+        use yinz_types::agent::control::CLOSEOUT_CAPABILITY;
+        let mut response = AgentResponse::new(AgentOutcome::Ok);
+        response.server_instance = Some(yinz_bus::agent_launch::server_instance().to_owned());
+        let (pane, expected) = match request {
+            AgentRequest::CloseoutSupport => {
+                response.output = Some(CLOSEOUT_CAPABILITY.into());
+                self.agent_reply(client, response);
+                return;
+            },
+            AgentRequest::CloseoutSnapshot { pane_id } => (pane_id, None),
+            AgentRequest::CloseoutClose { fence } => (fence.pane_id, Some(fence)),
+            _ => return,
+        };
+        if self.tab_containing_pane(pane).is_none() {
+            response.outcome = AgentOutcome::TargetNotFound;
+        } else {
+            match self.closeout_fence(pane) {
+                Err(message) => {
+                    response.outcome = AgentOutcome::Rejected;
+                    response.message = Some(message);
+                },
+                Ok(fence) => {
+                    if let Some(expected) = expected {
+                        if expected != fence {
+                            response.outcome = AgentOutcome::TargetChanged;
+                            response.message = Some("Controller identity, input or turn changed; obtain a fresh closeout offer and consent".into());
+                        } else {
+                            self.close_pane_explicitly(pane, None);
+                            if self.tab_containing_pane(pane).is_some() {
+                                response.outcome = AgentOutcome::Rejected;
+                                response.message =
+                                    Some("Controller pane could not be closed".into());
+                            } else {
+                                self.log_and_report_session_state().non_fatal();
+                                self.render().non_fatal();
+                            }
+                        }
+                    } else {
+                        response.closeout_target = Some(fence);
+                    }
+                },
+            }
+        }
+        self.agent_reply(client, response);
+    }
+
     pub(super) fn agent_control(&mut self, request: AgentRequest, client: ClientId) {
         self.agent_control_with_reply(request, Reply::Client(client));
     }
@@ -1573,6 +1711,13 @@ impl Screen {
 
     pub(super) fn agent_control_at(&mut self, request: AgentRequest, client: Reply, now: Instant) {
         use AgentRequest::*;
+        if matches!(
+            &request,
+            CloseoutSupport | CloseoutSnapshot { .. } | CloseoutClose { .. }
+        ) {
+            self.controller_closeout(request, &client);
+            return;
+        }
         let (pane, expected) = match &request {
             Restart {
                 pane_id,
@@ -1602,7 +1747,11 @@ impl Screen {
                 self.agent_reply(&client, response);
                 return;
             },
-            Launch { .. } | LaunchStatus { .. } => {
+            CloseoutSupport
+            | CloseoutSnapshot { .. }
+            | CloseoutClose { .. }
+            | Launch { .. }
+            | LaunchStatus { .. } => {
                 let mut response = AgentResponse::new(AgentOutcome::Rejected);
                 response.message = Some("launch transactions require the host coordinator".into());
                 self.agent_reply(&client, response);
@@ -2537,6 +2686,9 @@ impl Screen {
             | SpawnStackSupport
             | SpawnPlacementSupport
             | SpawnSuppressedSupport
+            | CloseoutSupport
+            | CloseoutSnapshot { .. }
+            | CloseoutClose { .. }
             | SpawnBubblewrapSupport => {},
         }
     }
@@ -3455,6 +3607,7 @@ impl Screen {
                             .map_or_else(Instant::now, |l| l.notification_tick),
                         last_report: Instant::now(),
                         ended_turn: previous.and_then(|previous| previous.ended_turn.clone()),
+                        closeout_turn: None,
                         claude_prompt_id: None,
                         claude_confirmation: None,
                         claude_previous_prompt_id: None,
@@ -3568,6 +3721,18 @@ impl Screen {
                             .map_or_else(Instant::now, |l| l.notification_tick),
                         last_report: Instant::now(),
                         ended_turn,
+                        closeout_turn: if event.hook == "UserPromptSubmit" && !notification {
+                            hook.and_then(|hook| {
+                                if event.kind == "claude" {
+                                    hook.prompt_id.clone()
+                                } else {
+                                    hook.turn_id.clone()
+                                }
+                            })
+                            .filter(|id| !id.is_empty())
+                        } else {
+                            previous.and_then(|previous| previous.closeout_turn.clone())
+                        },
                         claude_prompt_id: if event.hook == "UserPromptSubmit" && !notification {
                             hook.and_then(|hook| hook.prompt_id.clone())
                         } else {

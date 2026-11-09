@@ -198,6 +198,13 @@ export async function issueName(
     : `issue-${(await sha256(workspace)).slice(0, 24)}-${itemId}`;
 }
 
+/** Preserve structured helper evidence when a command fails after a destructive step. */
+export class GitOperationError extends Error {
+  constructor(message: string, readonly result: unknown) {
+    super(message);
+  }
+}
+
 /** Keep the Python supervisor alive until it has stopped and reaped its commands. */
 export async function gitOperation(
   context: Pick<Context, "repoDir" | "signal" | "createFileWriter">,
@@ -262,12 +269,13 @@ export async function gitOperation(
     }
     if (!status.success) {
       const failure = z.object({ error: z.string() }).safeParse(result);
-      throw new Error(
+      throw new GitOperationError(
         failure.success
           ? failure.data.error
           : `Git helper exited ${status.code}: ${
             typeof diagnostics === "string" ? diagnostics : logName
           }`,
+        result,
       );
     }
     context.signal.throwIfAborted();

@@ -223,6 +223,16 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
         | Agent::Register { .. } => {
             bail!("archive and registration use background services")
         },
+        Agent::CloseoutSupport { json } => (AgentRequest::CloseoutSupport, json),
+        Agent::CloseoutSnapshot { target, json } => {
+            (AgentRequest::CloseoutSnapshot { pane_id: target }, json)
+        },
+        Agent::CloseoutClose { fence, json } => (
+            AgentRequest::CloseoutClose {
+                fence: serde_json::from_str(&fence).context("parse controller closeout fence")?,
+            },
+            json,
+        ),
         Agent::CloseCompleted {
             target,
             conversation,
@@ -915,6 +925,14 @@ fn write_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
         }
         writeln!(out, "{value}").context("cannot write agent response")?;
         return Ok(());
+    }
+    if let Some(fence) = &response.closeout_target {
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(fence).context("encode controller closeout identity")?
+        )
+        .context("write controller closeout identity")?;
     }
     if let Some(launch) = &response.launch {
         writeln!(

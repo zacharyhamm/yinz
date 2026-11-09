@@ -38,7 +38,7 @@ class Cancelled(LifecycleError):
 
 
 _cancelled = False
-_lock_fd = None
+_lock_fds = []
 CI_COMMAND = ["cargo", "x", "ci", "check"]
 # A hung plan check would otherwise hold the issue lock indefinitely.
 CHECK_TIMEOUT_SECONDS = 3600
@@ -120,7 +120,7 @@ def command(args, cwd, *, check=True, capture=True, reap_group=False, timeout=No
         stderr=subprocess.PIPE if capture else sys.stderr,
         text=True,
         start_new_session=True,
-        pass_fds=() if _lock_fd is None else (_lock_fd,),
+        pass_fds=tuple(_lock_fds),
         env=child_environment(),
     )
     deadline = None if timeout is None else time.monotonic() + timeout
@@ -189,7 +189,7 @@ def run_logged(args, cwd, log):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             start_new_session=True,
-            pass_fds=() if _lock_fd is None else (_lock_fd,),
+            pass_fds=tuple(_lock_fds),
             env=child_environment(),
         )
         pump = threading.Thread(target=copy_output, args=(process.stdout, file), daemon=True)
@@ -361,6 +361,7 @@ def prepare(request):
     branch_name(repo, branch)
     with merge_lock(common, 60, name="worktree-ownership", label="worktree ownership") as directory:
         owners = read_owners(directory)
+        assert_not_closing(owners, issue_key, str(desired), branch)
         assert_owner(owners, issue_key, str(desired), branch)
         if desired.exists():
             state = inspect({**request, "worktree": str(desired)})
@@ -429,6 +430,7 @@ def claim(request):
         raise LifecycleError("Run start from a worktree on a feature branch, not a detached HEAD")
     with merge_lock(common, 60, name="worktree-ownership", label="worktree ownership") as directory:
         owners = read_owners(directory)
+        assert_not_closing(owners, issue_key, str(worktree), branch)
         conflicts = [
             owner for owner in owners
             if owner["issueKey"] != issue_key
@@ -469,6 +471,7 @@ def confirm(request):
     common, worktree, issue_key = claim_target(request)
     with merge_lock(common, 60, name="worktree-ownership", label="worktree ownership") as directory:
         owners = read_owners(directory)
+        assert_not_closing(owners, issue_key, str(worktree))
         mine = [owner for owner in owners if owner["issueKey"] == issue_key and owner["worktree"] == str(worktree)]
         if not mine:
             holder = next((owner["issueKey"] for owner in owners if owner["worktree"] == str(worktree)), None)
@@ -499,6 +502,7 @@ def read_owners(directory):
             not isinstance(owner.get(key), str) or not owner[key]
             for key in ("issueKey", "worktree", *(("branch",) if "branch" in owner else ()))
         ) or ("pending" in owner and (owner["pending"] is not True or "branch" in owner))
+        or ("cleanupId" in owner and (not isinstance(owner["cleanupId"], str) or "branch" not in owner))
         for owner in owners
     ):
         raise LifecycleError("Invalid worktree ownership registry")
@@ -627,7 +631,6 @@ def isolated_target(worktree):
 
 @contextmanager
 def merge_lock(common, wait_seconds=14400, *, name="merge", label="repository merge"):
-    global _lock_fd
     directory = common / "yinz-lifecycle"
     directory.mkdir(exist_ok=True)
     # Keep this inode permanently: unlinking a lock path creates two lock domains.
@@ -647,11 +650,11 @@ def merge_lock(common, wait_seconds=14400, *, name="merge", label="repository me
                     waiting = True
                 time.sleep(0.05)
         try:
-            _lock_fd = lock.fileno()
+            _lock_fds.append(lock.fileno())
             print(f"Acquired the {label} lock", file=sys.stderr, flush=True)
             yield directory
         finally:
-            _lock_fd = None
+            _lock_fds.pop()
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
@@ -964,16 +967,226 @@ def run_check(request):
     return result
 
 
+
+def assert_not_closing(owners, issue_key, worktree, branch=None):
+    for owner in owners:
+        if owner.get("cleanupId") and (owner["worktree"] == worktree or owner.get("branch") == branch):
+            raise LifecycleError("Worktree ownership is reserved by closeout; resume that cleanup first")
+
+
+def registered_worktrees(repo):
+    entries = []
+    for record in git(repo, "worktree", "list", "--porcelain", "-z")[1].split("\x00\x00"):
+        fields = dict(field.split(" ", 1) if " " in field else (field, "")
+                      for field in record.split("\x00") if field)
+        if "worktree" in fields:
+            entries.append(fields)
+    return entries
+
+
+def filesystem_identity(path):
+    stat = path.stat()
+    return {"device": str(stat.st_dev), "inode": str(stat.st_ino)}
+
+
+def branch_identity(common, branch):
+    """Pin ref storage and reflog, including same-OID deletion/recreation on resume.
+
+    Ref changes outside lifecycle locks are not excluded. Any storage change is
+    conservatively stale; compare-and-delete still protects the final Git update.
+    """
+    entries = []
+    loose = common / "refs" / "heads" / branch
+    for path in [loose, common / "logs" / "refs" / "heads" / branch,
+                 *([] if loose.exists() else [common / "packed-refs"])]:
+        if path.is_symlink():
+            raise LifecycleError("Closeout refuses symlinked ref storage")
+        if path.exists():
+            stat = path.stat()
+            entries.append([str(path), stat.st_dev, stat.st_ino, stat.st_mtime_ns,
+                            stat.st_ctime_ns, hashlib.sha256(path.read_bytes()).hexdigest()])
+        else:
+            entries.append([str(path), None])
+    return hashlib.sha256(json.dumps(entries, sort_keys=True).encode()).hexdigest()
+
+
+def closeout_merge(request, repo, directory):
+    path = attempt_path(directory, request)
+    if not path.is_file():
+        raise LifecycleError("Closeout requires a durable merged receipt")
+    receipt = reconcile(repo, path)
+    if receipt["status"] != "merged" or any(receipt.get(key) != text_field(request, key)
+                                              for key in ("issueKey", "issueDigest")):
+        raise LifecycleError("Closeout merge receipt does not match this issue and attempt")
+    if receipt.get("mergedCommit") != receipt["rebasedCommit"]:
+        raise LifecycleError("Closeout merge receipt has a different merged commit")
+    branch_name(repo, receipt["branch"])
+    return receipt
+
+
+def closeout_target(request, repo, common, directory, receipt):
+    desired = Path(receipt["worktree"])
+    if not desired.is_absolute() or desired.resolve() != desired:
+        raise LifecycleError("Closeout worktree must have its recorded canonical path")
+    entries = registered_worktrees(repo)
+    matches = [entry for entry in entries if Path(entry["worktree"]).resolve() == desired]
+    if len(matches) != 1 or not desired.is_dir():
+        raise LifecycleError("Closeout worktree is absent or not registered; cannot offer deletion")
+    entry = matches[0]
+    if any(key in entry for key in ("locked", "prunable", "bare")):
+        raise LifecycleError("Closeout worktree is locked, prunable or bare")
+    # The issue lock is already held by Swamp. Lock order: issue -> merge -> ownership.
+    # These locks do not exclude arbitrary manual Git or external processes.
+    protected = [repo, common, (repo / ".swamp").resolve(), (repo / ".swamp.yaml").resolve(),
+                 (repo / ".swamp" / "data").resolve(),
+                 *[Path(e["worktree"]).resolve() for e in entries if e is not entry]]
+    if any(target == desired or desired in target.parents for target in protected):
+        raise LifecycleError("Closeout would remove the control/store, main or another worktree")
+    worktree, other_common = canonical_repo(desired)
+    gitdir = Path(git(worktree, "rev-parse", "--absolute-git-dir")[1]).resolve(strict=True)
+    if worktree != desired or other_common != common or gitdir == common or gitdir.parent != common / "worktrees":
+        raise LifecycleError("Closeout requires an exact registered linked worktree")
+    branch = receipt["branch"]
+    oid = receipt["mergedCommit"]
+    if entry.get("branch") != f"refs/heads/{branch}" or entry.get("HEAD") != oid:
+        raise LifecycleError("Closeout worktree branch or HEAD changed")
+    if any(e is not entry and e.get("branch") == f"refs/heads/{branch}" for e in entries):
+        raise LifecycleError("Closeout branch has another linked checkout")
+    if (desired / ".git").is_symlink():
+        raise LifecycleError("Closeout refuses a symlinked Git registration link")
+    clean(desired)
+    if (desired / ".gitmodules").exists():
+        raise LifecycleError("Closeout refuses worktrees with submodules; retain for manual inspection")
+    if git(repo, "rev-parse", f"refs/heads/{branch}")[1] != oid:
+        raise LifecycleError("Closeout branch moved")
+    owners = read_owners(directory)
+    mine = {"issueKey": receipt["issueKey"], "worktree": str(desired), "branch": branch}
+    matching = [owner for owner in owners if owner["worktree"] == str(desired) or owner.get("branch") == branch]
+    if matching != [mine] and matching != [{**mine, "cleanupId": request.get("cleanupId")}]:
+        raise LifecycleError("Closeout requires the exact prepared ownership claim")
+    return {"worktree": str(desired), "branch": branch, "head": oid,
+            "branchIdentity": branch_identity(common, branch),
+            "gitDir": str(gitdir), "directoryIdentity": filesystem_identity(desired),
+            "registrationIdentity": filesystem_identity(gitdir),
+            "linkIdentity": filesystem_identity(desired / ".git"),
+            "gitLink": (desired / ".git").read_text(), "owner": mine}
+
+
+def closeout_preview(request):
+    repo, common = canonical_repo(text_field(request, "repoPath"))
+    with merge_lock(common) as directory:
+        with merge_lock(common, 60, name="worktree-ownership", label="worktree ownership"):
+            receipt = closeout_merge(request, repo, directory)
+            return closeout_target(request, repo, common, directory, receipt)
+
+
+def closeout_cleanup(request):
+    repo, common = canonical_repo(text_field(request, "repoPath"))
+    cleanup_id = text_field(request, "cleanupId")
+    if str(uuid.UUID(cleanup_id)) != cleanup_id:
+        raise LifecycleError("cleanupId must be a canonical UUID")
+    with merge_lock(common) as directory:
+        with merge_lock(common, 60, name="worktree-ownership", label="worktree ownership"):
+            merge = closeout_merge(request, repo, directory)
+            receipts = directory / "closeouts"
+            receipts.mkdir(exist_ok=True)
+            path = receipts / f"{cleanup_id}.json"
+            target = request.get("target")
+            binding = {key: request.get(key) for key in ("issueKey", "issueDigest", "attemptId", "cleanupId")}
+            if path.exists():
+                saved = json.loads(path.read_text())
+                if any(saved.get(key) != value for key, value in binding.items()) or saved["target"] != target:
+                    raise LifecycleError("Closeout receipt belongs to another authorization or target")
+            else:
+                current = closeout_target(request, repo, common, directory, merge)
+                if current != target:
+                    raise LifecycleError("Closeout offer is stale; worktree identity changed")
+                saved = {**binding, "target": current, "worktree": "pending", "branch": "pending"}
+                save_receipt(path, saved)
+            if target["worktree"] != merge["worktree"] or target["branch"] != merge["branch"] or target["head"] != merge["mergedCommit"]:
+                raise LifecycleError("Closeout targets differ from the merged receipt")
+            desired = Path(target["worktree"])
+            branch = target["branch"]
+            oid = target["head"]
+            owners = read_owners(directory)
+            mine = target["owner"]
+            reserved = {**mine, "cleanupId": cleanup_id}
+            if saved["branch"] != "removed":
+                matches = [o for o in owners if o["worktree"] == str(desired) or o.get("branch") == branch]
+                if matches not in ([mine], [reserved]):
+                    raise LifecycleError("Closeout ownership changed")
+                if matches == [mine]:
+                    owners = [reserved if o == mine else o for o in owners]
+                    save_receipt(directory / "worktree-owners.json", {"owners": owners})
+            # Never reconcile absence from the parent repository's HEAD.
+            if desired.exists() or desired.is_symlink():
+                if saved["worktree"] == "removed":
+                    raise LifecycleError("Closeout worktree path was reused")
+                current = closeout_target(request, repo, common, directory, merge)
+                if current != target:
+                    raise LifecycleError("Closeout worktree identity changed")
+                saved["worktree"] = "removing"
+                save_receipt(path, saved)
+                git(repo, "worktree", "remove", "--", str(desired))
+            elif saved["worktree"] not in ("removing", "removed"):
+                raise LifecycleError("Worktree disappeared before closeout removal intent")
+            if any(Path(e["worktree"]).resolve() == desired for e in registered_worktrees(repo)) or Path(target["gitDir"]).exists():
+                raise LifecycleError("Closeout registration survived or was recreated")
+            saved["worktree"] = "removed"
+            save_receipt(path, saved)
+            if desired.exists() or desired.is_symlink():
+                raise LifecycleError("Closeout worktree path was reused before branch deletion")
+            if any(e.get("branch") == f"refs/heads/{branch}" for e in registered_worktrees(repo)):
+                raise LifecycleError("Closeout branch is checked out elsewhere")
+            code, current, _ = git(repo, "rev-parse", "--verify", f"refs/heads/{branch}", check=False)
+            if code == 0:
+                if saved["branch"] == "removed" or current != oid:
+                    raise LifecycleError("Closeout branch moved or was recreated")
+                if branch_identity(common, branch) != target["branchIdentity"]:
+                    raise LifecycleError("Closeout branch storage identity changed or was recreated")
+                if git(repo, "merge-base", "--is-ancestor", oid, "refs/heads/main", check=False)[0] != 0:
+                    raise LifecycleError("Closeout branch is no longer merged in main")
+                saved["branch"] = "deleting"
+                save_receipt(path, saved)
+                git(repo, "update-ref", "-d", f"refs/heads/{branch}", oid)
+            elif saved["branch"] not in ("deleting", "removed"):
+                raise LifecycleError("Branch disappeared before closeout deletion intent")
+            saved["branch"] = "removed"
+            save_receipt(path, saved)
+            owners = read_owners(directory)
+            if any(o != reserved and (o["worktree"] == str(desired) or o.get("branch") == branch) for o in owners):
+                raise LifecycleError("Closeout ownership was reused")
+            if reserved in owners:
+                save_receipt(directory / "worktree-owners.json", {"owners": [o for o in owners if o != reserved]})
+            return saved
+
+
+def closeout_failure_receipt(request):
+    """Return only this exact authorization's last atomic helper progress."""
+    _, common = canonical_repo(text_field(request, "repoPath"))
+    cleanup_id = text_field(request, "cleanupId")
+    if str(uuid.UUID(cleanup_id)) != cleanup_id:
+        return None
+    path = common / "yinz-lifecycle" / "closeouts" / f"{cleanup_id}.json"
+    if not path.is_file():
+        return None
+    saved = json.loads(path.read_text())
+    if any(saved.get(key) != request.get(key) for key in ("issueKey", "issueDigest", "attemptId", "cleanupId", "target")):
+        return None
+    return saved
+
+
 def main():
     signal.signal(signal.SIGINT, cancel)
     signal.signal(signal.SIGTERM, cancel)
+    request = {}
     try:
         request = json.load(sys.stdin)
         if not isinstance(request, dict):
             raise LifecycleError("Request must be a JSON object")
         actions = {"inspect": inspect, "claim": claim, "confirm": confirm, "prepare": prepare, "integrate": integrate,
                    "receipt": receipt_action, "agenda-workspace": configured_workspace,
-                   "check": run_check}
+                   "check": run_check, "closeout-preview": closeout_preview, "closeout-cleanup": closeout_cleanup}
         action = request.get("action")
         if not isinstance(action, str) or action not in actions:
             raise LifecycleError(f"Unknown action: {action}")
@@ -982,7 +1195,15 @@ def main():
         return 0
     except (LifecycleError, OSError, ValueError, subprocess.SubprocessError) as error:
         print(str(error), file=sys.stderr)
-        print(json.dumps({"error": str(error)}, ensure_ascii=False))
+        result = {"error": str(error)}
+        if isinstance(request, dict) and request.get("action") == "closeout-cleanup":
+            try:
+                progress = closeout_failure_receipt(request)
+                if progress is not None:
+                    result["closeout"] = progress
+            except (LifecycleError, OSError, ValueError, subprocess.SubprocessError):
+                pass  # Failure to observe progress never guesses a completed step.
+        print(json.dumps(result, ensure_ascii=False))
         return 130 if isinstance(error, Cancelled) else 1
 
 

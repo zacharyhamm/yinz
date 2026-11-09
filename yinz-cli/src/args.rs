@@ -632,6 +632,9 @@ impl Agent {
             | Agent::Register { json, .. }
             | Agent::List { json, .. }
             | Agent::CloseCompleted { json, .. }
+            | Agent::CloseoutSupport { json }
+            | Agent::CloseoutSnapshot { json, .. }
+            | Agent::CloseoutClose { json, .. }
             | Agent::Status { json, .. }
             | Agent::Show { json, .. }
             | Agent::Hide { json, .. }
@@ -753,6 +756,25 @@ pub enum Agent {
     List {
         #[clap(long)]
         project: Option<String>,
+        #[clap(long)]
+        json: bool,
+    },
+    /// Negotiate guarded controller close-out support.
+    CloseoutSupport {
+        #[clap(long)]
+        json: bool,
+    },
+    /// Sample the controller identity and current turn without closing it.
+    CloseoutSnapshot {
+        #[clap(value_parser = parse_agent_target)]
+        target: yinz_types::pane_id::PaneId,
+        #[clap(long)]
+        json: bool,
+    },
+    /// Close only the controller matching the explicitly authorized JSON fence.
+    CloseoutClose {
+        #[clap(long)]
+        fence: String,
         #[clap(long)]
         json: bool,
     },

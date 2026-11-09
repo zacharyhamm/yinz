@@ -366,10 +366,64 @@ export const ReceiptSchema = z.object({
   mergedAt: z.iso.datetime(),
   previousAttempts: z.array(PreviousAttemptSchema).optional(),
 }).strict();
+export const CloseoutFenceSchema = z.object({
+  server_instance: Text,
+  pane_id: z.string().regex(/^terminal_[0-9]+$/),
+  provider: Text,
+  conversation: Text,
+  input_revision: z.number().int().nonnegative().safe(),
+  turn: Text,
+}).strict();
+export const CloseoutOriginSchema = z.object({
+  session: Text,
+  paneId: z.string().regex(/^terminal_[0-9]+$/),
+  server_instance: Text,
+  provider: Text,
+  conversation: Text,
+}).strict();
+const FileIdentitySchema = z.object({ device: Text, inode: Text }).strict();
+export const CloseoutTargetSchema = z.object({
+  worktree: Text,
+  branch: Text,
+  head: Commit,
+  gitDir: Text,
+  branchIdentity: Text,
+  directoryIdentity: FileIdentitySchema,
+  registrationIdentity: FileIdentitySchema,
+  linkIdentity: FileIdentitySchema,
+  gitLink: z.string().min(1),
+  owner: z.object({ issueKey: Text, worktree: Text, branch: Text }).strict(),
+}).strict();
+export const CloseoutGitResultSchema = z.object({
+  cleanupId: z.uuid(),
+  target: CloseoutTargetSchema,
+  worktree: z.enum(["pending", "removing", "removed"]),
+  branch: z.enum(["pending", "deleting", "removed"]),
+}).strip();
+export const CloseoutSchema = z.object({
+  id: z.uuid(),
+  offerId: z.uuid(),
+  issueDigest: Text,
+  attemptId: z.uuid(),
+  rollbackId: z.uuid().optional(),
+  origin: CloseoutOriginSchema,
+  target: CloseoutTargetSchema,
+  fence: CloseoutFenceSchema,
+  decision: z.enum(["offered", "declined", "accepted", "invalidated"]),
+  request: UserRequestSchema.optional(),
+  authorizedRequest: UserRequestSchema.optional(),
+  git: z.enum(["pending", "complete"]),
+  gitResult: CloseoutGitResultSchema.optional(),
+  pane: z.enum(["pending", "unknown", "closed", "absent", "expired"]),
+  failure: z.object({ stage: z.enum(["git", "pane"]), message: Text }).strict()
+    .optional(),
+}).strict();
 export const StateSchema = z.object({
   issue: IssueSchema,
   // Absent only in legacy states, which retain implementation/control selection.
   workerWorktree: Text.optional(),
+  closeout: CloseoutSchema.optional(),
+  closeoutHistory: z.array(CloseoutSchema).optional(),
   phase: z.enum([
     "triaging",
     "classified",
@@ -611,6 +665,7 @@ export function rollbackState(
   id: string,
 ): LifecycleState {
   const state = StateSchema.parse(current);
+  if (state.closeout) state.closeout.decision = "invalidated";
   const index = LifecycleStepSchema.options.indexOf(
     LifecycleStepSchema.parse(step),
   );
@@ -956,6 +1011,7 @@ export function refreshIssue(
   context.generation += 1;
   context.initialPlanVersion = state.planVersion;
   context.automaticRevisionConsumed = false;
+  if (state.closeout) state.closeout.decision = "invalidated";
   state.issue = next;
   state.phase = "triaging";
   delete state.classification;
@@ -1073,6 +1129,21 @@ export function transition(
     case "implement": {
       requirePhase(state, ["approved", "implementing"]);
       const implementation = ActionSchemas.implement.parse(args);
+      if (
+        state.closeout?.authorizedRequest &&
+        state.closeout.target.worktree === implementation.worktree
+      ) {
+        throw new Error(
+          "Closeout may have removed this worktree; deliberately select a new valid worktree before implementation",
+        );
+      }
+      if (
+        state.closeout?.authorizedRequest &&
+        state.closeout.target.worktree !== implementation.worktree
+      ) {
+        state.workerWorktree = implementation.worktree;
+        delete state.implementation;
+      }
       const plan = requirePlan(state);
       if (state.approval?.planVersion !== plan.version) {
         throw new Error("Approve the current plan first");
@@ -1559,6 +1630,24 @@ export async function readAgenda(
   validateAgendaItem(item, allowCompleted);
   const issue = { workspace, itemId, text: item.text, note: item.note };
   return IssueSchema.parse({ ...issue, digest: await digestIssue(issue) });
+}
+
+/** Closeout requires completed, unchanged requirements, not just a done snapshot. */
+export async function requireCompletedAgenda(
+  issue: Issue,
+  command: AgendaCommand = agendaCommand,
+) {
+  const item = await agendaRecord(issue.workspace, issue.itemId, command);
+  validateAgendaItem(item, true);
+  if (
+    !item.completed ||
+    await digestIssue({ ...issue, text: item.text, note: item.note }) !==
+      issue.digest
+  ) {
+    throw new Error(
+      "Closeout requires the completed Agenda task with unchanged requirements",
+    );
+  }
 }
 
 /** Rollback reopens a completed task without changing its requirements. Safe to retry. */

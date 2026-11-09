@@ -188,6 +188,174 @@ sys.exit(int(os.environ.get("YINZ_TEST_CI_EXIT", "0")))
     def receipt(self, request):
         return self.run_request({"action": "receipt", "repoPath": str(self.repo), "attemptId": request["attemptId"]})
 
+    def closeout_fixture(self, name="closeout"):
+        worktree = self.branch(name)
+        request = self.request(worktree)
+        merged = self.run_request(request)
+        request.update(action="closeout-preview")
+        target = self.run_request(request)
+        return worktree, {**request, "action": "closeout-cleanup", "cleanupId": str(uuid.uuid4()), "target": target}, merged
+
+    def closeout_fault(self, stage):
+        real_git = __import__("shutil").which("git")
+        marker = self.root / "closeout-fault"
+        self.stub("git", f'''import pathlib, subprocess, sys
+args = sys.argv[1:]
+marker = pathlib.Path({str(marker)!r})
+remove = "worktree" in args and "remove" in args
+branch = "update-ref" in args and "-d" in args
+if {stage!r} == "before-branch" and branch and not marker.exists():
+    marker.touch()
+    raise SystemExit(71)
+result = subprocess.run([{real_git!r}, *args])
+if {stage!r} == "after-worktree" and remove and result.returncode == 0 and not marker.exists():
+    marker.touch()
+    raise SystemExit(71)
+raise SystemExit(result.returncode)
+''')
+
+    def test_closeout_removes_worktree_then_exact_branch_and_replays_without_ci(self):
+        worktree, request, merged = self.closeout_fixture()
+        (worktree / "target").mkdir()
+        (worktree / "target" / "ignored-build").write_text("outputs")
+        result = self.run_request(request)
+        self.assertEqual((result["worktree"], result["branch"]), ("removed", "removed"))
+        self.assertFalse(worktree.exists())
+        self.assertEqual(self.git(self.repo, "branch", "--list", "closeout"), "")
+        self.assertEqual(self.run_request(request)["target"], request["target"])
+        self.assertEqual(len(self.event_rows()), 2)
+        self.assertEqual(self.receipt(request)["mergedCommit"], merged["mergedCommit"])
+        owners = json.loads((self.repo / ".git/yinz-lifecycle/worktree-owners.json").read_text())["owners"]
+        self.assertEqual(owners, [])
+
+    def test_closeout_lost_worktree_ack_reserves_claim_and_resumes_without_opening_missing_path(self):
+        worktree, request, _ = self.closeout_fixture()
+        self.closeout_fault("after-worktree")
+        self.run_request(request, success=False)
+        self.assertFalse(worktree.exists())
+        self.assertNotEqual(self.git(self.repo, "branch", "--list", "closeout"), "")
+        blocked = self.run_request({"action": "prepare", "repoPath": str(self.repo), "worktree": str(worktree), "branch": "closeout", "issueKey": request["issueKey"]}, success=False)
+        self.assertIn("reserved", blocked["error"])
+        result = self.run_request(request)
+        self.assertEqual(result["branch"], "removed")
+        self.assertEqual(self.git(self.repo, "branch", "--list", "closeout"), "")
+
+    def test_closeout_partial_branch_failure_blocks_moved_or_recreated_resources(self):
+        worktree, request, _ = self.closeout_fixture()
+        self.closeout_fault("before-branch")
+        self.run_request(request, success=False)
+        self.assertFalse(worktree.exists())
+        worktree.mkdir()
+        self.assertIn("reused", self.run_request(request, success=False)["error"])
+        worktree.rmdir()
+        self.git(self.repo, "update-ref", "refs/heads/closeout", self.git(self.repo, "rev-parse", "HEAD^"))
+        self.assertIn("moved", self.run_request(request, success=False)["error"])
+        self.git(self.repo, "update-ref", "refs/heads/closeout", request["target"]["head"])
+        self.assertIn("identity changed", self.run_request(request, success=False)["error"])
+
+    def test_closeout_same_oid_branch_recreation_during_partial_cleanup_is_stale(self):
+        worktree, request, _ = self.closeout_fixture()
+        self.closeout_fault("before-branch")
+        self.run_request(request, success=False)
+        self.assertFalse(worktree.exists())
+        oid = request["target"]["head"]
+        self.git(self.repo, "branch", "-d", "closeout")
+        self.git(self.repo, "branch", "closeout", oid)
+        self.assertIn("recreated", self.run_request(request, success=False)["error"])
+        self.assertEqual(self.git(self.repo, "rev-parse", "refs/heads/closeout"), oid)
+
+    def test_closeout_killed_helper_keeps_both_locks_and_concurrent_claim_prepare_cannot_recycle(self):
+        worktree, request, _ = self.closeout_fixture()
+        real_git = __import__("shutil").which("git")
+        ready = self.root / "removal-ready"
+        release = self.root / "removal-release"
+        self.stub("git", f'''import os, pathlib, subprocess, sys, time
+args = sys.argv[1:]
+if "worktree" in args and "remove" in args:
+    pathlib.Path({str(ready)!r}).write_text(str(os.getpid()))
+    while not pathlib.Path({str(release)!r}).exists():
+        time.sleep(0.01)
+raise SystemExit(subprocess.run([{real_git!r}, *args]).returncode)
+''')
+        runner = self.start_request(request)
+        # The fixture gates the child on a file, not elapsed time.
+        self.addCleanup(release.touch)
+        self.wait_for("worktree-removal child", ready.exists)
+        waiting = []
+        for action in ("claim", "prepare"):
+            child = self.start_request({"action": action, "repoPath": str(self.repo), "worktree": str(worktree), "branch": "closeout", "issueKey": "another"})
+            self.assertIn("Waiting for", child.stderr.readline())
+            waiting.append(child)
+        runner.kill()
+        runner.wait(timeout=10)
+        # The still-running native-command wrapper inherited both lock FDs.
+        for name in ("merge", "worktree-ownership"):
+            with (self.repo / ".git/yinz-lifecycle" / f"{name}.lock").open("a+") as lock:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        release.touch()
+        runner.communicate(timeout=10)
+        for child in waiting:
+            stdout, stderr = child.communicate(timeout=10)
+            self.assertNotEqual(child.returncode, 0, stderr)
+            self.assertIn("reserved", json.loads(stdout)["error"])
+        self.assertFalse(worktree.exists())
+        self.assertEqual(self.run_request(request)["branch"], "removed")
+
+    def test_closeout_dirty_locked_changed_identity_and_receipt_fail_closed(self):
+        worktree, request, _ = self.closeout_fixture()
+        (worktree / "untracked").write_text("preserve")
+        self.assertIn("not clean", self.run_request(request, success=False)["error"])
+        (worktree / "untracked").unlink()
+        self.git(self.repo, "worktree", "lock", str(worktree))
+        self.assertIn("locked", self.run_request(request, success=False)["error"])
+        self.git(self.repo, "worktree", "unlock", str(worktree))
+        wrong = {**request, "issueDigest": "wrong"}
+        self.assertIn("does not match", self.run_request(wrong, success=False)["error"])
+        # A renamed original inode still exists, so this cannot reuse its identity.
+        link = worktree / ".git"
+        link.rename(worktree / ".git-original")
+        link.write_text(request["target"]["gitLink"])
+        (worktree / ".git-original").unlink()
+        self.assertIn("identity changed", self.run_request(request, success=False)["error"])
+        self.assertTrue(worktree.exists())
+        self.assertNotEqual(self.git(self.repo, "branch", "--list", "closeout"), "")
+
+    def test_closeout_refuses_control_ancestor_other_checkout_and_submodules(self):
+        worktree, request, _ = self.closeout_fixture()
+        (worktree / ".gitmodules").write_text("")
+        self.git(worktree, "add", ".gitmodules")
+        # Even an ignored/empty submodule manifest requires manual inspection.
+        self.git(worktree, "reset", "--", ".gitmodules")
+        self.assertIn("not clean", self.run_request(request, success=False)["error"])
+        (worktree / ".gitmodules").unlink()
+        other = self.root / "duplicate"
+        self.git(self.repo, "worktree", "add", "--force", str(other), "closeout")
+        self.assertIn("another linked checkout", self.run_request(request, success=False)["error"])
+        self.git(self.repo, "worktree", "remove", str(other))
+        # Selecting the issue worktree as the control repo must never remove it.
+        self.assertIn("control/store", self.run_request({**request, "repoPath": str(worktree)}, success=False)["error"])
+        self.assertTrue(worktree.exists())
+
+    def test_closeout_protects_a_control_store_symlink_into_ignored_build_outputs(self):
+        worktree, request, _ = self.closeout_fixture()
+        store = worktree / "target" / "store"
+        store.mkdir(parents=True)
+        (store / "durable-evidence").write_text("retain")
+        (self.repo / ".swamp").symlink_to(store, target_is_directory=True)
+        self.assertIn("control/store", self.run_request(request, success=False)["error"])
+        self.assertTrue((store / "durable-evidence").is_file())
+        self.assertTrue(worktree.exists())
+
+    def test_closeout_symlink_alias_preview_pins_canonical_registered_path(self):
+        worktree, request, _ = self.closeout_fixture()
+        alias = self.root / "control-alias"
+        alias.symlink_to(self.repo, target_is_directory=True)
+        target = self.run_request({**request, "action": "closeout-preview", "repoPath": str(alias)})
+        self.assertEqual(target, request["target"])
+        self.run_request({**request, "repoPath": str(alias)})
+        self.assertFalse(worktree.exists())
+
     def test_rebases_on_current_main_runs_full_ci_and_merges_exact_commit(self):
         worktree = self.branch("issue-a")
         original = self.git(worktree, "rev-parse", "HEAD")

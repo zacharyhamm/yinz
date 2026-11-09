@@ -62,6 +62,8 @@ class InstalledSwampSmokeTest(unittest.TestCase):
             "YINZ_SMOKE_AGENT_STATE": str(self.yinz_state),
             "YINZ_SESSION_NAME": "smoke",
             "YINZ_PANE_ID": "0",
+            "YINZ_SMOKE_CLOSEOUT_OBSERVATION": str(self.root / "controller.json"),
+            "YINZ_SMOKE_CLOSEOUT_EVENTS": str(self.root / "closeout-events.jsonl"),
         }
         for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"):
             self.env.pop(name, None)
@@ -89,6 +91,38 @@ assert args[-1] == "--json", args
 operation = args[3]
 if operation == "launch-support":
     print(json.dumps({"outcome":"ok", "output":"agent-launch-transaction-v2", "server_instance":"smoke-server"}))
+    sys.exit(0)
+if operation == "closeout-support":
+    if os.environ.get("YINZ_SMOKE_CLOSEOUT_UNAVAILABLE"):
+        print(json.dumps({"outcome":"rejected", "message":"Older server without controller closeout"}))
+        sys.exit(1)
+    print(json.dumps({"outcome":"ok", "output":"agent-controller-closeout-v1", "server_instance":"smoke-server"}))
+    sys.exit(0)
+if operation in ("closeout-snapshot", "closeout-close"):
+    controller_file = pathlib.Path(os.environ["YINZ_SMOKE_CLOSEOUT_OBSERVATION"])
+    controller = json.loads(controller_file.read_text()) if controller_file.exists() else {"closed":False}
+    fence = {"server_instance":os.environ.get("YINZ_SMOKE_CLOSEOUT_INSTANCE", "smoke-server"), "pane_id":"terminal_0", "provider":"claude", "conversation":os.environ.get("YINZ_SMOKE_CLOSEOUT_CONVERSATION", "controller-conversation"), "input_revision":int(os.environ.get("YINZ_SMOKE_CLOSEOUT_REVISION", "1")), "turn":os.environ.get("YINZ_SMOKE_CLOSEOUT_TURN", "controller-turn")}
+    response = {"outcome":"ok", "server_instance":fence["server_instance"]}
+    if operation == "closeout-snapshot":
+        assert args[4] == "terminal_0", args
+        response.update({"outcome":"target_not_found"} if controller["closed"] else {"closeout_target":fence})
+    else:
+        assert json.loads(args[args.index("--fence")+1]) == fence
+        name = os.environ["YINZ_SMOKE_ISSUE_BEHAVIOR"]
+        query = subprocess.run(["swamp", "data", "query", 'behavior("' + name + '") && name == "state"', "--repo-dir", os.getcwd(), "--select", "content", "--single", "--json"], capture_output=True, text=True, timeout=30)
+        assert query.returncode == 0, query.stderr + query.stdout
+        saved = json.loads(query.stdout)
+        cleanup = saved["closeout"]
+        assert cleanup["git"] == "complete" and cleanup["pane"] == "unknown", cleanup
+        assert not pathlib.Path(cleanup["target"]["worktree"]).exists()
+        branch = subprocess.run(["git", "show-ref", "--verify", "--quiet", "refs/heads/" + cleanup["target"]["branch"]])
+        assert branch.returncode == 1
+        with pathlib.Path(os.environ["YINZ_SMOKE_CLOSEOUT_EVENTS"]).open("a") as log:
+            log.write(json.dumps({"effect":"pane", "saved":cleanup}) + "\\n")
+        controller_file.write_text(json.dumps({"closed":True}))
+        if os.environ.get("YINZ_SMOKE_CLOSEOUT_DROP_ACK"):
+            raise SystemExit("Lost self-close acknowledgement")
+    print(json.dumps(response))
     sys.exit(0)
 stdin = sys.stdin.read() if operation == "prompt" else None
 with pathlib.Path(os.environ["YINZ_SMOKE_AGENT_LOG"]).open("a") as log:
@@ -219,6 +253,17 @@ print(json.dumps(response))
                 os.killpg(process.pid, signal.SIGKILL)
                 stdout, stderr = process.communicate()
             self.fail(f"Command timed out: {args}\n{stdout}\n{stderr}")
+        except BaseException:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
+            raise
         diagnostics = ""
         if process.returncode:
             status = subprocess.run(["git", "-C", str(self.repo), "status", "--short", "--untracked-files=all"], env=self.env, text=True, capture_output=True, timeout=10)
@@ -409,7 +454,116 @@ print(json.dumps(response))
         self.lifecycle("approve", {"planVersion": 3, "request": "Implement the reviewed fixture plan"})
         self.assertEqual(json.loads(self.lifecycle("drive"))["decision"], "prepare_worktree")
 
+    def closeout_fixture(self):
+        worktree = self.dispatch_completion_fixture(replay=False)
+        self.env["YINZ_SMOKE_ISSUE_BEHAVIOR"] = f"issue-lifecycle-test-{self.item_id}"
+        # Record actual Git effects in this disposable fixture, keeping the real Git checks.
+        real_git = __import__("shutil").which("git")
+        self.stub("git", f'''import json, os, pathlib, subprocess, sys
+args = sys.argv[1:]
+remove = "worktree" in args and "remove" in args
+branch = "update-ref" in args and "-d" in args
+if branch and os.environ.get("YINZ_SMOKE_CLOSEOUT_FAIL_BRANCH"):
+    raise SystemExit("Injected branch failure")
+result = subprocess.run([{real_git!r}, *args])
+if result.returncode == 0 and (remove or branch):
+    with pathlib.Path(os.environ["YINZ_SMOKE_CLOSEOUT_EVENTS"]).open("a") as log:
+        log.write(json.dumps({{"effect":"worktree" if remove else "branch"}}) + "\\n")
+raise SystemExit(result.returncode)
+''')
+        handoff = json.loads(self.lifecycle("drive"))
+        self.assertEqual(handoff["decision"], "authorize_closeout", handoff)
+        self.assertIn(str(worktree), handoff["presentation"])
+        self.assertIn("smoke-issue", handoff["presentation"])
+        self.assertIn("smoke/terminal_0", handoff["presentation"])
+        self.assertEqual(handoff["id"], self.state()["closeout"]["offerId"])
+        return worktree, handoff
+
+    def closeout_events(self):
+        path = Path(self.env["YINZ_SMOKE_CLOSEOUT_EVENTS"])
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def closeout_accept(self, handoff):
+        return self.lifecycle("closeout", {"handoffId":handoff["id"], "decision":"accept", "request":"Delete the offered fixture worktree and branch, then close its original controller."})
+
+    def test_installed_closeout_accept_orders_git_before_pane_and_retains_completion(self):
+        worktree, handoff = self.closeout_fixture()
+        self.closeout_accept(handoff)
+        self.assertFalse(worktree.exists())
+        self.assertEqual(self.git(self.repo, "branch", "--list", "smoke-issue"), "")
+        self.assertEqual([e["effect"] for e in self.closeout_events()], ["worktree", "branch", "pane"])
+        saved = self.state()
+        self.assertEqual((saved["phase"], saved["closeout"]["pane"]), ("done", "closed"))
+        self.assertEqual(json.loads(self.lifecycle("drive"))["decision"], "complete")
+        self.lifecycle("start")
+        self.lifecycle("summarize", {"outcomeMet":True, "summary":"Replay"})
+        self.lifecycle("resume-closeout")
+        self.assertEqual(len(self.closeout_events()), 3)
+        self.assertTrue((self.repo / "marker.txt").is_file())
+
+    def test_installed_closeout_decline_preserves_all_resources_and_is_not_reoffered(self):
+        worktree, handoff = self.closeout_fixture()
+        self.lifecycle("closeout", {"handoffId":handoff["id"], "decision":"decline", "request":"Keep the fixture resources"})
+        self.assertTrue(worktree.exists())
+        self.assertNotEqual(self.git(self.repo, "branch", "--list", "smoke-issue"), "")
+        self.assertEqual(json.loads(self.lifecycle("drive"))["decision"], "complete")
+        self.assertEqual(self.closeout_events(), [])
+
+    def test_installed_closeout_lost_ack_resumes_from_another_pane_without_redeleting(self):
+        worktree, handoff = self.closeout_fixture()
+        self.env["YINZ_SMOKE_CLOSEOUT_DROP_ACK"] = "1"
+        self.closeout_accept(handoff)
+        self.assertEqual(self.state()["closeout"]["pane"], "unknown")
+        self.env["YINZ_PANE_ID"] = "99"
+        self.lifecycle("resume-closeout")
+        self.assertFalse(worktree.exists())
+        self.assertEqual(self.state()["closeout"]["pane"], "absent")
+        self.assertEqual([e["effect"] for e in self.closeout_events()], ["worktree", "branch", "pane"])
+
+    def test_installed_closeout_git_failure_keeps_pane_and_resumes_partial_removal(self):
+        worktree, handoff = self.closeout_fixture()
+        self.env["YINZ_SMOKE_CLOSEOUT_FAIL_BRANCH"] = "1"
+        launcher = [sys.executable, str(self.repo / "scripts/issue-lifecycle"), "--control", str(self.repo), "--item", str(self.item_id), "closeout", "--input-file", "-"]
+        result = subprocess.run(launcher, input=json.dumps({"handoffId":handoff["id"], "decision":"accept", "request":"Clean fixture"}), cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=120)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("pane retained", result.stdout + result.stderr)
+        self.assertFalse(worktree.exists())
+        self.assertEqual([e["effect"] for e in self.closeout_events()], ["worktree"])
+        self.assertEqual(self.state()["closeout"]["failure"]["stage"], "git")
+        self.assertEqual(self.state()["closeout"]["gitResult"]["worktree"], "removed")
+        self.assertEqual(self.state()["closeout"]["gitResult"]["branch"], "deleting")
+        self.env.pop("YINZ_SMOKE_CLOSEOUT_FAIL_BRANCH")
+        self.lifecycle("resume-closeout")
+        self.assertEqual([e["effect"] for e in self.closeout_events()], ["worktree", "branch", "pane"])
+
+    def test_installed_closeout_unavailable_legacy_origin_requires_binding_then_separate_consent(self):
+        self.env["YINZ_SMOKE_CLOSEOUT_UNAVAILABLE"] = "1"
+        worktree = self.dispatch_completion_fixture(replay=False, offer_available=False)
+        self.assertNotIn("closeout", self.state())
+        self.assertTrue(worktree.exists())
+        self.env.pop("YINZ_SMOKE_CLOSEOUT_UNAVAILABLE")
+        self.env["YINZ_SMOKE_ISSUE_BEHAVIOR"] = f"issue-lifecycle-test-{self.item_id}"
+        self.lifecycle("closeout", {"bind":{"session":"smoke", "paneId":"terminal_0", "server_instance":"smoke-server", "provider":"claude", "conversation":"controller-conversation"}})
+        self.assertTrue(worktree.exists(), "binding must not grant cleanup consent")
+        self.assertEqual(self.closeout_events(), [])
+        self.closeout_accept({"id":self.state()["closeout"]["offerId"]})
+        self.assertFalse(worktree.exists())
+        self.assertEqual(self.state()["closeout"]["pane"], "closed")
+
+    def test_installed_closeout_stale_offer_or_reused_conversation_preserves_targets(self):
+        worktree, handoff = self.closeout_fixture()
+        self.env["YINZ_SMOKE_CLOSEOUT_CONVERSATION"] = "replacement"
+        launcher = [sys.executable, str(self.repo / "scripts/issue-lifecycle"), "--control", str(self.repo), "--item", str(self.item_id), "closeout", "--input-file", "-"]
+        for offer in ["a11e72b8-2904-4c92-9abc-b3eb6a2f78af", handoff["id"]]:
+            result = subprocess.run(launcher, input=json.dumps({"handoffId":offer, "decision":"accept", "request":"Clean fixture"}), cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=120)
+            self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(worktree.exists())
+        self.assertEqual(self.closeout_events(), [])
+
     def test_installed_dispatch_agents_rebase_ci_merge_and_agenda_completion(self):
+        self.dispatch_completion_fixture()
+
+    def dispatch_completion_fixture(self, replay=True, offer_available=True):
         self.command(["swamp", "workflow", "validate", "yinz-issue-start", "--json"])
         # A direct workflow call cannot bypass the configured vault workspace.
         rejected = subprocess.run(
@@ -499,6 +653,13 @@ print(json.dumps(response))
         self.assertEqual(self.state()["phase"], "done")
         self.assertTrue(self.agenda("item", "show", str(self.item_id))["item"]["completed"])
         receipt = self.state()["receipt"]
+        if not replay:
+            records = json.loads(self.lifecycle("status"))["results"]
+            handoff = next(record for record in records if "decision" in record)
+            self.assertEqual(handoff["decision"], "authorize_closeout" if offer_available else "complete")
+            if offer_available:
+                self.assertEqual(handoff["id"], self.state()["closeout"]["offerId"])
+            return worktree
         self.lifecycle("rollback", {"step": "summarize", "request": "Repeat close-out in the fixture"})
         self.assertEqual(self.state()["phase"], "merged")
         self.assertEqual(self.state()["receipt"], receipt)

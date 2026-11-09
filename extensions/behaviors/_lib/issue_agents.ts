@@ -1,3 +1,4 @@
+import { captureCloseoutOrigin, offerCloseout } from "./issue_closeout.ts";
 /** Assign pane work and consume acknowledged Swamp evidence independently of chat. */
 import { join } from "node:path";
 import { z } from "npm:zod@4.6.7";
@@ -140,6 +141,8 @@ export type IssueAgentContext = Context & {
 };
 
 export interface IssueAgentDependencies {
+  captureCloseoutOrigin?: typeof captureCloseoutOrigin;
+  offerCloseout?: typeof offerCloseout;
   withIssue: typeof withIssue;
   readAgenda: typeof readAgenda;
   inspect: typeof inspect;
@@ -151,6 +154,8 @@ export interface IssueAgentDependencies {
   submissionPreflight: typeof submissionPreflight;
 }
 export const defaultDependencies: IssueAgentDependencies = {
+  captureCloseoutOrigin,
+  offerCloseout,
   withIssue,
   readAgenda,
   inspect,
@@ -636,6 +641,15 @@ export async function prepareTask(
   dependencies: IssueAgentDependencies,
   allowCompleted = false,
 ): Promise<Task> {
+  if (
+    state.closeout?.authorizedRequest &&
+    (state.implementation?.worktree ?? state.workerWorktree) ===
+      state.closeout.target.worktree
+  ) {
+    throw new Error(
+      "Closeout may have removed the worker worktree; deliberately select a new valid worktree with implement before launching more work",
+    );
+  }
   if (!args.control) {
     throw new Error(
       "Lifecycle workers require control identity (session and paneId) before launching",
@@ -772,6 +786,7 @@ export async function prepareTask(
     before: state,
     ...(commit ? { reviewCommit: commit } : {}),
   };
+  await dependencies.captureCloseoutOrigin?.(context, args.control);
   const controlDir = await dependencies.realPath(context.repoDir);
   const submission = EvidenceTargetSchema.parse({
     protocol: 1,

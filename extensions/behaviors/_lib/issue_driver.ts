@@ -1,3 +1,4 @@
+import { closeoutPresentation } from "./issue_closeout.ts";
 /** Foreground orchestration up to a human decision, with durable pane recovery. */
 import { z } from "npm:zod@4.6.7";
 import {
@@ -88,6 +89,8 @@ export const HandoffSchema = z.object({
     "approve_review_fixes",
     "integrate",
     "summarize",
+    "authorize_closeout",
+    "resume_closeout",
     "complete",
     "blocked",
   ]),
@@ -525,7 +528,10 @@ async function drive(
       result = cached;
     } else {
       const value = {
-        id: dependencies.id(),
+        id: ["authorize_closeout", "resume_closeout"].includes(decision) &&
+            state.closeout
+          ? state.closeout.offerId
+          : dependencies.id(),
         status: "current" as const,
         decision,
         reason,
@@ -930,9 +936,37 @@ async function drive(
           "Compare the merge receipt with the requirements and record the delivered outcome before Agenda close-out",
         );
       } else {
+        if (
+          state.closeout?.decision === "declined" ||
+          (state.closeout?.git === "complete" &&
+            ["closed", "absent"].includes(state.closeout.pane))
+        ) {
+          return await handoff(
+            "complete",
+            "The issue is merged and its outcome is recorded; closeout choice and results are retained",
+          );
+        }
+        let offered = state;
+        try {
+          if (dependencies.offerCloseout) {
+            const result = await dependencies.offerCloseout(context, state);
+            offered = result.state;
+            handles.push(...result.dataHandles);
+          }
+        } catch (error) {
+          if (state.closeout?.authorizedRequest) throw error;
+          return await handoff(
+            "complete",
+            `The issue is merged and its outcome is recorded. Optional closeout is unavailable; resources are retained: ${error}`,
+          );
+        }
         return await handoff(
-          "complete",
-          "The issue is merged and its outcome is recorded",
+          offered.closeout?.decision === "accepted"
+            ? "resume_closeout"
+            : "authorize_closeout",
+          offered.closeout
+            ? closeoutPresentation(offered)
+            : "Original controller identity unavailable; call closeout with an exact explicit binding to create an offer, or retain resources",
         );
       }
 

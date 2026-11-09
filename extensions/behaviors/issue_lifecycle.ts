@@ -1,3 +1,8 @@
+import {
+  closeout,
+  CloseoutArgsSchema,
+  offerCloseout,
+} from "./_lib/issue_closeout.ts";
 /** Agenda-backed issue development with local Git integration and durable evidence. */
 import { z } from "npm:zod@4.6.7";
 import {
@@ -135,9 +140,20 @@ function recordedTransition<K extends keyof typeof ActionSchemas>(
 /** Local behavior; the issue's state and every decision are versioned Swamp data. */
 export const behavior = {
   type: "@yinz/issue-lifecycle",
-  version: "2026.11.08.2",
+  version: "2026.11.09.1",
   globalArguments: GlobalArgsSchema,
   resources: {
+    "controller-origin": {
+      description:
+        "First controller binding, separately frozen from worker placement",
+      schema: z.object({
+        origin: StateSchema.shape.closeout.unwrap().shape.origin.optional(),
+        unavailable: z.string().optional(),
+        control: z.unknown().optional(),
+      }).strict(),
+      lifetime: "infinite",
+      garbageCollection: 1000,
+    },
     driver: {
       description:
         "Selected pane settings and the foreground driver's current assignment",
@@ -198,6 +214,28 @@ export const behavior = {
   },
   methods: {
     drive: createDriveMethod(),
+    closeout: {
+      kind: "update",
+      description:
+        "Offer or explicitly authorize completed issue cleanup; pane closes last",
+      arguments: CloseoutArgsSchema,
+      execute: (args: z.infer<typeof CloseoutArgsSchema>, context: Context) =>
+        withIssue(context, async () => {
+          await assertNoPendingAgent(context);
+          return closeout(context, CloseoutArgsSchema.parse(args));
+        }),
+    },
+    resume_closeout: {
+      kind: "update",
+      description:
+        "Reconcile the saved exact cleanup from another pane without repeating merge or completion",
+      arguments: Empty,
+      execute: (_args: unknown, context: Context) =>
+        withIssue(context, async () => {
+          await assertNoPendingAgent(context);
+          return closeout(context, {});
+        }),
+    },
     ...agentMethods,
     start: {
       kind: "create",
@@ -213,7 +251,9 @@ export const behavior = {
             const existing = await loadState(context);
             // A start that saved state but stopped before confirming left its
             // claim pending, and so reclaimable; confirm it now.
-            if (existing.workerWorktree) {
+            if (
+              existing.workerWorktree && !existing.closeout?.authorizedRequest
+            ) {
               await gitOperation(context, {
                 action: "confirm",
                 worktree: existing.workerWorktree,
@@ -525,8 +565,35 @@ export const behavior = {
           const next = state.phase === "done"
             ? state
             : transition(state, "done", args);
+          if (state.phase === "done") return { dataHandles: [] };
           await completeAgenda(state.issue);
-          return saveState(context, "done", next);
+          const saved = await saveState(context, "done", next);
+          try {
+            const offered = await offerCloseout(context, next);
+            return {
+              dataHandles: [
+                ...new Map(
+                  [...saved.dataHandles, ...offered.dataHandles].map(
+                    (handle) => [handle.name, handle],
+                  ),
+                ).values(),
+              ],
+            };
+          } catch (error) {
+            // Optional cleanup cannot undo successful Agenda/outcome completion.
+            const reason =
+              `The issue is merged and its outcome is recorded. Optional closeout is unavailable; resources are retained: ${error}`;
+            const handoff = await context.writeResource("handoff", "handoff", {
+              id: crypto.randomUUID(),
+              status: "current",
+              decision: "complete",
+              reason,
+              createdAt: new Date().toISOString(),
+              state: StateSchema.parse(next),
+              presentation: reason,
+            });
+            return { dataHandles: [...saved.dataHandles, handoff] };
+          }
         }),
     },
   },

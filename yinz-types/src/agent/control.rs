@@ -113,6 +113,20 @@ pub struct RestartedAgent {
     pub command: Vec<String>,
 }
 
+/// Exact controller identity sampled and checked on the screen thread.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloseoutFence {
+    pub server_instance: String,
+    #[serde(with = "pane_string")]
+    pub pane_id: PaneId,
+    pub provider: String,
+    pub conversation: String,
+    pub input_revision: u64,
+    pub turn: String,
+}
+
+pub const CLOSEOUT_CAPABILITY: &str = "agent-controller-closeout-v1";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum AgentRequest {
     /// Read-only feature negotiation before sending placement to an older server.
@@ -136,6 +150,13 @@ pub enum AgentRequest {
     /// Account usage reported by the provider on this session's host.
     Usage {
         provider: String,
+    },
+    CloseoutSupport,
+    CloseoutSnapshot {
+        pane_id: PaneId,
+    },
+    CloseoutClose {
+        fence: CloseoutFence,
     },
     CloseCompleted {
         submission_id: String,
@@ -315,6 +336,8 @@ pub struct AgentResponse {
     pub launch: Option<super::launch::LaunchReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_instance: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closeout_target: Option<CloseoutFence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<ProviderUsage>,
     pub output: Option<String>,
@@ -586,6 +609,10 @@ impl PromptObservation {
     /// A verified Pi dialog shown before its submit handler has assigned a turn ID.
     pub fn waiting_before_submit(&self) -> bool {
         self.waiting_before_submit
+    }
+
+    pub fn prompt_id(&self) -> Option<&str> {
+        self.prompt_id.as_deref()
     }
 
     pub fn turn_id(&self) -> Option<&str> {

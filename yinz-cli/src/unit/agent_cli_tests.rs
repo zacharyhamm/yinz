@@ -504,3 +504,22 @@ fn history_repair_defaults_to_read_only_and_requires_explicit_apply() {
         assert_eq!(apply, expected);
     }
 }
+
+#[test]
+fn closeout_commands_require_explicit_fence_and_terminal_target() {
+    use clap::Parser;
+    assert!(AgentCli::try_parse_from(["agent", "closeout-close"]).is_err());
+    assert!(AgentCli::try_parse_from(["agent", "closeout-snapshot", "plugin_7"]).is_err());
+    assert!(matches!(
+        AgentCli::try_parse_from(["agent", "closeout-snapshot", "terminal_7", "--json"])
+            .unwrap()
+            .command,
+        Agent::CloseoutSnapshot { json: true, .. }
+    ));
+    assert!(matches!(
+        AgentCli::try_parse_from(["agent", "closeout-close", "--fence", "{}", "--json"])
+            .unwrap()
+            .command,
+        Agent::CloseoutClose { json: true, .. }
+    ));
+}

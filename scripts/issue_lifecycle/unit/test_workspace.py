@@ -75,6 +75,16 @@ else:
         self.assertTrue(all(call["cwd"] == str(self.control) for call in calls))
         self.assertTrue(all(call["args"][call["args"].index("--repo-dir") + 1] == str(self.control) for call in calls))
 
+    def test_closeout_dispatch_is_thin_and_recovery_does_not_replace_target(self):
+        self.env.update(YINZ_SESSION_NAME="recovery", YINZ_PANE_ID="99")
+        for method in ("closeout", "resume-closeout"):
+            with self.subTest(method=method):
+                result = self.launch(method)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                call = self.calls()[-1]
+                self.assertEqual(call["args"][:4], ["behavior", "run", "issue-work-7", method.replace("-", "_")])
+                self.assertEqual(call["input"], {})
+
     def test_start_passes_vault_workspace_as_issue_identity(self):
         result = self.launch("start")
         self.assertEqual(result.returncode, 0, result.stderr)
