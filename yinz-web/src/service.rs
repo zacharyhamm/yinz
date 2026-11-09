@@ -125,6 +125,7 @@ pub(crate) async fn serve(
     state: Arc<State>,
     peer: SocketAddr,
     admission: CancellationToken,
+    instance: String,
 ) -> Result<Response<Body>, Infallible> {
     let head = req.method() == Method::HEAD;
     let api = request::normalize(req.uri().path(), req.uri().query())
@@ -142,7 +143,7 @@ pub(crate) async fn serve(
     let _request_guard = lifetime.clone().drop_guard();
     let result = tokio::time::timeout(timeout, async {
         tokio::select! {biased; _=admission.cancelled()=> (error(StatusCode::SERVICE_UNAVAILABLE,"not_serving"),true),
-            result=handle(req,&state,peer,admission.clone(),lifetime,deadline_ms)=>result}
+            result=handle(req,&state,peer,admission.clone(),lifetime,deadline_ms,&instance)=>result}
     }).await;
     let (response, close) =
         result.unwrap_or_else(|_| (error(StatusCode::GATEWAY_TIMEOUT, "timeout"), true));
@@ -156,6 +157,7 @@ async fn handle(
     admission: CancellationToken,
     lifetime: CancellationToken,
     deadline_ms: i64,
+    instance: &str,
 ) -> (Response<Body>, bool) {
     let (parts, body) = req.into_parts();
     if parts.headers.contains_key("tailscale-funnel-request") {
@@ -177,14 +179,13 @@ async fn handle(
     // A direct loopback health probe is a local diagnostic, not a browser/API bypass.
     // Proxy requests still require the configured Tailscale identity on every route.
     let mut probe_settings;
-    let policy_settings = if parts.uri.path() == "/healthz"
+    let local_probe = parts.uri.path() == "/healthz"
         && parts.method == Method::GET
         && peer.ip().is_loopback()
-        && !parts
-            .headers
-            .keys()
-            .any(|k| k.as_str().starts_with("x-forwarded-") || k.as_str().starts_with("tailscale-"))
-    {
+        && !parts.headers.keys().any(|k| {
+            k.as_str().starts_with("x-forwarded-") || k.as_str().starts_with("tailscale-")
+        });
+    let policy_settings = if local_probe {
         probe_settings = state.settings.clone();
         probe_settings.tailscale_users.clear();
         &probe_settings
@@ -425,6 +426,9 @@ async fn handle(
         let mut json = serde_json::json!({"ok": true});
         if peer.ip().is_loopback() && !parts.headers.contains_key("x-forwarded-for") {
             json["session"] = state.backend.session_name().into();
+        }
+        if local_probe {
+            json["instance"] = instance.into();
         }
         return (
             response(StatusCode::OK, json.to_string(), "application/json"),

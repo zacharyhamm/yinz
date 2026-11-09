@@ -872,6 +872,8 @@ async fn actual_status_probe_identifies_listener_with_startup_allowlist_and_rena
         .await
         .unwrap();
     assert_eq!(rows.len(), 1);
+    assert!(rows[0].is_current());
+    let instance = rows[0].responding_instance.clone().unwrap();
     assert_eq!(rows[0].responding_session, Some(backend.session_name()));
     assert_eq!(
         rows[0]
@@ -889,9 +891,28 @@ async fn actual_status_probe_identifies_listener_with_startup_allowlist_and_rena
     assert_eq!(rows[0].record.address, addr);
     *backend.name.write().unwrap() = "renamed".into();
     wait_for_record(temp.path(), addr, "renamed".into(), None).await;
+    let dir = temp.path().to_owned();
+    let renamed = tokio::task::spawn_blocking(move || crate::listener_file::inspect(&dir).unwrap())
+        .await
+        .unwrap();
+    assert!(renamed[0].is_current());
+    assert_eq!(renamed[0].responding_instance.as_ref(), Some(&instance));
     let proxied=request(addr,"GET /healthz HTTP/1.1\r\nHost: localhost\r\nX-Forwarded-For: 100.64.0.1\r\nConnection: close\r\n\r\n").await;
     assert!(proxied.starts_with("HTTP/1.1 403"));
     stop(&a).await;
+    let b = WebServer::start(
+        settings(temp.path()),
+        backend,
+        &tokio::runtime::Handle::current(),
+    );
+    serving(&b).await;
+    let dir = temp.path().to_owned();
+    let rebound = tokio::task::spawn_blocking(move || crate::listener_file::inspect(&dir).unwrap())
+        .await
+        .unwrap();
+    assert!(rebound[0].is_current());
+    assert_ne!(rebound[0].responding_instance.as_ref(), Some(&instance));
+    stop(&b).await;
 }
 #[tokio::test]
 async fn rate_limits_native_errors_and_rejected_requests_never_dispatch() {

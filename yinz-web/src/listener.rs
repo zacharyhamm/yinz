@@ -194,12 +194,13 @@ pub(crate) async fn run(
                         if let Ok(permit) = permits.clone().try_acquire_owned() {
                             let state = state.clone();
                             let generation = generation.clone();
+                            let instance = record.instance().to_owned();
                             connections.spawn(async move {
                                 let _permit = permit;
                                 let io = TokioIo::new(IdleIo::new(stream, state.settings.header_timeout));
                                 let service_state = state.clone();
                                 let admission = generation.clone();
-                                let service = service_fn(move |req| service::serve(req, service_state.clone(), peer, admission.clone()));
+                                let service = service_fn(move |req| service::serve(req, service_state.clone(), peer, admission.clone(), instance.clone()));
                                 let mut builder = http1::Builder::new();
                                 builder.timer(TokioTimer::new()).keep_alive(true).half_close(false).max_buf_size(16 * 1024).max_headers(64).header_read_timeout(state.settings.header_timeout);
                                 let connection = builder.serve_connection(io, service);

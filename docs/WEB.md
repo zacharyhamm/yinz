@@ -23,7 +23,10 @@ Enter and confirm a password of at least 12 Unicode characters. Input is hidden;
 Ctrl-C cancels and restores the terminal. For automation use `--password-stdin`
 with one UTF-8 line from a secret provider; do not put passwords in command
 arguments. Input is limited to 1024 bytes, rejects NUL, and strips a final LF or
-CRLF. Clear and revoke modes do not prompt or read stdin.
+CRLF. Clear and revoke modes do not prompt or read stdin. The success message
+suggests status for the same data directory; include `--config-dir` as below once
+you create the smoke configuration. Recovery suggestions from status retain both
+the selected data directory and explicit configuration options.
 
 Write `/tmp/yinz-web-smoke-config/config.kdl`:
 
@@ -89,8 +92,13 @@ instance ID, effective socket address, current session name and optional immutab
 startup configuration (records are limited to 64 KiB). Port 0 is supported
 for tests: read the effective address from this record. The record follows session
 rename and is removed after its listening socket closes. `yinz web status` probes
-local `/healthz` to identify the responding session and distinguishes startup
-policy from current disk configuration. Legacy records report unknown policy.
+local `/healthz` to identify the responding session and binding instance. Only a
+matching instance and session establish effective startup policy; reusable session
+names alone cannot verify crash leftovers or legacy health responses. Direct
+loopback GETs without forwarded or Tailscale headers include the public instance
+identifier, which stays stable across rename and changes on a new binding. Status
+distinguishes startup policy from current disk configuration. Legacy records
+report unknown policy.
 Failed probes never prove staleness: cleanup requires a dead PID and a locked
 identity recheck. Unsafe, malformed, replaced and ambiguous records are preserved.
 Cleanup failures are logged
@@ -201,7 +209,11 @@ yinz --data-dir PATH web status --https-port 7443
 
 This local command honors `--config` and `--config-dir`, loads no session layout,
 prints labeled defaults and a warning if configuration cannot be read, and clears
-inherited `--remote`. It reports configured values separately from probed live
+inherited `--remote`. It identifies the inspected data directory; password recovery
+and provisioning handoff commands retain that store and explicitly supplied
+`--config`/`--config-dir`. Suggested local commands quote paths literally, including
+spaces and apostrophes. Keep those options when following the custom-directory
+walkthrough above. It reports configured values separately from probed live
 addresses and recorded startup policy, plus password state/update time and public
 active-session summaries. Port 0 remains configured port 0 while the listener
 reports its actual bound port. No verified listener means runtime state is unknown,
@@ -219,8 +231,13 @@ children run; they are killed/reaped on timeout or excess output. The expected
 HTTPS origin uses `Self.DNSName` without its trailing dot. Background and foreground
 `AllowFunnel` booleans are matched to Web Proxy backends on every reported port,
 including local aliases, IPv6 and target paths. A matching public Funnel prints a
-warning and exits 1. Unrelated mappings do not fail. Missing/error/unsupported
-schemas report exposure unknown. No-match output covers only the reported device
+warning and exits 1. A same-port IPv4 loopback backend (including localhost)
+targeting an IPv6 wildcard listener may also reach it through dual-stack IPv4.
+Status warns that reachability is unverified and exits 1 for that possible
+exposure; inspect or disable the mapping before relying on privacy. This
+conservative warning also occurs on IPv6-only hosts because listener records do
+not establish the socket's IPv6-only setting. Unrelated mappings do not fail.
+Missing/error/unsupported schemas report exposure unknown. No-match output covers only the reported device
 Serve configuration, never verifies all network exposure or configures Serve.
 
 Verified references: [Serve CLI](https://tailscale.com/docs/reference/tailscale-cli/serve),

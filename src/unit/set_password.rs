@@ -21,11 +21,11 @@ fn set_password_stdin_validation() {
 #[test]
 fn set_password_clear_and_revoke_explicit_directory() {
     let temp = tempfile::tempdir().unwrap();
-    assert!(run(temp.path(), false, false, true).is_err());
+    assert!(run(temp.path(), false, false, true, "unused").is_err());
     yinz_web::auth::password::write(temp.path(), &Zeroizing::new("twelve words long".into()))
         .unwrap();
-    run(temp.path(), false, false, true).unwrap();
-    run(temp.path(), false, true, false).unwrap();
+    run(temp.path(), false, false, true, "unused").unwrap();
+    run(temp.path(), false, true, false, "unused").unwrap();
     assert_eq!(
         yinz_web::auth::password::read_state(temp.path()),
         yinz_web::auth::password::PasswordState::Missing
@@ -231,4 +231,127 @@ fn set_password_pty_confirmation_no_echo_and_ctrl_c_restores_terminal() {
         prompt.restored();
     }
     assert_eq!(yinz_web::auth::password::read_state(temp.path()), previous);
+}
+
+#[test]
+fn custom_store_guidance_retains_quoted_data_and_config_through_provisioning() {
+    use std::{
+        io::Write,
+        os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+        process::{Command, Stdio},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data's $value `literal`");
+    let config_dir = temp.path().join("config's directory");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let config = config_dir.join("chosen's config.kdl");
+    std::fs::write(&config, "web { port 0; }\n").unwrap();
+    let command = || {
+        let mut cmd = Command::new(binary());
+        cmd.env("PATH", "/nonexistent")
+            .args(["--remote", "must-not-contact.invalid", "--data-dir"])
+            .arg(&data)
+            .arg("--config")
+            .arg(&config)
+            .arg("--config-dir")
+            .arg(&config_dir);
+        cmd
+    };
+    let quoted = |p: &Path| format!("'{}'", p.to_str().unwrap().replace('\'', "'\\''"));
+    let prefix = format!(
+        "yinz --data-dir {} --config {} --config-dir {}",
+        quoted(&data),
+        quoted(&config),
+        quoted(&config_dir)
+    );
+    let status = || {
+        let output = command().args(["web", "status"]).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let missing = status();
+    assert!(
+        missing.contains(&format!("Data directory: {}", data.display())),
+        "{missing}"
+    );
+    assert!(
+        missing.contains(&format!(
+            "Password: Missing; enabled listeners wait for {prefix} set-password"
+        )),
+        "{missing}"
+    );
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(data.join("web"))
+        .unwrap();
+    let mut invalid = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(data.join("web/password"))
+        .unwrap();
+    invalid.write_all(b"invalid").unwrap();
+    drop(invalid);
+    let invalid = status();
+    assert!(
+        invalid.contains(&format!(
+            "Password: Invalid; repair with {prefix} set-password"
+        )),
+        "{invalid}"
+    );
+    let mut child = command()
+        .args(["set-password", "--password-stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"custom store secret\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let saved = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        saved.contains(&format!("Use {prefix} web status for listener")),
+        "{saved}"
+    );
+    assert!(!saved.contains("custom store secret"));
+    assert!(!saved.contains("must-not-contact"));
+    assert!(status().contains("Password: Ready"));
+    let mut sessions = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(data.join("web/sessions.json"))
+        .unwrap();
+    sessions.write_all(b"invalid").unwrap();
+    drop(sessions);
+    let broken = status();
+    assert!(
+        broken.contains(&format!(
+            "recover with {prefix} set-password --revoke-sessions"
+        )),
+        "{broken}"
+    );
+    let output = command()
+        .args(["set-password", "--revoke-sessions"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let repaired = status();
+    assert!(repaired.contains("Password: Ready"));
+    assert!(repaired.contains("Active browser sessions: 0"));
 }

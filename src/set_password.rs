@@ -106,7 +106,13 @@ fn prompt() -> Result<Zeroizing<String>> {
     }
 }
 
-pub(crate) fn run(data_dir: &Path, password_stdin: bool, clear: bool, revoke: bool) -> Result<()> {
+pub(crate) fn run(
+    data_dir: &Path,
+    password_stdin: bool,
+    clear: bool,
+    revoke: bool,
+    status_guidance: &str,
+) -> Result<()> {
     use yinz_web::auth::password;
     if clear {
         password::clear(data_dir)?;
@@ -123,7 +129,7 @@ pub(crate) fn run(data_dir: &Path, password_stdin: bool, clear: bool, revoke: bo
             prompt()?
         };
         password::write(data_dir, &password)?;
-        println!("Web password saved under {}. Enable web {{ enabled true }} and start a session. Config changes apply at the next session start. Use yinz web status for listener and Tailscale guidance. Native bearer login is ready; the web app is a later milestone.", data_dir.display());
+        println!("Web password saved under {}. Enable web {{ enabled true }} and start a session. Config changes apply at the next session start. Use {status_guidance} for listener and Tailscale guidance. Native bearer login is ready; the web app is a later milestone.", data_dir.display());
     }
     Ok(())
 }

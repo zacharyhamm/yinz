@@ -66,6 +66,9 @@ impl OwnedRecord {
         published?;
         Ok(owned)
     }
+    pub(crate) fn instance(&self) -> &str {
+        &self.instance
+    }
     pub(crate) fn refresh(&self, session: String) -> Result<()> {
         let _lock = lock(
             self.dir
@@ -143,6 +146,18 @@ mod tests;
 pub struct ObservedListener {
     pub record: ListenerRecord,
     pub responding_session: Option<String>,
+    pub responding_instance: Option<String>,
+}
+impl ObservedListener {
+    /// Session names are reusable; only the binding instance establishes ownership.
+    pub fn is_current(&self) -> bool {
+        self.responding_session.as_ref() == Some(&self.record.session)
+            && self.responding_instance.as_ref() == Some(&self.record.instance)
+    }
+}
+struct ProbeIdentity {
+    session: String,
+    instance: Option<String>,
 }
 fn dead(pid: u32) -> bool {
     let Ok(pid) = i32::try_from(pid) else {
@@ -207,7 +222,7 @@ pub fn inspect(data: &std::path::Path) -> Result<Vec<ObservedListener>> {
 }
 fn inspect_with(
     data: &std::path::Path,
-    mut probe: impl FnMut(SocketAddr) -> Option<String>,
+    mut probe: impl FnMut(SocketAddr) -> Option<ProbeIdentity>,
     mut dead: impl FnMut(u32) -> bool,
 ) -> Result<Vec<ObservedListener>> {
     let web = OpenOptions::new()
@@ -253,8 +268,8 @@ fn inspect_with(
         let Ok((record, metadata)) = read_record(&path) else {
             continue;
         };
-        let responding_session = probe(record.address);
-        if responding_session.is_none() && dead(record.pid) {
+        let responding = probe(record.address);
+        if responding.is_none() && dead(record.pid) {
             let _lock = lock(&data.join("web"))?;
             if let Ok((current, m)) = read_record(&path)
                 && signature(&metadata) == signature(&m)
@@ -268,12 +283,13 @@ fn inspect_with(
         }
         result.push(ObservedListener {
             record,
-            responding_session,
+            responding_session: responding.as_ref().map(|r| r.session.clone()),
+            responding_instance: responding.and_then(|r| r.instance),
         });
     }
     Ok(result)
 }
-fn probe(mut address: SocketAddr) -> Option<String> {
+fn probe(mut address: SocketAddr) -> Option<ProbeIdentity> {
     use std::io::{Read, Write};
     use std::time::{Duration, Instant};
     if address.ip().is_unspecified() {
@@ -321,5 +337,20 @@ fn probe(mut address: SocketAddr) -> Option<String> {
     if json.get("ok")?.as_bool() != Some(true) {
         return None;
     }
-    json.get("session")?.as_str().map(str::to_owned)
+    probe_identity(&json)
+}
+fn probe_identity(json: &serde_json::Value) -> Option<ProbeIdentity> {
+    let session = json.get("session")?.as_str()?;
+    if session.len() > 4096 {
+        return None;
+    }
+    let instance = json
+        .get("instance")
+        .and_then(|v| v.as_str())
+        .filter(|s| s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_owned);
+    Some(ProbeIdentity {
+        session: session.into(),
+        instance,
+    })
 }

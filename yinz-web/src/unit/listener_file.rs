@@ -8,6 +8,7 @@ fn private_distinct_records_refresh_and_remove_only_their_owner() {
     let second = OwnedRecord::create(temp.path(), addr, "second".into(), None).unwrap();
     let path = first.dir.join(&first.name);
     assert_ne!(first.name, second.name);
+    assert_ne!(first.instance(), second.instance());
     assert_eq!(
         std::fs::metadata(&first.dir).unwrap().permissions().mode() & 0o777,
         0o700
@@ -65,9 +66,16 @@ fn legacy_snapshot_stale_cleanup_alive_ambiguous_and_replacement_race() {
     assert!(path.exists());
     // Even a dead recorded PID cannot remove a record when another listener answers.
     assert_eq!(
-        inspect_with(t.path(), |_| Some("other".into()), |_| true)
-            .unwrap()
-            .len(),
+        inspect_with(
+            t.path(),
+            |_| Some(ProbeIdentity {
+                session: "other".into(),
+                instance: None
+            }),
+            |_| true
+        )
+        .unwrap()
+        .len(),
         1
     );
     let mut calls = 0;
@@ -135,4 +143,42 @@ fn probe_never_connects_to_nonlocal_record_and_dead_pid_test_is_conservative() {
     assert!(!dead(std::process::id()));
     assert!(!dead(0));
     assert!(!dead(u32::MAX));
+}
+
+#[test]
+fn probe_generation_requires_valid_matching_instance_and_session() {
+    let t = tempfile::tempdir().unwrap();
+    let owned = OwnedRecord::create(
+        t.path(),
+        "127.0.0.1:1".parse().unwrap(),
+        "reused".into(),
+        None,
+    )
+    .unwrap();
+    let (record, _) = read_record(&owned.dir.join(&owned.name)).unwrap();
+    for instance in [
+        serde_json::Value::Null,
+        serde_json::json!(123),
+        serde_json::json!("bad"),
+        serde_json::json!("z".repeat(32)),
+        serde_json::json!("a".repeat(32)),
+        serde_json::json!(record.instance),
+    ] {
+        let identity =
+            probe_identity(&serde_json::json!({"session":"reused", "instance":instance})).unwrap();
+        let observed = ObservedListener {
+            record: record.clone(),
+            responding_session: Some(identity.session),
+            responding_instance: identity.instance,
+        };
+        assert_eq!(observed.is_current(), instance == record.instance);
+    }
+    let legacy = probe_identity(&serde_json::json!({"session":"reused"})).unwrap();
+    assert!(legacy.instance.is_none());
+    assert!(!ObservedListener {
+        record: record.clone(),
+        responding_session: Some("different".into()),
+        responding_instance: Some(record.instance)
+    }
+    .is_current());
 }

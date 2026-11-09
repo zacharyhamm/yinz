@@ -402,7 +402,14 @@ fn main() {
             .data_dir
             .clone()
             .unwrap_or_else(yinz_runtime::home::get_default_data_dir);
-        if let Err(error) = set_password::run(&data_dir, password_stdin, clear, revoke_sessions) {
+        let status_guidance = web_cli::suggested_command(&opts, &data_dir, &["web", "status"]);
+        if let Err(error) = set_password::run(
+            &data_dir,
+            password_stdin,
+            clear,
+            revoke_sessions,
+            &status_guidance,
+        ) {
             eprintln!("Error: {error:#}");
             remote_commands::exit(1);
         }

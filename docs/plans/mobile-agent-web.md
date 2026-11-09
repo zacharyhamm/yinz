@@ -2,7 +2,12 @@
 > private session persistence, limits and local web status are implemented.
 > See [WEB.md](../WEB.md) for the delivered error/DTO/recovery contract and
 > configured-versus-startup reporting. Direct local health probes without proxy
-> headers bypass only the optional identity allowlist. XFF is not trusted for
+> headers bypass only the optional identity allowlist and include the per-binding
+> instance. Status trusts startup policy only when both instance and session match;
+> legacy responses remain unverified. Same-port IPv4 loopback Funnel backends to
+> an IPv6 wildcard yield a possible dual-stack exposure warning and exit 1 even on
+> IPv6-only hosts. Local recovery suggestions retain data/config selectors.
+> XFF is not trusted for
 > client limiter keys. Serve/phone smoke checks remain unperformed; the mobile UI,
 > plugin bridge and agent API remain later milestones.
 
@@ -301,7 +306,7 @@ On day one, WS-B creates `auth/mod.rs` with these exact signatures and deny-all 
 | `POST /api/logout` | bearer | `204`; deletes this session |
 | `POST /api/logout-all` | bearer | `204`; same as `revoke_sessions` |
 | `GET /api/session` | bearer | `200 {id,label,created_at_ms,expires_at_ms,idle_expires_at_ms}` |
-| `GET /healthz` | none | `200 {"ok":true}`. Adds `"session": name` only when the peer is loopback and there is no `X-Forwarded-For`. A direct GET probe with no forwarded/Tailscale headers bypasses only the optional identity allowlist (a local diagnostic for `yinz web status`). |
+| `GET /healthz` | none | `200 {"ok":true}`. Adds `"session": name` only when the peer is loopback and there is no `X-Forwarded-For`. A direct loopback GET probe with no forwarded/Tailscale headers also adds `"instance": id` for binding correlation and bypasses only the optional identity allowlist (a local diagnostic for `yinz web status`). |
 
 - Login runs argon2 in `spawn_blocking` under `Semaphore(1)`, with at most 2 waiters; more get 429. This caps memory at about 64 MiB.
 - The body is read into `Zeroizing<Vec<u8>>`.
@@ -1043,11 +1048,11 @@ There is deliberately no `--password <value>` flag: it would appear in `ps` and 
   Take the ports from the loaded config when available.
 
 **`src/web_cli.rs` `status`:**
-1. Load the config with the same loader `yinz setup --check` uses. If it fails, show defaults with a warning. Print `enabled`, the bind address and the port.
+1. Load the config with the same loader `yinz setup --check` uses. If it fails, show defaults with a warning. Print `enabled`, the bind address and the port. Identify the inspected data directory and retain it plus explicit config selectors in quoted local recovery and password-success status commands.
 2. Print the password state: Missing, Ready with `updated_at`, or Invalid with the reason. Also print the active session count, labels and last-seen times.
-3. List listeners from `<data_dir>/web/listeners/*.json`, checking each with `kill(pid, 0)` and deleting stale files. Probe `http://127.0.0.1:<port>/healthz` with a hand-written GET over `std::net::TcpStream` to name the session holding the port.
+3. List listeners from `<data_dir>/web/listeners/*.json`, checking each with `kill(pid, 0)` and deleting stale files. Probe `http://127.0.0.1:<port>/healthz` with a hand-written GET over `std::net::TcpStream` to name the session holding the port. Require the responding binding instance and session to match the record before treating its startup snapshot as effective; legacy or mismatched responses stay unverified.
 4. Print the serve command using `--https-port`, else `https_port_hint` (7443), plus the expected origin. If `tailscale` is on `PATH`, read `tailscale status --json` (`Self.DNSName`) to print the full URL `https://<dns>:7443/ (tailnet only)`.
-5. If `tailscale serve status --json` shows `AllowFunnel` for any handler that targets the backend, print a loud warning and **exit non-zero**. The default 7443 cannot be funneled: Funnel only allows 443, 8443 and 10000, and 443 and 8443 are already used on this machine.
+5. If `tailscale serve status --json` shows `AllowFunnel` for any handler that targets the backend, print a loud warning and **exit non-zero**. A same-port IPv4 loopback/localhost backend targeting an IPv6 wildcard is possibly exposed over dual-stack IPv4: warn that reachability is unverified and exit 1 even on IPv6-only hosts. The default 7443 cannot be funneled: Funnel only allows 443, 8443 and 10000, and 443 and 8443 are already used on this machine.
 
 Also update `README.md`, `docs/AGENT_CLI.md` and the hand-written completions in `yinz-cli/assets/completions/{comp.bash,comp.zsh,comp.fish}`.
 

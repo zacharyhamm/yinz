@@ -85,6 +85,7 @@ enum Exposure {
     Unknown,
     NoMatch,
     Exposed,
+    PossiblyExposed,
 }
 fn exposure(config: &Value, targets: &[SocketAddr]) -> Exposure {
     fn collect(c: &Value, web: &mut Vec<(String, String)>, funnel: &mut Vec<String>) -> Option<()> {
@@ -158,6 +159,21 @@ fn exposure(config: &Value, targets: &[SocketAddr]) -> Exposure {
     }) {
         return Exposure::Exposed;
     }
+    // The record does not establish IPV6_V6ONLY. IPv4 loopback may reach an IPv6
+    // wildcard on the same port; do not affirmatively classify it as unrelated.
+    if web.iter().any(|(h, p)| {
+        funnel.contains(h)
+            && backend(p).is_some_and(|a| {
+                targets.iter().any(|b| {
+                    a.address.port() == b.port()
+                        && b.ip() == std::net::Ipv6Addr::UNSPECIFIED
+                        && a.address.is_ipv4()
+                        && a.address.ip().is_loopback()
+                })
+            })
+    }) {
+        return Exposure::PossiblyExposed;
+    }
     if !valid {
         Exposure::Unknown
     } else {
@@ -167,6 +183,32 @@ fn exposure(config: &Value, targets: &[SocketAddr]) -> Exposure {
 fn describe_config(c: &WebConfig) -> String {
     format!("enabled={} bind={} plugin={} session_days={} allowed_hosts={:?} allowed_origins={:?} tailscale_users={:?}",
         c.enabled(),c.bind_addr().map(|a|a.to_string()).unwrap_or_else(|_|"invalid".into()),c.plugin_or_default(),c.session_days_or_default(),c.allowed_hosts,c.allowed_origins,c.tailscale_users)
+}
+/// Display only local store/config selectors. Single quotes keep shell syntax literal.
+pub(crate) fn suggested_command(opts: &CliArgs, data: &Path, action: &[&str]) -> String {
+    fn quote(path: &Path) -> Option<String> {
+        let text = path.to_str()?;
+        if text.chars().any(char::is_control) {
+            return None;
+        }
+        Some(format!("'{}'", text.replace('\'', "'\\''")))
+    }
+    let mut command = String::from("yinz");
+    for (flag, path) in [
+        ("--data-dir", Some(data)),
+        ("--config", opts.config.as_deref()),
+        ("--config-dir", opts.config_dir.as_deref()),
+    ] {
+        if let Some(path) = path {
+            let Some(quoted) = quote(path) else {
+                return format!("manually run yinz {} with --data-dir={data:?}, --config={:?}, --config-dir={:?} (paths cannot be represented as a shell command)", action.join(" "), opts.config, opts.config_dir);
+            };
+            command.push_str(&format!(" {flag} {quoted}"));
+        }
+    }
+    command.push(' ');
+    command.push_str(&action.join(" "));
+    command
 }
 pub(crate) fn run(opts: &CliArgs, https_port: Option<u16>) -> Result<i32> {
     let data = opts
@@ -186,12 +228,15 @@ pub(crate) fn run(opts: &CliArgs, https_port: Option<u16>) -> Result<i32> {
         "Configured (applies at session start): {}",
         describe_config(&config)
     );
+    println!("Data directory: {}", data.display());
+    let provision = suggested_command(opts, &data, &["set-password"]);
+    let revoke = suggested_command(opts, &data, &["set-password", "--revoke-sessions"]);
     match password::read_state(&data) {
         password::PasswordState::Missing => {
-            println!("Password: Missing; enabled listeners wait for yinz set-password")
+            println!("Password: Missing; enabled listeners wait for {provision}")
         },
         password::PasswordState::Invalid(_) => {
-            println!("Password: Invalid; repair with yinz set-password")
+            println!("Password: Invalid; repair with {provision}")
         },
         password::PasswordState::Ready(v) => {
             println!("Password: Ready; updated_at_ms={}", v.updated_at_ms)
@@ -213,7 +258,7 @@ pub(crate) fn run(opts: &CliArgs, https_port: Option<u16>) -> Result<i32> {
             }
         },
         Err(_) => println!(
-            "Browser sessions: unavailable (unsafe or invalid store; rotate/revoke to recover)"
+            "Browser sessions: unavailable (unsafe or invalid store; recover with {revoke})"
         ),
     }
     let listeners = yinz_web::listener_file::inspect(&data).unwrap_or_else(|_| {
@@ -222,13 +267,16 @@ pub(crate) fn run(opts: &CliArgs, https_port: Option<u16>) -> Result<i32> {
     });
     let mut targets = vec![];
     for observed in listeners {
+        let verified = observed.is_current();
         let r = observed.record;
         println!(
             "Listener {}: recorded session {:?}; responding session {:?}",
             r.address, r.session, observed.responding_session
         );
-        if observed.responding_session.as_ref() == Some(&r.session) {
-            targets.push(r.address);
+        if verified {
+            if !targets.contains(&r.address) {
+                targets.push(r.address);
+            }
             match r.startup_config {
                 Some(c) => println!("  Effective startup config: {}", describe_config(&c)),
                 None => println!("  Effective policy: unknown (legacy record)"),
@@ -303,12 +351,19 @@ pub(crate) fn run(opts: &CliArgs, https_port: Option<u16>) -> Result<i32> {
         .unwrap_or(Exposure::Unknown);
     let message=match exposure {
         Exposure::Exposed=>"WARNING: Funnel exposes this web backend publicly. Disable that Funnel mapping before use.",
+        Exposure::PossiblyExposed=>"WARNING: Reported Funnel mapping may reach this IPv6 wildcard listener over dual-stack IPv4; reachability is unverified. Inspect or disable that mapping before relying on privacy.",
         Exposure::Unknown=>"Funnel exposure unknown: Tailscale diagnostics unavailable or unsupported.",
         Exposure::NoMatch=>"No matching Funnel mapping in reported device Serve configuration; this does not verify all network exposure.",
     };
     println!("{message}");
     println!("Serve proxy/header and phone smoke checks remain operator checks; status never changes Tailscale configuration.");
-    Ok(if exposure == Exposure::Exposed { 1 } else { 0 })
+    Ok(
+        if matches!(exposure, Exposure::Exposed | Exposure::PossiblyExposed) {
+            1
+        } else {
+            0
+        },
+    )
 }
 #[cfg(test)]
 #[path = "unit/web_cli.rs"]
