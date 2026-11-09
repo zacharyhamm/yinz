@@ -17,6 +17,7 @@ import {
   HandoffSchema,
 } from "../_lib/issue_driver.ts";
 import {
+  codeReviewFingerprint,
   createState,
   effectivePlanFindings,
   initialPlanning,
@@ -1996,6 +1997,10 @@ function driverEvidence(
         summary: "Repaired the affected caller and added a regression",
         commit: head,
       };
+    case "plan_review_fixes":
+      return driverPlan;
+    case "implement_review_fixes":
+      return { summary: "Fixed selected review findings", commit: head };
     case "review_ux":
       return withUx(task.before).uxReview;
     case "review_code":
@@ -2518,7 +2523,7 @@ Deno.test("driver requires worktree preparation after explicit approval, then im
   equal(h.calls.length, 3);
 });
 
-Deno.test("driver returns code review blockers instead of running checks or requesting merge authorization", async () => {
+Deno.test("driver completes both reviews then asks which findings to address before running checks", async () => {
   const h = harness(implementing());
   h.controls.evidenceForRole = (task) =>
     task.role === "review_code"
@@ -2532,8 +2537,13 @@ Deno.test("driver returns code review blockers instead of running checks or requ
       }
       : driverEvidence(task);
   await h.drive.execute({ agent: options }, h.context);
-  equal(result(h).decision, "blocked");
-  assert(result(h).reason.includes("code review blockers"));
+  equal(result(h).decision, "address_review_findings");
+  assert((await loadState(h.context)).uxReview);
+  const handoffId = result(h).id;
+  const calls = h.calls.length;
+  await h.drive.execute({}, h.context);
+  equal(result(h).id, handoffId);
+  equal(h.calls.length, calls);
   equal(h.controls.checkCalls.length, 0);
 });
 
@@ -4247,7 +4257,10 @@ Deno.test("UX blockers and stale evidence stop all checks and are presented sepa
     } else state.uxReview!.commit = "b".repeat(40);
     const h = harness(state);
     await h.drive.execute({ agent: options }, h.context);
-    equal(result(h).decision, "blocked");
+    equal(
+      result(h).decision,
+      defect === "high" ? "address_review_findings" : "blocked",
+    );
     equal(h.controls.checkCalls.length, 0);
     equal(h.calls.length, 0);
     assert(
@@ -4255,7 +4268,7 @@ Deno.test("UX blockers and stale evidence stop all checks and are presented sepa
     );
     assert(result(h).presentation.includes("UX review findings"));
     assert(
-      result(h).reason.includes(
+      (defect === "high" ? result(h).presentation : result(h).reason).includes(
         defect === "high" ? "ux-loss" : "Current UX review",
       ),
     );
@@ -4381,4 +4394,328 @@ Deno.test("legacy ready without UX blocks with recovery guidance and no worker o
   assert(result(h).reason.includes("rollback to review_ux and drive"));
   equal(h.calls.length, 0);
   equal(h.controls.checkCalls.length, 0);
+});
+
+async function reviewRepairHarness() {
+  const h = harness(driverImplementing());
+  h.controls.evidenceForRole = (task) => {
+    const evidence = driverEvidence(task) as Record<string, unknown>;
+    if (task.role === "review_code") {
+      return {
+        ...evidence,
+        commit: h.controls.repo.head,
+        findings: [{
+          id: "race",
+          severity: "critical",
+          description: "Lost work",
+          evidence: ["lib.rs:1"],
+        }],
+      };
+    }
+    if (task.role === "implement_review_fixes") {
+      h.controls.repo.head = "d".repeat(40);
+      return { summary: "Repaired race", commit: h.controls.repo.head };
+    }
+    return evidence;
+  };
+  await h.drive.execute({ agent: options }, h.context);
+  equal(result(h).decision, "address_review_findings");
+  const state = await loadState(h.context);
+  await saveState(
+    h.context,
+    "decide_review",
+    transition(state, "decide_review", {
+      id: result(h).id,
+      reviewFingerprint: codeReviewFingerprint(state),
+      request: "Plan a fix for the race",
+      repair: [{ role: "review_code", findingId: "race" }],
+      ignore: [],
+    }),
+  );
+  return h;
+}
+Deno.test("review repair loop plans only selected findings, waits for approval and repeats both reviews", async () => {
+  const h = await reviewRepairHarness();
+  const originalPlan = (await loadState(h.context)).plan;
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "approve_review_fixes");
+  let state = await loadState(h.context);
+  assert(state.reviewDecisions!.at(-1)!.plan);
+  equal(state.reviewDecisions!.at(-1)!.approval, undefined);
+  const count = h.calls.length;
+  const id = result(h).id;
+  await h.drive.execute({}, h.context);
+  equal(result(h).id, id);
+  equal(h.calls.length, count);
+  await saveState(
+    h.context,
+    "approve_review_fixes",
+    transition(state, "approve_review_fixes", {
+      id: state.reviewDecisions!.at(-1)!.id,
+      handoffId: id,
+      request: "Implement this repair plan",
+    }),
+  );
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "address_review_findings");
+  equal(h.calls.length, count + 3); // implementation, technical review, UX review
+  equal(h.controls.checkCalls.length, 0);
+  state = await loadState(h.context);
+  equal(state.plan, originalPlan);
+  equal(state.codeReview!.commit, "d".repeat(40));
+  equal(state.uxReview!.commit, "d".repeat(40));
+  equal(state.reviewDecisions![0].result!.summary, "Repaired race");
+  // Existing acceptance never silently covers new review evidence.
+  await saveState(
+    h.context,
+    "decide_review",
+    transition(state, "decide_review", {
+      id: result(h).id,
+      reviewFingerprint: codeReviewFingerprint(state),
+      request: "Ignore the remaining race; merge with it outstanding",
+      repair: [],
+      ignore: [{ role: "review_code", findingId: "race" }],
+    }),
+  );
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "authorize_merge");
+  equal(h.controls.checkCalls.length, 4); // approved issue and repair checks
+  assert(
+    result(h).presentation.includes(
+      "Ignored (remain unresolved): review_code/race",
+    ),
+  );
+  state = await loadState(h.context);
+  await saveState(
+    h.context,
+    "ready",
+    transition(state, "ready", {
+      commit: state.codeReview!.commit,
+      mergeRequest: "Merge with the outstanding race",
+    }),
+  );
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "integrate");
+});
+Deno.test("review repair evidence recovers interrupted imports without dispatching a duplicate worker", async () => {
+  for (const role of ["plan_review_fixes", "implement_review_fixes"] as const) {
+    const h = await reviewRepairHarness();
+    if (role === "implement_review_fixes") {
+      await h.drive.execute({}, h.context);
+      const state = await loadState(h.context);
+      await saveState(
+        h.context,
+        "approve_review_fixes",
+        transition(state, "approve_review_fixes", {
+          id: state.reviewDecisions!.at(-1)!.id,
+          handoffId: result(h).id,
+          request: "Implement",
+        }),
+      );
+    }
+    h.controls.failEventOnce = true;
+    await h.drive.execute({}, h.context);
+    equal(result(h).decision, "blocked");
+    const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    equal(task.role, role);
+    const count = h.calls.length;
+    await h.drive.execute({}, h.context);
+    equal(h.calls.length, count + (role === "implement_review_fixes" ? 2 : 0));
+    equal(
+      result(h).decision,
+      role === "plan_review_fixes"
+        ? "approve_review_fixes"
+        : "address_review_findings",
+    );
+  }
+});
+Deno.test("explicit restart preserves selected repair scope and approved implementation authority", async () => {
+  for (const role of ["plan_review_fixes", "implement_review_fixes"] as const) {
+    const h = await reviewRepairHarness();
+    if (role === "implement_review_fixes") {
+      await h.drive.execute({}, h.context);
+      const state = await loadState(h.context);
+      await saveState(
+        h.context,
+        "approve_review_fixes",
+        transition(state, "approve_review_fixes", {
+          id: state.reviewDecisions!.at(-1)!.id,
+          handoffId: result(h).id,
+          request: "Implement",
+        }),
+      );
+    }
+    h.controls.runError = "Provider unavailable";
+    await h.drive.execute({}, h.context);
+    const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    equal(old.role, role);
+    h.controls.runError = undefined;
+    await h.methods.restart_agent.execute({
+      ...options,
+      role,
+      taskId: old.id,
+      request: "Restart this repair worker",
+    }, h.context);
+    const state = await loadState(h.context);
+    const fix = state.reviewDecisions!.at(-1)!;
+    equal(fix.repair, [{ role: "review_code", findingId: "race" }]);
+    if (role === "implement_review_fixes") {
+      equal(fix.approval, "Implement");
+      assert(fix.result);
+    } else assert(fix.plan);
+    await h.drive.execute({}, h.context);
+    equal(
+      result(h).decision,
+      role === "plan_review_fixes"
+        ? "approve_review_fixes"
+        : "address_review_findings",
+    );
+  }
+});
+
+Deno.test("explicit repair restart recovers imported scope after cleanup failure", async () => {
+  for (const role of ["plan_review_fixes", "implement_review_fixes"] as const) {
+    const h = await reviewRepairHarness();
+    if (role === "implement_review_fixes") {
+      await h.drive.execute({}, h.context);
+      const state = await loadState(h.context);
+      await saveState(
+        h.context,
+        "approve_review_fixes",
+        transition(state, "approve_review_fixes", {
+          id: state.reviewDecisions!.at(-1)!.id,
+          handoffId: result(h).id,
+          request: "Implement",
+        }),
+      );
+    }
+    h.controls.cleanupError = true;
+    await h.drive.execute({}, h.context);
+    equal(result(h).decision, "blocked");
+    const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    equal(old.role, role);
+    equal(old.status, "completed");
+    equal(old.cleanup, "pending");
+    const imported = await loadState(h.context);
+    if (role === "implement_review_fixes") {
+      assert(imported.reviewDecisions!.at(-1)!.result);
+      equal(imported.codeReview, undefined);
+      equal(imported.uxReview, undefined);
+    }
+    const args = {
+      ...options,
+      role,
+      taskId: old.id,
+      request: "Restart this repair worker after cleanup failed",
+    };
+    await rejects(
+      () =>
+        h.methods.restart_agent.execute({
+          ...args,
+          taskId: "00000000-0000-4000-8000-000000000000",
+        }, h.context),
+      "current assignment",
+    );
+    if (role === "implement_review_fixes") {
+      await rejects(
+        () =>
+          h.methods.restart_agent.execute({
+            ...args,
+            role: "plan_review_fixes",
+          }, h.context),
+        "No current review repair assignment",
+      );
+    }
+    const count = h.calls.length;
+    const cleanupCount = h.controls.cleanupCalls;
+    h.controls.cleanupError = false;
+    await h.methods.restart_agent.execute(args, h.context);
+    const replacement = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    assert(replacement.id !== old.id);
+    equal(replacement.role, role);
+    equal(replacement.status, "completed");
+    equal(h.calls.length, count + 1);
+    equal(h.controls.cleanupCalls, cleanupCount + 1);
+    const archived = AgentTaskSchema.parse(
+      h.resources.get(`agent-task-${old.id}`),
+    );
+    equal(archived.status, "superseded");
+    equal(archived.cleanup, undefined);
+    const next = replacement.before;
+    const fix = next.reviewDecisions!.at(-1)!;
+    equal(next.reviewDecisions!.slice(0, -1), imported.reviewDecisions);
+    equal(next.codeReview, old.before.codeReview);
+    equal(next.uxReview, old.before.uxReview);
+    equal(next.implementation!.head, old.before.implementation!.head);
+    equal(fix.repair, old.before.reviewDecisions!.at(-1)!.repair);
+    equal(fix.reviewFingerprint, codeReviewFingerprint(next));
+    equal(fix.result, undefined);
+    equal(
+      fix.plan,
+      role === "implement_review_fixes"
+        ? old.before.reviewDecisions!.at(-1)!.plan
+        : undefined,
+    );
+    equal(
+      fix.approval,
+      role === "implement_review_fixes" ? "Implement" : undefined,
+    );
+    const completed = await loadState(h.context);
+    await h.methods.restart_agent.execute(args, h.context);
+    equal(h.calls.length, count + 1);
+    equal(await loadState(h.context), completed);
+    await rejects(
+      () =>
+        h.methods.restart_agent.execute({
+          ...args,
+          request: "Different restart of the old task",
+        }, h.context),
+      "current assignment",
+    );
+    await h.drive.execute({}, h.context);
+    equal(
+      result(h).decision,
+      role === "plan_review_fixes"
+        ? "approve_review_fixes"
+        : "address_review_findings",
+    );
+  }
+});
+
+Deno.test("legacy ready state with outstanding findings returns to user direction before integration", async () => {
+  const reviewed = transition(implementing(), "review_code", {
+    planVersion: 1,
+    commit: head,
+    steps: [{ id: "fix", status: "implemented" }],
+    findings: [],
+  });
+  const state = transition(verify(reviewed), "ready", {
+    commit: head,
+    mergeRequest: "Old merge authorization",
+  });
+  state.codeReview!.findings = [{
+    id: "legacy",
+    severity: "medium",
+    description: "Previously advisory finding",
+  }];
+  const h = harness(state);
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "address_review_findings");
+  equal(h.calls.length, 0);
+  equal(h.controls.checkCalls.length, 0);
+  const current = await loadState(h.context);
+  await saveState(
+    h.context,
+    "decide_review",
+    transition(current, "decide_review", {
+      id: result(h).id,
+      reviewFingerprint: codeReviewFingerprint(current),
+      request: "Accept legacy finding and merge",
+      repair: [],
+      ignore: [{ role: "review_code", findingId: "legacy" }],
+    }),
+  );
+  equal((await loadState(h.context)).phase, "implementing");
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "authorize_merge");
 });

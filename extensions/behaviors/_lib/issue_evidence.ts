@@ -23,6 +23,8 @@ export const RoleSchema = z.enum([
   "implement",
   "review_code",
   "review_ux",
+  "plan_review_fixes",
+  "implement_review_fixes",
 ]);
 export const ImplementationResult = z.object({
   summary: z.string().trim().min(1),
@@ -35,6 +37,8 @@ export const RoleSchemas = {
   implement: ImplementationResult,
   review_code: ActionSchemas.review_code,
   review_ux: ActionSchemas.review_ux,
+  plan_review_fixes: ActionSchemas.plan_review_fixes,
+  implement_review_fixes: ImplementationResult,
 };
 export const RoleEvidenceSchema = z.discriminatedUnion("role", [
   z.object({ role: z.literal("triage"), evidence: RoleSchemas.triage })
@@ -54,6 +58,14 @@ export const RoleEvidenceSchema = z.discriminatedUnion("role", [
     .strict(),
   z.object({ role: z.literal("review_ux"), evidence: RoleSchemas.review_ux })
     .strict(),
+  z.object({
+    role: z.literal("plan_review_fixes"),
+    evidence: RoleSchemas.plan_review_fixes,
+  }).strict(),
+  z.object({
+    role: z.literal("implement_review_fixes"),
+    evidence: RoleSchemas.implement_review_fixes,
+  }).strict(),
 ]);
 export type RoleEvidence = z.infer<typeof RoleEvidenceSchema>;
 const Envelope = { taskId: z.uuid(), assignmentDigest: Digest };
@@ -64,6 +76,8 @@ export const SubmitArgsSchema = z.discriminatedUnion("role", [
   RoleEvidenceSchema.options[3].extend(Envelope),
   RoleEvidenceSchema.options[4].extend(Envelope),
   RoleEvidenceSchema.options[5].extend(Envelope),
+  RoleEvidenceSchema.options[6].extend(Envelope),
+  RoleEvidenceSchema.options[7].extend(Envelope),
 ]);
 export const EvidenceTargetSchema = z.object({
   protocol: z.literal(1),
@@ -199,7 +213,11 @@ export function validateEvidence(assignment: Assignment, raw: unknown) {
       "Pane reviewed a different commit than the dispatched task",
     );
   }
-  if (payload.role !== "implement" && assignment.request) {
+  if (
+    ["triage", "plan", "review_plan", "review_code", "review_ux"].includes(
+      payload.role,
+    ) && assignment.request
+  ) {
     recordFeedback(state, assignment.request, state.planVersion);
   }
   const next = payload.role === "implement"

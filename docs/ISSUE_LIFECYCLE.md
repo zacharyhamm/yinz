@@ -20,7 +20,12 @@ flowchart LR
     P --> I[Approved implementation]
     I --> R[Technical code review]
     R --> U[UX review]
-    U --> C[Deterministic plan checks]
+    U --> D[User selects repairs or accepts findings]
+    D --> C[Deterministic approved checks]
+    D -->|Plan selected repairs| RP[Repair planning worker]
+    RP --> AP[User approves repair plan]
+    AP --> RF[Repair implementation worker]
+    RF --> R
     C --> M[Merge authorization]
     M --> Q[Wait for integration lock]
     Q --> B[Rebase onto local main]
@@ -28,8 +33,6 @@ flowchart LR
     V --> F[Local fast-forward merge]
     F --> S[Outcome and Agenda completion]
     P -->|Revise| P
-    R -->|Fix findings| I
-    U -->|Fix UX findings| I
     C -->|Failure| I
     B -->|Conflict| I
     V -->|Failure| I
@@ -161,7 +164,8 @@ identity across resume; changed state or assignments invalidate them.
 The driver supplies role-specific prompts and validates results against the
 original task and current issue, plan and commit before import. Implementation
 returns the clean worktree's full committed HEAD. Reviews contain actual evidence.
-`implement`, `review_code` and `review_ux` roles require current-plan approval and preparation.
+`implement`, `review_code`, `review_ux`, `plan_review_fixes` and
+`implement_review_fixes` roles require current-plan approval and preparation.
 A completed provider turn alone does not establish code correctness.
 
 ### Planning generations and adjudication
@@ -288,14 +292,19 @@ identifiers are full issue-worktree Git IDs, never branch names or abbreviations
 | Implementation result | `summary`; full `commit` of clean issue worktree. |
 | Code review result | `planVersion`, `commit`, `steps` covering plan step IDs with `implemented` or `deviated` status; deviations require `justification`; `findings`; optional advisory `preliminaryChecks`. |
 | UX review result (`review-ux`) | `planVersion`, full `commit`, `assessment: {impact: material\|no_material_impact, summary, assessedPaths, limitations}`, shared `findings`, optional advisory `preliminaryChecks`. Rationale and assessed paths are nonempty even for no material impact. |
-| `verify` | No input; plan checks run at reviewed commit through `yinz-issue-verify`. |
-| `ready` | `commit`; `mergeRequest`: user authorization to merge. |
+| `decide-review` | Current findings handoff `id`, `reviewFingerprint` from its `codeReviewFingerprint`, actual user `request`, `repair` and `ignore` arrays of `{role: review_code\|review_ux, findingId}`. Role qualifies IDs shared across reviews. |
+| Repair plan result (`plan_review_fixes`) | Same checked plan content as an initial plan; selected findings only. Stored separately from the approved issue plan. |
+| `approve-review-fixes` | Repair selection `id`, current approval `handoffId`, actual user `request`. |
+| Repair implementation result (`implement_review_fixes`) | `summary`, full clean worktree `commit`. Requires the selected repair plan's approval. |
+| `verify` | No input; approved issue and completed repair checks run at the reviewed commit through `yinz-issue-verify`. |
+| `ready` | `commit`; `mergeRequest`: user authorization to merge, accepting remaining findings at this commit. |
 | `merge` | Normally no input; explicit exception is `skipCiRequest`. |
 | `repair` | `reason`: failure and repair. |
 | `summarize` | `outcomeMet: true`; `summary`: original problem, delivered outcome and limits. |
 
-Finding severities are `low`, `medium`, `high`, `critical`; unresolved high/critical
-blocks advancement. Empty findings mean a real review found none, never skipped
+Finding severities are `low`, `medium`, `high`, `critical`. Unresolved high/critical
+plan findings block planning approval. Implementation review findings of every
+severity require user direction; users may accept any of them for merge. Empty findings mean a real review found none, never skipped
 review. New plan versions require fresh review, as do repaired implementations.
 Adopting ad-hoc work does not bypass planning, review or verification.
 Requirement changes invalidate affected planning evidence through refresh;
@@ -312,8 +321,8 @@ plans with checks. Approval of the presented plan approves running its checks.
 
 ### Separate implementation reviews
 
-Normal drive runs implement -> technical code review -> UX review -> approved
-checks -> merge authorization. Both visible workers review the same full commit,
+Normal drive runs implement -> technical code review -> UX review -> user
+findings decision (when findings remain) -> approved checks -> merge authorization. Both visible workers review the same full commit,
 issue requirements and current approved plan. Technical review independently
 challenges behavior and design assumptions, traces affected callers and lifecycle
 paths, and inspects weak assertions while reporting every plan step. UX review
@@ -329,12 +338,39 @@ assessments are valid; no UI-file change alone is not a rationale. Proposed fixe
 must not be marked as resolutions of newly reported defects.
 
 Verification preflight, `ready`, `begin_merge` and resumed unlanded integration
-require both current reviews with no unresolved high/critical findings. Technical
-approval never substitutes for UX. New technical evidence or a repaired commit
+require both current reviews. Verification and integration also require recorded
+user acceptance of outstanding findings. `ready` can record that acceptance
+through explicit merge sign-off. Technical approval never substitutes for UX. New technical evidence or a repaired commit
 invalidates UX and downstream evidence. UX-only rollback retains matching
 technical review/head but clears UX, verification and authorization. Ready-only
 rollback retains both reviews and same-commit verification. Saved original tasks,
 prompts, submissions and accepted receipts resume without duplicate reviewers.
+
+The `address_review_findings` handoff presents both reviews and asks which findings
+to address. No automatic code repair is allowed. Selection authorizes only a
+`plan_review_fixes` worker. Its proposed changes, risks, assumptions and argv
+checks yield `approve_review_fixes`; explicit approval authorizes an
+`implement_review_fixes` worker in the existing worktree. Repairs preserve the
+original approved plan and require fresh technical and UX reviews. New findings
+or changed review evidence return to the user instead of extending approval.
+
+Optional `reviewDecisions` retains selections, actual requests, source reviews,
+repair plans, approvals and committed results. Decisions bind requirements,
+rollback, plan and both exact reviews through `codeReviewFingerprint`. Stale
+handoffs, reused IDs with different input and unknown/duplicate finding references
+are rejected. Ignored findings keep their original severity and unresolved
+status. Unselected findings remain pending. Merge sign-off can accept all
+remaining findings; when checks have not run, record that acceptance with
+`decide-review`, run checks, then record `ready` using the already-given merge
+request. Acceptance never waives verification or the separate full merge CI gate.
+Completed repair checks are added to original checks with unique lifecycle log
+IDs; repair-plan approval authorizes them. No additional approval is needed to
+resume the same saved worker assignment. Explicit repair-worker restart preserves
+selected scope and existing implementation approval while fencing the old worker.
+Ordinary rollback requires renewed decisions for retained findings.
+
+Existing records need no bulk rewrite. Legacy unmerged findings reach the new
+handoff without inferred acceptance. Already-landed receipts remain authoritative.
 
 Legacy pending tasks finish under their saved contract and never count as UX.
 Legacy implementing work with current technical review proceeds to UX. An
@@ -397,7 +433,7 @@ an answer, not correctness evidence replacing lifecycle review/verification.
 
 ## Deterministic verification
 
-After clean technical code review and separate UX review, `drive` (or explicit `verify`) runs the approved plan's
+After current technical code review, separate UX review and user findings decisions, `drive` (or explicit `verify`) runs the approved plan's
 checks in order outside the repository merge lock. Before each check, the Git
 helper requires a clean issue branch at the reviewed commit with its own real
 `target/`. Each check records exit code, duration and output.
@@ -425,7 +461,9 @@ the checklist on stderr and JSON on stdout, exiting 2 on failure.
 
 Legacy plans without `checks` still require both current reviews and retain the
 reviewer-reported gate: `ready` rejects failed preliminary checks from either
-reviewer and the handoff states no deterministic verification ran. New plans/revisions require checks. Empty or cancelled checks are not success.
+reviewer. Approved repair checks augment this gate; they never discard failed
+preliminary checks. Without repair checks, the handoff states no deterministic
+verification ran. New plans/revisions require checks. Empty or cancelled checks are not success.
 
 ## Development checks and the merge gate
 
@@ -583,7 +621,9 @@ passing merge.
 
 The installed-command smoke test submits evidence from a second process while the
 controller waits and drives planning through review with truncated final chat.
-It also checks continuation and handoff resume without duplicate submissions.
+It also checks continuation and handoff resume without duplicate submissions,
+stale finding selections, acceptance without invented resolutions, repair planning
+and approval through the launcher, committed repairs, and fresh reviews/checks.
 
 Fake Cargo checks establish ordering/recovery without running full Rust suites.
 They establish neither live provider launch nor a passed full feature gate. A

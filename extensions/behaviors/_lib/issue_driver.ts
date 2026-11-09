@@ -15,14 +15,17 @@ import {
 } from "./issue_agents.ts";
 import {
   activeMergeFailure,
+  activeReviewFix,
+  codeReviewFingerprint,
   describeMergeFailure,
   effectivePlanFindings,
   FindingSchema,
+  implementationMergeGate,
   initialPlanning,
   type LifecycleState,
-  mergeGate,
   planningGeneration,
   requireCurrentReviews,
+  requireReviewAcceptance,
   reviewFingerprint,
   StateSchema,
   transition,
@@ -81,6 +84,8 @@ export const HandoffSchema = z.object({
     "approve_plan",
     "prepare_worktree",
     "authorize_merge",
+    "address_review_findings",
+    "approve_review_fixes",
     "integrate",
     "summarize",
     "complete",
@@ -96,6 +101,7 @@ export const HandoffSchema = z.object({
   planVersion: z.number().int().positive().optional(),
   commit: z.string().optional(),
   reviewFingerprint: z.string().optional(),
+  codeReviewFingerprint: z.string().optional(),
   presentation: z.string().min(1),
 }).strict();
 type Handoff = z.infer<typeof HandoffSchema>;
@@ -179,6 +185,48 @@ function present(
         ]
         : []),
     );
+  }
+  if (handoff.decision === "address_review_findings") {
+    lines.push(
+      "Which findings would you like addressed? You may ignore any findings or sign off on merge with findings outstanding.",
+      `Record your selection with decide-review: {id: "${handoff.id}", reviewFingerprint: "${handoff.codeReviewFingerprint}", request: "<actual user direction>", repair: [{role: "review_code", findingId: "..."}], ignore: []}. Planning is authorized only for selected repairs; implementation needs separate plan approval.`,
+    );
+  }
+  if (handoff.decision === "approve_review_fixes") {
+    lines.push(
+      "Review the proposed repairs and checks, then approve-review-fixes with the repair id, this handoffId, and the actual user request. Approval authorizes only this repair plan.",
+    );
+  }
+  for (const decision of state.reviewDecisions ?? []) {
+    lines.push(
+      `Review decision ${decision.id}: ${decision.request}`,
+      `Selected repairs: ${
+        decision.repair.map((f) => `${f.role}/${f.findingId}`).join(", ") ||
+        "None"
+      }`,
+      `Ignored (remain unresolved): ${
+        decision.ignore.map((f) => `${f.role}/${f.findingId}`).join(", ") ||
+        "None"
+      }`,
+    );
+    if (decision.plan) {
+      lines.push(
+        `Repair plan: ${decision.plan.summary}`,
+        ...decision.plan.steps.map((step) =>
+          `- ${step.id}: ${step.description} (${step.files.join(", ")})`
+        ),
+        `Repair tests: ${decision.plan.testingStrategy}`,
+        ...decision.plan.checks.map((check) =>
+          `- ${check.id}: ${displayCommand(check.command)}`
+        ),
+        ...(decision.plan.assumptions ?? []).map((a) => `Assumption: ${a}`),
+      );
+    }
+    if (decision.result) {
+      lines.push(
+        `Repairs committed at ${decision.result.commit}: ${decision.result.summary}`,
+      );
+    }
   }
   if (state.planningContext) {
     const context = state.planningContext;
@@ -345,12 +393,7 @@ function present(
     }
     lines.push("Verification results:");
     const gate = state.plan &&
-      mergeGate(
-        state.plan,
-        state.codeReview,
-        state.verification,
-        state.uxReview,
-      );
+      implementationMergeGate(state);
     if (gate?.kind === "legacy") {
       lines.push(
         `- No deterministic verification: plan version ${
@@ -488,6 +531,9 @@ async function drive(
         reason,
         createdAt: dependencies.now(),
         state,
+        ...(decision !== "blocked" && state.codeReview && state.uxReview
+          ? { codeReviewFingerprint: codeReviewFingerprint(state) }
+          : {}),
         ...(state.planReview
           ? { reviewFingerprint: reviewFingerprint(state) }
           : {}),
@@ -718,12 +764,7 @@ async function drive(
         }
         if (state.codeReview) {
           const atReview = repo.clean && repo.head === state.codeReview.commit;
-          const gate = mergeGate(
-            state.plan,
-            state.codeReview,
-            state.verification,
-            state.uxReview,
-          );
+          const gate = implementationMergeGate(state);
           // A check that dirtied or moved the worktree makes the review look
           // stale. Its recorded failure is the actionable explanation.
           if (
@@ -734,12 +775,6 @@ async function drive(
               "Code review evidence is stale for the current worktree commit",
             );
           }
-          if (blockedFindings(state.codeReview.findings)) {
-            return await handoff(
-              "blocked",
-              "Resolve code review blockers, then obtain fresh review evidence",
-            );
-          }
           if (!state.uxReview) {
             role = "review_ux";
           } else {
@@ -747,55 +782,80 @@ async function drive(
               state,
               atReview ? repo.head : state.codeReview.commit,
             );
-            if (gate.kind === "legacy" && gate.failedPreliminary) {
-              return await handoff(
-                "blocked",
-                "Resolve failed verification, then obtain fresh review evidence",
-              );
-            }
-            if (gate.kind === "unverified") {
-              // Deterministic and authorization-free. Run inline: this method
-              // already holds the issue lock that a nested method would need.
-              handles.push(
-                ...(await runVerification(context, state, dependencies))
-                  .dataHandles,
-              );
-              continue;
-            }
-            if (gate.kind === "failed") {
-              const { verification } = gate;
-              const failures = verification.checks
-                .filter((check) => check.status === "failed")
-                .map((check) =>
-                  `${check.id} (${
-                    check.skipped ??
-                      `${checkOutcome(check)}; log: ${
-                        checkLogQuery(context.definition.name, check.log!)
-                      }`
-                  })`
+            const fix = activeReviewFix(state);
+            if (fix) {
+              if (!fix.plan) role = "plan_review_fixes";
+              else if (!fix.approval) {
+                return await handoff(
+                  "approve_review_fixes",
+                  "Approve the focused repair plan before an implementation worker edits code",
                 );
+              } else role = "implement_review_fixes";
+            } else {
+              try {
+                requireReviewAcceptance(state);
+              } catch {
+                return await handoff(
+                  "address_review_findings",
+                  "Present technical and UX findings and ask which to repair or ignore before continuing",
+                );
+              }
+              if (gate.kind === "legacy" && gate.failedPreliminary) {
+                return await handoff(
+                  "blocked",
+                  "Resolve failed verification, then obtain fresh review evidence",
+                );
+              }
+              if (gate.kind === "unverified") {
+                // Deterministic and authorization-free. Run inline: this method
+                // already holds the issue lock that a nested method would need.
+                handles.push(
+                  ...(await runVerification(context, state, dependencies))
+                    .dataHandles,
+                );
+                continue;
+              }
+              if (gate.kind === "failed") {
+                const { verification } = gate;
+                const failures = verification.checks
+                  .filter((check) => check.status === "failed")
+                  .map((check) =>
+                    `${check.id} (${
+                      check.skipped ??
+                        `${checkOutcome(check)}; log: ${
+                          checkLogQuery(context.definition.name, check.log!)
+                        }`
+                    })`
+                  );
+                return await handoff(
+                  "blocked",
+                  `Verification ${verification.id} failed at ${verification.commit}: ${
+                    failures.join("; ")
+                  }. Repair and obtain review of a new commit, or rerun verify explicitly for an environment failure${
+                    atReview
+                      ? ""
+                      : ". The worktree is no longer clean at the reviewed commit: obtain review of its new commit, or restore the reviewed commit before rerunning verify"
+                  }`,
+                );
+              }
               return await handoff(
-                "blocked",
-                `Verification ${verification.id} failed at ${verification.commit}: ${
-                  failures.join("; ")
-                }. Repair and obtain review of a new commit, or rerun verify explicitly for an environment failure${
-                  atReview
-                    ? ""
-                    : ". The worktree is no longer clean at the reviewed commit: obtain review of its new commit, or restore the reviewed commit before rerunning verify"
-                }`,
+                "authorize_merge",
+                "Explicit merge authorization for this reviewed commit is required; plan approval does not authorize merging",
               );
             }
-            return await handoff(
-              "authorize_merge",
-              "Explicit merge authorization for this reviewed commit is required; plan approval does not authorize merging",
-            );
           }
         } else {
           // A discarded review launch does not erase the completed implementation.
           const implementation = assignment?.role === "implement"
             ? assignment
             : driver.implementation;
+          const repaired = state.reviewDecisions?.at(-1)?.result;
           if (
+            repaired && repo.clean && repo.head === repaired.commit &&
+            state.implementation.head === repaired.commit
+          ) {
+            role = "review_code";
+          } else if (
             recovery?.status === "completed" &&
             recovery.id === state.rollbackId &&
             recovery.step === "review_code"
@@ -838,6 +898,19 @@ async function drive(
           }
         }
         requireCurrentReviews(state, state.mergeAuthorization?.commit);
+        try {
+          requireReviewAcceptance(state);
+        } catch {
+          if (state.attempt) {
+            throw new Error(
+              "Outstanding review findings need user direction; roll back to ready before deciding findings for this unlanded attempt",
+            );
+          }
+          return await handoff(
+            "address_review_findings",
+            "Present outstanding technical and UX findings before proceeding with this legacy merge authorization",
+          );
+        }
         const failure = activeMergeFailure(state);
         if (failure) {
           return await handoff(

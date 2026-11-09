@@ -218,6 +218,35 @@ export const UxReviewSchema = CodeReviewSchema.pick({
     limitations: z.array(Text),
   }).strict(),
 }).strict();
+const FindingRefSchema = z.object({
+  role: z.enum(["review_code", "review_ux"]),
+  findingId: Text,
+}).strict();
+const FindingRefsSchema = z.array(FindingRefSchema).refine(
+  (refs) =>
+    new Set(refs.map((ref) => JSON.stringify(ref))).size === refs.length,
+  "Finding references must be unique",
+);
+const ReviewDecisionSchema = z.object({
+  id: z.uuid(),
+  reviewFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+  request: UserRequestSchema,
+  repair: FindingRefsSchema,
+  ignore: FindingRefsSchema,
+}).strict();
+const RepairPlanSchema = CheckedPlanSchema.omit({ revision: true }).superRefine(
+  validateChecks,
+);
+const ReviewFixSchema = ReviewDecisionSchema.extend({
+  planVersion: z.number().int().positive(),
+  commit: Commit,
+  // Preserve the source reviews across repairs and subsequent review rounds.
+  codeReview: CodeReviewSchema,
+  uxReview: UxReviewSchema,
+  plan: RepairPlanSchema.optional(),
+  approval: UserRequestSchema.optional(),
+  result: z.object({ summary: Text, commit: Commit }).strict().optional(),
+}).strict();
 const CheckResultSchema = CheckSchema.extend({
   // Null when the executable could not be started.
   exitCode: z.number().int().nullable(),
@@ -365,6 +394,7 @@ export const StateSchema = z.object({
   implementation: ImplementationSchema.optional(),
   codeReview: CodeReviewSchema.optional(),
   uxReview: UxReviewSchema.optional(),
+  reviewDecisions: z.array(ReviewFixSchema).optional(),
   verification: VerificationSchema.optional(),
   mergeAuthorization: z.object({
     commit: Commit,
@@ -673,6 +703,14 @@ export const ActionSchemas = {
   implement: ImplementationSchema.omit({ head: true }).strict(),
   review_code: CodeReviewSchema,
   review_ux: UxReviewSchema,
+  decide_review: ReviewDecisionSchema,
+  plan_review_fixes: RepairPlanSchema,
+  approve_review_fixes: z.object({
+    id: z.uuid(),
+    handoffId: z.uuid(),
+    request: UserRequestSchema,
+  }).strict(),
+  implement_review_fixes: z.object({ summary: Text, commit: Commit }).strict(),
   verify: z.object({ verification: VerificationSchema }).strict(),
   ready: z.object({ commit: Commit, mergeRequest: Text }).strict(),
   begin_merge: z.object({ attempt: AttemptSchema }).strict(),
@@ -745,7 +783,6 @@ export function requireCurrentReviews(
       "Current code review must match the reviewed commit and approved plan",
     );
   }
-  requireResolved(technical.findings);
   if (
     !ux || ux.planVersion !== plan.version || ux.commit !== technical.commit
   ) {
@@ -753,7 +790,92 @@ export function requireCurrentReviews(
       "Current UX review must match the reviewed commit and approved plan; rollback to review_ux and drive, or repair an unlanded active attempt first",
     );
   }
-  requireResolved(ux.findings);
+}
+
+/** Decisions are scoped to the exact pair of reviews, requirements and rollback. */
+export function codeReviewFingerprint(state: LifecycleState): string {
+  requireCurrentReviews(state);
+  return createHash("sha256").update(JSON.stringify({
+    digest: state.issue.digest,
+    rollbackId: state.rollbackId,
+    plan: state.plan,
+    technical: state.codeReview,
+    ux: state.uxReview,
+  })).digest("hex");
+}
+export function outstandingReviewFindings(state: LifecycleState) {
+  return (["review_code", "review_ux"] as const).flatMap((role) =>
+    (role === "review_code" ? state.codeReview : state.uxReview)?.findings
+      .filter((finding) => !finding.resolution)
+      .map((finding) => ({ role, findingId: finding.id, finding })) ?? []
+  );
+}
+export function activeReviewFix(state: LifecycleState) {
+  const decision = state.reviewDecisions?.at(-1);
+  return decision?.repair.length && !decision.result && state.codeReview &&
+      state.uxReview &&
+      decision.reviewFingerprint === codeReviewFingerprint(state)
+    ? decision
+    : undefined;
+}
+export function requireReviewAcceptance(state: LifecycleState) {
+  requireCurrentReviews(state);
+  const fingerprint = codeReviewFingerprint(state);
+  const ignored = (state.reviewDecisions ?? []).filter((d) =>
+    d.reviewFingerprint === fingerprint
+  ).flatMap((d) => d.ignore);
+  if (
+    activeReviewFix(state) ||
+    outstandingReviewFindings(state).some((ref) =>
+      !ignored.some((item) =>
+        item.role === ref.role && item.findingId === ref.findingId
+      )
+    )
+  ) {
+    throw new Error(
+      "Present review findings and obtain the user's decision before continuing",
+    );
+  }
+}
+/** Original checks plus every approved repair's focused checks, with unique log IDs. */
+export function verificationPlan(state: LifecycleState): Plan {
+  const plan = requirePlan(state);
+  const repairs = (state.reviewDecisions ?? []).filter((d) =>
+    d.planVersion === plan.version && d.result && d.approval && d.plan
+  );
+  if (!repairs.length) return plan;
+  return {
+    ...plan,
+    checks: [
+      ...(plan.checks ?? []),
+      ...repairs.flatMap((d) =>
+        d.plan!.checks.map((check, index) => ({
+          ...check,
+          id: `${d.id}-${index}`,
+        }))
+      ),
+    ],
+  };
+}
+
+/** Repair checks augment the legacy reviewer gate rather than discarding failures. */
+export function implementationMergeGate(state: LifecycleState): MergeGate {
+  if (!state.codeReview) {
+    throw new Error("Record a code review before verifying");
+  }
+  const original = mergeGate(
+    requirePlan(state),
+    state.codeReview,
+    state.verification,
+    state.uxReview,
+  );
+  if (original.kind === "legacy" && original.failedPreliminary) return original;
+  return mergeGate(
+    verificationPlan(state),
+    state.codeReview,
+    state.verification,
+    state.uxReview,
+  );
 }
 
 /** The recorded failure of the active merge attempt, if it has one. */
@@ -1021,7 +1143,6 @@ export function transition(
           "UX review requires current technical review of the same approved implementation commit",
         );
       }
-      requireResolved(state.codeReview.findings);
       state.uxReview = review;
       delete state.verification;
       delete state.mergeAuthorization;
@@ -1029,10 +1150,94 @@ export function transition(
       state.phase = "implementing";
       break;
     }
+    case "decide_review": {
+      requirePhase(state, ["implementing", "ready"]);
+      if (state.attempt) {
+        throw new Error(
+          "Repair or roll back the active merge attempt before deciding findings",
+        );
+      }
+      requireCurrentReviews(state);
+      const decision = ActionSchemas.decide_review.parse(args);
+      if (decision.reviewFingerprint !== codeReviewFingerprint(state)) {
+        throw new Error("Review decision is stale");
+      }
+      const existing = state.reviewDecisions?.find((d) => d.id === decision.id);
+      if (existing) {
+        if (
+          JSON.stringify(ReviewDecisionSchema.strip().parse(existing)) !==
+            JSON.stringify(decision)
+        ) throw new Error("Review decision ID already used");
+        break;
+      }
+      if (activeReviewFix(state)) {
+        throw new Error(
+          "Finish or roll back the selected review repairs first",
+        );
+      }
+      const refs = [...decision.repair, ...decision.ignore];
+      if (
+        !refs.length ||
+        new Set(refs.map((ref) => JSON.stringify(ref))).size !== refs.length
+      ) throw new Error("Select distinct review findings to repair or ignore");
+      const findings = outstandingReviewFindings(state);
+      if (
+        refs.some((ref) =>
+          !findings.some((f) =>
+            f.role === ref.role && f.findingId === ref.findingId
+          )
+        )
+      ) throw new Error("Unknown or resolved review finding");
+      state.reviewDecisions = [...(state.reviewDecisions ?? []), {
+        ...decision,
+        planVersion: state.plan!.version,
+        commit: state.codeReview!.commit,
+        codeReview: state.codeReview!,
+        uxReview: state.uxReview!,
+      }];
+      delete state.mergeAuthorization;
+      state.phase = "implementing";
+      break;
+    }
+    case "plan_review_fixes": {
+      requirePhase(state, ["implementing"]);
+      const fix = activeReviewFix(state);
+      if (!fix || fix.plan) {
+        throw new Error("Select review findings before planning repairs");
+      }
+      fix.plan = ActionSchemas.plan_review_fixes.parse(args);
+      break;
+    }
+    case "approve_review_fixes": {
+      requirePhase(state, ["implementing"]);
+      const approval = ActionSchemas.approve_review_fixes.parse(args);
+      const fix = activeReviewFix(state);
+      if (!fix?.plan || fix.id !== approval.id) {
+        throw new Error("Approval must match the current review repair plan");
+      }
+      if (fix.approval && fix.approval !== approval.request) {
+        throw new Error("Repair plan already approved");
+      }
+      fix.approval = approval.request;
+      break;
+    }
+    case "implement_review_fixes": {
+      requirePhase(state, ["implementing"]);
+      const fix = activeReviewFix(state);
+      if (!fix?.plan || !fix.approval) {
+        throw new Error("Approve the review repair plan before implementation");
+      }
+      fix.result = ActionSchemas.implement_review_fixes.parse(args);
+      clearReview(state);
+      state.implementation!.head = fix.result.commit;
+      break;
+    }
     case "verify": {
       requirePhase(state, ["implementing"]);
       const { verification } = ActionSchemas.verify.parse(args);
-      const plan = requirePlan(state, verification.planVersion);
+      requirePlan(state, verification.planVersion);
+      const plan = verificationPlan(state);
+      requireReviewAcceptance(state);
       requireCurrentReviews(state, verification.commit);
       if (!plan.checks) {
         throw new Error(
@@ -1099,12 +1304,29 @@ export function transition(
         );
       }
       requireCurrentReviews(state, ready.commit);
-      const gate = mergeGate(
-        plan,
-        state.codeReview,
-        state.verification,
-        state.uxReview,
-      );
+      if (activeReviewFix(state)) {
+        throw new Error(
+          "Finish or roll back selected review repairs before merge",
+        );
+      }
+      const outstanding = outstandingReviewFindings(state);
+      if (outstanding.length) {
+        state.reviewDecisions = [...(state.reviewDecisions ?? []), {
+          id: crypto.randomUUID(),
+          reviewFingerprint: codeReviewFingerprint(state),
+          request: ready.mergeRequest,
+          repair: [],
+          ignore: outstanding.map(({ role, findingId }) => ({
+            role,
+            findingId,
+          })),
+          planVersion: plan.version,
+          commit: ready.commit,
+          codeReview: state.codeReview!,
+          uxReview: state.uxReview!,
+        }];
+      }
+      const gate = implementationMergeGate(state);
       if (gate.kind === "legacy" && gate.failedPreliminary) {
         throw new Error(
           "Resolve failed preliminary checks before requesting a merge",
@@ -1140,6 +1362,7 @@ export function transition(
         throw new Error("Merge attempt does not match the authorized commit");
       }
       requireCurrentReviews(state, attempt.originalHead);
+      requireReviewAcceptance(state);
       state.attempt = attempt;
       delete state.lastFailure;
       break;

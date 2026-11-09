@@ -13,6 +13,7 @@ import {
 } from "./_lib/issue_agents.ts";
 import {
   ActionSchemas,
+  codeReviewFingerprint,
   completeAgenda,
   createState,
   type LifecycleState,
@@ -21,6 +22,7 @@ import {
   recordMergeFailure,
   refreshIssue,
   requireCurrentReviews,
+  requireReviewAcceptance,
   StateSchema,
   transition,
 } from "./_lib/lifecycle.ts";
@@ -98,10 +100,32 @@ function recordedTransition<K extends keyof typeof ActionSchemas>(
         await currentIssue(state);
         if (
           action === "review_code" || action === "review_ux" ||
-          action === "ready"
+          action === "ready" || action === "plan_review_fixes"
         ) {
-          const { commit } = z.object({ commit: z.string() }).parse(args);
+          const commit = action === "plan_review_fixes"
+            ? (state.codeReview?.commit ?? "")
+            : z.object({ commit: z.string() }).parse(args).commit;
           await reviewedHead(context, state, commit);
+        }
+        if (action === "decide_review" || action === "approve_review_fixes") {
+          const handoff = HandoffSchema.parse(
+            await context.readResource("handoff"),
+          );
+          const input = args as { id: string; handoffId?: string };
+          if (
+            handoff.status !== "current" ||
+            handoff.decision !==
+              (action === "decide_review"
+                ? "address_review_findings"
+                : "approve_review_fixes") ||
+            handoff.id !==
+              (action === "decide_review" ? input.id : input.handoffId) ||
+            JSON.stringify(handoff.state) !== JSON.stringify(state)
+          ) throw new Error("Review decision handoff is stale");
+          await reviewedHead(context, state, state.codeReview!.commit);
+          if (handoff.codeReviewFingerprint !== codeReviewFingerprint(state)) {
+            throw new Error("Review findings changed");
+          }
         }
         return saveState(context, action, transition(state, action, args));
       }),
@@ -111,7 +135,7 @@ function recordedTransition<K extends keyof typeof ActionSchemas>(
 /** Local behavior; the issue's state and every decision are versioned Swamp data. */
 export const behavior = {
   type: "@yinz/issue-lifecycle",
-  version: "2026.11.08.1",
+  version: "2026.11.08.2",
   globalArguments: GlobalArgsSchema,
   resources: {
     driver: {
@@ -288,6 +312,18 @@ export const behavior = {
           );
         }),
     },
+    decide_review: recordedTransition(
+      "decide_review",
+      "Record the user's selected review repairs and ignored findings",
+    ),
+    plan_review_fixes: recordedTransition(
+      "plan_review_fixes",
+      "Record a focused repair plan; visible workers remain required",
+    ),
+    approve_review_fixes: recordedTransition(
+      "approve_review_fixes",
+      "Approve the current repair plan before implementation",
+    ),
     review_code: recordedTransition(
       "review_code",
       "Record coverage of every plan step at a committed HEAD",
@@ -429,6 +465,7 @@ export const behavior = {
             );
           }
           requireCurrentReviews(state, state.attempt!.originalHead);
+          requireReviewAcceptance(state);
           const attempt = state.attempt!;
           const implementation = state.implementation!;
           try {

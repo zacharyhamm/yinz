@@ -176,8 +176,16 @@ restart step. `status` includes the latest recovery; `recovery-<id>` and
 
 Plan blockers use the skill's `authorize_plan_revision` route: supported
 adjudication or separately authorized targeted revision, never implied approval.
-Technical or UX blockers require repair in the issue worktree and fresh
-technical and UX reviews of the resulting commit. A failed, unaccepted or stale
+Technical and UX findings yield `address_review_findings` after both reviews.
+Present findings and ask which to repair or ignore; any severity may be accepted
+by the user. Use `decide-review` with the handoff ID, exact review fingerprint,
+actual request and role-qualified finding references. Selected repairs run a
+planner and yield `approve_review_fixes`; approval authorizes the implementation
+worker. Repairs require fresh technical and UX reviews and verification. The
+user may sign off on merge with outstanding findings; preserve them as unresolved.
+Resume interrupted repair assignments using their original submissions and saved
+approval. Explicit `restart-agent` for either repair role retains selected scope
+and any approved repair plan; ordinary rollback invalidates finding decisions. A failed, unaccepted or stale
 UX assignment never counts as approval; resume its original saved submission. Existing
 ad-hoc code still needs a real plan, review and verification; never fabricate
 evidence. Stale review cannot cover a new plan or repaired implementation.

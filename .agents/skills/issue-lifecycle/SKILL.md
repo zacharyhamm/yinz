@@ -72,7 +72,7 @@ inspection/dialogs.
 | `classified` | `drive` plans steps/files/risks, focused tests and verbatim argv `checks` covering steps, then runs adversarial review. Present checks: plan approval approves running them. |
 | `planning` | Missing/current-version-mismatched review: review. Blocking current review: one automatic revision/review if available, otherwise `authorize_plan_revision`. Clean review: `approve_plan`. Missing plan blocks. |
 | `approved` | `prepare_worktree`: adopt recorded worktree/existing feature branch; conflicting paths are rejected before Git preparation. |
-| `implementing` | `drive` implements/commits with focused tests, then runs technical code review followed by separate UX review; completed implementation or rollback to `review_code` routes to review. Both clean current reviews run checks at the same full commit and plan version. UX-only rollback retains technical review and repeats UX. Stale evidence, technical/UX blockers or failed verification block; passing gate yields `authorize_merge`. |
+| `implementing` | `drive` implements/commits with focused tests, then runs technical code review followed by separate UX review; completed implementation or rollback to `review_code` routes to review. Both current reviews yield `address_review_findings` when findings remain, regardless of severity. Ask which findings to repair or ignore. Selected repairs run a planner, yield `approve_review_fixes`, then run an implementation worker only after approval. Fresh reviews follow repairs. Accepted findings permit checks at the same full commit and plan version. UX-only rollback retains technical review and repeats UX. Stale evidence or failed verification blocks; passing gate yields `authorize_merge`. |
 | `ready` | Active merge failure: `blocked`, read log and repair. Otherwise `integrate`. |
 | `merged` | `summarize` compares outcome to original requirements using landed receipt. |
 | `done` | `complete`: report recorded outcome without repeating work/merge. |
@@ -82,7 +82,9 @@ inspection/dialogs.
 | `authorize_plan_revision` | Supported adjudication or authorization for one targeted revision, below. |
 | `approve_plan` | Present reviewed plan; `approve {planVersion, request}` records explicit approval. Existing session authorization within scope suffices; ask only if absent. |
 | `prepare_worktree` | `implement {worktree, branch}`, then `drive`. |
-| `authorize_merge` | Show change, technical review, UX assessment/findings and verification; `ready {commit, mergeRequest}` records explicit merge authorization, including an existing explicit request. Plan approval does not authorize merge. |
+| `address_review_findings` | Present both reviews and ask which findings to address. Record actual direction with `decide-review`, then `drive`; never select or ignore findings on the user's behalf. |
+| `approve_review_fixes` | Present the focused repair plan and checks. Obtain explicit approval, record `approve-review-fixes`, then `drive`. Selection authorizes planning only. |
+| `authorize_merge` | Show change, technical review, UX assessment/findings and verification; `ready {commit, mergeRequest}` records explicit merge authorization, including an existing explicit request and acceptance of remaining findings for this commit. Plan approval does not authorize merge. |
 | `integrate` | `merge` from control checkout serializes rebase onto current local `main`, full `cargo x ci check` and local fast-forward merge. |
 | `summarize` | `summarize {outcomeMet: true, summary}` only after merge and met outcome; otherwise keep Agenda open and explain remaining work. |
 | `complete` | Present completed result. |
@@ -129,14 +131,35 @@ assessed paths, never an inferred skip. Present both reviews, assessed UX paths
 and limitations in the merge handoff. Direct `review-code`/`review-ux` methods
 record evidence and never replace the visible review workers.
 
-Both reviews must be current without unresolved high/critical findings before
-verification, `ready` or integration. New technical evidence invalidates UX;
+After both reviews, present every outstanding finding with its role, ID, severity,
+evidence and proposed repair. The user chooses what to repair or ignore; no
+severity forces a repair. `decide-review` takes handoff `id`,
+`reviewFingerprint` (the handoff's `codeReviewFingerprint`), actual `request`,
+and `repair`/`ignore` arrays of `{role: "review_code"|"review_ux", findingId}`.
+Unselected findings remain pending. Ignoring a finding preserves it as unresolved.
+Repeated drive calls never authorize or start repairs on their own.
+
+Selected repairs launch a visible `plan_review_fixes` worker. Present its plan,
+risks, assumptions and focused checks. `approve-review-fixes {id, handoffId,
+request}` uses the selection's repair ID, current approval handoff ID and actual
+user approval. Only then can `implement_review_fixes` edit and commit selected
+repairs. The original approved issue plan remains intact. Resume uses persisted
+assignments and approvals; every additional repair round needs new direction.
+
+Both reviews must remain current. Verification requires user acceptance of
+outstanding findings; explicit merge sign-off after presenting them may accept
+all remaining findings. Record that acceptance with `decide-review` before
+checks, then reuse the same explicit merge request with `ready` after they pass;
+do not ask for the same authorization again. `ready` also records acceptance of
+remaining findings. User acceptance never waives failed checks or merge CI.
+New technical evidence invalidates UX;
 code repairs require fresh technical and UX review plus verification. UX-only
 rollback retains matching technical evidence/head and drops UX and downstream
 decisions; ready-only rollback retains the pair and exact-commit verification.
 Historical records parse without fabricated UX. Legacy implementing work with
-technical review proceeds to UX. A legacy unmerged ready state needs explicit
-rollback to `review_ux`, drive/checks, and new merge authorization; an unlanded
+technical review proceeds to UX. A legacy unmerged ready state without UX needs explicit
+rollback to `review_ux`, drive/checks, and new merge authorization; legacy ready
+findings with both reviews return to `address_review_findings`; an unlanded
 active attempt requires repair and fresh reviews. Already-landed durable receipts
 remain facts and merge/close-out replay does not require retrospective reviews.
 The bounded [reviewer evaluation](references/review-evaluation.md) measures seeded
@@ -144,8 +167,8 @@ scenarios and documents limitations, not current implementation approval.
 
 Keep each worktree's real `target/` isolated: no `CARGO_TARGET_DIR`, changed
 `build.target-dir` or shared/copied mutable build artifacts. Fix defects/flakes in
-this branch through the worker. After both clean reviews, lifecycle checks run at the
-exact commit outside the merge lock, recording exit codes/durations/logs; reviewer
+this branch through the worker. After both reviews and user decisions, lifecycle
+checks run approved issue and repair checks at the exact commit outside the merge lock, recording exit codes/durations/logs; reviewer
 checks are advisory. `ready` needs passing exact-commit verification. Legacy plans
 without checks explicitly retain the reviewer-reported gate, including failed
 checks from either role, and still require a separate current UX assessment. Failed verification

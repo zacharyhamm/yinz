@@ -1,4 +1,5 @@
 import {
+  codeReviewFingerprint,
   completeAgenda,
   createState,
   digestIssue,
@@ -16,6 +17,7 @@ import {
   rollbackState,
   transition,
   validatePlanReview,
+  verificationPlan,
   VerificationSchema,
 } from "../_lib/lifecycle.ts";
 
@@ -405,7 +407,7 @@ function legacy(state: LifecycleState): LifecycleState {
   return copy;
 }
 
-Deno.test("merge authorization binds the reviewed commit and rejects findings", () => {
+Deno.test("merge authorization binds the reviewed commit and findings require a user decision", () => {
   rejects(
     () =>
       transition(verified(), "ready", {
@@ -414,14 +416,14 @@ Deno.test("merge authorization binds the reviewed commit and rejects findings", 
       }),
     "reviewed commit",
   );
-  const finding = transition(implementing(), "review_code", {
+  const finding = withUx(transition(implementing(), "review_code", {
     ...review,
     findings: [{
       id: "broken",
       severity: "critical",
       description: "Data loss",
     }],
-  });
+  }));
   rejects(
     () =>
       transition(
@@ -429,7 +431,7 @@ Deno.test("merge authorization binds the reviewed commit and rejects findings", 
         "ready",
         { commit: head, mergeRequest: "Merge" },
       ),
-    "Resolve high/critical",
+    "obtain the user's decision",
   );
 });
 
@@ -1351,33 +1353,19 @@ Deno.test("UX review requires a real distinct assessment and matching technical 
   );
 });
 
-Deno.test("missing stale and blocking UX evidence cannot verify authorize or begin merge", () => {
+Deno.test("missing and stale UX evidence cannot verify authorize or begin merge", () => {
   for (
     const kind of [
       "missing",
       "commit",
       "plan",
-      "high",
-      "critical",
-      "technical",
     ] as const
   ) {
     const state = reviewed();
     if (kind === "missing") delete state.uxReview;
     if (kind === "commit") state.uxReview!.commit = changedHead;
     if (kind === "plan") state.uxReview!.planVersion++;
-    if (["high", "critical", "technical"].includes(kind)) {
-      (kind === "technical" ? state.codeReview! : state.uxReview!).findings = [
-        {
-          id: "defect",
-          severity: kind === "critical" ? "critical" : "high",
-          description: "Concrete blocker",
-        },
-      ];
-    }
-    const message = ["high", "critical", "technical"].includes(kind)
-      ? "Resolve high/critical"
-      : "Current UX review";
+    const message = "Current UX review";
     rejects(() => transition(state, "verify", verification(state)), message);
     rejects(
       () => transition(state, "ready", { commit: head, mergeRequest: "Merge" }),
@@ -1464,4 +1452,224 @@ Deno.test("rollback cannot retain stale technical or UX review as current prereq
   const ux = verified();
   ux.uxReview!.planVersion++;
   rejects(() => rollbackState(ux, "ready", id), "Current UX review");
+});
+
+const decisionId = "dc5a9964-b7cf-4dd5-86a5-bfbc7438dc9d";
+function findingsState() {
+  const state = reviewed();
+  state.codeReview!.findings = [{
+    id: "same",
+    severity: "critical",
+    description: "Technical loss",
+    evidence: ["a.ts:1"],
+  }];
+  state.uxReview!.findings = [{
+    id: "same",
+    severity: "low",
+    description: "Unclear feedback",
+    evidence: ["b.ts:2"],
+  }];
+  return state;
+}
+function selectRepairs(state: LifecycleState) {
+  return transition(state, "decide_review", {
+    id: decisionId,
+    reviewFingerprint: codeReviewFingerprint(state),
+    request: "Plan the technical fix; ignore the UX finding",
+    repair: [{ role: "review_code", findingId: "same" }],
+    ignore: [{ role: "review_ux", findingId: "same" }],
+  });
+}
+Deno.test("all severities require user direction and can be accepted without fabricating resolution", () => {
+  for (const severity of ["low", "medium", "high", "critical"] as const) {
+    let state = findingsState();
+    state.codeReview!.findings[0].severity = severity;
+    rejects(
+      () => transition(state, "verify", verification(state)),
+      "user's decision",
+    );
+    state = transition(state, "decide_review", {
+      id: decisionId,
+      reviewFingerprint: codeReviewFingerprint(state),
+      request: "Accept both findings",
+      repair: [],
+      ignore: [{ role: "review_code", findingId: "same" }, {
+        role: "review_ux",
+        findingId: "same",
+      }],
+    });
+    state = transition(state, "verify", verification(state));
+    state = transition(state, "ready", {
+      commit: head,
+      mergeRequest: "Merge with both findings outstanding",
+    });
+    equal(state.codeReview!.findings[0].resolution, undefined);
+    equal(state.uxReview!.findings[0].resolution, undefined);
+    equal(
+      state.mergeAuthorization!.request,
+      "Merge with both findings outstanding",
+    );
+    state = transition(state, "begin_merge", {
+      attempt: {
+        id: decisionId,
+        originalHead: head,
+        startedAt: "2026-11-08T00:00:00.000Z",
+      },
+    });
+    equal(state.phase, "ready");
+  }
+});
+Deno.test("explicit merge sign-off accepts remaining legacy review findings but never failed checks", () => {
+  const state = legacy(findingsState());
+  const ready = transition(state, "ready", {
+    commit: head,
+    mergeRequest: "Merge accepting all findings",
+  });
+  equal(ready.reviewDecisions!.at(-1)!.ignore.length, 2);
+  const failed = legacy(findingsState());
+  failed.uxReview!.preliminaryChecks = [{
+    command: "test",
+    result: "failed",
+    summary: "Failure",
+  }];
+  rejects(
+    () =>
+      transition(failed, "ready", {
+        commit: head,
+        mergeRequest: "Merge anyway",
+      }),
+    "failed preliminary",
+  );
+});
+Deno.test("review decisions reject stale identity unknown findings duplicates and conflicting replay", () => {
+  const state = findingsState();
+  const input = {
+    id: decisionId,
+    reviewFingerprint: codeReviewFingerprint(state),
+    request: "Plan this fix",
+    repair: [{ role: "review_code", findingId: "same" }],
+    ignore: [],
+  };
+  rejects(
+    () =>
+      transition(state, "decide_review", {
+        ...input,
+        reviewFingerprint: "0".repeat(64),
+      }),
+    "stale",
+  );
+  rejects(
+    () =>
+      transition(state, "decide_review", {
+        ...input,
+        repair: [{ role: "review_code", findingId: "missing" }],
+      }),
+    "Unknown",
+  );
+  rejects(
+    () =>
+      transition(state, "decide_review", { ...input, ignore: input.repair }),
+    "distinct",
+  );
+  const selected = transition(state, "decide_review", input);
+  equal(transition(selected, "decide_review", input), selected);
+  rejects(
+    () =>
+      transition(selected, "decide_review", { ...input, request: "different" }),
+    "already used",
+  );
+});
+Deno.test("selected repairs require plan approval and new reviews and verify original plus repair checks", () => {
+  let state = selectRepairs(findingsState());
+  rejects(
+    () =>
+      transition(state, "implement_review_fixes", {
+        commit: changedHead,
+        summary: "Fix",
+      }),
+    "Approve",
+  );
+  state = transition(state, "plan_review_fixes", plan);
+  rejects(
+    () =>
+      transition(state, "implement_review_fixes", {
+        commit: changedHead,
+        summary: "Fix",
+      }),
+    "Approve",
+  );
+  state = transition(state, "approve_review_fixes", {
+    id: decisionId,
+    handoffId: decisionId,
+    request: "Implement these repairs",
+  });
+  rejects(
+    () => transition(state, "ready", { commit: head, mergeRequest: "Merge" }),
+    "Finish or roll back",
+  );
+  const original = state.plan;
+  state = transition(state, "implement_review_fixes", {
+    commit: changedHead,
+    summary: "Fixed the selected defect",
+  });
+  equal(state.plan, original);
+  equal(state.codeReview, undefined);
+  equal(state.uxReview, undefined);
+  equal(state.verification, undefined);
+  rejects(
+    () =>
+      transition(state, "ready", {
+        commit: changedHead,
+        mergeRequest: "Merge",
+      }),
+    "reviewed commit",
+  );
+  state = transition(state, "review_code", { ...review, commit: changedHead });
+  state = withUx(state);
+  const checks = verificationPlan(state).checks!;
+  equal(checks.length, 4);
+  equal(new Set(checks.map((c) => c.id)).size, 4);
+  const record = verification(state, undefined, changedHead);
+  record.verification.checks = checks.map((check) => ({
+    ...check,
+    exitCode: 0,
+    durationMs: 1,
+    log: check.id,
+    worktreeUnchanged: true,
+    status: "passed" as const,
+  }));
+  state = transition(state, "verify", record);
+  state = transition(state, "ready", {
+    commit: changedHead,
+    mergeRequest: "Merge fixed code",
+  });
+  equal(state.phase, "ready");
+  equal(state.reviewDecisions![0].codeReview.findings[0].resolution, undefined);
+});
+Deno.test("changed review evidence and rollback require renewed acceptance", () => {
+  let state = findingsState();
+  state = transition(state, "decide_review", {
+    id: decisionId,
+    reviewFingerprint: codeReviewFingerprint(state),
+    request: "Ignore both",
+    repair: [],
+    ignore: [{ role: "review_code", findingId: "same" }, {
+      role: "review_ux",
+      findingId: "same",
+    }],
+  });
+  const accepted = state;
+  state = transition(state, "review_ux", {
+    ...state.uxReview!,
+    assessment: { ...state.uxReview!.assessment, summary: "New evidence" },
+  });
+  rejects(
+    () => transition(state, "verify", verification(state)),
+    "user's decision",
+  );
+  state = rollbackState(accepted, "ready", decisionId);
+  rejects(
+    () => transition(state, "verify", verification(state)),
+    "user's decision",
+  );
 });

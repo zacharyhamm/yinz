@@ -87,6 +87,9 @@ args = sys.argv[1:]
 assert args[:2] == ["--session", "smoke"], args
 assert args[-1] == "--json", args
 operation = args[3]
+if operation == "launch-support":
+    print(json.dumps({"outcome":"ok", "output":"agent-launch-transaction-v2", "server_instance":"smoke-server"}))
+    sys.exit(0)
 stdin = sys.stdin.read() if operation == "prompt" else None
 with pathlib.Path(os.environ["YINZ_SMOKE_AGENT_LOG"]).open("a") as log:
     log.write(json.dumps({"args":args,"stdin":stdin,"stub":True}) + "\\n")
@@ -108,6 +111,9 @@ if operation == "spawn":
     state = {"cwd":args[args.index("--cwd")+1]}
     state_file.write_text(json.dumps(state))
     response["spawned"] = {"pane_id":"terminal_17","tab_id":3,"branch":None,"cwd":state["cwd"]}
+    response["launch"] = {"version":2,"launch_id":args[args.index("--launch-id")+1], "request_digest":"a"*64,
+                          "server_instance":"smoke-server", "outcome":"started", "phase":"finished", "reason":None,
+                          "process":"running", "resources":{"cleanup_pending":False}, "disposition":"available"}
 else:
     state = json.loads(state_file.read_text())
     response["agents"] = [{"pane_id":"terminal_17","session":"smoke","host_id":"smoke-host","tab_id":3,"is_suppressed":False,"target":"Local","agent":{"kind":"claude","session_id":"smoke-conversation","state":"Idle","source":"Reported"},"cwd":state["cwd"],"branch":"main","ready":True,"status_available":True,"prompt_supported":True,"not_ready_reason":None,"readiness":None,"input_revision":None,"clear_draft_supported":False,"background":False}]
@@ -138,6 +144,14 @@ else:
             evidence = {"planVersion":snapshot["plan"]["version"], "commit":snapshot["implementation"]["head"], "assessment":{"impact":"no_material_impact","summary":"The marker is internal fixture data; command discovery, output and repeat use are unchanged.","assessedPaths":["marker.txt: internal fixture data and repeat CLI use"],"limitations":["Protocol stub; no real interaction evaluation"]},"findings":[]}
             if os.environ.get("YINZ_SMOKE_BLOCK_UX"):
                 evidence["findings"] = [{"id":"ux-feedback","severity":"high","description":"Fixture cancellation hides continuing work", "requirement":"Understand progress", "mechanism":"Feedback claims completion before settlement", "evidence":["fixture.ts:42"]}]
+        elif "Plan focused repairs for" in stdin:
+            evidence = {"summary":"Repair selected UX feedback", "steps":[{"id":"feedback","description":"Add repair marker for feedback", "files":["marker.txt"]}], "testingStrategy":"Check the repair marker", "checks":[{"id":"feedback","command":["grep","-q","repaired feedback","marker.txt"],"covers":["feedback"]}]}
+        elif "Implement only the approved repair plan" in stdin:
+            marker = pathlib.Path(state["cwd"]) / "marker.txt"
+            marker.write_text(marker.read_text() + "repaired feedback\\n")
+            subprocess.run(["git", "-C", state["cwd"], "add", "marker.txt"], check=True)
+            subprocess.run(["git", "-C", state["cwd"], "commit", "-m", "Repair fixture feedback"], check=True, capture_output=True)
+            evidence = {"summary":"Repaired selected UX feedback", "commit":subprocess.check_output(["git", "-C", state["cwd"], "rev-parse", "HEAD"], text=True).strip()}
         elif "Adversarially review the current plan" in stdin:
             evidence = {"planVersion":snapshot["plan"]["version"], "findings":[]}
             if snapshot["plan"]["version"] <= int(os.environ.get("YINZ_SMOKE_BLOCKED_VERSIONS", "0")):
@@ -244,7 +258,7 @@ print(json.dumps(response))
         self.assertEqual(self.state()["workerWorktree"], str(worktree.resolve()))
         self.env["YINZ_SMOKE_TIMEOUT"] = "1"
         handoff = json.loads(self.lifecycle("drive", {"agent": {"session": "smoke", "kind": "claude"}}))
-        self.assertEqual(handoff["decision"], "approve_plan")
+        self.assertEqual(handoff["decision"], "approve_plan", handoff)
         self.assertEqual(handoff["planVersion"], 1)
         self.assertEqual(handoff["state"]["planReview"], {"planVersion": 1, "findings": []})
         for label in ("Proposed behavior", "Implementation steps", "Tests:", "Assumptions:", "Plan review findings", "controlling agent must collect and present"):
@@ -505,7 +519,7 @@ print(json.dumps(response))
         self.git(self.repo, "worktree", "add", "-b", "review-issue", str(worktree))
         self.lifecycle("start", cwd=worktree)
         handoff = json.loads(self.lifecycle("drive", {"agent": {"session": "smoke", "kind": "claude"}}))
-        self.assertEqual(handoff["decision"], "approve_plan")
+        self.assertEqual(handoff["decision"], "approve_plan", handoff)
         self.lifecycle("approve", {"planVersion": 1, "request": "Implement fixture"})
         self.lifecycle("implement", {"worktree": str(worktree), "branch": "review-issue"})
         (worktree / "marker.txt").write_text("smoke marker\n")
@@ -522,13 +536,37 @@ print(json.dumps(response))
         self.assertNotIn("verification", self.state())
         self.env["YINZ_SMOKE_BLOCK_UX"] = "1"
         blocked = json.loads(self.lifecycle("drive"))
-        self.assertEqual(blocked["decision"], "blocked")
+        self.assertEqual(blocked["decision"], "address_review_findings")
         self.assertIn("ux-feedback", blocked["presentation"])
         self.assertNotIn("verification", self.state())
-        # UX-only rollback retains technical evidence and runs one fresh UX worker.
+        selection = {"id": blocked["id"], "reviewFingerprint": blocked["codeReviewFingerprint"],
+                     "request": "Accept this UX risk", "repair": [], "ignore": [{"role":"review_ux", "findingId":"ux-feedback"}]}
+        # The public controller rejects stale selections before recording them.
+        stale = subprocess.run([*launcher, "decide-review", "--input-file", "-"], input=json.dumps({**selection, "id":"00000000-0000-4000-8000-000000000000"}),
+                               cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=120)
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertIn("stale", stale.stdout + stale.stderr)
+        self.lifecycle("decide-review", selection)
+        accepted = json.loads(self.lifecycle("drive"))
+        self.assertEqual(accepted["decision"], "authorize_merge")
+        self.assertNotIn("resolution", accepted["state"]["uxReview"]["findings"][0])
+        # A new review invalidates acceptance and can be selected for repair.
+        self.lifecycle("rollback", {"step": "review_ux", "request": "Repeat fixture UX and plan its repair"})
+        findings = json.loads(self.lifecycle("drive"))
+        self.assertEqual(findings["decision"], "address_review_findings")
+        self.lifecycle("decide-review", {"id":findings["id"], "reviewFingerprint":findings["codeReviewFingerprint"],
+                                        "request":"Plan the feedback repair", "repair":[{"role":"review_ux","findingId":"ux-feedback"}], "ignore":[]})
+        proposed = json.loads(self.lifecycle("drive"))
+        self.assertEqual(proposed["decision"], "approve_review_fixes")
+        self.assertEqual(self.git(worktree, "rev-parse", "HEAD"), commit)
+        self.assertEqual(json.loads(self.lifecycle("drive"))["id"], proposed["id"])
+        fix = proposed["state"]["reviewDecisions"][-1]
+        self.lifecycle("approve-review-fixes", {"id":fix["id"], "handoffId":proposed["id"], "request":"Implement this feedback repair"})
         del self.env["YINZ_SMOKE_BLOCK_UX"]
-        self.lifecycle("rollback", {"step": "review_ux", "request": "Repeat fixture UX"})
         clean = json.loads(self.lifecycle("drive"))
+        self.assertNotEqual(clean["commit"], commit)
+        self.assertEqual(len(clean["state"]["verification"]["checks"]), 2)
+        self.assertEqual(clean["state"]["reviewDecisions"][-1]["result"]["commit"], clean["commit"])
         self.assertEqual(clean["decision"], "authorize_merge")
         self.assertEqual(clean["state"]["uxReview"]["assessment"]["impact"], "no_material_impact")
         self.assertEqual(clean["state"]["verification"]["status"], "passed")
@@ -538,10 +576,10 @@ print(json.dumps(response))
             calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
             return [json.loads(call["stdin"].split("Swamp submission target:\n", 1)[1].split("\n\n", 1)[0])["role"]
                     for call in calls if call["args"][3] == "prompt"]
-        self.assertEqual(roles(), ["triage", "plan", "review_plan", "review_ux", "review_ux"])
+        self.assertEqual(roles(), ["triage", "plan", "review_plan", "review_ux", "review_ux", "plan_review_fixes", "implement_review_fixes", "review_code", "review_ux"])
         replay = json.loads(self.lifecycle("drive"))
         self.assertEqual(replay["id"], clean["id"])
-        self.assertEqual(roles(), ["triage", "plan", "review_plan", "review_ux", "review_ux"])
+        self.assertEqual(roles(), ["triage", "plan", "review_plan", "review_ux", "review_ux", "plan_review_fixes", "implement_review_fixes", "review_code", "review_ux"])
         # Repeat from technical review to exercise the visible two-role sequence.
         self.lifecycle("rollback", {"step": "review_code", "request": "Repeat both fixture reviews"})
         again = json.loads(self.lifecycle("drive"))

@@ -2,6 +2,8 @@
 import { join } from "node:path";
 import { z } from "npm:zod@4.6.7";
 import {
+  activeReviewFix,
+  codeReviewFingerprint,
   initialPlanning,
   readAgenda,
   recordFeedback,
@@ -241,6 +243,10 @@ export function taskPrompt(
       "Implement the approved plan in this existing issue worktree. Run focused checks following AGENTS.md, investigate failures, and commit the intended changes on the existing feature branch. Return a summary and the full resulting commit hash. Do not rebase, merge, push, or run the full CI gate here. If lastFailure records a failed merge gate, read its log first and fix the cause, selecting focused tests that reproduce it; treat a flake or timeout as a defect, not something a rerun resolves.",
     review_code:
       "Review the committed diff against local main, issue requirements and the approved plan. Independently assess whether the behavior is correct, including incorrect assumptions or defects in the approved approach. Trace affected callers and relevant state transitions, failure paths, cleanup, ownership, concurrency and platform behavior as applicable. Inspect tests for missing cases and assertions that could pass despite incorrect behavior. Prioritize actionable defects introduced or exposed by this change. For each finding identify the trigger, consequence and concrete source locations, explain severity and distinguish demonstrated behavior from assumptions. Avoid speculative concerns and unrelated cleanup. An empty findings array is valid after a real review. Cover each plan step exactly once and justify deviations. Record only preliminary checks actually performed. Preliminary checks are advisory; the lifecycle runs the approved plan checks itself. Do not invent passing checks. Return the supplied full commit hash and planVersion.",
+    plan_review_fixes:
+      "Plan focused repairs for activeReviewFix's selected findings in reviewDecisions. Read the stored technical and UX reviews, the user's request and existing approved plan. Do not edit source. Propose only the selected repairs, explain risks in steps, and include focused argv checks and a testingStrategy. Return the repair plan for user approval; this task authorizes no implementation.",
+    implement_review_fixes:
+      "Implement only the approved repair plan in the last reviewDecisions entry in this existing issue worktree. Respect ignored findings and the user's selected scope. Run focused checks, investigate failures, and commit changes on the existing feature branch. Return summary and full commit hash. Do not rebase, merge, push, or run full CI.",
     review_ux:
       "Review the supplied committed change specifically for its impact on the user experience. Use the issue requirements, actual implementation, affected callers, tests, help and documentation to identify affected users and tasks. Trace representative end-to-end workflows through discovery, normal use, repeat use, waiting, failure, cancellation and recovery as applicable. Independently assess whether the experience remains understandable, consistent, responsive and usable, even when the code follows the approved plan. Inspect relevant terminal UI, keyboard navigation and focus, rendering/readability, CLI commands and output, configuration/defaults, help/documentation, feedback, errors and lifecycle handoffs. Consider indirect responsiveness, compatibility surprises, extra interaction steps and loss of user work. Can users understand what happened, what is happening and what to do next? Keep implementation details out of user flows unless they support a meaningful user decision. Exercise representative interactions when practical; distinguish observed results from source-based conclusions and state material limitations. Report concrete actionable UX defects introduced or exposed by the change. Each finding needs the affected user/task, triggering interaction sequence, observed or source-derived behavior, user consequence, severity and concrete source or interaction evidence. Avoid personal aesthetic preferences, speculative concerns and unrelated redesigns. An empty findings array is valid after a real review. Always submit assessment with impact, a nonempty rationale, assessedPaths describing affected user tasks/workflows and source paths, and limitations. A no_material_impact result requires a source-based rationale; absence of UI-file changes is insufficient. Preliminary checks are advisory; record only checks actually performed. Return the supplied full commit hash and planVersion.",
   }[role];
@@ -248,12 +254,12 @@ export function taskPrompt(
     "You are working on one Yinz issue lifecycle task in a visible Yinz pane.",
     `Work only in ${cwd}. Follow its AGENTS.md and applicable repository instructions.`,
     "Do not invoke the lifecycle launcher. Use only the assigned Swamp evidence interface described below. Do not merge or contact remote Git services.",
-    role === "implement"
+    (role === "implement" || role === "implement_review_fixes")
       ? "Only this task may edit the issue worktree."
       : "This is investigation or review: do not edit source files, Git refs, or configuration.",
     "Finish this task in the foreground. Do not leave background subagents or jobs running when returning your answer.",
     instructions,
-    ...(["plan", "review_plan"].includes(role)
+    ...(["plan", "review_plan", "plan_review_fixes"].includes(role)
       ? [
         `Read ${join(references, "planning.md")} and ${
           join(references, "review.md")
@@ -497,10 +503,13 @@ async function validateResultFreshness(
   }
   if (
     task.role === "implement" || task.role === "review_code" ||
-    task.role === "review_ux"
+    task.role === "review_ux" || task.role === "plan_review_fixes" ||
+    task.role === "implement_review_fixes"
   ) {
     if (
-      !commit || (task.role !== "implement" && commit !== task.reviewCommit)
+      !commit ||
+      (!["implement", "implement_review_fixes"].includes(task.role) &&
+        commit !== task.reviewCommit)
     ) {
       throw new Error(
         "Pane result has no verifiable evidence commit; use continue-agent for a typed submission supplement",
@@ -591,9 +600,12 @@ async function applyResult(
     task,
     current,
     dependencies,
-    receipt.payload.role === "implement" ||
-      (receipt.payload.role === "review_code" ||
-        receipt.payload.role === "review_ux")
+    receipt.payload.role === "plan_review_fixes"
+      ? task.reviewCommit
+      : receipt.payload.role === "implement_review_fixes" ||
+          receipt.payload.role === "implement" ||
+          (receipt.payload.role === "review_code" ||
+            receipt.payload.role === "review_ux")
       ? receipt.payload.evidence.commit
       : undefined,
   );
@@ -657,6 +669,8 @@ export async function prepareTask(
     implement: ["implementing"],
     review_code: ["implementing", "ready"],
     review_ux: ["implementing", "ready"],
+    plan_review_fixes: ["implementing"],
+    implement_review_fixes: ["implementing"],
   };
   if (!phases[args.role].includes(state.phase)) {
     throw new Error(`Cannot run ${args.role} in ${state.phase}`);
@@ -672,7 +686,8 @@ export async function prepareTask(
   let commit: string | undefined;
   if (
     args.role === "implement" || args.role === "review_code" ||
-    args.role === "review_ux"
+    args.role === "review_ux" || args.role === "plan_review_fixes" ||
+    args.role === "implement_review_fixes"
   ) {
     if (
       !state.implementation || !state.plan ||
@@ -685,7 +700,8 @@ export async function prepareTask(
     const repo = await dependencies.inspect(context, cwd);
     if (
       repo.branch !== state.implementation.branch ||
-      (args.role !== "implement" && !repo.clean)
+      (!["implement", "implement_review_fixes"].includes(args.role) &&
+        !repo.clean)
     ) {
       throw new Error(
         "Commit implementation changes before requesting code review",
@@ -693,16 +709,37 @@ export async function prepareTask(
     }
     if (args.role !== "implement") commit = repo.head;
     if (
+      args.role === "plan_review_fixes" ||
+      args.role === "implement_review_fixes"
+    ) {
+      const fix = activeReviewFix(state);
+      if (
+        !fix ||
+        (args.role === "plan_review_fixes"
+          ? !!fix.plan
+          : !fix.plan || !fix.approval)
+      ) {
+        throw new Error(
+          "Review repairs require current selection and explicit repair-plan approval before implementation",
+        );
+      }
+      if (args.role === "plan_review_fixes" && repo.head !== fix.commit) {
+        throw new Error("Review repair plan commit is stale");
+      }
+    }
+    if (args.role === "implement" && activeReviewFix(state)) {
+      throw new Error(
+        "Use the approved review repair worker for selected findings",
+      );
+    }
+    if (
       args.role === "review_ux" &&
       (!state.codeReview || state.codeReview.commit !== commit ||
         state.implementation.head !== commit ||
-        state.codeReview.planVersion !== state.plan.version ||
-        state.codeReview.findings.some((f) =>
-          ["high", "critical"].includes(f.severity) && !f.resolution
-        ))
+        state.codeReview.planVersion !== state.plan.version)
     ) {
       throw new Error(
-        "UX dispatch requires current technical review of the same clean implementation commit without blockers",
+        "UX dispatch requires current technical review of the same clean implementation commit",
       );
     }
   }
@@ -934,7 +971,39 @@ async function beginRecovery(
     true,
   );
   const id = dependencies.id();
-  let next = rollbackState(source, input.step, id);
+  const repairRestart = restart &&
+    ["plan_review_fixes", "implement_review_fixes"].includes(restart.role);
+  const selected = repairRestart
+    ? activeReviewFix(source) ??
+      (task?.role === restart.role ? activeReviewFix(task.before) : undefined)
+    : undefined;
+  if (repairRestart && !selected) {
+    throw new Error("No current review repair assignment to restart");
+  }
+  let next = repairRestart
+    ? structuredClone(source)
+    : rollbackState(source, input.step, id);
+  if (repairRestart && selected) {
+    // Import clears the reviews and advances the head before pane cleanup. An
+    // explicit restart restores that scope while retaining the imported outcome
+    // in history; it does not rewind the checkout or require another approval.
+    next.codeReview = structuredClone(selected.codeReview);
+    next.uxReview = structuredClone(selected.uxReview);
+    next.implementation!.head = selected.commit;
+    next.rollbackId = id;
+    const replacement = {
+      ...structuredClone(selected),
+      id,
+      reviewFingerprint: codeReviewFingerprint(next),
+    };
+    if (restart.role === "plan_review_fixes") {
+      delete replacement.plan;
+      delete replacement.approval;
+    }
+    next.reviewDecisions = [...(next.reviewDecisions ?? []), replacement];
+    delete next.verification;
+    delete next.mergeAuthorization;
+  }
   if (fresh.digest !== before.issue.digest) {
     if (input.step !== "triage") {
       throw new Error(
@@ -1212,7 +1281,13 @@ export function createAgentMethods(
           } else {
             await beginRecovery(
               context,
-              { step: args.role, request: args.request },
+              {
+                step: args.role === "plan_review_fixes" ||
+                    args.role === "implement_review_fixes"
+                  ? "review_code"
+                  : args.role,
+                request: args.request,
+              },
               dependencies,
               args,
             );

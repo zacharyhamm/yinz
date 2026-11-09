@@ -191,6 +191,8 @@ export function createEvidenceMethods(dependencies = evidenceDependencies) {
           );
         }
         if (
+          validated.payload.role === "implement_review_fixes" ||
+          validated.payload.role === "plan_review_fixes" ||
           validated.payload.role === "implement" ||
           validated.payload.role === "review_code" ||
           validated.payload.role === "review_ux"
@@ -206,7 +208,10 @@ export function createEvidenceMethods(dependencies = evidenceDependencies) {
           );
           if (
             !repo.clean || repo.branch !== current.implementation.branch ||
-            repo.head !== validated.payload.evidence.commit
+            repo.head !==
+              (validated.payload.role === "plan_review_fixes"
+                ? assignment.reviewCommit
+                : validated.payload.evidence.commit)
           ) {
             throw new Error(
               "Pane result does not match the clean issue branch's current commit",
@@ -324,7 +329,7 @@ async function parentTaskWithIdentity(
 
 export const behavior = {
   type: "@yinz/issue-evidence",
-  version: "2026.11.08.1",
+  version: "2026.11.08.2",
   globalArguments: z.object({}).strict(),
   resources: {
     submission: {

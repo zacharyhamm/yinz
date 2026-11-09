@@ -11,7 +11,11 @@ import {
   SubmissionSchema,
   SubmitArgsSchema,
 } from "../_lib/issue_evidence.ts";
-import { createState, transition } from "../_lib/lifecycle.ts";
+import {
+  codeReviewFingerprint,
+  createState,
+  transition,
+} from "../_lib/lifecycle.ts";
 import { assertSubmissionBackend } from "../_lib/runtime.ts";
 import { AgentConfigSchema, promptDigest } from "../_lib/yinz_agent.ts";
 
@@ -55,10 +59,27 @@ const plan = {
 async function fixture(role: RoleEvidence["role"] = "triage") {
   let state = createState(issue);
   if (role !== "triage") state = transition(state, "triage", triage);
-  if (["review_plan", "implement", "review_code", "review_ux"].includes(role)) {
+  if (
+    [
+      "review_plan",
+      "implement",
+      "review_code",
+      "review_ux",
+      "plan_review_fixes",
+      "implement_review_fixes",
+    ].includes(role)
+  ) {
     state = transition(state, "plan", plan);
   }
-  if (["implement", "review_code", "review_ux"].includes(role)) {
+  if (
+    [
+      "implement",
+      "review_code",
+      "review_ux",
+      "plan_review_fixes",
+      "implement_review_fixes",
+    ].includes(role)
+  ) {
     state = transition(state, "review_plan", { planVersion: 1, findings: [] });
     state = transition(state, "approve", {
       planVersion: 1,
@@ -69,13 +90,47 @@ async function fixture(role: RoleEvidence["role"] = "triage") {
       branch: "issue-85",
     });
   }
-  if (role === "review_ux") {
+  if (
+    ["review_ux", "plan_review_fixes", "implement_review_fixes"].includes(role)
+  ) {
     state = transition(state, "review_code", {
       planVersion: 1,
       commit: head,
       steps: [{ id: "fix", status: "implemented" }],
       findings: [],
     });
+  }
+  if (["plan_review_fixes", "implement_review_fixes"].includes(role)) {
+    state = transition(state, "review_ux", {
+      planVersion: 1,
+      commit: head,
+      findings: [{
+        id: "ux",
+        severity: "medium",
+        description: "Feedback needs repair",
+      }],
+      assessment: {
+        impact: "material",
+        summary: "Feedback gap",
+        assessedPaths: ["cli.ts:1"],
+        limitations: [],
+      },
+    });
+    state = transition(state, "decide_review", {
+      id: taskId,
+      reviewFingerprint: codeReviewFingerprint(state),
+      request: "Plan UX repairs",
+      repair: [{ role: "review_ux", findingId: "ux" }],
+      ignore: [],
+    });
+    if (role === "implement_review_fixes") {
+      state = transition(state, "plan_review_fixes", plan);
+      state = transition(state, "approve_review_fixes", {
+        id: taskId,
+        handoffId: taskId,
+        request: "Implement UX repairs",
+      });
+    }
   }
   const prompt = "Investigate once and submit through Swamp";
   const task = {
@@ -91,7 +146,12 @@ async function fixture(role: RoleEvidence["role"] = "triage") {
     status: "running",
     prompt,
     promptDigest: await promptDigest(prompt),
-    ...(["review_code", "review_ux"].includes(role)
+    ...([
+        "review_code",
+        "review_ux",
+        "plan_review_fixes",
+        "implement_review_fixes",
+      ].includes(role)
       ? { reviewCommit: head }
       : {}),
   };
@@ -175,6 +235,8 @@ async function fixture(role: RoleEvidence["role"] = "triage") {
     plan,
     review_plan: { planVersion: 1, findings: [] },
     implement: { summary: "Implemented", commit: head },
+    plan_review_fixes: plan,
+    implement_review_fixes: { summary: "Repaired", commit: head },
     review_ux: {
       planVersion: 1,
       commit: head,
@@ -225,6 +287,8 @@ for (
     "implement",
     "review_code",
     "review_ux",
+    "plan_review_fixes",
+    "implement_review_fixes",
   ] as const
 ) {
   Deno.test(`${role} evidence is validated and acknowledged in one Swamp resource`, async () => {

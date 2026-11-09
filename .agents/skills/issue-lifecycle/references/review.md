@@ -33,7 +33,8 @@ The controller owns adjudication. Workers supply evidence and disagreements;
 they do not invoke `adjudicate-plan` or approve implementation. The controller may
 resolve, reject or downgrade a finding only after inspecting its cited code and
 explaining its judgment. Accepting an unresolved high/critical risk is user
-direction, not a resolution, and must remain blocked. Keep the original review
+direction, not a resolution. Plan blockers remain blocked; implementation review
+findings may be accepted for merge by the user. Keep the original review
 and record dispositions separately against its exact fingerprint.
 
 Submit findings through the assigned Swamp evidence behavior and inspect the
@@ -70,8 +71,13 @@ nonempty `assessedPaths` describing user tasks/workflows and source paths, and
 `limitations` (possibly empty). No-impact conclusions require tracing affected
 paths; absence of UI-file changes is insufficient.
 
-Both reviews must be current and free of unresolved high/critical findings before
-lifecycle verification or merge authorization. Checks actually performed by either
+Both reviews must be current. Present their findings together and let the user
+choose which to repair or ignore, regardless of severity. Ignored findings remain
+unresolved, with user decisions recorded separately against the exact reviews.
+Users may explicitly authorize merge with outstanding findings. Selected repairs
+need a worker's repair plan and separate user approval before implementation;
+repairs require fresh technical and UX reviews and verification. No reviewer or
+controller may infer permission to fix or ignore a finding. Checks actually performed by either
 reviewer remain advisory for structured plans; the lifecycle runs approved checks.
 Follow AGENTS.md's focused-test policy; review never authorizes full suites.
 Plan checks are valid command argument arrays executed directly without a shell,

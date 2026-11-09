@@ -4,6 +4,7 @@ import {
   type LifecycleState,
   transition,
   type Verification,
+  verificationPlan,
   VerificationSchema,
 } from "./lifecycle.ts";
 import { type Context, type gitOperation, saveState } from "./runtime.ts";
@@ -84,7 +85,7 @@ export async function runVerification(
   state: LifecycleState,
   dependencies: VerificationDependencies,
 ) {
-  const plan = state.plan;
+  const plan = verificationPlan(state);
   const review = state.codeReview;
   const implementation = state.implementation;
   if (!plan?.checks) {
