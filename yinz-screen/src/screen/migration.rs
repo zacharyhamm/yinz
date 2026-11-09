@@ -208,6 +208,10 @@ impl Screen {
                 | ScreenInstruction::ReplacePane(..)
                 | ScreenInstruction::OpenInPlaceEditor(..)
                 | ScreenInstruction::ConfirmTerminalPlacement(..)
+                | ScreenInstruction::ClaimAgentLaunch { .. }
+                | ScreenInstruction::RegisterAgentLaunch { .. }
+                | ScreenInstruction::CommitAgentLaunch { .. }
+                | ScreenInstruction::ReleaseAgentLaunch { .. }
                 | ScreenInstruction::RemotePaneReady(..)
                 | ScreenInstruction::HoldPane(..)
                 | ScreenInstruction::ClosePane(_, None, None, _)

@@ -4363,6 +4363,122 @@ fn warp_revalidates_pending_restarts_before_releasing_any_pane() {
 }
 
 #[test]
+fn launch_transaction_warp_refuses_unfinished_reservations_before_releasing_any_pane() {
+    use yinz_bus::agent_launch::LaunchGate;
+    use yinz_types::agent::launch::LaunchReason;
+
+    for held in [false, true] {
+        for revoked in [false, true] {
+            let mock = MockOsApi::new();
+            let (mut pty, _, _) = make_pty_with_screen_receiver(mock.clone());
+            let peer = TerminalId::new(3);
+            let reserved = TerminalId::new(8);
+            set_warpable_terminal(&mut pty, peer);
+            set_warpable_terminal(&mut pty, reserved);
+            let gate = Arc::new(LaunchGate::new("pending-checkout".into(), false));
+            gate.allocated(reserved);
+            if revoked {
+                gate.revoke(LaunchReason::PlacementRevoked);
+            }
+            pty.bus
+                .senders
+                .launches
+                .gates
+                .lock()
+                .unwrap()
+                .insert(reserved, gate.clone());
+            // Checkout preparation has not queued a PTY worker or rerun yet.
+            assert!(pty.pending_terminal_spawns.is_empty());
+            assert!(pty.reruns.is_empty());
+            let held_panes = if held {
+                HashMap::from([(
+                    reserved,
+                    yinz_types::data::HeldTerminal {
+                        command: RunCommand::default(),
+                        first_run: true,
+                        exit_status: None,
+                    },
+                )])
+            } else {
+                HashMap::new()
+            };
+            let single_error = if held {
+                pty.drain_held_reader_for_warp(reserved, test_warp_deadline())
+                    .unwrap_err()
+            } else {
+                pty.release_terminal_for_warp(reserved, test_warp_deadline())
+                    .unwrap_err()
+            };
+            assert!(format!("{single_error:#}").contains("unfinished managed launch"));
+            let released = release_tab_with_held_for_warp(
+                &mut pty,
+                vec![peer, reserved],
+                held_panes,
+                test_warp_deadline(),
+            );
+            assert_eq!(released.len(), 2);
+            assert!(released.iter().all(|(_, result)| result
+                .as_ref()
+                .unwrap_err()
+                .contains("unfinished managed launch")));
+            assert!(mock.release_attempts().is_empty());
+            assert!(pty.task_handles.contains_key(&peer));
+            assert!(pty.task_handles.contains_key(&reserved));
+            assert!(
+                !gate.snapshot().claimed,
+                "transfer must not consume the permit"
+            );
+            assert!(!gate.snapshot().finished);
+        }
+    }
+}
+
+#[test]
+fn launch_transaction_warp_allows_finished_reservations_and_ordinary_held_panes() {
+    use yinz_bus::agent_launch::LaunchGate;
+
+    for managed in [false, true] {
+        let mock = MockOsApi::new();
+        let (mut pty, _, _) = make_pty_with_screen_receiver(mock.clone());
+        let live = TerminalId::new(3);
+        let held = TerminalId::new(8);
+        set_warpable_terminal(&mut pty, live);
+        set_warpable_terminal(&mut pty, held);
+        if managed {
+            for id in [live, held] {
+                let gate = Arc::new(LaunchGate::new(format!("finished-{id}"), false));
+                gate.allocated(id);
+                gate.running();
+                gate.registered();
+                assert!(gate.handoff());
+                pty.bus
+                    .senders
+                    .launches
+                    .gates
+                    .lock()
+                    .unwrap()
+                    .insert(id, gate);
+            }
+        }
+        let released = release_tab_with_held_for_warp(
+            &mut pty,
+            vec![live, held],
+            HashMap::from([(
+                held,
+                yinz_types::data::HeldTerminal {
+                    command: RunCommand::default(),
+                    first_run: false,
+                    exit_status: Some(0),
+                },
+            )]),
+            test_warp_deadline(),
+        );
+        assert!(released.iter().all(|(_, result)| result.is_ok()));
+        assert_eq!(mock.release_attempts(), vec![live]);
+    }
+}
+
+#[test]
 fn warp_adoption_failure_cleans_up_held_reservations() {
     let mock = MockOsApi::new();
     let (mut pty, _, _) = make_pty_with_screen_receiver(mock.clone());
@@ -5794,6 +5910,31 @@ fn launch_transaction_ordinary_rerun_cannot_start_a_held_reservation() {
 fn launch_transaction_typed_admission_and_final_claim_fence_process_execution() {
     use yinz_bus::{agent_launch::LaunchGate, route::ManagedPlacementDecision};
     use yinz_types::agent::launch::{LaunchReason, LaunchSlot};
+    use yinz_types::session_migration::*;
+    let poll_preparation = |pty: &mut Pty| {
+        let (reply, received) = crossbeam::channel::bounded(1);
+        pty.session_migration(yinz_bus::migration::PtyRequest::PrepareUpdate {
+            inventory: SessionMigrationInventory {
+                format: SESSION_MIGRATION_FORMAT,
+                session_name: SessionName::new("preparing"),
+                instance_id: uuid::Uuid::new_v4().to_string(),
+                tabs: vec![],
+                clients: vec![],
+                remote_hosts: vec![],
+                global_last_active_tab: TabId::new(0),
+                tab_group_preferences: vec![],
+                paneless_plugins: vec![],
+                display_size: None,
+            },
+            terminals: vec![],
+            held: HashMap::new(),
+            reply,
+        });
+        received
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap()
+            .unwrap()
+    };
     for start_wins in [false, true] {
         let mut os = MockOsApi::new();
         if start_wins {
@@ -5862,6 +6003,12 @@ fn launch_transaction_typed_admission_and_final_claim_fence_process_execution() 
         loop {
             let (instruction, _) = screen.recv_timeout(Duration::from_secs(30)).unwrap();
             if let ScreenInstruction::ClaimAgentLaunch { reply, .. } = instruction {
+                // Update preparation overlaps the worker's final claim. It must
+                // return to dispatch so the claim reply can drain this spawn.
+                assert_eq!(
+                    poll_preparation(&mut pty),
+                    MigrationPreparation::Waiting(vec![PreparationWork::TerminalPlacement])
+                );
                 if !start_wins {
                     gate.revoke(LaunchReason::ControllerMoved);
                 }
@@ -5890,5 +6037,9 @@ fn launch_transaction_typed_admission_and_final_claim_fence_process_execution() 
         assert_eq!(gate.snapshot().claimed, start_wins);
         assert!(gate.wait_cleanup(Duration::from_secs(30)));
         assert!(!gate.snapshot().finished);
+        assert!(matches!(
+            poll_preparation(&mut pty),
+            MigrationPreparation::Ready(_)
+        ));
     }
 }

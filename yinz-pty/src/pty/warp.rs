@@ -36,7 +36,23 @@ impl Pty {
         .into()
     }
 
+    fn check_launch_can_be_warped(&self, id: TerminalId) -> Result<()> {
+        // Adoption does not carry the launch gate. Keep the reservation here until
+        // its transaction hands it off, even before it has queued a spawn worker.
+        anyhow::ensure!(
+            self.bus
+                .senders
+                .launches
+                .gate(id)
+                .is_none_or(|gate| gate.snapshot().finished),
+            "terminal_{id} has an unfinished managed launch; retry after it completes"
+        );
+        Ok(())
+    }
+
     fn check_held_can_be_warped(&self, id: TerminalId) -> Result<()> {
+        self.check_launch_can_be_warped(id)
+            .context("check held terminal launch ownership")?;
         if self.reruns.contains_key(&id) || self.pending_terminal_spawns.contains_key(&id) {
             return Err(anyhow!(
                 "terminal_{id} is restarting; retry after it has started"
@@ -74,6 +90,8 @@ impl Pty {
     /// let go — the panes ahead of a refusal would otherwise already be gone by
     /// the time it arrived.
     pub(crate) fn check_terminal_can_be_warped(&self, terminal_id: TerminalId) -> Result<()> {
+        self.check_launch_can_be_warped(terminal_id)
+            .context("check terminal launch ownership")?;
         self.bus
             .os_input
             .as_ref()

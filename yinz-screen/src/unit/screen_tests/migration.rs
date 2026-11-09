@@ -830,6 +830,129 @@ fn migration_preparation_drains_completions_and_defers_new_structure() {
 }
 
 #[test]
+fn migration_preparation_acknowledges_launch_completions_before_pty_handback() {
+    use yinz_bus::migration::PtyRequest;
+    use yinz_types::session_migration::{MigrationPreparation, PreparationWork};
+
+    let mut mock = MockScreen::new(Size { cols: 80, rows: 24 });
+    let received = Watched::new(vec![]);
+    let server = mock.server_receiver.take().unwrap();
+    let server_thread = log_actions_in_thread!(received, ServerInstruction::KillSession, server);
+    let screen_thread = mock.run(None, vec![]);
+    let pty = mock.pty_receiver.take().unwrap();
+    let operation = operation();
+    let (reply, progress) = crossbeam::channel::bounded(1);
+    mock.to_screen
+        .send(ScreenInstruction::SessionMigration(
+            ScreenRequest::PrepareUpdate {
+                operation: operation.clone(),
+                client: mock.main_client_id,
+                reply,
+            },
+        ))
+        .unwrap();
+    let (inventory, handback) = loop {
+        let (event, _) = pty
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap();
+        if let PtyInstruction::SessionMigration(PtyRequest::PrepareUpdate {
+            inventory,
+            reply,
+            ..
+        }) = event
+        {
+            break (inventory, reply);
+        }
+    };
+    // PTY cannot hand back an in-flight spawn until Screen answers its final
+    // claim. Keep preflight outstanding while exercising the real dispatch loop.
+    let terminal = TerminalId::new(99);
+    let (claim_reply, claim) = std::sync::mpsc::channel();
+    mock.to_screen
+        .send(ScreenInstruction::ClaimAgentLaunch {
+            terminal_id: terminal,
+            command: RunCommand::default(),
+            reply: claim_reply,
+        })
+        .unwrap();
+    assert_eq!(
+        claim
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap(),
+        None,
+        "admission must still reject a missing launch gate"
+    );
+    let (register_reply, register) = std::sync::mpsc::channel();
+    let (commit_reply, commit) = std::sync::mpsc::channel();
+    let (release_reply, release) = std::sync::mpsc::channel();
+    for event in [
+        ScreenInstruction::RegisterAgentLaunch {
+            spawned: yinz_types::agent::SpawnedAgent {
+                pane_id: PaneId::Terminal(terminal),
+                ..Default::default()
+            },
+            reply: register_reply,
+        },
+        ScreenInstruction::CommitAgentLaunch {
+            terminal_id: terminal,
+            reply: commit_reply,
+        },
+        ScreenInstruction::ReleaseAgentLaunch {
+            terminal_id: terminal,
+            reply: release_reply,
+        },
+    ] {
+        mock.to_screen.send(event).unwrap();
+    }
+    for reply in [register, commit, release] {
+        assert!(!reply
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap());
+    }
+    handback
+        .send(Ok(MigrationPreparation::Waiting(vec![
+            PreparationWork::TerminalPlacement,
+        ])))
+        .unwrap();
+    assert!(matches!(
+        progress
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap()
+            .unwrap(),
+        MigrationPreparation::Waiting(_)
+    ));
+    let (reply, progress) = crossbeam::channel::bounded(1);
+    mock.to_screen
+        .send(ScreenInstruction::SessionMigration(
+            ScreenRequest::PrepareUpdate {
+                operation,
+                client: mock.main_client_id,
+                reply,
+            },
+        ))
+        .unwrap();
+    loop {
+        let (event, _) = pty
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap();
+        if let PtyInstruction::SessionMigration(PtyRequest::PrepareUpdate { reply, .. }) = event {
+            reply
+                .send(Ok(MigrationPreparation::Ready(inventory.clone())))
+                .unwrap();
+            break;
+        }
+    }
+    assert_eq!(
+        progress
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap()
+            .unwrap(),
+        MigrationPreparation::Ready(inventory)
+    );
+    mock.teardown(vec![screen_thread, server_thread]);
+}
+
+#[test]
 fn migration_preparation_disconnects_watchers_via_server_cleanup() {
     use yinz_types::session_migration::{MigrationPreparation, PreparationWork};
     let (mut screen, _, server) =
