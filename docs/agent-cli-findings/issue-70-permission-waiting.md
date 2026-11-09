@@ -256,3 +256,73 @@ permission tracking, fallback release, quiet-pane rendering and dependency
 resolution are unchanged. These are focused fake-OS integration checks, not a
 full CI gate, live Claude, remote SSH or macOS measurement. No background jobs
 or subagents were started by this repair task.
+
+## Supplemental repair R5–R7: passive observations and interrupted recovery
+
+Selected finding: `issue70-permission-observation-blocks-recovery`, UX review
+at `7c584ac8888f905f827f5b55699aadc3c257abd5`, decision
+`205119bc-79ef-4456-b99f-54b4fd0714c1` (approved repair R5–R7).
+Only this recovery finding is repaired here; the prior native fallback ownership,
+observer retry/lease, freshness and scheduler decisions remain intact.
+
+The queued report path normalized permission observations correctly but then
+advanced `Lifecycle.last_report` for every event. An accepted Inactive or
+Unavailable observation after Esc therefore invalidated both interrupted
+Recover and ClearDraft's input-after-hook proof. During clearing it also changed
+the timestamp captured by the operation, despite no provider activity.
+
+`agent_control_event` now exempts only matching ClaudePermissionStatus event/hook
+identities carrying an accepted, normalized Inactive or Unavailable payload.
+The timestamp remains exactly unchanged. Native hooks (including ones enriched
+with an inactive registry sample), worker hooks and accepted Active permission
+evidence still advance it; a later passive sample cannot erase that fence.
+Report validation, watermark/presentation updates, control observations and
+plugin delivery continue normally. Recovery authorization, quiet timing,
+input/composer guards, schema and handoff representation are unchanged. The
+user guide clarifies this boundary alongside the existing inspection guidance.
+
+Five new portable queued-report regressions compose acknowledged submission,
+terminal/CLI Esc, accepted passive evidence and recovery/clearing. They cover
+Inactive, Unavailable and an older Active sample normalized to a retained
+release; unchanged timestamp, input consumption/revision, parent, confirmation
+and submission ownership; passive plugin events; early/plain recovery refusal;
+quiet recovery to Idle/ready with Interrupt and PaneUpdate publication and an
+Interrupted submission whose task completion remains unverified. Empty and
+nonempty composer cases deliver more passive reports during marker verification
+and stable-empty proof. Negative controls retain native/worker/Active fences,
+interrupt clearing on actual activity and reject recovery of an unacted-on
+native fallback or worker question, preserving the native latch.
+
+Before the production repair, the corrected five-case selection failed four
+assertions on the timestamp changing and passed the actual-activity clearing
+control. Initial fixture development also exposed an un-abandoned submission
+and a queued NeedsInput reply; the fixture now waits on the acknowledged
+submission, explicitly abandons it with Esc, drains the cancellation reply and
+checks the actual recovery rejection. These were fixture issues, not passing
+reruns used to dismiss a runtime flake. After the repair and fixture corrections,
+all five new cases passed without sleeps or new synchronization timeouts.
+
+Focused development validation on Linux (2026-11-09):
+
+- `cargo x test -p yinz-screen -E 'test(claude_permission_registry_recovery)'`:
+  5 passed, 1722 skipped; doctests skipped by filter.
+- `cargo x test -p yinz-screen -E 'test(/^screen::screen_tests::agent_control::/) | test(/^screen::screen_tests::agent_resume::/) | test(/^screen::screen_tests::agent_tracking_handoff::/)'`:
+  350 passed, 1377 skipped; doctests skipped by filter.
+- `cargo x integration-test --test claude_steering --test waiting_agent_bells -E 'test(claude_permission_latency) | test(waiting)' -j 16`:
+  2 passed, 6 skipped; 20.178 seconds in nextest (consumer 12.095s,
+  waiting UI 8.083s).
+- `cargo x format --check` and `git diff --check`: passed.
+
+These are development results before the repair commit; exact-commit repetitions
+of the approved checks are recorded in the submitted task evidence. A competing
+worktree build was observed during prelaunch inspection; it finished before the
+integration check, whose immediate prelaunch check found no Cargo/nextest/rustc
+processes. The existing all-slot latency reservation is unchanged. Socket checks
+used escalation on their first attempts and all builds used this worktree's own
+real target directory and production binary.
+
+The new recovery composition uses portable screen tests with a fake OS; the
+unchanged Linux consumer fixture uses actual reporter/observer and local IPC
+with a test-owned provider/registry and fake whole-app OS. No authenticated live
+Claude, end-to-end recovery, remote SSH or macOS result is claimed. No full
+suite, full CI, rebase, merge, remote Git operation or background agent was used.

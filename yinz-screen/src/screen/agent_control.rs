@@ -3310,7 +3310,23 @@ impl Screen {
         if clear_revision.is_some() {
             self.agent_clear_inputs.remove(&pane);
         }
-        if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
+        // Accepted nonpositive registry observations describe presentation, not a
+        // new lifecycle hook. Real hooks and positive input evidence retain the
+        // recovery fence, including when they carry registry enrichment.
+        let passive_permission = event.kind == "claude"
+            && event.hook == yinz_types::agent::claude_permissions::EVENT
+            && hook.is_some_and(|hook| {
+                hook.hook_event_name == event.hook
+                    && event.session_id.as_deref() == Some(hook.session_id.as_str())
+                    && hook.claude_permission.as_ref().is_some_and(|sample| {
+                        matches!(
+                            sample.status,
+                            yinz_types::agent::claude_permissions::Status::Inactive
+                                | yinz_types::agent::claude_permissions::Status::Unavailable
+                        )
+                    })
+            });
+        if !passive_permission && let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
             lifecycle.last_report = Instant::now();
         }
         let notification = parent

@@ -16042,3 +16042,383 @@ fn claude_permission_registry_loss_recovers_from_fresh_read_without_a_rewrite() 
         AgentState::Waiting
     );
 }
+
+// Keep the real queued-report path: it validates and normalizes the sample before
+// the control timestamp and draft-clear activity checks see it.
+fn permission_recovery_setup() -> (
+    Screen,
+    CapturedClientMessages,
+    Receiver<(PtyWriteInstruction, ErrorContext)>,
+) {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(
+        &mut screen,
+        "claude",
+        with_notification_source(hook("SessionStart"), notification_source()),
+    );
+    screen.agent_control_with_clear(identified_prompt("abandoned", true), CLIENT, &writes);
+    finish_paste(&writes);
+    report_kind(
+        &mut screen,
+        "claude",
+        with_notification_source(hook("UserPromptSubmit"), notification_source()),
+    );
+    assert!(replies(&messages, CLIENT).is_empty());
+    assert!(screen.agent_submissions[&PANE].back().unwrap().acknowledged);
+    (screen, messages, writes)
+}
+
+fn permission_recovery_cancel(screen: &mut Screen, messages: &CapturedClientMessages, cli: bool) {
+    if cli {
+        send_esc(screen, messages);
+    } else {
+        screen
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .write_to_active_terminal(
+                &Some(KeyWithModifier::new(BareKey::Esc)),
+                b"\x1b".to_vec(),
+                false,
+                CLIENT,
+                None,
+            )
+            .unwrap();
+        screen.refresh_agent_controls();
+    }
+    screen.refresh_agent_controls();
+    assert_eq!(
+        replies(messages, CLIENT)[0].outcome,
+        AgentOutcome::Interrupted
+    );
+}
+
+fn assert_abandoned_permission_submission(screen: &mut Screen, messages: &CapturedClientMessages) {
+    screen.agent_control(wait_submission("abandoned"), CLIENT);
+    let response = replies(messages, CLIENT).pop().unwrap();
+    assert_eq!(response.outcome, AgentOutcome::Interrupted);
+    assert!(response.message.unwrap().contains("not verified"));
+}
+
+#[test]
+fn claude_permission_registry_recovery_passive_reports_preserve_cancellation() {
+    use yinz_types::agent::claude_permissions::Status;
+    for (status, reordered) in [
+        (Status::Inactive, false),
+        (Status::Unavailable, false),
+        (Status::Active, true),
+    ] {
+        for cli in [false, true] {
+            let (mut screen, messages, writes) = permission_recovery_setup();
+            if reordered {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    permission_sample(Status::Inactive, 500_002),
+                );
+            }
+            permission_recovery_cancel(&mut screen, &messages, cli);
+            finish_paste(&writes);
+            let before = claude_lifecycle(&screen);
+            let last_report = screen.agent_lifecycle[&PANE].last_report;
+            let input_at = screen.tabs[&TabId::new(0)].agent_input_at(PANE).unwrap();
+            assert!(input_at > last_report);
+            let revision = screen.tabs[&TabId::new(0)].agent_input_revision(PANE);
+            let submissions = screen.agent_submissions[&PANE].clone();
+            let (sender, plugins) = channels::unbounded();
+            screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+            screen.background_plugin_subscriptions.insert(
+                (PluginId::new(99), CLIENT),
+                HashSet::from([EventType::PaneUpdate]),
+            );
+            report_kind(&mut screen, "claude", permission_sample(status, 500_001));
+            let accepted = claude_lifecycle(&screen);
+            let sample = &accepted.claude.permission.as_ref().unwrap().sample;
+            assert_eq!(
+                sample.status,
+                if reordered { Status::Inactive } else { status }
+            );
+            assert_eq!(sample.updated_ms, if reordered { 500_002 } else { 500_001 });
+            assert_eq!(
+                screen.agent_lifecycle[&PANE].last_report, last_report,
+                "passive presentation must not move the input-after-hook fence"
+            );
+            assert_eq!(accepted.input_revision, before.input_revision);
+            assert_eq!(accepted.claude.parent, before.claude.parent);
+            assert_eq!(accepted.claude_confirmation, before.claude_confirmation);
+            assert_eq!(
+                screen.tabs[&TabId::new(0)].agent_input_revision(PANE),
+                revision
+            );
+            assert_eq!(screen.agent_submissions[&PANE], submissions);
+            assert!(plugins.try_iter().any(|(instruction, _)| {
+                let PluginInstruction::Update(updates) = instruction else { return false };
+                updates.into_iter().any(|(_, _, event)| {
+                    matches!(event, Event::AgentEvent(event) if event.hook == "ClaudePermissionStatus"
+                        && serde_json::from_str::<HookEvent>(&event.raw).unwrap().claude_permission.unwrap() == *sample)
+                })
+            }), "accepted passive observations still reach plugin consumers");
+            screen.agent_control(recover(), CLIENT);
+            assert_eq!(
+                replies(&messages, CLIENT)[0].outcome,
+                AgentOutcome::Rejected
+            );
+            screen.agent_control(interrupted_recover(), CLIENT);
+            assert_eq!(
+                replies(&messages, CLIENT)[0].outcome,
+                AgentOutcome::Rejected,
+                "cancellation still needs the quiet interval"
+            );
+            recover_after_quiet(&mut screen, interrupted_recover());
+            let recovered = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(recovered.outcome, AgentOutcome::Ok);
+            assert!(recovered.agents[0].ready);
+            assert_eq!(recovered.agents[0].agent.state, AgentState::Idle);
+            let updates: Vec<_> = plugins
+                .try_iter()
+                .filter_map(|(instruction, _)| {
+                    if let PluginInstruction::Update(updates) = instruction {
+                        Some(updates)
+                    } else {
+                        None
+                    }
+                })
+                .flatten()
+                .map(|(_, _, event)| event)
+                .collect();
+            assert!(updates.iter().any(
+                |event| matches!(event, Event::AgentEvent(event) if event.hook == "Interrupt")
+            ));
+            assert!(updates
+                .iter()
+                .any(|event| matches!(event, Event::PaneUpdate(manifest)
+                if manifest.panes.values().flatten().any(|pane| pane.id == PANE
+                    && pane.agent.as_ref().is_some_and(|agent| agent.state == AgentState::Idle)))));
+            assert_abandoned_permission_submission(&mut screen, &messages);
+            assert!(
+                finish_paste(&writes).is_empty(),
+                "recovery sends no extra key"
+            );
+        }
+    }
+}
+
+#[test]
+fn claude_permission_registry_recovery_clear_draft_survives_passive_reports() {
+    use yinz_types::agent::claude_permissions::Status;
+    for status in [Status::Inactive, Status::Unavailable] {
+        for draft in ["", "old draft"] {
+            let (mut screen, messages, writes) = permission_recovery_setup();
+            permission_recovery_cancel(&mut screen, &messages, true);
+            finish_paste(&writes);
+            let last_report = screen.agent_lifecycle[&PANE].last_report;
+            report_kind(&mut screen, "claude", permission_sample(status, 500_001));
+            assert_eq!(screen.agent_lifecycle[&PANE].last_report, last_report);
+            let now = Instant::now() + Duration::from_secs(4);
+            draft_frame(&mut screen, "claude", draft, 3.min(draft.len()), now);
+            let mut request = draft_request(&screen);
+            screen.agent_control_at(
+                request.clone(),
+                crate::screen::agent_control::Reply::Client(CLIENT),
+                now,
+            );
+            assert_eq!(
+                replies(&messages, CLIENT)[0].outcome,
+                AgentOutcome::Rejected
+            );
+            if let AgentRequest::ClearDraft { interrupted, .. } = &mut request {
+                *interrupted = true;
+            }
+            screen.agent_control_at(
+                request,
+                crate::screen::agent_control::Reply::Client(CLIENT),
+                now,
+            );
+            assert!(
+                replies(&messages, CLIENT).is_empty(),
+                "clearing starts after cancellation and quiet"
+            );
+            assert!(screen.agent_draft_clears.contains_key(&PANE));
+            let bytes = finish_paste(&writes);
+            // Deliver during the operation as well: its captured report timestamp
+            // must still match through marker verification and stable-empty proof.
+            report_kind(&mut screen, "claude", permission_sample(status, 500_002));
+            assert_eq!(screen.agent_lifecycle[&PANE].last_report, last_report);
+            if draft.is_empty() {
+                assert!(bytes.is_empty());
+            } else {
+                let marker = std::str::from_utf8(&bytes)
+                    .unwrap()
+                    .strip_prefix("\x1b[200~")
+                    .unwrap()
+                    .strip_suffix("\x1b[201~")
+                    .unwrap();
+                draft_frame(
+                    &mut screen,
+                    "claude",
+                    &format!("old{marker} draft"),
+                    3 + marker.len(),
+                    now + Duration::from_millis(1),
+                );
+                screen.refresh_agent_controls_at(now + Duration::from_millis(2));
+                assert_eq!(
+                    finish_paste(&writes),
+                    [3],
+                    "only verified marker authorizes clearing"
+                );
+                draft_frame(&mut screen, "claude", "", 0, now + Duration::from_millis(3));
+                screen.refresh_agent_controls_at(now + Duration::from_millis(4));
+                report_kind(&mut screen, "claude", permission_sample(status, 500_003));
+            }
+            screen.refresh_agent_controls_at(now + Duration::from_millis(300));
+            let response = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(response.outcome, AgentOutcome::Ok);
+            assert!(response.agents[0].ready);
+            assert_eq!(response.agents[0].agent.state, AgentState::Idle);
+            assert!(!screen.agent_draft_clears.contains_key(&PANE));
+            assert_abandoned_permission_submission(&mut screen, &messages);
+            assert!(finish_paste(&writes).is_empty());
+        }
+    }
+}
+
+#[test]
+fn claude_permission_registry_recovery_retains_real_activity_fences() {
+    use yinz_types::agent::claude_permissions::Status;
+    for activity in ["native", "worker", "active", "native-with-inactive"] {
+        let (mut screen, messages, writes) = permission_recovery_setup();
+        permission_recovery_cancel(&mut screen, &messages, true);
+        finish_paste(&writes);
+        let before = screen.agent_lifecycle[&PANE].last_report;
+        let event = match activity {
+            "worker" => claude_worker("SubagentStop", "worker"),
+            "active" => permission_sample(Status::Active, 500_001),
+            "native-with-inactive" => HookEvent {
+                hook_event_name: "Notification".into(),
+                notification_type: Some("permission_prompt".into()),
+                ..permission_sample(Status::Inactive, 500_001)
+            },
+            _ => hook("PreToolUse"),
+        };
+        report_kind(&mut screen, "claude", event);
+        let fenced = screen.agent_lifecycle[&PANE].last_report;
+        assert!(fenced > before, "{activity}");
+        if activity == "active" {
+            assert_eq!(
+                screen.agent_status_for_test().agent.state,
+                AgentState::Waiting
+            );
+        }
+        report_kind(
+            &mut screen,
+            "claude",
+            permission_sample(Status::Inactive, 500_002),
+        );
+        assert_eq!(
+            screen.agent_lifecycle[&PANE].last_report, fenced,
+            "a passive sample must neither advance nor erase the {activity} fence"
+        );
+        recover_after_quiet(&mut screen, interrupted_recover());
+        assert_eq!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::Rejected,
+            "{activity}"
+        );
+        let now = Instant::now() + Duration::from_secs(4);
+        draft_frame(&mut screen, "claude", "", 0, now);
+        let mut request = draft_request(&screen);
+        if let AgentRequest::ClearDraft { interrupted, .. } = &mut request {
+            *interrupted = true;
+        }
+        screen.agent_control_at(
+            request,
+            crate::screen::agent_control::Reply::Client(CLIENT),
+            now,
+        );
+        assert_eq!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::Rejected,
+            "{activity}"
+        );
+        assert!(!screen.agent_draft_clears.contains_key(&PANE));
+        assert!(finish_paste(&writes).is_empty());
+    }
+}
+
+#[test]
+fn claude_permission_registry_recovery_activity_interrupts_clearing() {
+    use yinz_types::agent::claude_permissions::Status;
+    for active in [false, true] {
+        let (mut screen, messages, writes) = permission_recovery_setup();
+        permission_recovery_cancel(&mut screen, &messages, true);
+        finish_paste(&writes);
+        let now = Instant::now() + Duration::from_secs(4);
+        draft_frame(&mut screen, "claude", "", 0, now);
+        let mut request = draft_request(&screen);
+        if let AgentRequest::ClearDraft { interrupted, .. } = &mut request {
+            *interrupted = true;
+        }
+        screen.agent_control_at(
+            request,
+            crate::screen::agent_control::Reply::Client(CLIENT),
+            now,
+        );
+        assert!(screen.agent_draft_clears.contains_key(&PANE));
+        report_kind(
+            &mut screen,
+            "claude",
+            if active {
+                permission_sample(Status::Active, 500_001)
+            } else {
+                hook("PreToolUse")
+            },
+        );
+        screen.refresh_agent_controls_at(now + Duration::from_millis(300));
+        assert_eq!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::Interrupted
+        );
+        assert!(!screen.agent_draft_clears.contains_key(&PANE));
+        assert!(finish_paste(&writes).is_empty());
+    }
+}
+
+#[test]
+fn claude_permission_registry_recovery_passive_reports_do_not_answer_unacted_waits() {
+    use yinz_types::agent::claude_permissions::Status;
+    for worker in [false, true] {
+        let (mut screen, messages, writes) = permission_recovery_setup();
+        // This input precedes the new wait; it has not answered that dialog.
+        permission_recovery_cancel(&mut screen, &messages, true);
+        finish_paste(&writes);
+        report_kind(
+            &mut screen,
+            "claude",
+            if worker {
+                HookEvent {
+                    tool_name: Some("AskUserQuestion".into()),
+                    ..claude_worker("PreToolUse", "worker")
+                }
+            } else {
+                claude_permission_prompt()
+            },
+        );
+        let native = screen.claude_permission_waits.get(&PANE).cloned();
+        let last_report = screen.agent_lifecycle[&PANE].last_report;
+        report_kind(
+            &mut screen,
+            "claude",
+            permission_sample(Status::Inactive, 500_001),
+        );
+        assert_eq!(screen.claude_permission_waits.get(&PANE), native.as_ref());
+        assert_eq!(screen.agent_lifecycle[&PANE].last_report, last_report);
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
+        recover_after_quiet(&mut screen, interrupted_recover());
+        let refused = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(refused.outcome, AgentOutcome::Rejected);
+        assert!(refused.message.unwrap().contains("Esc"));
+        assert!(finish_paste(&writes).is_empty());
+    }
+}

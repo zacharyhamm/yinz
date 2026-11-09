@@ -826,6 +826,11 @@ received input, such as Esc, after the agent's last hook, and no hook, including
 a subagent's, may have arrived in the 3 seconds since. A waiting agent is always
 quiet, so quiet alone cannot show that its dialog is gone, and a hook still on its
 way is not overtaken. Plugins then receive an `Interrupt` event for the agent.
+Inactive or unavailable permission registry observations describe presentation;
+they do not require another cancellation key or restart the recovery quiet proof.
+Native hooks, worker hooks and fresh positive permission-wait evidence still
+require inspection and deliberate input afterwards. Inspect and verify or clear
+the actual composer before confirming recovery; recovery does not verify task completion.
 Codex reports its own interrupt and returns to idle. Hooks that the cancelled
 turn sends afterwards, such as a tool call finishing, do not make it busy again.
 Inspect status and output before deciding what to do next. Requests are never
