@@ -1038,6 +1038,7 @@ pub enum ScreenInstruction {
         placement: yinz_types::agent::control::AgentPlacement,
         invoked_with: Option<Run>,
         client_id: ClientId,
+        originating_pane: Option<PaneId>,
         launch: std::sync::Arc<crate::agent_launch::LaunchGate>,
         reply: std::sync::mpsc::Sender<Result<crate::route::AgentTabPlacement, String>>,
     },

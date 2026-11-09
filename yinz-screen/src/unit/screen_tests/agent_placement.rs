@@ -1167,6 +1167,83 @@ fn a_deferred_tab_close_already_rejects_agent_arrivals() {
 }
 
 #[test]
+fn suppressed_launch_resolution_prefers_the_originating_plugins_current_tab() {
+    use yinz_bus::agent_launch::LaunchGate;
+    use yinz_types::agent::{control::AgentPlacement, launch::LaunchReason};
+
+    let mut screen = screen_with_floor();
+    let _plugins = plugin_capture(&mut screen);
+    tab_with_panes(&mut screen, TabId::new(0), 1, 1);
+    let plugin = PaneId::Plugin(yinz_types::internal_ids::PluginId::new(42));
+    add_pane_to_tab(&mut screen, TabId::new(0), plugin, false);
+    tab_with_panes(&mut screen, TabId::new(1), 10, 1);
+    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(1));
+    let focus = screen.active_tab_ids.clone();
+
+    for (originating_pane, requested, expected) in [
+        (Some(plugin), None, TabId::new(0)),
+        (None, None, TabId::new(1)),
+        (
+            Some(PaneId::Plugin(yinz_types::internal_ids::PluginId::new(999))),
+            None,
+            TabId::new(1),
+        ),
+        (Some(plugin), Some(TabId::new(1)), TabId::new(1)),
+        (None, Some(TabId::new(0)), TabId::new(0)),
+    ] {
+        let gate = LaunchGate::new("test.suppressed".into(), true);
+        let destination = screen
+            .resolve_launch_tab(
+                AgentPlacement::Suppressed(requested),
+                None,
+                CLIENT,
+                originating_pane,
+                &gate,
+            )
+            .unwrap();
+        assert_eq!(destination.tab_id, expected);
+        assert_eq!(gate.snapshot().destination.unwrap().tab_id, expected);
+        assert!(!destination.created);
+        assert_eq!(screen.active_tab_ids, focus);
+    }
+
+    // Resolving a supplied tab still validates it instead of choosing the plugin's tab.
+    let gate = LaunchGate::new("test.suppressed.missing".into(), true);
+    assert!(screen
+        .resolve_launch_tab(
+            AgentPlacement::Suppressed(Some(TabId::new(99))),
+            None,
+            CLIENT,
+            Some(plugin),
+            &gate,
+        )
+        .is_err());
+    assert_eq!(
+        gate.snapshot().revoked,
+        Some(LaunchReason::DestinationClosed)
+    );
+    assert!(gate.snapshot().destination.is_none());
+
+    // A present origin whose tab is closing must fail, even with another active client tab.
+    screen.deferred_tab_closes.insert(TabId::new(0));
+    let gate = LaunchGate::new("test.suppressed.closing".into(), true);
+    assert!(screen
+        .resolve_launch_tab(
+            AgentPlacement::Suppressed(None),
+            None,
+            CLIENT,
+            Some(plugin),
+            &gate,
+        )
+        .is_err());
+    assert_eq!(
+        gate.snapshot().revoked,
+        Some(LaunchReason::DestinationClosed)
+    );
+    assert!(gate.snapshot().destination.is_none());
+}
+
+#[test]
 fn suppressed_agent_launch_completes_in_the_reserved_tab_without_layout_or_focus_changes() {
     use yinz_types::agent::control::AgentPlacement;
     for requested in [None, Some(TabId::new(0)), Some(TabId::new(1))] {

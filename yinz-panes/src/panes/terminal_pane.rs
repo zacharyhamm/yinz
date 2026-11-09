@@ -1506,7 +1506,7 @@ impl Pane for TerminalPane {
     }
     fn set_launch_command(&mut self, command: RunCommand) {
         self.invoked_with = Some(Run::Command(command));
-        self.agent = agent_from_run(self.invoked_with.as_ref());
+        self.set_agent_info(agent_from_run(self.invoked_with.as_ref()));
         self.is_held = None;
         self.remove_banner();
     }

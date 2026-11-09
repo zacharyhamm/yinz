@@ -433,7 +433,14 @@ pub(super) fn spawn_agent_prepared_with_gate(
         None
     } else {
         Some(resolve_agent_tab(
-            senders, placement, None, client_id, &gate,
+            senders,
+            placement,
+            None,
+            client_id,
+            origin
+                .as_ref()
+                .map(|origin| yinz_types::pane_id::PaneId::Plugin(origin.plugin_id)),
+            &gate,
         )?)
     };
     if let Some(destination) = &destination {
@@ -594,6 +601,7 @@ fn resolve_agent_tab(
     placement: yinz_types::agent::control::AgentPlacement,
     invoked_with: Option<Run>,
     client_id: crate::ClientId,
+    originating_pane: Option<yinz_types::pane_id::PaneId>,
     gate: &std::sync::Arc<yinz_bus::agent_launch::LaunchGate>,
 ) -> Result<yinz_bus::route::AgentTabPlacement, String> {
     let (reply, receiver) = std::sync::mpsc::channel();
@@ -602,6 +610,7 @@ fn resolve_agent_tab(
             placement,
             invoked_with,
             client_id,
+            originating_pane,
             launch: gate.clone(),
             reply,
         })

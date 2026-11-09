@@ -28,6 +28,7 @@ use super::Screen;
 use crate::pty::ClientTabIndexOrPaneId;
 use crate::ClientId;
 use yinz_types::input::layout::Run;
+use yinz_types::pane_id::PaneId;
 use yinz_types::pane_size::{Size, Viewport};
 use {yinz_types::data::NewPanePlacement, yinz_types::data::AGENT_PANE_CONTEXT};
 
@@ -287,12 +288,21 @@ impl Screen {
 impl Screen {
     pub(super) fn resolve_launch_tab(
         &mut self,
-        placement: yinz_types::agent::control::AgentPlacement,
+        mut placement: yinz_types::agent::control::AgentPlacement,
         invoked_with: Option<Run>,
         client_id: ClientId,
+        originating_pane: Option<PaneId>,
         launch: &yinz_bus::agent_launch::LaunchGate,
     ) -> Result<yinz_bus::route::AgentTabPlacement, String> {
         use yinz_types::agent::{control::AgentPlacement, launch::LaunchReason};
+        if matches!(placement, AgentPlacement::Suppressed(None)) {
+            // Resolve current pane ownership on Screen; headless plugins use the client tab.
+            placement = AgentPlacement::Suppressed(
+                originating_pane
+                    .and_then(|pane| self.tab_id_containing_pane(pane))
+                    .or_else(|| self.tab_a_client_is_looking_at(client_id)),
+            );
+        }
         let rejection = launch.snapshot().revoked.or_else(|| {
             if placement.validate().is_err() {
                 return Some(LaunchReason::InvalidRequest);

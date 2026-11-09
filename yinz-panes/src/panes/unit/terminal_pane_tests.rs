@@ -2877,6 +2877,41 @@ fn starting_an_agent_reservation_clears_the_banner_and_preserves_output_on_resiz
 }
 
 #[test]
+fn installing_an_agent_launch_remembers_identity_for_restart_without_reports() {
+    use yinz_types::agent::control::AgentRestartSession;
+
+    let mut pane = agent_pane();
+    pane.hold(None, true, RunCommand::default());
+    assert!(pane.agent_info().is_none());
+    assert!(!pane.was_an_agent());
+    assert!(pane.last_agent_kind().is_none());
+
+    let command = RunCommand {
+        command: "env".into(),
+        args: vec!["YINZ_AGENT_PANE=1".into(), "codex".into()],
+        cwd: Some("/work".into()),
+        hold_on_close: true,
+        ..Default::default()
+    };
+    pane.set_launch_command(command.clone());
+    assert!(pane.was_an_agent());
+    assert_eq!(pane.last_agent_kind(), Some("codex"));
+    assert_eq!(pane.last_agent_cwd(), Some("/work"));
+    assert_eq!(pane.agent_info().unwrap().state, AgentState::Busy);
+
+    // The provider exits before it sends any agent reports.
+    pane.hold(Some(1), false, command.clone());
+    assert_eq!(pane.agent_info().unwrap().state, AgentState::Exited);
+    assert!(pane.was_an_agent());
+    assert_eq!(pane.last_agent_kind(), Some("codex"));
+    assert_eq!(
+        pane.agent_restart_command(AgentRestartSession::Fresh, None)
+            .unwrap(),
+        command
+    );
+}
+
+#[test]
 fn agent_restart_is_fresh_and_keeps_command_metadata() {
     let mut pane = agent_pane();
     pane.set_agent_info(Some(AgentInfo {

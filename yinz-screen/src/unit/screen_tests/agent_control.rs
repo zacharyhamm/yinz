@@ -13665,7 +13665,7 @@ fn launch_transaction_destination_rejection_has_typed_reason_and_no_side_effects
         let focus = screen.active_tab_ids.clone();
         let gate = yinz_bus::agent_launch::LaunchGate::new("test.destination".into(), false);
         assert!(screen
-            .resolve_launch_tab(placement, None, CLIENT, &gate)
+            .resolve_launch_tab(placement, None, CLIENT, None, &gate)
             .is_err());
         assert_eq!(gate.snapshot().revoked, Some(expected));
         assert!(gate.snapshot().destination.is_none());

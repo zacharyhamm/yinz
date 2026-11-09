@@ -81,6 +81,12 @@ fn launch_transaction_restart_and_conflict_never_replay_preparation() {
 struct Host {
     senders: ThreadSenders,
     commands: yinz_test_support::Watched<Vec<yinz_types::input::command::RunCommand>>,
+    resolutions: yinz_test_support::Watched<
+        Vec<(
+            yinz_types::agent::control::AgentPlacement,
+            Option<yinz_types::pane_id::PaneId>,
+        )>,
+    >,
     threads: Vec<std::thread::JoinHandle<()>>,
 }
 #[derive(Clone, Copy, PartialEq)]
@@ -110,6 +116,8 @@ impl Host {
             ..Default::default()
         };
         let runtime = senders.launches.clone();
+        let resolutions = yinz_test_support::Watched::new(Vec::new());
+        let observed_resolutions = resolutions.clone();
         let screen_thread = std::thread::spawn(move || {
             let lifetime = Arc::new(());
             loop {
@@ -119,9 +127,13 @@ impl Host {
                     ScreenInstruction::ResolveAgentTab {
                         reply,
                         placement,
+                        originating_pane,
                         launch,
                         ..
                     } => {
+                        observed_resolutions
+                            .lock()
+                            .push((placement.clone(), originating_pane));
                         let destination = AgentTabPlacement {
                             tab_id: TabId::new(7),
                             lifetime: Arc::downgrade(&lifetime),
@@ -230,8 +242,58 @@ impl Host {
         Self {
             senders,
             commands,
+            resolutions,
             threads: vec![screen_thread, pty_thread],
         }
+    }
+}
+
+#[test]
+fn launch_transaction_carries_the_originating_pane_to_suppressed_destination_resolution() {
+    use yinz_types::{
+        agent::control::AgentPlacement,
+        data::OriginatingPlugin,
+        internal_ids::{PluginId, TabId},
+        pane_id::PaneId,
+    };
+
+    let client = crate::ClientId::new(1);
+    let origin = OriginatingPlugin::new(PluginId::new(42), client, Default::default());
+    for (placement, origin) in [
+        (AgentPlacement::Suppressed(None), Some(origin.clone())),
+        (AgentPlacement::Suppressed(None), None),
+        (
+            AgentPlacement::Suppressed(Some(TabId::new(7))),
+            Some(origin),
+        ),
+    ] {
+        let (_root, data, mut request) = repository();
+        request.placement = placement.clone();
+        let host = Host::new(false, true, false);
+        let receipt = launch_with_prepare(
+            format!("{}.origin", server_instance()),
+            request,
+            client,
+            &host.senders,
+            &data,
+            OpeningPromptPolicy::Reject,
+            origin.clone(),
+            None,
+            None,
+        )
+        .launch
+        .unwrap();
+        assert_eq!(receipt.outcome, LaunchOutcome::Started, "{receipt:?}");
+        assert_eq!(
+            *host.resolutions.lock(),
+            vec![(
+                placement,
+                origin
+                    .as_ref()
+                    .map(|origin| PaneId::Plugin(origin.plugin_id))
+            )]
+        );
+        assert_eq!(host.commands.lock()[0].originating_plugin, origin);
     }
 }
 

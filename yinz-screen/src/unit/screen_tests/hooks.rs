@@ -837,6 +837,107 @@ fn a_pane_born_as_an_agent_fires_agent_start() {
 }
 
 #[test]
+fn claiming_an_agent_launch_fires_start_only_when_installation_adds_identity() {
+    use crate::route::NotificationEnd;
+    use yinz_bus::agent_launch::LaunchGate;
+    use yinz_types::agent::{control::AgentPlacement, launch::LaunchReason};
+
+    for (identified, rejected) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+        new_tab(&mut screen, 1, TabId::new(0));
+        let (to_plugin, plugins) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        let gate = std::sync::Arc::new(LaunchGate::new("test.claim".into(), false));
+        gate.allocated(TERMINAL_2);
+        screen
+            .bus
+            .senders
+            .launches
+            .gates
+            .lock()
+            .unwrap()
+            .insert(TERMINAL_2, gate.clone());
+        let destination = screen
+            .resolve_agent_tab(AgentPlacement::Tab(TabId::new(0)), None, ClientId::new(1))
+            .unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut completion = NotificationEnd::new(tx);
+        completion.launch = Some(gate.clone());
+        completion.agent_tab = Some(destination);
+        let command = agent_command("/work");
+        let placeholder = Some(Run::Command(if identified {
+            command.clone()
+        } else {
+            RunCommand::default()
+        }));
+        screen
+            .place_new_pane(
+                PaneId::Terminal(TERMINAL_2),
+                None,
+                (!identified).then(RunCommand::default),
+                placeholder.clone(),
+                NewPanePlacement::default(),
+                false,
+                ClientTabIndexOrPaneId::TabIndexNoFocus(TabId::new(0)),
+                Some(completion),
+                false,
+                &mut Default::default(),
+            )
+            .unwrap();
+        assert!(rx.blocking_recv().unwrap().error_message.is_none());
+        if rejected {
+            gate.revoke(LaunchReason::PlacementRevoked);
+        }
+
+        let size = screen.claim_agent_launch(TERMINAL_2, command.clone());
+        assert_eq!(size.is_some(), !rejected);
+        let pane = screen.tabs[&TabId::new(0)]
+            .get_pane_with_id(PaneId::Terminal(TERMINAL_2))
+            .unwrap();
+        assert_eq!(
+            pane.invoked_with(),
+            &if rejected {
+                placeholder
+            } else {
+                Some(Run::Command(command))
+            }
+        );
+        assert_eq!(pane.is_held(), rejected && !identified);
+        let fired: Vec<_> = plugins
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                PluginInstruction::RunHook {
+                    point,
+                    pane_id,
+                    payload,
+                    ..
+                } => Some((point, pane_id, payload)),
+                _ => None,
+            })
+            .collect();
+        let expected = if identified || !rejected {
+            vec![HookPoint::AgentStart]
+        } else {
+            vec![]
+        };
+        assert_eq!(
+            points(&fired),
+            expected,
+            "identified={identified}, rejected={rejected}: {fired:?}"
+        );
+        if !rejected {
+            let (pane, record, previous, command) = agent(&fired[0].2);
+            assert_eq!(pane, TERMINAL_2);
+            assert_eq!(record.kind, "codex");
+            assert_eq!(record.cwd.as_deref(), Some("/work"));
+            assert_eq!(record.state, AgentState::Busy);
+            assert!(previous.is_none());
+            assert!(command.unwrap().contains("codex"));
+        }
+    }
+}
+
+#[test]
 fn an_agent_reporting_for_itself_fires_agent_start() {
     let fired = hooks_fired_by(vec![
         new_pane(2, None),

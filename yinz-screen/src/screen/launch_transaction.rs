@@ -2,12 +2,30 @@ use super::Screen;
 use yinz_bus::screen::ScreenInstruction;
 use yinz_types::{
     agent::{launch::*, SpawnedAgent},
+    input::command::RunCommand,
     internal_ids::TerminalId,
     pane_id::PaneId,
     pane_size::TerminalSize,
 };
 
 impl Screen {
+    pub(super) fn claim_agent_launch(
+        &mut self,
+        terminal: TerminalId,
+        command: RunCommand,
+    ) -> Option<TerminalSize> {
+        let size = self.validate_launch_slot(terminal).ok()?;
+        let pane_id = PaneId::Terminal(terminal);
+        let pane = self
+            .tab_containing_pane_mut(pane_id)?
+            .get_pane_with_id_mut(pane_id)?;
+        let previous = pane.agent_info().cloned();
+        pane.set_launch_command(command);
+        let current = pane.agent_info().cloned();
+        self.fire_agent_state_hooks(pane_id, previous.as_ref(), current.as_ref());
+        Some(size)
+    }
+
     pub(super) fn validate_launch_slot(
         &mut self,
         terminal: TerminalId,

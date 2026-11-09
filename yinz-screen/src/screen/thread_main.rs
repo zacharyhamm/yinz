@@ -369,14 +369,7 @@ pub fn screen_thread_main(
                     command,
                     reply,
                 } => {
-                    let size = screen.validate_launch_slot(terminal_id).ok();
-                    if size.is_some()
-                        && let Some(tab) =
-                            screen.tab_containing_pane_mut(PaneId::Terminal(terminal_id))
-                        && let Some(pane) = tab.get_pane_with_id_mut(PaneId::Terminal(terminal_id))
-                    {
-                        pane.set_launch_command(command);
-                    }
+                    let size = screen.claim_agent_launch(terminal_id, command);
                     let _ = reply.send(size);
                 },
                 ScreenInstruction::RegisterAgentLaunch { spawned, reply } => {
@@ -3365,11 +3358,17 @@ pub fn screen_thread_main(
                     placement,
                     invoked_with,
                     client_id,
+                    originating_pane,
                     launch,
                     reply,
                 } => {
-                    let result =
-                        screen.resolve_launch_tab(placement, invoked_with, client_id, &launch);
+                    let result = screen.resolve_launch_tab(
+                        placement,
+                        invoked_with,
+                        client_id,
+                        originating_pane,
+                        &launch,
+                    );
                     // If the receiver disappeared, retain the tab: the outcome is unknown.
                     let _ = reply.send(result);
                 },
