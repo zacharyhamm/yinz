@@ -423,9 +423,9 @@ rerun by `drive`; environment-only explicit reruns and repair procedures are in
 the recovery reference. Every run remains in event history. The launcher prints
 the checklist on stderr and JSON on stdout, exiting 2 on failure.
 
-Legacy plans without `checks` still require both current reviews and retain the reviewer-reported gate: `ready` rejects
-failed preliminary checks from either reviewer and the handoff states no deterministic verification
-ran. New plans/revisions require checks. Empty or cancelled checks are not success.
+Legacy plans without `checks` still require both current reviews and retain the
+reviewer-reported gate: `ready` rejects failed preliminary checks from either
+reviewer and the handoff states no deterministic verification ran. New plans/revisions require checks. Empty or cancelled checks are not success.
 
 ## Development checks and the merge gate
 
