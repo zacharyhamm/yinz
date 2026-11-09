@@ -986,8 +986,26 @@ for grouped activity), `range`, `kind`, `created_at_ms`, `time`, `markdown`,
 `truncated`, `tool_calls` and a closed `request` for its event/hit/tools reader.
 `navigation` maps native row IDs (`earlier`, `continue`, `latest`, `context`,
 `received`, `previous`, `origin`, `event:…`, `tools`) to callable requests.
-It omits archived search, workers-picker and resume actions. Reapply `tz` when
-following navigation. Worker scopes can be supplied on history/range requests.
+It omits archived search, workers-picker and resume actions. Current-run history
+navigation (`earlier`, `continue`, `latest`, `received`) preserves the original
+optional `agent` ID, including while that agent is gone. Follow requests as
+returned, reapplying `tz`; each bound request takes a fresh live snapshot and
+updates the live row/header. For example, a live-bound response may return:
+
+```json
+{"op":"history","run":"R","agent":"live:session:7","worker":null,"before":null,"after_revision":42}
+```
+
+If the agent disappears, this refresh keeps reading R with `agent_gone:true` and
+`live:null`, and its returned refresh still carries the agent ID. If the agent
+returns or changes to R2, following that refresh detects it; a changed run returns
+`retargeted:true`, R2 content and navigation bound to R2. Replace cached history
+on retarget: old worker, page and delivery cursors have been cleared.
+`previous`/`origin` links deliberately omit `agent`, even for self-referential
+lineage, so intentional stored-run browsing stays independent of the live agent.
+Run-only history and hit/event/tools inspection also remain independent; those
+reader operations do not accept `agent`. Worker scopes can be supplied on
+history/range requests.
 
 Chronological `before` is `{created_at_ms:number|null, revision:number}`; null
 sorts before dated entries, with revision breaking timestamp ties. `range` is

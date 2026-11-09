@@ -327,7 +327,7 @@ fn web_agents_history_preserves_navigation_and_empty_activity_replacements() {
         ],
         status: "partial".into(),
     };
-    let page = adapt(reply, "run", None, None, false, true, false).unwrap();
+    let page = adapt(reply, "run", None, None, false, Some("missing"), false).unwrap();
     assert_eq!(page["activity_ranges"].as_array().unwrap().len(), 2);
     assert_eq!(
         page["events"][0]["range"],
@@ -377,6 +377,288 @@ fn web_agents_stored_history_without_live_snapshot_and_missing_event_error() {
     assert_eq!(reply["ok"]["run"], "run");
     assert_eq!(reply["ok"]["retargeted"], true);
     assert_eq!(reply["ok"]["header"]["name"], "live task");
+}
+
+fn history_navigation_data() -> (tempfile::TempDir, DataAccess) {
+    use agent_proto::agents::{rows, AgentRun, RunEntry, RunEntryKind, RunOutcome};
+    use yinz_types::plugin_data::REV_ABSENT;
+    let (directory, data) = data();
+    for (id, revisions) in [
+        ("run", 101..=220),
+        ("replacement", 1..=4),
+        ("previous", 1..=1),
+        ("original", 1..=1),
+    ] {
+        let run = AgentRun {
+            id: id.into(),
+            pane_id: 7,
+            yinz_session_name: "stored".into(),
+            host_id: yinz_runtime::host_identity::host_id(),
+            origin_run_id: (id == "run").then(|| "original".into()),
+            previous_run_id: (id == "run").then(|| "previous".into()),
+            session_id: "conversation".into(),
+            kind: "codex".into(),
+            cwd: None,
+            host: None,
+            bubblewrap: None,
+            started_at_ms: 100,
+            ended_at_ms: None,
+            outcome: RunOutcome::Active,
+            revision: *revisions.end(),
+            summarized_revision: 0,
+            summary: None,
+            omitted_entries: 0,
+            entries: revisions
+                .map(|revision| RunEntry {
+                    worker_id: (id == "run" && revision > 180).then(|| "old-worker".into()),
+                    conversation_turn_id: None,
+                    revision,
+                    event_id: None,
+                    kind: RunEntryKind::Message,
+                    text: if id == "replacement" && revision == 4 {
+                        "unrelated replacement message".into()
+                    } else {
+                        format!("needle {id} {revision}")
+                    },
+                    // An old chronological cursor excludes the replacement's later messages;
+                    // an old delivery/search watermark excludes its lower revisions.
+                    created_at_ms: Some(if id == "replacement" {
+                        2_000_000 + revision as i64
+                    } else {
+                        revision as i64 * 1000
+                    }),
+                    tool: None,
+                })
+                .collect(),
+        };
+        data.plugin_data()
+            .apply(
+                project_data::store::SHARED,
+                &rows::run_mutations(&run, REV_ABSENT),
+            )
+            .unwrap();
+    }
+    (directory, data)
+}
+
+fn history_navigation_page(
+    mut request: Value,
+    agents: Option<Vec<WebLiveAgent>>,
+    data: &DataAccess,
+) -> Value {
+    // Follow the emitted request as documented, without restoring its agent binding.
+    request["tz"] = json!("UTC");
+    Operation::parse(&request.to_string()).unwrap();
+    let reply = match agents {
+        Some(agents) => with_snapshot(request.clone(), agents, data),
+        None => handle(
+            &request.to_string(),
+            ClientId::new(1),
+            &ThreadSenders::default(),
+            data,
+        ),
+    };
+    assert!(reply.get("ok").is_some(), "{request}: {reply}");
+    let page = reply["ok"].clone();
+    for request in page["navigation"].as_object().unwrap().values() {
+        Operation::parse(&request.to_string()).unwrap();
+    }
+    for event in page["events"].as_array().unwrap() {
+        Operation::parse(&event["request"].to_string()).unwrap();
+        assert!(event["request"].get("agent").is_none());
+    }
+    page
+}
+
+#[test]
+fn web_agents_history_navigation_refresh_tracks_live_gone_and_returned_agents() {
+    let (_directory, data) = history_navigation_data();
+    let agent = live("local", AgentState::Idle, true);
+    let page = history_navigation_page(
+        json!({"op":"history","agent":agent.id,"run":"run"}),
+        Some(vec![agent.clone()]),
+        &data,
+    );
+    let refresh = page["navigation"]["received"].clone();
+    assert_eq!(refresh["agent"], agent.id);
+    assert!(refresh["after_revision"].as_u64().unwrap() > 100);
+    let mut updated = agent.clone();
+    updated.header.name = "updated live header".into();
+    let unchanged = history_navigation_page(refresh, Some(vec![updated]), &data);
+    assert_eq!(unchanged["retargeted"], false);
+    assert_eq!(unchanged["agent_gone"], false);
+    assert_eq!(unchanged["header"]["name"], "updated live header");
+    assert_eq!(unchanged["live"]["id"], agent.id);
+    assert_eq!(
+        unchanged["navigation"]["received"],
+        page["navigation"]["received"]
+    );
+
+    // Latest retains actual stored content when the agent disappears; its returned
+    // refresh must keep checking for the same agent on every subsequent call.
+    let gone = history_navigation_page(page["navigation"]["latest"].clone(), Some(vec![]), &data);
+    assert_eq!(gone["run"], "run");
+    assert_eq!(gone["retargeted"], false);
+    assert_eq!(gone["agent_gone"], true);
+    assert!(gone["live"].is_null());
+    assert!(gone["events"].to_string().contains("needle run"));
+    let gone_again =
+        history_navigation_page(gone["navigation"]["received"].clone(), Some(vec![]), &data);
+    assert_eq!(gone_again["agent_gone"], true);
+    assert!(gone_again["live"].is_null());
+    assert_eq!(gone_again["navigation"]["received"]["agent"], agent.id);
+
+    let mut returned = agent.clone();
+    returned.run = Some("replacement".into());
+    returned.header.name = "returned agent".into();
+    let replacement = history_navigation_page(
+        gone_again["navigation"]["received"].clone(),
+        Some(vec![returned]),
+        &data,
+    );
+    assert_eq!(replacement["run"], "replacement");
+    assert_eq!(replacement["retargeted"], true);
+    assert_eq!(replacement["agent_gone"], false);
+    assert_eq!(replacement["header"]["name"], "returned agent");
+    assert_eq!(replacement["live"]["id"], agent.id);
+    assert_eq!(replacement["events"].as_array().unwrap().len(), 4);
+    assert!(replacement["events"]
+        .to_string()
+        .contains("needle replacement 1"));
+    assert_eq!(replacement["navigation"]["received"]["run"], "replacement");
+    assert_eq!(replacement["navigation"]["received"]["agent"], agent.id);
+    assert_eq!(replacement["navigation"]["received"]["after_revision"], 5);
+}
+
+#[test]
+fn web_agents_history_navigation_continuations_retarget_and_reset_cursors() {
+    let (_directory, data) = history_navigation_data();
+    let agent = live("local", AgentState::Idle, true);
+    let page = history_navigation_page(
+        json!({"op":"history","agent":agent.id,"run":"run","worker":"old-worker"}),
+        Some(vec![agent.clone()]),
+        &data,
+    );
+    let earlier = page["navigation"]["earlier"].clone();
+    assert_eq!(earlier["agent"], agent.id);
+    assert_eq!(earlier["worker"], "old-worker");
+    assert!(earlier["before"]["revision"].as_u64().unwrap() > 180);
+    let older = history_navigation_page(earlier.clone(), Some(vec![agent.clone()]), &data);
+    assert_eq!(older["retargeted"], false);
+    assert_eq!(older["live"]["id"], agent.id);
+    let revisions: Vec<_> = older["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["revision"].as_u64().unwrap())
+        .collect();
+    assert!(!revisions.is_empty());
+    assert!(revisions
+        .iter()
+        .all(|rev| *rev > 180 && *rev < earlier["before"]["revision"].as_u64().unwrap()));
+    assert_eq!(older["navigation"]["latest"]["worker"], "old-worker");
+
+    let search = history_navigation_page(
+        json!({"op":"history","agent":agent.id,"run":"run","query":"needle"}),
+        Some(vec![agent.clone()]),
+        &data,
+    );
+    let continuation = search["navigation"]["continue"].clone();
+    assert_eq!(continuation["agent"], agent.id);
+    assert_eq!(continuation["query"], "needle");
+    assert!(continuation["from"].as_u64().unwrap() > 100);
+    let next = history_navigation_page(continuation.clone(), Some(vec![agent.clone()]), &data);
+    assert_eq!(next["retargeted"], false);
+    assert!(
+        next["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["revision"].as_u64().unwrap()
+                >= continuation["from"].as_u64().unwrap())
+    );
+
+    let mut replaced = agent.clone();
+    replaced.run = Some("replacement".into());
+    for request in [
+        earlier,
+        page["navigation"]["received"].clone(),
+        page["navigation"]["latest"].clone(),
+        continuation,
+    ] {
+        let searching = request["query"] == "needle";
+        let replacement = history_navigation_page(request, Some(vec![replaced.clone()]), &data);
+        assert_eq!(replacement["retargeted"], true);
+        assert_eq!(replacement["run"], "replacement");
+        assert_eq!(
+            replacement["events"].as_array().unwrap().len(),
+            if searching { 3 } else { 4 }
+        );
+        assert!(replacement["events"]
+            .to_string()
+            .contains("needle replacement 1"));
+        assert!(!replacement["events"].to_string().contains("needle run"));
+        for request in replacement["navigation"].as_object().unwrap().values() {
+            assert_eq!(request["run"], "replacement");
+            if request["op"] == "history" {
+                assert_eq!(request["agent"], agent.id);
+            } else {
+                // Retained event/hit/tools readers stay independent of the live pane.
+                assert!(request.get("agent").is_none());
+            }
+            assert!(request["worker"].is_null());
+            assert!(request["before"].is_null());
+        }
+    }
+
+    // Intentional lineage browsing stays snapshot-free even if the live agent
+    // has moved elsewhere. Run-only history also emits no live binding.
+    for (link, run) in [("previous", "previous"), ("origin", "original")] {
+        let request = page["navigation"][link].clone();
+        assert!(request.get("agent").is_none());
+        let stored = history_navigation_page(request, None, &data);
+        assert_eq!(stored["run"], run);
+        assert_eq!(stored["retargeted"], false);
+        assert_eq!(stored["agent_gone"], false);
+        assert!(stored["live"].is_null());
+        assert!(stored["events"]
+            .to_string()
+            .contains(&format!("needle {run} 1")));
+        for request in stored["navigation"].as_object().unwrap().values() {
+            assert!(request.get("agent").is_none());
+        }
+    }
+}
+
+#[test]
+fn web_agents_history_navigation_excludes_self_lineage_and_other_run_links() {
+    let reply = HistoryReply::Run {
+        header: Default::default(),
+        events: vec![],
+        activity_ranges: vec![],
+        rows: ["previous", "origin", "latest", "other"]
+            .into_iter()
+            .map(|id| palette::HistoryRow {
+                id: id.into(),
+                label: String::new(),
+                description: String::new(),
+                action: HistoryAction::Run {
+                    id: if id == "other" { "other-run" } else { "run" }.into(),
+                    from: None,
+                    query: String::new(),
+                },
+            })
+            .collect(),
+        status: String::new(),
+    };
+    let page = adapt(reply, "run", None, None, false, Some("missing"), false).unwrap();
+    assert_eq!(page["navigation"]["latest"]["agent"], "missing");
+    for id in ["previous", "origin", "other"] {
+        assert!(page["navigation"][id].get("agent").is_none());
+    }
+    for request in page["navigation"].as_object().unwrap().values() {
+        Operation::parse(&request.to_string()).unwrap();
+    }
 }
 
 #[test]

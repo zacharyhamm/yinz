@@ -713,7 +713,15 @@ older cursor/scaffold descriptions below: current palette history is chronologic
 with `before`, inclusive `after_revision`, worker scopes, typed `navigation`,
 `activity_ranges`, event ranges and ranged tools' separate `page` extension.
 `revisions[]` tools compatibility remains available. Retargeting clears old
-worker/page/delivery cursors. Exited agents remain excluded from both live lists,
+worker/page/delivery cursors. Current-run history navigation preserves the
+requested optional `agent` ID, even while gone; follow it as returned and reapply
+`tz`. For example, `{"op":"history","run":"R","agent":"live:session:7","after_revision":42}`
+refreshes the live header while present and retains R with `agent_gone:true`
+while absent. A later return or run change is detected by the next returned
+refresh; a change to R2 retargets content and navigation to R2, and clients replace
+their cached history. Previous/original links and run-only retained inspection
+stay independent; hit/event/tools do not gain an agent field.
+Exited agents remain excluded from both live lists,
 with stored history available through `agent_gone`. Focus returns `{"ok":true}`;
 no attached terminal returns `unavailable` / `No terminal attached`. Controls use
 a distinct kind-and-conversation-guarded IPC variant and never downgrade for an

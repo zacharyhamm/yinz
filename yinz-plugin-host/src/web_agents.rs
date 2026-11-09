@@ -429,7 +429,7 @@ fn adapt(
     live: Option<&WebLiveAgent>,
     label: Option<&palette::AgentLabels>,
     retargeted: bool,
-    agent_gone: bool,
+    requested_agent: Option<&str>,
     searching: bool,
 ) -> Result<Value> {
     match reply {
@@ -473,7 +473,21 @@ fn adapt(
             };
             let requests: BTreeMap<_, _> = rows
                 .iter()
-                .filter_map(|r| navigation(&r.action).map(|n| (r.id.clone(), n)))
+                .filter_map(|r| {
+                    let mut request = navigation(&r.action)?;
+                    // Keep current-run browsing live-bound even while its agent is gone.
+                    // Lineage links deliberately inspect stored runs, including self-links.
+                    if !matches!(r.id.as_str(), "previous" | "origin")
+                        && matches!(&r.action,
+                            HistoryAction::Run { id, .. } | HistoryAction::Conversation { id, .. }
+                            if id == run)
+                    {
+                        if let Some(agent) = requested_agent {
+                            request["agent"] = json!(agent);
+                        }
+                    }
+                    Some((r.id.clone(), request))
+                })
                 .collect();
             let events: Vec<_> = events.into_iter().map(|e| {
                 let action = if searching { HistoryAction::Hit { id: run.into(), revision: e.revision } }
@@ -484,7 +498,7 @@ fn adapt(
                     "truncated":e.truncated,"tool_calls":e.tool_calls,"markdown":e.markdown,"request":navigation(&action)})
             }).collect();
             Ok(
-                json!({"run":run,"retargeted":retargeted,"agent_gone":agent_gone,"live":live.map(|a| row(a,label)),
+                json!({"run":run,"retargeted":retargeted,"agent_gone":requested_agent.is_some() && live.is_none(),"live":live.map(|a| row(a,label)),
                 "header":{"name":header.name,"status":header.status,"location":header.location,"started":header.started,
                     "task":header.task,"project":header.project,"branch":header.branch,"session_id":header.session_id,"details":header.details},
                 "events":events,"earlier":action("earlier").is_some(),"next_from":next_from,
@@ -597,7 +611,7 @@ fn execute(
                 None,
                 None,
                 false,
-                false,
+                None,
                 false,
             )
         },
@@ -618,7 +632,7 @@ fn execute(
                 None,
                 None,
                 false,
-                false,
+                None,
                 false,
             )
         },
@@ -637,7 +651,6 @@ fn execute(
             } else {
                 None
             };
-            let agent_gone = agent.is_some() && live.is_none();
             let retargeted = live
                 .as_ref()
                 .and_then(|a| a.run.as_ref())
@@ -676,7 +689,7 @@ fn execute(
                 live.as_ref(),
                 live.as_ref().and_then(|a| labels.get(&a.id)),
                 retargeted,
-                agent_gone,
+                agent.as_deref(),
                 !query.is_empty(),
             )
         },
@@ -723,7 +736,7 @@ fn execute(
                     None,
                     None,
                     false,
-                    false,
+                    None,
                     false,
                 )?;
                 let markdown = page["events"]
