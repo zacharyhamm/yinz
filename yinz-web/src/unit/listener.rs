@@ -1,13 +1,16 @@
 use super::*;
+use crate::listener_file::ListenerRecord;
 use crate::{Backend, DispatchFuture, WebServer, WebSettings};
 use std::{
     net::SocketAddr,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         RwLock,
     },
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use yinz_test_support::Watched;
 use yinz_types::web::{Site, StaticFile, WebRequest};
 
 #[derive(Default)]
@@ -92,12 +95,238 @@ async fn get(addr: SocketAddr, path: &str) -> String {
     )
     .await
 }
-fn records(dir: &std::path::Path) -> Vec<crate::listener_file::ListenerRecord> {
-    std::fs::read_dir(dir.join("web/listeners"))
-        .into_iter()
-        .flatten()
-        .map(|e| serde_json::from_slice(&std::fs::read(e.unwrap().path()).unwrap()).unwrap())
-        .collect()
+// Enumeration is not a directory-wide snapshot: publication and cleanup may run between
+// read_dir and read. Only completed final files are records; empty reservations still own paths.
+#[derive(Debug, Default)]
+struct RecordObservation {
+    records: Vec<ListenerRecord>,
+    pending: Vec<PathBuf>,
+}
+impl RecordObservation {
+    fn is_empty(&self) -> bool {
+        self.records.is_empty() && self.pending.is_empty()
+    }
+}
+fn records(dir: &Path) -> Result<RecordObservation> {
+    observe_records(dir, |path| std::fs::read(path))
+}
+fn observe_records(
+    dir: &Path,
+    mut read: impl FnMut(&Path) -> std::io::Result<Vec<u8>>,
+) -> Result<RecordObservation> {
+    let directory = dir.join("web/listeners");
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RecordObservation::default());
+        },
+        Err(error) => {
+            return Err(error).with_context(|| format!("enumerate {}", directory.display()))
+        },
+    };
+    let mut observation = RecordObservation::default();
+    for entry in entries {
+        let entry = entry.with_context(|| format!("read entry in {}", directory.display()))?;
+        let name = entry.file_name();
+        let Some((pid, suffix)) = name
+            .to_str()
+            .and_then(|name| name.strip_suffix(".json"))
+            .and_then(|name| name.split_once('-'))
+        else {
+            continue;
+        };
+        if ![pid, suffix]
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        {
+            continue;
+        }
+        let path = entry.path();
+        let bytes = match read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
+        };
+        if bytes.is_empty() {
+            observation.pending.push(path);
+        } else {
+            observation.records.push(
+                serde_json::from_slice(&bytes).with_context(|| {
+                    format!("parse published listener record {}", path.display())
+                })?,
+            );
+        }
+    }
+    Ok(observation)
+}
+async fn wait_for_record(
+    dir: &Path,
+    address: SocketAddr,
+    session: String,
+    instance: Option<String>,
+) -> ListenerRecord {
+    let what = format!("published listener {address}, session {session:?}, instance {instance:?}");
+    let observed = Watched::new(None);
+    let updates = observed.clone();
+    let dir = dir.to_owned();
+    let cancel = CancellationToken::new();
+    let cancelled = cancel.clone();
+    let observer = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_millis(10));
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancelled.cancelled() => break,
+                _ = tick.tick() => {},
+            }
+            let dir = dir.clone();
+            let result = tokio::task::spawn_blocking(move || records(&dir))
+                .await
+                .context("join listener record observation")
+                .and_then(|result| result)
+                .map_err(|error| format!("{error:#}"));
+            let failed = result.is_err();
+            *updates.lock() = Some(result);
+            if failed {
+                break;
+            }
+        }
+    });
+    // Watched waits block a thread; keep this test's current-thread runtime free to serve.
+    let waiter = tokio::task::spawn_blocking(move || {
+        observed.wait_until(&what, Duration::from_secs(5), |snapshot| {
+            match snapshot.as_ref()? {
+                Err(error) => Some(Err(error.clone())),
+                Ok(snapshot) => snapshot
+                    .records
+                    .iter()
+                    .find(|record| {
+                        record.address == address
+                            && record.session == session
+                            && instance
+                                .as_ref()
+                                .is_none_or(|instance| record.instance == *instance)
+                    })
+                    .cloned()
+                    .map(Ok),
+            }
+        })
+    })
+    .await;
+    // Even a timeout panic must stop and join the observer before it reaches fixture cleanup.
+    cancel.cancel();
+    observer.await.expect("join listener record observer");
+    waiter
+        .expect("listener record wait")
+        .expect("observe listener records")
+}
+fn assert_no_records(dir: &Path) {
+    assert!(records(dir).expect("observe listener cleanup").is_empty());
+    // Stopped means publication and cleanup workers have joined, including staging files.
+    let directory = dir.join("web/listeners");
+    assert_eq!(
+        std::fs::read_dir(directory).unwrap().count(),
+        0,
+        "listener staging files remain"
+    );
+}
+
+fn observation_fixture() -> (tempfile::TempDir, ListenerRecord, PathBuf) {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("web/listeners");
+    std::fs::create_dir_all(&directory).unwrap();
+    let record = ListenerRecord {
+        version: 1,
+        pid: 123,
+        instance: "instance".into(),
+        address: "127.0.0.1:7419".parse().unwrap(),
+        session: "observed".into(),
+    };
+    (temp, record, directory.join("123-456.json"))
+}
+#[test]
+fn listener_record_observation_ignores_unpublished_staging_files() {
+    let (temp, record, path) = observation_fixture();
+    std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    for (name, bytes) in [
+        (".tmp-empty", ""),
+        (".tmp-partial", "{\"version\":"),
+        ("123-x.json", "invalid"),
+        ("-456.json", "invalid"),
+        ("123-.json", "invalid"),
+    ] {
+        std::fs::write(path.parent().unwrap().join(name), bytes).unwrap();
+    }
+    let observed = records(temp.path()).unwrap();
+    assert!(observed.pending.is_empty());
+    assert_eq!(observed.records.len(), 1);
+    assert_eq!(observed.records[0].instance, record.instance);
+    assert_eq!(observed.records[0].session, record.session);
+    assert_eq!(observed.records[0].address, record.address);
+}
+#[tokio::test]
+async fn listener_record_observation_tracks_pending_until_atomic_publication() {
+    let (temp, record, path) = observation_fixture();
+    std::fs::write(&path, []).unwrap();
+    let pending = records(temp.path()).unwrap();
+    assert!(pending.records.is_empty());
+    assert_eq!(pending.pending, std::slice::from_ref(&path));
+    assert!(
+        !pending.is_empty(),
+        "a reservation must prevent cleanup success"
+    );
+    crate::auth::password::atomic_write(
+        path.parent().unwrap(),
+        "123-456.json",
+        &serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
+    let published = wait_for_record(
+        temp.path(),
+        record.address,
+        record.session.clone(),
+        Some(record.instance.clone()),
+    )
+    .await;
+    assert_eq!(published.pid, record.pid);
+    assert!(records(temp.path()).unwrap().pending.is_empty());
+    std::fs::remove_file(path).unwrap();
+    assert_no_records(temp.path());
+}
+#[test]
+fn listener_record_observation_tolerates_removal_between_enumeration_and_read() {
+    let (temp, record, path) = observation_fixture();
+    std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    let mut read_count = 0;
+    let observed = observe_records(temp.path(), |entry| {
+        assert_eq!(entry, path);
+        read_count += 1;
+        std::fs::remove_file(entry)?;
+        std::fs::read(entry)
+    })
+    .unwrap();
+    assert_eq!(read_count, 1, "removal must occur after enumeration");
+    assert!(observed.is_empty());
+    std::fs::remove_dir(path.parent().unwrap()).unwrap();
+    assert!(records(temp.path()).unwrap().is_empty());
+}
+#[test]
+fn listener_record_observation_reports_malformed_publication_and_io_errors() {
+    let (temp, _, path) = observation_fixture();
+    std::fs::write(&path, b"{").unwrap();
+    let error = records(temp.path()).unwrap_err();
+    assert!(error.to_string().contains(&path.display().to_string()));
+    assert!(format!("{error:#}").contains("EOF"));
+    let error = observe_records(temp.path(), |_| {
+        Err(std::io::ErrorKind::PermissionDenied.into())
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains(&path.display().to_string()));
+    assert!(error.downcast_ref::<std::io::Error>().is_some());
+    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_dir(path.parent().unwrap()).unwrap();
+    std::fs::write(path.parent().unwrap(), b"not a directory").unwrap();
+    assert!(records(temp.path()).is_err());
 }
 fn fixture() -> (tempfile::TempDir, Arc<Fake>) {
     let temp = tempfile::tempdir().unwrap();
@@ -135,9 +364,9 @@ async fn native_health_starting_security_and_no_dispatch() {
     let reply = request(addr, "POST /api/login HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await;
     assert!(reply.starts_with("HTTP/1.1 401"));
     assert_eq!(backend.dispatches.load(Ordering::SeqCst), 0);
-    assert_eq!(records(temp.path())[0].address, addr);
+    wait_for_record(temp.path(), addr, backend.session_name(), None).await;
     stop(&server).await;
-    assert!(records(temp.path()).is_empty());
+    assert_no_records(temp.path());
 }
 
 #[tokio::test]
@@ -273,25 +502,16 @@ async fn password_loss_quiesce_rebind_rename_and_stop() {
     .unwrap();
     backend.quiesced.store(false, Ordering::Release);
     let addr = serving(&server).await;
+    let original = wait_for_record(temp.path(), addr, backend.session_name(), None).await;
     *backend.name.write().unwrap() = "renamed".into();
     assert!(get(addr, "/healthz").await.contains("renamed"));
-    // Observe a refreshed record via condition polling, without a fixed sleep.
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if records(temp.path()).iter().any(|r| r.session == "renamed") {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
+    wait_for_record(temp.path(), addr, "renamed".into(), Some(original.instance)).await;
     crate::auth::password::clear(temp.path()).unwrap();
     state(&server, |s| *s == WebStatus::WaitingForPassword).await;
     assert!(TcpStream::connect(addr).await.is_err());
     assert!(backend.activations.load(Ordering::SeqCst) >= 2);
     stop(&server).await;
-    assert!(records(temp.path()).is_empty());
+    assert_no_records(temp.path());
 }
 
 #[tokio::test]
@@ -323,7 +543,7 @@ async fn port_takeover_and_idle_early_reset() {
     state(&holder, |s| *s == WebStatus::Stopped).await;
     assert!(get(addr, "/healthz").await.starts_with("HTTP/1.1 200"));
     stop(&waiter).await;
-    assert!(records(temp.path()).is_empty());
+    assert_no_records(temp.path());
 }
 
 #[tokio::test]
@@ -447,7 +667,7 @@ async fn keepalive_repeated_requests_idle_expiry_and_drop() {
     .await
     .unwrap();
     assert!(TcpStream::connect(addr).await.is_err());
-    assert!(records(temp.path()).is_empty());
+    assert_no_records(temp.path());
 }
 
 #[tokio::test]
@@ -531,20 +751,8 @@ async fn rename_during_activation_refreshes_initial_record() {
         backend,
         &tokio::runtime::Handle::current(),
     );
-    serving(&server).await;
-    tokio::time::timeout(Duration::from_secs(5), async {
-        let mut tick = tokio::time::interval(Duration::from_millis(10));
-        loop {
-            tick.tick().await;
-            if records(temp.path())
-                .iter()
-                .any(|record| record.session == "renamed during bind")
-            {
-                break;
-            }
-        }
-    })
-    .await
-    .expect("record follows rename during bind");
+    let addr = serving(&server).await;
+    wait_for_record(temp.path(), addr, "renamed during bind".into(), None).await;
     stop(&server).await;
+    assert_no_records(temp.path());
 }
