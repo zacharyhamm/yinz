@@ -105,6 +105,19 @@ impl SwapLayouts {
         self.current_tiled_layout_position = 0;
         self.current_floating_layout_position = 0;
     }
+    /// The tiled layout the tab was created with, as [`Self::set_base_layout`] recorded it.
+    pub fn base_tiled_layout(&self) -> Option<TiledPaneLayout> {
+        self.swap_tiled_layouts
+            .first()
+            .filter(|(_, name)| name.as_deref() == Some("BASE"))
+            .and_then(|(layouts, _)| layouts.values().next().cloned())
+    }
+    /// Makes the base layout current and clean, after it was applied outside of
+    /// [`Self::swap_tiled_panes`].
+    pub fn select_base_tiled_layout(&mut self) {
+        self.current_tiled_layout_position = 0;
+        self.is_tiled_damaged = false;
+    }
     pub fn set_swap_tiled_layouts(&mut self, new_swap_tiled_layouts: Vec<SwapTiledLayout>) {
         self.swap_tiled_layouts = new_swap_tiled_layouts;
         self.current_tiled_layout_position = 0;

@@ -304,7 +304,12 @@ impl Tab {
     pub fn worker_split_anchor(&mut self) -> Option<PaneId> {
         let ids = self.get_tiled_pane_ids();
         ids.into_iter()
-            .filter(|id| self.get_pane_with_id(*id).is_some_and(|p| p.selectable()))
+            // UI panes (eg. the tab and status bars) are never split, even before their plugin
+            // has loaded and marked itself unselectable.
+            .filter(|id| {
+                self.get_pane_with_id(*id)
+                    .is_some_and(|p| !crate::panes::is_ui_pane(p))
+            })
             .collect::<Vec<_>>()
             .into_iter()
             .find(|id| {

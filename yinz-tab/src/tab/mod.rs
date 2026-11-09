@@ -314,6 +314,14 @@ pub struct Tab {
     pub agent_tab_cleanup_allowed: bool,
     /// Keep an empty default layout alive until its reserved agent pane arrives.
     pub agent_tab_waiting_for_pane: bool,
+    /// Set by the screen when it opens this tab for an agent pane that arrives only after the
+    /// layout lands. Consumed by [`Tab::apply_layout`], which then holds the layout slot of the
+    /// absent pane in `reserved_layout_slot`.
+    pub agent_layout_slot_expected: bool,
+    /// The initial layout's slot for a pane that had not arrived when it landed. The first
+    /// content pane to arrive fills it by re-applying the base layout, rather than by splitting
+    /// whatever else the layout left on screen (see `fill_reserved_layout_slot`).
+    reserved_layout_slot: bool,
     pending_agent_placements: Vec<(PaneId, NotificationEnd)>,
     pub agent_worktrees: HashMap<PaneId, PathBuf>,
     pub agent_double_escape: bool,
@@ -674,6 +682,8 @@ impl Tab {
             agent_tab_lifetime: std::sync::Arc::new(()),
             agent_tab_cleanup_allowed: false,
             agent_tab_waiting_for_pane: false,
+            agent_layout_slot_expected: false,
+            reserved_layout_slot: false,
             pending_agent_placements: vec![],
             is_pending: true, // will be switched to false once the layout is applied
             pending_instructions: vec![],
@@ -2464,6 +2474,20 @@ impl Tab {
     }
     pub fn get_selectable_tiled_panes_count(&self) -> usize {
         self.get_selectable_tiled_panes().count()
+    }
+    /// Visible tiled panes that hold content, leaving out UI panes such as the tab and status
+    /// bars even before their plugins load and mark themselves unselectable.
+    pub fn tiled_content_pane_count(&self) -> usize {
+        self.get_tiled_panes()
+            .filter(|(id, pane)| {
+                !crate::panes::is_ui_pane(pane.as_ref())
+                    && !self.tiled_panes.panes_to_hide_contains(**id)
+            })
+            .count()
+    }
+    /// The initial layout holds a slot for a pane that has not arrived yet.
+    pub fn has_reserved_layout_slot(&self) -> bool {
+        self.reserved_layout_slot
     }
     pub fn get_selectable_floating_panes_count(&self) -> usize {
         self.get_selectable_floating_panes().count()

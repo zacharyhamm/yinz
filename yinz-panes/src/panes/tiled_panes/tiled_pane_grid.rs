@@ -1590,7 +1590,9 @@ impl<'a> TiledPaneGrid<'a> {
         room_in_geometries(
             panes
                 .iter()
-                .filter(|(_, pane)| pane.selectable())
+                // UI panes (eg. the tab and status bars) are never split, even before their
+                // plugin has loaded and marked itself unselectable.
+                .filter(|(_, pane)| !super::is_ui_pane(pane.as_ref()))
                 .map(|(id, pane)| {
                     (
                         *id,

@@ -9,6 +9,7 @@
 use super::*;
 use crate::route::{wait_for_action_completion, NotificationEnd};
 use crate::screen::agent_placement::{choose_tab, floor_of, projected_share, Candidate};
+use crate::screen::thread_main::PendingEvents;
 use std::collections::BTreeMap;
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TabNumber;
@@ -1296,4 +1297,424 @@ fn suppressed_agent_launch_completes_in_the_reserved_tab_without_layout_or_focus
             assert_eq!(tab.get_pane_with_id(id).unwrap().current_geom(), geom);
         }
     }
+}
+
+// A tab opened for an agent pane with the shipped default layout: the pane arrives after the
+// layout lands (a managed launch is queued while its tab is pending), and must take the content
+// slot between the tab bar and the status bar whenever it arrives relative to the UI plugins
+// loading.
+
+const TAB_BAR: PaneId = PaneId::Plugin(yinz_types::internal_ids::PluginId::new(1));
+const STATUS_BAR: PaneId = PaneId::Plugin(yinz_types::internal_ids::PluginId::new(2));
+
+/// The shipped default layout and swap layouts, with the plugin aliases resolved as the default
+/// config resolves them: the tab bar is the builtin one, whose height follows the tab groups.
+fn shipped_default_layout() -> Layout {
+    let resolve = |kdl: &[u8]| {
+        String::from_utf8(kdl.to_vec())
+            .unwrap()
+            .replace(r#"location="tab-bar""#, r#"location="yinz:tab-bar""#)
+            .replace(r#"location="status-bar""#, r#"location="yinz:status-bar""#)
+    };
+    let layout = resolve(yinz_config::assets::DEFAULT_LAYOUT);
+    let swap = resolve(yinz_config::assets::DEFAULT_SWAP_LAYOUT);
+    let layout = yinz_config::kdl::layout::from_kdl(
+        &layout,
+        Some("default.kdl".into()),
+        Some(("default.swap.kdl", &swap)),
+        None,
+    )
+    .unwrap();
+    assert!(layout
+        .swap_tiled_layouts
+        .iter()
+        .any(|(_, name)| name.as_deref() == Some("vertical")));
+    layout
+}
+
+fn ui_plugin_ids() -> HashMap<RunPluginOrAlias, Vec<yinz_types::internal_ids::PluginId>> {
+    [("yinz:tab-bar", 1), ("yinz:status-bar", 2)]
+        .into_iter()
+        .map(|(url, id)| {
+            let run =
+                yinz_runtime::plugin_location::run_plugin_or_alias_from_url(url, &None, None, None)
+                    .unwrap();
+            (run, vec![yinz_types::internal_ids::PluginId::new(id)])
+        })
+        .collect()
+}
+
+fn screen_with_default_layout(crowded: bool) -> Screen {
+    let mut screen = screen_with_floor();
+    screen.default_layout = Box::new(shipped_default_layout());
+    tab_with_panes(&mut screen, TabId::new(0), 1, if crowded { 4 } else { 1 });
+    screen
+}
+
+/// A `NewTab` the plugin thread was asked for, as it is handed back to land.
+struct AskedLayout {
+    tab_id: TabId,
+    layout: TiledPaneLayout,
+    floating: Vec<FloatingPaneLayout>,
+    completion: Option<NotificationEnd>,
+}
+
+fn layouts_asked_for(receiver: &Receiver<(PluginInstruction, ErrorContext)>) -> Vec<AskedLayout> {
+    receiver
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::NewTab(
+                _,
+                _,
+                Some(layout),
+                floating,
+                tab_id,
+                _,
+                _,
+                _,
+                _,
+                completion,
+            ) => Some(AskedLayout {
+                tab_id,
+                layout,
+                floating: floating.unwrap_or_default(),
+                completion,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+fn land_asked_layout(screen: &mut Screen, asked: AskedLayout, pending: &mut PendingEvents) {
+    screen
+        .land_layout(
+            asked.layout,
+            asked.floating,
+            vec![],
+            vec![],
+            vec![],
+            ui_plugin_ids(),
+            asked.tab_id,
+            false,
+            CLIENT,
+            asked.completion,
+            None,
+            pending,
+        )
+        .unwrap();
+}
+
+/// Places an agent pane as the launcher sends it: a managed launch with a real gate.
+fn place_managed_agent(
+    screen: &mut Screen,
+    pid: u32,
+    target: ClientTabIndexOrPaneId,
+    destination: Option<yinz_bus::route::AgentTabPlacement>,
+    pending: &mut PendingEvents,
+) -> (
+    tokio::sync::oneshot::Receiver<yinz_bus::route::ActionCompletionResult>,
+    Arc<yinz_bus::agent_launch::LaunchGate>,
+) {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut completion = NotificationEnd::new(tx);
+    completion.wait_for_agent_start = true;
+    completion.created_tab_id = destination
+        .as_ref()
+        .filter(|destination| destination.created)
+        .map(|destination| destination.tab_id);
+    completion.agent_tab = destination;
+    let gate = Arc::new(yinz_bus::agent_launch::LaunchGate::new(
+        format!("test.default-layout.{pid}"),
+        false,
+    ));
+    completion.launch = Some(gate.clone());
+    screen
+        .place_new_pane(
+            PaneId::Terminal(crate::TerminalId::new(pid)),
+            None,
+            None,
+            Some(run("claude")),
+            tiled(),
+            false,
+            target,
+            Some(completion),
+            false,
+            pending,
+        )
+        .unwrap();
+    (rx, gate)
+}
+
+/// As the screen's reflow lays a tab out for its viewers.
+fn resize_tab(screen: &mut Screen, tab_id: TabId, rows: usize) {
+    screen
+        .tabs
+        .get_mut(&tab_id)
+        .unwrap()
+        .resize_whole_tab_to(Size {
+            cols: SURFACE.cols,
+            rows,
+        })
+        .unwrap();
+}
+
+fn load_ui_plugins(screen: &mut Screen, tab_id: TabId) {
+    let tab = screen.tabs.get_mut(&tab_id).unwrap();
+    tab.set_pane_selectable(TAB_BAR, false);
+    tab.set_pane_selectable(STATUS_BAR, false);
+}
+
+fn assert_agent_fills_default_layout(
+    screen: &Screen,
+    tab_id: TabId,
+    pid: u32,
+    rows: usize,
+    completion: tokio::sync::oneshot::Receiver<yinz_bus::route::ActionCompletionResult>,
+    gate: &yinz_bus::agent_launch::LaunchGate,
+    case: &str,
+) {
+    let pane = PaneId::Terminal(crate::TerminalId::new(pid));
+    let result = completion.blocking_recv().unwrap();
+    assert!(result.error_message.is_none(), "{case}: {result:?}");
+    assert_eq!(result.affected_tab_id, Some(tab_id), "{case}");
+    let snapshot = gate.snapshot();
+    assert_eq!(snapshot.revoked, None, "{case}");
+    assert_eq!(snapshot.slot.map(|slot| slot.pane_id), Some(pane), "{case}");
+
+    let tab = &screen.tabs[&tab_id];
+    let geom = |id: PaneId| {
+        let geom = tab.get_pane_with_id(id).unwrap().position_and_size();
+        (geom.x, geom.y, geom.cols.as_usize(), geom.rows.as_usize())
+    };
+    let cols = SURFACE.cols;
+    assert!(tab.get_pane_with_id(TAB_BAR).unwrap().is_builtin_tab_bar());
+    assert_eq!(geom(TAB_BAR), (0, 0, cols, 1), "{case}: tab bar");
+    assert_eq!(geom(pane), (0, 1, cols, rows - 2), "{case}: agent");
+    assert_eq!(
+        geom(STATUS_BAR),
+        (0, rows - 1, cols, 1),
+        "{case}: status bar"
+    );
+    let viewport = tab.get_viewport();
+    assert_eq!(
+        (viewport.x, viewport.y, viewport.cols, viewport.rows),
+        (0, 1, cols, rows - 2),
+        "{case}: viewport"
+    );
+    assert!(tab.get_tiled_pane_ids().contains(&pane), "{case}: tiled");
+    assert_eq!(tab.get_suppressed_panes().count(), 0, "{case}: suppressed");
+    assert!(!tab.has_reserved_layout_slot(), "{case}: reservation");
+    assert_eq!(
+        tab.swap_layout_info(),
+        (Some("BASE".into()), false),
+        "{case}: swap layout"
+    );
+}
+
+/// When the managed pane arrives relative to its tab's layout and UI plugins.
+#[derive(Clone, Copy, Debug)]
+enum Arrival {
+    /// Queued while the tab is pending, replayed as the layout lands.
+    Queued,
+    BeforePluginsLoad,
+    AfterPluginsLoad,
+    AfterPluginsLoadAndResize,
+}
+
+#[test]
+fn an_explicit_new_agent_tab_gives_its_pane_the_default_layouts_content_slot() {
+    use yinz_types::agent::control::AgentPlacement;
+    for arrival in [
+        Arrival::Queued,
+        Arrival::BeforePluginsLoad,
+        Arrival::AfterPluginsLoad,
+        Arrival::AfterPluginsLoadAndResize,
+    ] {
+        let case = format!("{arrival:?}");
+        let mut screen = screen_with_default_layout(false);
+        let plugins = plugin_capture(&mut screen);
+        let target = screen
+            .resolve_agent_tab(AgentPlacement::NewTab(None), None, CLIENT)
+            .unwrap();
+        let tab_id = target.tab_id;
+        let mut asked = layouts_asked_for(&plugins);
+        assert_eq!(asked.len(), 1, "{case}");
+        let asked = asked.remove(0);
+        assert_eq!(asked.tab_id, tab_id, "{case}");
+        assert_eq!(
+            asked.layout.run_instructions_to_ignore,
+            vec![None],
+            "{case}"
+        );
+
+        let mut pending = PendingEvents::default();
+        let target_tab = ClientTabIndexOrPaneId::TabIndexNoFocus(tab_id);
+        let mut rows = SURFACE.rows;
+        let (completion, gate) = if let Arrival::Queued = arrival {
+            let (mut completion, gate) =
+                place_managed_agent(&mut screen, 20, target_tab, Some(target), &mut pending);
+            assert_eq!(pending.waiting_for_tab.len(), 1, "{case}: queued");
+            assert!(matches!(
+                completion.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ));
+            land_asked_layout(&mut screen, asked, &mut pending);
+            assert!(pending.waiting_for_tab.is_empty(), "{case}: replayed");
+            load_ui_plugins(&mut screen, tab_id);
+            (completion, gate)
+        } else {
+            land_asked_layout(&mut screen, asked, &mut pending);
+            assert!(screen.tabs[&tab_id].has_reserved_layout_slot(), "{case}");
+            if !matches!(arrival, Arrival::BeforePluginsLoad) {
+                load_ui_plugins(&mut screen, tab_id);
+            }
+            if let Arrival::AfterPluginsLoadAndResize = arrival {
+                rows = 30;
+                resize_tab(&mut screen, tab_id, rows);
+            }
+            let placed =
+                place_managed_agent(&mut screen, 20, target_tab, Some(target), &mut pending);
+            if let Arrival::BeforePluginsLoad = arrival {
+                load_ui_plugins(&mut screen, tab_id);
+            }
+            placed
+        };
+        assert_agent_fills_default_layout(&screen, tab_id, 20, rows, completion, &gate, &case);
+    }
+}
+
+#[test]
+fn an_agent_rerouted_out_of_a_crowded_tab_gets_the_default_layouts_content_slot() {
+    for delayed_replay in [false, true] {
+        let case = format!("delayed replay: {delayed_replay}");
+        let mut screen = screen_with_default_layout(true);
+        let plugins = plugin_capture(&mut screen);
+        let mut held = PendingEvents::default();
+        // The target the launcher sends for `AgentPlacement::Automatic`.
+        let (completion, gate) = place_managed_agent(
+            &mut screen,
+            20,
+            ClientTabIndexOrPaneId::ClientIdNoFocus(CLIENT),
+            None,
+            &mut held,
+        );
+        let mut asked = layouts_asked_for(&plugins);
+        assert_eq!(asked.len(), 1, "{case}");
+        let asked = asked.remove(0);
+        let tab_id = asked.tab_id;
+        assert_ne!(tab_id, TabId::new(0), "{case}");
+        assert_eq!(
+            asked.layout.run_instructions_to_ignore,
+            vec![Some(run("claude"))],
+            "{case}"
+        );
+        assert_eq!(held.waiting_for_tab.len(), 1, "{case}: queued");
+
+        let mut rows = SURFACE.rows;
+        if delayed_replay {
+            land_asked_layout(&mut screen, asked, &mut PendingEvents::default());
+            assert!(screen.tabs[&tab_id].has_reserved_layout_slot(), "{case}");
+            rows = 30;
+            resize_tab(&mut screen, tab_id, rows);
+            load_ui_plugins(&mut screen, tab_id);
+            screen.replay_events_waiting_for_layout(&mut held);
+        } else {
+            land_asked_layout(&mut screen, asked, &mut held);
+            load_ui_plugins(&mut screen, tab_id);
+        }
+        assert!(held.waiting_for_tab.is_empty(), "{case}: replayed");
+        assert_agent_fills_default_layout(&screen, tab_id, 20, rows, completion, &gate, &case);
+    }
+}
+
+#[test]
+fn only_tabs_opened_for_an_agent_hold_a_layout_slot() {
+    use yinz_types::agent::control::AgentPlacement;
+    // A warp's new tab is opened the same way, but its pane is not an agent launch.
+    let mut screen = screen_with_default_layout(false);
+    let plugins = plugin_capture(&mut screen);
+    let tab_id = screen
+        .new_tab_for_adopted_pane(Some(run("claude")), CLIENT, false)
+        .unwrap();
+    assert!(!screen.tabs[&tab_id].agent_layout_slot_expected);
+    let asked = layouts_asked_for(&plugins).remove(0);
+    land_asked_layout(&mut screen, asked, &mut PendingEvents::default());
+    assert!(!screen.tabs[&tab_id].has_reserved_layout_slot());
+
+    // As project arrangement lands a new tab and moves panes into it: an agent placed in that
+    // tab afterwards is admitted beside them, as in any tab with content.
+    let mut screen = screen_with_default_layout(false);
+    let plugins = plugin_capture(&mut screen);
+    let tab_id = screen.get_new_tab_id();
+    screen
+        .new_tab(tab_id, (vec![], vec![]), None, None)
+        .unwrap();
+    let (mut layout, floating) = screen.default_layout.new_tab();
+    layout.ignore_run_instruction(None);
+    screen
+        .land_layout(
+            layout,
+            floating,
+            vec![],
+            vec![],
+            vec![],
+            ui_plugin_ids(),
+            tab_id,
+            false,
+            CLIENT,
+            None,
+            None,
+            &mut PendingEvents::default(),
+        )
+        .unwrap();
+    drop(plugins);
+    load_ui_plugins(&mut screen, tab_id);
+    assert!(!screen.tabs[&tab_id].has_reserved_layout_slot());
+    let arranged_id = PaneId::Terminal(crate::TerminalId::new(1));
+    let pane = screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .extract_pane(arranged_id, true)
+        .unwrap();
+    {
+        let tab = screen.tabs.get_mut(&tab_id).unwrap();
+        let _ = tab.accept_arranged_pane(pane, crate::screen::ExtractedPanePlacement::Tiled);
+        tab.arrange_existing_panes(&TiledPaneLayout::default(), &[arranged_id])
+            .unwrap();
+        assert!(!tab.has_reserved_layout_slot());
+        assert_eq!(tab.tiled_content_pane_count(), 1);
+    }
+    let destination = screen
+        .resolve_agent_tab(AgentPlacement::Tab(tab_id), None, CLIENT)
+        .unwrap();
+    let (completion, gate) = place_managed_agent(
+        &mut screen,
+        20,
+        ClientTabIndexOrPaneId::TabIndexNoFocus(tab_id),
+        Some(destination),
+        &mut PendingEvents::default(),
+    );
+    let result = completion.blocking_recv().unwrap();
+    assert!(result.error_message.is_none(), "{result:?}");
+    assert!(gate.snapshot().slot.is_some());
+    let tab = &screen.tabs[&tab_id];
+    assert_eq!(tab.tiled_content_pane_count(), 2);
+    // Worker admission splits the arranged pane and leaves the swap layout to the user.
+    assert!(tab.swap_layout_info().1);
+    let viewport = tab.get_viewport();
+    let agent = tab
+        .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(20)))
+        .unwrap()
+        .position_and_size();
+    let arranged = tab
+        .get_pane_with_id(arranged_id)
+        .unwrap()
+        .position_and_size();
+    assert_eq!(agent.y, viewport.y);
+    assert_eq!(arranged.y, viewport.y);
+    assert_eq!(
+        agent.cols.as_usize() + arranged.cols.as_usize(),
+        viewport.cols
+    );
 }

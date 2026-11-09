@@ -929,6 +929,13 @@ impl Tab {
             self.tiled_panes.unset_fullscreen();
         }
         self.dissolve_stack_lists_for_classic_mutation();
+        if self.reserved_layout_slot
+            && !self.is_pending
+            && !separate
+            && !crate::panes::is_ui_pane(pane.as_ref())
+        {
+            return self.fill_reserved_layout_slot(pane, pane_id, client_id);
+        }
         let should_auto_layout = self.auto_layout
             && !self.swap_layouts.is_tiled_damaged()
             && !without_relayout
@@ -972,7 +979,12 @@ impl Tab {
             if let Some(client_id) = client_id {
                 self.tiled_panes.focus_pane(pane_id, client_id);
             }
-        } else if self.is_pending || separate {
+        } else {
+            // Parked rather than dropped, as above: a pane nothing holds is a process with no
+            // owner.
+            if !self.is_pending && !separate {
+                log::error!("No room for pane {pane_id:?} in the tiled layout, hiding it instead");
+            }
             self.park_pane(pane);
         }
         // Wait for the initial layout before applying swap layouts.

@@ -102,6 +102,13 @@ impl Tab {
         client_id: ClientId,
         mut blocking_terminal: Option<(TerminalId, NotificationEnd)>,
     ) -> Result<()> {
+        // A tab opened for an agent pane gets its layout before the pane arrives: hold the
+        // slot of the absent pane for it. The marker is consumed whatever happens below.
+        let reserve_slot = std::mem::take(&mut self.agent_layout_slot_expected)
+            && layout
+                .run_instructions_to_ignore
+                .iter()
+                .any(|run| !self.tiled_panes.has_pane_with_run(run));
         if !new_terminal_ids.is_empty()
             || !new_floating_terminal_ids.is_empty()
             || new_plugin_ids.values().any(|ids| !ids.is_empty())
@@ -132,6 +139,7 @@ impl Tab {
                 client_id,
             )
             .context("failed to apply tab layout")?;
+        self.reserved_layout_slot = reserve_slot;
         self.swap_layouts
             .set_base_layout((layout, floating_panes_layout));
         if should_show_floating_panes != self.floating_panes.panes_are_visible() {
@@ -173,6 +181,8 @@ impl Tab {
         mut blocking_terminal: Option<(TerminalId, NotificationEnd)>,
     ) -> Result<()> {
         self.agent_tab_cleanup_allowed = false;
+        // The replacement layout decides where every pane goes.
+        self.reserved_layout_slot = false;
         if let Err(error) = self.validate_override_layout(
             &layout,
             &floating_panes_layout,
@@ -347,6 +357,8 @@ impl Tab {
         order: &[PaneId],
     ) -> Result<()> {
         self.agent_tab_cleanup_allowed = false;
+        // The arranged panes take the layout's slots.
+        self.reserved_layout_slot = false;
         self.tiled_panes.unset_fullscreen();
         self.layout_applier(None)
             .apply_tiled_panes_layout_in_order(layout, Some(order))?;
@@ -356,6 +368,63 @@ impl Tab {
         self.tiled_panes.reapply_pane_frames();
         self.resize_all_stack_list_hidden_members();
         self.swap_layouts.set_is_tiled_damaged();
+        self.set_should_clear_display_before_rendering();
+        self.set_force_render();
+        self.senders
+            .send_to_pty_writer(PtyWriteInstruction::StartCachingResizes)
+            .context("keep pane resizes batched until the screen event ends")?;
+        Ok(())
+    }
+
+    /// Places the first content pane to arrive in the slot the initial layout held for it.
+    ///
+    /// The pane is inserted over the viewport and the base layout re-applied, so it takes the
+    /// layout's content slot whatever resizes and swap relayouts did to the tab while it was
+    /// waiting. Should re-application fail, the pane stays where it was inserted: it is never
+    /// dropped.
+    pub(super) fn fill_reserved_layout_slot(
+        &mut self,
+        mut pane: Box<dyn yinz_panes::pane::Pane>,
+        pane_id: PaneId,
+        client_id: Option<ClientId>,
+    ) -> Result<()> {
+        self.reserved_layout_slot = false;
+        let viewport = *self.viewport.borrow();
+        let mut geom = yinz_types::pane_size::PaneGeom::from(&yinz_types::pane_size::Size {
+            rows: viewport.rows,
+            cols: viewport.cols,
+        });
+        geom.x = viewport.x;
+        geom.y = viewport.y;
+        pane.set_geom(geom);
+        pane.set_active_at(std::time::Instant::now());
+        self.tiled_panes.add_pane_with_existing_geom(pane_id, pane);
+        let applied = self
+            .swap_layouts
+            .base_tiled_layout()
+            .context("the tab has no base layout")
+            .and_then(|layout| {
+                self.layout_applier(None)
+                    .apply_tiled_panes_layout_to_existing_panes(&layout)
+            })
+            .with_context(|| format!("failed to place pane {pane_id:?} in its layout slot"));
+        match applied {
+            Ok(()) => self.swap_layouts.select_base_tiled_layout(),
+            Err(error) => {
+                self.swap_layouts.set_is_tiled_damaged();
+                Err::<(), _>(error).non_fatal();
+            },
+        }
+        self.tiled_panes.reapply_pane_frames();
+        let display_area = *self.display_area.borrow();
+        // as in `relayout_tiled_panes`, so that the layout passes through the constraint system
+        self.tiled_panes.resize(display_area);
+        // The base layout declares the tab bar's configured height; one tab group wants less.
+        self.sync_tab_bar_height().non_fatal();
+        if let Some(client_id) = client_id {
+            self.tiled_panes.focus_pane(pane_id, client_id);
+        }
+        self.refresh_overlay_expansion();
         self.set_should_clear_display_before_rendering();
         self.set_force_render();
         self.senders

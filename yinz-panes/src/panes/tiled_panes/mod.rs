@@ -107,7 +107,7 @@ fn display_area_viewport(display_area: &Rc<RefCell<Size>>) -> Viewport {
 /// out of the viewport just like a non-selectable pane - we cannot rely on selectability alone here,
 /// because a plugin only reports it once it has loaded, and until then we'd be calculating (and
 /// sending to the pty) wrong sizes for the other panes in this tab.
-fn is_ui_pane(pane: &dyn Pane) -> bool {
+pub fn is_ui_pane(pane: &dyn Pane) -> bool {
     !pane.selectable() || (pane.borderless() && matches!(pane.pid(), PaneId::Plugin(_)))
 }
 
@@ -405,8 +405,9 @@ impl TiledPanes {
         let should_relayout = false;
         self.add_pane(pane_id, pane, should_relayout, client_id)
     }
-    /// Only unselectable panes that do not touch the viewport remain, such as the UI
-    /// panes a warp leaves behind when it takes a tab's last content pane.
+    /// Only UI panes that do not touch the viewport remain, such as the UI panes a warp leaves
+    /// behind when it takes a tab's last content pane, or the tab and status bars of a new tab
+    /// before their plugins have loaded and marked themselves unselectable.
     fn has_no_content_in_viewport(&self) -> bool {
         let viewport = *self.viewport.borrow();
         self.panes.values().all(|pane| {
@@ -415,7 +416,7 @@ impl TiledPanes {
                 && viewport.x < geom.x + geom.cols.as_usize()
                 && geom.y < viewport.y + viewport.rows
                 && viewport.y < geom.y + geom.rows.as_usize();
-            !pane.selectable() && !overlaps
+            is_ui_pane(pane.as_ref()) && !overlaps
         })
     }
     pub fn has_room_for_new_pane(&mut self) -> bool {
@@ -1726,6 +1727,10 @@ impl TiledPanes {
     pub fn position_and_size_of_stack(&mut self, pane_id: &PaneId) -> Option<PaneGeom> {
         StackedPanes::new_from_btreemap(&mut self.panes, &self.panes_to_hide)
             .position_and_size_of_stack(pane_id)
+    }
+    /// Whether a pane started with `run` is already in this layer.
+    pub fn has_pane_with_run(&self, run: &Option<Run>) -> bool {
+        self.panes.values().any(|pane| pane.invoked_with() == run)
     }
     pub fn set_geom_for_pane_with_run(
         &mut self,

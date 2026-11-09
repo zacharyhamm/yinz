@@ -909,7 +909,13 @@ impl<'a> LayoutApplier<'a> {
         // layout)
         let mut run_instructions_without_a_location = vec![];
         for run_instruction in run_instructions_to_ignore.iter().cloned() {
-            if self
+            if !self.tiled_panes.has_pane_with_run(&run_instruction) {
+                // The running pane has not arrived yet (eg. an agent pane queued until its new
+                // tab's layout lands). Its slot stays out of reach of the new terminals, which
+                // the pty already allocated without it, and the tab decides whether to hold it
+                // for the pane (see `Tab::apply_layout`).
+                Self::reserve_location_for_absent_pane(&run_instruction, positions_in_layout);
+            } else if self
                 .place_running_pane_in_exact_match_location(&run_instruction, positions_in_layout)
             {
                 // found exact match
@@ -1225,6 +1231,24 @@ impl<'a> LayoutApplier<'a> {
         self.tiled_panes
             .add_pane_with_existing_geom(PaneId::Terminal(pid), Box::new(new_pane));
         Ok(())
+    }
+    /// Takes the slot an ignored run would have been placed in, in the same order of preference
+    /// as for a running pane: an exact match, then the first slot without a run instruction.
+    fn reserve_location_for_absent_pane(
+        run_instruction: &Option<Run>,
+        positions_in_layout: &mut Vec<(TiledPaneLayout, PaneGeom)>,
+    ) {
+        let position = positions_in_layout
+            .iter()
+            .position(|(layout, _)| &layout.run == run_instruction)
+            .or_else(|| {
+                positions_in_layout
+                    .iter()
+                    .position(|(layout, _)| layout.run.is_none())
+            });
+        if let Some(position) = position {
+            positions_in_layout.remove(position);
+        }
     }
     fn place_running_pane_in_exact_match_location(
         &mut self,

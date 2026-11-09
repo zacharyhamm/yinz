@@ -643,7 +643,10 @@ impl Screen {
                             }
                         } else if managed_gate.is_some()
                             && !start_suppressed
-                            && active_tab.get_selectable_tiled_panes_count() > 0
+                            // Only content panes are split. A tab holding its UI panes alone, or
+                            // whose layout holds a slot for this pane, places it as a new pane.
+                            && active_tab.tiled_content_pane_count() > 0
+                            && !active_tab.has_reserved_layout_slot()
                         {
                             let anchor = active_tab.worker_split_anchor().ok_or_else(|| {
                                 if let Some(gate) = &managed_gate {

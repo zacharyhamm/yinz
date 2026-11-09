@@ -256,6 +256,10 @@ impl Screen {
                 match made {
                     Ok(tab_id) => {
                         created_tab_id = Some(tab_id);
+                        // The pane arrives after the tab's layout lands; hold its slot.
+                        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                            tab.agent_layout_slot_expected = true;
+                        }
                         (tab_id, None)
                     },
                     Err(error) => {
@@ -378,6 +382,8 @@ impl Screen {
                     .map_err(|error| format!("cannot create agent tab: {error:#}"))?;
                 if let Some(tab) = self.tabs.get_mut(&id) {
                     tab.agent_tab_waiting_for_pane = true;
+                    // The pane arrives after the tab's layout lands; hold its slot.
+                    tab.agent_layout_slot_expected = true;
                 }
                 if let Some(name) = name
                     && let Some(tab) = self.tabs.get_mut(&id)
