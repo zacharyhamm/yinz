@@ -16,8 +16,11 @@ measured input/ancestry projections and explicitly synthetic schedules. The
 [earlier investigation](issue-69-notification-investigation.md) preserves its
 original verdict/provenance. This subset supersedes its all-path implementation
 gate; it does not resolve anonymous worker removal or prove sidechain answer ends.
-Overall issue 69 stays open. Unsupported formats/routes, unproved resumed passes,
-worker-owned tasks and gated tool-result delivery retain existing fallback.
+Per the user's issue split, Agenda yinz #69 closes when this approved root/local-shell
+subset merges. Agenda yinz #76 remains open for deferred sidechain/resume, anonymous
+hook-declined wake and alternate-delivery work. Unsupported formats/routes, unproved
+resumed passes, worker-owned tasks and gated tool-result delivery retain existing
+fallback.
 Observation loss, capacity and the 24-hour operational budget degrade observation;
 none proves completion. Handoff preserves pending facts and the remaining budget.
 An explicit unavailable notification observer (including a registry-only turn end

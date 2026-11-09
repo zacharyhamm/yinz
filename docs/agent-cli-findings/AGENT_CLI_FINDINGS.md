@@ -44,8 +44,10 @@ pinned provider/input proof. The [prior investigation](issue-69-notification-inv
 retains installed-binary capture provenance. Automated worktree parser, native
 pruning/relay, screen, reporter-process and selected IPC tests verify the
 implementation separately; they are not a fresh live adverse-order reproduction.
-Issue 69 remains open for worker-owned/unattributed resumed processing, anonymous
-hook-declined removals, gated tool-result and unvalidated alternate delivery.
+Per the user's issue split, Agenda yinz #69 closes when this approved root/local-shell
+subset merges. Agenda yinz #76 remains open for worker-owned/unattributed resumed
+processing, anonymous hook-declined removals, gated tool-result and unvalidated
+alternate delivery.
 Unsupported or unavailable observation retains registry/hooks. Operational budget
 or capacity exhaustion is unavailable observation, never successful settlement.
 Unavailable notification observers also release their accepted processing lifetime,

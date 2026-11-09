@@ -733,7 +733,10 @@ empty task snapshot settles an identified obligation. Older Claude versions or
 unreadable registries retain available hooks and supported positive evidence.
 `wait --until idle` observes the aggregate; completing one prompt does not imply
 the pane is idle. See the [pinned adapter mapping](agent-cli-findings/issue-69-s1-adapter-mapping.md)
-for input provenance and limits. Overall issue 69 remains open for the deferred paths.
+for input provenance and limits. Per the user's issue split, Agenda yinz #69 closes
+when this approved root/local-shell subset merges. Agenda yinz #76 remains open for
+the deferred sidechain/resume, anonymous hook-declined wake and alternate-delivery
+work.
 
 The default deadline is 30 seconds. `prompt --wait` defaults to 10 minutes.
 `--timeout` accepts durations from `1ms` to `24h` and includes acceptance time.
