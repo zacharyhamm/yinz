@@ -731,6 +731,13 @@ degrade to that fallback; expiry never proves task completion. Pane transfer
 preserves the remaining budget and dependent identities. No idle debounce or
 empty task snapshot settles an identified obligation. Older Claude versions or
 unreadable registries retain available hooks and supported positive evidence.
+A newer local provider's native startup/resume adopts its process identity even
+when the conversation ID stays the same and no new background task launches.
+This retires the previous process's observation and input waits without proving
+task completion. Pending requests for that process return `target_changed`;
+completed submission results remain available. Late reports from the retired
+process cannot change the replacement's state or answer. Resuming the same
+process retains its available work and person/worker waits.
 `wait --until idle` observes the aggregate; completing one prompt does not imply
 the pane is idle. See the [pinned adapter mapping](agent-cli-findings/issue-69-s1-adapter-mapping.md)
 for input provenance and limits. Per the user's issue split, Agenda yinz #69 closes

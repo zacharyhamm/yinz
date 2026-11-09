@@ -1284,3 +1284,69 @@ fn warp_tracking_retains_identified_obligations_and_run_tombstones() {
         assert!(!destination.claude_background_pending_for_test());
     }
 }
+
+#[test]
+fn warp_tracking_preserves_provider_adoption_and_rejects_retired_source_reports() {
+    for path in ["pane", "tab", "companion"] {
+        let (mut source, _, _) = setup("claude");
+        report_kind(
+            &mut source,
+            "claude",
+            provider_resume(notification_source()),
+        );
+        report_kind(&mut source, "claude", hook("UserPromptSubmit"));
+        report_kind(
+            &mut source,
+            "claude",
+            native_background_launch("bash", "tool", "Bash"),
+        );
+        report_kind(&mut source, "claude", sourced_stop("prompt", "LAUNCH"));
+        report_kind(
+            &mut source,
+            "claude",
+            task_notification("notice", &["bash"]),
+        );
+        report_kind(
+            &mut source,
+            "claude",
+            identified_notice("notice", "bash", "tool", "run"),
+        );
+        let (mut destination, _) = adopt_tracking(&mut source, path, false, true);
+        report_kind(
+            &mut destination,
+            "claude",
+            provider_resume(notification_source()),
+        );
+        assert!(destination.claude_background_pending_for_test());
+        report_kind(
+            &mut destination,
+            "claude",
+            provider_resume(replacement_source()),
+        );
+        assert!(!destination.claude_background_pending_for_test());
+        report_kind(
+            &mut destination,
+            "claude",
+            with_notification_source(steering_ack("new"), replacement_source()),
+        );
+        report_kind(
+            &mut destination,
+            "claude",
+            with_notification_source(claude_stop("new", "NEW", false), replacement_source()),
+        );
+        let (mut next, _) = adopt_tracking(&mut destination, path, false, true);
+        for old in [
+            provider_resume(notification_source()),
+            native_background_launch("bash", "tool", "Bash"),
+            sourced_stop("new", "OLD"),
+        ] {
+            report_kind(&mut next, "claude", old);
+            assert!(!next.claude_background_pending_for_test());
+            assert_eq!(claude_lifecycle(&next).last_message.as_deref(), Some("NEW"));
+            assert_eq!(
+                claude_lifecycle(&next).claude.obligations.source,
+                Some(replacement_source())
+            );
+        }
+    }
+}

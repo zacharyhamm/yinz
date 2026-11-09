@@ -430,7 +430,9 @@ impl NotificationIpc {
     fn native(&self, raw: serde_json::Value) -> HookEvent {
         let (mut hook, _) =
             yinz_runtime::agent::hooks::parse_hook_event("claude", raw.to_string()).unwrap();
-        hook.claude_notifications.as_mut().unwrap().source = Some(Self::source());
+        hook.claude_notifications
+            .get_or_insert_with(Default::default)
+            .source = Some(Self::source());
         hook
     }
 
@@ -735,4 +737,196 @@ fn claude_steering_exact_cancellation_waits_for_its_answer_in_both_registry_orde
 #[test]
 fn claude_steering_supported_answers_preserve_other_work_in_both_registry_orders() {
     notification_disposition_over_ipc("answer");
+}
+
+#[test]
+fn claude_steering_resume_replaces_provider_without_a_new_async_launch() {
+    use yinz_types::agent::claude_notifications::Source;
+    let fixture = NotificationIpc::new();
+    let replacement = Source {
+        pid: 124,
+        started: 457,
+    };
+    let sourced = |mut hook: HookEvent, source: Source| {
+        hook.claude_notifications
+            .get_or_insert_with(Default::default)
+            .source = Some(source);
+        hook
+    };
+    let resume = || {
+        fixture.native(serde_json::json!({
+            "hook_event_name":"SessionStart", "session_id":"conversation", "source":"resume"
+        }))
+    };
+    fixture.submit("launch", None);
+    fixture.launch("bash", "tool");
+    assert_eq!(
+        fixture.report(fixture.stop("launch", "LAUNCH")).agents[0]
+            .agent
+            .state,
+        AgentState::Busy
+    );
+    assert_eq!(
+        fixture.report(resume()).agents[0].agent.state,
+        AgentState::Busy
+    );
+    let (mut waiter, mut waited) = fixture.connect();
+    let wait = || AgentRequest::Wait {
+        pane_id: fixture.pane,
+        expected_session_id: None,
+        until: AgentState::Idle,
+        timeout_ms: 30_000,
+    };
+    waiter
+        .send_client_msg(ClientToServerMsg::AgentControl(wait()))
+        .unwrap();
+    // The Status on the waiter's own channel proves the wait has reached the screen.
+    waiter
+        .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Status {
+            pane_id: fixture.pane,
+            expected_session_id: None,
+        }))
+        .unwrap();
+    assert_eq!(
+        NotificationIpc::reply(&mut waited).agents[0].agent.state,
+        AgentState::Busy
+    );
+    let adopted = fixture.report(sourced(resume(), replacement.clone()));
+    assert_eq!(adopted.agents[0].agent.state, AgentState::Idle);
+    assert!(!adopted.agents[0].background);
+    assert_eq!(
+        NotificationIpc::reply(&mut waited).outcome,
+        AgentOutcome::TargetChanged
+    );
+    fixture.report(sourced(
+        fixture.hook("UserPromptSubmit", "new"),
+        replacement.clone(),
+    ));
+    assert_eq!(
+        fixture
+            .report(sourced(resume(), replacement.clone()))
+            .agents[0]
+            .agent
+            .state,
+        AgentState::Busy
+    );
+    let events = fixture
+        .yinz
+        .stream_events(&["pane_update", "agent_lifecycle"]);
+    events.wait_for_event("PaneUpdate");
+    waiter
+        .send_client_msg(ClientToServerMsg::AgentControl(wait()))
+        .unwrap();
+    waiter
+        .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Status {
+            pane_id: fixture.pane,
+            expected_session_id: None,
+        }))
+        .unwrap();
+    assert_eq!(
+        NotificationIpc::reply(&mut waited).agents[0].agent.state,
+        AgentState::Busy
+    );
+    let done = fixture.report(sourced(
+        fixture.stop("new", "NEW_ANSWER"),
+        replacement.clone(),
+    ));
+    assert_eq!(done.agents[0].agent.state, AgentState::Idle);
+    assert!(done.agents[0].ready);
+    assert!(!done.agents[0].background);
+    let answer = NotificationIpc::reply(&mut waited);
+    assert_eq!(answer.outcome, AgentOutcome::Ok);
+    assert_eq!(answer.message.as_deref(), Some("NEW_ANSWER"));
+    assert_eq!(
+        fixture.request(wait()).message.as_deref(),
+        Some("NEW_ANSWER")
+    );
+    events.wait_for_event_matching("agent_lifecycle", |json| {
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        value["event_type"] == "state_changed" && value["state"] == "idle"
+    });
+    events.wait_for_event_matching("PaneUpdate", |json| {
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        value["PaneUpdate"]["panes"]
+            .as_object()
+            .is_some_and(|panes| {
+                panes.values().any(|panes| {
+                    panes.as_array().is_some_and(|panes| {
+                        panes.iter().any(|pane| {
+                            pane["id"] == fixture.agent.terminal_id().get()
+                                && pane["is_plugin"] == false
+                                && pane["agent"]["state"] == "Idle"
+                        })
+                    })
+                })
+            })
+    });
+    // Old native hooks and detached callbacks cannot reclaim the conversation,
+    // change its text, or clear the replacement's later background work.
+    for old in [
+        resume(),
+        fixture.stop("new", "STALE"),
+        fixture.notice("old", "bash", "tool"),
+        fixture.hook("SessionEnd", ""),
+    ] {
+        let after = fixture.report(sourced(old, NotificationIpc::source()));
+        assert_eq!(after.agents[0].agent.state, AgentState::Idle);
+        assert!(!after.agents[0].background);
+        assert_eq!(
+            fixture.request(wait()).message.as_deref(),
+            Some("NEW_ANSWER")
+        );
+    }
+    let recovered = fixture.request(AgentRequest::Recover {
+        pane_id: fixture.pane,
+        expected_session_id: "conversation".into(),
+        confirm_empty: true,
+        interrupted: false,
+    });
+    assert_eq!(recovered.outcome, AgentOutcome::Ok);
+    fixture.report(sourced(
+        fixture.hook("UserPromptSubmit", "launch"),
+        replacement.clone(),
+    ));
+    fixture.report(sourced(
+        fixture.native(serde_json::json!({"hook_event_name":"PostToolUse",
+        "session_id":"conversation", "prompt_id":"launch", "tool_name":"Bash", "tool_use_id":"tool",
+        "tool_response":{"backgroundTaskId":"bash"}})),
+        replacement.clone(),
+    ));
+    fixture.report(sourced(
+        fixture.stop("launch", "NEW_LAUNCH"),
+        replacement.clone(),
+    ));
+    assert!(fixture.report(fixture.stop("launch", "OLD_LAUNCH")).agents[0].background);
+    // Use the native task-notification submit shape; the accepted row is separate.
+    fixture.report(sourced(
+        HookEvent {
+            prompt: Some("<task-notification><task-id>bash</task-id></task-notification>".into()),
+            ..fixture.hook("UserPromptSubmit", "notice-actual")
+        },
+        replacement.clone(),
+    ));
+    fixture.report(sourced(
+        fixture.notice("notice-actual", "bash", "tool"),
+        replacement.clone(),
+    ));
+    waiter
+        .send_client_msg(ClientToServerMsg::AgentControl(wait()))
+        .unwrap();
+    waiter
+        .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Status {
+            pane_id: fixture.pane,
+            expected_session_id: None,
+        }))
+        .unwrap();
+    assert!(NotificationIpc::reply(&mut waited).agents[0].background);
+    fixture.report(sourced(
+        fixture.stop("notice-actual", "FINAL_NEW"),
+        replacement,
+    ));
+    let final_answer = NotificationIpc::reply(&mut waited);
+    assert_eq!(final_answer.outcome, AgentOutcome::Ok);
+    assert_eq!(final_answer.message.as_deref(), Some("FINAL_NEW"));
+    assert!(!fixture.status().agents[0].background);
 }

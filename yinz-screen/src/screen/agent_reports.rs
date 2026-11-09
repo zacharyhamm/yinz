@@ -172,9 +172,15 @@ pub(super) fn apply_queued_agent_report(
     if report.kind == "claude"
         && let Some(hook) = hook.as_mut()
         && report.event.as_ref().is_some_and(|event| {
-            event.kind == "claude" && event.session_id.as_deref() == Some(hook.session_id.as_str())
+            event.kind == "claude"
+                && PaneId::Terminal(event.pane_id) == pane_id
+                && event.hook == hook.hook_event_name
+                && event.session_id.as_deref() == Some(hook.session_id.as_str())
         })
     {
+        if !screen.accept_claude_source(pane_id, hook) {
+            return Ok(true);
+        }
         screen.correlate_claude_terminal_hook(pane_id, hook);
         screen.retain_claude_evidence(pane_id, hook);
     }
@@ -274,6 +280,19 @@ pub(super) fn apply_queued_agent_report(
         normalized.state = yinz_types::agent::report::AgentReportState::Set(waiting);
         if let Some(event) = &mut normalized.event {
             event.state = Some(AgentState::Waiting);
+        }
+        &normalized
+    } else if report.kind == "claude"
+        && hook
+            .as_ref()
+            .is_some_and(|hook| screen.preserve_claude_start_state(pane_id, hook))
+    {
+        // Resuming the current process proves no foreground turn or native wait
+        // ended. A replacement has already retired its old parent before this point.
+        normalized = report.clone();
+        normalized.state = yinz_types::agent::report::AgentReportState::Unchanged;
+        if let Some(event) = &mut normalized.event {
+            event.state = None;
         }
         &normalized
     } else if matches!(report.kind.as_str(), "claude" | "agy")

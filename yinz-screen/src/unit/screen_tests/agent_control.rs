@@ -15082,3 +15082,479 @@ fn unsupported_cancellation_degrades_only_unbound_observation_without_settling()
         assert!(!state.claude.obligations.launches[0].settled);
     }
 }
+
+fn with_notification_source(
+    mut event: HookEvent,
+    source: yinz_types::agent::claude_notifications::Source,
+) -> HookEvent {
+    event
+        .claude_notifications
+        .get_or_insert_with(Default::default)
+        .source = Some(source);
+    event
+}
+
+fn replacement_source() -> yinz_types::agent::claude_notifications::Source {
+    yinz_types::agent::claude_notifications::Source {
+        pid: 124,
+        started: 457,
+    }
+}
+
+fn provider_resume(source: yinz_types::agent::claude_notifications::Source) -> HookEvent {
+    let (event, _) = yinz_runtime::agent::hooks::parse_hook_event(
+        "claude",
+        serde_json::json!({
+            "hook_event_name": "SessionStart", "session_id": "conversation", "source": "resume"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    with_notification_source(event, source)
+}
+
+#[test]
+fn claude_provider_resume_retires_old_observation_and_preserves_completed_submission() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    screen.agent_control_with_clear(identified_prompt("original", true), CLIENT, &writes);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    report_kind(
+        &mut screen,
+        "claude",
+        native_background_launch("bash", "tool", "Bash"),
+    );
+    report_kind(&mut screen, "claude", sourced_stop("prompt", "LAUNCH"));
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().message.as_deref(),
+        Some("LAUNCH")
+    );
+    let original = screen.agent_submissions[&PANE].clone();
+    draft_frame(&mut screen, "claude", "", 0, Instant::now());
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    assert!(replies(&messages, CLIENT).is_empty());
+
+    report_kind(&mut screen, "claude", provider_resume(replacement_source()));
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::TargetChanged
+    );
+    assert!(!screen.claude_background_pending_for_test());
+    assert_eq!(screen.agent_submissions[&PANE], original);
+    assert_eq!(claude_lifecycle(&screen).last_message, None);
+    assert_eq!(
+        claude_lifecycle(&screen).claude.obligations.source,
+        Some(replacement_source())
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        with_notification_source(steering_ack("replacement"), replacement_source()),
+    );
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    report_kind(
+        &mut screen,
+        "claude",
+        with_notification_source(
+            claude_stop("replacement", "NEW", false),
+            replacement_source(),
+        ),
+    );
+    let done = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(done.outcome, AgentOutcome::Ok);
+    assert_eq!(done.message.as_deref(), Some("NEW"));
+    assert_eq!(done.agents[0].agent.state, AgentState::Idle);
+    assert!(screen.agent_status_for_test().ready);
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().message.as_deref(),
+        Some("NEW")
+    );
+    recover_after_quiet(&mut screen, recover());
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Ok
+    );
+    screen.agent_control(
+        AgentRequest::WaitTurn {
+            pane_id: PANE,
+            expected_session_id: None,
+            submission_id: "original".into(),
+            timeout_ms: 30_000,
+        },
+        CLIENT,
+    );
+    let original_result = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(original_result.outcome, AgentOutcome::Completed);
+    assert_eq!(original_result.message.as_deref(), Some("LAUNCH"));
+}
+
+#[test]
+fn claude_provider_source_adoption_rejects_unrelated_callbacks_and_old_replay() {
+    let (mut screen, _, _) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    report_kind(
+        &mut screen,
+        "claude",
+        native_background_launch("bash", "tool", "Bash"),
+    );
+    report_kind(&mut screen, "claude", sourced_stop("prompt", "LAUNCH"));
+    let before = claude_lifecycle(&screen);
+    for event in [
+        sourced_stop("prompt", "UNRELATED"),
+        identified_notice("notice", "bash", "tool", "run"),
+        task_notification("notice", &["bash"]),
+        background_idle("prompt"),
+        hook("SessionEnd"),
+        HookEvent {
+            source: Some("compact".into()),
+            ..hook("SessionStart")
+        },
+        HookEvent {
+            archive_only: true,
+            ..provider_resume(replacement_source())
+        },
+        HookEvent {
+            agent_id: Some("worker".into()),
+            ..provider_resume(replacement_source())
+        },
+    ] {
+        report_kind(
+            &mut screen,
+            "claude",
+            with_notification_source(event, replacement_source()),
+        );
+        let after = claude_lifecycle(&screen);
+        assert_eq!(
+            after.claude.obligations.source,
+            before.claude.obligations.source
+        );
+        assert_eq!(after.claude.turns, before.claude.turns);
+        assert_eq!(after.last_message, before.last_message);
+        assert!(screen.claude_background_pending_for_test());
+    }
+    report_kind(&mut screen, "claude", provider_resume(replacement_source()));
+    report_kind(
+        &mut screen,
+        "claude",
+        with_notification_source(steering_ack("new"), replacement_source()),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        with_notification_source(claude_stop("new", "NEW", false), replacement_source()),
+    );
+    let current = claude_lifecycle(&screen);
+    for event in [
+        provider_resume(notification_source()),
+        native_background_launch("bash", "tool", "Bash"),
+        task_notification("notice", &["bash"]),
+        identified_notice("notice", "bash", "tool", "run"),
+        sourced_stop("new", "OLD"),
+        hook("SessionEnd"),
+    ] {
+        report_kind(
+            &mut screen,
+            "claude",
+            with_notification_source(event, notification_source()),
+        );
+        let after = claude_lifecycle(&screen);
+        assert_eq!(after.claude, current.claude);
+        assert_eq!(after.last_message.as_deref(), Some("NEW"));
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+    }
+    // The replacement can reuse a task/tool/run from the retired incarnation.
+    report_kind(
+        &mut screen,
+        "claude",
+        with_notification_source(steering_ack("prompt"), replacement_source()),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        with_notification_source(
+            native_background_launch("bash", "tool", "Bash"),
+            replacement_source(),
+        ),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        with_notification_source(sourced_stop("prompt", "NEW_LAUNCH"), replacement_source()),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        with_notification_source(task_notification("notice", &["bash"]), replacement_source()),
+    );
+    let notice = with_notification_source(
+        identified_notice("notice", "bash", "tool", "run"),
+        replacement_source(),
+    );
+    report_kind(&mut screen, "claude", notice.clone());
+    // Even an old-source answer naming the current prompt cannot settle it.
+    report_kind(&mut screen, "claude", sourced_stop("notice", "OLD"));
+    assert!(screen.claude_background_pending_for_test());
+    let mut answer =
+        with_notification_source(sourced_stop("notice", "FINAL_NEW"), replacement_source());
+    answer.claude_notifications = notice.claude_notifications;
+    report_kind(&mut screen, "claude", answer);
+    assert!(!screen.claude_background_pending_for_test());
+    assert_eq!(
+        claude_lifecycle(&screen).last_message.as_deref(),
+        Some("FINAL_NEW")
+    );
+}
+
+#[test]
+fn claude_same_source_resume_preserves_available_work_and_native_waits() {
+    for worker in [false, true] {
+        let (mut screen, _, _) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        report_kind(
+            &mut screen,
+            "claude",
+            native_background_launch("bash", "tool", "Bash"),
+        );
+        report_kind(&mut screen, "claude", sourced_stop("prompt", "LAUNCH"));
+        report_kind(
+            &mut screen,
+            "claude",
+            task_notification("notice", &["bash"]),
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            identified_notice("notice", "bash", "tool", "run"),
+        );
+        let waiting = if worker {
+            claude_worker_input("PreToolUse", "worker", Some("question"))
+        } else {
+            HookEvent {
+                prompt_id: Some("notice".into()),
+                ..claude_permission_prompt()
+            }
+        };
+        report_kind(
+            &mut screen,
+            "claude",
+            with_notification_source(waiting, notification_source()),
+        );
+        let before = claude_lifecycle(&screen);
+        report_kind(
+            &mut screen,
+            "claude",
+            provider_resume(notification_source()),
+        );
+        assert!(screen.claude_background_pending_for_test());
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
+        assert_eq!(
+            claude_lifecycle(&screen).claude_notifications,
+            before.claude_notifications
+        );
+        assert_eq!(
+            claude_lifecycle(&screen).claude.worker_wait_tools,
+            before.claude.worker_wait_tools
+        );
+        report_kind(&mut screen, "claude", provider_resume(replacement_source()));
+        assert!(!screen.claude_background_pending_for_test());
+        assert!(claude_lifecycle(&screen).claude_notifications.is_empty());
+        assert!(claude_lifecycle(&screen)
+            .claude
+            .worker_wait_tools
+            .is_empty());
+        assert!(!screen.agent_worker_waits.contains_key(&PANE));
+        assert!(!screen.claude_permission_waits.contains_key(&PANE));
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+    }
+}
+
+#[test]
+fn claude_provider_replacement_cannot_complete_an_unresolved_submission() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(
+        &mut screen,
+        "claude",
+        provider_resume(notification_source()),
+    );
+    screen.agent_control_with_clear(identified_prompt("pending", true), CLIENT, &writes);
+    finish_paste(&writes);
+    report_kind(
+        &mut screen,
+        "claude",
+        with_notification_source(hook("UserPromptSubmit"), notification_source()),
+    );
+    report_kind(&mut screen, "claude", provider_resume(replacement_source()));
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::TargetChanged
+    );
+    let result = screen.agent_submissions[&PANE]
+        .back()
+        .unwrap()
+        .result
+        .clone()
+        .unwrap();
+    assert_eq!(result.outcome, AgentOutcome::TargetChanged);
+    assert_eq!(result.message, None);
+    report_kind(
+        &mut screen,
+        "claude",
+        with_notification_source(steering_ack("new"), replacement_source()),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        with_notification_source(claude_stop("new", "NEW", false), replacement_source()),
+    );
+    assert_eq!(
+        screen.agent_submissions[&PANE]
+            .back()
+            .unwrap()
+            .result
+            .as_ref(),
+        Some(&result)
+    );
+    // A newer local positive launch retains the previously supported replacement route.
+    let third = yinz_types::agent::claude_notifications::Source {
+        pid: 125,
+        started: 458,
+    };
+    report_kind(
+        &mut screen,
+        "claude",
+        with_notification_source(
+            native_background_launch("next", "next-tool", "Bash"),
+            third.clone(),
+        ),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        with_notification_source(sourced_stop("prompt", "NEXT"), third),
+    );
+    assert!(screen.claude_background_pending_for_test());
+    assert_eq!(
+        claude_lifecycle(&screen).last_message.as_deref(),
+        Some("NEXT")
+    );
+}
+
+#[test]
+fn claude_provider_adoption_requires_live_local_native_authority() {
+    for invalid in [
+        "older",
+        "same-start",
+        "unavailable",
+        "compact",
+        "confirmation",
+        "remote",
+        "held",
+        "foreign",
+    ] {
+        let target = if invalid == "remote" {
+            PaneTarget::ssh("test-host").unwrap()
+        } else {
+            PaneTarget::Local
+        };
+        let (mut screen, _, _) = setup_on_target("claude", target);
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        report_kind(
+            &mut screen,
+            "claude",
+            native_background_launch("bash", "tool", "Bash"),
+        );
+        report_kind(&mut screen, "claude", sourced_stop("prompt", "LAUNCH"));
+        let mut start = provider_resume(replacement_source());
+        match invalid {
+            "older" => {
+                start
+                    .claude_notifications
+                    .as_mut()
+                    .unwrap()
+                    .source
+                    .as_mut()
+                    .unwrap()
+                    .started = 455
+            },
+            "same-start" => {
+                start
+                    .claude_notifications
+                    .as_mut()
+                    .unwrap()
+                    .source
+                    .as_mut()
+                    .unwrap()
+                    .started = 456
+            },
+            "unavailable" => start.claude_notifications.as_mut().unwrap().unavailable = true,
+            "compact" => start.source = Some("compact".into()),
+            "confirmation" => start.claude_turn_complete = Some(true),
+            "held" => screen
+                .tab_containing_pane_mut(PANE)
+                .unwrap()
+                .get_pane_with_id_mut(PANE)
+                .unwrap()
+                .hold(Some(0), true, RunCommand::default()),
+            "foreign" => {
+                // A foreign detached notice cannot claim this lifecycle.
+                start = identified_notice("notice", "bash", "tool", "run");
+                start.session_id = "foreign".into();
+                start = with_notification_source(start, replacement_source());
+            },
+            _ => {},
+        }
+        report_kind(&mut screen, "claude", start);
+        assert_eq!(
+            claude_lifecycle(&screen).claude.obligations.source,
+            Some(notification_source()),
+            "{invalid}"
+        );
+        assert!(screen.claude_background_pending_for_test(), "{invalid}");
+    }
+}
+
+#[test]
+fn claude_same_source_resume_does_not_answer_the_current_parent_turn_or_permission() {
+    for permission in [false, true] {
+        let (mut screen, _, _) = setup("claude");
+        report_kind(
+            &mut screen,
+            "claude",
+            provider_resume(notification_source()),
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            with_notification_source(hook("UserPromptSubmit"), notification_source()),
+        );
+        if permission {
+            report_kind(
+                &mut screen,
+                "claude",
+                with_notification_source(claude_permission_prompt(), notification_source()),
+            );
+        }
+        let before = screen.agent_status_for_test().agent;
+        report_kind(
+            &mut screen,
+            "claude",
+            provider_resume(notification_source()),
+        );
+        assert_eq!(screen.agent_status_for_test().agent, before);
+        assert_eq!(
+            screen.claude_permission_waits.contains_key(&PANE),
+            permission
+        );
+        report_kind(&mut screen, "claude", provider_resume(replacement_source()));
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+        assert!(!screen.claude_permission_waits.contains_key(&PANE));
+    }
+}

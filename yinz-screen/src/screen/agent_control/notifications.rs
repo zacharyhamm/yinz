@@ -13,12 +13,7 @@ fn ingest(
     let evidence = evidence.bounded();
     let source = evidence.source.as_ref()?;
     if pending.source.as_ref().is_some_and(|old| old != source) {
-        // Old detached reports cannot replace a newer incarnation. Replacement requires
-        // a newly observed launch; acceptance/completion never changes process ownership.
-        if evidence.launches.is_empty() || source.started <= pending.source.as_ref()?.started {
-            return None;
-        }
-        *pending = Pending::default();
+        return None; // Ownership is established before report state or evidence is applied.
     }
     pending.source = Some(source.clone());
     if pending.disabled {
@@ -217,6 +212,136 @@ pub(super) fn prune_released_notification_waits(lifecycle: &mut Lifecycle) {
 }
 
 impl Screen {
+    pub(in crate::screen) fn preserve_claude_start_state(
+        &self,
+        pane: PaneId,
+        hook: &HookEvent,
+    ) -> bool {
+        hook.hook_event_name == "SessionStart"
+            && !hook.is_worker()
+            && !hook.archive_only
+            && self.agent_lifecycle.get(&pane).is_some_and(|l| {
+                l.kind == "claude"
+                    && l.conversation == hook.session_id
+                    && l.claude.parent.is_some()
+                    && l.claude.obligations.source.is_some()
+                    && hook
+                        .claude_notifications
+                        .as_ref()
+                        .is_some_and(|e| e.source == l.claude.obligations.source)
+            })
+    }
+
+    /// Only native startup or a positive launch can establish a replacement provider.
+    /// Reject other incarnations before they can affect turns, input, waits or presentation.
+    pub(in crate::screen) fn accept_claude_source(
+        &mut self,
+        pane: PaneId,
+        hook: &HookEvent,
+    ) -> bool {
+        let Some(old) = self
+            .agent_lifecycle
+            .get(&pane)
+            .filter(|l| l.kind == "claude" && l.conversation == hook.session_id)
+            .and_then(|l| l.claude.obligations.source.as_ref())
+        else {
+            return true;
+        };
+        let Some(evidence) = hook.claude_notifications.as_ref().map(Evidence::bounded) else {
+            return true; // Preserve compatibility with reporters lacking process identity.
+        };
+        let Some(source) = evidence.source.as_ref().filter(|source| *source != old) else {
+            return true;
+        };
+        let startup = hook.hook_event_name == "SessionStart"
+            && hook.claude_turn_complete.is_none()
+            && hook.claude_recovered_after.is_none()
+            && matches!(
+                hook.source.as_deref(),
+                Some("startup" | "resume" | "clear" | "fork")
+            );
+        let launch = hook.hook_event_name == "PostToolUse"
+            && hook.is_error != Some(true)
+            && hook.error.is_none()
+            && !evidence.launches.is_empty()
+            && evidence
+                .launches
+                .iter()
+                .all(|l| hook.prompt_id.as_ref() == Some(&l.prompt));
+        if source.started <= old.started
+            || source.pid == 0
+            || evidence.unavailable
+            || hook.is_worker()
+            || hook.archive_only
+            || (!startup && !launch)
+            || !self.agent_process_matches(pane, "claude")
+            || !self.get_pane_info(pane).is_some_and(|info| {
+                !info.is_held
+                    && !info.exited
+                    && info.target == yinz_types::command::PaneTarget::Local
+            })
+        {
+            return false;
+        }
+        log::debug!("Claude provider replaced pane={pane:?} old={old:?} new={source:?}; old observation unavailable");
+        // Requests belong to the provider they targeted. Retain completed submission
+        // results, but never complete an unresolved old request with the new answer.
+        let mut keep = Vec::new();
+        for pending in std::mem::take(&mut self.agent_controls) {
+            if pending.pane == pane {
+                self.finish_agent_control(&pending, AgentOutcome::TargetChanged, None, None);
+            } else {
+                keep.push(pending);
+            }
+        }
+        self.agent_controls = keep;
+        if let Some(operation) = self.agent_draft_clears.get_mut(&pane) {
+            operation.failure = Some((
+                AgentOutcome::TargetChanged,
+                "Claude provider replaced".into(),
+            ));
+        }
+        self.agent_dialog_inputs.remove(&pane);
+        self.agent_clear_inputs.remove(&pane);
+        self.warped_agent_inputs.remove(&pane);
+        self.agent_worker_waits.remove(&pane);
+        self.claude_permission_waits.remove(&pane);
+        let input_revision = (self.agent_input_revision(pane) == 0).then_some(0);
+        let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) else {
+            return false;
+        };
+        // Replacing a process degrades its observation; it proves no task or answer
+        // completed. No old notification, permission or worker lifetime can travel
+        // into the replacement, even when the conversation ID is unchanged.
+        lifecycle.claude = ClaudeActivity::default();
+        lifecycle.claude.obligations.source = Some(source.clone());
+        lifecycle.claude_background = None;
+        lifecycle.claude_notifications.clear();
+        lifecycle.claude_prompt_id = None;
+        lifecycle.claude_previous_prompt_id = None;
+        lifecycle.claude_confirmation = None;
+        lifecycle.ended_turn = None;
+        lifecycle.input_revision = input_revision;
+        lifecycle.last_message = None;
+        lifecycle.notification_tick = Instant::now();
+        if launch {
+            // A native successful launch positively identifies its root prompt even
+            // when its earlier submit could not yet establish replacement ownership.
+            let prompt = evidence.launches[0].prompt.clone();
+            lifecycle.claude.sequence = 1;
+            lifecycle.claude.turns.insert(
+                prompt.clone(),
+                ClaudeTurn {
+                    awaiting_native_submit: false,
+                    confirmation: None,
+                    sequence: 1,
+                },
+            );
+            lifecycle.claude_prompt_id = Some(prompt);
+        }
+        true
+    }
+
     /// Called before confirmation filters/state application and again after lifecycle creation.
     pub(in crate::screen) fn retain_claude_evidence(&mut self, pane: PaneId, hook: &HookEvent) {
         if hook.is_worker() || hook.archive_only {
