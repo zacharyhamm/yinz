@@ -76,10 +76,20 @@ fn search_input_jumps_to_a_match() {
     yinz.wait_until("search input mode active", |grid_snapshot| {
         grid_snapshot.contains("ENTERING SEARCH TERM")
     });
-    yinz.send_stdin(b"NEEDLE");
+    // A partial term already jumps to the same match and scroll position. Observe
+    // that intermediate frame so it cannot satisfy the final snapshot wait.
+    yinz.send_stdin(b"NEED");
+    yinz.wait_until("scrolled to the partial search term", |grid_snapshot| {
+        grid_snapshot.contains("SEARCHING: NEED ")
+            && grid_snapshot.contains("line05")
+            && grid_snapshot.contains("ENTERING SEARCH TERM")
+            && grid_snapshot.contains("SCROLL 16/20")
+    });
+    yinz.send_stdin(b"LE");
 
-    let grid_snapshot = yinz.wait_until("scrolled to the typed match", |grid_snapshot| {
+    let grid_snapshot = yinz.wait_until("scrolled to the complete typed match", |grid_snapshot| {
         grid_snapshot.contains("line05")
+            && grid_snapshot.contains("SEARCHING: NEEDLE")
             && grid_snapshot.contains("ENTERING SEARCH TERM")
             && grid_snapshot.contains("SCROLL 16/20")
     });

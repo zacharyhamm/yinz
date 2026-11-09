@@ -19,12 +19,10 @@ fn cannot_split_terminals_vertically_when_active_terminal_is_too_small() {
     let (width_before_split, _) = terminal.wait_for_size("first terminal sized", |_, _| true);
 
     yinz.send_stdin(&keys::ctrl('p'));
-    yinz.send_stdin(&keys::key('r'));
-
     terminal.output(b"done");
     let tab_bar_glyph = '\u{e0b0}';
-    let grid_snapshot = yinz.wait_until(
-        "split attempt processed, chrome rendered",
+    yinz.wait_until(
+        "pane mode chrome and terminal output rendered before split",
         |grid_snapshot| {
             grid_snapshot.contains("done")
                 && grid_snapshot.contains("Ctrl +")
@@ -34,6 +32,19 @@ fn cannot_split_terminals_vertically_when_active_terminal_is_too_small() {
                     .is_some_and(|first_line| first_line.contains(tab_bar_glyph))
         },
     );
+
+    yinz.send_stdin(&keys::key('r'));
+    let grid_snapshot = yinz.wait_until("split error title rendered", |grid_snapshot| {
+        // Output and mode chrome can render before the split is processed. At eight
+        // columns the error title is truncated to CA…; the normal pane title is [0….
+        grid_snapshot.contains("👇 CA…")
+            && grid_snapshot.contains("done")
+            && grid_snapshot.contains("Ctrl +")
+            && grid_snapshot
+                .lines()
+                .first()
+                .is_some_and(|first_line| first_line.contains(tab_bar_glyph))
+    });
 
     assert_eq!(terminal.size().unwrap().0, width_before_split);
     assert_snapshot!(normalized(&grid_snapshot));
