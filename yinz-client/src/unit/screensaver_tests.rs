@@ -190,22 +190,21 @@ fn loops_at_splash_speed_and_repaints_on_resize_without_waiting_for_frame() {
 }
 
 #[test]
-fn mouse_and_both_keyboard_protocols_reset_idle_and_wake_once() {
-    use yinz_key_codec::vendored::termwiz::input::{Modifiers, MouseButtons, MouseEvent};
+fn keyboard_and_paste_reset_idle_and_wake_once() {
+    use yinz_key_codec::vendored::termwiz::input::{KeyCode, KeyEvent, Modifiers};
     use yinz_types::keys::{BareKey, KeyWithModifier};
     let key = KeyWithModifier::new(BareKey::Char('x'));
     for instruction in [
         InputInstruction::KeyWithModifierEvent(key.clone(), b"x".to_vec(), false),
         InputInstruction::KeyWithModifierEvent(key, b"x".to_vec(), true),
         InputInstruction::KeyEvent(
-            InputEvent::Mouse(MouseEvent {
-                x: 5,
-                y: 5,
-                mouse_buttons: MouseButtons::LEFT,
+            InputEvent::Key(KeyEvent {
+                key: KeyCode::Char('x'),
                 modifiers: Modifiers::NONE,
             }),
-            vec![],
+            b"x".to_vec(),
         ),
+        InputInstruction::KeyEvent(InputEvent::Paste("text".into()), vec![]),
     ] {
         let mut saver = saver();
         let os = FakeClientOsApi::new();
@@ -235,6 +234,58 @@ fn mouse_and_both_keyboard_protocols_reset_idle_and_wake_once() {
             start + Duration::from_secs(120)
         )
         .unwrap());
+    }
+}
+
+#[test]
+fn mouse_movement_clicks_and_scrolling_postpone_activation_without_waking() {
+    use yinz_key_codec::vendored::termwiz::input::{Modifiers, MouseButtons, MouseEvent};
+
+    for mouse_buttons in [
+        MouseButtons::NONE,
+        MouseButtons::LEFT,
+        MouseButtons::RIGHT,
+        MouseButtons::MIDDLE,
+        MouseButtons::VERT_WHEEL | MouseButtons::WHEEL_POSITIVE,
+        MouseButtons::VERT_WHEEL,
+        MouseButtons::HORZ_WHEEL | MouseButtons::WHEEL_POSITIVE,
+        MouseButtons::HORZ_WHEEL,
+    ] {
+        let mut saver = saver();
+        let os = FakeClientOsApi::new();
+        let start = saver.activity.lock().unwrap().last_input;
+        let instruction = InputInstruction::KeyEvent(
+            InputEvent::Mouse(MouseEvent {
+                x: 5,
+                y: 5,
+                mouse_buttons,
+                modifiers: Modifiers::NONE,
+            }),
+            vec![],
+        );
+        assert!(!record_input(
+            &saver.activity,
+            &instruction,
+            start + Duration::from_secs(59)
+        )
+        .unwrap());
+        assert_eq!(
+            saver.wake_at(start).unwrap(),
+            Some(start + Duration::from_secs(119))
+        );
+        saver
+            .tick(&os, None, start + Duration::from_secs(60), true)
+            .unwrap();
+        assert!(!saver.active());
+        saver
+            .tick(&os, None, start + Duration::from_secs(119), true)
+            .unwrap();
+        assert!(saver.active());
+        let now = start + Duration::from_secs(120);
+        assert!(!record_input(&saver.activity, &instruction, now).unwrap());
+        assert_eq!(saver.activity.lock().unwrap().last_input, now);
+        assert!(!saver.tick(&os, None, now, true).unwrap());
+        assert!(saver.active());
     }
 }
 

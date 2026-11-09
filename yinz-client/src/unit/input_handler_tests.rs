@@ -363,52 +363,128 @@ fn ctrl_c_during_recovery_cancels_locally_and_is_not_sent_to_the_server() {
 }
 
 #[test]
-fn screensaver_consumes_wake_paste_and_forwards_the_following_input() {
-    let os = FakeClientOsApi::new();
-    let mut saver =
-        crate::screensaver::Screensaver::new(&Default::default(), &Default::default()).unwrap();
-    saver
-        .tick(
-            &os,
-            None,
-            std::time::Instant::now() + std::time::Duration::from_secs(61),
-            true,
-        )
-        .unwrap();
-    assert!(saver.active());
-    let (client_tx, client_rx) = channels::unbounded();
-    let (input_tx, input_rx) = channels::unbounded();
-    let input_tx = SenderWithContext::new(input_tx);
-    for text in ["wake only", "forward this"] {
-        input_tx
-            .send(InputInstruction::KeyEvent(
-                InputEvent::Paste(text.into()),
-                vec![],
-            ))
+fn screensaver_forwards_mouse_and_consumes_only_wake_keyboard_or_paste() {
+    use yinz_key_codec::vendored::termwiz::input::{KeyCode, KeyEvent};
+    use yinz_types::keys::BareKey;
+
+    let key = KeyWithModifier::new(BareKey::Char('x'));
+    for (instruction, forwarded) in [
+        (
+            InputInstruction::KeyEvent(
+                InputEvent::Key(KeyEvent {
+                    key: KeyCode::Char('x'),
+                    modifiers: Modifiers::NONE,
+                }),
+                b"x".to_vec(),
+            ),
+            ClientToServerMsg::Key {
+                key: key.clone(),
+                raw_bytes: b"x".to_vec(),
+                is_kitty_keyboard_protocol: false,
+            },
+        ),
+        (
+            InputInstruction::KeyWithModifierEvent(key.clone(), b"x".to_vec(), false),
+            ClientToServerMsg::Key {
+                key: key.clone(),
+                raw_bytes: b"x".to_vec(),
+                is_kitty_keyboard_protocol: false,
+            },
+        ),
+        (
+            InputInstruction::KeyWithModifierEvent(key.clone(), b"\x1b[120u".to_vec(), true),
+            ClientToServerMsg::Key {
+                key,
+                raw_bytes: b"\x1b[120u".to_vec(),
+                is_kitty_keyboard_protocol: true,
+            },
+        ),
+        (
+            InputInstruction::KeyEvent(InputEvent::Paste("text".into()), vec![]),
+            ClientToServerMsg::Paste("text".into()),
+        ),
+    ] {
+        let os = FakeClientOsApi::new();
+        let mut saver =
+            crate::screensaver::Screensaver::new(&Default::default(), &Default::default()).unwrap();
+        saver
+            .tick(
+                &os,
+                None,
+                std::time::Instant::now() + std::time::Duration::from_secs(61),
+                true,
+            )
             .unwrap();
+        assert!(saver.active());
+        let (client_tx, client_rx) = channels::unbounded();
+        let (input_tx, input_rx) = channels::unbounded();
+        let input_tx = SenderWithContext::new(input_tx);
+        let mut expected = Vec::new();
+        let position = Position::new(4, 4);
+        for (mouse_buttons, event) in [
+            (
+                MouseButtons::NONE,
+                MouseEvent::new_buttonless_motion(position),
+            ),
+            (
+                MouseButtons::LEFT,
+                MouseEvent::new_left_press_event(position),
+            ),
+            (
+                MouseButtons::VERT_WHEEL,
+                MouseEvent {
+                    event_type: MouseEventType::Press,
+                    wheel_down: true,
+                    position,
+                    ..MouseEvent::new()
+                },
+            ),
+        ] {
+            input_tx
+                .send(InputInstruction::KeyEvent(
+                    InputEvent::Mouse(TermwizMouseEvent {
+                        x: 5,
+                        y: 5,
+                        mouse_buttons,
+                        modifiers: Modifiers::NONE,
+                    }),
+                    vec![],
+                ))
+                .unwrap();
+            expected.push(ClientToServerMsg::Action {
+                action: Action::MouseEvent { event },
+                terminal_id: None,
+                client_id: None,
+                is_cli_client: false,
+            });
+        }
+        input_tx.send(instruction.clone()).unwrap();
+        input_tx.send(instruction).unwrap();
+        input_tx.send(InputInstruction::Exit).unwrap();
+        let reannounce =
+            NestedReannounce::spawn(Box::new(os.clone()), SessionName::from("screensaver-input"));
+        reannounce.stop();
+        let mut handler = InputHandler::new(
+            Box::new(os.clone()),
+            CommandIsExecuting::new(),
+            Default::default(),
+            SenderWithContext::new(client_tx),
+            input_rx,
+            input_control_channel().1,
+            reannounce,
+        );
+        handler.activity = Some(saver.activity.clone());
+        handler.handle_input();
+        expected.push(forwarded);
+        assert_eq!(os.sent_messages(), expected);
+        assert_eq!(
+            client_rx
+                .try_iter()
+                .filter(|(instruction, _)| matches!(instruction, ClientInstruction::UserActivity))
+                .count(),
+            1
+        );
     }
-    input_tx.send(InputInstruction::Exit).unwrap();
-    let reannounce =
-        NestedReannounce::spawn(Box::new(os.clone()), SessionName::from("screensaver-input"));
-    reannounce.stop();
-    let mut handler = InputHandler::new(
-        Box::new(os.clone()),
-        CommandIsExecuting::new(),
-        Default::default(),
-        SenderWithContext::new(client_tx),
-        input_rx,
-        input_control_channel().1,
-        reannounce,
-    );
-    handler.activity = Some(saver.activity.clone());
-    handler.handle_input();
-    assert_eq!(
-        os.sent_messages(),
-        vec![ClientToServerMsg::Paste("forward this".into())]
-    );
-    assert!(client_rx
-        .try_iter()
-        .any(|(instruction, _)| matches!(instruction, ClientInstruction::UserActivity)));
 }
 
 #[test]

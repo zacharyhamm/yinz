@@ -26,6 +26,7 @@ pub(crate) struct Activity {
 pub(crate) type SharedActivity = Arc<Mutex<Activity>>;
 
 /// Returns true only for the event that wakes the client. Protocol replies never count as input.
+/// Mouse events reset idle time, but only keyboard input and paste wake the client.
 pub(crate) fn record_input(
     activity: &SharedActivity,
     instruction: &InputInstruction,
@@ -46,6 +47,12 @@ pub(crate) fn record_input(
         .to_anyhow()
         .context("record client activity")?;
     state.last_input = now;
+    if matches!(
+        instruction,
+        InputInstruction::KeyEvent(InputEvent::Mouse(_), _)
+    ) {
+        return Ok(false);
+    }
     Ok(std::mem::take(&mut state.sleeping))
 }
 
