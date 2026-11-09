@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use strum_macros::{Display, EnumString};
 
 pub mod claude_notifications;
+pub mod claude_permissions;
 pub mod launch;
 pub mod theme;
 pub mod tracking;

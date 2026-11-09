@@ -1,5 +1,6 @@
 mod handoff;
 mod notifications;
+mod permissions;
 // Agent control is serialized with state reports and terminal input on the screen thread.
 use super::Screen;
 use crate::ClientId;
@@ -92,6 +93,14 @@ impl Lifecycle {
                 .as_millis()
                 .min(u64::MAX as u128) as u64,
         );
+        if let Some(permission) = &mut claude.permission {
+            permission.elapse(
+                self.notification_tick
+                    .elapsed()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+            );
+        }
         LifecycleState {
             kind: self.kind.clone(),
             conversation: self.conversation.clone(),
@@ -465,6 +474,18 @@ impl Screen {
     }
 
     fn reconcile_claude_parent(&mut self, pane: PaneId) {
+        if self
+            .agent_lifecycle
+            .get(&pane)
+            .is_some_and(|l| l.claude.permission.is_some())
+        {
+            if let Some(visible) = self.claude_visible(pane)
+                && let Some(tab) = self.tab_containing_pane_mut(pane)
+            {
+                tab.set_pane_agent(pane, Some(visible));
+            }
+            return;
+        }
         let Some(mut visible) = self.get_pane_info(pane).and_then(|p| p.agent) else {
             return;
         };
@@ -526,6 +547,7 @@ impl Screen {
         {
             agent.state = AgentState::Busy;
         }
+        self.overlay_claude_permission(pane, agent);
     }
 
     pub(super) fn remember_claude_parent(&mut self, pane: PaneId, agent: &AgentInfo) {
@@ -778,6 +800,30 @@ impl Screen {
         use yinz_types::agent::report::AgentReportState;
         use yinz_types::agent::{hook_state_for, waiting_detail, waiting_needs_a_person};
         let pane = report.pane_id;
+        if report.kind == "claude"
+            && hook.is_some_and(|hook| {
+                hook.hook_event_name == yinz_types::agent::claude_permissions::EVENT
+                    || permissions::owned_notification(hook)
+            })
+        {
+            if let Some(visible) = self.claude_visible(pane) {
+                return super::agent_reports::stage_pane_agent_report(self, pane, Some(visible));
+            }
+            return Ok(true);
+        }
+        if report.kind == "claude"
+            && hook.is_some_and(|hook| {
+                matches!(hook.hook_event_name.as_str(), "Interrupt" | "StopFailure")
+                    && !hook.is_worker()
+                    && self.agent_lifecycle.get(&pane).is_none_or(|l| {
+                        hook.prompt_id.is_none()
+                            || l.claude_prompt_id.is_none()
+                            || hook.prompt_id == l.claude_prompt_id
+                    })
+            })
+        {
+            self.release_claude_permission(pane);
+        }
         // Transcript acceptance can arrive while Claude is already asking permission.
         // It registers a turn, but says nothing about whether that wait was answered.
         if report.kind == "claude"
@@ -2594,6 +2640,7 @@ impl Screen {
     }
 
     fn finalize_agent_recovery(&mut self, pane: PaneId, agent: &AgentInfo, revision: u64) {
+        self.release_claude_permission(pane);
         if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
             lifecycle.input_revision = Some(revision);
             lifecycle.claude_background = None;

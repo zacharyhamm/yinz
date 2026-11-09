@@ -15,6 +15,7 @@ use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::HookEvent;
 
 mod notifications;
+mod permissions;
 mod prompts;
 mod recovery;
 
@@ -67,6 +68,8 @@ struct Observation {
     /// The process-scoped prompt recovery observer, rather than one turn's observer.
     #[serde(default)]
     recovery: bool,
+    #[serde(default)]
+    permissions: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -94,7 +97,7 @@ impl ClaudeStatusObservation {
 
     /// The status of Claude's session registry record (`busy`, `shell`, `idle` or `waiting`),
     /// when it names this process and conversation and changed after `since_ms`.
-    fn status(&self, pid: u32, session: &str, since_ms: u64) -> Option<String> {
+    fn record(&self, pid: u32, session: &str, since_ms: u64) -> Option<Value> {
         // Claude 2.1.312+ rewrites the record whenever its status changes, including after an
         // early Esc that writes no transcript boundary. Missing/older registries leave hooks and
         // transcript observation in charge. Bound reads and reject special files; this optional
@@ -120,8 +123,47 @@ impl ClaudeStatusObservation {
             && record["statusUpdatedAt"]
                 .as_u64()
                 .is_some_and(|updated| updated > since_ms))
-        .then(|| record["status"].as_str().map(str::to_owned))
-        .flatten()
+        .then_some(record)
+    }
+
+    fn status(&self, pid: u32, session: &str, since_ms: u64) -> Option<String> {
+        self.record(pid, session, since_ms)?["status"]
+            .as_str()
+            .map(str::to_owned)
+    }
+
+    fn permission(
+        &self,
+        (pid, started): (u32, u64),
+        session: &str,
+    ) -> Option<yinz_types::agent::claude_permissions::Sample> {
+        use yinz_types::agent::{
+            claude_notifications::Source,
+            claude_permissions::{Sample, Status},
+        };
+        let record = self.record(pid, session, started.saturating_sub(1).saturating_mul(1000))?;
+        let status = match record["status"].as_str()? {
+            "busy" | "shell" | "idle" => Status::Inactive,
+            "waiting" => match record["waitingFor"].as_str()? {
+                "permission prompt" => Status::Active,
+                "input needed" | "dialog open" | "worker request" | "sandbox request" => {
+                    Status::Inactive
+                },
+                _ => return None,
+            },
+            _ => return None,
+        };
+        Some(Sample {
+            source: Source { pid, started },
+            updated_ms: record["statusUpdatedAt"].as_u64()?,
+            observed_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()?
+                .as_millis()
+                .try_into()
+                .ok()?,
+            status,
+        })
     }
 
     /// Whether the registry shows this prompt's turn over: `idle`, or `shell` when only
@@ -152,6 +194,11 @@ fn working(status: &str) -> Option<bool> {
 /// Start only after the prompt report is delivered, so confirmation cannot overtake it.
 /// Each installed reporter may start one; the screen deduplicates by prompt identity.
 pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
+    if kind == "claude" {
+        permissions::start(hook, &route)
+            .context("start Claude permission observation")
+            .non_fatal();
+    }
     if hook.claude_recovered_after.is_some()
         || !matches!(kind, "claude" | "agy")
         || hook.is_worker()
@@ -179,6 +226,7 @@ pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
         }
         let observation = Observation {
             recovery: false,
+            permissions: false,
             kind: kind.to_owned(),
             hook: hook.clone(),
             route: route.clone(),
@@ -291,6 +339,24 @@ pub fn prepare_hook(hook: &mut HookEvent, local: bool) {
     if evidence.source.is_none() {
         evidence.unavailable = true;
     }
+    if local
+        && hook.claude_permission.is_none()
+        && matches!(
+            hook.hook_event_name.as_str(),
+            "PermissionRequest"
+                | "PostToolUse"
+                | "PostToolUseFailure"
+                | "PermissionDenied"
+                | "Notification"
+        )
+        && let Some(source) = evidence.source.as_ref()
+    {
+        hook.claude_permission = ClaudeStatusObservation::new(source.pid)
+            .and_then(|reader| reader.permission((source.pid, source.started), &hook.session_id));
+    }
+    if !local {
+        hook.claude_permission = None;
+    }
 }
 
 fn agent_ancestor(kind: &str) -> Option<(u32, u64)> {
@@ -339,6 +405,9 @@ fn agent_ancestor(kind: &str) -> Option<(u32, u64)> {
 pub fn run() -> Result<()> {
     let mut observation: Observation =
         serde_json::from_reader(std::io::stdin()).context("read turn observation")?;
+    if observation.permissions {
+        return permissions::run(&observation);
+    }
     if observation.recovery {
         return recovery::run(&observation);
     }

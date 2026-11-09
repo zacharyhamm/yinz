@@ -1563,3 +1563,94 @@ fn notification_observation_loss_and_native_wait_have_independent_handoff_lifeti
     assert_eq!(restored, failed);
     assert_eq!(restored.permission_revision, Some(17));
 }
+
+#[test]
+fn claude_permission_status_is_bounded_input_evidence_without_parent_state() {
+    use crate::agent::{
+        claude_notifications::Source,
+        claude_permissions::{Sample, Status, DETAIL, EVENT},
+    };
+    for status in [Status::Active, Status::Inactive, Status::Unavailable] {
+        let event = HookEvent {
+            hook_event_name: EVENT.into(),
+            session_id: "conversation".into(),
+            claude_permission: Some(Sample {
+                source: Source {
+                    pid: 123,
+                    started: 456,
+                },
+                updated_ms: 500_000,
+                observed_ms: 500_000,
+                status,
+            }),
+            prompt: Some("x".repeat(HOOK_BROADCAST_MAX_BYTES * 2)),
+            ..Default::default()
+        };
+        let raw = event.broadcast_json(serde_json::to_string(&event).unwrap());
+        assert!(raw.len() <= HOOK_BROADCAST_MAX_BYTES);
+        let bounded: HookEvent = serde_json::from_str(&raw).unwrap();
+        assert_eq!(bounded.claude_permission, event.claude_permission);
+        assert_eq!(hook_outcome("claude", &bounded), HookOutcome::Nothing);
+        assert_eq!(
+            hook_state_for("claude", &bounded),
+            (status == Status::Active).then_some(AgentState::Waiting)
+        );
+        assert_eq!(waiting_needs_a_person(&bounded), status == Status::Active);
+        if status == Status::Active {
+            assert_eq!(waiting_detail(&bounded).as_deref(), Some(DETAIL));
+        }
+    }
+}
+
+#[test]
+fn claude_permission_watermark_fences_reordered_release_loss_and_cancel() {
+    use crate::agent::{
+        claude_notifications::Source,
+        claude_permissions::{Overlay, Sample, Status, LEASE_MS},
+    };
+    let sample = Sample {
+        source: Source { pid: 1, started: 2 },
+        updated_ms: 3_000,
+        observed_ms: 500_000,
+        status: Status::Active,
+    };
+    let mut overlay = Overlay {
+        sample: sample.clone(),
+        remaining_ms: LEASE_MS,
+    };
+    overlay.elapse(500);
+    overlay.accept(&sample);
+    assert_eq!(overlay.remaining_ms, LEASE_MS);
+    let mut release = sample.clone();
+    release.status = Status::Inactive;
+    overlay.accept(&release);
+    overlay.accept(&sample);
+    assert!(!overlay.active());
+    let mut newer = sample.clone();
+    newer.updated_ms += 1;
+    overlay.accept(&newer);
+    assert!(overlay.active());
+    overlay.elapse(LEASE_MS);
+    overlay.accept(&newer);
+    assert!(
+        !overlay.active(),
+        "a dead observer's heartbeat cannot resurrect its expired sample"
+    );
+    // An unchanged dialog recovers after observation loss only from a fresh guarded read.
+    newer.observed_ms += LEASE_MS + 1;
+    overlay.accept(&newer);
+    assert!(overlay.active());
+    overlay.release();
+    overlay.accept(&newer);
+    assert!(!overlay.active());
+    let mut lost = newer.clone();
+    lost.status = Status::Unavailable;
+    lost.observed_ms += 10;
+    overlay.accept(&lost);
+    newer.observed_ms += 20;
+    overlay.accept(&newer);
+    assert!(
+        !overlay.active(),
+        "loss cannot erase the equal-timestamp release fence"
+    );
+}

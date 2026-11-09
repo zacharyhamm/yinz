@@ -1350,3 +1350,40 @@ fn warp_tracking_preserves_provider_adoption_and_rejects_retired_source_reports(
         }
     }
 }
+
+#[test]
+fn claude_permission_registry_handoff_retains_overlay_watermark_and_parent() {
+    use yinz_types::agent::claude_permissions::Status;
+    for path in ["pane", "tab", "companion"] {
+        let mut source = permission_setup();
+        report_kind(&mut source, "claude", claude_stop("prompt", "done", true));
+        let parent = claude_lifecycle(&source).claude.parent.clone();
+        report_kind(
+            &mut source,
+            "claude",
+            permission_sample(Status::Active, 500_000),
+        );
+        let (mut destination, _) = adopt_tracking(&mut source, path, false, true);
+        assert_eq!(
+            destination.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
+        assert_eq!(claude_lifecycle(&destination).claude.parent, parent);
+        report_kind(
+            &mut destination,
+            "claude",
+            permission_sample(Status::Inactive, 500_001),
+        );
+        assert_eq!(
+            destination.agent_status_for_test().agent.state,
+            AgentState::Busy
+        );
+        let (mut next, _) = adopt_tracking(&mut destination, path, false, true);
+        report_kind(
+            &mut next,
+            "claude",
+            permission_sample(Status::Active, 500_000),
+        );
+        assert_eq!(next.agent_status_for_test().agent.state, AgentState::Busy);
+    }
+}

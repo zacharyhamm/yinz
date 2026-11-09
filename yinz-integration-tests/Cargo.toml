@@ -37,6 +37,7 @@ vte = { workspace = true }
 yinz-test-support = { path = "../yinz-test-support" }
 
 [dev-dependencies]
+nix = { workspace = true }
 yinz-web = { workspace = true }
 zeroize = { workspace = true }
 yinz-bus = { path = "../yinz-bus" }

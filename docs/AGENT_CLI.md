@@ -712,6 +712,26 @@ registry reports background agents, workflows or Bash still running after a
 confirmed turn. Prompt replies and status set `background: true` for registry work
 or identified notification obligations.
 
+Local interactive Claude also reports permission `waiting` from its guarded session
+registry when `status=waiting` and `waitingFor=permission prompt`, before Claude's
+delayed permission notification. This includes background-worker dialogs after the
+parent turn ends. The generic detail, “approve Claude permission request”, is
+session-wide; it cannot identify the exact worker or tool. Automatic evaluation,
+including slow automatic allow/deny, remains busy unless there is positive human
+input evidence. Dedicated question and elicitation waits keep their own lifetimes.
+
+The local observer polls every 100 ms. Active observations renew every 500 ms;
+two seconds of unreadable/unknown registry data releases this overlay, and a
+three-second screen lease also bounds loss of the observer or reporting route.
+A current guarded read can restore an unchanged dialog after observation recovers.
+Release restores the current parent/worker/background aggregate. It does not prove
+task completion or composer readiness. Enter alone does not release a registry-owned
+dialog; a newer provider publication controls it. Delayed notifications sampled
+after approval cannot resurrect the answered dialog. Older or unknown registry
+schemas, missing permission reasons, and remote routes retain native hook fallback,
+including its notification latency. The recognized reason was inspected in Claude
+Code 2.1.319; the fields and reason, rather than the version number, gate support.
+
 For ordinary local interactive Claude Code 2.1.319, successful native asynchronous
 Bash and Agent results acquire bounded, process/conversation-scoped obligations
 before the launching hook returns. They stay pending across registry idle, short

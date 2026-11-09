@@ -15558,3 +15558,361 @@ fn claude_same_source_resume_does_not_answer_the_current_parent_turn_or_permissi
         assert!(!screen.claude_permission_waits.contains_key(&PANE));
     }
 }
+
+fn permission_sample(
+    status: yinz_types::agent::claude_permissions::Status,
+    updated_ms: u64,
+) -> HookEvent {
+    with_notification_source(
+        HookEvent {
+            hook_event_name: yinz_types::agent::claude_permissions::EVENT.into(),
+            session_id: "conversation".into(),
+            claude_permission: Some(yinz_types::agent::claude_permissions::Sample {
+                source: notification_source(),
+                updated_ms,
+                observed_ms: updated_ms,
+                status,
+            }),
+            ..Default::default()
+        },
+        notification_source(),
+    )
+}
+
+fn permission_setup() -> Screen {
+    let (mut screen, _, _) = setup("claude");
+    report_kind(
+        &mut screen,
+        "claude",
+        with_notification_source(hook("SessionStart"), notification_source()),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        with_notification_source(hook("UserPromptSubmit"), notification_source()),
+    );
+    screen
+}
+
+#[test]
+fn claude_permission_registry_overlays_parent_and_normalizes_late_reminders() {
+    use yinz_types::agent::claude_permissions::Status;
+    let mut screen = permission_setup();
+    let raw_parent = claude_lifecycle(&screen).claude.parent.clone();
+    report_kind(
+        &mut screen,
+        "claude",
+        permission_sample(Status::Active, 500_000),
+    );
+    let status = screen.agent_status_for_test();
+    assert_eq!(status.agent.state, AgentState::Waiting);
+    assert!(status.agent.wait_needs_a_person);
+    assert_eq!(
+        status.agent.waiting_on.as_deref(),
+        Some("approve Claude permission request")
+    );
+    assert_eq!(claude_lifecycle(&screen).claude.parent, raw_parent);
+    // Neither progress nor Enter is proof that the session-wide dialog was answered.
+    report_kind(&mut screen, "claude", hook("PostToolUse"));
+    permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), true);
+    assert_eq!(
+        screen.agent_status_for_test().agent.state,
+        AgentState::Waiting
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        permission_sample(Status::Inactive, 500_001),
+    );
+    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+    let (to_plugin, plugins) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    for sample in [
+        permission_sample(Status::Active, 500_000),
+        permission_sample(Status::Active, 500_001),
+        permission_sample(Status::Inactive, 500_002),
+    ] {
+        let reminder = HookEvent {
+            hook_event_name: "Notification".into(),
+            notification_type: Some("permission_prompt".into()),
+            message: Some("late prompt".into()),
+            ..sample
+        };
+        report_kind(&mut screen, "claude", reminder);
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+    }
+    assert!(screen.claude_permission_waits.is_empty());
+    assert!(plugins.try_iter().all(|(instruction, _)| {
+        let PluginInstruction::Update(updates) = instruction else { return true };
+        updates.into_iter().all(|(_,_,event)| !matches!(event, Event::AgentEvent(event) if event.state == Some(AgentState::Waiting)))
+    }));
+    report_kind(
+        &mut screen,
+        "claude",
+        permission_sample(Status::Active, 500_003),
+    );
+    assert_eq!(
+        screen.agent_status_for_test().agent.state,
+        AgentState::Waiting
+    );
+}
+
+#[test]
+fn claude_permission_registry_loss_releases_only_overlay_and_fences_heartbeats() {
+    use yinz_types::agent::claude_permissions::{Status, LEASE_MS};
+    for independent in [false, true] {
+        let mut screen = permission_setup();
+        if independent {
+            report_kind(
+                &mut screen,
+                "claude",
+                HookEvent {
+                    tool_name: Some("AskUserQuestion".into()),
+                    ..hook("PreToolUse")
+                },
+            );
+        }
+        report_kind(
+            &mut screen,
+            "claude",
+            permission_sample(Status::Active, 500_000),
+        );
+        // Model an accepted wait followed by a failed release report and no new native trigger.
+        screen.refresh_agent_controls_at(Instant::now() + Duration::from_millis(LEASE_MS + 1));
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            if independent {
+                AgentState::Waiting
+            } else {
+                AgentState::Busy
+            }
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            permission_sample(Status::Active, 500_000),
+        );
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            if independent {
+                AgentState::Waiting
+            } else {
+                AgentState::Busy
+            }
+        );
+        if independent {
+            assert_eq!(
+                screen.agent_status_for_test().agent.waiting_on.as_deref(),
+                Some("a question")
+            );
+        }
+    }
+}
+
+#[test]
+fn claude_permission_registry_worker_after_parent_completion_restores_aggregate() {
+    use yinz_types::agent::claude_permissions::Status;
+    for background in [false, true] {
+        let mut screen = permission_setup();
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_stop("prompt", "done", background),
+        );
+        let parent = claude_lifecycle(&screen).claude.parent.clone();
+        let expected = if background {
+            AgentState::Busy
+        } else {
+            AgentState::Idle
+        };
+        assert_eq!(screen.agent_status_for_test().agent.state, expected);
+        report_kind(
+            &mut screen,
+            "claude",
+            permission_sample(Status::Active, 500_000),
+        );
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
+        // A worker's ordinary automatic evaluation must not hide the session-wide wait.
+        report_kind(
+            &mut screen,
+            "claude",
+            HookEvent {
+                tool_name: Some("Bash".into()),
+                ..claude_worker("PermissionRequest", "worker")
+            },
+        );
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            permission_sample(Status::Inactive, 500_001),
+        );
+        assert_eq!(screen.agent_status_for_test().agent.state, expected);
+        assert_eq!(claude_lifecycle(&screen).claude.parent, parent);
+    }
+}
+
+#[test]
+fn claude_permission_registry_preserves_other_worker_and_notification_fallback_waits() {
+    use yinz_types::agent::claude_permissions::Status;
+    let mut screen = permission_setup();
+    let worker = HookEvent {
+        tool_name: Some("AskUserQuestion".into()),
+        tool_use_id: Some("question".into()),
+        ..claude_worker("PreToolUse", "worker")
+    };
+    report_kind(&mut screen, "claude", worker);
+    report_kind(
+        &mut screen,
+        "claude",
+        permission_sample(Status::Active, 500_000),
+    );
+    assert_eq!(
+        screen.agent_status_for_test().agent.waiting_on.as_deref(),
+        Some("a question")
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        permission_sample(Status::Inactive, 500_001),
+    );
+    assert_eq!(
+        screen.agent_status_for_test().agent.state,
+        AgentState::Waiting
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            tool_use_id: Some("question".into()),
+            ..claude_worker("PostToolUse", "worker")
+        },
+    );
+    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+    // No usable registry sample retains the established native permission lifetime.
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            notification_type: Some("permission_prompt".into()),
+            message: Some("native permission".into()),
+            ..hook("Notification")
+        },
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        permission_sample(Status::Unavailable, 500_001),
+    );
+    assert_eq!(
+        screen.agent_status_for_test().agent.state,
+        AgentState::Waiting
+    );
+    assert_eq!(
+        screen.agent_status_for_test().agent.waiting_on.as_deref(),
+        Some("native permission")
+    );
+}
+
+#[test]
+fn claude_permission_registry_rejects_unowned_sources_and_fences_cancel_and_transfer() {
+    use yinz_types::agent::claude_permissions::Status;
+    let mut screen = permission_setup();
+    let mut foreign = permission_sample(Status::Active, 500_000);
+    foreign.claude_permission.as_mut().unwrap().source = replacement_source();
+    report_kind(&mut screen, "claude", foreign);
+    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+    report_kind(
+        &mut screen,
+        "claude",
+        permission_sample(Status::Active, 500_000),
+    );
+    let handoff = claude_lifecycle(&screen);
+    screen.agent_lifecycle.insert(PANE, handoff.into());
+    assert_eq!(
+        screen.agent_status_for_test().agent.state,
+        AgentState::Waiting
+    );
+    report_kind(&mut screen, "claude", hook("Interrupt"));
+    report_kind(
+        &mut screen,
+        "claude",
+        permission_sample(Status::Active, 500_000),
+    );
+    assert_ne!(
+        screen.agent_status_for_test().agent.state,
+        AgentState::Waiting
+    );
+    report_kind(&mut screen, "claude", provider_resume(replacement_source()));
+    report_kind(
+        &mut screen,
+        "claude",
+        permission_sample(Status::Active, 500_001),
+    );
+    assert_ne!(
+        screen.agent_status_for_test().agent.state,
+        AgentState::Waiting
+    );
+    assert!(claude_lifecycle(&screen).claude.permission.is_none());
+}
+
+#[test]
+fn claude_permission_registry_old_failure_cannot_answer_a_newer_dialog() {
+    use yinz_types::agent::claude_permissions::Status;
+    let mut screen = permission_setup();
+    report_kind(&mut screen, "claude", steering_ack("newer"));
+    report_kind(
+        &mut screen,
+        "claude",
+        permission_sample(Status::Active, 500_000),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            prompt_id: Some("old".into()),
+            ..hook("StopFailure")
+        },
+    );
+    assert_eq!(
+        screen.agent_status_for_test().agent.state,
+        AgentState::Waiting
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            prompt_id: Some("newer".into()),
+            ..hook("Interrupt")
+        },
+    );
+    assert_ne!(
+        screen.agent_status_for_test().agent.state,
+        AgentState::Waiting
+    );
+}
+
+#[test]
+fn claude_permission_registry_loss_recovers_from_fresh_read_without_a_rewrite() {
+    use yinz_types::agent::claude_permissions::{Status, LEASE_MS};
+    let mut screen = permission_setup();
+    let sample = permission_sample(Status::Active, 500_000);
+    report_kind(&mut screen, "claude", sample.clone());
+    screen.refresh_agent_controls_at(Instant::now() + Duration::from_millis(LEASE_MS + 1));
+    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+    report_kind(&mut screen, "claude", sample.clone());
+    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+    let mut fresh = sample;
+    fresh.claude_permission.as_mut().unwrap().observed_ms += LEASE_MS + 10;
+    report_kind(&mut screen, "claude", fresh);
+    assert_eq!(
+        screen.agent_status_for_test().agent.state,
+        AgentState::Waiting
+    );
+}

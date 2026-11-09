@@ -161,6 +161,8 @@ pub(super) fn apply_queued_agent_report(
     report: &yinz_types::agent::report::AgentReport,
     accepted_at: std::time::Instant,
 ) -> Result<bool> {
+    let mut prepared = report.clone();
+    let report = &mut prepared;
     let pane_id = report.pane_id;
     if screen.tab_containing_pane(pane_id).is_none() {
         return Ok(false);
@@ -181,9 +183,37 @@ pub(super) fn apply_queued_agent_report(
         if !screen.accept_claude_source(pane_id, hook) {
             return Ok(true);
         }
+        if !screen.accept_claude_permission(pane_id, hook) {
+            return Ok(true);
+        }
+        if let Some(event) = &mut report.event {
+            let mut raw: serde_json::Value =
+                serde_json::from_str(&event.raw).context("parse permission report")?;
+            if hook.claude_permission.is_some() || raw.get("_yinz_claude_permission").is_some() {
+                raw["_yinz_claude_permission"] = serde_json::to_value(&hook.claude_permission)
+                    .context("normalize permission sample")?;
+                *event = yinz_types::agent::AgentEvent::from_hook(
+                    "claude",
+                    event.pane_id,
+                    hook,
+                    serde_json::to_string(&raw)
+                        .context("serialize normalized permission report")?,
+                );
+            }
+        }
+        if hook.hook_event_name == yinz_types::agent::claude_permissions::EVENT
+            || (hook.hook_event_name == "Notification"
+                && hook.notification_type.as_deref() == Some("permission_prompt")
+                && hook.claude_permission.as_ref().is_some_and(|s| {
+                    s.status != yinz_types::agent::claude_permissions::Status::Unavailable
+                }))
+        {
+            report.state = yinz_types::agent::report::AgentReportState::Unchanged;
+        }
         screen.correlate_claude_terminal_hook(pane_id, hook);
         screen.retain_claude_evidence(pane_id, hook);
     }
+    let report = &*report;
     if report.kind == "claude"
         && let Some(hook) = hook
             .as_ref()

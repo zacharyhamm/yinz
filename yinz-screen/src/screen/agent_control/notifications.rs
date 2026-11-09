@@ -361,9 +361,21 @@ impl Screen {
         else {
             return;
         };
+        let permission_active = lifecycle
+            .claude
+            .permission
+            .as_ref()
+            .is_some_and(|p| p.active());
         let was_active = lifecycle.claude.obligations.active();
         let notification_count = lifecycle.claude_notifications.len();
         let now = Instant::now();
+        if let Some(permission) = &mut lifecycle.claude.permission {
+            permission.elapse(
+                now.saturating_duration_since(lifecycle.notification_tick)
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+            );
+        }
         lifecycle.claude.obligations.elapse(
             now.saturating_duration_since(lifecycle.notification_tick)
                 .as_millis()
@@ -448,7 +460,13 @@ impl Screen {
             }
         }
         release_unavailable_notifications(lifecycle);
-        if (was_active && !lifecycle.claude.obligations.active())
+        if (permission_active
+            && !lifecycle
+                .claude
+                .permission
+                .as_ref()
+                .is_some_and(|p| p.active()))
+            || (was_active && !lifecycle.claude.obligations.active())
             || notification_count != lifecycle.claude_notifications.len()
         {
             // Identity ingestion precedes duplicate confirmation filters. A repeated
@@ -460,6 +478,11 @@ impl Screen {
     pub(super) fn expire_claude_observations(&mut self, now: Instant) {
         let mut changed = Vec::new();
         for (pane, lifecycle) in &mut self.agent_lifecycle {
+            let permission_active = lifecycle
+                .claude
+                .permission
+                .as_ref()
+                .is_some_and(|p| p.active());
             let active = lifecycle.claude.obligations.active();
             let notifications = lifecycle.claude_notifications.len();
             let elapsed = now
@@ -467,9 +490,18 @@ impl Screen {
                 .as_millis()
                 .min(u64::MAX as u128) as u64;
             lifecycle.notification_tick = now;
+            if let Some(permission) = &mut lifecycle.claude.permission {
+                permission.elapse(elapsed);
+            }
             lifecycle.claude.obligations.elapse(elapsed);
             release_unavailable_notifications(lifecycle);
-            if (active && !lifecycle.claude.obligations.active())
+            if (permission_active
+                && !lifecycle
+                    .claude
+                    .permission
+                    .as_ref()
+                    .is_some_and(|p| p.active()))
+                || (active && !lifecycle.claude.obligations.active())
                 || notifications != lifecycle.claude_notifications.len()
             {
                 changed.push(*pane);

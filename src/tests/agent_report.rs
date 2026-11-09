@@ -1460,7 +1460,7 @@ read -r gate
                 .unwrap(),
         );
         let mut output = BufReader::new(provider.0.stdout.take().unwrap());
-        let receive = || {
+        let receive = || loop {
             let mut receiver =
                 IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
             receiver
@@ -1472,7 +1472,17 @@ read -r gate
                 panic!("expected hook report")
             };
             let hook: HookEvent = serde_json::from_str(&report.event.unwrap().raw).unwrap();
-            (hook, report.report_id, receiver)
+            if hook.hook_event_name == yinz_types::agent::claude_permissions::EVENT {
+                receiver
+                    .get_sender::<ServerToClientMsg>()
+                    .unwrap()
+                    .send_server_msg(ServerToClientMsg::AgentReportAccepted {
+                        report_id: report.report_id,
+                    })
+                    .unwrap();
+                continue;
+            }
+            return (hook, report.report_id, receiver);
         };
         let acknowledge = |id, receiver: &IpcReceiverWithContext<ClientToServerMsg>| {
             receiver
@@ -1584,3 +1594,7 @@ read -r gate
         // both cases; no observer/recovery job is left running by this test.
     }
 }
+
+#[cfg(target_os = "linux")]
+#[path = "../unit/claude_permission_observer.rs"]
+mod claude_permission_observer;

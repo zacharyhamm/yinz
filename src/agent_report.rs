@@ -68,6 +68,8 @@ pub fn run(mut action: CliAction, session: Option<String>, started: Instant) -> 
                 serde_json::from_str(&event.raw).context("parse native Claude payload")?;
             raw["_yinz_claude_notifications"] = serde_json::to_value(&hook.claude_notifications)
                 .context("serialize local Claude identities")?;
+            raw["_yinz_claude_permission"] = serde_json::to_value(&hook.claude_permission)
+                .context("serialize local permission evidence")?;
             event.raw = hook.broadcast_json(
                 serde_json::to_string(&raw).context("serialize local Claude evidence")?,
             );

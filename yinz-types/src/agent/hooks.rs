@@ -655,6 +655,13 @@ pub struct HookEvent {
         skip_serializing_if = "Option::is_none"
     )]
     pub claude_notifications: Option<super::claude_notifications::Evidence>,
+    /// Optional local registry evidence. Independent of parent/worker tool attribution.
+    #[serde(
+        default,
+        rename = "_yinz_claude_permission",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub claude_permission: Option<super::claude_permissions::Sample>,
     /// Antigravity's host-side turn confirmation.
     #[serde(
         default,
@@ -860,6 +867,7 @@ impl HookEvent {
             claude_recovered_after: self.claude_recovered_after.clone(),
             claude_background: self.claude_background,
             claude_notifications: self.claude_notifications.as_ref().map(|e| e.bounded()),
+            claude_permission: self.claude_permission.clone(),
             agy_turn_complete: self.agy_turn_complete,
             prompt_sha256: self.prompt_sha256.clone(),
             codex_hooks_ready: self.codex_hooks_ready,
@@ -1076,6 +1084,13 @@ pub fn hook_state_for(kind: &str, event: &HookEvent) -> Option<AgentState> {
     }
     if kind == "claude" {
         match event.hook_event_name.as_str() {
+            super::claude_permissions::EVENT => {
+                return event
+                    .claude_permission
+                    .as_ref()
+                    .filter(|s| s.status == super::claude_permissions::Status::Active)
+                    .map(|_| AgentState::Waiting);
+            },
             // Claude uses trigger=auto both during a turn and while idle. Neither
             // compaction hook establishes a turn boundary, so preserve the last
             // reported state (also when no managed-agent lifecycle exists).
@@ -1094,7 +1109,10 @@ pub fn hook_state_for(kind: &str, event: &HookEvent) -> Option<AgentState> {
                 .then_some(AgentState::Busy);
             },
             "Notification" if event.notification_type.as_deref() == Some("permission_prompt") => {
-                return Some(AgentState::Waiting);
+                return match event.claude_permission.as_ref().map(|s| s.status) {
+                    Some(super::claude_permissions::Status::Inactive) => None,
+                    _ => Some(AgentState::Waiting),
+                };
             },
             _ => {},
         }
@@ -1158,6 +1176,12 @@ pub fn hook_state(event: &HookEvent) -> Option<AgentState> {
 /// explicit questions and elicitation always wait, regardless of approval mode.
 /// Missing or unknown modes, and unknown tools under `acceptEdits`, stay manual.
 pub fn waiting_needs_a_person(event: &HookEvent) -> bool {
+    if event.hook_event_name == super::claude_permissions::EVENT {
+        return event
+            .claude_permission
+            .as_ref()
+            .is_some_and(|s| s.status == super::claude_permissions::Status::Active);
+    }
     if event.hook_event_name != "PermissionRequest" {
         return true;
     }
@@ -1287,6 +1311,7 @@ pub fn waiting_detail(event: &HookEvent) -> Option<String> {
         // The tool it wants to run is the whole of what is being asked. No fallback:
         // `tool_name` is required in Claude Code's own schema, and a bare "permission" beside a
         // `waiting` that already says as much is a word for nothing.
+        super::claude_permissions::EVENT => Some(super::claude_permissions::DETAIL.into()),
         "PermissionRequest" => tool_summary(event),
         // Both of these carry the sentence Claude Code would have shown the user, which is a
         // better line than anything reconstructed from the event around it.
@@ -1439,7 +1464,10 @@ pub enum HookOutcome {
 /// Read one hook event from an agent of `kind`. Every reported record is complete — kind,
 /// state, hint, folder, session — so setting it needs no merge with what came before.
 pub fn hook_outcome(kind: &str, event: &HookEvent) -> HookOutcome {
-    if event.is_worker() || event.archive_only {
+    if event.is_worker()
+        || event.archive_only
+        || (kind == "claude" && event.hook_event_name == super::claude_permissions::EVENT)
+    {
         return HookOutcome::Nothing;
     }
     if event.hook_event_name == HOOK_SESSION_END {

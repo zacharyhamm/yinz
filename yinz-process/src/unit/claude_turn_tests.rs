@@ -218,6 +218,7 @@ fn missing_transcripts_and_exited_processes_are_unavailable() {
         conversation_file: None,
         claude_status: None,
         recovery: false,
+        permissions: false,
     };
     assert!(follow(&observation).is_err());
     let dir = tempfile::tempdir().unwrap();
@@ -278,6 +279,7 @@ fn observation(path: &std::path::Path, marker: Option<PathBuf>) -> Observation {
         conversation_file: marker,
         claude_status: None,
         recovery: false,
+        permissions: false,
     }
 }
 
@@ -1613,4 +1615,137 @@ fn a_registry_only_notice_end_is_unavailable_answer_evidence() {
             .unwrap()
             .unavailable
     );
+}
+
+#[test]
+fn claude_permission_registry_requires_positive_reason_and_guarded_identity() {
+    use yinz_types::agent::claude_permissions::Status;
+    let dir = tempfile::tempdir().unwrap();
+    let reader = ClaudeStatusObservation {
+        path: dir.path().join("record.json"),
+        after_ms: 0,
+    };
+    let base = json!({"pid":123,"sessionId":"conversation","kind":"interactive","status":"waiting","waitingFor":"permission prompt","statusUpdatedAt":456_100});
+    for (change, expected) in [
+        (json!({}), Some(Status::Active)),
+        (json!({"status":"busy"}), Some(Status::Inactive)),
+        (json!({"status":"idle"}), Some(Status::Inactive)),
+        (json!({"waitingFor":"input needed"}), Some(Status::Inactive)),
+        (json!({"waitingFor":"dialog open"}), Some(Status::Inactive)),
+        (
+            json!({"waitingFor":"worker request"}),
+            Some(Status::Inactive),
+        ),
+        (
+            json!({"waitingFor":"sandbox request"}),
+            Some(Status::Inactive),
+        ),
+        (json!({"waitingFor":"new reason"}), None),
+        (json!({"waitingFor":null}), None),
+        (json!({"status":"future"}), None),
+        (json!({"pid":124}), None),
+        (json!({"kind":"worker"}), None),
+        (json!({"sessionId":"other"}), None),
+        (json!({"statusUpdatedAt":454_000}), None),
+    ] {
+        let mut record = base.clone();
+        record
+            .as_object_mut()
+            .unwrap()
+            .extend(change.as_object().unwrap().clone());
+        std::fs::write(&reader.path, record.to_string()).unwrap();
+        assert_eq!(
+            reader
+                .permission((123, 456), "conversation")
+                .map(|s| s.status),
+            expected,
+            "{change}"
+        );
+    }
+    for malformed in ["{".into(), " ".repeat(65_537)] {
+        std::fs::write(&reader.path, malformed).unwrap();
+        assert!(reader.permission((123, 456), "conversation").is_none());
+    }
+    std::fs::remove_file(&reader.path).unwrap();
+    // Opening a FIFO must never block a synchronous hook.
+    nix::unistd::mkfifo(&reader.path, nix::sys::stat::Mode::S_IRUSR).unwrap();
+    assert!(reader.permission((123, 456), "conversation").is_none());
+}
+
+#[test]
+fn claude_permission_watch_retries_release_without_new_trigger_and_deduplicates() {
+    use yinz_types::agent::{
+        claude_notifications::Source,
+        claude_permissions::{Sample, Status},
+    };
+    let mut watch = permissions::Watch::default();
+    let mut sample = Sample {
+        source: Source { pid: 1, started: 2 },
+        updated_ms: 3_000,
+        observed_ms: 500_000,
+        status: Status::Inactive,
+    };
+    assert_eq!(
+        watch.next(Some(sample.clone()), Duration::ZERO),
+        Some(sample.clone())
+    );
+    watch.accepted(sample.clone(), Duration::ZERO);
+    // Slow automatic allow/deny remains inactive even beyond a candidate grace period.
+    for ms in [100, 500, 1_000, 3_000] {
+        assert!(watch
+            .next(Some(sample.clone()), Duration::from_millis(ms))
+            .is_none());
+    }
+    sample.status = Status::Active;
+    sample.updated_ms += 1;
+    let active = watch
+        .next(Some(sample.clone()), Duration::from_secs(4))
+        .unwrap();
+    watch.accepted(active.clone(), Duration::from_secs(4));
+    assert!(watch
+        .next(Some(active.clone()), Duration::from_millis(4_100))
+        .is_none());
+    assert_eq!(
+        watch.next(Some(active.clone()), Duration::from_millis(4_500)),
+        Some(active.clone())
+    );
+    sample.status = Status::Inactive;
+    sample.updated_ms += 1;
+    // First delivery fails: do not acknowledge it into the watch. It must retry itself.
+    assert_eq!(
+        watch.next(Some(sample.clone()), Duration::from_secs(5)),
+        Some(sample.clone())
+    );
+    assert_eq!(
+        watch.next(Some(sample.clone()), Duration::from_millis(5_100)),
+        Some(sample.clone())
+    );
+    watch.accepted(sample.clone(), Duration::from_millis(5_100));
+    assert!(watch.next(None, Duration::from_secs(6)).is_none());
+    assert!(watch.next(None, Duration::from_millis(7_999)).is_none());
+    let lost = watch.next(None, Duration::from_secs(8)).unwrap();
+    assert_eq!(lost.status, Status::Unavailable);
+    watch.accepted(lost, Duration::from_secs(8));
+    assert_eq!(
+        watch.next(Some(sample.clone()), Duration::from_secs(9)),
+        Some(sample)
+    );
+}
+
+#[test]
+fn claude_permission_observer_lock_has_independent_namespace_and_releases() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut observation = observation(&dir.path().join("missing-transcript"), None);
+    observation.process = Some((1, 2));
+    let lock = permissions::lock(&observation, dir.path())
+        .unwrap()
+        .unwrap();
+    assert!(permissions::lock(&observation, dir.path())
+        .unwrap()
+        .is_none());
+    assert!(recovery::lock(&observation, dir.path()).unwrap().is_some());
+    drop(lock);
+    assert!(permissions::lock(&observation, dir.path())
+        .unwrap()
+        .is_some());
 }

@@ -1778,3 +1778,42 @@ fn prompt_delivery_roundtrips_without_inventing_legacy_evidence() {
         );
     }
 }
+
+#[test]
+fn claude_permission_status_observes_needs_input_without_claiming_completion() {
+    use crate::agent::{
+        claude_notifications::Source,
+        claude_permissions::{Sample, Status, EVENT},
+    };
+    let mut observation = PromptObservation::new("claude", "conversation", "review");
+    assert_eq!(
+        observe(
+            &mut observation,
+            &event("claude", "UserPromptSubmit", Some("prompt"), Some("review"))
+        ),
+        Some(AgentOutcome::Submitted)
+    );
+    for status in [Status::Inactive, Status::Unavailable, Status::Active] {
+        let hook = HookEvent {
+            hook_event_name: EVENT.into(),
+            session_id: "conversation".into(),
+            claude_permission: Some(Sample {
+                source: Source { pid: 1, started: 2 },
+                updated_ms: 3_000,
+                observed_ms: 500_000,
+                status,
+            }),
+            ..Default::default()
+        };
+        let event = AgentEvent::from_hook(
+            "claude",
+            TerminalId::new(7),
+            &hook,
+            serde_json::to_string(&hook).unwrap(),
+        );
+        assert_eq!(
+            observe(&mut observation, &event),
+            (status == Status::Active).then_some(AgentOutcome::NeedsInput)
+        );
+    }
+}

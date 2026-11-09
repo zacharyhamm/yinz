@@ -930,3 +930,7 @@ fn claude_steering_resume_replaces_provider_without_a_new_async_launch() {
     assert_eq!(final_answer.message.as_deref(), Some("FINAL_NEW"));
     assert!(!fixture.status().agents[0].background);
 }
+
+#[cfg(target_os = "linux")]
+#[path = "unit/claude_steering/permission_status.rs"]
+mod permission_status;

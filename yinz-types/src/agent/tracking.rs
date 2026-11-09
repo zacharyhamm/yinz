@@ -65,6 +65,8 @@ pub struct ClaudeActivity {
     #[serde(default)]
     pub obligations: super::claude_notifications::Pending,
     pub parent: Option<AgentInfo>,
+    #[serde(default)]
+    pub permission: Option<super::claude_permissions::Overlay>,
     /// Tool identity of each worker's visible input wait. Missing identity never permits
     /// an unrelated tool event to release the wait, including after execution completion.
     #[serde(default)]
