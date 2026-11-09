@@ -1524,3 +1524,24 @@ fn notification_identity_is_never_truncated_and_transfer_retains_remaining_budge
     .unwrap();
     assert!(!old.obligations.active());
 }
+
+#[test]
+fn reordered_notification_answer_dependency_survives_handoff_and_old_payloads() {
+    use crate::agent::claude_notifications::{Answer, Pending};
+    let old: Answer = serde_json::from_value(serde_json::json!({
+        "prompt":"human", "sequence":1, "text":"ordinary"
+    }))
+    .unwrap();
+    assert!(!old.notification);
+    let pending = Pending {
+        answers: vec![Answer {
+            notification: true,
+            ..old
+        }],
+        ..Default::default()
+    };
+    let restored: Pending =
+        serde_json::from_str(&serde_json::to_string(&pending).unwrap()).unwrap();
+    assert_eq!(pending, restored);
+    assert!(restored.answers[0].notification);
+}

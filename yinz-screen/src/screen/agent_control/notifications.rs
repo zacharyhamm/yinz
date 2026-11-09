@@ -24,15 +24,6 @@ fn ingest(
     if pending.disabled {
         return None;
     }
-    if evidence.unavailable {
-        for obligation in &mut pending.launches {
-            if hook.prompt_id.as_ref().is_none_or(|p| {
-                p == &obligation.launch.prompt || obligation.answer_prompt.as_ref() == Some(p)
-            }) {
-                obligation.unavailable = true;
-            }
-        }
-    }
     for task in &evidence.unsupported_tasks {
         for obligation in &mut pending.launches {
             if &obligation.launch.task == task && obligation.answer_prompt.is_none() {
@@ -63,9 +54,29 @@ fn ingest(
         pending.cancellations.push(cancel.clone());
     }
     if let Some(answer) = answer
+        // Without positive work there is no future cancellation to join. A native
+        // notification submit can precede its structural acceptance report, though.
+        && (pending.active()
+            || answer.notification
+            || answer_needed(pending, &answer.prompt))
         && !pending.answers.iter().any(|a| a.prompt == answer.prompt)
     {
         pending.answers.push(answer);
+    }
+    // Foreground answers can precede a reordered cancellation, but are not
+    // dependencies until positive attribution arrives. Keep a bounded recent cache;
+    // never evict an answer needed by an identified notice/cancellation or an
+    // accepted notification whose structural row has not been reported yet.
+    while pending.answers.len() > MAX_FACTS {
+        let disposable = pending
+            .answers
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| !a.notification && !answer_needed(pending, &a.prompt))
+            .min_by_key(|(_, a)| a.sequence)
+            .map(|(i, _)| i);
+        let Some(index) = disposable else { break };
+        pending.answers.remove(index);
     }
     if pending.launches.len() > MAX_FACTS
         || pending.notices.len() > MAX_FACTS
@@ -124,6 +135,17 @@ fn ingest(
             }
         }
     }
+    // Binding can arrive in this same unavailable report, or after budget expiry.
+    // Apply loss after the positive joins so it reaches the identified answer lifetime.
+    if evidence.unavailable {
+        for obligation in &mut pending.launches {
+            if hook.prompt_id.as_ref().is_none_or(|p| {
+                p == &obligation.launch.prompt || obligation.answer_prompt.as_ref() == Some(p)
+            }) {
+                obligation.unavailable = true;
+            }
+        }
+    }
     let mut final_answer: Option<Answer> = None;
     for obligation in &mut pending.launches {
         if !obligation.settled
@@ -143,6 +165,31 @@ fn ingest(
         }
     }
     final_answer
+}
+
+fn answer_needed(pending: &Pending, prompt: &str) -> bool {
+    pending.notices.iter().any(|n| n.prompt == prompt)
+        || pending.cancellations.iter().any(|c| c.prompt == prompt)
+        || pending
+            .launches
+            .iter()
+            .any(|o| o.answer_prompt.as_deref() == Some(prompt))
+}
+
+/// Unavailable observation releases only its accepted processing lifetime. It
+/// supplies neither an answer nor a successful settlement. Keep turn/run tombstones
+/// so duplicate accepts cannot reopen it and a later confirmed answer can still apply.
+fn release_unavailable_notifications(lifecycle: &mut Lifecycle) {
+    lifecycle.claude_notifications.retain(|prompt, _| {
+        let mut bound = lifecycle
+            .claude
+            .obligations
+            .launches
+            .iter()
+            .filter(|o| o.answer_prompt.as_ref() == Some(prompt))
+            .peekable();
+        bound.peek().is_none() || bound.any(|o| !o.unavailable)
+    });
 }
 
 impl Screen {
@@ -165,6 +212,8 @@ impl Screen {
         else {
             return;
         };
+        let was_active = lifecycle.claude.obligations.active();
+        let notification_count = lifecycle.claude_notifications.len();
         let now = Instant::now();
         lifecycle.claude.obligations.elapse(
             now.saturating_duration_since(lifecycle.notification_tick)
@@ -180,6 +229,7 @@ impl Screen {
                     prompt: prompt.clone(),
                     sequence: turn.sequence,
                     text: hook.last_assistant_message.clone(),
+                    notification: lifecycle.claude_notifications.contains_key(prompt),
                 })
             });
         if evidence
@@ -197,11 +247,57 @@ impl Screen {
         {
             return;
         }
+        // Capacity loss clears the reducer's facts, so retain the source-attributed
+        // processing prompts long enough to release their activity lifetimes too.
+        let lost_prompts: Vec<_> = lifecycle
+            .claude
+            .obligations
+            .notices
+            .iter()
+            .chain(evidence.notice.iter())
+            .map(|n| n.prompt.clone())
+            .chain(
+                lifecycle
+                    .claude
+                    .obligations
+                    .answers
+                    .iter()
+                    .filter(|a| a.notification)
+                    .map(|a| a.prompt.clone()),
+            )
+            .collect();
+        let was_disabled = lifecycle.claude.obligations.disabled;
         if let Some(answer) = ingest(&mut lifecycle.claude.obligations, evidence, hook, answer)
             && answer.sequence >= lifecycle.claude.message_sequence
         {
             lifecycle.claude.message_sequence = answer.sequence;
             lifecycle.last_message = answer.text;
+        }
+        let evidence = evidence.bounded();
+        if evidence.source.is_some() && evidence.source == lifecycle.claude.obligations.source {
+            if !was_disabled && lifecycle.claude.obligations.disabled {
+                for prompt in lost_prompts {
+                    lifecycle.claude_notifications.remove(&prompt);
+                }
+            }
+            if evidence.unavailable {
+                if let Some(prompt) = &hook.prompt_id {
+                    lifecycle.claude_notifications.remove(prompt);
+                } else {
+                    // Source-wide loss may release only structurally attributed notices.
+                    for notice in &lifecycle.claude.obligations.notices {
+                        lifecycle.claude_notifications.remove(&notice.prompt);
+                    }
+                }
+            }
+        }
+        release_unavailable_notifications(lifecycle);
+        if (was_active && !lifecycle.claude.obligations.active())
+            || notification_count != lifecycle.claude_notifications.len()
+        {
+            // Identity ingestion precedes duplicate confirmation filters. A repeated
+            // Stop can add the first scoped loss evidence even if its state is ignored.
+            self.publish_claude_observation_activity(pane);
         }
     }
 
@@ -209,30 +305,39 @@ impl Screen {
         let mut changed = Vec::new();
         for (pane, lifecycle) in &mut self.agent_lifecycle {
             let active = lifecycle.claude.obligations.active();
+            let notifications = lifecycle.claude_notifications.len();
             let elapsed = now
                 .saturating_duration_since(lifecycle.notification_tick)
                 .as_millis()
                 .min(u64::MAX as u128) as u64;
             lifecycle.notification_tick = now;
             lifecycle.claude.obligations.elapse(elapsed);
-            if active && !lifecycle.claude.obligations.active() {
+            release_unavailable_notifications(lifecycle);
+            if (active && !lifecycle.claude.obligations.active())
+                || notifications != lifecycle.claude_notifications.len()
+            {
                 changed.push(*pane);
             }
         }
         for pane in changed {
-            let previous = self.get_pane_info(pane).and_then(|p| p.agent);
-            self.reconcile_claude_parent(pane);
-            let current = self.get_pane_info(pane).and_then(|p| p.agent);
-            if let Some(previous) = previous
-                && let Some(current) = current
-            {
-                if let Some(tab) = self.tab_containing_pane_mut(pane) {
-                    tab.set_pane_agent(pane, Some(previous));
-                }
-                super::super::agent_reports::publish_pane_agent_activity(self, pane, current)
-                    .context("publish unavailable Claude notification observation")
-                    .non_fatal();
+            self.publish_claude_observation_activity(pane);
+        }
+    }
+
+    fn publish_claude_observation_activity(&mut self, pane: PaneId) {
+        let previous = self.get_pane_info(pane).and_then(|p| p.agent);
+        self.reconcile_claude_parent(pane);
+        let current = self.get_pane_info(pane).and_then(|p| p.agent);
+        if previous != current
+            && let Some(previous) = previous
+            && let Some(current) = current
+        {
+            if let Some(tab) = self.tab_containing_pane_mut(pane) {
+                tab.set_pane_agent(pane, Some(previous));
             }
+            super::super::agent_reports::publish_pane_agent_activity(self, pane, current)
+                .context("publish Claude notification observation activity")
+                .non_fatal();
         }
     }
 }

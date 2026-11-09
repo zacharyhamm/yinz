@@ -1375,3 +1375,212 @@ fn claude_observer_preserves_native_acquisition_until_acknowledged() {
     let output = provider.0.take().unwrap().wait_with_output().unwrap();
     assert!(output.status.success(), "{output:?}");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn claude_observer_native_hooks_start_both_confirmation_paths_and_notice_dispositions() {
+    use std::io::{BufRead, BufReader};
+    use yinz_types::agent::{claude_notifications::Source, HookEvent};
+    // Native reporters intentionally detach observers. Adopt their orphaned children
+    // so the test can reap every observer on success and on assertion failure.
+    struct Provider(Child);
+    impl Drop for Provider {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+            loop {
+                match nix::sys::wait::waitpid(None, None) {
+                    Ok(_) | Err(nix::errno::Errno::EINTR) => {},
+                    Err(nix::errno::Errno::ECHILD) => break,
+                    error => panic!("reap detached fixture observers: {error:?}"),
+                }
+            }
+            nix::sys::prctl::set_child_subreaper(false).unwrap();
+        }
+    }
+    warm_binary();
+    for registry_only in [false, true] {
+        nix::sys::prctl::set_child_subreaper(true).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let listener = listener(dir.path());
+        let provider_path = dir.path().join("claude");
+        yinz_test_support::write_warm_script(
+            &provider_path,
+            r#"
+"$@" < "$YINZ_TEST_DIR/submit.json"
+printf 'submitted\n'
+read -r gate
+"$@" < "$YINZ_TEST_DIR/launch.json"
+touch "$YINZ_TEST_DIR/acquired"
+printf 'acquired\n'
+read -r gate
+"$@" < "$YINZ_TEST_DIR/notice.json"
+printf 'noticed\n'
+read -r gate
+"#,
+        );
+        let transcript = dir.path().join("root.jsonl");
+        let launch_row = serde_json::json!({"type":"user","sessionId":"conversation","promptId":"launch","uuid":"launch-row"});
+        std::fs::write(&transcript, format!("{launch_row}\n")).unwrap();
+        for (file, hook) in [
+            (
+                "submit.json",
+                serde_json::json!({"hook_event_name":"UserPromptSubmit","session_id":"conversation","prompt_id":"launch","prompt":"start","transcript_path":transcript}),
+            ),
+            (
+                "launch.json",
+                serde_json::json!({"hook_event_name":"PostToolUse","session_id":"conversation","prompt_id":"launch","tool_name":"Bash","tool_use_id":"tool","tool_response":{"backgroundTaskId":"short-task"}}),
+            ),
+            (
+                "notice.json",
+                serde_json::json!({"hook_event_name":"UserPromptSubmit","session_id":"conversation","prompt_id":"notice","prompt":"<task-notification><task-id>short-task</task-id></task-notification>","transcript_path":transcript}),
+            ),
+        ] {
+            std::fs::write(dir.path().join(file), hook.to_string()).unwrap();
+        }
+        let base = command(dir.path());
+        let mut cmd = Command::new(&provider_path);
+        cmd.arg(base.get_program())
+            .args(base.get_args())
+            .arg("--hook-json");
+        for (key, value) in base.get_envs() {
+            if let Some(value) = value {
+                cmd.env(key, value);
+            } else {
+                cmd.env_remove(key);
+            }
+        }
+        let mut provider = Provider(
+            cmd.env("YINZ_TEST_DIR", dir.path())
+                .env("CLAUDE_CONFIG_DIR", dir.path())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let mut output = BufReader::new(provider.0.stdout.take().unwrap());
+        let receive = || {
+            let mut receiver =
+                IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
+            receiver
+                .set_recv_timeout(Some(Duration::from_secs(30)))
+                .unwrap();
+            let IpcRecv::Msg(ClientToServerMsg::AgentReport(report), _) =
+                receiver.recv_client_msg()
+            else {
+                panic!("expected hook report")
+            };
+            let hook: HookEvent = serde_json::from_str(&report.event.unwrap().raw).unwrap();
+            (hook, report.report_id, receiver)
+        };
+        let acknowledge = |id, receiver: &IpcReceiverWithContext<ClientToServerMsg>| {
+            receiver
+                .get_sender::<ServerToClientMsg>()
+                .unwrap()
+                .send_server_msg(ServerToClientMsg::AgentReportAccepted { report_id: id })
+                .unwrap();
+        };
+        let read_gate = |output: &mut BufReader<std::process::ChildStdout>, expected: &str| {
+            let mut line = String::new();
+            output.read_line(&mut line).unwrap();
+            assert_eq!(line.trim(), expected);
+        };
+        let (submit, id, receiver) = receive();
+        assert_eq!(submit.hook_event_name, "UserPromptSubmit");
+        let source: Source = submit.claude_notifications.unwrap().source.unwrap();
+        acknowledge(id, &receiver);
+        read_gate(&mut output, "submitted");
+        writeln!(provider.0.stdin.as_mut().unwrap(), "launch").unwrap();
+        let (launch, id, receiver) = receive();
+        let facts = launch.claude_notifications.unwrap();
+        assert_eq!(facts.source.as_ref(), Some(&source));
+        assert_eq!(facts.launches[0].task, "short-task");
+        assert!(
+            !dir.path().join("acquired").exists(),
+            "native hook has not returned before acquisition acknowledgement"
+        );
+        acknowledge(id, &receiver);
+        read_gate(&mut output, "acquired");
+        // Work is already idle before the first confirmation sample. Exercise each
+        // real follow -> confirm caller after synchronous native acquisition.
+        let answer = serde_json::json!({"type":"assistant","uuid":"launch-answer","parentUuid":"launch-row","message":{"content":[{"type":"text","text":"LAUNCH"}]}});
+        let mut rows = format!("{launch_row}\n{answer}\n");
+        if !registry_only {
+            rows += &format!(
+                "{}\n",
+                serde_json::json!({"type":"system","subtype":"turn_duration","parentUuid":"launch-answer"})
+            );
+        }
+        let status = dir
+            .path()
+            .join("sessions")
+            .join(format!("{}.json", source.pid));
+        std::fs::create_dir_all(status.parent().unwrap()).unwrap();
+        let registry = |state: &str| {
+            serde_json::json!({"pid":source.pid,"sessionId":"conversation","kind":"interactive","status":state,
+            "statusUpdatedAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() + 1})
+        };
+        std::fs::write(&status, registry("busy").to_string()).unwrap();
+        std::fs::write(&transcript, &rows).unwrap();
+        std::fs::write(&status, registry("idle").to_string()).unwrap();
+        let (stop, id, receiver) = receive();
+        assert_eq!(stop.hook_event_name, "Stop");
+        assert_eq!(stop.prompt_id.as_deref(), Some("launch"));
+        assert_eq!(stop.claude_turn_complete, Some(true));
+        assert_eq!(stop.claude_background, Some(false));
+        assert_eq!(stop.last_assistant_message.as_deref(), Some("LAUNCH"));
+        acknowledge(id, &receiver);
+        std::fs::write(&status, registry("busy").to_string()).unwrap();
+        rows += &format!(
+            "{}\n",
+            serde_json::json!({"type":"user","isSidechain":false,"sessionId":"conversation","promptId":"notice","uuid":"notice-row",
+            "origin":{"kind":"task-notification","producer":"session-task","runId":"run"},
+            "message":{"content":"<task-notification><task-id>short-task</task-id><tool-use-id>tool</tool-use-id></task-notification>"}})
+        );
+        if !registry_only {
+            rows += &format!(
+                "{}\n{}\n",
+                serde_json::json!({"type":"assistant","parentUuid":"notice-row","uuid":"notice-answer","message":{"content":[{"type":"text","text":"FINAL"}]}}),
+                serde_json::json!({"type":"system","subtype":"turn_duration","parentUuid":"notice-answer"})
+            );
+        }
+        std::fs::write(&transcript, &rows).unwrap();
+        // This native submit, rather than a manually invoked observer, starts the
+        // ordinary notification observer and its root ancestry/answer processing.
+        writeln!(provider.0.stdin.as_mut().unwrap(), "notice").unwrap();
+        let (submit, id, receiver) = receive();
+        assert_eq!(submit.hook_event_name, "UserPromptSubmit");
+        assert_eq!(submit.prompt_id.as_deref(), Some("notice"));
+        acknowledge(id, &receiver);
+        read_gate(&mut output, "noticed");
+        let (accept, id, receiver) = receive();
+        assert_eq!(accept.hook_event_name, "NotificationAccepted");
+        assert_eq!(
+            accept
+                .claude_notifications
+                .as_ref()
+                .unwrap()
+                .source
+                .as_ref(),
+            Some(&source)
+        );
+        acknowledge(id, &receiver);
+        std::fs::write(&status, registry("idle").to_string()).unwrap();
+        let (stop, id, receiver) = receive();
+        assert_eq!(stop.hook_event_name, "Stop");
+        assert_eq!(stop.claude_turn_complete, Some(!registry_only));
+        assert_eq!(
+            stop.last_assistant_message.as_deref(),
+            (!registry_only).then_some("FINAL")
+        );
+        let facts = stop.claude_notifications.unwrap();
+        assert_eq!(facts.notice, accept.claude_notifications.unwrap().notice);
+        assert_eq!(facts.unavailable, registry_only);
+        acknowledge(id, &receiver);
+        writeln!(provider.0.stdin.as_mut().unwrap(), "exit").unwrap();
+        assert!(provider.0.wait().unwrap().success());
+        // Drop kills the provider on error and reaps the detached descendants in
+        // both cases; no observer/recovery job is left running by this test.
+    }
+}

@@ -20,6 +20,13 @@ Overall issue 69 stays open. Unsupported formats/routes, unproved resumed passes
 worker-owned tasks and gated tool-result delivery retain existing fallback.
 Observation loss, capacity and the 24-hour operational budget degrade observation;
 none proves completion. Handoff preserves pending facts and the remaining budget.
+An explicit unavailable notification observer (including a registry-only turn end
+without an answer boundary), or expiry of its attributed obligation, releases that
+notification's activity lifetime as unavailable. It does not settle the task or
+replace final text. Independent work remains pending, and a later real confirmed
+answer may still update text in turn order. Ordinary foreground answer history
+cannot exhaust the adapter: only identified dependencies are protected from the
+bounded recent-answer cache's pruning.
 No complete execution ledger, epochs or replay prerequisite is restored.
 
 The general transcript/sidechain reconstruction described below was removed. Its

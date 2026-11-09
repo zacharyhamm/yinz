@@ -303,3 +303,363 @@ fn claude_steering_delivers_without_interrupting_and_publishes_background_activi
         },
     );
 }
+
+/// Real IPC application with a status barrier after each report, rather than
+/// treating AgentReportAccepted (queue receipt) as screen application.
+struct NotificationIpc {
+    yinz: yinz_integration_tests::TestSession,
+    agent: yinz_integration_tests::FakePtyHandle,
+    pane: PaneId,
+}
+
+impl NotificationIpc {
+    fn new() -> Self {
+        let yinz = TestRunner::new(TERMINAL_SIZE)
+            .with_config("load_plugins clear-defaults=true {}")
+            .with_layout(LayoutInfo::Stringified(
+                "layout { pane command=\"claude\"; }".into(),
+            ))
+            .start();
+        let agent = yinz.expect_pty_spawn();
+        let pane = PaneId::Terminal(agent.terminal_id());
+        let (cols, _) =
+            agent.wait_for_size("Claude pane has a size", |cols, rows| cols > 20 && rows > 8);
+        let border = "─".repeat(usize::from(cols));
+        agent.output(format!("\x1b[?2004h\x1b[2J\x1b[HClaude composer\r\n{border}\r\n❯ \r\n{border}\r\n  auto mode on\x1b[3;3H\x1b[?25h").as_bytes());
+        yinz.wait_until("the composer is rendered", |s| {
+            s.contains("Claude composer")
+        });
+        let fixture = Self { yinz, agent, pane };
+        fixture.report(HookEvent {
+            source: Some("startup".into()),
+            ..fixture.hook("SessionStart", "")
+        });
+        fixture
+    }
+
+    fn connect(
+        &self,
+    ) -> (
+        IpcSenderWithContext<ClientToServerMsg>,
+        yinz_ipc::ipc::IpcReceiverWithContext<ServerToClientMsg>,
+    ) {
+        let path = yinz_runtime::consts::YINZ_SOCK_DIR.join(self.yinz.session_name());
+        let sender = IpcSenderWithContext::<ClientToServerMsg>::new(
+            yinz_ipc::consts::ipc_connect(&path).unwrap(),
+        );
+        let receiver = sender.get_receiver().unwrap();
+        receiver
+            .set_recv_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        (sender, receiver)
+    }
+
+    fn reply(
+        receiver: &mut yinz_ipc::ipc::IpcReceiverWithContext<ServerToClientMsg>,
+    ) -> AgentResponse {
+        loop {
+            match receiver.recv_server_msg() {
+                IpcRecv::Msg(ServerToClientMsg::AgentControl(response), _) => return response,
+                IpcRecv::Msg(_, _) => {},
+                _ => panic!("agent response disconnected or timed out"),
+            }
+        }
+    }
+
+    fn request(&self, request: AgentRequest) -> AgentResponse {
+        let (mut sender, mut receiver) = self.connect();
+        sender
+            .send_client_msg(ClientToServerMsg::AgentControl(request))
+            .unwrap();
+        Self::reply(&mut receiver)
+    }
+
+    fn status(&self) -> AgentResponse {
+        self.request(AgentRequest::Status {
+            pane_id: self.pane,
+            expected_session_id: None,
+        })
+    }
+
+    fn hook(&self, name: &str, prompt: &str) -> HookEvent {
+        HookEvent {
+            hook_event_name: name.into(),
+            session_id: "conversation".into(),
+            prompt_id: Some(prompt.into()),
+            ..Default::default()
+        }
+    }
+
+    fn report(&self, hook: HookEvent) -> AgentResponse {
+        let (mut sender, mut receiver) = self.connect();
+        let trace = yinz_runtime::agent::report::ReportTrace::new(std::time::Instant::now());
+        sender
+            .send_client_msg(ClientToServerMsg::AgentReport(AgentReport {
+                report_id: trace.report_id,
+                pane_id: self.pane,
+                kind: "claude".into(),
+                trace: false,
+                process_id: trace.process_id,
+                state: match hook_outcome("claude", &hook) {
+                    HookOutcome::Reported(agent) => AgentReportState::Set(agent),
+                    HookOutcome::Ended => AgentReportState::Clear,
+                    HookOutcome::Nothing => AgentReportState::Unchanged,
+                },
+                event: Some(AgentEvent::from_hook(
+                    "claude",
+                    self.agent.terminal_id(),
+                    &hook,
+                    serde_json::to_string(&hook).unwrap(),
+                )),
+            }))
+            .unwrap();
+        assert!(matches!(
+            receiver.recv_server_msg(),
+            IpcRecv::Msg(ServerToClientMsg::AgentReportAccepted { .. }, _)
+        ));
+        self.status()
+    }
+
+    fn source() -> yinz_types::agent::claude_notifications::Source {
+        yinz_types::agent::claude_notifications::Source {
+            pid: 123,
+            started: 456,
+        }
+    }
+
+    fn native(&self, raw: serde_json::Value) -> HookEvent {
+        let (mut hook, _) =
+            yinz_runtime::agent::hooks::parse_hook_event("claude", raw.to_string()).unwrap();
+        hook.claude_notifications.as_mut().unwrap().source = Some(Self::source());
+        hook
+    }
+
+    fn submit(&self, prompt: &str, task: Option<&str>) {
+        self.report(HookEvent {
+            prompt: Some(task.map_or_else(
+                || "human".into(),
+                |task| format!("<task-notification><task-id>{task}</task-id></task-notification>"),
+            )),
+            ..self.hook("UserPromptSubmit", prompt)
+        });
+    }
+
+    fn launch(&self, task: &str, tool: &str) {
+        self.report(self.native(serde_json::json!({"hook_event_name":"PostToolUse","session_id":"conversation","prompt_id":"launch",
+            "tool_name":"Bash","tool_use_id":tool,"tool_response":{"backgroundTaskId":task}})));
+    }
+
+    fn notice(&self, prompt: &str, task: &str, tool: &str) -> HookEvent {
+        use yinz_types::agent::claude_notifications::{Evidence, Notice};
+        HookEvent {
+            claude_notifications: Some(Evidence {
+                source: Some(Self::source()),
+                notice: Some(Notice {
+                    task: task.into(),
+                    tool: tool.into(),
+                    prompt: prompt.into(),
+                    run: format!("run-{prompt}"),
+                    row: format!("row-{prompt}"),
+                }),
+                ..Default::default()
+            }),
+            ..self.hook("NotificationAccepted", prompt)
+        }
+    }
+
+    fn stop(&self, prompt: &str, text: &str) -> HookEvent {
+        HookEvent {
+            claude_turn_complete: Some(true),
+            claude_background: Some(false),
+            last_assistant_message: Some(text.into()),
+            claude_notifications: Some(yinz_types::agent::claude_notifications::Evidence {
+                source: Some(Self::source()),
+                ..Default::default()
+            }),
+            ..self.hook("Stop", prompt)
+        }
+    }
+}
+
+fn notification_disposition_over_ipc(disposition: &str) {
+    for registry_first in [false, true] {
+        for concurrent in [false, true] {
+            let fixture = NotificationIpc::new();
+            fixture.submit("launch", None);
+            fixture.launch("bash", "tool");
+            if concurrent {
+                fixture.launch("other", "other-tool");
+            }
+            let mut stop = fixture.stop("launch", "LAUNCH");
+            stop.claude_background = Some(true);
+            fixture.report(stop);
+            let events = fixture
+                .yinz
+                .stream_events(&["pane_update", "agent_lifecycle"]);
+            events.wait_for_event("PaneUpdate");
+            events.wait_for_event_matching("agent_lifecycle", |json| {
+                serde_json::from_str::<serde_json::Value>(json).unwrap()["event_type"] == "ready"
+            });
+            let (mut waiter, mut waited) = fixture.connect();
+            let wait = || AgentRequest::Wait {
+                pane_id: fixture.pane,
+                expected_session_id: None,
+                until: AgentState::Idle,
+                timeout_ms: 30_000,
+            };
+            waiter
+                .send_client_msg(ClientToServerMsg::AgentControl(wait()))
+                .unwrap();
+            let clear_registry = || {
+                fixture.report(HookEvent {
+                    claude_background: Some(false),
+                    ..fixture.hook(CLAUDE_BACKGROUND_IDLE, "launch")
+                })
+            };
+            if registry_first {
+                assert_eq!(clear_registry().agents[0].agent.state, AgentState::Busy);
+            }
+            if disposition == "cancel" {
+                fixture.submit("cancel", None);
+                fixture.report(fixture.native(serde_json::json!({"hook_event_name":"PostToolUse","session_id":"conversation","prompt_id":"cancel",
+                    "tool_name":"TaskStop","tool_use_id":"cancel-tool","tool_input":{"task_id":"bash"},
+                    "tool_response":{"task_id":"bash","task_type":"local_bash","command":"private"}})));
+            } else {
+                fixture.submit("notice", Some("bash"));
+                fixture.report(fixture.notice("notice", "bash", "tool"));
+            }
+            if !registry_first {
+                assert_eq!(clear_registry().agents[0].agent.state, AgentState::Busy);
+            }
+            assert_eq!(fixture.status().agents[0].agent.state, AgentState::Busy);
+            let final_prompt = if disposition == "cancel" {
+                "cancel"
+            } else {
+                "notice"
+            };
+            if disposition == "unavailable" && registry_first {
+                // A duplicate false Stop may add the first scoped loss evidence.
+                // Deduplicating its state must not skip the resulting publication.
+                let mut unknown = fixture.stop("notice", "");
+                unknown.claude_turn_complete = Some(false);
+                assert_eq!(
+                    fixture.report(unknown).agents[0].agent.state,
+                    AgentState::Busy
+                );
+            }
+            let mut answer = fixture.stop(final_prompt, "FINAL");
+            if disposition == "unavailable" {
+                answer.claude_turn_complete = Some(false);
+                answer.claude_notifications = fixture
+                    .notice("notice", "bash", "tool")
+                    .claude_notifications;
+                answer.claude_notifications.as_mut().unwrap().unavailable = true;
+            }
+            let after = fixture.report(answer);
+            assert_eq!(after.agents[0].background, concurrent);
+            assert_eq!(
+                after.agents[0].agent.state,
+                if concurrent {
+                    AgentState::Busy
+                } else {
+                    AgentState::Idle
+                }
+            );
+            let expected = if concurrent {
+                fixture.submit("other-notice", Some("other"));
+                fixture.report(fixture.notice("other-notice", "other", "other-tool"));
+                fixture.report(fixture.stop("other-notice", "FINAL_OTHER"));
+                "FINAL_OTHER"
+            } else if disposition == "unavailable" {
+                "LAUNCH"
+            } else {
+                "FINAL"
+            };
+            let done = NotificationIpc::reply(&mut waited);
+            assert_eq!(done.outcome, AgentOutcome::Ok);
+            assert_eq!(done.message.as_deref(), Some(expected));
+            assert_eq!(fixture.request(wait()).message.as_deref(), Some(expected));
+            events.wait_for_event_matching("agent_lifecycle", |json| {
+                let value: serde_json::Value = serde_json::from_str(json).unwrap();
+                value["event_type"] == "state_changed" && value["state"] == "idle"
+            });
+            events.wait_for_event_matching("PaneUpdate", |json| {
+                let value: serde_json::Value = serde_json::from_str(json).unwrap();
+                value["PaneUpdate"]["panes"]
+                    .as_object()
+                    .is_some_and(|panes| {
+                        panes
+                            .values()
+                            .filter_map(|p| p.as_array())
+                            .flatten()
+                            .any(|p| {
+                                p["id"] == fixture.agent.terminal_id().get()
+                                    && p["is_plugin"] == false
+                                    && p["agent"]["state"] == "Idle"
+                            })
+                    })
+            });
+            // Ordered stream delivery reaches final Idle after all prior state edges.
+            // No Busy may follow an earlier Idle in these protected phases.
+            let mut idle = [false; 2];
+            for (kind, json) in events.streamed_events() {
+                let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+                let state = if kind == "agent_lifecycle" && value["event_type"] == "state_changed" {
+                    value["state"].as_str().map(|s| (0, s.to_owned()))
+                } else if kind == "PaneUpdate" {
+                    value["PaneUpdate"]["panes"].as_object().and_then(|panes| {
+                        panes
+                            .values()
+                            .filter_map(|p| p.as_array())
+                            .flatten()
+                            .find(|p| {
+                                p["id"] == fixture.agent.terminal_id().get()
+                                    && p["is_plugin"] == false
+                            })
+                            .and_then(|p| p["agent"]["state"].as_str())
+                            .map(|s| (1, s.to_lowercase()))
+                    })
+                } else {
+                    None
+                };
+                if let Some((feed, state)) = state {
+                    if state == "idle" {
+                        idle[feed] = true;
+                    }
+                    if state == "busy" {
+                        assert!(!idle[feed], "premature Idle in {kind}, {disposition}, registry_first={registry_first}: {json}");
+                    }
+                }
+            }
+            assert!(
+                idle.into_iter().all(|s| s),
+                "both lifecycle and PaneUpdate publish final Idle"
+            );
+            // R69-3 must also allow subsequent ordinary use; a late valid answer
+            // cannot overwrite the newer human turn or resurrect its failed observer.
+            fixture.submit("later-human", None);
+            fixture.report(fixture.stop("later-human", "LATER"));
+            if disposition == "unavailable" {
+                fixture.report(fixture.stop("notice", "OLDER_REAL_ANSWER"));
+            }
+            let later = fixture.request(wait());
+            assert_eq!(later.message.as_deref(), Some("LATER"));
+            assert_eq!(later.agents[0].agent.state, AgentState::Idle);
+        }
+    }
+}
+
+#[test]
+fn claude_steering_unavailable_notification_falls_back_without_stranding_other_work() {
+    notification_disposition_over_ipc("unavailable");
+}
+
+#[test]
+fn claude_steering_exact_cancellation_waits_for_its_answer_in_both_registry_orders() {
+    notification_disposition_over_ipc("cancel");
+}
+
+#[test]
+fn claude_steering_supported_answers_preserve_other_work_in_both_registry_orders() {
+    notification_disposition_over_ipc("answer");
+}

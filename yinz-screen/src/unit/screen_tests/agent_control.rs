@@ -14223,6 +14223,370 @@ fn notification_source() -> yinz_types::agent::claude_notifications::Source {
     }
 }
 
+fn sourced_stop(prompt: &str, text: &str) -> HookEvent {
+    HookEvent {
+        claude_notifications: Some(yinz_types::agent::claude_notifications::Evidence {
+            source: Some(notification_source()),
+            ..Default::default()
+        }),
+        ..claude_stop(prompt, text, false)
+    }
+}
+
+#[test]
+fn unavailable_identified_notification_releases_only_its_processing_lifetime() {
+    // R69-3: registry-only turn_over ends the observer without proving an answer.
+    for concurrent in [false, true] {
+        for budget in [false, true] {
+            let (mut screen, messages, writes) = setup("claude");
+            report_kind(&mut screen, "claude", hook("SessionStart"));
+            screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+            finish_paste(&writes);
+            report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+            report_kind(
+                &mut screen,
+                "claude",
+                native_background_launch("bash", "tool", "Bash"),
+            );
+            if concurrent {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    native_background_launch("agent", "agent-tool", "Agent"),
+                );
+            }
+            report_kind(&mut screen, "claude", sourced_stop("prompt", "LAUNCH"));
+            let original = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(original.outcome, AgentOutcome::Completed);
+            assert_eq!(original.message.as_deref(), Some("LAUNCH"));
+            report_kind(
+                &mut screen,
+                "claude",
+                task_notification("notice", &["bash"]),
+            );
+            let accepted = identified_notice("notice", "bash", "tool", "run");
+            if budget || concurrent {
+                report_kind(&mut screen, "claude", accepted.clone());
+            }
+            // The standalone failure also carries the first structural join in its Stop.
+            draft_frame(&mut screen, "claude", "", 0, Instant::now());
+            screen.agent_control(wait(AgentState::Idle), CLIENT);
+            if budget {
+                // Exhaust only this observation, leaving an independent task live.
+                let mut state = claude_lifecycle(&screen);
+                state.claude.obligations.launches[0].remaining_ms = 1;
+                // The remaining budget and pending notice survive the handoff JSON route.
+                let state = serde_json::from_str::<yinz_types::agent::tracking::LifecycleState>(
+                    &serde_json::to_string(&state).unwrap(),
+                )
+                .unwrap();
+                screen.agent_lifecycle.insert(PANE, state.into());
+                screen.refresh_agent_controls_at(Instant::now() + Duration::from_millis(10));
+            } else {
+                if !concurrent {
+                    // A prior observer could report no answer without scoped loss.
+                    // The second observer's same false confirmation is deduplicated,
+                    // but its new unavailable evidence must still publish cleanup.
+                    let mut unknown = sourced_stop("notice", "");
+                    unknown.claude_turn_complete = Some(false);
+                    report_kind(&mut screen, "claude", unknown);
+                    assert!(screen.claude_background_pending_for_test());
+                }
+                let mut failed = sourced_stop("notice", "not a confirmed answer");
+                failed.claude_turn_complete = Some(false);
+                failed.claude_notifications = accepted.claude_notifications.clone();
+                failed.claude_notifications.as_mut().unwrap().unavailable = true;
+                report_kind(&mut screen, "claude", failed);
+            }
+            let lifecycle = claude_lifecycle(&screen);
+            assert!(!lifecycle.claude_notifications.contains_key("notice"));
+            assert!(lifecycle.claude.obligations.launches[0].unavailable);
+            assert!(!lifecycle.claude.obligations.launches[0].settled);
+            assert_eq!(
+                screen.agent_status_for_test().agent.state,
+                if concurrent {
+                    AgentState::Busy
+                } else {
+                    AgentState::Idle
+                }
+            );
+            assert_eq!(screen.agent_status_for_test().background, concurrent);
+            assert_eq!(
+                lifecycle.last_message.as_deref(),
+                Some("LAUNCH"),
+                "unavailable is not an answer"
+            );
+            assert_eq!(replies(&messages, CLIENT).is_empty(), concurrent);
+            // A second observer can still supply a real answer after observation loss.
+            let mut late = sourced_stop("notice", "REAL_ANSWER");
+            late.claude_notifications = accepted.claude_notifications;
+            report_kind(&mut screen, "claude", late.clone());
+            assert_eq!(
+                screen.agent_lifecycle[&PANE].last_message_for_test(),
+                Some("REAL_ANSWER")
+            );
+            // A later human turn finishes normally without erasing independent work.
+            report_kind(&mut screen, "claude", steering_ack("later"));
+            report_kind(&mut screen, "claude", sourced_stop("later", "LATER"));
+            assert_eq!(screen.agent_status_for_test().background, concurrent);
+            report_kind(&mut screen, "claude", late);
+            assert_eq!(
+                screen.agent_lifecycle[&PANE].last_message_for_test(),
+                Some("LATER")
+            );
+            if concurrent {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    task_notification("other", &["agent"]),
+                );
+                let mut answer = sourced_stop("other", "FINAL_OTHER");
+                answer.claude_notifications =
+                    identified_notice("other", "agent", "agent-tool", "other-run")
+                        .claude_notifications;
+                report_kind(&mut screen, "claude", answer);
+                assert_eq!(
+                    replies(&messages, CLIENT).pop().unwrap().message.as_deref(),
+                    Some("FINAL_OTHER")
+                );
+            }
+            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+            assert!(!claude_lifecycle(&screen).claude.obligations.launches[0].settled);
+        }
+    }
+}
+
+#[test]
+fn ordinary_answer_history_cannot_disable_later_notification_tracking() {
+    // R69-4: neither an empty adapter nor one with independent work may accumulate
+    // an unbounded dependency on unrelated foreground answers.
+    for concurrent in [false, true] {
+        let (mut screen, messages, writes) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        if concurrent {
+            report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+            report_kind(
+                &mut screen,
+                "claude",
+                native_background_launch("independent", "independent-tool", "Agent"),
+            );
+            report_kind(&mut screen, "claude", sourced_stop("prompt", "ORIGINAL"));
+        }
+        for i in 0..80 {
+            let id = format!("ordinary-{i}");
+            report_kind(&mut screen, "claude", steering_ack(&id));
+            report_kind(&mut screen, "claude", sourced_stop(&id, "ordinary"));
+            assert_eq!(screen.agent_status_for_test().background, concurrent);
+            assert!(!claude_lifecycle(&screen).claude.obligations.disabled);
+        }
+        // The real submission result remains independent of aggregate idle.
+        draft_frame(&mut screen, "claude", "", 0, Instant::now());
+        screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+        finish_paste(&writes);
+        let mut submit = hook("UserPromptSubmit");
+        submit.prompt_id = Some("new-launch".into());
+        report_kind(&mut screen, "claude", submit);
+        let mut launch = native_background_launch("new-task", "new-tool", "Bash");
+        launch.prompt_id = Some("new-launch".into());
+        launch.claude_notifications.as_mut().unwrap().launches[0].prompt = "new-launch".into();
+        report_kind(&mut screen, "claude", launch);
+        report_kind(
+            &mut screen,
+            "claude",
+            sourced_stop("new-launch", "LAUNCH_NEW"),
+        );
+        assert_eq!(
+            replies(&messages, CLIENT).pop().unwrap().message.as_deref(),
+            Some("LAUNCH_NEW")
+        );
+        draft_frame(&mut screen, "claude", "", 0, Instant::now());
+        screen.agent_control(wait(AgentState::Idle), CLIENT);
+        assert!(replies(&messages, CLIENT).is_empty());
+        // Answer-before-acceptance remains a dependency through another >64 answers.
+        report_kind(
+            &mut screen,
+            "claude",
+            task_notification("notice", &["new-task"]),
+        );
+        report_kind(&mut screen, "claude", sourced_stop("notice", "NEW_ANSWER"));
+        for i in 80..160 {
+            let id = format!("ordinary-{i}");
+            report_kind(&mut screen, "claude", steering_ack(&id));
+            report_kind(&mut screen, "claude", sourced_stop(&id, "newer ordinary"));
+            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+            assert!(!claude_lifecycle(&screen).claude.obligations.disabled);
+        }
+        report_kind(
+            &mut screen,
+            "claude",
+            identified_notice("notice", "new-task", "new-tool", "new-run"),
+        );
+        assert_eq!(
+            screen.agent_lifecycle[&PANE].last_message_for_test(),
+            Some("newer ordinary")
+        );
+        if concurrent {
+            assert!(replies(&messages, CLIENT).is_empty());
+            report_kind(
+                &mut screen,
+                "claude",
+                task_notification("other", &["independent"]),
+            );
+            report_kind(
+                &mut screen,
+                "claude",
+                identified_notice(
+                    "other",
+                    "independent",
+                    "independent-tool",
+                    "independent-run",
+                ),
+            );
+            report_kind(&mut screen, "claude", sourced_stop("other", "FINAL"));
+        }
+        let expected = if concurrent {
+            "FINAL"
+        } else {
+            "newer ordinary"
+        };
+        assert_eq!(
+            replies(&messages, CLIENT).pop().unwrap().message.as_deref(),
+            Some(expected)
+        );
+        screen.agent_control(wait(AgentState::Idle), CLIENT);
+        assert_eq!(
+            replies(&messages, CLIENT).pop().unwrap().message.as_deref(),
+            Some(expected)
+        );
+    }
+}
+
+#[test]
+fn unrelated_answer_pruning_preserves_reordered_cancellation_and_run_guards() {
+    let (mut screen, _, _) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    report_kind(
+        &mut screen,
+        "claude",
+        native_background_launch("bash", "tool", "Bash"),
+    );
+    report_kind(&mut screen, "claude", sourced_stop("prompt", "LAUNCH"));
+    for i in 0..80 {
+        let id = format!("unrelated-{i}");
+        report_kind(&mut screen, "claude", steering_ack(&id));
+        report_kind(&mut screen, "claude", sourced_stop(&id, "ordinary"));
+    }
+    report_kind(&mut screen, "claude", steering_ack("cancel"));
+    report_kind(&mut screen, "claude", sourced_stop("cancel", "CANCELLED"));
+    assert!(screen.claude_background_pending_for_test());
+    // A reordered positive cancellation joins the retained confirmed answer.
+    let (mut cancel, _) = yinz_runtime::agent::hooks::parse_hook_event(
+        "claude",
+        serde_json::json!({
+            "hook_event_name":"PostToolUse","session_id":"conversation","prompt_id":"cancel",
+            "tool_use_id":"cancel-tool","tool_name":"TaskStop","tool_input":{"task_id":"bash"},
+            "tool_response":{"task_id":"bash","task_type":"local_bash","command":"private"}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    cancel.claude_notifications.as_mut().unwrap().source = Some(notification_source());
+    report_kind(&mut screen, "claude", cancel.clone());
+    assert!(!screen.claude_background_pending_for_test());
+    assert_eq!(
+        screen.agent_lifecycle[&PANE].last_message_for_test(),
+        Some("CANCELLED")
+    );
+    report_kind(&mut screen, "claude", steering_ack("new"));
+    let mut launch = native_background_launch("bash", "new-tool", "Bash");
+    launch.prompt_id = Some("new".into());
+    launch.claude_notifications.as_mut().unwrap().launches[0].prompt = "new".into();
+    report_kind(&mut screen, "claude", launch);
+    report_kind(&mut screen, "claude", sourced_stop("new", "NEW_LAUNCH"));
+    report_kind(&mut screen, "claude", cancel);
+    assert!(
+        screen.claude_background_pending_for_test(),
+        "old cancellation cannot bind reused task"
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        task_notification("notice", &["bash"]),
+    );
+    let mut answer = sourced_stop("notice", "FINAL");
+    answer.claude_notifications =
+        identified_notice("notice", "bash", "new-tool", "new-run").claude_notifications;
+    report_kind(&mut screen, "claude", answer);
+    assert!(!screen.claude_background_pending_for_test());
+    assert!(!claude_lifecycle(&screen).claude.obligations.disabled);
+    assert_eq!(
+        screen.agent_lifecycle[&PANE].last_message_for_test(),
+        Some("FINAL")
+    );
+}
+
+#[test]
+fn identified_capacity_loss_does_not_orphan_an_accepted_notification() {
+    let (mut screen, _, _) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    for i in 0..yinz_types::agent::claude_notifications::MAX_FACTS {
+        report_kind(
+            &mut screen,
+            "claude",
+            native_background_launch(&format!("task-{i}"), &format!("tool-{i}"), "Bash"),
+        );
+    }
+    report_kind(&mut screen, "claude", sourced_stop("prompt", "LAUNCH"));
+    report_kind(
+        &mut screen,
+        "claude",
+        task_notification("notice", &["task-0"]),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        identified_notice("notice", "task-0", "tool-0", "run"),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        native_background_launch("overflow", "overflow-tool", "Bash"),
+    );
+    let lifecycle = claude_lifecycle(&screen);
+    assert!(lifecycle.claude.obligations.disabled);
+    assert!(lifecycle.claude_notifications.is_empty());
+    assert_eq!(lifecycle.last_message.as_deref(), Some("LAUNCH"));
+    // Fresh tool progress retains the hook fallback until a later confirmed turn.
+    assert!(!screen.agent_status_for_test().background);
+    report_kind(&mut screen, "claude", steering_ack("later"));
+    report_kind(&mut screen, "claude", sourced_stop("later", "LATER"));
+    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+    // After adapter capacity loss, ordinary accepted-turn tracking still supplies
+    // the hook fallback. A future notice is not itself a new observation failure.
+    report_kind(
+        &mut screen,
+        "claude",
+        task_notification("future", &["future-task"]),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        identified_notice("future", "future-task", "future-tool", "future-run"),
+    );
+    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+    let mut failed = sourced_stop("future", "not an answer");
+    failed.claude_turn_complete = Some(false);
+    failed.claude_notifications.as_mut().unwrap().unavailable = true;
+    report_kind(&mut screen, "claude", failed);
+    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+    assert_eq!(
+        screen.agent_lifecycle[&PANE].last_message_for_test(),
+        Some("LATER")
+    );
+}
+
 fn native_background_launch(task: &str, tool: &str, kind: &str) -> HookEvent {
     let raw = serde_json::json!({"hook_event_name":"PostToolUse", "session_id":"conversation", "prompt_id":"prompt",
         "tool_name":kind,"tool_use_id":tool,"tool_response":if kind == "Bash" {

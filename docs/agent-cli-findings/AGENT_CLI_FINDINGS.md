@@ -48,6 +48,11 @@ Issue 69 remains open for worker-owned/unattributed resumed processing, anonymou
 hook-declined removals, gated tool-result and unvalidated alternate delivery.
 Unsupported or unavailable observation retains registry/hooks. Operational budget
 or capacity exhaustion is unavailable observation, never successful settlement.
+Unavailable notification observers also release their accepted processing lifetime,
+without manufacturing an answer or releasing independent work. Late confirmed
+answers retain sequence ordering. Unrelated foreground answers are pruned from a
+bounded cache rather than disabling future notification acquisitions; identified
+answer/acceptance/cancellation dependencies and run tombstones remain protected.
 The historical ledger, epochs and sidechain scanner below remain superseded.
 
 ## Claude session registry activity, 2026-11-07

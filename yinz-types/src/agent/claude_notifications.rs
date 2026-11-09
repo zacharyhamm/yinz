@@ -138,6 +138,10 @@ pub struct Answer {
     pub prompt: String,
     pub sequence: u64,
     pub text: Option<String>,
+    /// An accepted notification may confirm before its structural notice arrives.
+    /// Preserve that dependency even after the active notification lifetime ends.
+    #[serde(default)]
+    pub notification: bool,
 }
 
 impl Pending {
