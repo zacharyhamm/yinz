@@ -8828,3 +8828,233 @@ fn a_background_start_announces_its_id_before_the_guest_initializes() {
     assert_eq!(again, Some(id), "a running instance is announced too");
     test.bridge.unload_plugin(id).unwrap();
 }
+
+const WEB_TRANSPORT_HANDLER: &str = r#"
+(define pending '())
+(define count 0)
+(define (answer id body)
+  (yinz-command (hash "HttpRespond" (hash "request_id" id "response"
+    (yinz-json-string (hash "status" 200 "headers" (hash "content-type" "application/json") "body" body))))))
+(define (yinz-web-dispatch request)
+  (set! count (+ count 1))
+  (define id (hash-ref request "id"))
+  (cond
+    [(equal? (hash-ref request "path") "/api/pending") (set! pending (cons id pending))]
+    [(equal? (hash-ref request "path") "/api/flush")
+      (for-each (lambda (saved) (answer saved (number->string saved))) pending)
+      (set! pending '()) (answer id (number->string count))]
+    [(equal? (hash-ref request "path") "/api/crash") (error "fixture crash")]
+    [else (answer id (yinz-json-string (hash "count" count "request" request)))]) #f)
+"#;
+
+fn web_transport_fixture(source: &str) -> (TestBridge, PluginId, u64) {
+    let mut test = TestBridge::new();
+    test.bridge.web = crate::web_host::WebHost::new(Some(Default::default()));
+    let id = PluginId::new(501);
+    test.bridge.web.set_target(Some(id));
+    test.connect(&[ClientId::new(1)]);
+    let context = test.context(501, 1, source);
+    test.load(context).unwrap();
+    let instance = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(id, None)
+        .unwrap();
+    let plugin = instance.lock().unwrap();
+    *plugin.env().permissions.lock().unwrap() = Some(HashSet::from([
+        yinz_types::data::PermissionType::RunCommands,
+    ]));
+    let generation = plugin.generation().unwrap();
+    drop(plugin);
+    (test, id, generation)
+}
+fn web_transport_request(
+    test: &TestBridge,
+    plugin: PluginId,
+    generation: u64,
+    id: u64,
+    path: &str,
+) -> (
+    yinz_bus::web::ReplySlot,
+    tokio::sync::oneshot::Receiver<yinz_types::web::WebReply>,
+) {
+    let (slot, receiver) = yinz_bus::web::ReplySlot::new();
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    test.bridge.plugin_web(
+        plugin,
+        generation,
+        Box::new(yinz_types::web::WebRequest {
+            id,
+            method: yinz_types::web::WebMethod::Get,
+            path: path.into(),
+            segments: vec![],
+            query: vec![],
+            headers: vec![],
+            body: None,
+            auth: yinz_types::web::WebAuth {
+                session: "public".into(),
+                label: "fixture".into(),
+            },
+            deadline_ms: i64::MAX,
+        }),
+        slot.clone(),
+        shutdown,
+    );
+    (slot, receiver)
+}
+#[test]
+fn web_transport_real_host_reply_detached_actor_and_capacity_recovery() {
+    use yinz_types::web::WebReply;
+    let (test, plugin, generation) = web_transport_fixture(WEB_TRANSPORT_HANDLER);
+    let (_, mut first) = web_transport_request(&test, plugin, generation, 1, "/api/echo");
+    test.wait_for_executor(plugin);
+    let WebReply::Response(first) = first.try_recv().unwrap() else {
+        panic!("missing response")
+    };
+    let body: serde_json::Value = serde_json::from_str(&first.body).unwrap();
+    assert_eq!(body["count"], 1);
+    assert_eq!(body["request"]["client"], 1);
+    test.connect(&[]);
+    let (_, mut detached) = web_transport_request(&test, plugin, generation, 2, "/api/echo");
+    test.wait_for_executor(plugin);
+    let WebReply::Response(detached) = detached.try_recv().unwrap() else {
+        panic!("missing detached response")
+    };
+    let body: serde_json::Value = serde_json::from_str(&detached.body).unwrap();
+    assert!(body["request"]["client"].is_null());
+    assert_eq!(body["request"]["attached"], false);
+    let mut pending = Vec::new();
+    for id in 10..74 {
+        pending.push(web_transport_request(
+            &test,
+            plugin,
+            generation,
+            id,
+            "/api/pending",
+        ));
+    }
+    test.wait_for_executor(plugin);
+    let (_, mut busy) = web_transport_request(&test, plugin, generation, 74, "/api/pending");
+    test.wait_for_executor(plugin);
+    assert!(matches!(
+        busy.try_recv().unwrap(),
+        WebReply::Unavailable {
+            retry_after_s: 2,
+            ..
+        }
+    ));
+    // Closing the HTTP receiver releases capacity on the next delivery.
+    drop(pending.remove(0));
+    let (_, mut flush) = web_transport_request(&test, plugin, generation, 75, "/api/flush");
+    test.wait_for_executor(plugin);
+    assert!(matches!(flush.try_recv().unwrap(), WebReply::Response(_)));
+    for (_, mut receiver) in pending {
+        assert!(matches!(
+            receiver.try_recv().unwrap(),
+            WebReply::Response(_)
+        ));
+    }
+    let instance = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(plugin, None)
+        .unwrap();
+    let instance = instance.lock().unwrap();
+    assert!(instance.env().web_pending.lock().unwrap().is_empty());
+    assert_eq!(instance.env().client_id, ClientId::new(1));
+}
+#[test]
+fn web_transport_reload_fences_queued_delivery_and_closes_cloned_slots() {
+    use yinz_types::web::WebReply;
+    let (mut test, plugin, generation) = web_transport_fixture(WEB_TRANSPORT_HANDLER);
+    let old_instance = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(plugin, None)
+        .unwrap();
+    let (slot, mut pending) = web_transport_request(&test, plugin, generation, 1, "/api/pending");
+    test.wait_for_executor(plugin);
+    let gate = test.hold_executor(plugin);
+    let (_, mut queued) = web_transport_request(&test, plugin, generation, 2, "/api/echo");
+    test.bridge.reload_plugin_with_id(plugin).unwrap();
+    assert!(matches!(
+        pending.try_recv().unwrap(),
+        WebReply::Unavailable { .. }
+    ));
+    assert!(slot.is_closed());
+    gate.send(()).unwrap();
+    test.finish_reload(plugin);
+    assert!(matches!(
+        queued.try_recv().unwrap(),
+        WebReply::Unavailable { .. }
+    ));
+    let replacement = test.bridge.web.selected(plugin).unwrap();
+    assert_ne!(replacement, generation);
+    let (_, mut old) = web_transport_request(&test, plugin, generation, 1, "/api/echo");
+    test.wait_for_executor(plugin);
+    assert!(matches!(
+        old.try_recv().unwrap(),
+        WebReply::Unavailable { .. }
+    ));
+    let new_instance = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(plugin, None)
+        .unwrap();
+    *new_instance
+        .lock()
+        .unwrap()
+        .env()
+        .permissions
+        .lock()
+        .unwrap() = Some(HashSet::from([
+        yinz_types::data::PermissionType::RunCommands,
+    ]));
+    let (_, mut reused) = web_transport_request(&test, plugin, replacement, 1, "/api/pending");
+    test.wait_for_executor(plugin);
+    crate::yinz_exports::run_plugin_command(
+        old_instance.lock().unwrap().env_mut(),
+        yinz_types::data::PluginCommand::HttpRespond {
+            request_id: 1,
+            response: "invalid stale response".into(),
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        reused.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    let (_, mut flush) = web_transport_request(&test, plugin, replacement, 2, "/api/flush");
+    test.wait_for_executor(plugin);
+    assert!(matches!(reused.try_recv().unwrap(), WebReply::Response(_)));
+    assert!(matches!(flush.try_recv().unwrap(), WebReply::Response(_)));
+}
+#[test]
+fn web_transport_crash_fails_request_and_releases_other_waiters() {
+    use yinz_types::web::WebReply;
+    let (test, plugin, generation) = web_transport_fixture(WEB_TRANSPORT_HANDLER);
+    let (_, mut pending) = web_transport_request(&test, plugin, generation, 1, "/api/pending");
+    let (_, mut crash) = web_transport_request(&test, plugin, generation, 2, "/api/crash");
+    test.wait_for_executor(plugin);
+    assert!(matches!(crash.try_recv().unwrap(), WebReply::Failed(_)));
+    assert!(matches!(
+        pending.try_recv().unwrap(),
+        WebReply::Unavailable { .. }
+    ));
+    assert_eq!(test.bridge.web.selected(plugin), None);
+    let (slot, mut rejected) =
+        web_transport_request(&test, PluginId::new(9999), generation, 3, "/api/echo");
+    assert!(matches!(
+        rejected.try_recv().unwrap(),
+        WebReply::Unavailable { .. }
+    ));
+    assert!(slot.is_closed());
+}

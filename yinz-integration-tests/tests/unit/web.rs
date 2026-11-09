@@ -95,9 +95,19 @@ fn get(addr: SocketAddr, path: &str) -> String {
 }
 
 fn api(addr: SocketAddr, method: &str, path: &str, token: Option<&str>, body: &str) -> String {
+    api_headers(addr, method, path, token, body, "")
+}
+fn api_headers(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    body: &str,
+    extra: &str,
+) -> String {
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).unwrap();
     stream
-        .set_read_timeout(Some(Duration::from_secs(15)))
+        .set_read_timeout(Some(Duration::from_secs(25)))
         .unwrap();
     stream
         .set_write_timeout(Some(Duration::from_secs(5)))
@@ -105,7 +115,7 @@ fn api(addr: SocketAddr, method: &str, path: &str, token: Option<&str>, body: &s
     let authorization = token
         .map(|t| format!("Authorization: Bearer {t}\r\n"))
         .unwrap_or_default();
-    write!(stream,"{method} {path} HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost\r\nContent-Type: application/json\r\n{authorization}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+    write!(stream,"{method} {path} HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost\r\nContent-Type: application/json\r\n{authorization}{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
     let mut reply = String::new();
     stream.read_to_string(&mut reply).unwrap();
     reply
@@ -271,4 +281,205 @@ fn bearer_sessions_cross_live_servers_logout_all_password_rotation_and_clear() {
     assert!(TcpStream::connect(b).is_err());
     first.quit();
     second.quit();
+}
+
+fn public_request(addr: SocketAddr, method: &str, path: &str, extra: &str) -> String {
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(25)))
+        .unwrap();
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n{extra}\r\n"
+    )
+    .unwrap();
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).unwrap();
+    reply
+}
+
+fn wait_public(addr: SocketAddr, path: &str, text: &str) {
+    let published = Watched::new(false);
+    let observed = published.clone();
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let deadline = tokio::time::Instant::now() + default_timeout();
+                    let mut tick = tokio::time::interval(Duration::from_millis(20));
+                    loop {
+                        tick.tick().await;
+                        if get(addr, path).contains(text) {
+                            *observed.lock() = true;
+                            break;
+                        }
+                        if tokio::time::Instant::now() >= deadline {
+                            break;
+                        }
+                    }
+                });
+        });
+        published.wait_until("Steel public publication", default_timeout(), |ready| {
+            ready.then_some(())
+        });
+    });
+}
+fn web_plugin_operation(
+    session: &yinz_integration_tests::TestSession,
+    source: &Path,
+    operation: yinz_types::cli::PluginOperation,
+) {
+    let response = yinz_client::store_client::plugin_request(
+        &session.session_name().into(),
+        yinz_types::cli::PluginRequest {
+            operation,
+            target: Some(source.display().to_string()),
+            configuration: None,
+            fallback: Some(yinz_types::input::layout::RunPlugin {
+                location: yinz_types::input::layout::RunPluginLocation::File(source.to_owned()),
+                ..Default::default()
+            }),
+            candidates: vec![],
+            caller: None,
+        },
+    )
+    .unwrap();
+    assert!(!response.plugins.is_empty(), "{response:?}");
+}
+
+#[test]
+fn web_transport_authenticated_steel_and_native_frozen_site() {
+    yinz_integration_tests::test_env::init();
+    let dir = private_data();
+    set(dir.path());
+    let plugin_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(plugin_dir.path().join("static")).unwrap();
+    std::fs::write(plugin_dir.path().join("static/app.js"), "frozen javascript").unwrap();
+    let source = plugin_dir.path().join("web-test.scm");
+    std::fs::write(&source, r#"
+(define count 0)
+(define ready #f)
+(define (load config)
+  (yinz-then (yinz-wait-for-permissions '("RunCommands")) (lambda (_)
+    (yinz-command (hash "HttpAssets" (hash "prefix" "/static/" "directory" "static")))
+    (yinz-command (hash "HttpPublish" (hash "path" "/" "content_type" "text/html; charset=utf-8" "body" "<p>frozen page</p>")))
+    (set! ready #t) #f)))
+(define (yinz-web-dispatch request)
+  (set! count (+ count 1))
+  (define path (hash-ref request "path"))
+  (define result (hash "count" count "request" request "ready" ready))
+  (define (send-result)
+    (yinz-command (hash "HttpRespond" (hash "request_id" (hash-ref request "id")
+      "response" (yinz-json-string (hash "status" 200 "headers" (hash "content-type" "application/json" "x-yinz-test" "steel") "body" (yinz-json-string result)))))) #f)
+  (cond
+    [(equal? path "/api/deferred") (yinz-then (yinz-sleep 0.01) (lambda (_) (send-result)))]
+    [(equal? path "/api/timeout") #f]
+    [(equal? path "/api/hold")
+      (yinz-command (hash "HttpPublish" (hash "path" "/pending" "content_type" "text/plain; charset=utf-8" "body" "pending request admitted"))) #f]
+    [(equal? path "/api/invalid")
+      (yinz-command (hash "HttpRespond" (hash "request_id" (hash-ref request "id") "response" "{\"status\":200,\"headers\":{\"set-cookie\":\"forbidden\"},\"body\":\"\"}"))) #f]
+    [else (send-result)]))
+"#).unwrap();
+    let url = format!("file:{}", source.display());
+    let cache_path = yinz_runtime::consts::YINZ_PLUGIN_PERMISSIONS_CACHE.clone();
+    std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+    let mut cache =
+        yinz_config::permission::PermissionCache::from_path_or_default(Some(cache_path));
+    cache.cache(
+        yinz_runtime::plugin_location::parse_plugin_location(&url, None)
+            .unwrap()
+            .to_string(),
+        vec![yinz_types::data::PermissionType::RunCommands],
+    );
+    cache.write_to_file().unwrap();
+    let records = Records::new(dir.path().to_owned());
+    let mut session = TestRunner::new(TERMINAL_SIZE)
+        .with_data_dir(dir.path().to_owned())
+        .with_config(&format!("web {{ enabled true; port 0; plugin {url:?}; }}"))
+        .start();
+    claim_first_terminal_and_wait_for_prompt(&session);
+    let addr = records.serving(session.session_name());
+    let token = login(addr);
+    assert!(api(addr, "GET", "/api/echo", None, "").starts_with("HTTP/1.1 401"));
+    // Public readiness polling cannot dispatch a guest request or disturb the counter.
+    wait_public(addr, "/", "frozen page");
+    let reply = api_headers(
+        addr,
+        "GET",
+        "/api/echo?x=a&x=b",
+        Some(&token),
+        "",
+        "Cookie: guest-secret-cookie\r\nTailscale-User-Login: guest-secret-proxy\r\n",
+    );
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    assert!(reply.contains("x-yinz-test: steel"));
+    assert!(reply.contains("cache-control: no-store"));
+    let value: serde_json::Value =
+        serde_json::from_str(reply.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(value["count"], 1);
+    assert_eq!(value["ready"], true);
+    assert_eq!(value["request"]["query"]["x"], "b");
+    assert_eq!(value["request"]["query_pairs"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        value["request"]["server"]["session"],
+        session.session_name()
+    );
+    assert!(value["request"]["headers"].get("authorization").is_none());
+    assert!(!value.to_string().contains(&token));
+    assert!(!value.to_string().contains("guest-secret"));
+    let asset = get(addr, "/static/app.js");
+    assert!(asset.ends_with("frozen javascript"), "{asset}");
+    let etag = asset
+        .lines()
+        .find_map(|line| line.strip_prefix("etag: "))
+        .unwrap()
+        .trim();
+    let head = public_request(addr, "HEAD", "/static/app.js", "");
+    assert!(head.starts_with("HTTP/1.1 200"));
+    assert!(head.ends_with("\r\n\r\n"));
+    let cached = public_request(
+        addr,
+        "GET",
+        "/static/app.js",
+        &format!("If-None-Match: {etag}\r\n"),
+    );
+    assert!(cached.starts_with("HTTP/1.1 304"));
+    let next = api(addr, "GET", "/api/echo", Some(&token), "");
+    let next: serde_json::Value =
+        serde_json::from_str(next.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(next["count"], 2);
+    assert!(api(addr, "GET", "/api/deferred", Some(&token), "").starts_with("HTTP/1.1 200"));
+    assert!(api(addr, "GET", "/api/invalid", Some(&token), "").starts_with("HTTP/1.1 502"));
+    let timed_out = api(addr, "GET", "/api/timeout", Some(&token), "");
+    assert!(timed_out.starts_with("HTTP/1.1 504"), "{timed_out}");
+    // The fixture publishes only after admitting the pending call. Reload must resolve it
+    // promptly, and the next generation starts its own counter and site.
+    std::thread::scope(|scope| {
+        let token = &token;
+        let pending = scope.spawn(move || api(addr, "GET", "/api/hold", Some(token), ""));
+        wait_public(addr, "/pending", "pending request admitted");
+        let replacement = std::fs::read_to_string(&source)
+            .unwrap()
+            .replace("frozen page", "replacement page");
+        std::fs::write(&source, replacement).unwrap();
+        web_plugin_operation(&session, &source, yinz_types::cli::PluginOperation::Reload);
+        assert!(pending.join().unwrap().starts_with("HTTP/1.1 503"));
+    });
+    wait_public(addr, "/", "replacement page");
+    let next = api(addr, "GET", "/api/echo", Some(&token), "");
+    let next: serde_json::Value =
+        serde_json::from_str(next.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(next["count"], 1);
+    std::thread::scope(|scope| {
+        let token = &token;
+        let pending = scope.spawn(move || api(addr, "GET", "/api/hold", Some(token), ""));
+        wait_public(addr, "/pending", "pending request admitted");
+        web_plugin_operation(&session, &source, yinz_types::cli::PluginOperation::Stop);
+        assert!(pending.join().unwrap().starts_with("HTTP/1.1 503"));
+    });
+    session.quit();
+    records.empty();
 }

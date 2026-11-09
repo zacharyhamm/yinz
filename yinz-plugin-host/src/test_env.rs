@@ -10,6 +10,8 @@ use yinz_types::internal_ids::TabId;
 
 pub(crate) fn test_env() -> PluginEnv {
     PluginEnv {
+        web: Default::default(),
+        web_pending: Default::default(),
         yinz_data_dir: Default::default(),
         background: false,
         panes: Default::default(),

@@ -485,6 +485,16 @@ impl State {
                     .pipe(serde_json::to_value(message).context("encode pipe")?)
                     .map(Value::Bool)
             },
+            "web" => {
+                let client = argument.get("client").cloned().unwrap_or(Value::Null);
+                self.plugin()?.invoke("yinz-async-enter", vec![client])?;
+                let result = self.plugin()?.web(argument.clone());
+                let restored = self.plugin()?.invoke("yinz-async-enter", vec![json!(1)]);
+                result.and_then(|changed| {
+                    restored?;
+                    Ok(Value::Bool(changed))
+                })
+            },
             "palette" => {
                 let client = argument["client"]
                     .as_u64()

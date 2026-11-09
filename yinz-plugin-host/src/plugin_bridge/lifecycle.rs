@@ -7,6 +7,7 @@ fn make_plugin_url_path_safe(url: String) -> String {
 
 #[derive(Debug, Clone)]
 pub struct LoadingContext {
+    pub(crate) web: crate::web_host::WebHost,
     pub(crate) panes: PluginPanes,
     /// Set for a load or a reload: its prepare step reads the plugin's pane declaration. `None`
     /// for a new client's instance of a plugin already running, which keeps what it has.
@@ -343,6 +344,7 @@ impl LoadingContext {
         }
 
         Ok(LoadingContext {
+            web: plugin_bridge.web.clone(),
             panes: plugin_bridge.panes.clone(),
             pane_ticket: None,
             prefetched_source: None,
@@ -776,6 +778,7 @@ impl PluginBridge {
         pid: PluginId,
         plugin_map_deadline: Option<Instant>,
     ) -> Result<()> {
+        self.web.retire_plugin(pid);
         self.pane_hooks.retain(|_, plugin_id| *plugin_id != pid);
         self.repl_pipe_owners.remove(&pid);
         self.cancel_plugin_picks(pid);
@@ -1130,6 +1133,7 @@ impl PluginBridge {
         };
         let cwd = self.cwd_of_plugin_id(plugin_id);
 
+        self.web.retire_plugin(plugin_id);
         // Retire queued callbacks before the reload notification can release an active host call.
         let cancel = self.cancel_token(plugin_id);
         {

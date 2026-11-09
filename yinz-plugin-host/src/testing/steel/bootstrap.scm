@@ -71,6 +71,7 @@
 (define (test-renders) (%test "renders" json-null))
 (define (test-event event) (%test "event" event))
 (define (test-pipe message) (%test "pipe" message))
+(define (test-web request) (%test "web" request))
 (define (test-palette message client)
   (%test "palette" (hash "message" message "client" client)))
 (define (test-step-wall-clock milliseconds) (%test "step-wall-clock" milliseconds))

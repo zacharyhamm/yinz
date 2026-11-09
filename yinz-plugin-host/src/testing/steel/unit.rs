@@ -690,3 +690,38 @@ fn client_timezone_installed_mock_helpers_require_explicit_stubs() {
     .unwrap();
     assert!(report.passed(), "{report:#?}");
 }
+
+#[test]
+fn web_transport_installed_harness_calls_handler() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("plugin.scm"),
+        r#"
+        (define (yinz-web-dispatch request)
+          (yinz-command (hash "HttpRespond" (hash "request_id" (hash-ref request "id")
+            "response" "{\"status\":204,\"headers\":{},\"body\":\"\"}"))) #f)
+    "#,
+    )
+    .unwrap();
+    let path = root.path().join("plugin.test.scm");
+    std::fs::write(
+        &path,
+        r#"
+        (test "web transport" (lambda ()
+          (test-load-plugin "./plugin.scm" (hash "grants" '("RunCommands")))
+          (test-stub "HttpRespond" json-null)
+          (test-web (hash "id" 17 "client" 1))
+          (assert (hash-contains? (last (test-commands)) "HttpRespond"))))
+    "#,
+    )
+    .unwrap();
+    let report = run(
+        super::super::fixture_data().path(),
+        &path,
+        &PluginTestOptions::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(report.passed(), "{report:#?}");
+}

@@ -31,6 +31,7 @@ yinz-process = { path = "../yinz-process", version = "0.1.2-alpha.10" }
 yinz-tile = { path = "../yinz-tile" }
 yinz-tile-markdown = { path = "../yinz-tile-markdown" }
 anyhow = { workspace = true }
+http = { workspace = true }
 chrono = { workspace = true }
 crossbeam = { version = "0.8", default-features = false, features = ["crossbeam-channel", "std"] }
 kdl = { workspace = true }

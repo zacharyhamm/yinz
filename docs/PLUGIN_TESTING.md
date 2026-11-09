@@ -257,3 +257,11 @@ Use `json-null` stubs to exercise unavailable rules/offsets and send raw
 Unstubbed timezone queries fail like other host operations. Real session tests
 should provide distinct client reports with an unrelated server zone and check
 both winter and summer instants; avoid mutating process-global `TZ` during tests.
+
+`test-web` delivers a request hash to a fixture's `yinz-web-dispatch` through
+the same worker lifecycle as production. For example, `(test-web (hash "id" 17
+"client" 1 "path" "/api/example"))`. Stub `HttpRespond` explicitly to inspect
+captured commands. This harness does not establish native authorization or slot
+ownership: host `web_transport_` tests exercise real command dispatch and teardown,
+and the app `web_transport_` acceptance test uses a bearer-authenticated TCP
+request, normal permission handling and native frozen page/asset responses.

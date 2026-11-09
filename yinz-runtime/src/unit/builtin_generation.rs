@@ -101,3 +101,36 @@ fn session_generation_reads_read_only_installation_without_sidecar() {
     assert_eq!(contents, "read-only builtin");
     assert!(!plugins.join(".yinz-update.lock").exists());
 }
+
+#[test]
+fn static_assets_track_edits_and_survive_exchange() {
+    let data = tempfile::tempdir().unwrap();
+    let root = data.path().join("plugins/builtins");
+    fs::create_dir_all(root.join("web/static")).unwrap();
+    fs::write(root.join("web.scm"), "source").unwrap();
+    fs::write(root.join("web/static/app.js"), "old").unwrap();
+    fs::write(root.join("web/app.js"), "outside").unwrap();
+    let _generation = pin_session_generation(data.path()).unwrap();
+    fs::write(root.join("web/static/app.js"), "edited old").unwrap();
+    assert_eq!(
+        fs::read_to_string(source_path(&root.join("web/static/app.js")).unwrap()).unwrap(),
+        "edited old"
+    );
+    fs::rename(&root, data.path().join("backup")).unwrap();
+    fs::create_dir_all(root.join("web/static")).unwrap();
+    fs::write(root.join("web.scm"), "new source").unwrap();
+    fs::write(root.join("web/static/app.js"), "new").unwrap();
+    fs::remove_dir_all(data.path().join("backup")).unwrap();
+    let retained = source_path(&root.join("web.scm")).unwrap();
+    assert_eq!(
+        fs::read_to_string(retained.parent().unwrap().join("web/static/app.js")).unwrap(),
+        "edited old"
+    );
+    assert!(!retained.parent().unwrap().join("web/app.js").exists());
+    for path in ["static-ish/app.js", "outside/app.js", "static/app.exe"] {
+        assert!(!retained_source(
+            Path::new("/static/root"),
+            &Path::new("/static/root").join(path)
+        ));
+    }
+}

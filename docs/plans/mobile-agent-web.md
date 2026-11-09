@@ -1,3 +1,13 @@
+> Transport milestone (issue 75): authenticated requests now reach the configured
+> Steel handler; validated replies and immutable native pages/assets use
+> generation-owned state. Nested asset prefixes retain longest-prefix lookup.
+> Builtin asset resolution uses `source_path` into the retained builtin tree:
+> `web` is an embedded SDK module, not an installed plugin tag, so it cannot be
+> resolved with `builtin_path(..., "web")`. Static generation retention and the
+> shared descriptor-relative opener are implemented. See the
+> [protocol](../PLUGIN_PROTOCOL.md#authenticated-http-transport) for the delivered contract. The HTML/routing SDK, mobile frontend, native agent
+> view/palette parity and phone/Tailscale smoke checks remain later work.
+>
 > Native milestone status (issue 74): bearer login/session/logout/logout-all,
 > private session persistence, limits and local web status are implemented.
 > See [WEB.md](../WEB.md) for the delivered error/DTO/recovery contract and
@@ -8,8 +18,8 @@
 > an IPv6 wildcard yield a possible dual-stack exposure warning and exit 1 even on
 > IPv6-only hosts. Local recovery suggestions retain data/config selectors.
 > XFF is not trusted for
-> client limiter keys. Serve/phone smoke checks remain unperformed; the mobile UI,
-> plugin bridge and agent API remain later milestones.
+> client limiter keys. Serve/phone smoke checks remain unperformed; the mobile UI and
+> agent API remain later milestones. The plugin transport is described above.
 
 # Mobile agents web interface: final implementation plan
 

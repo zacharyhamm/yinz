@@ -66,7 +66,7 @@ async fn dispatch_contract_without_http_auth_bypass() {
                 body: "good".into(),
             })),
             false,
-            200,
+            502,
         ),
         (
             Some(WebReply::Response(WebResponse {
@@ -101,4 +101,34 @@ fn pages_escape_untrusted_text() {
     assert!(!page.contains("<script>"));
     assert!(!page.contains("<img"));
     assert!(page.contains("&lt;script&gt;&amp;&quot;&#39;"));
+}
+
+#[tokio::test]
+async fn allowed_plugin_headers_survive_with_native_api_cache_policy() {
+    let reply = WebReply::Response(WebResponse {
+        status: 302,
+        headers: vec![
+            ("location".into(), "/login".into()),
+            ("vary".into(), "Accept".into()),
+            ("x-yinz-test".into(), "ok".into()),
+            ("cache-control".into(), "public".into()),
+        ],
+        body: String::new(),
+    });
+    let response = finish(
+        dispatch(
+            &Reply(Some(reply), false),
+            request(),
+            Duration::from_secs(1),
+        )
+        .await,
+        false,
+        true,
+        false,
+    );
+    assert_eq!(response.status(), 302);
+    assert_eq!(response.headers()["location"], "/login");
+    assert_eq!(response.headers()["x-yinz-test"], "ok");
+    assert_eq!(response.headers()["vary"], "Accept, Authorization");
+    assert_eq!(response.headers()["cache-control"], "no-store");
 }

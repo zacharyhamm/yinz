@@ -943,3 +943,12 @@ Long-running and headless plugins receive the same subscription snapshots.
 `ListClients` entries and palette callback contexts contain nullable `timezone`
 fields. Listing requires `ReadApplicationState`; palette contexts reflect the
 requesting client's current report at discovery, refresh and execution.
+
+The native HTTP-to-Steel transport is available to the configured web plugin via
+`yinz-web-dispatch` and the raw `HttpRespond`, `HttpAssets` and `HttpPublish`
+commands. See [the protocol](PLUGIN_PROTOCOL.md#authenticated-http-transport)
+for request hashes, permission gates, limits and generation ownership. Assets
+are frozen at publication; edits require republication or reload. Allowlisted
+static files below a relative `static` component are retained with builtin
+Scheme generations across installation exchange. This transport does not yet
+provide the production HTML/routing SDK, mobile frontend or agent-view parity.

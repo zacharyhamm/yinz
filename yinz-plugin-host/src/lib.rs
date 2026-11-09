@@ -25,6 +25,7 @@ mod plugin_map;
 mod plugin_panes;
 pub(crate) mod response;
 mod watch_filesystem;
+mod web_assets;
 mod web_host;
 mod web_requests;
 mod yinz_exports;
@@ -138,6 +139,7 @@ pub fn plugin_thread_main(
     // https://tokio.rs/tokio/topics/shutdown#waiting-for-things-to-finish-shutting-down
     let (shutdown_send, mut shutdown_receive) = tokio::sync::mpsc::channel::<()>(1);
 
+    let web_host = web_host::WebHost::new(web.as_ref().map(|params| params.site.clone()));
     let palette_data = data_access.clone();
     let mut plugin_bridge = PluginBridge::new(
         bus.senders.clone(),
@@ -159,7 +161,7 @@ pub fn plugin_thread_main(
     // The background plugins below and the first layout's plugins are loaded for the first
     // client before its `AddClient`, and must share its attachment token.
     plugin_bridge.reserve_client(initiating_client_id);
-    let web_host = web_host::WebHost::new(web.as_ref().map(|params| params.site.clone()));
+    plugin_bridge.web = web_host.clone();
     let mut web_requests = web_requests::WebRequests::new(web, &web_host);
     let _data_watch_poller = plugin_bridge.start_data_watch_polling()?;
     let clipboard_writer = clipboard_history::start_worker(

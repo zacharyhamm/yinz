@@ -194,6 +194,7 @@ pub fn source_path(source: &Path) -> Result<PathBuf> {
 
 /// Metadata of every source `copy_sources` would retain, in a stable order.
 fn fingerprint(source: &Path) -> Result<Fingerprint> {
+    let root = source;
     let mut pending = vec![(source.to_owned(), 0usize)];
     let mut entries = Vec::new();
     let mut files = 0usize;
@@ -214,7 +215,7 @@ fn fingerprint(source: &Path) -> Result<Fingerprint> {
                 .context("inspect builtin generation entry")?;
             if kind.is_dir() {
                 pending.push((entry.path(), depth + 1));
-            } else if kind.is_file() && retained_source(&entry.path()) {
+            } else if kind.is_file() && retained_source(root, &entry.path()) {
                 let metadata = entry
                     .metadata()
                     .context("inspect builtin source metadata")?;
@@ -234,12 +235,28 @@ fn fingerprint(source: &Path) -> Result<Fingerprint> {
     Ok(entries)
 }
 
-/// Only Scheme sources belong to a retained generation.
-fn retained_source(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|extension| extension.to_str()),
-        Some("scm" | "ss" | "sld")
-    )
+/// Keep Scheme sources and allowlisted files beneath a relative `static` component.
+fn retained_source(root: &Path, path: &Path) -> bool {
+    let extension = path.extension().and_then(|extension| extension.to_str());
+    matches!(extension, Some("scm" | "ss" | "sld"))
+        || (path.strip_prefix(root).is_ok_and(|relative| {
+            relative
+                .components()
+                .any(|part| matches!(part, Component::Normal(name) if name == "static"))
+        }) && matches!(
+            extension,
+            Some(
+                "js" | "mjs"
+                    | "css"
+                    | "svg"
+                    | "png"
+                    | "ico"
+                    | "webmanifest"
+                    | "json"
+                    | "woff2"
+                    | "txt"
+            )
+        ))
 }
 
 fn snapshot(source: &Path) -> Result<tempfile::TempDir> {
@@ -252,6 +269,7 @@ fn snapshot(source: &Path) -> Result<tempfile::TempDir> {
 }
 
 fn copy_sources(source: &Path, destination: &Path) -> Result<()> {
+    let root = source;
     let mut pending = vec![(source.to_owned(), destination.to_owned(), 0usize)];
     let mut bytes = 0u64;
     let mut files = 0usize;
@@ -273,7 +291,7 @@ fn copy_sources(source: &Path, destination: &Path) -> Result<()> {
                 .context("inspect builtin generation entry")?;
             if kind.is_dir() {
                 pending.push((entry.path(), destination.join(entry.file_name()), depth + 1));
-            } else if kind.is_file() && retained_source(&entry.path()) {
+            } else if kind.is_file() && retained_source(root, &entry.path()) {
                 let size = entry
                     .metadata()
                     .context("inspect builtin source size")?

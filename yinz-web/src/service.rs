@@ -102,7 +102,24 @@ fn finish(mut response: Response<Body>, head: bool, api: bool, close: bool) -> R
         headers.insert("cache-control", HeaderValue::from_static("no-store"));
     }
     if api {
-        headers.insert("vary", HeaderValue::from_static("Authorization"));
+        headers.insert("cache-control", HeaderValue::from_static("no-store"));
+        let vary = headers
+            .get("vary")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        if !vary
+            .split(',')
+            .any(|name| name.trim().eq_ignore_ascii_case("authorization"))
+        {
+            let vary = if vary.is_empty() {
+                "Authorization".to_owned()
+            } else {
+                format!("{vary}, Authorization")
+            };
+            if let Ok(value) = HeaderValue::from_str(&vary) {
+                headers.insert("vary", value);
+            }
+        }
     }
     if close {
         headers.insert("connection", HeaderValue::from_static("close"));
@@ -518,20 +535,61 @@ pub(crate) async fn dispatch(
             if !(200..=599).contains(&reply.status) || reply.body.len() > MAX_RESPONSE_BODY {
                 return error(StatusCode::BAD_GATEWAY, "invalid_response");
             }
+            if (reply.status == 304 && !reply.body.is_empty())
+                || (!reply.body.is_empty()
+                    && !reply
+                        .headers
+                        .iter()
+                        .any(|(name, _)| name.eq_ignore_ascii_case("content-type")))
+            {
+                return error(StatusCode::BAD_GATEWAY, "invalid_response");
+            }
             let mut response = response(status, reply.body, "application/json");
             for (name, value) in reply.headers {
-                if matches!(name.as_str(), "content-type" | "retry-after" | "etag")
-                    && let (Ok(name), Ok(value)) = (
-                        http::header::HeaderName::from_bytes(name.as_bytes()),
-                        HeaderValue::from_str(&value),
-                    )
+                let (Ok(name), Ok(value)) = (
+                    http::header::HeaderName::from_bytes(name.as_bytes()),
+                    HeaderValue::from_str(&value),
+                ) else {
+                    return error(StatusCode::BAD_GATEWAY, "invalid_response");
+                };
+                let allowed = matches!(
+                    name.as_str(),
+                    "content-type" | "etag" | "cache-control" | "vary" | "retry-after" | "location"
+                ) || (name.as_str().starts_with("x-yinz-")
+                    && name.as_str().len() > 7);
+                if !allowed
+                    || (name == "location"
+                        && (!(300..400).contains(&reply.status)
+                            || !safe_location(value.to_str().unwrap_or(""))))
                 {
-                    response.headers_mut().insert(name, value);
+                    return error(StatusCode::BAD_GATEWAY, "invalid_response");
                 }
+                response.headers_mut().insert(name, value);
             }
             response
         },
     }
+}
+
+fn safe_location(value: &str) -> bool {
+    let Ok(uri) = value.parse::<http::Uri>() else {
+        return false;
+    };
+    let lower = value.to_ascii_lowercase();
+    value.starts_with('/')
+        && !value.starts_with("//")
+        && uri.scheme().is_none()
+        && uri.authority().is_none()
+        && !value
+            .bytes()
+            .any(|byte| byte == b'\\' || byte.is_ascii_control())
+        && !lower.as_bytes().windows(3).any(|part| {
+            part[0] == b'%'
+                && std::str::from_utf8(&part[1..])
+                    .ok()
+                    .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+                    .is_some_and(|byte| byte.is_ascii_control() || matches!(byte, b'/' | b'\\'))
+        })
 }
 
 #[cfg(test)]

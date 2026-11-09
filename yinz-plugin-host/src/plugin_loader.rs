@@ -112,6 +112,7 @@ fn pane_declaration_changed(loaded: bool, declared: bool) -> String {
 }
 
 pub struct PluginLoader {
+    web: crate::web_host::WebHost,
     panes: crate::plugin_panes::PluginPanes,
     /// The entry source the prepare step read for the pane declaration, so the module
     /// evaluated is the one that was scanned. Shared rather than copied: the load evaluates it
@@ -173,6 +174,7 @@ impl PluginLoader {
             &loading_context.plugin_own_cache_dir,
         );
         Self {
+            web: loading_context.web.clone(),
             yinz_data_dir: loading_context.yinz_data_dir.clone(),
             panes: loading_context.panes,
             prefetched_source: loading_context.prefetched_source,
@@ -510,6 +512,8 @@ impl PluginLoader {
         let background = self.panes.lock().unwrap().background(self.plugin_id);
         let surface = self.surface();
         PluginEnv {
+            web: self.web.clone(),
+            web_pending: Default::default(),
             yinz_data_dir: self.yinz_data_dir.clone(),
             background,
             surface,

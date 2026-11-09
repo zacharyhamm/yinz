@@ -996,3 +996,50 @@ Rust callers use `PluginCommand::GetClientTimezone { client_id: None }` and deco
 and tag remain unchanged; additive `unavailable = true` means null. A missing
 flag means available, preserving legacy scalar zero replies. Old decoders cannot
 distinguish unavailable replies from zero and should upgrade before using selectors.
+
+## Authenticated HTTP transport
+
+The configured `web { plugin ...; }` target receives `yinz-web-dispatch` calls
+through its supervised Steel worker. The request is a hash with `id`, `method`,
+`path`, `segments`, `query` (last value wins), `query_pairs` (ordered duplicates),
+`headers`, `body`, `auth`, `client`, `attached`, `server.session` and `deadline_ms`.
+Only `accept`, `accept-language`, `content-type`, `if-none-match` and `user-agent`
+are forwarded. `auth` contains the public session ID and label; bearer tokens,
+cookies and proxy identity headers stay native. Detached requests have a null
+client. An attached call and its continuations retain the selected acting client.
+
+`HttpRespond`, `HttpAssets`, `HttpPublish` and `AgentView` require `RunCommands`.
+The last three also require a builtin identity or the configured web target.
+Only the selected live parent instance of that target can publish its site;
+named workers cannot publish or answer a parent's requests. Each incarnation has
+its own reply slots, capped at 64. Unknown, duplicate and closed replies are ignored.
+Unload, reload, failed initialization and crashes close waiting slots as unavailable.
+A retired incarnation cannot publish over or retire its replacement's snapshot.
+
+`HttpRespond.response` is JSON with integer `status` (200–599), string-valued
+`headers` and string `body` (at most 4 MiB). A nonempty body requires content-type;
+304 bodies must be empty. Allowed response headers are content-type, etag,
+cache-control, vary, retry-after, location and nonempty x-yinz-* names. Names and
+values must satisfy HTTP syntax. Location requires a 3xx response and a safe
+root-relative URI; authority, backslashes and escaped slash/control attacks are
+refused. Invalid matching replies fail as 502. Native security headers remain
+authoritative, API caching is always no-store, and Vary includes Authorization.
+Unavailable replies are 503 with Retry-After (starting: 1 second, busy: 2,
+unavailable or paused: 5); the HTTP deadline produces 504. Failed targets are
+unloaded before automatic restart, with a 30-second restart interval.
+
+`HttpAssets` freezes a plugin-relative directory or `builtin:<relative-path>`
+from the session's retained builtin tree. All directory components are confined,
+symlinks and special files are rejected, and reads are bounded: depth 6, 256
+allowlisted files, 2 MiB/file, 8 MiB/tree. Extensions are js/mjs, css, svg, png,
+ico, webmanifest, json, woff2 and txt. ETags contain the first 16 SHA-256 bytes.
+Public prefixes use lowercase letters, digits, slash, underscore and hyphen,
+with leading/trailing slash; API paths are reserved. Up to four prefixes may
+coexist, including nested prefixes resolved by longest match.
+
+`HttpPublish` accepts exact canonical public paths and HTML (`text/html; charset=utf-8`),
+manifest (`application/manifest+json`) or text (`text/plain; charset=utf-8`).
+Pages are limited to 16 and 512 KiB each. A page cannot lie under an asset prefix,
+regardless of publication order. Replacing an existing page/prefix uses its
+existing slot. Failed publication preserves the prior immutable snapshot.
+Public GET/HEAD/ETag requests are served natively without guest calls.

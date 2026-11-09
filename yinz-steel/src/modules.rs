@@ -10,6 +10,7 @@ use std::{
     sync::Arc,
 };
 use steel::parser::{ast::ExprKind, parser::Parser, tokens::TokenType};
+use yinz_runtime::fs_beneath::open_beneath;
 
 const MAX_GRAPH_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MODULES: usize = 1024;
@@ -518,32 +519,6 @@ fn module_id(path: &Path) -> Result<String> {
         "yinz-module:{}",
         path.to_str().context("module paths must be UTF-8")?
     ))
-}
-
-// Pin each directory descriptor so a symlink swap after canonicalization cannot escape the root.
-fn open_beneath(root: &File, path: &Path) -> Result<File> {
-    use std::os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::ffi::OsStrExt,
-    };
-    let mut directory = root.try_clone().context("retain plugin source root")?;
-    let parts: Vec<_> = path.components().collect();
-    for (index, component) in parts.iter().enumerate() {
-        let Component::Normal(name) = component else {
-            bail!("noncanonical module path")
-        };
-        let name = std::ffi::CString::new(name.as_bytes()).context("module path contains NUL")?;
-        let mut flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK;
-        if index + 1 != parts.len() {
-            flags |= libc::O_DIRECTORY;
-        }
-        let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
-        if fd < 0 {
-            return Err(std::io::Error::last_os_error()).context("open module path component");
-        }
-        directory = unsafe { File::from_raw_fd(fd) };
-    }
-    Ok(directory)
 }
 
 fn create_directories_beneath(root: &File, path: &Path, fresh: bool) -> Result<File> {

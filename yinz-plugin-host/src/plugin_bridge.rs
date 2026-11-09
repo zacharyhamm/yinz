@@ -112,6 +112,7 @@ mod permission_requests;
 pub(crate) mod picker;
 
 pub struct PluginBridge {
+    pub(crate) web: crate::web_host::WebHost,
     pub(crate) pane_hooks: HashMap<(yinz_types::input::hooks::HookPoint, PaneId), PluginId>,
     picks: HashMap<PluginId, picker::PendingPick>,
     permission_requests: BTreeMap<u64, permission_requests::PendingPermission>,
@@ -312,6 +313,7 @@ impl PluginBridge {
             &connected_clients,
         ));
         Ok(PluginBridge {
+            web: Default::default(),
             permission_requests: BTreeMap::new(),
             next_permission_request: 0,
             panes: Default::default(),
@@ -1438,6 +1440,118 @@ impl PluginBridge {
             false,
             move |_, _, _| super::steel::dispose_generation(generation),
         );
+    }
+
+    pub(crate) fn web_loading(&self, id: PluginId) -> bool {
+        self.loading_plugins
+            .iter()
+            .any(|(loading, _)| *loading == id)
+    }
+
+    pub(crate) fn plugin_web(
+        &self,
+        id: PluginId,
+        generation: u64,
+        request: Box<yinz_types::web::WebRequest>,
+        reply: yinz_bus::web::ReplySlot,
+        shutdown: Sender<()>,
+    ) {
+        use yinz_types::web::WebReply;
+        let rejected = reply.clone();
+        let queued = crate::web_host::QueuedReply::new(reply.clone());
+        let accepted = self.plugin_executor.execute_for_plugin_tagged(
+            id,
+            "plugin_web",
+            false,
+            move |senders, map, connected| {
+                let _shutdown = shutdown;
+                let mut queued = queued;
+                let instances = map.lock().unwrap().running_plugins();
+                let Some((_, owner, instance)) =
+                    instances.into_iter().find(|(plugin_id, _, instance)| {
+                        *plugin_id == id
+                            && instance.lock().unwrap().generation() == Some(generation)
+                    })
+                else {
+                    reply.send(crate::web_host::unavailable());
+                    return;
+                };
+                let mut plugin = instance.lock().unwrap();
+                if plugin.is_unavailable() || plugin.env().web.selected(id) != Some(generation) {
+                    reply.send(crate::web_host::unavailable());
+                    return;
+                }
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis();
+                if reply.is_closed() || now >= request.deadline_ms.max(0) as u128 {
+                    queued.delivered();
+                    return;
+                }
+                if let Err(error) =
+                    plugin
+                        .env()
+                        .web
+                        .admit(id, generation, request.id, reply.clone())
+                {
+                    reply.send(error);
+                    return;
+                }
+                queued.delivered();
+                let clients = connected.lock().unwrap().clone();
+                let client = if plugin.env().plugin_config.is_shared() {
+                    clients.first().copied()
+                } else {
+                    clients.contains(&owner).then_some(owner)
+                };
+                let message = crate::web_requests::guest_request(
+                    &request,
+                    client,
+                    &plugin.env().server_session,
+                );
+                let previous = plugin.env().client_id;
+                if let Some(client) = client {
+                    plugin.env_mut().client_id = client;
+                }
+                let result = plugin.plugin_web(message);
+                plugin.env_mut().client_id = previous;
+                let result = result.and_then(|render| {
+                    if render && plugin.has_area() {
+                        render_plugin_for_clients(id, &mut plugin, &clients)
+                    } else {
+                        Ok(vec![])
+                    }
+                });
+                match result {
+                    Ok(assets) if !assets.is_empty() => senders
+                        .send_to_screen(ScreenInstruction::PluginBytes(assets))
+                        .context("render web plugin")
+                        .non_fatal(),
+                    Ok(_) => {},
+                    Err(error) => {
+                        plugin
+                            .env()
+                            .web_pending
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&request.id);
+                        reply.send(WebReply::Failed("web handler failed".into()));
+                        plugin.mark_failed();
+                        handle_plugin_crash(
+                            id,
+                            Some(generation),
+                            Some(plugin.instance_id),
+                            format!("{error:#}"),
+                            senders.clone(),
+                        );
+                    },
+                }
+            },
+        );
+        if !accepted {
+            rejected.send(crate::web_host::unavailable());
+        }
     }
 
     pub fn plugin_palette(

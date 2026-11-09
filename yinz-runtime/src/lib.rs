@@ -34,3 +34,5 @@ compile_error!("Yinz does not support Windows");
 
 pub mod remote_hosts;
 pub mod session_update;
+
+pub mod fs_beneath;

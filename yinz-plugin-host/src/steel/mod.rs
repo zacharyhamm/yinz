@@ -192,6 +192,19 @@ impl SteelPlugin {
             disposed: false,
             first_render_started: Some(started),
         };
+        if plugin
+            .env()
+            .workers
+            .as_ref()
+            .is_some_and(|workers| workers.parent_generation == generation)
+        {
+            plugin.env().web.register(
+                plugin.env().plugin_id,
+                generation,
+                plugin.env().web_pending.clone(),
+                plugin.env().unavailable.clone(),
+            );
+        }
         let log_identity = plugin.env().log_identity();
         let evaluation_started = Instant::now();
         let initialized = plugin.with_runtime(false, |runtime| {
@@ -418,6 +431,10 @@ impl SteelPlugin {
         self.with_runtime(true, |runtime| runtime.palette(message))
     }
 
+    pub fn web(&mut self, request: serde_json::Value) -> Result<bool> {
+        self.with_runtime(true, |runtime| runtime.web(request))
+    }
+
     pub fn render(&mut self, rows: usize, columns: usize) -> Result<Vec<u8>> {
         let started = Instant::now();
         let frame = self.with_runtime(true, |runtime| {
@@ -441,6 +458,7 @@ impl SteelPlugin {
         if self.disposed {
             return;
         }
+        self.env().close_web();
         if run_unload
             && self.thread == thread::current().id()
             && !self.is_disposed()

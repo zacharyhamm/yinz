@@ -1086,3 +1086,35 @@ async fn native_login_queue_overflow_returns_retry_and_does_not_block_health() {
     }
     stop(&server).await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn web_transport_active_request_suspends_idle_expiry_then_rearms() {
+    use std::future::{poll_fn, Future};
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let client = TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (stream, _) = listener.accept().await.unwrap();
+    let idle = IdleClock::new();
+    let active = idle.begin();
+    let mut io = IdleIo::new(stream, Duration::from_secs(3), idle.clone());
+    let mut bytes = [0];
+    let read = io.read(&mut bytes);
+    tokio::pin!(read);
+    tokio::time::advance(Duration::from_secs(20)).await;
+    poll_fn(|cx| {
+        assert!(read.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(active);
+    tokio::time::advance(Duration::from_secs(2)).await;
+    poll_fn(|cx| {
+        assert!(read.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert_eq!(read.await.unwrap_err().kind(), io::ErrorKind::TimedOut);
+    drop(client);
+}

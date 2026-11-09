@@ -915,6 +915,8 @@ pub const CANCELLED_BY_HOST: &str = "plugin cancelled by the host";
 pub type WatchGenerations = Arc<Mutex<HashMap<yinz_types::internal_ids::DataWatchId, u64>>>;
 
 pub struct PluginEnv {
+    pub(crate) web: crate::web_host::WebHost,
+    pub(crate) web_pending: Arc<Mutex<crate::web_host::WebPending>>,
     pub yinz_data_dir: PathBuf,
     /// Whether each plugin has a pane, shared with the bridge. See `crate::plugin_panes`.
     pub(crate) panes: crate::plugin_panes::PluginPanes,
@@ -1001,6 +1003,21 @@ pub struct PluginEnv {
 }
 
 impl PluginEnv {
+    pub(crate) fn close_web(&self) {
+        self.unavailable.store(true, Ordering::Release);
+        if let Some(generation) = self.generation {
+            self.web.retire(generation);
+        }
+        for (_, slot) in self
+            .web_pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain()
+        {
+            slot.send(crate::web_host::unavailable());
+        }
+    }
+
     pub(crate) fn clear_agent_providers(&self) {
         if let Some(generation) = self.generation {
             if yinz_types::project_provider::unregister_owner(generation) {
@@ -1280,6 +1297,7 @@ impl RunningPlugin {
     }
 
     pub fn mark_failed(&mut self) {
+        self.env().close_web();
         self.failed = true;
         self.env().unavailable.store(true, Ordering::Release);
     }
@@ -1297,6 +1315,10 @@ impl RunningPlugin {
         message: &yinz_types::command_palette::Message,
     ) -> Result<bool> {
         self.runtime.palette(message)
+    }
+
+    pub fn plugin_web(&mut self, request: serde_json::Value) -> Result<bool> {
+        self.runtime.web(request)
     }
 
     pub fn plugin_tick(&mut self) -> Result<bool> {

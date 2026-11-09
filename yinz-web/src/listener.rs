@@ -10,7 +10,7 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use std::{
     io,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Mutex},
     task::{Context as TaskContext, Poll},
     time::Duration,
 };
@@ -197,10 +197,15 @@ pub(crate) async fn run(
                             let instance = record.instance().to_owned();
                             connections.spawn(async move {
                                 let _permit = permit;
-                                let io = TokioIo::new(IdleIo::new(stream, state.settings.header_timeout));
+                                let idle = IdleClock::new();
+                                let io = TokioIo::new(IdleIo::new(stream, state.settings.header_timeout, idle.clone()));
                                 let service_state = state.clone();
                                 let admission = generation.clone();
-                                let service = service_fn(move |req| service::serve(req, service_state.clone(), peer, admission.clone(), instance.clone()));
+                                let service = service_fn(move |req| {
+                                    let active = idle.begin();
+                                    let future = service::serve(req, service_state.clone(), peer, admission.clone(), instance.clone());
+                                    async move { let _active = active; future.await }
+                                });
                                 let mut builder = http1::Builder::new();
                                 builder.timer(TokioTimer::new()).keep_alive(true).half_close(false).max_buf_size(16 * 1024).max_headers(64).header_read_timeout(state.settings.header_timeout);
                                 let connection = builder.serve_connection(io, service);
@@ -249,18 +254,55 @@ pub(crate) async fn run(
     status.send_replace(WebStatus::Stopped);
 }
 
+/// Idle expiry is suspended during a request and starts afresh after its response.
+#[derive(Clone)]
+struct IdleClock(Arc<Mutex<IdleState>>);
+struct IdleState {
+    active: usize,
+    since: Instant,
+}
+impl IdleClock {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(IdleState {
+            active: 0,
+            since: Instant::now(),
+        })))
+    }
+    fn begin(&self) -> ActiveRequest {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).active += 1;
+        ActiveRequest(self.clone())
+    }
+    fn touch(&self) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).since = Instant::now();
+    }
+    fn deadline(&self, timeout: Duration) -> Option<Instant> {
+        let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        (state.active == 0).then_some(state.since + timeout)
+    }
+}
+struct ActiveRequest(IdleClock);
+impl Drop for ActiveRequest {
+    fn drop(&mut self) {
+        let mut state = self.0 .0.lock().unwrap_or_else(|e| e.into_inner());
+        state.since = Instant::now();
+        state.active -= 1;
+    }
+}
+
 /// An idle connection must expire even before Hyper begins parsing its next request.
 struct IdleIo {
     stream: TcpStream,
     timer: Pin<Box<Sleep>>,
     timeout: Duration,
+    idle: IdleClock,
 }
 impl IdleIo {
-    fn new(stream: TcpStream, timeout: Duration) -> Self {
+    fn new(stream: TcpStream, timeout: Duration, idle: IdleClock) -> Self {
         Self {
             stream,
             timer: Box::pin(tokio::time::sleep(timeout)),
             timeout,
+            idle,
         }
     }
 }
@@ -275,16 +317,22 @@ impl AsyncRead for IdleIo {
         match Pin::new(&mut this.stream).poll_read(cx, buf) {
             Poll::Ready(result) => {
                 if buf.filled().len() > before {
-                    this.timer.as_mut().reset(Instant::now() + this.timeout);
+                    this.idle.touch();
                 }
                 Poll::Ready(result)
             },
-            Poll::Pending => match this.timer.as_mut().poll(cx) {
-                Poll::Ready(_) => Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "idle web connection",
-                ))),
-                Poll::Pending => Poll::Pending,
+            Poll::Pending => {
+                let Some(deadline) = this.idle.deadline(this.timeout) else {
+                    return Poll::Pending;
+                };
+                this.timer.as_mut().reset(deadline);
+                match this.timer.as_mut().poll(cx) {
+                    Poll::Ready(_) => Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "idle web connection",
+                    ))),
+                    Poll::Pending => Poll::Pending,
+                }
             },
         }
     }
@@ -295,7 +343,12 @@ impl AsyncWrite for IdleIo {
         cx: &mut TaskContext<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().stream).poll_write(cx, buf)
+        let this = self.get_mut();
+        let result = Pin::new(&mut this.stream).poll_write(cx, buf);
+        if matches!(result, Poll::Ready(Ok(written)) if written > 0) {
+            this.idle.touch();
+        }
+        result
     }
     fn poll_flush(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.get_mut().stream).poll_flush(cx)

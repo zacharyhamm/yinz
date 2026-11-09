@@ -5162,6 +5162,7 @@ dependencies = [
  "crossbeam",
  "flate2",
  "hegeltest",
+ "http 1.5.0",
  "insta",
  "interprocess",
  "isahc",
