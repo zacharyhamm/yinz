@@ -81,6 +81,9 @@ impl Screen {
                 self.clear_bell_for_pane_id(pane_id, client_id);
                 self.sync_scroll_mode_on_focus(client_id)?;
                 self.log_and_report_session_state()?;
+                // Quiet panes may produce no subsequent PTY or plugin activity.
+                // Publish the new cursor, focus frame and host directory ourselves.
+                self.render()?;
             }
         }
         Ok(())

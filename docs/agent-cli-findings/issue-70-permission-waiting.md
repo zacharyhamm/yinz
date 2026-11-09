@@ -162,3 +162,57 @@ checks, not a full CI run. The consumer test uses the actual worktree reporter
 and observer with a test-owned provider/registry and fake whole-app OS backend
 on Linux; no fresh authenticated Claude, macOS or remote SSH measurement is
 claimed. All fixture processes/readers are stopped and reaped before return.
+
+## Merge-gate repair: asynchronous disconnect and quiet-pane focus
+
+The controller's merge attempt `8f965717-bd6a-4009-ae65-52dc2cdb1922`
+failed at rebased HEAD `a3af2b45e370609fa5f2e1a04cfe7800c8d61e5f`.
+The durable `ci-check.log` was read before edits; its two failures were
+investigated in this same issue worktree. Passing diagnostic reruns were not
+treated as resolutions.
+
+The legacy-client refusal test observed `Exit` and immediately required the
+client to be absent from inventory. `DetachSession` sends Exit before
+`remove_client_and_flush_forwards` removes the interactive client, while the
+inventory endpoint reads shared state from another router. Receiving Exit is
+therefore not a cleanup fence. The test now polls inventory through a scoped
+worker and `Watched::wait_until_described`, preserving the unsupported-message
+assertions and reporting the observed inventory on timeout. No server protocol
+or disconnect semantics changed. The initial 24 selected real-client tests
+passed before this test repair, consistent with a scheduling-dependent assertion;
+that pass alone did not address the race.
+
+The OSC 7 timeout had a production cause: `focus_pane_by_request` changed focus
+and published session metadata without scheduling a frame. For a focus change
+within the same tab, neither tab switching nor scroll-mode synchronization
+necessarily requests rendering. Unrelated plugin or PTY activity could mask the
+missing request; quiet panes could retain the old cursor/frame and omit the
+focus-dependent OSC 7 report indefinitely. The focus path now schedules a render
+after its state change, retaining the already-focused no-op and deferred-layout
+behavior.
+
+The new synchronous screen regression services only render jobs requested by
+focus itself, without plugin/PTY activity or an explicit rescue render. It
+requires a post-request frame with the upper pane's cursor/content and its actual
+OSC 7 output. During test development, an incorrect expected cursor row and
+incomplete cumulative ANSI replay were corrected; this fixture has no tab-bar
+row. With those corrections, removing the production fix reproduced the missing
+post-request frame deterministically. Restoring the render request resolves it.
+
+Focused repair validation on Linux (2026-11-09):
+
+- `cargo x test -p yinz --bin yinz -E 'test(session_update_refuses_legacy_client_without_sending_unknown_messages) | test(publication_skips_disconnected_shared_client_but_acknowledges_connected_client)'`:
+  2 passed, 233 skipped; doctests skipped by filter.
+- `cargo x test -p yinz-screen -E 'test(/^screen::screen_tests::osc7::/) | test(/^screen::screen_tests::cli_actions::/)'`:
+  64 passed, 1658 skipped; doctests skipped by filter.
+- `cargo x integration-test --test osc7_forwarding --test claude_steering --test waiting_agent_bells -j 16`:
+  13 passed, including the failed OSC 7 case and existing Claude permission
+  latency, fallback and consumer checks. No competing Cargo/nextest run was
+  present; the existing latency scheduler reservation remains intact.
+- `cargo x lint`: passed, including deny-warnings Clippy and builtin plugin checks.
+- `cargo x format --check` and `git diff --check`: passed.
+
+Socket-binding checks used escalation on their first attempts and built this
+worktree's own binary with its real target directory. These checks do not claim a
+full merge gate, live Claude, remote SSH or macOS measurement. The inherited
+permission implementation and additive dependency resolution remain intact.

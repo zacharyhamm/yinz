@@ -717,11 +717,45 @@ fn session_update_refuses_legacy_client_without_sending_unknown_messages() {
             IpcRecv::Malformed => panic!("malformed reply during legacy client disconnection"),
         }
     }
-    assert!(!peer
-        .inventory(&operation)
-        .clients
-        .iter()
-        .any(|current| current.id == client.id));
+    // Exit is sent before the server removes the client. Inventory requests use
+    // another router and can overtake that cleanup, so observe removal itself.
+    let removed = Watched::new(None);
+    std::thread::scope(|scope| {
+        let removed = &removed;
+        let peer = &mut peer;
+        let operation = &operation;
+        let client_id = client.id;
+        scope.spawn(move || {
+            let deadline = Instant::now() + TIMEOUT;
+            while Instant::now() < deadline {
+                let inventory = peer.inventory(operation);
+                let done = !inventory
+                    .clients
+                    .iter()
+                    .any(|current| current.id == client_id);
+                *removed.lock() = Some(inventory);
+                if done {
+                    return;
+                }
+            }
+        });
+        removed.wait_until_described(
+            "legacy client removed after Exit",
+            TIMEOUT,
+            |inventory| {
+                inventory
+                    .as_ref()
+                    .filter(|inventory| {
+                        !inventory
+                            .clients
+                            .iter()
+                            .any(|current| current.id == client_id)
+                    })
+                    .map(|_| ())
+            },
+            |inventory| format!("inventory: {inventory:?}"),
+        );
+    });
 }
 
 #[test]

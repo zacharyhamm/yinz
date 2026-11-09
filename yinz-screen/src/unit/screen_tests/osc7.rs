@@ -120,6 +120,68 @@ fn osc7_focus_changes_restate_the_directory_after_a_pane_without_a_report() {
 }
 
 #[test]
+fn osc7_focus_request_renders_quiet_panes_without_followup_activity() {
+    let (mut screen, receiver) = screen_with_two_panes();
+    emit_osc7(&mut screen, 1, "file://host/upper");
+    screen
+        .get_active_tab_mut(CLIENT)
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(1), b"$ ".to_vec())
+        .unwrap();
+    screen.render_to_clients().unwrap();
+    screen
+        .get_active_tab_mut(CLIENT)
+        .unwrap()
+        .move_focus_down(CLIENT)
+        .unwrap();
+    screen.render_to_clients().unwrap();
+    // Keep the baseline for cumulative ANSI replay, but require content from a
+    // post-request frame below. These baseline renders are synchronous.
+    let mut instructions: Vec<_> = receiver
+        .try_iter()
+        .map(|(instruction, _)| instruction)
+        .collect();
+    let preceding_frames =
+        take_snapshots_and_cursor_coordinates_from_render_events(instructions.iter(), SIZE).len();
+    let checkpoint = instructions.len();
+
+    let (to_background, background) = channels::unbounded();
+    screen.bus.senders.to_background_jobs = Some(SenderWithContext::new(to_background));
+    let upper = PaneId::Terminal(TerminalId::new(1));
+    screen
+        .focus_pane_by_request(upper, true, false, CLIENT, None, &mut Default::default())
+        .unwrap();
+    assert_eq!(screen.get_active_pane_id(&CLIENT), Some(upper));
+
+    // Only service frames requested by focus itself. No PTY bytes, plugin update or
+    // forced render may rescue the request; all calls here run synchronously.
+    for (job, _) in background.try_iter() {
+        if matches!(job, BackgroundJob::RenderToClients) {
+            screen.render_to_clients().unwrap();
+        }
+    }
+    instructions.extend(receiver.try_iter().map(|(instruction, _)| instruction));
+    let snapshots =
+        take_snapshots_and_cursor_coordinates_from_render_events(instructions.iter(), SIZE);
+    assert!(
+        snapshots
+            .iter()
+            .skip(preceding_frames)
+            .any(|(cursor, frame)| { *cursor == Some((2, 0)) && frame.contains("$ ") }),
+        "focus must publish the quiet upper pane's cursor: {snapshots:?}"
+    );
+    assert!(
+        instructions[checkpoint..].iter().any(|instruction| {
+            matches!(instruction, ServerInstruction::Render(Some(clients))
+            if clients.get(&CLIENT).is_some_and(|output| {
+                output.contains("\x1b]7;file://host/upper\x1b\\")
+            }))
+        }),
+        "focus must restate the directory without unrelated render activity"
+    );
+}
+
+#[test]
 fn osc7_tracks_each_clients_focus_and_last_report_separately() {
     let (mut screen, receiver) = screen_with_two_panes();
     screen.set_client_size(OTHER_CLIENT, SIZE).unwrap();
