@@ -542,7 +542,17 @@ pub(super) fn stage_pane_agent_report(
     pane_id: PaneId,
     agent: Option<AgentInfo>,
 ) -> Result<bool> {
+    screen.claude_permission_waits.remove(&pane_id);
     set_pane_agent_report(screen, pane_id, agent, false, false)
+}
+
+/// Stage aggregated activity without replacing the parent or its native input ownership.
+pub(super) fn stage_pane_agent_activity(
+    screen: &mut Screen,
+    pane_id: PaneId,
+    agent: AgentInfo,
+) -> Result<bool> {
+    set_pane_agent_report(screen, pane_id, Some(agent), false, false)
 }
 
 /// Publish aggregated activity without replacing the underlying parent state or its wait.
@@ -561,7 +571,7 @@ fn set_pane_agent_report(
     publish: bool,
     remember_parent: bool,
 ) -> Result<bool> {
-    if !publish || remember_parent {
+    if remember_parent {
         screen.claude_permission_waits.remove(&pane_id);
     }
     // Read before the write: which hooks a change fires is a question about the edge, and the

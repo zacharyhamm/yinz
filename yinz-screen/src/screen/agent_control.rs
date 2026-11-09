@@ -807,7 +807,7 @@ impl Screen {
             })
         {
             if let Some(visible) = self.claude_visible(pane) {
-                return super::agent_reports::stage_pane_agent_report(self, pane, Some(visible));
+                return super::agent_reports::stage_pane_agent_activity(self, pane, visible);
             }
             return Ok(true);
         }

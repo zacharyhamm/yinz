@@ -105,3 +105,60 @@ remote latency or the report's separate F4/F5 post-approval readiness defects.
 Registry presentation remains optional input evidence, not completion or
 composer-readiness proof. No public CLI flags, permission policies, protobufs,
 portable skills, production Scheme or SDK interfaces were changed.
+
+## Supplemental repair: issue70-native-fallback-release-latch
+
+The approved repair decision `ca48c6d8-dc70-469f-8f0f-d4b068613191`
+selects the same finding from technical and UX review of
+`00656f2b7900f40f000d5d21bc03af9e342ecb7d`.
+Registry-only staging retained the native Waiting parent but removed its
+`PermissionWait`, preventing a subsequent forwarded Enter from releasing it.
+The new screen composition regression failed at the missing native latch before
+the production repair; this was the expected reproduction, not a timing flake.
+
+Registry presentation now stages aggregate activity without replacing the parent
+or its native release ownership. Ordinary report/adoption staging still clears
+its latch as before; identity changes and exit still invalidate retired state.
+The preserved latch keeps its original conversation and input revision. Enter
+releases native fallback only; an active registry overlay or worker question
+continues to require its own release. This restores the fallback contract in
+AGENT_CLI.md without changing commands, permission policy, schemas or remote
+behavior.
+
+New screen coverage composes native fallback Notification with Unavailable,
+Inactive, repeated Active samples and registry-owned reminders, then forwards
+Enter through terminal and CLI input. It checks the original latch/revision,
+Busy versus confirmed-parent Idle, cleared native detail/person flags,
+PaneUpdate/status release, independent registry/worker waits and source
+replacement. Existing placement, input, cancellation and handoff coverage is
+included in the selected screen check.
+
+The existing isolated Linux consumer fixture now adds two fallback phases after
+its latency and automatic-policy controls. Each acknowledges a fresh inactive
+registry sample, removes the file, establishes native fallback Waiting, and waits
+for the observer's real two-second read-loss report. One phase also restores a
+newer inactive record before Enter. Per-phase watch/event barriers and Scheme
+notification/status counters ensure earlier rounds cannot satisfy assertions.
+Real `agent send-keys` forwards Enter and CLI status/watch plus Scheme PaneUpdate
+release without any post-tool, denial or completion hook. Enter does not require
+or fabricate a provider AgentEvent. Registry loss may normalize to the retained
+Inactive watermark, so the barrier checks the advanced read timestamp.
+
+Repair development results (2026-11-09), separate from the historical results
+above:
+
+- The new single screen regression failed before the fix and passed after it.
+- `cargo x test -p yinz-screen -E 'test(/^screen::screen_tests::agent_control::/) | test(/^screen::screen_tests::agent_resume::/) | test(/^screen::screen_tests::agent_tracking_handoff::/)'`:
+  345 passed, 1376 skipped; doctests skipped by filter.
+- `cargo x integration-test --test claude_steering --test waiting_agent_bells -E 'test(claude_permission_latency) | test(waiting)' -j 16`:
+  2 passed, 6 skipped. The consumer case including the new fallback phases took
+  11.667 seconds; bell rendering took 7.023 seconds. No competing Cargo/nextest
+  run was present before starting; the existing all-slot latency reservation stays
+  unchanged.
+
+The three approved repair checks (including `cargo x format --check`) are run
+again at the final repair commit before evidence submission. These are focused
+checks, not a full CI run. The consumer test uses the actual worktree reporter
+and observer with a test-owned provider/registry and fake whole-app OS backend
+on Linux; no fresh authenticated Claude, macOS or remote SSH measurement is
+claimed. All fixture processes/readers are stopped and reaped before return.

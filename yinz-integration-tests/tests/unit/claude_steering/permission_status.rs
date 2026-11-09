@@ -15,6 +15,7 @@ use yinz_test_support::Watched;
 const PLUGIN: &str = r#"
 (yinz-declare-pane)
 (define ready #f) (define pw 0) (define ew 0) (define pr 0) (define er 0)
+(define nf 0) (define sc 0)
 (define pane-waiting #f) (define event-waiting #f)
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("ReadApplicationState"))
@@ -34,7 +35,10 @@ const PLUGIN: &str = r#"
             (set! pane-waiting waiting))) (hash-ref groups key))) (hash-keys->list groups)))
     (when (hash-contains? event "AgentEvent")
       (define hook (hash-ref event "AgentEvent"))
+      (when (and (equal? (hash-ref hook "hook") "Notification")
+                 (equal? (hash-ref hook "state") "Waiting")) (set! nf (+ nf 1)))
       (when (equal? (hash-ref hook "hook") "ClaudePermissionStatus")
+        (set! sc (+ sc 1))
         (define waiting (equal? (hash-ref hook "state") "Waiting"))
         (when (and waiting (not event-waiting)) (set! ew (+ ew 1)))
         (when (and event-waiting (not waiting)) (set! er (+ er 1)))
@@ -42,7 +46,8 @@ const PLUGIN: &str = r#"
   #t)
 (define (render rows columns)
   (if ready (string-append "PERMISSION PW=" (number->string pw) " EW=" (number->string ew)
-      " PR=" (number->string pr) " ER=" (number->string er)) "Waiting for permissions"))
+      " PR=" (number->string pr) " ER=" (number->string er)
+      " NF=" (number->string nf) " SC=" (number->string sc) ";") "Waiting for permissions"))
 "#;
 
 fn direct_children() -> std::collections::BTreeSet<i32> {
@@ -235,6 +240,10 @@ fn claude_permission_latency_parent_and_background_worker_reach_all_consumers() 
         (
             "late",
             serde_json::json!({"hook_event_name":"Notification","session_id":"permission-session","notification_type":"permission_prompt","message":"late permission reminder"}),
+        ),
+        (
+            "fallback",
+            serde_json::json!({"hook_event_name":"Notification","session_id":"permission-session","notification_type":"permission_prompt","message":"fallback permission"}),
         ),
         (
             "allow",
@@ -520,6 +529,121 @@ done
         waiting_count, 2,
         "heartbeats/reminders produce one Waiting edge per dialog"
     );
+    // Native fallback keeps its own Enter ownership across observer read loss and
+    // a restored inactive record. No provider progress may rescue either release.
+    for (phase, restore) in [(3, false), (4, true)] {
+        send_hook(&mut processes, &mut provider_output, "submit");
+        timestamp += 10;
+        registry(&samples, pid, "busy", "", timestamp);
+        let sample_matches = |json: &str, lost: bool| {
+            let event: serde_json::Value = serde_json::from_str(json).unwrap();
+            let event = &event["AgentEvent"];
+            if event["hook"] != "ClaudePermissionStatus" {
+                return false;
+            }
+            let raw: serde_json::Value =
+                serde_json::from_str(event["raw"].as_str().unwrap()).unwrap();
+            let sample = &raw["_yinz_claude_permission"];
+            sample["updated_ms"] == timestamp
+                && (!lost || sample["observed_ms"].as_u64().unwrap() >= timestamp + 2_000)
+        };
+        events.wait_for_event_matching("AgentEvent", |json| sample_matches(json, false));
+        fs::remove_file(&samples).unwrap();
+        let baseline = lines.lock().len();
+        send_hook(&mut processes, &mut provider_output, "fallback");
+        let waiting_at = lines.wait_until(
+            "fallback Waiting reaches CLI watch",
+            Duration::from_secs(10),
+            |lines| {
+                lines[baseline..]
+                    .iter()
+                    .find(|(_, v)| {
+                        v["event_type"] == "state_changed"
+                            && v["state"] == "waiting"
+                            && v["needs_input"] == true
+                    })
+                    .map(|(at, _)| *at)
+            },
+        );
+        assert_eq!(
+            status()["agents"][0]["agent"]["waiting_on"],
+            "fallback permission"
+        );
+        yinz.wait_until("Scheme receives this phase's native fallback", |s| {
+            s.contains(&format!(
+                "PERMISSION PW={phase} EW=2 PR={} ER=2 NF={}",
+                phase - 1,
+                phase - 2
+            ))
+        });
+        // A fresh per-phase stream barrier cannot be satisfied by the earlier latency
+        // rounds. Read loss retains the inactive watermark but advances observed_ms.
+        events.wait_for_event_matching("AgentEvent", |json| sample_matches(json, true));
+        if restore {
+            timestamp += 1;
+            registry(&samples, pid, "busy", "", timestamp);
+            events.wait_for_event_matching("AgentEvent", |json| {
+                let value: serde_json::Value = serde_json::from_str(json).unwrap();
+                let event = &value["AgentEvent"];
+                if event["hook"] != "ClaudePermissionStatus" {
+                    return false;
+                }
+                let raw: serde_json::Value =
+                    serde_json::from_str(event["raw"].as_str().unwrap()).unwrap();
+                raw["_yinz_claude_permission"]["updated_ms"] == timestamp
+            });
+        }
+        // Require the Scheme subscriber to consume the intervening accepted status,
+        // rather than merely observing that native Waiting survived on the host.
+        let status_count = events
+            .streamed_events()
+            .iter()
+            .filter(|(kind, json)| kind == "AgentEvent" && json.contains("ClaudePermissionStatus"))
+            .count();
+        yinz.wait_until(
+            "Scheme receives all intervening registry observations",
+            |s| s.contains(&format!("NF={} SC={status_count};", phase - 2)),
+        );
+        let input_before = agent.stdin_bytes().len();
+        let output = cli(&binary, yinz.session_name(), dir.path())
+            .args(["agent", "send-keys", &pane.to_string(), "Enter", "--json"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        agent.wait_for_stdin("fallback approval Enter is forwarded", |bytes| {
+            bytes.len() > input_before && bytes.ends_with(b"\r")
+        });
+        lines.wait_until(
+            "fallback Enter releases CLI watch without a tool hook",
+            Duration::from_secs(10),
+            |lines| {
+                lines
+                    .iter()
+                    .any(|(at, v)| {
+                        *at > waiting_at
+                            && v["event_type"] == "state_changed"
+                            && v["state"] == "busy"
+                            && v["needs_input"] == false
+                    })
+                    .then_some(())
+            },
+        );
+        let released = status();
+        let released = &released["agents"][0]["agent"];
+        assert_eq!(released["state"], "Busy");
+        assert!(released["waiting_on"].is_null());
+        assert!(released["detail"].is_null());
+        assert_eq!(released["wait_needs_a_person"], false);
+        yinz.wait_until(
+            "Scheme PaneUpdate releases fallback without a new provider event",
+            |s| {
+                s.contains(&format!(
+                    "PERMISSION PW={phase} EW=2 PR={phase} ER=2 NF={}",
+                    phase - 2
+                ))
+            },
+        );
+    }
     // Explicitly tear down external children before stopping the server.
     drop(processes);
     yinz.quit();

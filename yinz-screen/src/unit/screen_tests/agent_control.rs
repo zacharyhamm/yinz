@@ -15821,6 +15821,132 @@ fn claude_permission_registry_preserves_other_worker_and_notification_fallback_w
 }
 
 #[test]
+fn claude_permission_registry_preserves_native_enter_release_ownership() {
+    use yinz_types::agent::claude_permissions::Status;
+    for status in [Status::Unavailable, Status::Inactive, Status::Active] {
+        for confirmed in [false, true] {
+            for cli in [false, true] {
+                let (mut screen, _, writes) = setup("claude");
+                for event in ["SessionStart", "UserPromptSubmit"] {
+                    report_kind(
+                        &mut screen,
+                        "claude",
+                        with_notification_source(hook(event), notification_source()),
+                    );
+                }
+                if confirmed {
+                    report_kind(&mut screen, "claude", claude_stop("prompt", "done", false));
+                }
+                // Old input cannot answer a newly established native fallback wait.
+                permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
+                report_kind(&mut screen, "claude", claude_permission_prompt());
+                let native = screen.agent_status_for_test().agent;
+                let wait = screen.claude_permission_waits.get(&PANE).unwrap().clone();
+                for updated in [500_000, 500_001] {
+                    report_kind(&mut screen, "claude", permission_sample(status, updated));
+                    if status == Status::Active {
+                        let reminder = HookEvent {
+                            hook_event_name: "Notification".into(),
+                            notification_type: Some("permission_prompt".into()),
+                            ..permission_sample(status, updated)
+                        };
+                        report_kind(&mut screen, "claude", reminder);
+                    }
+                    let retained = screen
+                        .claude_permission_waits
+                        .get(&PANE)
+                        .expect("registry presentation must retain native Enter ownership");
+                    assert_eq!(retained.conversation, wait.conversation);
+                    assert_eq!(retained.input_revision, wait.input_revision);
+                    assert_eq!(screen.agent_status_for_test().agent, native);
+                }
+                let (sender, plugins) = channels::unbounded();
+                screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+                screen.background_plugin_subscriptions.insert(
+                    (PluginId::new(99), CLIENT),
+                    HashSet::from([EventType::PaneUpdate]),
+                );
+                finish_paste(&writes);
+                permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
+                assert_eq!(finish_paste(&writes), b"\r");
+                assert!(!screen.claude_permission_waits.contains_key(&PANE));
+                let expected = if confirmed {
+                    AgentState::Idle
+                } else {
+                    AgentState::Busy
+                };
+                let parent = claude_lifecycle(&screen).claude.parent.unwrap();
+                assert_eq!(parent.state, expected);
+                assert_eq!(parent.waiting_on, None);
+                assert_eq!(parent.detail, None);
+                assert!(!parent.wait_needs_a_person);
+                if status == Status::Active {
+                    assert_eq!(
+                        screen.agent_status_for_test().agent.state,
+                        AgentState::Waiting
+                    );
+                    report_kind(
+                        &mut screen,
+                        "claude",
+                        permission_sample(Status::Inactive, 500_002),
+                    );
+                }
+                let released = screen.agent_status_for_test().agent;
+                assert_eq!(released.state, expected);
+                assert_eq!(released.waiting_on, None);
+                assert_eq!(released.detail, None);
+                assert!(!released.wait_needs_a_person);
+                assert!(plugins.try_iter().any(|(instruction, _)| {
+                    let PluginInstruction::Update(updates) = instruction else { return false };
+                    updates.into_iter().any(|(_, _, event)| {
+                        matches!(event, Event::PaneUpdate(manifest) if manifest.panes.values().flatten()
+                            .any(|pane| pane.id == PANE && pane.agent.as_ref() == Some(&released)))
+                    })
+                }));
+                // Presentation preservation must not retain ownership across replacement.
+                report_kind(&mut screen, "claude", claude_permission_prompt());
+                assert!(screen.claude_permission_waits.contains_key(&PANE));
+                report_kind(&mut screen, "claude", provider_resume(replacement_source()));
+                assert!(!screen.claude_permission_waits.contains_key(&PANE));
+            }
+        }
+    }
+}
+
+#[test]
+fn claude_permission_registry_native_enter_preserves_worker_question() {
+    use yinz_types::agent::claude_permissions::Status;
+    let mut screen = permission_setup();
+    report_kind(&mut screen, "claude", claude_permission_prompt());
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            tool_name: Some("AskUserQuestion".into()),
+            tool_use_id: Some("question".into()),
+            ..claude_worker("PreToolUse", "worker")
+        },
+    );
+    let wait = screen.claude_permission_waits.get(&PANE).unwrap().clone();
+    report_kind(
+        &mut screen,
+        "claude",
+        permission_sample(Status::Unavailable, 500_000),
+    );
+    assert_eq!(screen.claude_permission_waits.get(&PANE), Some(&wait));
+    permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), true);
+    assert!(!screen.claude_permission_waits.contains_key(&PANE));
+    let agent = screen.agent_status_for_test().agent;
+    assert_eq!(agent.state, AgentState::Waiting);
+    assert_eq!(agent.waiting_on.as_deref(), Some("a question"));
+    assert!(agent.wait_needs_a_person);
+    assert_eq!(
+        claude_lifecycle(&screen).claude.parent.unwrap().state,
+        AgentState::Busy
+    );
+}
+
+#[test]
 fn claude_permission_registry_rejects_unowned_sources_and_fences_cancel_and_transfer() {
     use yinz_types::agent::claude_permissions::Status;
     let mut screen = permission_setup();
