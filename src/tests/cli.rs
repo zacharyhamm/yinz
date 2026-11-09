@@ -323,3 +323,30 @@ fn bubblewrap_prepare_respects_the_selected_config_directory() {
         matches!(opts.command, Some(Command::Bubblewrap(yinz_cli::args::Bubblewrap::Prepare { project: Some(path) })) if path == std::path::Path::new("/work/repo"))
     );
 }
+
+#[test]
+fn cli_web_status_ports_and_generated_completion() {
+    use yinz_cli::args::Web;
+    let opts = try_parse_cli(["yinz", "web", "status", "--https-port", "8443"]).unwrap();
+    assert!(matches!(
+        opts.command,
+        Some(Command::Web(Web::Status {
+            https_port: Some(8443)
+        }))
+    ));
+    for port in ["0", "65536", "no"] {
+        assert!(try_parse_cli(["yinz", "web", "status", "--https-port", port]).is_err());
+    }
+    for shell in ["bash", "zsh", "fish"] {
+        let output = std::process::Command::new(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug/yinz"),
+        )
+        .args(["setup", "--generate-completion", shell])
+        .output()
+        .unwrap();
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains("web"));
+        assert!(text.contains("https-port"));
+    }
+}

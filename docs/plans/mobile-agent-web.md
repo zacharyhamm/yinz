@@ -1,3 +1,11 @@
+> Native milestone status (issue 74): bearer login/session/logout/logout-all,
+> private session persistence, limits and local web status are implemented.
+> See [WEB.md](../WEB.md) for the delivered error/DTO/recovery contract and
+> configured-versus-startup reporting. Direct local health probes without proxy
+> headers bypass only the optional identity allowlist. XFF is not trusted for
+> client limiter keys. Serve/phone smoke checks remain unperformed; the mobile UI,
+> plugin bridge and agent API remain later milestones.
+
 # Mobile agents web interface: final implementation plan
 
 > Decided with the user: the HTTP server uses hyper directly (vetis was evaluated and rejected for idle-connection, reset and Host-routing bugs).
@@ -293,7 +301,7 @@ On day one, WS-B creates `auth/mod.rs` with these exact signatures and deny-all 
 | `POST /api/logout` | bearer | `204`; deletes this session |
 | `POST /api/logout-all` | bearer | `204`; same as `revoke_sessions` |
 | `GET /api/session` | bearer | `200 {id,label,created_at_ms,expires_at_ms,idle_expires_at_ms}` |
-| `GET /healthz` | none | `200 {"ok":true}`. Adds `"session": name` only when the peer is loopback and there is no `X-Forwarded-For` (a direct probe from `yinz web status`). |
+| `GET /healthz` | none | `200 {"ok":true}`. Adds `"session": name` only when the peer is loopback and there is no `X-Forwarded-For`. A direct GET probe with no forwarded/Tailscale headers bypasses only the optional identity allowlist (a local diagnostic for `yinz web status`). |
 
 - Login runs argon2 in `spawn_blocking` under `Semaphore(1)`, with at most 2 waiters; more get 429. This caps memory at about 64 MiB.
 - The body is read into `Zeroizing<Vec<u8>>`.

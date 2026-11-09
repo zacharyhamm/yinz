@@ -170,6 +170,19 @@ pub(crate) fn check(
     Ok(())
 }
 
+/// Serve strips identity headers; XFF trust is deliberately not assumed.
+pub(crate) fn client_key(headers: &HeaderMap, peer: SocketAddr) -> String {
+    if peer.ip().is_loopback()
+        && let Ok(Some(login)) = single(headers, "tailscale-user-login")
+        && !login.is_empty()
+        && login.len() <= 256
+        && !login.chars().any(char::is_control)
+    {
+        return format!("user:{login}");
+    }
+    format!("peer:{}", peer.ip())
+}
+
 #[cfg(test)]
 #[path = "unit/policy.rs"]
 mod tests;

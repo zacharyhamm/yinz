@@ -1292,12 +1292,17 @@ and client disconnection also stop clearing. Queued writes retain ownership unti
 Failure can leave a partially cleared draft. Inspect the terminal before manual recovery.
 Clearing preserves the conversation and does not verify task completion or promise deletion from provider history.
 
-## Native web prerequisite
+## Native web access
 
 `yinz --data-dir PATH set-password` sets a hidden, confirmed local web password.
 Use `--password-stdin` explicitly for one bounded input line, `--clear` to remove
 the password and sessions, or `--revoke-sessions` to rotate the verifier while
 keeping the password. These modes are mutually exclusive and always local,
 including with `--remote`. See [WEB.md](WEB.md) for installation, enabled config
-and health/starting-page smoke checks. Config changes apply at the next session
-start. Bearer login, browser sessions and the mobile agent API remain deferred.
+and login/session smoke checks. Config changes apply at the next session start.
+`yinz web status [--https-port PORT]` reports configured versus verified startup
+policy, password state, public browser sessions and optional Tailscale diagnostics.
+It is local even with `--remote`, honors `--config`/`--config-dir` and `--data-dir`,
+and never changes Tailscale configuration. Native bearer login, session, logout
+and logout-all are available. The mobile UI, plugin bridge and agent API remain
+deferred.

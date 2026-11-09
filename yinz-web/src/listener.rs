@@ -118,8 +118,10 @@ pub(crate) async fn run(
         let dir = state.settings.data_dir.clone();
         let name = state.backend.session_name();
         let mut current_name = name.clone();
-        let mut publication =
-            tokio::task::spawn_blocking(move || OwnedRecord::create(&dir, addr, name));
+        let startup_config = state.settings.startup_config.clone();
+        let mut publication = tokio::task::spawn_blocking(move || {
+            OwnedRecord::create(&dir, addr, name, startup_config)
+        });
         let record = tokio::select! {
             biased;
             _ = cancel.cancelled() => {

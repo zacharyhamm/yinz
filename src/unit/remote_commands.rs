@@ -31,6 +31,7 @@ fn remote_is_global_and_routes_each_live_command_family() {
                 (vec!["hooks", "status"], Route::Local),
                 (vec!["skills", "list"], Route::Local),
                 (vec!["update"], Route::Local),
+                (vec!["web", "status"], Route::Local),
             ] {
                 let before: Vec<_> = ["yinz", "--remote", "host"]
                     .into_iter()
@@ -321,4 +322,17 @@ fn set_password_is_always_local() {
             Route::Local
         );
     }
+}
+
+#[test]
+fn web_status_clears_inherited_remote_without_contact() {
+    let mut opts = CliArgs {
+        remote: Some("must-not-contact.invalid".into()),
+        command: Some(Command::Web(yinz_cli::args::Web::Status {
+            https_port: None,
+        })),
+        ..Default::default()
+    };
+    dispatch(&mut opts).unwrap();
+    assert!(opts.remote.is_none());
 }

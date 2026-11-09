@@ -9,7 +9,8 @@ pub mod password;
 pub mod sessions;
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use tokio::sync::Semaphore;
 
 /// Wall-clock milliseconds, injectable so expiry can be tested.
 pub trait Clock: Send + Sync + 'static {
@@ -57,6 +58,7 @@ pub enum AuthError {
     Unauthenticated,
     /// The password is missing or invalid, so no session is valid: 503.
     PasswordNotReady,
+    StoreUnavailable,
 }
 
 /// A per-session API bucket ran dry: 429 with `Retry-After`.
@@ -66,16 +68,19 @@ pub struct RateLimited {
 }
 
 /// The public view of an authenticated session. The token never leaves this module.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct SessionInfo {
     /// 16 hex characters, safe to log by prefix and to show the plugin.
     pub id: String,
     pub label: String,
     pub expires_at_ms: i64,
+    pub created_at_ms: i64,
+    pub last_seen_ms: i64,
+    pub idle_expires_at_ms: i64,
 }
 
 /// A native auth endpoint's answer.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct AuthResponse {
     pub status: u16,
     pub json: serde_json::Value,
@@ -83,7 +88,7 @@ pub struct AuthResponse {
 }
 
 impl AuthResponse {
-    fn error(status: u16, code: &str) -> Self {
+    pub(crate) fn error(status: u16, code: &str) -> Self {
         AuthResponse {
             status,
             json: serde_json::json!({"error": {"code": code}}),
@@ -92,11 +97,26 @@ impl AuthResponse {
     }
 }
 
-/// One server's authentication state. Denies everything until the auth workstream lands.
+impl std::fmt::Debug for AuthResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthResponse")
+            .field("status", &self.status)
+            .finish_non_exhaustive()
+    }
+}
+/// One server's authentication state.
 pub struct Auth {
     data_dir: PathBuf,
     config: AuthConfig,
     clock: Arc<dyn Clock>,
+    store: Mutex<sessions::Store>,
+    limits: Mutex<limiter::Limiter>,
+    admission: Arc<Semaphore>,
+    verification: Arc<Semaphore>,
+    #[cfg(test)]
+    pub(crate) verify_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    pub(crate) commit_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Auth {
@@ -105,7 +125,20 @@ impl Auth {
             data_dir,
             config: cfg,
             clock,
+            store: Mutex::default(),
+            limits: Mutex::default(),
+            #[cfg(test)]
+            verify_hook: Mutex::default(),
+            #[cfg(test)]
+            commit_hook: Mutex::default(),
+            admission: Arc::new(Semaphore::new(3)),
+            verification: Arc::new(Semaphore::new(1)),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn login_slots(&self) -> usize {
+        self.admission.available_permits()
     }
 
     /// Missing, Invalid or Ready, from a fresh read; the listener polls off-runtime at most 500 ms apart.
@@ -118,47 +151,87 @@ impl Auth {
     }
 
     pub fn authenticate(&self, bearer: Option<&str>) -> Result<SessionInfo, AuthError> {
-        let _ = (bearer, &self.config, self.clock.now_ms());
-        match self.password_state() {
-            PasswordStateKind::Ready => Err(AuthError::Unauthenticated),
-            PasswordStateKind::Missing | PasswordStateKind::Invalid => {
-                Err(AuthError::PasswordNotReady)
-            },
-        }
-    }
-
-    pub async fn login(
-        &self,
-        body: zeroize::Zeroizing<Vec<u8>>,
-        user_agent: Option<&str>,
-        client_key: &str,
-    ) -> AuthResponse {
-        let _ = (body, user_agent, client_key);
-        match self.password_state() {
-            PasswordStateKind::Ready => AuthResponse::error(401, "invalid_credentials"),
-            PasswordStateKind::Missing | PasswordStateKind::Invalid => {
-                AuthResponse::error(503, "no_password")
-            },
-        }
+        let password::PasswordState::Ready(v) = password::read_state(&self.data_dir) else {
+            return Err(AuthError::PasswordNotReady);
+        };
+        let token = bearer
+            .filter(|t| sessions::valid_token(t))
+            .ok_or(AuthError::Unauthenticated)?;
+        let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        let info = store
+            .authenticate(&self.data_dir, &v.verifier_id, token, self.clock.now_ms())
+            .map_err(|_| AuthError::StoreUnavailable)?;
+        let snapshot = store
+            .snapshot(&self.data_dir, &v.verifier_id)
+            .map_err(|_| AuthError::StoreUnavailable)?;
+        self.limits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain_sessions(snapshot.sessions.iter().map(|r| r.id.as_str()));
+        info.ok_or(AuthError::Unauthenticated)
     }
 
     pub fn logout(&self, s: &SessionInfo) -> AuthResponse {
-        let _ = s;
-        AuthResponse::error(401, "unauthenticated")
+        self.logout_if(s, || true)
     }
-
+    pub(crate) fn logout_if(&self, s: &SessionInfo, live: impl FnOnce() -> bool) -> AuthResponse {
+        match self
+            .store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .logout_guarded(&self.data_dir, &s.id, self.clock.now_ms(), live)
+        {
+            Ok(()) => {
+                self.limits
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&s.id);
+                AuthResponse::error(204, "")
+            },
+            Err(_) => AuthResponse::error(503, "session_store_unavailable"),
+        }
+    }
     pub fn logout_all(&self) -> AuthResponse {
-        AuthResponse::error(401, "unauthenticated")
+        self.logout_all_if(|| true)
     }
-
+    pub(crate) fn logout_all_if(&self, live: impl FnOnce() -> bool) -> AuthResponse {
+        use yinz_runtime::errors::prelude::*;
+        let result = (|| -> Result<()> {
+            let dir = self.data_dir.join("web");
+            let _lock = password::lock(&dir)?;
+            let password::PasswordState::Ready(mut v) = password::read_state(&self.data_dir) else {
+                bail!("no password");
+            };
+            if !live() {
+                bail!("request canceled");
+            }
+            v.verifier_id = password::random_id()?;
+            v.updated_at_ms = self.clock.now_ms();
+            password::publish(&dir, v)
+        })();
+        match result {
+            Ok(()) => AuthResponse::error(204, ""),
+            Err(_) => AuthResponse::error(503, "session_store_unavailable"),
+        }
+    }
     pub fn session_json(&self, s: &SessionInfo) -> AuthResponse {
-        let _ = s;
-        AuthResponse::error(401, "unauthenticated")
+        AuthResponse {
+            status: 200,
+            json: serde_json::json!({"session":s}),
+            retry_after_s: None,
+        }
     }
-
-    /// Spend one request from the session's API bucket and note it as seen.
     pub fn touch(&self, s: &SessionInfo) -> Result<(), RateLimited> {
-        let _ = s;
-        Ok(())
+        self.limits.lock().unwrap_or_else(|e| e.into_inner()).api(
+            &s.id,
+            s.idle_expires_at_ms,
+            self.clock.now_ms(),
+        )
+    }
+    pub fn public(&self) -> Result<(), RateLimited> {
+        self.limits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .public(self.clock.now_ms())
     }
 }

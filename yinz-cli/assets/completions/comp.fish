@@ -42,3 +42,5 @@ complete -c yzpipe -f -a "(__yinz_complete_aliases)" -d Yzpipes
 
 # set-password --password-stdin / --clear / --revoke-sessions are generated
 # from the CLI schema above. Password values are never arguments or completions.
+
+# web status --https-port is generated from the CLI schema.

@@ -1,4 +1,4 @@
-//! Native HTTP service. Authentication remains fail-closed in this milestone.
+//! Native HTTP admission: transport policy, authentication, limits, then plugin dispatch.
 use crate::{pages, policy, request, site, Backend, WebSettings};
 use bytes::Bytes;
 use http::{HeaderValue, Method, Request, Response, StatusCode};
@@ -12,10 +12,32 @@ use zeroize::Zeroizing;
 pub(crate) type Body = Full<Bytes>;
 pub(crate) struct State {
     pub settings: WebSettings,
+    pub auth: Arc<crate::auth::Auth>,
+    pub request_id: std::sync::atomic::AtomicU64,
+    pub io_work: Arc<tokio::sync::Semaphore>,
     pub backend: Arc<dyn Backend>,
     pub funnel_warning: std::sync::Mutex<Option<tokio::time::Instant>>,
 }
 
+// Admission waits are cancellable futures; a canceled running file operation retains its
+// permit until completion. Together with bounded flock waits this caps abandoned I/O work.
+async fn file_work<T: Send + 'static>(
+    state: &State,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, ()> {
+    let permit = state
+        .io_work
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ())?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        work()
+    })
+    .await
+    .map_err(|_| ())
+}
 fn response(
     status: StatusCode,
     body: impl Into<Bytes>,
@@ -37,11 +59,36 @@ fn error(status: StatusCode, code: &str) -> Response<Body> {
         "application/json",
     )
 }
-fn retry(mut response: Response<Body>, seconds: u32) -> Response<Body> {
+fn retry(mut response: Response<Body>, seconds: u64) -> Response<Body> {
     if let Ok(value) = HeaderValue::from_str(&seconds.to_string()) {
         response.headers_mut().insert("retry-after", value);
     }
     response
+}
+fn auth_response(r: crate::auth::AuthResponse) -> Response<Body> {
+    let mut out = if r.status == 204 {
+        response(StatusCode::NO_CONTENT, Bytes::new(), "application/json")
+    } else {
+        response(
+            StatusCode::from_u16(r.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            r.json.to_string(),
+            "application/json",
+        )
+    };
+    if r.status == 401 {
+        out.headers_mut()
+            .insert("www-authenticate", HeaderValue::from_static("Bearer"));
+    }
+    if let Some(seconds) = r.retry_after_s {
+        out = retry(out, seconds);
+    }
+    out
+}
+fn unauthenticated() -> Response<Body> {
+    let mut r = error(StatusCode::UNAUTHORIZED, "unauthenticated");
+    r.headers_mut()
+        .insert("www-authenticate", HeaderValue::from_static("Bearer"));
+    r
 }
 fn finish(mut response: Response<Body>, head: bool, api: bool, close: bool) -> Response<Body> {
     let headers = response.headers_mut();
@@ -87,7 +134,16 @@ pub(crate) async fn serve(
     } else {
         state.settings.get_timeout
     };
-    let result = tokio::time::timeout(timeout, handle(req, &state, peer, admission)).await;
+    use crate::auth::Clock as _;
+    let deadline_ms = crate::auth::SystemClock
+        .now_ms()
+        .saturating_add(timeout.as_millis() as i64);
+    let lifetime = CancellationToken::new();
+    let _request_guard = lifetime.clone().drop_guard();
+    let result = tokio::time::timeout(timeout, async {
+        tokio::select! {biased; _=admission.cancelled()=> (error(StatusCode::SERVICE_UNAVAILABLE,"not_serving"),true),
+            result=handle(req,&state,peer,admission.clone(),lifetime,deadline_ms)=>result}
+    }).await;
     let (response, close) =
         result.unwrap_or_else(|_| (error(StatusCode::GATEWAY_TIMEOUT, "timeout"), true));
     Ok(finish(response, head, api, close))
@@ -98,6 +154,8 @@ async fn handle(
     state: &State,
     peer: SocketAddr,
     admission: CancellationToken,
+    lifetime: CancellationToken,
+    deadline_ms: i64,
 ) -> (Response<Body>, bool) {
     let (parts, body) = req.into_parts();
     if parts.headers.contains_key("tailscale-funnel-request") {
@@ -116,7 +174,24 @@ async fn handle(
             true,
         );
     }
-    if let Err(status) = policy::check(&parts.method, &parts.headers, peer, &state.settings) {
+    // A direct loopback health probe is a local diagnostic, not a browser/API bypass.
+    // Proxy requests still require the configured Tailscale identity on every route.
+    let mut probe_settings;
+    let policy_settings = if parts.uri.path() == "/healthz"
+        && parts.method == Method::GET
+        && peer.ip().is_loopback()
+        && !parts
+            .headers
+            .keys()
+            .any(|k| k.as_str().starts_with("x-forwarded-") || k.as_str().starts_with("tailscale-"))
+    {
+        probe_settings = state.settings.clone();
+        probe_settings.tailscale_users.clear();
+        &probe_settings
+    } else {
+        &state.settings
+    };
+    if let Err(status) = policy::check(&parts.method, &parts.headers, peer, policy_settings) {
         let mut response = error(status, "request_rejected");
         if status == StatusCode::METHOD_NOT_ALLOWED {
             response
@@ -148,6 +223,62 @@ async fn handle(
     }
     if !post && (length != 0 || parts.headers.contains_key("transfer-encoding")) {
         return (error(StatusCode::BAD_REQUEST, "unexpected_body"), true);
+    }
+    let native = match normalized.path.as_str() {
+        "/api/login" | "/api/logout" | "/api/logout-all" => Some("POST"),
+        "/api/session" => Some("GET"),
+        _ => None,
+    };
+    if let Some(expected) = native
+        && parts.method.as_str() != expected
+    {
+        let mut r = error(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
+        r.headers_mut()
+            .insert("allow", HeaderValue::from_static(expected));
+        return (r, true);
+    }
+    if admission.is_cancelled() || state.backend.quiesced() {
+        return (
+            retry(error(StatusCode::SERVICE_UNAVAILABLE, "updating"), 1),
+            true,
+        );
+    }
+    let session = if normalized.path.starts_with("/api/") && normalized.path != "/api/login" {
+        let bearer = policy::single(&parts.headers, "authorization")
+            .ok()
+            .flatten()
+            .and_then(|s| s.split_once(' '))
+            .filter(|(scheme, token)| {
+                scheme.eq_ignore_ascii_case("Bearer") && crate::auth::sessions::valid_token(token)
+            })
+            .map(|(_, token)| token.to_owned());
+        let auth = state.auth.clone();
+        let result = file_work(state, move || auth.authenticate(bearer.as_deref())).await;
+        let s = match result {
+            Ok(Ok(s)) => s,
+            Ok(Err(crate::auth::AuthError::PasswordNotReady)) => {
+                return (error(StatusCode::SERVICE_UNAVAILABLE, "no_password"), true)
+            },
+            Ok(Err(crate::auth::AuthError::StoreUnavailable)) | Err(_) => {
+                return (
+                    error(StatusCode::SERVICE_UNAVAILABLE, "session_store_unavailable"),
+                    true,
+                )
+            },
+            _ => return (unauthenticated(), true),
+        };
+        if let Err(r) = state.auth.touch(&s) {
+            return (auth_response(crate::auth::AuthResponse::limited(r)), true);
+        }
+        Some(s)
+    } else {
+        None
+    };
+    if (matches!(normalized.path.as_str(), "/" | "/login")
+        || normalized.path.starts_with("/static/"))
+        && let Err(r) = state.auth.public()
+    {
+        return (auth_response(crate::auth::AuthResponse::limited(r)), true);
     }
     let bytes =
         match tokio::time::timeout(Duration::from_secs(10), Limited::new(body, limit).collect())
@@ -182,7 +313,7 @@ async fn handle(
     // The accept loop refreshes readiness off-runtime. A fresh per-request read closes
     // the keep-alive admission race without caching missing/invalid state for another second.
     let data_dir = state.settings.data_dir.clone();
-    let ready = tokio::task::spawn_blocking(move || {
+    let ready = file_work(state, move || {
         matches!(
             crate::auth::password::read_state(&data_dir),
             crate::auth::password::PasswordState::Ready(_)
@@ -196,21 +327,92 @@ async fn handle(
             true,
         );
     }
-    if normalized.path.starts_with("/api/") {
-        // No credential can authenticate until bearer sessions land. Never dispatch or
-        // perform an expensive password check from this HTTP path.
-        let mut response = error(
-            StatusCode::UNAUTHORIZED,
-            if normalized.path == "/api/login" {
-                "invalid_credentials"
-            } else {
-                "unauthenticated"
-            },
+    if normalized.path == "/api/login" {
+        let client_key = policy::client_key(&parts.headers, peer);
+        let backend = state.backend.clone();
+        let live = Arc::new(move || {
+            !lifetime.is_cancelled() && !admission.is_cancelled() && !backend.quiesced()
+        });
+        return (
+            auth_response(
+                state
+                    .auth
+                    .login_guarded(
+                        bytes,
+                        policy::single(&parts.headers, "user-agent").ok().flatten(),
+                        &client_key,
+                        live,
+                    )
+                    .await,
+            ),
+            false,
         );
-        response
-            .headers_mut()
-            .insert("www-authenticate", HeaderValue::from_static("Bearer"));
-        return (response, false);
+    }
+    if let Some(session) = session {
+        if admission.is_cancelled() || state.backend.quiesced() {
+            return (error(StatusCode::SERVICE_UNAVAILABLE, "updating"), true);
+        }
+        if matches!(
+            normalized.path.as_str(),
+            "/api/session" | "/api/logout" | "/api/logout-all"
+        ) {
+            let auth = state.auth.clone();
+            let path = normalized.path;
+            let backend = state.backend.clone();
+            let live = move || {
+                !lifetime.is_cancelled() && !admission.is_cancelled() && !backend.quiesced()
+            };
+            let answer = file_work(state, move || match path.as_str() {
+                "/api/session" => auth.session_json(&session),
+                "/api/logout" => auth.logout_if(&session, live),
+                _ => auth.logout_all_if(live),
+            })
+            .await
+            .unwrap_or_else(|_| crate::auth::AuthResponse::error(503, "session_store_unavailable"));
+            return (auth_response(answer), false);
+        }
+        let timeout = if post {
+            state.settings.post_timeout
+        } else {
+            state.settings.get_timeout
+        };
+        let headers = parts
+            .headers
+            .iter()
+            .filter(|(k, _)| {
+                matches!(
+                    k.as_str(),
+                    "accept" | "accept-language" | "content-type" | "if-none-match" | "user-agent"
+                )
+            })
+            .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_owned())))
+            .collect();
+        let request = WebRequest {
+            id: state
+                .request_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            method: if post {
+                yinz_types::web::WebMethod::Post
+            } else if parts.method == Method::HEAD {
+                yinz_types::web::WebMethod::Head
+            } else {
+                yinz_types::web::WebMethod::Get
+            },
+            path: normalized.path,
+            segments: normalized.segments,
+            query: normalized.query,
+            headers,
+            body: post.then(|| String::from_utf8_lossy(&bytes).into_owned()),
+            auth: yinz_types::web::WebAuth {
+                session: session.id,
+                label: session.label,
+            },
+            deadline_ms,
+        };
+        return (
+            dispatch(state.backend.as_ref(), request, timeout).await,
+            false,
+        );
     }
     if post {
         let mut response = error(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
@@ -292,15 +494,6 @@ async fn handle(
     (response, false)
 }
 
-// The dispatch contract is implemented without accepting synthetic credentials on HTTP.
-// It will be called only after a real Auth::authenticate success in the auth milestone.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "authenticated dispatch is deliberately unreachable until bearer sessions land"
-    )
-)]
 pub(crate) async fn dispatch(
     backend: &dyn Backend,
     request: WebRequest,
@@ -311,7 +504,7 @@ pub(crate) async fn dispatch(
         Ok(None) => retry(error(StatusCode::SERVICE_UNAVAILABLE, "unavailable"), 1),
         Ok(Some(WebReply::Unavailable { retry_after_s, .. })) => retry(
             error(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
-            retry_after_s,
+            u64::from(retry_after_s),
         ),
         Ok(Some(WebReply::Failed(_))) => error(StatusCode::BAD_GATEWAY, "plugin_failed"),
         Ok(Some(WebReply::Response(reply))) => {

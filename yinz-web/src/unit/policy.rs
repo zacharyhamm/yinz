@@ -95,3 +95,20 @@ fn identity_funnel_and_method_checks() {
         Err(StatusCode::METHOD_NOT_ALLOWED)
     );
 }
+
+#[test]
+fn limiter_identity_is_single_bounded_loopback_only_and_never_xff() {
+    let local = "127.0.0.1:1234".parse().unwrap();
+    let remote = "192.0.2.1:1234".parse().unwrap();
+    let mut h = http::HeaderMap::new();
+    h.insert("x-forwarded-for", "1.2.3.4".parse().unwrap());
+    assert_eq!(client_key(&h, local), "peer:127.0.0.1");
+    h.insert("tailscale-user-login", "alice@example.com".parse().unwrap());
+    assert_eq!(client_key(&h, local), "user:alice@example.com");
+    assert_eq!(client_key(&h, remote), "peer:192.0.2.1");
+    h.append("tailscale-user-login", "bob@example.com".parse().unwrap());
+    assert_eq!(client_key(&h, local), "peer:127.0.0.1");
+    h.remove("tailscale-user-login");
+    h.insert("tailscale-user-login", "a".repeat(257).parse().unwrap());
+    assert_eq!(client_key(&h, local), "peer:127.0.0.1");
+}

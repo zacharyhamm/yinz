@@ -55,8 +55,8 @@ Yinz works best with agents if you install the skills and hooks:
 `yinz skills install`
 
 The optional native web listener and local `yinz set-password` setup are
-documented in [WEB.md](docs/WEB.md). The mobile application and bearer login
-are still deferred.
+documented in [WEB.md](docs/WEB.md). Native bearer sessions and `yinz web status`
+are available; the mobile application and plugin bridge remain deferred.
 
 ## Install
 

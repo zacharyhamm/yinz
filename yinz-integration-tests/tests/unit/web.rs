@@ -94,6 +94,38 @@ fn get(addr: SocketAddr, path: &str) -> String {
     reply
 }
 
+fn api(addr: SocketAddr, method: &str, path: &str, token: Option<&str>, body: &str) -> String {
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let authorization = token
+        .map(|t| format!("Authorization: Bearer {t}\r\n"))
+        .unwrap_or_default();
+    write!(stream,"{method} {path} HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost\r\nContent-Type: application/json\r\n{authorization}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).unwrap();
+    reply
+}
+fn login(addr: SocketAddr) -> String {
+    let reply = api(
+        addr,
+        "POST",
+        "/api/login",
+        None,
+        r#"{"password":"integration password","label":"Phone"}"#,
+    );
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    serde_json::from_str::<serde_json::Value>(reply.split_once("\r\n\r\n").unwrap().1).unwrap()
+        ["token"]
+        .as_str()
+        .unwrap()
+        .into()
+}
+
 #[test]
 fn enabled_health_starting_rename_clear_and_terminal_usable() {
     let dir = private_data();
@@ -193,9 +225,50 @@ fn two_sessions_share_password_and_take_over_port_after_shutdown() {
         .start();
     claim_first_terminal_and_wait_for_prompt(&second);
     assert!(get(addr, "/healthz").contains(first.session_name()));
+    let survivor = login(addr);
+    let revoked = login(addr);
+    assert!(api(addr, "POST", "/api/logout", Some(&revoked), "{}").starts_with("HTTP/1.1 204"));
     first.quit();
     assert_eq!(records.serving(second.session_name()), addr);
+    assert!(api(addr, "GET", "/api/session", Some(&survivor), "").starts_with("HTTP/1.1 200"));
+    assert!(api(addr, "GET", "/api/session", Some(&revoked), "").starts_with("HTTP/1.1 401"));
     assert!(get(addr, "/healthz").contains(second.session_name()));
     second.quit();
     records.empty();
+}
+
+#[test]
+fn bearer_sessions_cross_live_servers_logout_all_password_rotation_and_clear() {
+    let dir = private_data();
+    set(dir.path());
+    let records = Records::new(dir.path().to_owned());
+    let mut first = TestRunner::new(TERMINAL_SIZE)
+        .with_data_dir(dir.path().to_owned())
+        .with_config("web { enabled true; port 0; }")
+        .start();
+    claim_first_terminal_and_wait_for_prompt(&first);
+    let a = records.serving(first.session_name());
+    let mut second = TestRunner::new(TERMINAL_SIZE)
+        .with_data_dir(dir.path().to_owned())
+        .with_config("web { enabled true; port 0; }")
+        .start();
+    claim_first_terminal_and_wait_for_prompt(&second);
+    let b = records.serving(second.session_name());
+    let token = login(a);
+    assert!(api(b, "GET", "/api/session", Some(&token), "").starts_with("HTTP/1.1 200"));
+    assert!(api(b, "POST", "/api/logout", Some(&token), "{}").starts_with("HTTP/1.1 204"));
+    assert!(api(a, "GET", "/api/session", Some(&token), "").starts_with("HTTP/1.1 401"));
+    let token = login(a);
+    let other = login(b);
+    assert!(api(a, "POST", "/api/logout-all", Some(&token), "{}").starts_with("HTTP/1.1 204"));
+    assert!(api(b, "GET", "/api/session", Some(&other), "").starts_with("HTTP/1.1 401"));
+    let token = login(a);
+    set(dir.path());
+    assert!(api(b, "GET", "/api/session", Some(&token), "").starts_with("HTTP/1.1 401"));
+    password::clear(dir.path()).unwrap();
+    records.empty();
+    assert!(TcpStream::connect(a).is_err());
+    assert!(TcpStream::connect(b).is_err());
+    first.quit();
+    second.quit();
 }

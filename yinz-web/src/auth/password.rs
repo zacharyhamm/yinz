@@ -68,7 +68,7 @@ fn validate_metadata(metadata: &std::fs::Metadata, uid: u32) -> Result<()> {
     Ok(())
 }
 
-fn lock(dir: &Path) -> Result<File> {
+pub(crate) fn lock(dir: &Path) -> Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -80,8 +80,16 @@ fn lock(dir: &Path) -> Result<File> {
         .context("open web lock")?;
     validate_private(&file)?;
     // SAFETY: file owns a valid descriptor. The persistent inode is never removed.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error()).context("lock web files");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            break;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::WouldBlock || std::time::Instant::now() >= deadline {
+            return Err(error).context("lock web files");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
     Ok(file)
 }
@@ -114,7 +122,7 @@ fn remove(dir: &Path, name: &str) -> Result<bool> {
     }
 }
 
-fn publish(dir: &Path, v: Verifier) -> Result<()> {
+pub(crate) fn publish(dir: &Path, v: Verifier) -> Result<()> {
     // Invalidate and sync BEFORE publishing a new verifier. A failed publication cannot
     // leave old bearer sessions alongside a newly published verifier, even after a crash.
     remove(dir, "sessions.json")?;

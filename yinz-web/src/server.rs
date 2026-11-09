@@ -43,6 +43,7 @@ pub trait Backend: Send + Sync + 'static {
 pub struct WebSettings {
     /// `127.0.0.1:7419` by default.
     pub bind: SocketAddr,
+    pub startup_config: Option<WebConfig>,
     /// Extra exact hosts, added to loopback and `*.ts.net`.
     pub allowed_hosts: Vec<String>,
     /// Extra exact origins, `scheme://host:port`.
@@ -71,6 +72,7 @@ impl WebSettings {
             .context("invalid web bind address")?;
         Ok(WebSettings {
             bind,
+            startup_config: Some(c.clone()),
             allowed_hosts: c.allowed_hosts.clone(),
             allowed_origins: c.allowed_origins.clone(),
             tailscale_users: c.tailscale_users.clone(),
@@ -107,9 +109,27 @@ impl WebServer {
         backend: Arc<dyn Backend>,
         rt: &tokio::runtime::Handle,
     ) -> Self {
+        let auth = Arc::new(crate::auth::Auth::new(
+            settings.data_dir.clone(),
+            crate::auth::AuthConfig {
+                session_days: settings.session_days,
+            },
+            Arc::new(crate::auth::SystemClock),
+        ));
+        Self::start_with_auth(settings, backend, rt, auth)
+    }
+    pub(crate) fn start_with_auth(
+        settings: WebSettings,
+        backend: Arc<dyn Backend>,
+        rt: &tokio::runtime::Handle,
+        auth: Arc<crate::auth::Auth>,
+    ) -> Self {
         let cancel = CancellationToken::new();
         let (status, receiver) = watch::channel(WebStatus::WaitingForPassword);
         let state = Arc::new(crate::service::State {
+            auth,
+            request_id: std::sync::atomic::AtomicU64::new(1),
+            io_work: Arc::new(tokio::sync::Semaphore::new(4)),
             settings,
             backend,
             funnel_warning: std::sync::Mutex::new(None),

@@ -561,6 +561,10 @@ pub enum Command {
     #[clap(subcommand)]
     Hooks(Hooks),
 
+    /// Inspect the local mobile web setup.
+    #[clap(subcommand)]
+    Web(Web),
+
     /// Set or clear the local web password and revoke web sessions.
     SetPassword {
         /// Read one password line from stdin (at most 1024 bytes).
@@ -579,6 +583,16 @@ pub enum Command {
     #[cfg(unix)]
     #[clap(subcommand, name = "pty-host")]
     PtyHosts(PtyHosts),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Subcommand)]
+pub enum Web {
+    /// Show configured policy, active listeners, browser sessions and Tailscale diagnostics.
+    Status {
+        /// HTTPS port for the suggested tailscale serve command (default: config hint or 7443).
+        #[clap(long, value_parser = clap::value_parser!(u16).range(1..))]
+        https_port: Option<u16>,
+    },
 }
 
 /// A terminal pane named the way `action` documents it: `terminal_7`, or `7` for short.

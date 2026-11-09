@@ -21,10 +21,12 @@ struct Fake {
     site: RwLock<Option<Arc<Site>>>,
     name: RwLock<String>,
     rename_on_activate: std::sync::Mutex<Option<String>>,
+    requests: std::sync::Mutex<Vec<WebRequest>>,
 }
 impl Backend for Fake {
-    fn dispatch(&self, _: WebRequest) -> DispatchFuture {
+    fn dispatch(&self, request: WebRequest) -> DispatchFuture {
         self.dispatches.fetch_add(1, Ordering::SeqCst);
+        self.requests.lock().unwrap().push(request);
         Box::pin(async { None })
     }
     fn site(&self) -> Option<Arc<Site>> {
@@ -236,6 +238,7 @@ fn observation_fixture() -> (tempfile::TempDir, ListenerRecord, PathBuf) {
     let directory = temp.path().join("web/listeners");
     std::fs::create_dir_all(&directory).unwrap();
     let record = ListenerRecord {
+        startup_config: None,
         version: 1,
         pid: 123,
         instance: "instance".into(),
@@ -356,13 +359,13 @@ async fn native_health_starting_security_and_no_dispatch() {
     assert!(starting.starts_with("HTTP/1.1 503"));
     assert!(starting.contains("retry-after: 1"));
     assert!(starting.contains("&lt;session &amp; &quot;name&quot;&gt;"));
-    for path in ["/api/session", "/api/agents", "/api/login"] {
+    for path in ["/api/session", "/api/agents"] {
         let reply = request(addr, &format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer forged\r\nAuthorization: Bearer another\r\nConnection: close\r\n\r\n")).await;
         assert!(reply.starts_with("HTTP/1.1 401"));
         assert!(reply.contains("www-authenticate: Bearer"));
     }
     let reply = request(addr, "POST /api/login HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await;
-    assert!(reply.starts_with("HTTP/1.1 401"));
+    assert!(reply.starts_with("HTTP/1.1 400"));
     assert_eq!(backend.dispatches.load(Ordering::SeqCst), 0);
     wait_for_record(temp.path(), addr, backend.session_name(), None).await;
     stop(&server).await;
@@ -407,7 +410,7 @@ async fn frozen_site_etags_head_and_parallel_requests() {
         ("/", 200),
         ("/healthz", 200),
         ("/missing", 404),
-        ("/api/session", 401),
+        ("/api/session", 405),
         ("/%2f", 400),
     ] {
         let reply = request(
@@ -755,4 +758,310 @@ async fn rename_during_activation_refreshes_initial_record() {
     wait_for_record(temp.path(), addr, "renamed during bind".into(), None).await;
     stop(&server).await;
     assert_no_records(temp.path());
+}
+
+async fn api(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    body: &str,
+) -> String {
+    let auth = token
+        .map(|t| format!("Authorization: Bearer {t}\r\n"))
+        .unwrap_or_default();
+    request(addr,&format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost\r\nContent-Type: application/json\r\n{auth}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len())).await
+}
+async fn login(addr: SocketAddr) -> String {
+    let reply = api(
+        addr,
+        "POST",
+        "/api/login",
+        None,
+        r#"{"password":"twelve words long","label":"Phone"}"#,
+    )
+    .await;
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    serde_json::from_str::<serde_json::Value>(reply.split_once("\r\n\r\n").unwrap().1).unwrap()
+        ["token"]
+        .as_str()
+        .unwrap()
+        .into()
+}
+#[tokio::test]
+async fn native_bearer_lifecycle_cross_server_revocation_takeover_and_dispatch_secrecy() {
+    let (temp, backend) = fixture();
+    let mut config = settings(temp.path());
+    let a = WebServer::start(
+        config.clone(),
+        backend.clone(),
+        &tokio::runtime::Handle::current(),
+    );
+    let addr = serving(&a).await;
+    let token = login(addr).await;
+    let r = api(addr, "GET", "/api/session", Some(&token), "").await;
+    assert!(r.starts_with("HTTP/1.1 200"));
+    assert!(r.contains("\"label\":\"Phone\""));
+    assert!(r.contains("idle_expires_at_ms"));
+    let r=request(addr,&format!("GET /api/agents?filter=running HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nCookie: secret-cookie\r\nTailscale-User-Login: private-login\r\nAccept: application/json\r\nConnection: close\r\n\r\n")).await;
+    assert!(r.starts_with("HTTP/1.1 503"));
+    let forwarded = backend.requests.lock().unwrap()[0].clone();
+    assert_eq!(forwarded.auth.label, "Phone");
+    assert_eq!(forwarded.query, vec![("filter".into(), "running".into())]);
+    assert_eq!(
+        forwarded.headers,
+        vec![("accept".into(), "application/json".into())]
+    );
+    assert!(forwarded.body.is_none());
+    assert!(!format!("{forwarded:?}").contains(&token));
+    let b = WebServer::start(
+        config.clone(),
+        backend.clone(),
+        &tokio::runtime::Handle::current(),
+    );
+    let other = serving(&b).await;
+    assert!(api(other, "GET", "/api/session", Some(&token), "")
+        .await
+        .starts_with("HTTP/1.1 200"));
+    assert!(api(other, "POST", "/api/logout", Some(&token), "{}")
+        .await
+        .ends_with("\r\n\r\n"));
+    assert!(api(addr, "GET", "/api/session", Some(&token), "")
+        .await
+        .starts_with("HTTP/1.1 401"));
+    let revoked = login(addr).await;
+    let other_token = login(other).await;
+    let r = api(addr, "POST", "/api/logout-all", Some(&revoked), "{}").await;
+    assert!(r.starts_with("HTTP/1.1 204"));
+    assert!(r.ends_with("\r\n\r\n"));
+    assert!(api(other, "GET", "/api/session", Some(&other_token), "")
+        .await
+        .starts_with("HTTP/1.1 401"));
+    let rotated = login(addr).await;
+    crate::auth::password::revoke_sessions(temp.path()).unwrap();
+    assert!(api(other, "GET", "/api/session", Some(&rotated), "")
+        .await
+        .starts_with("HTTP/1.1 401"));
+    let survivor = login(addr).await;
+    stop(&a).await;
+    config.bind = addr;
+    let replacement = WebServer::start(config, backend.clone(), &tokio::runtime::Handle::current());
+    assert_eq!(serving(&replacement).await, addr);
+    assert!(api(addr, "GET", "/api/session", Some(&survivor), "")
+        .await
+        .starts_with("HTTP/1.1 200"));
+    assert!(api(addr, "GET", "/api/session", Some(&revoked), "")
+        .await
+        .starts_with("HTTP/1.1 401"));
+    assert_eq!(backend.dispatches.load(Ordering::SeqCst), 1);
+    stop(&b).await;
+    stop(&replacement).await;
+}
+#[tokio::test]
+async fn actual_status_probe_identifies_listener_with_startup_allowlist_and_rename() {
+    let (temp, backend) = fixture();
+    let mut config = settings(temp.path());
+    config.tailscale_users = vec!["allowed@example.com".into()];
+    config.startup_config.as_mut().unwrap().tailscale_users = config.tailscale_users.clone();
+    let a = WebServer::start(config, backend.clone(), &tokio::runtime::Handle::current());
+    let addr = serving(&a).await;
+    assert!(get(addr, "/").await.starts_with("HTTP/1.1 403"));
+    assert!(get(addr, "/api/session").await.starts_with("HTTP/1.1 403"));
+    let dir = temp.path().to_owned();
+    let rows = tokio::task::spawn_blocking(move || crate::listener_file::inspect(&dir).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].responding_session, Some(backend.session_name()));
+    assert_eq!(
+        rows[0]
+            .record
+            .startup_config
+            .as_ref()
+            .unwrap()
+            .tailscale_users,
+        vec!["allowed@example.com"]
+    );
+    assert_eq!(
+        rows[0].record.startup_config.as_ref().unwrap().port,
+        Some(0)
+    );
+    assert_eq!(rows[0].record.address, addr);
+    *backend.name.write().unwrap() = "renamed".into();
+    wait_for_record(temp.path(), addr, "renamed".into(), None).await;
+    let proxied=request(addr,"GET /healthz HTTP/1.1\r\nHost: localhost\r\nX-Forwarded-For: 100.64.0.1\r\nConnection: close\r\n\r\n").await;
+    assert!(proxied.starts_with("HTTP/1.1 403"));
+    stop(&a).await;
+}
+#[tokio::test]
+async fn rate_limits_native_errors_and_rejected_requests_never_dispatch() {
+    struct Frozen;
+    impl crate::auth::Clock for Frozen {
+        fn now_ms(&self) -> i64 {
+            1000000
+        }
+    }
+    let (temp, backend) = fixture();
+    let config = settings(temp.path());
+    let auth = Arc::new(crate::auth::Auth::new(
+        temp.path().into(),
+        crate::auth::AuthConfig::default(),
+        Arc::new(Frozen),
+    ));
+    let server = WebServer::start_with_auth(
+        config,
+        backend.clone(),
+        &tokio::runtime::Handle::current(),
+        auth,
+    );
+    let addr = serving(&server).await;
+    let token = login(addr).await;
+    for _ in 0..5 {
+        assert!(
+            api(addr, "POST", "/api/login", None, r#"{"password":"wrong"}"#)
+                .await
+                .starts_with("HTTP/1.1 401")
+        );
+    }
+    let r = api(addr, "POST", "/api/login", None, r#"{"password":"wrong"}"#).await;
+    assert!(r.starts_with("HTTP/1.1 429"));
+    assert!(r.contains("retry-after: 60"));
+    for i in 0..25 {
+        let body = r#"{"password":"wrong"}"#;
+        let r=request(addr,&format!("POST /api/login HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost\r\nContent-Type: application/json\r\nTailscale-User-Login: client{i}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len())).await;
+        assert!(r.starts_with("HTTP/1.1 401"), "{r}");
+    }
+    let r=request(addr,"POST /api/login HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost\r\nContent-Type: application/json\r\nTailscale-User-Login: new-client\r\nContent-Length: 20\r\nConnection: close\r\n\r\n{\"password\":\"wrong\"}").await;
+    assert!(r.starts_with("HTTP/1.1 429"), "{r}");
+    assert!(r.contains("retry-after: 900"));
+    for _ in 0..40 {
+        assert!(api(addr, "GET", "/api/session", Some(&token), "")
+            .await
+            .starts_with("HTTP/1.1 200"));
+    }
+    let r = api(addr, "GET", "/api/session", Some(&token), "").await;
+    assert!(r.starts_with("HTTP/1.1 429"));
+    assert!(r.contains("retry-after: 1"));
+    for _ in 0..100 {
+        assert!(get(addr, "/").await.starts_with("HTTP/1.1 503"));
+    }
+    let r = get(addr, "/").await;
+    assert!(r.starts_with("HTTP/1.1 429"));
+    assert!(r.contains("retry-after: 1"));
+    assert!(get(addr, "/healthz").await.starts_with("HTTP/1.1 200"));
+    for (method, path, body, status) in [
+        ("GET", "/api/login", "", 405),
+        ("HEAD", "/api/session", "", 405),
+        ("POST", "/api/login", "{}", 400),
+        ("GET", "/api/agents", "", 401),
+    ] {
+        let r = api(addr, method, path, None, body).await;
+        assert!(r.starts_with(&format!("HTTP/1.1 {status}")), "{r}");
+    }
+    for value in [
+        format!("Bearer {token}, Bearer {token}"),
+        format!("Bearer  {token}"),
+        "Basic forged".into(),
+        "Bearer forged".into(),
+    ] {
+        let r=request(addr,&format!("GET /api/agents HTTP/1.1\r\nHost: localhost\r\nAuthorization: {value}\r\nConnection: close\r\n\r\n")).await;
+        assert!(r.starts_with("HTTP/1.1 401"));
+        assert!(r.contains("www-authenticate: Bearer"));
+    }
+    assert_eq!(backend.dispatches.load(Ordering::SeqCst), 0);
+    stop(&server).await;
+}
+
+#[tokio::test]
+async fn status_probes_ipv4_ipv6_wildcard_binds_using_local_family() {
+    for address in ["0.0.0.0", "::"] {
+        let (temp, backend) = fixture();
+        let c = yinz_types::input::web::WebConfig {
+            enabled: Some(true),
+            address: Some(address.into()),
+            allow_non_loopback: Some(true),
+            port: Some(0),
+            ..Default::default()
+        };
+        let mut config = WebSettings::from_config(&c, temp.path()).unwrap();
+        config.retry_interval = Duration::from_millis(50);
+        let server = WebServer::start(config, backend.clone(), &tokio::runtime::Handle::current());
+        serving(&server).await;
+        let data = temp.path().to_owned();
+        let rows =
+            tokio::task::spawn_blocking(move || crate::listener_file::inspect(&data).unwrap())
+                .await
+                .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].responding_session, Some(backend.session_name()));
+        stop(&server).await;
+    }
+}
+
+#[tokio::test]
+async fn native_login_queue_overflow_returns_retry_and_does_not_block_health() {
+    let (temp, backend) = fixture();
+    let auth = Arc::new(crate::auth::Auth::new(
+        temp.path().into(),
+        crate::auth::AuthConfig::default(),
+        Arc::new(crate::auth::SystemClock),
+    ));
+    let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let work_gate = gate.clone();
+    let (entered, rx) = std::sync::mpsc::channel();
+    *auth.verify_hook.lock().unwrap() = Some(Arc::new(move || {
+        let _ = entered.send(());
+        let mut open = work_gate.0.lock().unwrap();
+        while !*open {
+            open = work_gate.1.wait(open).unwrap();
+        }
+    }));
+    let server = WebServer::start_with_auth(
+        settings(temp.path()),
+        backend.clone(),
+        &tokio::runtime::Handle::current(),
+        auth.clone(),
+    );
+    let addr = serving(&server).await;
+    let mut clients = JoinSet::new();
+    for _ in 0..3 {
+        clients.spawn(async move {
+            api(
+                addr,
+                "POST",
+                "/api/login",
+                None,
+                r#"{"password":"twelve words long"}"#,
+            )
+            .await
+        });
+    }
+    tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(10)).unwrap())
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while auth.login_slots() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let overflow = api(
+        addr,
+        "POST",
+        "/api/login",
+        None,
+        r#"{"password":"twelve words long"}"#,
+    )
+    .await;
+    assert!(overflow.starts_with("HTTP/1.1 429"), "{overflow}");
+    assert!(overflow.contains("retry-after: 1"));
+    assert!(get(addr, "/healthz").await.starts_with("HTTP/1.1 200"));
+    assert_eq!(backend.dispatches.load(Ordering::SeqCst), 0);
+    *gate.0.lock().unwrap() = true;
+    gate.1.notify_all();
+    while let Some(reply) = clients.join_next().await {
+        assert!(reply.unwrap().starts_with("HTTP/1.1 200"));
+    }
+    stop(&server).await;
 }

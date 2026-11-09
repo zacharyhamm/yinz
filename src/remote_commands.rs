@@ -115,7 +115,8 @@ fn route(command: Option<&Command>) -> Route {
             | Command::Options(_)
             | Command::Setup(_)
             | Command::Hooks(_)
-            | Command::SetPassword { .. },
+            | Command::SetPassword { .. }
+            | Command::Web(_),
         ) => Route::Local,
     }
 }
@@ -424,7 +425,10 @@ fn select_name(explicit: Option<&str>, names: Vec<SessionName>, host: &str) -> R
 pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
     // Password provisioning always targets this machine, including when a global
     // --remote option was inherited from a wrapper or shell function.
-    if matches!(opts.command, Some(Command::SetPassword { .. })) {
+    if matches!(
+        opts.command,
+        Some(Command::SetPassword { .. } | Command::Web(_))
+    ) {
         opts.remote = None;
         return Ok(());
     }

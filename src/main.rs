@@ -14,6 +14,7 @@ mod set_password;
 #[cfg(test)]
 mod tests;
 mod update;
+mod web_cli;
 
 #[cfg(target_os = "windows")]
 compile_error!("Yinz does not support Windows");
@@ -378,6 +379,16 @@ fn main() {
             remote_commands::exit(1);
         }
         remote_commands::exit(0);
+    }
+
+    if let Some(Command::Web(yinz_cli::args::Web::Status { https_port })) = &opts.command {
+        match web_cli::run(&opts, *https_port) {
+            Ok(code) => remote_commands::exit(code),
+            Err(error) => {
+                eprintln!("Error: {error:#}");
+                remote_commands::exit(1);
+            },
+        }
     }
 
     // Local provisioning branches before attachment; no session or remote host is needed.
