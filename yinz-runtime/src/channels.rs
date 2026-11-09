@@ -46,12 +46,19 @@ impl<T: Clone> SenderWithContext<T> {
         Shutdown::default().sender(sender)
     }
 
+    /// Whether this sender's session has begun teardown. After a required send fails,
+    /// resource owners can use this to distinguish shutdown cancellation from a worker failure.
+    /// This does not indicate whether a message was delivered.
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutdown.0.load(Ordering::Relaxed)
+    }
+
     /// Sends an event, along with the current [`ErrorContext`], on this
     /// [`SenderWithContext`]'s channel, tolerating disconnects during shutdown.
     pub fn send(&self, event: T) -> Result<(), SendError<(T, ErrorContext)>> {
         match self.send_required(event) {
             // Check after sending: a bounded send may have been waiting when teardown began.
-            Err(_) if self.shutdown.0.load(Ordering::Relaxed) => Ok(()),
+            Err(_) if self.is_shutting_down() => Ok(()),
             result => result,
         }
     }

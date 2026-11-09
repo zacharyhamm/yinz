@@ -854,6 +854,20 @@ impl Pty {
         {
             self.close_pane(PaneId::Terminal(terminal_id))
                 .context("release unplaced terminal")?;
+            // Shutdown joins Screen before stopping PTY. A queued start may reach us
+            // after Screen has exited, including while this bounded send was waiting.
+            // Keep the required send and release its resources before cancelling; an
+            // unexpected screen disconnect outside shutdown still ends the session.
+            if self
+                .bus
+                .senders
+                .to_screen
+                .as_ref()
+                .is_some_and(|sender| sender.is_shutting_down())
+            {
+                log::debug!("cancelled terminal {terminal_id} placement during session shutdown");
+                return Ok(());
+            }
             return Err(error).context("request terminal placement dimensions");
         }
         match &job {

@@ -5816,6 +5816,85 @@ fn a_held_scrollback_editor_given_back_keeps_its_dump() {
 }
 
 #[test]
+fn agent_reservation_placement_disconnect_cancels_only_during_shutdown() {
+    use yinz_bus::agent_launch::LaunchGate;
+    use yinz_types::agent::launch::LaunchReason;
+
+    for (shutdown_before_send, shutdown_during_send) in
+        [(false, false), (true, false), (false, true)]
+    {
+        let os = MockOsApi::new();
+        let (mut pty, _plugins, _) = make_pty_with_screen_receiver(os.clone());
+        let shutdown = Shutdown::default();
+        let (screen_tx, screen_rx) = channels::bounded(0);
+        pty.bus.senders.to_screen = Some(shutdown.sender(screen_tx));
+        pty.bus.senders.should_silently_fail = false;
+        let gate = Arc::new(LaunchGate::new("shutdown-reservation".into(), false));
+        gate.allocated(TERMINAL_41);
+        pty.bus
+            .senders
+            .launches
+            .gates
+            .lock()
+            .unwrap()
+            .insert(TERMINAL_41, gate.clone());
+        let (reply, mut received) = tokio::sync::oneshot::channel();
+        if shutdown_before_send {
+            shutdown.begin();
+        }
+        let worker = std::thread::spawn(move || {
+            let result = pty.start_agent_reservation(
+                TERMINAL_41,
+                RunCommand {
+                    command: "sh".into(),
+                    ..Default::default()
+                },
+                NotificationEnd::new(reply),
+            );
+            (pty, result)
+        });
+        // The rendezvous becomes readable only once PTY is requesting placement.
+        // Drop the receiver without accepting it, just as an exiting screen does.
+        let mut selector = channels::Select::new();
+        selector.recv(&screen_rx);
+        selector
+            .ready_timeout(yinz_test_support::default_timeout())
+            .unwrap();
+        drop(selector);
+        if shutdown_during_send {
+            shutdown.begin();
+        }
+        drop(screen_rx);
+        let (pty, result) = worker.join().unwrap();
+
+        let state = gate.snapshot();
+        assert!(state.start_requested);
+        assert_eq!(state.revoked, Some(LaunchReason::PlacementRevoked));
+        assert!(state.cleanup_confirmed);
+        assert!(!state.claimed && !state.worker_pending && !state.running);
+        assert_eq!(*os.cleared_terminal_ids.lock().unwrap(), [TERMINAL_41]);
+        assert!(os.resolved_spawns.lock().unwrap().is_empty());
+        assert!(pty.awaiting_placement.is_empty());
+        assert!(pty.pending_start_completions.is_empty());
+        assert!(pty.pending_terminal_spawns.is_empty());
+        assert!(pty.reruns.is_empty());
+        assert!(pty.spawn_workers.is_empty());
+        assert!(received
+            .try_recv()
+            .unwrap()
+            .error_message
+            .unwrap()
+            .contains("pane closed during command startup"));
+        if shutdown_before_send || shutdown_during_send {
+            result.expect("cancel startup and let the PTY thread finish queued shutdown work");
+        } else {
+            let error = result.expect_err("an unexpected screen disconnect must remain fatal");
+            assert!(format!("{error:#}").contains("request terminal placement dimensions"));
+        }
+    }
+}
+
+#[test]
 fn launch_transaction_ordinary_rerun_cannot_start_a_held_reservation() {
     use yinz_bus::agent_launch::LaunchGate;
     use yinz_types::agent::launch::LaunchSlot;

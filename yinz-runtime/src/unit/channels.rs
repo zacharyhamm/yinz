@@ -52,8 +52,12 @@ fn required_sends_preserve_delivery_errors_after_shutdown() {
         let shutdown = Shutdown::default();
         let sender = shutdown.sender(sender);
         let cloned_sender = sender.clone();
+        assert!(!sender.is_shutting_down());
+        assert!(!cloned_sender.is_shutting_down());
         sender.send_required("before shutdown").unwrap();
         shutdown.begin();
+        assert!(sender.is_shutting_down());
+        assert!(cloned_sender.is_shutting_down());
         cloned_sender.send_required("after shutdown").unwrap();
         assert_eq!(receiver.try_recv().unwrap().0, "before shutdown");
         assert_eq!(receiver.try_recv().unwrap().0, "after shutdown");
@@ -80,6 +84,8 @@ fn independent_sessions_keep_their_send_errors() {
     drop(other_receiver);
 
     shutdown.begin();
+    assert!(sender.is_shutting_down());
+    assert!(!other_sender.is_shutting_down());
     sender.send("shutting down").unwrap();
     assert!(other_sender.send("still running").is_err());
 }
