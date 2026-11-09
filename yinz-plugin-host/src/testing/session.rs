@@ -808,9 +808,12 @@ impl Controller {
                 }
                 let request: AgentRequest =
                     serde_json::from_value(arg).context("test agent request")?;
-                if let AgentRequest::Spawn { remote_host, .. } = &request
-                    && remote_host.is_some()
-                {
+                let remote_host = match &request {
+                    AgentRequest::Spawn { remote_host, .. } => remote_host,
+                    AgentRequest::Launch { request, .. } => &request.remote_host,
+                    _ => &None,
+                };
+                if remote_host.is_some() {
                     bail!("test agent spawning is limited to the owned local session");
                 }
                 let timeout = match &request {

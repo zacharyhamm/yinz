@@ -2,14 +2,13 @@ use super::super::agent_launch::{
     agent_folder_tracked, apply_project_worktree_dir, prepare_git_checkout_in_tracked,
     WorktreeGuard,
 };
+use super::super::launch_transaction::tests::Host;
 use super::*;
 use std::thread;
 use std::time::Duration;
-use yinz_bus::pty::ClientTabIndexOrPaneId;
 use yinz_types::agent::control::AgentStatus;
 use yinz_types::command::GitCheckout;
 use yinz_types::command::PaneTarget;
-use yinz_types::input::command::TerminalAction;
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TerminalId;
 use yinz_types::plugin_data::Mutation;
@@ -1547,42 +1546,15 @@ fn new_project_spawn_creates_unborn_main_remembers_root_and_launches_there() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap().join("new-app");
     let data = new_project_data(temp.path());
-    let (to_pty, pty_rx) = yinz_runtime::channels::unbounded();
-    let (to_screen, screen_rx) = yinz_runtime::channels::unbounded();
     let (to_plugin, plugin_rx) = yinz_runtime::channels::unbounded();
-    let senders = ThreadSenders {
-        to_pty: Some(yinz_runtime::channels::SenderWithContext::new(to_pty)),
-        to_screen: Some(yinz_runtime::channels::SenderWithContext::new(to_screen)),
-        to_plugin: Some(yinz_runtime::channels::SenderWithContext::new(to_plugin)),
-        ..Default::default()
-    };
-    let expected_root = root.clone();
-    let worker = thread::spawn(move || {
-        let (instruction, _) = pty_rx.recv_timeout(Duration::from_secs(30)).unwrap();
-        let PtyInstruction::SpawnTerminal(
-            Some(TerminalAction::RunCommand(command)),
-            _,
-            _,
-            _,
-            target,
-            Some(mut completion),
-            _,
-        ) = instruction
-        else {
-            panic!("expected agent launch");
-        };
-        assert_eq!(command.cwd, Some(expected_root));
-        assert!(matches!(target, ClientTabIndexOrPaneId::ClientIdNoFocus(_)));
-        completion.set_affected_tab_id(TabId::new(0));
-        completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(17)));
-    });
+    let mut host = Host::new(false, true, false);
+    host.senders.to_plugin = Some(yinz_runtime::channels::SenderWithContext::new(to_plugin));
     let response = control_agent(
         new_project_request(root.clone()),
         crate::ClientId::new(1),
-        &senders,
+        &host.senders,
         &data,
     );
-    worker.join().unwrap();
     assert_eq!(response.outcome, AgentOutcome::Ok, "{response:?}");
     assert_eq!(response.spawned.unwrap().cwd, Some(root.clone()));
     let (notification, _) = plugin_rx.recv_timeout(Duration::from_secs(30)).unwrap();
@@ -1590,10 +1562,13 @@ fn new_project_spawn_creates_unborn_main_remembers_root_and_launches_there() {
         matches!(notification, PluginInstruction::RefreshDataWatches { namespace, entities }
         if namespace == project_data::store::SHARED && entities.contains("project"))
     );
-    assert!(matches!(
-        screen_rx.recv_timeout(Duration::from_secs(30)).unwrap().0,
-        ScreenInstruction::AgentSpawned(_)
-    ));
+    let commands = host.commands.lock();
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].cwd, Some(root.clone()));
+    assert!(!commands[0].hold_on_start);
+    let gate = host.senders.launches.gate(TerminalId::new(0)).unwrap();
+    let state = gate.snapshot();
+    assert!(state.registered && state.running && state.finished);
     let projects = project_data::projects::from_rows(&projects(&data).unwrap());
     assert_eq!(projects["new-app"].root, root.to_str().unwrap());
     assert_eq!(
@@ -1733,17 +1708,33 @@ fn new_project_spawn_validates_before_creation_and_retains_failed_launches() {
         );
     }
     assert!(!root.exists());
+    // Admission failure must not materialize or register a project.
+    let rejected = Host::new(true, true, false);
     let response = control_agent(
         new_project_request(root.clone()),
         crate::ClientId::new(1),
-        &ThreadSenders::default(),
+        &rejected.senders,
+        &data,
+    );
+    assert_eq!(response.outcome, AgentOutcome::Rejected, "{response:?}");
+    assert!(!root.exists());
+    assert!(projects(&data).unwrap().rows.is_empty());
+    assert!(rejected.commands.lock().is_empty());
+
+    // Once admitted, a failed registration retains the prepared project.
+    let host = Host::new(false, false, false);
+    let response = control_agent(
+        new_project_request(root.clone()),
+        crate::ClientId::new(1),
+        &host.senders,
         &data,
     );
     assert_eq!(response.outcome, AgentOutcome::Failed, "{response:?}");
-    let message = response.message.unwrap();
-    assert!(message.contains(root.to_str().unwrap()), "{message}");
-    assert!(message.contains("registration succeeded"), "{message}");
-    assert!(message.contains("--allow-outside-worktree"), "{message}");
+    assert_eq!(
+        response.launch.as_ref().unwrap().reason,
+        Some(yinz_types::agent::launch::LaunchReason::RegistrationFailed)
+    );
+    assert_eq!(host.commands.lock().len(), 1);
     assert_eq!(response.launch_resources.unwrap().cwd, Some(root.clone()));
     assert!(root.join(".git").is_dir());
     assert!(project_data::projects::from_rows(&projects(&data).unwrap()).contains_key("new-app"));
@@ -1765,10 +1756,11 @@ fn new_project_spawn_git_failure_retains_directory_without_registration() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap().join("new-app");
     let data = new_project_data(temp.path());
+    let host = Host::new(false, true, false);
     let response = control_agent(
         new_project_request(root.clone()),
         crate::ClientId::new(1),
-        &ThreadSenders::default(),
+        &host.senders,
         &data,
     );
     assert_eq!(response.outcome, AgentOutcome::Failed, "{response:?}");
@@ -1777,10 +1769,14 @@ fn new_project_spawn_git_failure_retains_directory_without_registration() {
         message.contains("initialize project repository"),
         "{message}"
     );
-    assert!(
-        message.contains("registration did not succeed"),
-        "{message}"
+    let receipt = response.launch.unwrap();
+    assert_eq!(
+        receipt.process,
+        yinz_types::agent::launch::ProcessState::NotStarted
     );
+    assert_eq!(receipt.resources.checkout.unwrap().cwd, Some(root.clone()));
+    assert_eq!(receipt.resources.git[0].path, root);
+    assert!(host.commands.lock().is_empty());
     assert!(root.is_dir());
     assert!(projects(&data).unwrap().rows.is_empty());
     let retained = root.with_file_name("create-only");
@@ -1837,7 +1833,10 @@ fn new_project_spawn_never_overwrites_a_concurrent_name_or_root_registration() {
         fn fetch(&self, namespace: &str, request: &FetchRequest) -> Result<DataRows, DataError> {
             let rows = self.inner.fetch(namespace, request)?;
             // Another writer commits after our snapshot, before creation's guarded batch.
-            if !self.injected.swap(true, Ordering::SeqCst) {
+            if namespace == project_data::store::SHARED
+                && request.entity == "project"
+                && !self.injected.swap(true, Ordering::SeqCst)
+            {
                 self.inner.apply(
                     namespace,
                     &[project_data::projects::to_mutation(&self.project)],
@@ -1874,6 +1873,7 @@ fn new_project_spawn_never_overwrites_a_concurrent_name_or_root_registration() {
                 .define_entity(project_data::store::SHARED, "test", &def, false)
                 .unwrap();
         }
+        let host = Host::new(false, true, false);
         let response = control_agent(
             if create_only {
                 AgentRequest::CreateProject {
@@ -1884,7 +1884,7 @@ fn new_project_spawn_never_overwrites_a_concurrent_name_or_root_registration() {
                 new_project_request(root.clone())
             },
             crate::ClientId::new(1),
-            &ThreadSenders::default(),
+            &host.senders,
             &data,
         );
         assert_eq!(
@@ -1896,10 +1896,15 @@ fn new_project_spawn_never_overwrites_a_concurrent_name_or_root_registration() {
             },
             "{response:?}"
         );
-        assert!(response
-            .message
-            .unwrap()
-            .contains("retained project directory"));
+        if create_only {
+            assert!(response
+                .message
+                .unwrap()
+                .contains("retained project directory"));
+        } else {
+            assert_eq!(response.launch_resources.unwrap().cwd, Some(root.clone()));
+            assert!(host.commands.lock().is_empty());
+        }
         assert!(root.join(".git").is_dir());
         let registry = project_data::projects::from_rows(&projects(&data).unwrap());
         assert_eq!(registry.len(), 1);

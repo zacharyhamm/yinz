@@ -307,6 +307,79 @@ fn disposable_sessions_do_not_schedule_durable_metadata_checkpoints() {
 }
 
 #[test]
+fn test_agent_requests_reject_remote_spawn_and_launch_before_forwarding() {
+    use yinz_types::agent::{control::AgentRequest, launch::LaunchRequest};
+    let mut session = OwnedSession::new(crate::testing::fixture_data().path()).unwrap();
+    let entry = session.root().join("case.test.scm");
+    fs::write(&entry, "").unwrap();
+    let loader = super::super::steel::Sources {
+        entry,
+        root: session.root().canonicalize().unwrap(),
+    };
+    let mut controller =
+        Controller::new(session.root().to_owned(), vec![PermissionType::RunCommands]);
+    controller.call("start", json!({}), &loader).unwrap();
+    let support = controller
+        .call("agent", json!(AgentRequest::LaunchSupport), &loader)
+        .unwrap();
+    let response = controller
+        .agent_requests
+        .remove(&support.as_u64().unwrap())
+        .unwrap()
+        .recv_timeout(Duration::from_secs(30))
+        .unwrap()
+        .unwrap();
+    let server = response["server_instance"].as_str().unwrap();
+    let request = LaunchRequest {
+        placement: Default::default(),
+        spec: Default::default(),
+        cwd: None,
+        project: None,
+        remote_host: Some("outside-owned-session".into()),
+        new_project: None,
+    };
+    for remote in [
+        AgentRequest::Spawn {
+            placement: request.placement.clone(),
+            spec: request.spec.clone(),
+            cwd: None,
+            project: None,
+            remote_host: request.remote_host.clone(),
+        },
+        AgentRequest::Launch {
+            launch_id: format!("{server}.remote"),
+            request: request.clone(),
+        },
+    ] {
+        let error = controller
+            .call("agent", json!(remote), &loader)
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("test agent spawning is limited to the owned local session"));
+        assert!(controller.agent_requests.is_empty());
+    }
+    let local = AgentRequest::Launch {
+        launch_id: format!("{server}.local"),
+        request: LaunchRequest {
+            remote_host: None,
+            ..request
+        },
+    };
+    let id = controller.call("agent", json!(local), &loader).unwrap();
+    // An invalid provider spec is rejected by the server, proving the local request was forwarded.
+    let response = controller
+        .agent_requests
+        .remove(&id.as_u64().unwrap())
+        .unwrap()
+        .recv_timeout(Duration::from_secs(30))
+        .unwrap()
+        .unwrap();
+    assert_eq!(response["launch"]["outcome"], "rejected");
+    session.shutdown().unwrap();
+}
+
+#[test]
 fn connected_repl_cli_evaluates_with_session_host_access() {
     let mut session = OwnedSession::new(crate::testing::fixture_data().path()).unwrap();
     let entry = session.root().join("case.test.scm");

@@ -13965,6 +13965,63 @@ fn launch_transaction_dissolved_group_cannot_revive_completed_region_ownership()
 }
 
 #[test]
+fn launch_transaction_only_confirmed_warp_departure_retires_worker_ownership() {
+    for whole_tab in [false, true] {
+        let (mut screen, _, _) = setup("bash");
+        let terminal = TerminalId::new(88);
+        let pane = PaneId::Terminal(terminal);
+        let (gate, result) = launch_transaction_worker(&mut screen, terminal.get());
+        assert!(result.error_message.is_none());
+        assert!(gate.claim());
+        gate.running();
+        gate.registered();
+        assert!(gate.handoff());
+        let released = |id| {
+            Ok(released_for_warp(ReleasedPane::Local(ReleasedPtyHost {
+                host_id: yinz_types::internal_ids::SupervisorId::new(format!("worker-{id}")),
+                host_pid: ProcessId::new(1),
+                control_socket: Some(PathBuf::from(format!("/tmp/worker-{id}.sock"))),
+            })))
+        };
+        if whole_tab {
+            let (tab, _, prepared) = screen
+                .check_tab_can_be_warped(Some(TabId::new(0)), CLIENT)
+                .unwrap();
+            assert!(screen
+                .take_released_tab_for_warp(
+                    tab,
+                    vec![(terminal, Err("release failed".into()))],
+                    prepared
+                )
+                .is_err());
+        } else {
+            assert!(screen
+                .take_released_pane_for_warp(terminal, Err("release failed".into()))
+                .is_err());
+        }
+        assert!(!gate.snapshot().departed);
+        assert!(screen.get_pane_info(pane).is_some());
+        if whole_tab {
+            let (tab, terminals, prepared) = screen
+                .check_tab_can_be_warped(Some(TabId::new(0)), CLIENT)
+                .unwrap();
+            let addresses = terminals.into_iter().map(|id| (id, released(id))).collect();
+            screen
+                .take_released_tab_for_warp(tab, addresses, prepared)
+                .unwrap();
+        } else {
+            screen
+                .take_released_pane_for_warp(terminal, released(terminal))
+                .unwrap();
+        }
+        assert!(screen.get_pane_info(pane).is_none());
+        let state = gate.snapshot();
+        assert!(state.departed);
+        assert!(!state.exited && !state.cleanup_started && !state.cleanup_confirmed);
+    }
+}
+
+#[test]
 fn launch_transaction_controller_close_revokes_pending_but_preserves_committed_workers() {
     for committed in [false, true] {
         let (mut screen, _, _) = setup("bash");

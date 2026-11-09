@@ -1321,6 +1321,10 @@ impl TerminalProcesses for ServerOsInputOutput {
         terminal_id: TerminalId,
         child: Option<ProcessId>,
     ) -> Result<bool> {
+        self.detected_themes
+            .lock()
+            .to_anyhow()?
+            .remove(&terminal_id);
         self.pty_backend
             .clear_terminal_id_confirmed(terminal_id, child)
     }

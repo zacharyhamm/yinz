@@ -2408,7 +2408,7 @@ fn detected_agent_theme_observes_an_agent_started_inside_a_shell() {
 
 #[test]
 fn launch_transaction_cleanup_confirms_real_process_exit_after_termination() {
-    use yinz_bus::os_input_output::TerminalProcesses;
+    use yinz_bus::os_input_output::{ServerEnvironment, TerminalProcesses};
     let server = make_server();
     let (terminal, reader, child) = server
         .spawn_terminal(
@@ -2420,7 +2420,18 @@ fn launch_transaction_cleanup_confirms_real_process_exit_after_termination() {
             None,
         )
         .unwrap();
+    server.detected_agent_theme(terminal, child.unwrap());
+    assert!(server
+        .detected_themes
+        .lock()
+        .unwrap()
+        .contains_key(&terminal));
     drop(reader);
     assert!(server.clear_terminal_id_confirmed(terminal, child).unwrap());
+    assert!(!server
+        .detected_themes
+        .lock()
+        .unwrap()
+        .contains_key(&terminal));
     assert!(yinz_process::liveness::has_exited(child.unwrap().get()).unwrap());
 }

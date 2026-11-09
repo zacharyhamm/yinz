@@ -41,6 +41,7 @@ pub struct GateState {
     pub registered: bool,
     pub finished: bool,
     pub superseded: bool,
+    pub departed: bool,
     pub layout_released: bool,
     pub cleanup_confirmed: bool,
 }
@@ -178,6 +179,13 @@ impl LaunchGate {
         }
         state.finished = true;
         true
+    }
+    /// The process continues in another session; this session no longer owns it.
+    pub fn departed(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .departed = true;
     }
     #[cfg(test)]
     pub fn finish(&self) {

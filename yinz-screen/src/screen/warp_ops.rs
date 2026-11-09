@@ -574,6 +574,11 @@ impl Screen {
     }
 
     fn notify_warp_departure(&mut self, pane_id: PaneId) {
+        if let PaneId::Terminal(terminal) = pane_id
+            && let Some(gate) = self.bus.senders.launches.gate(terminal)
+        {
+            gate.departed();
+        }
         self.invalidate_agent_lifecycle(pane_id, "warped");
         self.agent_launches.remove(&pane_id);
         self.bus

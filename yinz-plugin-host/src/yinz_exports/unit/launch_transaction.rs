@@ -78,9 +78,9 @@ fn launch_transaction_restart_and_conflict_never_replay_preparation() {
 
 /// Host coordinator fixture: Screen and PTY decisions are explicit, independently acknowledged
 /// messages. Process non-execution itself is covered by the real-binary marker tests.
-struct Host {
-    senders: ThreadSenders,
-    commands: yinz_test_support::Watched<Vec<yinz_types::input::command::RunCommand>>,
+pub(crate) struct Host {
+    pub(crate) senders: ThreadSenders,
+    pub(crate) commands: yinz_test_support::Watched<Vec<yinz_types::input::command::RunCommand>>,
     resolutions: yinz_test_support::Watched<
         Vec<(
             yinz_types::agent::control::AgentPlacement,
@@ -98,7 +98,7 @@ enum LostLaunchReply {
     Cleanup,
 }
 impl Host {
-    fn new(reject: bool, register: bool, cancel: bool) -> Self {
+    pub(crate) fn new(reject: bool, register: bool, cancel: bool) -> Self {
         Self::with_lost_reply(reject, register, cancel, LostLaunchReply::None)
     }
     fn with_lost_reply(reject: bool, register: bool, cancel: bool, lost: LostLaunchReply) -> Self {
@@ -188,7 +188,17 @@ impl Host {
                 let (instruction, _) = pty.recv().unwrap();
                 match instruction {
                     PtyInstruction::Exit => break,
-                    PtyInstruction::SpawnTerminal(_, _, _, _, _, Some(mut completion), _) => {
+                    PtyInstruction::SpawnTerminal(
+                        Some(yinz_types::input::command::TerminalAction::RunCommand(command)),
+                        _,
+                        _,
+                        _,
+                        _,
+                        Some(mut completion),
+                        _,
+                    ) => {
+                        assert!(command.hold_on_start);
+                        assert!(command.cwd.is_none());
                         let terminal = TerminalId::new(next);
                         next += 1;
                         let gate = completion.launch.as_ref().unwrap().clone();
@@ -295,6 +305,47 @@ fn launch_transaction_carries_the_originating_pane_to_suppressed_destination_res
         );
         assert_eq!(host.commands.lock()[0].originating_plugin, origin);
     }
+}
+
+#[test]
+fn launch_transaction_departure_retires_availability_without_claiming_process_exit() {
+    let (_root, data, request) = repository();
+    let host = Host::new(false, true, false);
+    let id = format!("{}.departed", server_instance());
+    let first = launch(
+        id.clone(),
+        request.clone(),
+        crate::ClientId::new(1),
+        &host.senders,
+        &data,
+    );
+    assert_eq!(first.outcome, AgentOutcome::Ok);
+    let original = first.launch.unwrap();
+    let yinz_types::pane_id::PaneId::Terminal(terminal) =
+        original.spawned.as_ref().unwrap().pane_id
+    else {
+        panic!("terminal worker");
+    };
+    let gate = host.senders.launches.gate(terminal).unwrap();
+    gate.departed();
+    for observed in [
+        status(&id, &host.senders, &data),
+        launch(id, request, crate::ClientId::new(2), &host.senders, &data),
+    ] {
+        assert_eq!(observed.outcome, AgentOutcome::StatusUnavailable);
+        let receipt = observed.launch.unwrap();
+        assert_eq!(receipt.outcome, LaunchOutcome::Started);
+        assert_eq!(receipt.disposition, WorkerDisposition::Unknown);
+        assert_eq!(receipt.process, ProcessState::Unknown);
+        assert_eq!(receipt.spawned, original.spawned);
+        assert_eq!(receipt.resources.slot, original.resources.slot);
+        assert!(!receipt.resources.placeholder_owned);
+        assert!(!receipt.resources.process_owned);
+        assert!(!receipt.resources.cleanup_pending);
+    }
+    let state = gate.snapshot();
+    assert!(!state.exited && !state.cleanup_started && !state.cleanup_confirmed);
+    assert_eq!(host.commands.lock().len(), 1);
 }
 
 #[test]

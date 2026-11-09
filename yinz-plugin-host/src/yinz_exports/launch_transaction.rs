@@ -259,6 +259,13 @@ pub(super) fn status(id: &str, senders: &ThreadSenders, data: &DataAccess) -> Ag
                     receipt.resources.cleanup_pending = true;
                 }
             }
+            if state.departed {
+                receipt.disposition = WorkerDisposition::Unknown;
+                receipt.process = ProcessState::Unknown;
+                receipt.resources.placeholder_owned = false;
+                receipt.resources.process_owned = false;
+                receipt.resources.cleanup_pending = false;
+            }
         }
     }
 
@@ -660,4 +667,4 @@ pub(super) fn launch_with_prepare(
 
 #[cfg(test)]
 #[path = "unit/launch_transaction.rs"]
-mod tests;
+pub(crate) mod tests;
