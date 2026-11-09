@@ -1096,7 +1096,6 @@ Deno.test("stack placement never silently falls back without a controller", asyn
   equal(h.calls.length, 0);
 });
 
-<<<<<<< HEAD
 Deno.test("submission continuation retains the original conversation and recovers a lost acknowledgement without another prompt", async () => {
   const h = harness([spawned, ready(), completed()]);
   await runAgent(
@@ -1278,7 +1277,8 @@ Deno.test("a different continuation cannot replace a timed-out turn's saved iden
   equal(h.records.get("result")?.submissionId, "submission-2");
   equal(h.calls.filter((c) => c.args.includes("prompt")).length, 2);
   equal(h.calls.filter((c) => c.args.includes("spawn")).length, 1);
-=======
+});
+
 Deno.test("launch transaction resumes the original started operation after a lost reply without spawning twice", async () => {
   const h = harness([
     new Error("lost reply"),
@@ -1367,5 +1367,4 @@ Deno.test("launch transaction refuses a changed digest or server on observation"
     equal(h.records.get("state")?.submissionId, undefined);
     equal(h.calls.filter((call) => call.args[3] === "spawn").length, 1);
   }
->>>>>>> bab9477ac (Make agent launches transactional with durable receipts and placement safeguards)
 });

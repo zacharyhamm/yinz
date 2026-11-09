@@ -311,8 +311,6 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
         };
         const dependencies = {
           run: async (args: string[], stdin?: string, signal?: AbortSignal) => {
-<<<<<<< HEAD
-=======
             if (args[3] === "launch-support") {
               return {
                 code: 0,
@@ -320,7 +318,6 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
                 stderr: "",
               };
             }
->>>>>>> bab9477ac (Make agent launches transactional with durable receipts and placement safeguards)
             if (args[3] === "list-panes") {
               controls.placementCalls.push(args);
               return Promise.resolve({
@@ -333,21 +330,16 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
                 stderr: "",
               });
             }
-<<<<<<< HEAD
-            const output = await controls.agentRunner!(args, stdin, signal);
-            if (args[3] === "prompt" && controls.submitEvidence) {
-              await submitEvidence();
-            }
-            return output;
-=======
             const result = await controls.agentRunner!(args, stdin, signal);
             try {
               result.stdout = JSON.stringify(
                 launchReply(args, JSON.parse(result.stdout)),
               );
             } catch { /* Preserve malformed responses. */ }
+            if (args[3] === "prompt" && controls.submitEvidence) {
+              await submitEvidence();
+            }
             return result;
->>>>>>> bab9477ac (Make agent launches transactional with durable receipts and placement safeguards)
           },
           realPath: (path: string) => Promise.resolve(path),
           id: controls.agentId,
