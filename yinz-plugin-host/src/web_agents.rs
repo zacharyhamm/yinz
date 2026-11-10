@@ -481,10 +481,9 @@ fn adapt(
                         && matches!(&r.action,
                             HistoryAction::Run { id, .. } | HistoryAction::Conversation { id, .. }
                             if id == run)
+                        && let Some(agent) = requested_agent
                     {
-                        if let Some(agent) = requested_agent {
-                            request["agent"] = json!(agent);
-                        }
+                        request["agent"] = json!(agent);
                     }
                     Some((r.id.clone(), request))
                 })
