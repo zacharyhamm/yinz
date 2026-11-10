@@ -543,3 +543,60 @@ fn oversized_host_replies_and_requests_do_not_desynchronize_the_worker() {
         .is_err());
     assert_eq!(worker.eval("(+ 40 2)").unwrap().values, ["42"]);
 }
+
+#[test]
+fn web_sdk_worker_deferred_success_failure_and_deadline_cleanup() {
+    use serde_json::{json, Value};
+    use std::sync::{Arc, Mutex};
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let output = commands.clone();
+    let mut worker = super::WorkerRuntime::new(&binary(), move |command| {
+        output.lock().unwrap().push(command);
+        Ok(Value::Null)
+    })
+    .unwrap();
+    worker.eval(r#"
+      (define callbacks 0)
+      (yinz-web-route "GET" "/later" (lambda (_) (yinz-then (yinz-wait-for-event "CustomMessage") (lambda (_) (yinz-command "GetPluginIds") (yinz-web-text "done")))))
+      (yinz-web-route "GET" "/bad" (lambda (_) (error "private-worker-failure")))
+      (yinz-web-route "GET" "/expire" (lambda (_) (yinz-then (yinz-agent-view (hash "op" "list")) (lambda (_) (set! callbacks (+ callbacks 1)) (yinz-web-text "late")))))
+    "#).unwrap();
+    worker.invoke("yinz-async-enter", vec![json!(2)]).unwrap();
+    let req = |id, path: &str, deadline| json!({"id":id,"method":"HEAD","path":path,"segments":[path.trim_start_matches('/')],"deadline_ms":deadline});
+    worker.web(req(1, "/later", 9_000_000_000_000u64)).unwrap();
+    worker.invoke("yinz-async-enter", vec![json!(9)]).unwrap();
+    worker.update(json!({"CustomMessage":["go",""]})).unwrap();
+    worker.web(req(2, "/bad", 9_000_000_000_000u64)).unwrap();
+    let logs = worker.take_logs().unwrap();
+    assert!(logs.contains("private-worker-failure"));
+    worker
+        .eval("(define deadline (+ (yinz-wall-clock-ms) 1000))")
+        .unwrap();
+    let deadline = worker.value("deadline").unwrap().as_u64().unwrap();
+    // Replace only the exposed clocks in this isolated fixture; production uses native clocks.
+    worker.eval("(set! yinz-now-ms (lambda () 0))").unwrap();
+    worker.web(req(3, "/expire", deadline)).unwrap();
+    worker.eval("(set! yinz-now-ms (lambda () 2000))").unwrap();
+    worker.update(json!({"Timer":2.0})).unwrap();
+    let sent = commands.lock().unwrap().clone();
+    for command in &sent {
+        let raw = command
+            .pointer("/__yinz_runtime/command")
+            .unwrap_or(command);
+        if let Some(call) = raw.get("AgentView") {
+            worker.update(json!({"CustomMessage":["agent-view-response",json!({"id":call["id"],"reply":{"ok":true}}).to_string()]})).unwrap();
+        }
+    }
+    assert_eq!(worker.value("callbacks").unwrap(), 0);
+    worker
+        .eval("(define pending (length (hash-keys->list %async-operations)))")
+        .unwrap();
+    assert_eq!(worker.value("pending").unwrap(), 0);
+    let replies: Vec<_> = sent
+        .iter()
+        .filter_map(|c| c.pointer("/__yinz_runtime/command/HttpRespond"))
+        .collect();
+    assert_eq!(replies.len(), 2);
+    assert!(replies[0]["response"].as_str().unwrap().contains("done"));
+    assert!(!replies[1]["response"].as_str().unwrap().contains("private"));
+}

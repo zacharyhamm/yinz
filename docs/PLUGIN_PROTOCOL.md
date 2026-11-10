@@ -1049,8 +1049,9 @@ outcomes with the original submission ID. Detached list/history/prompt/read/key
 requests do not require a palette or terminal client. Focus succeeds as
 `{"ok":true}`, not a fabricated `AgentResponse`.
 
-Production SDK/frontend, safe HTML/Markdown rendering, archived-agent search,
-archived-run resume, and phone/Tailscale verification are separate work.
+The embedded safe HTML/Markdown and web routing SDK is documented in
+[PLUGIN_SDK.md](PLUGIN_SDK.md#safe-html-and-web-sdk). Standard frontend content,
+archived-agent search/resume and phone/Tailscale verification remain separate work.
 
 ### Directory project resolution
 
@@ -1168,3 +1169,14 @@ Pages are limited to 16 and 512 KiB each. A page cannot lie under an asset prefi
 regardless of publication order. Replacing an existing page/prefix uses its
 existing slot. Failed publication preserves the prior immutable snapshot.
 Public GET/HEAD/ETag requests are served natively without guest calls.
+
+
+The authoring SDK preserves the guest request and response envelopes above.
+HEAD uses explicit HEAD > GET fallback > wildcard after path specificity; the
+handler still sees HEAD and sends one ordinary representation. Native response
+finalization suppresses HEAD bytes and supplies representation content-length.
+Request-created async operations have a local ownership scope retired on every
+terminal path; borrowed pre-existing operations survive and native commands
+already sent are not rolled back. AgentView's SDK error string is additive and
+versioned; the native `{id,reply:{ok:...}|{error:{code,message}}}` wire shape is
+unchanged. See the SDK guide for explicit status mapping and trust boundaries.

@@ -955,3 +955,45 @@ fn client_timezone_real_dispatch_selects_actor_and_preserves_server_local_offset
     drop(env);
     responder.join().unwrap();
 }
+
+#[test]
+fn web_sdk_startup_phase_timings() {
+    struct Capture(std::sync::Mutex<Vec<String>>);
+    impl log::Log for Capture {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            let message = record.args().to_string();
+            if message.starts_with("startup:") {
+                self.0.lock().unwrap().push(message);
+            }
+        }
+        fn flush(&self) {}
+    }
+    static CAPTURE: Capture = Capture(std::sync::Mutex::new(Vec::new()));
+    log::set_logger(&CAPTURE).unwrap();
+    log::set_max_level(log::LevelFilter::Info);
+    for sample in 0..12 {
+        CAPTURE.0.lock().unwrap().clear();
+        let mut instance = plugin("(yinz-declare-pane) (define (load config) (void)) (define (render rows columns) \"ready\")");
+        instance.load(&BTreeMap::new(), true).unwrap();
+        assert_eq!(instance.render(10, 80).unwrap(), b"ready");
+        let records = CAPTURE.0.lock().unwrap().clone();
+        for phase in ["worker_ready", "module_eval", "load", "first_render"] {
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|line| line.contains(&format!("phase={phase} ")))
+                    .count(),
+                1
+            );
+        }
+        if sample >= 2 {
+            for record in records {
+                println!("sample={} {record}", sample - 2);
+            }
+        }
+        instance.dispose_with_cleanup(true);
+    }
+}

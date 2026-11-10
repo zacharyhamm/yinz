@@ -950,5 +950,198 @@ commands. See [the protocol](PLUGIN_PROTOCOL.md#authenticated-http-transport)
 for request hashes, permission gates, limits and generation ownership. Assets
 are frozen at publication; edits require republication or reload. Allowlisted
 static files below a relative `static` component are retained with builtin
-Scheme generations across installation exchange. This transport does not yet
-provide the production HTML/routing SDK, mobile frontend or agent-view parity.
+Scheme generations across installation exchange. The safe HTML/routing SDK and deferred agent-view helper are documented below;
+the standard mobile frontend remains separate.
+
+## Safe HTML and web SDK
+
+The embedded SDK is available in every worker. The configured web plugin needs
+`RunCommands` for publication, replies and native agent views. Register routes
+at initialization; call publication functions from `load` after permission is
+granted. Helpers compose the existing host commands and cannot bypass host
+identity, source confinement, generation ownership or permissions.
+
+```scheme
+(define (load configuration)
+  (yinz-then (yinz-wait-for-permissions '("RunCommands")) (lambda (_)
+    (yinz-web-assets "/static/" "static")
+    (yinz-web-page "/" "text/html; charset=utf-8"
+      (lambda () (yinz-html-document
+        (yinz-h "title" (hash) "Status")
+        (yinz-h "main" (hash) "Ready")))))))
+(yinz-web-route "GET" "/api/greeting/:name"
+  (lambda (request) (yinz-web-json
+    (hash "hello" (yinz-web-param request "name")))))
+(yinz-web-route "GET" "/api/later"
+  (lambda (_) (yinz-then (yinz-sleep 10)
+    (lambda (_) (yinz-web-text "Ready")))))
+```
+
+### Markup and trust
+
+| API | Contract |
+| --- | --- |
+| `(yinz-h tag attrs child ...)` | Immutable opaque native node; lowercase supported tag and string-keyed attribute hash. |
+| `(yinz-html value ...)` | Render text, native nodes or list fragments to a string. Strings/numbers escape `& < > " '`. False and `json-null` disappear. Hashes, true, vectors and arbitrary custom values fail. |
+| `(yinz-html-document head body [attrs])` | Trusted document with doctype, head/body and default `lang="en"`; optional attributes replace the default hash. |
+| `(yinz-html-escape string)` | Escape text; the returned string remains ordinary text, so inserting it as a child escapes it again. |
+| `(yinz-html-raw string)` | Explicit trusted markup, for plugin-authored constants only. Never pass agent output, hashes, request data or Markdown to this escape hatch. |
+| `(yinz-html-json-script id value)` | Trusted inert `application/json` script. JSON escapes `< > &` and U+2028/U+2029, including closing-script text. Read with `JSON.parse(element.textContent)`. |
+| `(yinz-markdown->html string)` | Trusted safe Markdown HTML; input at most 1 MiB. Raw HTML becomes escaped text, images become alt text, links retain only HTTP/HTTPS/mailto, relative paths and fragments with `rel="noopener noreferrer"`. |
+| `(yinz-html-form attrs child ...)` | Fetch-driven semantic form with fixed `method="post"` and required root-relative action. Submission overrides are refused. |
+
+Construction and emission enforce depth 64 (including fragments and reused
+native nodes) and 4 MiB UTF-8 output. JSON input has an additional conservative
+structural budget before copying. Raw HTML can bypass the element policy and
+therefore belongs exclusively to trusted plugin authors.
+
+Supported elements: `html head body title meta link script noscript div span p a
+img br hr main header footer nav section article aside h1 h2 h3 h4 h5 h6 ul ol li
+dl dt dd pre code kbd samp blockquote strong em b i s small sub sup mark table
+caption thead tbody tfoot tr th td button input label select option textarea
+fieldset legend details summary time progress meter`. `form` requires the
+separate constructor. SVG, MathML, custom tags, namespaces, raw style, iframe,
+object, embed and base are outside this safe subset.
+
+All ordinary elements allow `id class title lang dir role tabindex hidden` and
+lowercase `data-*`/`aria-*`. Additional attributes are:
+
+| Element | Attributes |
+| --- | --- |
+| a | href, rel, target |
+| img | src, alt, width, height, loading |
+| link | href, rel, type; rel must be stylesheet, icon or manifest |
+| meta | charset, name, content; never http-equiv |
+| script | src, type only; nonempty same-origin root-relative src required; type absent, module or text/javascript; no children |
+| form | action, method (post), autocomplete, novalidate |
+| input | type, name, value, placeholder, autocomplete, disabled, checked, required, readonly, min, max, step, minlength, maxlength, multiple, autofocus |
+| button | type, name, value, disabled |
+| label | for |
+| select | name, disabled, required, multiple |
+| option | value, selected, disabled |
+| textarea | name, rows, cols, placeholder, required, readonly, disabled, maxlength |
+| th, td | colspan, rowspan, scope, headers |
+| ol | start, reversed |
+| time | datetime |
+| details | open |
+| progress, meter | value, min, max |
+| fieldset | disabled |
+
+Attribute strings/numbers are quoted and escaped. True is allowed only for
+supported boolean attributes; false/null omit an attribute. `on*`, `style`,
+`srcdoc`, `srcset`, `ping`, background URLs and submission overrides are refused.
+Void elements refuse content. General `a` URLs accept root-relative paths,
+fragments, HTTPS and mailto; resources/forms/scripts accept only root-relative
+paths. Controls, whitespace, backslashes, authority-relative URLs, encoded
+slash/control redirects and entity-looking scheme prefixes fail closed. Scheme
+matching ignores case. This conservative API rejects ambiguous URLs instead of
+trying to repair them. Markdown additionally allows HTTP and relative links.
+
+The native CSP stays `form-action 'none'` with external same-origin scripts only.
+A login form must include labels, an accessible status area and a visible or
+`noscript` explanation that JavaScript is required. Its external script must
+`preventDefault()` and POST JSON to `/api/login` with `fetch`; update the status
+on both success and failure. No-JavaScript submission is blocked by CSP. Never
+put passwords in a GET URL or bootstrap data. Inert JSON scripts are a dedicated
+constructor; ordinary scripts cannot accept inline code or `application/json`.
+
+### Routes, responses and request lifetime
+
+`(yinz-web-route method pattern handler)` accepts GET, HEAD, POST or `*` and
+returns an unregister thunk. Patterns contain literal segments, `:name` and a
+final `*rest`. Names must be unique identifiers; rest is slash-joined and can be
+empty. Requests already contain decoded segments: the SDK never decodes again.
+Trailing slash variants match identically. Specificity compares the first
+differing segment: literal > parameter > rest, then exact ending > rest. Method
+rank follows path specificity: exact > `*`, or HEAD > GET fallback > `*` for
+HEAD requests. A literal GET fallback thus beats a parameter HEAD route. The
+handler still sees `method="HEAD"`; the native listener alone strips the body
+and sets representation content-length. GET/POST never match HEAD-only routes.
+Equivalent ties keep earliest registration; identical method/pattern replaces
+in place, and an old unregister thunk cannot remove the replacement.
+
+Handlers receive a fresh hash with `params`, preserving the complete native
+request (auth, nullable client/body, query_pairs, server.session and deadline).
+`yinz-web-param request name`, `yinz-web-query request key [default]` and
+`yinz-web-header request name` return false if absent (or the query default).
+Header lookup ignores name case. `yinz-web-body-json request` requires
+application/json (parameters permitted) and valid nonempty JSON; valid null is
+`json-null`. Missing/wrong media type or bad JSON yields typed 400 `bad_json`.
+
+Responses are hashes with `status`, `headers` and string `body`. Constructors:
+`yinz-web-json value [status]`, `yinz-web-html value [status]`,
+`yinz-web-text string [status]`, `yinz-web-error status code [message]`,
+`yinz-web-redirect root-relative-path` (303) and `yinz-web-not-modified` (304).
+HTML responses escape ordinary strings; explicit trusted values insert markup.
+Status is an integer 200–599; 304 has an empty body; nonempty bodies need
+content-type; body limit is 4 MiB. Only content-type, etag, cache-control, vary,
+retry-after, safe 3xx location and nonempty `x-yinz-*` headers are supported.
+The native listener still enforces security headers and API no-store policy.
+
+Sync/deferred handlers run through the existing async lifecycle. Unmatched
+routes return 404. Raised/rejected or invalid responses return generic 500
+`internal`; details stay in local logs. Each dispatch has a private one-response
+token, with 64 active slots and 1,024 recent IDs. Old native reply ownership is
+the final duplicate fence. Send failures are logged without a second reply.
+
+Handler-created deferreds, chains, event listeners, waits, timers and RPCs belong
+to a private request scope, including work created in resumed continuations.
+Completion/deadline/unload closes that scope, detaches observations and retires
+owned operations even when custom cancellation never acknowledges. Closed-scope
+callbacks cannot run late. The native timeout owns 504: SDK deadline cleanup
+sends no competing response. Pre-existing operations are borrowed, survive for
+other consumers, and lose only the request's observers. Create long-lived work
+outside handlers (normally in load). Local cleanup cannot roll back native
+commands already sent or stop remote effects through a new cancellation protocol.
+Outside request scopes, existing async cancellation and string-error semantics
+remain unchanged.
+
+### Agent views, pages and override hooks
+
+`(yinz-agent-view request)` sends the existing 64 KiB native AgentView request
+and returns a correlated deferred. A listener and 40-second monotonic timer are
+installed before sending. Success resolves `reply.ok`, including false/null.
+Errors reject a bounded versioned JSON string; `(yinz-agent-view-error string)`
+decodes only this envelope to `{yinz_agent_view_error,code,message,op,origin}`
+or false. The origin distinguishes native, timeout, cancel and SDK failures.
+Malformed correlated replies reject; unrelated/duplicate/late replies do nothing.
+All exits release listener/timer/correlation state. Host timers themselves
+cannot be unarmed; later events are harmless.
+
+```scheme
+(yinz-web-route "GET" "/api/agents" (lambda (_)
+  (yinz-catch
+    (yinz-then (yinz-agent-view (hash "op" "list")) yinz-web-json)
+    (lambda (failure)
+      (define detail (yinz-agent-view-error failure))
+      (yinz-web-error (yinz-web-agent-error->status detail)
+        (if detail (hash-ref detail "code") "failed"))))))
+```
+
+`yinz-web-agent-error->status` accepts the decoded hash or encoded error:
+invalid=400, not_found=404, target_changed=409, paused/unavailable=503,
+failed/unknown=502. Native unavailable for focus=409; SDK timeout for focus=503.
+An uncaught rejection still returns generic 500; explicit catches opt into
+expected-error mapping without exposing arbitrary exception text.
+
+`yinz-web-assets prefix directory` freezes plugin-relative or approved builtin
+assets through HttpAssets (four prefixes). `yinz-web-page path mime thunk`
+retains a render thunk and immediately publishes; replacement uses the same
+slot (16 pages, 512 KiB each). Public canonical paths cannot claim `/api`.
+HTML MIME `text/html; charset=utf-8` renders safe values; plain text
+`text/plain; charset=utf-8` requires a string; `application/manifest+json`
+serializes JSON. Native source/path ownership and freezing remain authoritative.
+
+`yinz-web-hook-define name default`, `yinz-web-hook-wrap! name wrapper`,
+`yinz-web-hook name arg ...` and `yinz-web-hook-names` provide sorted named
+extension points. Latest wrapper is outermost and receives `(next . args)`;
+call `(next replacement-arg ...)` to pass explicit arguments. Replacing a
+default preserves wrappers. Defining/wrapping republishes every retained page;
+all render results/sizes are checked before the first send. Recursive mutation
+or publication fails. Publication is per page, so a later host failure can
+leave generations mixed; that page keeps its previous native snapshot and the
+failure remains observable. There is no multi-page transaction guarantee.
+
+`yinz-web-agent-app configuration` is the future once-per-worker standard-app
+installation seam. It currently raises an explicit not-installed diagnostic.
+No standard routes, app content or frontend assets load automatically.

@@ -710,3 +710,131 @@ fn web_agents_configured_steel_native_list_history_guarded_screen_and_detached_f
     session.quit();
     records.empty();
 }
+
+#[test]
+fn web_sdk_authenticated_routes_pages_assets_and_failures() {
+    yinz_integration_tests::test_env::init();
+    let dir = private_data();
+    set(dir.path());
+    let plugin_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(plugin_dir.path().join("static")).unwrap();
+    std::fs::write(plugin_dir.path().join("static/app.js"), "sdk asset").unwrap();
+    std::fs::write(plugin_dir.path().join("static/login.js"), r#"
+document.querySelector('form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const status = document.querySelector('#status');
+  try {
+    const reply = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({password:document.querySelector('input').value,label:'Browser smoke'})});
+    status.textContent = reply.ok ? 'Logged in' : 'Login failed';
+  } catch (_) { status.textContent = 'Login failed'; }
+});
+"#).unwrap();
+    let source = plugin_dir.path().join("sdk.scm");
+    std::fs::write(&source,r#"
+      (define (load config)
+        (yinz-then (yinz-wait-for-permissions '("RunCommands")) (lambda (_)
+          (yinz-web-assets "/static/" "static")
+          (yinz-web-page "/login" "text/html; charset=utf-8" (lambda () (yinz-html-document
+            (yinz-h "title" (hash) "<SDK login>")
+            (list (yinz-html-form (hash "action" "/api/login")
+                    (yinz-h "label" (hash "for" "password") "Password")
+                    (yinz-h "input" (hash "id" "password" "type" "password" "name" "password" "required" #t))
+                    (yinz-h "button" (hash "type" "submit") "Log in"))
+                  (yinz-h "p" (hash "id" "status" "role" "status" "aria-live" "polite") "JavaScript is required to log in.")
+                  (yinz-h "p" (hash) "JavaScript is required to log in.")
+                  (yinz-h "noscript" (hash) "JavaScript is required to log in.")
+                  (yinz-html-json-script "bootstrap" (hash "text" "</script>\u{2028}\u{2029}"))
+                  (yinz-h "script" (hash "src" "/static/login.js"))))))
+          (yinz-web-hook-define "title" (lambda () "<SDK>"))
+          (yinz-web-page "/" "text/html; charset=utf-8" (lambda () (yinz-html-document
+            (yinz-h "title" (hash) (yinz-web-hook "title"))
+            (list (yinz-h "p" (hash) "SDK ready") (yinz-html-json-script "data" (hash "text" "</script>"))))))
+          #f)))
+      (yinz-web-route "GET" "/api/echo/:id" (lambda (r) (yinz-web-text (string-append (hash-ref r "method") ":" (yinz-web-param r "id")))))
+      (yinz-web-route "*" "/api/override" (lambda (_) (yinz-web-text "wild")))
+      (yinz-web-route "GET" "/api/override" (lambda (_) (yinz-web-text "get")))
+      (yinz-web-route "HEAD" "/api/override" (lambda (_) (yinz-web-text "explicit-head" 202)))
+      (yinz-web-route "HEAD" "/api/echo/:x" (lambda (_) (yinz-web-text "param" 203)))
+      (yinz-web-route "GET" "/api/echo/literal" (lambda (r) (yinz-web-text (hash-ref r "method"))))
+      (yinz-web-route "HEAD" "/api/only-head" (lambda (_) (yinz-web-text "head")))
+      (yinz-web-route "GET" "/api/deferred" (lambda (_) (yinz-then (yinz-sleep 1) (lambda (_) (yinz-web-text "deferred")))))
+      (yinz-web-route "GET" "/api/raised" (lambda (_) (error "hidden exception")))
+      (yinz-web-route "GET" "/api/rejected" (lambda (_) (define d (yinz-deferred)) (yinz-reject! d "hidden rejection") d))
+      (yinz-web-route "POST" "/api/json" (lambda (r) (yinz-web-json (yinz-web-body-json r))))
+      (yinz-web-route "POST" "/api/republish" (lambda (_) (yinz-web-hook-wrap! "title" (lambda (next) "updated")) (yinz-web-text "ok")))
+    "#).unwrap();
+    let url = format!("file:{}", source.display());
+    let cache_path = yinz_runtime::consts::YINZ_PLUGIN_PERMISSIONS_CACHE.clone();
+    std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+    let mut cache =
+        yinz_config::permission::PermissionCache::from_path_or_default(Some(cache_path));
+    cache.cache(
+        yinz_runtime::plugin_location::parse_plugin_location(&url, None)
+            .unwrap()
+            .to_string(),
+        vec![yinz_types::data::PermissionType::RunCommands],
+    );
+    cache.write_to_file().unwrap();
+    let records = Records::new(dir.path().to_owned());
+    let mut session = TestRunner::new(TERMINAL_SIZE)
+        .with_data_dir(dir.path().to_owned())
+        .with_config(&format!("web {{ enabled true; port 0; plugin {url:?}; }}"))
+        .start();
+    claim_first_terminal_and_wait_for_prompt(&session);
+    let addr = records.serving(session.session_name());
+    let token = login(addr);
+    wait_public(addr, "/", "SDK ready");
+    let page = get(addr, "/");
+    assert!(page.contains("&lt;SDK&gt;"));
+    assert!(page.contains("\\u003c/script\\u003e"));
+    assert!(page.contains("form-action 'none'"));
+    assert!(get(addr, "/static/app.js").ends_with("sdk asset"));
+    assert!(api(addr, "GET", "/api/echo/7", None, "").starts_with("HTTP/1.1 401"));
+    let response = api(addr, "GET", "/api/echo/7", Some(&token), "");
+    assert!(response.ends_with("GET:7"), "{response}");
+    // GET fallback preserves HEAD; explicit method rank is applied after path specificity.
+    for (path, status, length) in [
+        ("/api/echo/literal", 200, 4),
+        ("/api/override", 202, 13),
+        ("/api/deferred", 200, 8),
+        ("/api/missing", 404, 30),
+    ] {
+        let response = api(addr, "HEAD", path, Some(&token), "");
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {status}")),
+            "{response}"
+        );
+        assert!(response.ends_with("\r\n\r\n"), "{response}");
+        if status != 404 {
+            assert!(
+                response.contains(&format!("content-length: {length}\r\n")),
+                "{response}"
+            );
+        }
+        assert!(response.contains("cache-control: no-store"));
+        assert!(response.contains("default-src 'none'"));
+    }
+    for method in ["GET", "POST"] {
+        assert!(api(addr, method, "/api/only-head", Some(&token), "").starts_with("HTTP/1.1 404"));
+    }
+    for path in ["/api/raised", "/api/rejected"] {
+        let response = api(addr, "GET", path, Some(&token), "");
+        assert!(response.starts_with("HTTP/1.1 500"));
+        assert!(!response.contains("hidden"));
+    }
+    assert!(api(addr, "POST", "/api/json", Some(&token), "{").starts_with("HTTP/1.1 400"));
+    assert!(api(addr, "POST", "/api/json", Some(&token), "null").ends_with("null"));
+    assert!(api(addr, "POST", "/api/republish", Some(&token), "{}").starts_with("HTTP/1.1 200"));
+    wait_public(addr, "/", "updated");
+    if let Some(script) = std::env::var_os("YINZ_WEB_BROWSER_SMOKE") {
+        let result = std::process::Command::new("python")
+            .arg(script)
+            .arg(addr.to_string())
+            .status()
+            .unwrap();
+        assert!(result.success(), "supplementary Firefox smoke failed");
+    }
+    session.quit();
+    records.empty();
+}

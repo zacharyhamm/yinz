@@ -6,12 +6,14 @@ pub mod binary;
 mod bridge;
 mod callback;
 pub mod format;
+mod html;
 pub mod manifest;
 pub mod modules;
 pub mod repl;
 mod sandbox;
 mod text;
 pub mod ui;
+mod web;
 pub mod worker;
 
 use std::io::{self, Write};
@@ -325,6 +327,8 @@ impl Runtime {
                     .collect()
             },
         );
+        html::register(&mut engine);
+        web::register(&mut engine);
         ui::register(&mut engine);
         agent_model::register(&mut engine);
         engine
@@ -366,6 +370,15 @@ impl Runtime {
         engine
             .run(include_str!("workers.scm"))
             .map_err(|error| anyhow!("initializing Steel workers SDK: {error}"))?;
+        engine
+            .run(include_str!("web.scm"))
+            .map_err(|error| anyhow!("initializing Steel web SDK: {error}"))?;
+        // Keep future standard-app source dormant. Steel's require is top-level
+        // only, so the public unavailable guard does not fake a callable lazy require.
+        engine.register_steel_module(
+            "%yinz/private-web-app".into(),
+            include_str!("web_app.scm").into(),
+        );
         Ok(Self {
             engine,
             output,
@@ -837,3 +850,10 @@ mod trace_tests;
 #[cfg(test)]
 #[path = "unit/binary.rs"]
 mod binary_tests;
+
+#[cfg(test)]
+#[path = "unit/html.rs"]
+mod html_tests;
+#[cfg(test)]
+#[path = "unit/web.rs"]
+mod web_tests;

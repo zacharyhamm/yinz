@@ -461,3 +461,9 @@ optional client ID and return `json-null` when unavailable. Subscribe to
 the subject separately from the callback actor. Client listings and palette
 contexts also include `timezone`. See [the SDK reference](PLUGIN_SDK.md#client-timezones)
 for supported rule strings, offset selectors and server-local compatibility.
+
+
+For browser-facing plugins, use the embedded [safe HTML and web routing SDK](PLUGIN_SDK.md#safe-html-and-web-sdk).
+It provides opaque markup, sanitized Markdown, authenticated routes, deferred
+agent views, frozen page/asset publication and overridable render hooks over
+the existing native transport. The standard mobile app is delivered separately.

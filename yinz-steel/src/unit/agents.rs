@@ -232,3 +232,69 @@ fn agent_restart_returns_a_deferred_and_preserves_options_and_errors() {
     h.eval(r#"(yinz-catch (yinz-agent-restart (hash "Plugin" 7) (hash "session" "fresh")) (lambda (message) (set! failure message)))"#);
     assert!(h.value("failure").as_str().unwrap().contains("terminal ID"));
 }
+
+#[test]
+fn agent_view_correlates_false_null_errors_and_releases_all_registrations() {
+    let mut h = Harness::new(
+        r#"
+      (define results '()) (define errors '())
+      (define a (yinz-agent-view (hash "op" "list")))
+      (define b (yinz-agent-view (hash "op" "focus")))
+      (yinz-then a (lambda (v) (set! results (cons v results))))
+      (yinz-catch b (lambda (e) (set! errors (cons (yinz-agent-view-error e) errors))))
+    "#,
+    );
+    let sent = h.sent("AgentView");
+    h.event(json!({"CustomMessage":["agent-view-response","not json"]}));
+    h.event(json!({"CustomMessage":["agent-view-response",json!({"id":"unrelated","reply":{}}).to_string()]}));
+    h.event(json!({"CustomMessage":["agent-view-response",json!({"id":sent[1]["id"],"reply":{"error":{"code":"unavailable","message":"detached"}}}).to_string()]}));
+    h.event(json!({"CustomMessage":["agent-view-response",json!({"id":sent[0]["id"],"reply":{"ok":false}}).to_string()]}));
+    assert_eq!(h.value("results"), json!([false]));
+    assert_eq!(h.value("errors")[0]["code"], "unavailable");
+    h.eval("(define mapped (yinz-web-agent-error->status (car errors)))");
+    assert_eq!(h.value("mapped"), 409);
+    h.eval("(define c (yinz-agent-view (hash \"op\" \"list\"))) (yinz-then c (lambda (v) (set! results (cons v results))))");
+    let id = h.sent("AgentView").last().unwrap()["id"].clone();
+    h.event(json!({"CustomMessage":["agent-view-response",json!({"id":id,"reply":{"ok":null}}).to_string()]}));
+    assert_eq!(h.value("results"), json!([null, false]));
+    h.eval("(define timers (length (hash-keys->list %async-timers))) (define handlers (length (hash-keys->list %async-handlers))) (define operations (length (hash-keys->list %async-operations)))");
+    for name in ["timers", "handlers", "operations"] {
+        assert_eq!(h.value(name), 0);
+    }
+}
+#[test]
+fn agent_view_timeout_cancel_malformed_and_send_failure_have_encoded_provenance() {
+    let mut h = Harness::new(
+        r#"(define errors '()) (define (record op) (yinz-catch op (lambda (e) (set! errors (cons (yinz-agent-view-error e) errors)))))
+      (record (yinz-agent-view (hash "op" "focus")))"#,
+    );
+    h.advance(40000);
+    assert_eq!(h.value("errors")[0]["origin"], "timeout");
+    h.eval("(define mapped (yinz-web-agent-error->status (car errors)))");
+    assert_eq!(h.value("mapped"), 503);
+    h.eval("(define cancel (yinz-agent-view (hash \"op\" \"list\"))) (record cancel) (yinz-cancel! cancel)");
+    assert_eq!(h.value("errors")[0]["origin"], "cancel");
+    h.eval("(record (yinz-agent-view (hash \"op\" \"list\")))");
+    let id = h.sent("AgentView").last().unwrap()["id"].clone();
+    h.event(json!({"CustomMessage":["agent-view-response",json!({"id":id,"reply":{"ok":true,"error":{}}}).to_string()]}));
+    assert_eq!(h.value("errors")[0]["origin"], "sdk");
+    *h.failure.lock().unwrap() = Some("AgentView".into());
+    h.eval("(record (yinz-agent-view (hash \"op\" \"list\")))");
+    assert_eq!(h.value("errors")[0]["code"], "failed");
+    h.eval("(define pending (length (hash-keys->list %async-operations)))");
+    assert_eq!(h.value("pending"), 0);
+    for (code, status) in [
+        ("invalid", 400),
+        ("not_found", 404),
+        ("target_changed", 409),
+        ("paused", 503),
+        ("unavailable", 503),
+        ("failed", 502),
+        ("other", 502),
+    ] {
+        h.eval(&format!(
+            r#"(define status (yinz-web-agent-error->status (hash "code" "{code}")))"#
+        ));
+        assert_eq!(h.value("status"), status);
+    }
+}

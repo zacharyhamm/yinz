@@ -8889,7 +8889,12 @@ fn web_transport_request(
             id,
             method: yinz_types::web::WebMethod::Get,
             path: path.into(),
-            segments: vec![],
+            segments: path
+                .trim_matches('/')
+                .split('/')
+                .filter(|part| !part.is_empty())
+                .map(str::to_owned)
+                .collect(),
             query: vec![],
             headers: vec![],
             body: None,
@@ -9195,4 +9200,57 @@ fn web_agents_generation_replacement_fences_a_real_outstanding_native_reply() {
     };
     let body: serde_json::Value = serde_json::from_str(&response.body).unwrap();
     assert_eq!(body["ok"]["agents"], serde_json::json!([]));
+}
+
+#[test]
+fn web_sdk_real_host_sync_deferred_and_detached_actor() {
+    use yinz_types::web::WebReply;
+    let source = r#"
+      (yinz-web-route "GET" "/api/sync" (lambda (request) (yinz-web-json request)))
+      (yinz-web-route "GET" "/api/deferred" (lambda (_) (yinz-then (yinz-sleep 0) (lambda (_) (yinz-web-text "deferred")))))
+      (yinz-web-route "GET" "/api/failure" (lambda (_) (error "private source diagnostic")))
+    "#;
+    let (mut test, plugin, generation) = web_transport_fixture(source);
+    let (_, mut first) = web_transport_request(&test, plugin, generation, 1, "/api/sync");
+    test.wait_for_executor(plugin);
+    let WebReply::Response(first) = first.try_recv().unwrap() else {
+        panic!("missing SDK response")
+    };
+    let body: serde_json::Value = serde_json::from_str(&first.body).unwrap();
+    assert_eq!(body["client"], 1);
+    test.connect(&[]);
+    let (_, mut detached) = web_transport_request(&test, plugin, generation, 2, "/api/sync");
+    test.wait_for_executor(plugin);
+    let WebReply::Response(detached) = detached.try_recv().unwrap() else {
+        panic!("missing detached response")
+    };
+    let body: serde_json::Value = serde_json::from_str(&detached.body).unwrap();
+    assert_eq!(body["attached"], false);
+    let (_, mut failure) = web_transport_request(&test, plugin, generation, 3, "/api/failure");
+    test.wait_for_executor(plugin);
+    let WebReply::Response(failure) = failure.try_recv().unwrap() else {
+        panic!("missing failure response")
+    };
+    assert_eq!(failure.status, 500);
+    assert!(!failure.body.contains("private"));
+    // Explicit timer delivery keeps this fixture independent of host scheduling.
+    let (_, mut deferred) = web_transport_request(&test, plugin, generation, 4, "/api/deferred");
+    test.wait_for_executor(plugin);
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    test.bridge
+        .update_plugins(
+            vec![(
+                Some(plugin),
+                None,
+                Event::Timer(yinz_types::units::FractionalSeconds::new(1.0)),
+            )],
+            shutdown,
+        )
+        .unwrap();
+    test.wait_for_executor(plugin);
+    let WebReply::Response(deferred) = deferred.try_recv().unwrap() else {
+        panic!("missing deferred response")
+    };
+    assert_eq!(deferred.body, "deferred");
+    test.bridge.unload_plugin(plugin).unwrap();
 }

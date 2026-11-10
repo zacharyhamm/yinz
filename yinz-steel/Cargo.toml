@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 agent-proto = { path = "../default-plugins/agent-proto" }
 anyhow = { workspace = true }
+http = { workspace = true }
 chrono = { workspace = true }
 miette = { workspace = true }
 yinz-config = { workspace = true }

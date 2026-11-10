@@ -265,3 +265,155 @@ captured commands. This harness does not establish native authorization or slot
 ownership: host `web_transport_` tests exercise real command dispatch and teardown,
 and the app `web_transport_` acceptance test uses a bearer-authenticated TCP
 request, normal permission handling and native frozen page/asset responses.
+
+
+## Web SDK coverage and fixtures
+
+The public SDK is tested separately from the raw transport fixtures. Select
+`html_tests`/`web_tests` in yinz-steel, `web_sdk_` in yinz-plugin-host, and
+`web_sdk_authenticated_routes_pages_assets_and_failures` for the real listener.
+Keep the existing raw transport/generation/native-AgentView tests selected too.
+
+An installed test can use public helpers with explicit host stubs:
+
+```scheme
+(test "SDK route" (lambda ()
+  (test-load-plugin "./plugin.scm" (hash "grants" '("RunCommands")))
+  (test-stub "Subscribe" json-null)
+  (test-stub "SetTimeout" json-null)
+  (test-stub "HttpRespond" json-null)
+  (test-web (hash "id" 17 "client" 1 "method" "HEAD"
+    "path" "/api/hello" "segments" '("api" "hello")
+    "deadline_ms" 9000000000000))
+  (assert (hash-contains? (last (test-commands)) "HttpRespond"))))
+```
+
+Publication during load needs `HttpAssets`/`HttpPublish` replies in the load
+options. Agent-view tests stub `AgentView`, read its correlation ID from the
+recorded command and deliver CustomMessage `agent-view-response` with serialized
+`{id,reply:{ok:false}}` (or error). Both false and null are successful values.
+The installed SDK fixture exercises this path through the supervised worker.
+
+Request-lifetime tests inject clocks, inspect operations, event handlers,
+observer links, timers and correlations relative to their pre-request baselines,
+and deliver late events/replies/progress. They cover owned chained event/plugin
+RPC/agent-view sources, borrowed sources, nested continuations, concurrent actors,
+queued notifications, cleanup failures, cancellation without acknowledgement,
+unload, send failures and more than 4,096 cumulative deferred creations. The
+one-response token is independent of the 1,024 recent-ID FIFO. Ordinary async,
+panes, services, consumers, RPC, palette, trace and module callers remain selected.
+
+Issue 81 implementation validation (Linux, 2026-11-10): 124 selected Steel tests,
+4 final HTML budget tests, 30 Markdown crate tests (plus its doctest pass),
+15 focused host/harness/transport tests, 5 native request/service tests, and the
+three selected authenticated integration cases passed. The isolated startup
+fixture, `cargo x format --check` and warning-denying Clippy for the five changed
+crates and their test targets also passed. Full CI, unfiltered workspace tests,
+rebase and merge are reserved for the controller.
+
+### Browser interaction smoke
+
+Firefox 159.0.1 ran headlessly with its built-in Marionette protocol and a
+throwaway profile. The SDK integration fixture publishes a temporary `/login`
+form and same-origin external script under the unchanged native CSP. It verified
+escaped title/labels, `JSON.parse(textContent)` with closing-script text and both
+Unicode separators, failed and successful JSON-fetch login against native
+`/api/login`, accessible status feedback, and a broken-script submission blocked
+by `form-action 'none'` without credential-bearing navigation. A visible and
+noscript JavaScript-required explanation remains. The standard app is not shipped
+by this fixture. No phone/Tailscale or general frontend validation is claimed.
+
+The integration case optionally runs a supplied local Python browser driver via
+`YINZ_WEB_BROWSER_SMOKE=/absolute/path/to/driver.py`; it receives the listener's
+address as its only argument and must join/stop its browser before returning.
+The implementation smoke used a temporary driver outside the repository; normal
+automated tests do not require a browser installation. This is recorded browser
+evidence, distinct from the TCP assertions.
+
+### Startup measurements
+
+Fixture: `steel::tests::web_sdk_startup_phase_timings`, run alone with
+`cargo x test -p yinz-plugin-host -E 'test(web_sdk_startup_phase_timings)' --no-capture -j 1`.
+Every batch loads/renders the identical minimal declared-pane plugin through
+SteelPlugin: two warmups, then ten fresh worker processes. It asserts successful
+render content and complete existing phase records; no wall-time threshold is an
+automated assertion. All binaries/artifacts came from this worktree's real
+`target/`, Cargo dev/test profiles (unoptimized, debuginfo), on Linux x86_64,
+32 logical CPUs, AMD Ryzen AI MAX+ 395. No other Cargo run was observed when the
+batches began, and this task ran them serially with no concurrent task-owned jobs.
+The machine is shared: baseline numeric load was not captured, so host load is
+not controlled and these timings must not be treated as a precise causal estimate.
+
+Before: `d4661c01797a5becbd0c8c2de292a7d6053d2ed3` plus the measurement-only fixture,
+prior to SDK evaluation changes. Final: the implementation source in the commit
+containing this table (the lifecycle evidence supplies its full commit hash).
+The source fingerprint below hashes sorted path, NUL, bytes, NUL for lib.rs,
+html.rs, web.rs, async.scm, rpc.scm, agents.scm, web.scm and web_app.scm under
+yinz-steel/src, yinz-tile-markdown/src/html.rs and the host timing fixture file.
+
+Implementation fingerprint: `fcde9e33ae280410e1bf3bc3ae5ed6bb856ae5ce29ff698f3dd4f167bd21a420`.
+
+Medians, milliseconds (phase durations are measured independently):
+
+| Batch | Worker ready | Module eval | Load | First render | Total to first render |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| before | 73.666325 | 0.297341 | 0.150504 | 0.099292 | 74.537642 |
+| after | 86.911476 | 0.367783 | 0.206906 | 0.123198 | 87.973774 |
+| after-repeat | 86.732793 | 0.314883 | 0.159565 | 0.103711 | 87.558405 |
+| batched | 132.390421 | 0.405114 | 0.173473 | 0.082831 | 133.772677 |
+| startup-final | 192.772046 | 0.672964 | 0.292086 | 0.169705 | 194.167063 |
+| startup-repeat-final | 93.052412 | 0.380733 | 0.173507 | 0.094428 | 94.028238 |
+
+The initial SDK batches exceeded both the 10% and 5 ms investigation threshold
+(about 13 ms / 18% total growth); the repeat confirmed it. Combining all SDK
+sources into one compilation pass worsened the median to about 134 ms and was
+reverted. The final first batch varied substantially; its observed load averages
+were 44.91 (one minute), versus 94.15 at the later repeat.
+The unchanged final binary then returned to the lower timing range below.
+The repeat invocation's process-tree CPU/wall accounting is recorded here:
+`elapsed_s=1.758612 user_s=1.504956 system_s=0.259956`.
+Residual SDK startup cost is material and is disclosed, not waived or hidden.
+
+The private standard-app source is registered with `register_steel_module` and
+never evaluated for ordinary plugins. The callable API currently raises the
+explicit not-installed diagnostic; it emits no app commands and cannot duplicate
+registration. Inspection/testing found that this pinned Steel engine permits
+`require` only at top level: putting require inside a callable macro/let fails.
+Consequently the current unavailable guard does not pretend that a callable
+require installs the future app. Actual app content/installation remains the
+separate milestone; explicit guest imports of the private module stay confined.
+
+Raw before and final samples, all in milliseconds:
+
+| Batch | Sample | Worker ready | Module eval | Load | First render | Total |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| before | 0 | 76.059608 | 0.262054 | 0.130496 | 0.097504 | 76.739471 |
+| before | 1 | 71.963482 | 0.275801 | 0.275560 | 0.128722 | 72.871846 |
+| before | 2 | 77.853772 | 0.294525 | 0.140825 | 0.070783 | 78.585923 |
+| before | 3 | 75.970410 | 0.339831 | 0.272374 | 0.173297 | 77.044767 |
+| before | 4 | 72.573964 | 0.276551 | 0.133712 | 0.125447 | 73.321083 |
+| before | 5 | 73.948968 | 0.416105 | 0.206780 | 0.086483 | 74.916201 |
+| before | 6 | 76.750111 | 0.322057 | 0.168658 | 0.101080 | 77.621043 |
+| before | 7 | 73.383681 | 0.302972 | 0.149432 | 0.093597 | 74.159083 |
+| before | 8 | 71.574919 | 0.300156 | 0.151576 | 0.080111 | 72.365510 |
+| before | 9 | 73.256752 | 0.273405 | 0.132971 | 0.125978 | 73.980637 |
+| startup-final | 0 | 182.127306 | 1.199843 | 0.305707 | 0.183937 | 184.188072 |
+| startup-final | 1 | 210.150137 | 0.644816 | 0.295808 | 0.156715 | 211.610611 |
+| startup-final | 2 | 192.281386 | 0.687947 | 0.255993 | 0.142398 | 193.710912 |
+| startup-final | 3 | 207.796539 | 0.567390 | 0.232598 | 0.128722 | 209.043962 |
+| startup-final | 4 | 189.132217 | 0.743713 | 0.288364 | 0.247387 | 190.949204 |
+| startup-final | 5 | 201.073609 | 0.704929 | 0.296479 | 0.178547 | 202.626508 |
+| startup-final | 6 | 169.188924 | 0.617455 | 0.264078 | 0.155553 | 170.580508 |
+| startup-final | 7 | 193.262707 | 0.569313 | 0.314644 | 0.177986 | 194.623214 |
+| startup-final | 8 | 180.522559 | 0.761626 | 0.287362 | 0.163649 | 182.092390 |
+| startup-final | 9 | 198.436956 | 0.657981 | 0.299886 | 0.175761 | 199.927757 |
+| startup-repeat-final | 0 | 91.062329 | 0.428999 | 0.189277 | 0.082806 | 92.045754 |
+| startup-repeat-final | 1 | 89.804325 | 0.382170 | 0.151767 | 0.073218 | 90.699514 |
+| startup-repeat-final | 2 | 97.545706 | 0.382602 | 0.201921 | 0.110278 | 98.514884 |
+| startup-repeat-final | 3 | 92.220342 | 0.379296 | 0.170792 | 0.085271 | 93.125911 |
+| startup-repeat-final | 4 | 95.058375 | 0.353787 | 0.159871 | 0.074030 | 95.892809 |
+| startup-repeat-final | 5 | 88.288748 | 0.390897 | 0.161715 | 0.135064 | 90.016145 |
+| startup-repeat-final | 6 | 93.927692 | 0.358486 | 0.291770 | 0.135636 | 94.965881 |
+| startup-repeat-final | 7 | 96.866876 | 0.361612 | 0.153710 | 0.073499 | 97.703424 |
+| startup-repeat-final | 8 | 93.884481 | 0.439679 | 0.207101 | 0.115889 | 94.930564 |
+| startup-repeat-final | 9 | 91.753833 | 0.379145 | 0.176222 | 0.103585 | 92.670751 |

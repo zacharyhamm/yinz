@@ -5474,6 +5474,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "hegeltest",
+ "http 1.5.0",
  "libc",
  "miette 7.6.0",
  "rand 0.10.2",

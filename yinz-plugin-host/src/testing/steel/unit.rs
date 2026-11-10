@@ -725,3 +725,36 @@ fn web_transport_installed_harness_calls_handler() {
     .unwrap();
     assert!(report.passed(), "{report:#?}");
 }
+
+#[test]
+fn web_sdk_installed_harness_publication_routes_and_agent_view() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("plugin.scm"),r#"
+      (define (load config)
+        (yinz-web-assets "/static/" "static")
+        (yinz-web-page "/" "text/html; charset=utf-8" (lambda () (yinz-h "p" (hash) "<safe>"))))
+      (yinz-web-route "GET" "/api/test" (lambda (_) (yinz-then (yinz-agent-view (hash "op" "list")) (lambda (v) (yinz-web-json v)))))
+    "#).unwrap();
+    let path = root.path().join("plugin.test.scm");
+    std::fs::write(&path,r#"
+      (test "SDK publication and deferred route" (lambda ()
+        (test-load-plugin "./plugin.scm" (hash "grants" '("RunCommands") "replies" (hash "HttpAssets" json-null "HttpPublish" json-null)))
+        (test-stub "HttpRespond" json-null)
+        (test-stub "Subscribe" json-null)
+        (test-stub "SetTimeout" json-null)
+        (test-stub "AgentView" json-null)
+        (test-web (hash "id" 1 "client" 1 "method" "GET" "path" "/api/test" "segments" '("api" "test") "deadline_ms" 9000000000000))
+        (define call (hash-ref (last (test-commands)) "AgentView"))
+        (test-event (hash "CustomMessage" (list "agent-view-response" (yinz-json-string (hash "id" (hash-ref call "id") "reply" (hash "ok" #f))))))
+        (assert (hash-contains? (last (test-commands)) "HttpRespond"))))
+    "#).unwrap();
+    let report = run(
+        super::super::fixture_data().path(),
+        &path,
+        &PluginTestOptions::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(report.passed(), "{report:#?}");
+}

@@ -27,6 +27,8 @@
 //! `agent/benches/transcript.rs`, which calls this by far the most expensive thing a render
 //! does. Callers that redraw on a timer cache the result rather than parsing again.
 
+pub mod html;
+
 use std::collections::HashMap;
 
 use pulldown_cmark::{

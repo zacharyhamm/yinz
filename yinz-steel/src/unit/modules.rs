@@ -431,3 +431,22 @@ fn plugin_copy_keeps_original_sources_and_a_confined_deduplicated_graph() {
         .is_err());
     assert!(!destination.path().join("rejected").exists());
 }
+
+#[test]
+fn web_sdk_private_app_source_does_not_expand_the_guest_import_boundary() {
+    let mut runtime = Runtime::new(|_| panic!("app seam must not issue host commands")).unwrap();
+    for _ in 0..2 {
+        assert!(runtime
+            .eval("(yinz-web-agent-app (hash))")
+            .unwrap_err()
+            .to_string()
+            .contains("not installed"));
+    }
+    let mut root = SourceRoot::embedded("main.scm", BTreeMap::new()).unwrap();
+    assert!(runtime
+        .eval_with_source_root("(require \"%yinz/private-web-app\")", &mut root)
+        .is_err());
+    assert!(runtime
+        .eval_with_source_root("(require \"/etc/passwd\")", &mut root)
+        .is_err());
+}

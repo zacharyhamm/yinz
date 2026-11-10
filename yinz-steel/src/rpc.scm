@@ -139,7 +139,7 @@
             (define callback (vector-ref waiting 2))
             (when callback
               (with-handler (lambda (failure) (yinz-reject! operation failure))
-                (%async-with-client (vector-ref waiting 3)
+                (%async-operation-context operation
                   (lambda () (callback (hash-ref call "payload")))))))
           (if (hash-contains? call "error")
               (when (and (not (hash-contains? call "result")) (string? (hash-ref call "error")))

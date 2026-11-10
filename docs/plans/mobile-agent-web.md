@@ -5,8 +5,9 @@
 > `web` is an embedded SDK module, not an installed plugin tag, so it cannot be
 > resolved with `builtin_path(..., "web")`. Static generation retention and the
 > shared descriptor-relative opener are implemented. See the
-> [protocol](../PLUGIN_PROTOCOL.md#authenticated-http-transport) for the delivered contract. The HTML/routing SDK, mobile frontend, native agent
-> view/palette parity and phone/Tailscale smoke checks remain later work.
+> [protocol](../PLUGIN_PROTOCOL.md#authenticated-http-transport) for the delivered contract. The safe HTML/routing SDK is delivered in issue 81; see
+> [the SDK guide](../PLUGIN_SDK.md#safe-html-and-web-sdk). Standard mobile frontend
+> content and phone/Tailscale smoke checks remain later work.
 >
 > Native milestone status (issue 74): bearer login/session/logout/logout-all,
 > private session persistence, limits and local web status are implemented.
@@ -838,6 +839,15 @@ pub(crate) fn handle(request: &str, client: ClientId, senders: &ThreadSenders, d
 
 ## 5. Steel SDK and the builtin plugin
 
+The delivered issue-81 contract is [Safe HTML and web SDK](../PLUGIN_SDK.md#safe-html-and-web-sdk).
+It tightens the sketches below: positive element/attribute subsets; ordinary
+forms refused with a dedicated POST/fetch form constructor under unchanged
+`form-action 'none'`; inert JSON scripts separate from external executable
+scripts; case-insensitive scheme validation rejects ambiguous entity syntax.
+HEAD preserves its method with GET fallback after path specificity. HTTP
+completion closes an owned async scope while detaching borrowed shared sources.
+The standard app is only a not-installed seam; no app content is eagerly loaded.
+
 ### 5.1 Native HTML: `yinz-steel/src/html.rs` (new, WS-E)
 
 Registered in `Runtime::new` the same way as `yinz-markdown-escape` (`yinz-steel/src/lib.rs:307`). It uses Steel custom types, with the `Pattern` type in `agent_model/archive.rs` as the precedent: opaque `HtmlNode` and `TrustedHtml`.
@@ -866,7 +876,7 @@ It is evaluated in `Runtime::new` after `palette.scm` (`lib.rs:362-364`) and kep
 
 ```scheme
 ;; registration
-(yinz-web-route method pattern handler)       ; method "GET"|"POST"|"*"; segments literal, ":name", trailing "*rest"
+(yinz-web-route method pattern handler)       ; method "GET"|"HEAD"|"POST"|"*"; segments literal, ":name", trailing "*rest"
                                               ; most specific wins (literal > :param > *rest); re-registering replaces; returns unregister thunk
 (yinz-web-assets prefix directory)            ; → HttpAssets; directory "web/static" or "builtin:web/static"
 (yinz-web-page path content-type thunk)       ; stores thunk, publishes via HttpPublish now and on every hook change
