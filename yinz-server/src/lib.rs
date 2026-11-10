@@ -131,6 +131,7 @@ use crate::{
     thread_bus::{Bus, ThreadSenders},
 };
 use route::{route_thread_main, NotificationEnd};
+use yinz_config::config::FIRST_RUN_CONFIG;
 use yinz_pty::{pty_thread_main, Pty};
 use yinz_runtime::channels;
 use yinz_runtime::channels::ChannelWithContext;
@@ -1390,33 +1391,12 @@ pub fn start_server_impl(
                             break;
                         },
                     };
-                    // A default config that cannot be written faithfully is not written at all -
-                    // and then there is nothing for the setup wizard to edit.
-                    let successfully_written_config =
+                    // Creating the bootstrap config means it did not exist and its directory is
+                    // writable: this is a first start, and only then does the wizard launch.
+                    let should_launch_setup_wizard =
                         startup_stage("server.write_initial_config", || {
-                            if cli_assets.update_target.is_some() {
-                                return false;
-                            }
-                            match config.to_string(true) {
-                                Ok(text) => Config::write_config_to_disk_if_it_does_not_exist(
-                                    text,
-                                    &cli_assets.config_file_path,
-                                ),
-                                Err(e) => {
-                                    Err::<(), _>(anyhow!("{e}"))
-                                        .context("not writing the initial config")
-                                        .non_fatal();
-                                    false
-                                },
-                            }
+                            write_first_run_config(&cli_assets)
                         });
-                    // if we successfully wrote the config to disk, it means two things:
-                    // 1. It did not exist beforehand
-                    // 2. The config folder is writeable
-                    //
-                    // If these two are true, we should launch the setup wizard, if even one of them is
-                    // false, we should never launch it.
-                    let should_launch_setup_wizard = successfully_written_config;
 
                     let runtime_config_options = match &cli_assets.configuration_options {
                         Some(configuration_options) => {
@@ -3401,6 +3381,28 @@ fn init_session(
     Ok(())
 }
 
+/// Create the comment-only bootstrap config ([`FIRST_RUN_CONFIG`]) if `config.kdl` does not
+/// exist yet, and return whether this call created it, which marks a first start.
+///
+/// That file is the only configuration a first start creates. Its directory is created when
+/// the client resolves `config.kdl`'s path (`Config::config_file_path`), only because the file
+/// lives there. The cache, session-info and run directories also created at startup hold
+/// session state, not configuration. `config.d`, `layouts` and `themes` are created only when
+/// something is written to them, and saved settings go to `config.d/yinz-managed.kdl`.
+///
+/// An existing file or symlink (even a dangling one), a missing path and an unwritable
+/// directory all return `false`, as does a live-update replacement server, which takes over a
+/// running session and is never a first start.
+fn write_first_run_config(cli_assets: &CliAssets) -> bool {
+    if cli_assets.update_target.is_some() {
+        return false;
+    }
+    Config::write_config_to_disk_if_it_does_not_exist(
+        FIRST_RUN_CONFIG.to_owned(),
+        &cli_assets.config_file_path,
+    )
+}
+
 fn setup_wizard_floating_pane() -> FloatingPaneLayout {
     let mut setup_wizard_pane = FloatingPaneLayout::new();
     let configuration = BTreeMap::from_iter([("is_setup_wizard".to_owned(), "true".to_owned())]);
@@ -3426,6 +3428,10 @@ fn cli_pipe_reply(pipe_name: String, output: String) -> ServerToClientMsg {
 #[cfg(test)]
 #[path = "unit/capturing_os.rs"]
 mod capturing_os;
+
+#[cfg(test)]
+#[path = "unit/first_run_config_tests.rs"]
+mod first_run_config_tests;
 
 #[cfg(test)]
 #[path = "unit/session_shutdown_tests.rs"]

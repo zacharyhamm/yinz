@@ -1046,3 +1046,456 @@ fn the_last_client_leaves_a_baseline_without_leaving_its_identity() {
         Config::default()
     );
 }
+
+/// Saved key rebindings: written as per-binding edits to `config.d/yinz-managed.kdl` over the
+/// first-run bootstrap `config.kdl`, which is never rewritten.
+mod rebind_saves {
+    use super::*;
+    use yinz_config::config::{FIRST_RUN_CONFIG, MANAGED_CONFIG_FILE_NAME};
+
+    type PluginReconfigure = (ClientId, Option<Keybinds>, bool);
+    type WriteFailure = (Option<PathBuf>, Option<String>);
+
+    struct Fixture {
+        dir: tempfile::TempDir,
+        session: Arc<RwLock<Option<SessionMetaData>>>,
+        state: Arc<RwLock<SessionState>>,
+        screen: channels::Receiver<(ScreenInstruction, yinz_types::diagnostics::ErrorContext)>,
+        plugin: channels::Receiver<(PluginInstruction, yinz_types::diagnostics::ErrorContext)>,
+    }
+
+    impl Fixture {
+        /// A session over a first-run config directory, with `attached` clients attached.
+        fn new(attached: &[ClientId]) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("config.kdl"), FIRST_RUN_CONFIG).unwrap();
+            let (to_screen, screen) = channels::unbounded();
+            let (to_plugin, plugin) = channels::unbounded();
+            let mut session = reconfiguration_session(ThreadSenders {
+                to_screen: Some(SenderWithContext::new(to_screen)),
+                to_plugin: Some(SenderWithContext::new(to_plugin)),
+                should_silently_fail: true,
+                ..Default::default()
+            });
+            session.config_dir = Some(dir.path().to_path_buf());
+            let saved = Self::load(&dir);
+            session
+                .session_configuration
+                .set_saved_configuration(saved.clone());
+            let mut state = SessionState::new();
+            for client in attached {
+                state.clients.insert(*client);
+                state.interactive_clients.insert(*client);
+                session
+                    .session_configuration
+                    .set_client_runtime_configuration(*client, saved.clone());
+            }
+            Fixture {
+                dir,
+                session: Arc::new(RwLock::new(Some(session))),
+                state: Arc::new(RwLock::new(state)),
+                screen,
+                plugin,
+            }
+        }
+
+        /// What the config watcher loads after a write.
+        fn load(dir: &tempfile::TempDir) -> Config {
+            Config::load(
+                Some(&dir.path().join("config.kdl")),
+                Some(dir.path()),
+                false,
+            )
+            .unwrap()
+        }
+
+        fn reload(&self) -> Config {
+            Self::load(&self.dir)
+        }
+
+        fn managed(&self) -> PathBuf {
+            self.dir
+                .path()
+                .join("config.d")
+                .join(MANAGED_CONFIG_FILE_NAME)
+        }
+
+        fn with<R>(&self, f: impl FnOnce(&mut SessionMetaData) -> R) -> R {
+            with_session_mut(&self.session, f).unwrap().unwrap()
+        }
+
+        fn client_config(&self, client: ClientId) -> Config {
+            self.with(|session| {
+                session
+                    .session_configuration
+                    .get_client_configuration(&client)
+            })
+        }
+
+        fn rebind(
+            &self,
+            client: ClientId,
+            rebind: Vec<(InputMode, KeyWithModifier, Vec<Action>)>,
+            unbind: Vec<(InputMode, KeyWithModifier)>,
+            save: bool,
+        ) -> Result<()> {
+            rebind_client_keys(client, rebind, unbind, save, &self.state, &self.session)
+        }
+
+        fn screen_reconfigures(&self) -> Vec<(ClientId, Keybinds)> {
+            self.screen
+                .try_iter()
+                .filter_map(|(instruction, _)| match instruction {
+                    ScreenInstruction::Reconfigure {
+                        client_id,
+                        keybinds,
+                        ..
+                    } => Some((client_id, keybinds)),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// The plugin `Reconfigure`s (client, keybinds, written to disk) and write failures.
+        fn plugin_messages(&self) -> (Vec<PluginReconfigure>, Vec<WriteFailure>) {
+            let mut reconfigures = vec![];
+            let mut failures = vec![];
+            for (instruction, _) in self.plugin.try_iter() {
+                match instruction {
+                    PluginInstruction::Reconfigure {
+                        client_id,
+                        keybinds,
+                        was_written_to_disk,
+                        ..
+                    } => reconfigures.push((client_id, keybinds, was_written_to_disk)),
+                    PluginInstruction::FailedToWriteConfigToDisk { file_path, reason } => {
+                        failures.push((file_path, reason))
+                    },
+                    _ => {},
+                }
+            }
+            (reconfigures, failures)
+        }
+
+        fn drain(&self) {
+            while self.screen.try_recv().is_ok() {}
+            while self.plugin.try_recv().is_ok() {}
+        }
+    }
+
+    fn key(chord: &str) -> KeyWithModifier {
+        KeyWithModifier::from_str(chord).unwrap()
+    }
+
+    fn bound(keybinds: &Keybinds, mode: InputMode, chord: &str) -> Option<Vec<Action>> {
+        keybinds
+            .get_actions_for_key_in_mode(&mode, &key(chord))
+            .cloned()
+    }
+
+    #[test]
+    fn a_saved_rebind_writes_only_binding_edits_and_reaches_the_client() {
+        let client = ClientId::new(1);
+        let fixture = Fixture::new(&[client]);
+        let config_file = fixture.dir.path().join("config.kdl");
+        fixture
+            .rebind(
+                client,
+                vec![(InputMode::Normal, key("Ctrl Alt y"), vec![Action::Quit])],
+                vec![],
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&config_file).unwrap(),
+            FIRST_RUN_CONFIG
+        );
+        // One edits block holding the one binding: no defaults or other settings.
+        let managed = std::fs::read_to_string(fixture.managed()).unwrap();
+        assert!(
+            managed
+                .trim_start()
+                .starts_with(yinz_config::editor::EDITS_BLOCK),
+            "{managed}"
+        );
+        assert_eq!(managed.matches(yinz_config::editor::EDITS_BLOCK).count(), 1);
+        assert_eq!(managed.matches("set ").count(), 1, "{managed}");
+        assert_eq!(managed.matches("bind ").count(), 1, "{managed}");
+        assert!(managed.contains("\"Ctrl Alt y\""), "{managed}");
+
+        let reloaded = fixture.reload();
+        assert_eq!(
+            bound(&reloaded.keybinds, InputMode::Normal, "Ctrl Alt y"),
+            Some(vec![Action::Quit])
+        );
+        assert_eq!(
+            Config::load(None, Some(fixture.dir.path()), false)
+                .unwrap()
+                .keybinds,
+            reloaded.keybinds
+        );
+        // The client's screen and plugins hear of the binding, and that it was saved.
+        let screen = fixture.screen_reconfigures();
+        assert!(
+            screen.iter().any(|(id, keybinds)| *id == client
+                && bound(keybinds, InputMode::Normal, "Ctrl Alt y").is_some()),
+            "{screen:?}"
+        );
+        let (plugin, failures) = fixture.plugin_messages();
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(
+            plugin.iter().any(|(id, keybinds, written)| *id == client
+                && *written
+                && keybinds
+                    .as_ref()
+                    .is_some_and(|k| bound(k, InputMode::Normal, "Ctrl Alt y").is_some())),
+            "{plugin:?}"
+        );
+        // The config marked saved is the one on disk, so the watcher's reload changes nothing.
+        let echo = fixture.with(|session| {
+            assert_eq!(
+                session.session_configuration.saved_config.keybinds,
+                reloaded.keybinds
+            );
+            session.session_configuration.change_saved_config(reloaded)
+        });
+        assert!(echo.is_empty(), "{echo:?}");
+    }
+
+    /// The rebind screen applies new leader keys with Enter, unsaved, then saves with Ctrl+A a
+    /// request built from the keymap it now sees. The save must record the keys the first
+    /// apply unbound, or the watcher's reload brings them back.
+    #[test]
+    fn saving_after_an_unsaved_rebind_persists_the_whole_keybinding_difference() {
+        let client = ClientId::new(1);
+        let fixture = Fixture::new(&[client]);
+        let defaults = fixture.reload().keybinds;
+        let moved: Vec<_> = defaults
+            .0
+            .iter()
+            .filter_map(|(mode, bindings)| {
+                bindings
+                    .get(&key("Ctrl g"))
+                    .map(|actions| (*mode, actions.clone()))
+            })
+            .collect();
+        assert!(moved.len() > 1, "Ctrl g is bound in several modes");
+        fixture
+            .rebind(
+                client,
+                moved
+                    .iter()
+                    .map(|(mode, actions)| (*mode, key("Ctrl Alt g"), actions.clone()))
+                    .collect(),
+                moved
+                    .iter()
+                    .map(|(mode, _)| (*mode, key("Ctrl g")))
+                    .collect(),
+                false,
+            )
+            .unwrap();
+        reconfigure_client(
+            client,
+            "pane_frames false".into(),
+            false,
+            &fixture.state,
+            &fixture.session,
+        )
+        .unwrap();
+        assert!(!fixture.managed().exists(), "nothing was saved yet");
+        fixture.drain();
+
+        fixture
+            .rebind(
+                client,
+                moved
+                    .iter()
+                    .map(|(mode, actions)| (*mode, key("Ctrl Alt g"), actions.clone()))
+                    .collect(),
+                moved
+                    .iter()
+                    .map(|(mode, _)| (*mode, key("Ctrl Alt g")))
+                    .collect(),
+                true,
+            )
+            .unwrap();
+
+        let running = fixture.client_config(client);
+        let reloaded = fixture.reload();
+        assert_eq!(reloaded.keybinds, running.keybinds);
+        for (mode, actions) in &moved {
+            assert_eq!(bound(&reloaded.keybinds, *mode, "Ctrl g"), None);
+            assert_eq!(
+                bound(&reloaded.keybinds, *mode, "Ctrl Alt g"),
+                Some(actions.clone())
+            );
+        }
+        // The unsaved option stays applied, and unsaved.
+        assert_eq!(running.options.pane_frames, Some(false));
+        assert_ne!(reloaded.options.pane_frames, Some(false));
+        assert!(!std::fs::read_to_string(fixture.managed())
+            .unwrap()
+            .contains("pane_frames"));
+        let (plugin, _) = fixture.plugin_messages();
+        assert!(
+            plugin
+                .iter()
+                .any(|(id, _, written)| *id == client && *written),
+            "{plugin:?}"
+        );
+
+        let echo = fixture.with(|session| {
+            assert_eq!(
+                session.session_configuration.saved_config.keybinds,
+                running.keybinds
+            );
+            session.session_configuration.change_saved_config(reloaded)
+        });
+        assert!(echo.is_empty(), "the reload restored saved keys: {echo:?}");
+        assert_eq!(fixture.client_config(client), running);
+    }
+
+    #[test]
+    fn an_unwritable_action_refuses_the_save_and_changes_nothing() {
+        let client = ClientId::new(1);
+        let fixture = Fixture::new(&[client]);
+        let before = fixture.with(|session| session.session_configuration.clone());
+        let unwritable = Action::NewPane {
+            direction: None,
+            pane_name: Some("named".into()),
+            start_suppressed: false,
+        };
+        let saved = fixture.rebind(
+            client,
+            vec![(InputMode::Normal, key("Ctrl Alt y"), vec![unwritable])],
+            vec![],
+            true,
+        );
+        assert!(saved.is_err());
+        let (plugin, failures) = fixture.plugin_messages();
+        assert!(plugin.is_empty(), "{plugin:?}");
+        match failures.as_slice() {
+            [(None, Some(reason))] => assert!(reason.contains("Ctrl Alt y"), "{reason}"),
+            other => panic!("expected one reported failure, got {other:?}"),
+        }
+        assert!(fixture.screen_reconfigures().is_empty());
+        assert!(!fixture.dir.path().join("config.d").exists());
+        assert_eq!(
+            std::fs::read_to_string(fixture.dir.path().join("config.kdl")).unwrap(),
+            FIRST_RUN_CONFIG
+        );
+        fixture.with(|session| {
+            let after = &session.session_configuration;
+            assert_eq!(after.saved_config, before.saved_config);
+            assert_eq!(after.runtime_config, before.runtime_config);
+            assert_eq!(after.pending_editor_reload, None);
+        });
+    }
+
+    /// As with any failed fragment save, the rebinding stays applied, unsaved.
+    #[test]
+    fn a_failed_write_keeps_the_rebinding_applied_and_unsaved() {
+        let client = ClientId::new(1);
+        let fixture = Fixture::new(&[client]);
+        std::fs::create_dir(fixture.dir.path().join("config.d")).unwrap();
+        std::fs::write(fixture.managed(), "configuration_edits {\n").unwrap();
+        let saved_before =
+            fixture.with(|session| session.session_configuration.saved_config.clone());
+
+        let saved = fixture.rebind(
+            client,
+            vec![(InputMode::Normal, key("Ctrl Alt y"), vec![Action::Quit])],
+            vec![],
+            true,
+        );
+        assert!(saved.is_err());
+        let (plugin, failures) = fixture.plugin_messages();
+        match failures.as_slice() {
+            [(Some(path), Some(reason))] => {
+                assert_eq!(path, &fixture.managed());
+                assert!(reason.contains("not valid KDL"), "{reason}");
+            },
+            other => panic!("expected one reported failure, got {other:?}"),
+        }
+        assert!(
+            plugin.iter().any(|(id, keybinds, written)| *id == client
+                && !*written
+                && keybinds
+                    .as_ref()
+                    .is_some_and(|k| bound(k, InputMode::Normal, "Ctrl Alt y").is_some())),
+            "{plugin:?}"
+        );
+        assert!(plugin.iter().all(|(_, _, written)| !*written));
+        assert_eq!(
+            std::fs::read_to_string(fixture.managed()).unwrap(),
+            "configuration_edits {\n"
+        );
+        assert_eq!(
+            bound(
+                &fixture.client_config(client).keybinds,
+                InputMode::Normal,
+                "Ctrl Alt y"
+            ),
+            Some(vec![Action::Quit])
+        );
+        fixture.with(|session| {
+            assert_eq!(session.session_configuration.saved_config, saved_before);
+            assert_eq!(session.session_configuration.pending_editor_reload, None);
+        });
+    }
+
+    /// A departed client's save while another client is attached writes the edits and gives
+    /// the attached client the saved bindings, keeping its other runtime settings.
+    #[test]
+    fn a_departed_clients_saved_rebind_updates_the_attached_clients_bindings() {
+        let attached = ClientId::new(1);
+        let departed = ClientId::new(2);
+        let fixture = Fixture::new(&[attached]);
+        reconfigure_client(
+            attached,
+            "pane_frames false".into(),
+            false,
+            &fixture.state,
+            &fixture.session,
+        )
+        .unwrap();
+        fixture.drain();
+
+        fixture
+            .rebind(
+                departed,
+                vec![(InputMode::Normal, key("Ctrl Alt y"), vec![Action::Quit])],
+                vec![],
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(
+            bound(&fixture.reload().keybinds, InputMode::Normal, "Ctrl Alt y"),
+            Some(vec![Action::Quit])
+        );
+        let running = fixture.client_config(attached);
+        assert_eq!(
+            bound(&running.keybinds, InputMode::Normal, "Ctrl Alt y"),
+            Some(vec![Action::Quit])
+        );
+        assert_eq!(running.options.pane_frames, Some(false));
+        let screen = fixture.screen_reconfigures();
+        assert!(
+            screen.iter().all(|(id, _)| *id == attached),
+            "only the attached client hears of it: {screen:?}"
+        );
+        assert!(!screen.is_empty());
+        fixture.with(|session| {
+            let configured: Vec<_> = session
+                .session_configuration
+                .runtime_config
+                .keys()
+                .copied()
+                .collect();
+            assert_eq!(configured, vec![attached]);
+            assert_eq!(session.session_configuration.detached_runtime_config, None);
+        });
+    }
+}

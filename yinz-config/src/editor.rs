@@ -1126,6 +1126,92 @@ fn legacy_binding_updates(
     Ok(())
 }
 
+/// One binding that differs between two keymaps: `actions` is what the key now does, or
+/// `None` when it is unbound.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeybindingChange {
+    pub mode: yinz_types::data::InputMode,
+    pub key: yinz_types::keys::KeyWithModifier,
+    pub actions: Option<Vec<yinz_types::input::actions::Action>>,
+}
+
+/// The bindings that turn `saved` into `target`, sorted by mode and key. A mode missing from
+/// either keymap has no bindings.
+pub fn keybinding_changes(
+    saved: &yinz_types::input::keybinds::Keybinds,
+    target: &yinz_types::input::keybinds::Keybinds,
+) -> Vec<KeybindingChange> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let modes: BTreeSet<_> = saved.0.keys().chain(target.0.keys()).copied().collect();
+    let mut changes = vec![];
+    for mode in modes {
+        let empty = Default::default();
+        let before = saved.0.get(&mode).unwrap_or(&empty);
+        let after = target.0.get(&mode).unwrap_or(&empty);
+        let keys: BTreeMap<_, _> = before
+            .keys()
+            .chain(after.keys())
+            .map(|key| (key.clone(), (before.get(key), after.get(key))))
+            .collect();
+        for (key, (before, after)) in keys {
+            if before != after {
+                changes.push(KeybindingChange {
+                    mode,
+                    key,
+                    actions: after.cloned(),
+                });
+            }
+        }
+    }
+    changes
+}
+
+/// Per-binding patches for `changes`: setting `keybinds <mode> bind:["<key>"]` replaces only
+/// that binding, so a later save in the same mode keeps the earlier ones, and removing it
+/// unbinds a default. An action without a config spelling is an error naming its binding.
+pub fn keybinding_patches(changes: &[KeybindingChange]) -> Result<Vec<Patch>, String> {
+    changes
+        .iter()
+        .map(|change| {
+            let mode = format!("{:?}", change.mode).to_lowercase();
+            let key = change.key.to_keybind_string();
+            let node = match &change.actions {
+                Some(actions) => {
+                    let bindings = crate::kdl::keybinds::serialize_mode_keybinds(
+                        &std::collections::BTreeSet::from([change.mode]),
+                        &std::collections::BTreeMap::from([(change.key.clone(), actions.clone())]),
+                    )
+                    .map_err(|e| e.to_string())?;
+                    let node = bindings
+                        .nodes()
+                        .first()
+                        .ok_or_else(|| format!("keybinding `{key}` in {mode} mode is empty"))?;
+                    Some(from_kdl(node))
+                },
+                None => None,
+            };
+            let path = vec![
+                "keybinds".to_owned(),
+                mode,
+                format!(
+                    "bind:{}",
+                    serde_json::to_string(&[&key]).map_err(|e| e.to_string())?
+                ),
+            ];
+            Ok(Patch {
+                path,
+                node,
+                reset: false,
+            })
+        })
+        .collect()
+}
+
+/// The `configuration_edits` fragment that records `changes`. See [`keybinding_patches`].
+pub fn keybinding_edits(changes: &[KeybindingChange]) -> Result<String, String> {
+    Ok(patches_to_kdl(&keybinding_patches(changes)?)?.to_string())
+}
+
 #[cfg(test)]
 #[path = "unit/editor.rs"]
 mod tests;

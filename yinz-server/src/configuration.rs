@@ -1,6 +1,6 @@
 //! Session configuration, live reconfiguration and persistence.
 use super::*;
-use yinz_config::config::{watch_config_file_changes, ConfigWriteError};
+use yinz_config::config::watch_config_file_changes;
 use yinz_types::keys::KeyWithModifier;
 
 #[path = "configuration_editor.rs"]
@@ -255,6 +255,58 @@ impl SessionConfiguration {
         self.forget_transient(client_id);
 
         (full_reconfigured_config, config_changed)
+    }
+    /// Mark the keybindings a save wrote as saved. `saved` is the saved config with `changes`
+    /// applied the way the loader applies them, so it equals what the file now loads. Every
+    /// client's and the detached runtime config get the same bindings; their other runtime
+    /// settings are kept, unsaved. Like the configuration editor's permanent save, this arms
+    /// `pending_editor_reload`, so the watcher's reload of this same write changes nothing.
+    /// Returns the clients whose effective configuration changed, or [`ClientId::NONE`] when no
+    /// client is attached and the session-wide configuration changed.
+    fn commit_saved_keybinds(
+        &mut self,
+        saved: Config,
+        changes: &[yinz_config::editor::KeybindingChange],
+    ) -> Vec<(ClientId, Config)> {
+        let mut clients: Vec<_> = self.runtime_config.keys().copied().collect();
+        if clients.is_empty() {
+            clients.push(ClientId::NONE);
+        }
+        let before: Vec<_> = clients
+            .iter()
+            .map(|client| self.get_client_configuration(client))
+            .collect();
+        for config in self
+            .runtime_config
+            .values_mut()
+            .chain(self.detached_runtime_config.iter_mut())
+        {
+            for change in changes {
+                let bindings = config.keybinds.0.entry(change.mode).or_default();
+                match saved
+                    .keybinds
+                    .get_actions_for_key_in_mode(&change.mode, &change.key)
+                {
+                    Some(actions) => {
+                        bindings.insert(change.key.clone(), actions.clone());
+                    },
+                    None => {
+                        bindings.remove(&change.key);
+                    },
+                }
+            }
+        }
+        self.pending_editor_reload = Some(saved.clone());
+        self.saved_config = saved;
+        self.recompute_effective_keybinds();
+        clients
+            .into_iter()
+            .zip(before)
+            .filter_map(|(client, before)| {
+                let after = self.get_client_configuration(&client);
+                (after != before).then_some((client, after))
+            })
+            .collect()
     }
     /// Keep detached changes as session state without retaining a synthetic client entry.
     fn forget_transient(&mut self, client_id: &ClientId) {
@@ -595,14 +647,13 @@ pub(super) fn rebind_client_keys(
     else {
         return Ok(());
     };
+    if write_config_to_disk {
+        return save_rebound_keys(target, keys_to_rebind, keys_to_unbind, session_data);
+    }
+    // An unsaved change is never save-only: `configuration_target` drops those.
     let Some((new_config, changed)) = with_session_mut(session_data, |session| {
-        // As in `reconfigure_client`: a save-only change does not touch the session until saved.
-        let mut staged = target
-            .save_only
-            .then(|| session.session_configuration.clone());
-        staged
-            .as_mut()
-            .unwrap_or(&mut session.session_configuration)
+        session
+            .session_configuration
             .rebind_keys(&target.client_id, keys_to_rebind, keys_to_unbind)
     })?
     else {
@@ -610,14 +661,125 @@ pub(super) fn rebind_client_keys(
     };
     update_new_saved_config(
         new_config,
-        match write_config_to_disk {
-            true => ConfigPersistence::WholeConfig,
-            false => ConfigPersistence::None,
-        },
-        changed && !target.save_only,
+        ConfigPersistence::None,
+        changed,
         session_data,
         target.client_id,
     )
+}
+
+/// A saved `RebindKeys`. The rebinding is worked out on a copy of the session configuration,
+/// and what is written is every keybinding the client's runtime config then differs from the
+/// saved config by - not only the requested keys - so bindings an earlier unsaved rebinding or
+/// preset changed are saved as well, and the file's keybindings equal the client's afterwards.
+/// They go to `config.d/yinz-managed.kdl` as per-binding edits; the user's `config.kdl` is not
+/// rewritten. Only those keybindings are then marked saved: other unsaved runtime changes stay
+/// applied and unsaved, because they are not on disk.
+fn save_rebound_keys(
+    target: ConfigurationTarget,
+    keys_to_rebind: Vec<(InputMode, KeyWithModifier, Vec<Action>)>,
+    keys_to_unbind: Vec<(InputMode, KeyWithModifier)>,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+) -> Result<()> {
+    use yinz_config::editor;
+    struct Staged {
+        configuration: SessionConfiguration,
+        new_config: Option<Config>,
+        changed: bool,
+        changes: Vec<editor::KeybindingChange>,
+        saved: Config,
+        fragment: String,
+    }
+    let Some(staged) = with_session_mut(session_data, |session| -> Result<Staged, String> {
+        let mut configuration = session.session_configuration.clone();
+        let (new_config, changed) =
+            configuration.rebind_keys(&target.client_id, keys_to_rebind, keys_to_unbind);
+        let changes = editor::keybinding_changes(
+            &configuration.saved_config.keybinds,
+            &configuration
+                .base_client_configuration(&target.client_id)
+                .keybinds,
+        );
+        // Serialized first: a binding whose action has no config spelling refuses the save
+        // here, with the mode, key and action in the reason, before anything changes.
+        let patches = editor::keybinding_patches(&changes)?;
+        let saved = editor::apply(&configuration.saved_config, &patches)?;
+        let fragment = yinz_config::editor::patches_to_kdl(&patches)?.to_string();
+        Ok(Staged {
+            configuration,
+            new_config,
+            changed,
+            changes,
+            saved,
+            fragment,
+        })
+    })?
+    else {
+        return Ok(());
+    };
+    let staged = match staged {
+        Ok(staged) => staged,
+        Err(reason) => {
+            Err::<(), _>(anyhow!("{reason}"))
+                .context("refusing to save the key rebinding")
+                .non_fatal();
+            with_session(session_data, |session| {
+                session.report_config_write_failure(None, Some(reason.clone()))
+            })?;
+            return Err(anyhow!("{reason}"));
+        },
+    };
+    let apply_unsaved = |session: &mut SessionMetaData, configuration: SessionConfiguration| {
+        session.session_configuration = configuration;
+        if let (Some(new_config), true) = (staged.new_config.clone(), staged.changed) {
+            session.propagate_configuration_changes(vec![(target.client_id, new_config)], false);
+        }
+    };
+    if staged.changes.is_empty() {
+        // The saved keybindings already are the client's: there is nothing to write.
+        if !target.save_only {
+            with_session_mut(session_data, |session| {
+                apply_unsaved(session, staged.configuration)
+            })?;
+        }
+        return Ok(());
+    }
+    match write_managed_config_fragment(session_data, &staged.fragment)? {
+        Ok(()) => {
+            with_session_mut(session_data, |session| {
+                if !target.save_only {
+                    session.session_configuration = staged.configuration;
+                }
+                let mut changes = session
+                    .session_configuration
+                    .commit_saved_keybinds(staged.saved, &staged.changes);
+                // The rebinding already changed this client's runtime config, so the commit
+                // may not report it, but its screen and plugins have not heard of it yet.
+                if !target.save_only && !changes.iter().any(|(id, _)| *id == target.client_id) {
+                    changes.push((
+                        target.client_id,
+                        session
+                            .session_configuration
+                            .get_client_configuration(&target.client_id),
+                    ));
+                }
+                session.propagate_configuration_changes(changes, true);
+            })?;
+            Ok(())
+        },
+        Err((file_path, reason)) => {
+            with_session(session_data, |session| {
+                session.report_config_write_failure(file_path, Some(reason.clone()))
+            })?;
+            // As with any failed fragment save, the change stays applied, unsaved.
+            if !target.save_only {
+                with_session_mut(session_data, |session| {
+                    apply_unsaved(session, staged.configuration)
+                })?;
+            }
+            Err(anyhow!("{reason}"))
+        },
+    }
 }
 
 pub(super) fn report_changes_in_config_file(
@@ -692,16 +854,44 @@ fn theme_fragment(config: &Config, name: &str) -> Result<String> {
         .join("\n"))
 }
 
-/// How a configuration change is kept, beyond the running session.
+/// How a configuration change is kept, beyond the running session. Nothing rewrites the
+/// user's own config file: a saved `RebindKeys` writes per-binding edits to the same managed
+/// file (see `save_rebound_keys`).
 enum ConfigPersistence {
     /// Applied to the session only.
     None,
-    /// The whole effective config rewrites the user's config file. Only `RebindKeys` still
-    /// does this - it has no fragment to write.
-    WholeConfig,
     /// The requested KDL fragment goes into `config.d/yinz-managed.kdl`, whatever the
     /// user's own config is written in. See `Config::write_managed_fragment`.
     Fragment(String),
+}
+
+/// Merge `fragment` into the session's `config.d/yinz-managed.kdl`. The inner `Err` is the
+/// file, when one was reached, and why the write failed; the outer one is an unavailable
+/// session.
+fn write_managed_config_fragment(
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+    fragment: &str,
+) -> Result<std::result::Result<(), (Option<PathBuf>, String)>> {
+    let config_dir = with_session(session_data, |session| session.config_dir.clone())?.flatten();
+    let overlay_dir = yinz_runtime::home::get_config_overlay_dir(
+        config_dir.or_else(yinz_runtime::home::find_default_config_dir),
+    );
+    Ok(match overlay_dir {
+        Some(dir) => Config::write_managed_fragment(&dir, fragment)
+            .map(|_| ())
+            .map_err(|e| {
+                log::error!("Failed to persist the config fragment: {}", e);
+                (
+                    Some(dir.join(yinz_config::config::MANAGED_CONFIG_FILE_NAME)),
+                    e.to_string(),
+                )
+            }),
+        None => {
+            let reason = "no config directory to persist the config fragment in";
+            log::error!("{reason}");
+            Err((None, reason.to_owned()))
+        },
+    })
 }
 
 fn update_new_saved_config(
@@ -724,27 +914,7 @@ fn update_new_saved_config(
             session.propagate_configuration_changes(changes, true);
         };
         if let ConfigPersistence::Fragment(fragment) = persistence {
-            let overlay_dir = {
-                let config_dir =
-                    with_session(session_data, |session| session.config_dir.clone())?.flatten();
-                yinz_runtime::home::get_config_overlay_dir(
-                    config_dir.or_else(yinz_runtime::home::find_default_config_dir),
-                )
-            };
-            let written = match overlay_dir {
-                Some(dir) => Config::write_managed_fragment(&dir, &fragment).map_err(|e| {
-                    log::error!("Failed to persist the config fragment: {}", e);
-                    (
-                        Some(dir.join(yinz_config::config::MANAGED_CONFIG_FILE_NAME)),
-                        e.to_string(),
-                    )
-                }),
-                None => {
-                    let reason = "no config directory to persist the config fragment in";
-                    log::error!("{reason}");
-                    Err((None, reason.to_owned()))
-                },
-            };
+            let written = write_managed_config_fragment(session_data, &fragment)?;
             match written {
                 Ok(_) => {
                     // The session's saved config is the running one now, and every client
@@ -768,51 +938,7 @@ fn update_new_saved_config(
             }
             return Ok(());
         }
-        if matches!(persistence, ConfigPersistence::WholeConfig) {
-            let add_comments = true;
-            let config_file_path =
-                with_session(session_data, |session| session.config_file_path.clone())?.flatten();
-
-            let Some(config_file_path) = config_file_path.as_ref() else {
-                let reason = "the session has no config file path to write to";
-                log::error!("{reason}");
-                with_session(session_data, |session| {
-                    session.report_config_write_failure(None, Some(reason.to_owned()))
-                })?;
-                return Err(anyhow!("{reason}"));
-            };
-            // Serialized first, on its own: a binding whose action has no config spelling
-            // refuses the save here, with the mode, key and action in the reason, before
-            // anything on disk is touched.
-            let written = new_config
-                .to_string(add_comments)
-                .map_err(|e| ConfigWriteError {
-                    path: None,
-                    reason: e.to_string(),
-                })
-                .and_then(|text| new_config.write_config_to_disk(text, config_file_path));
-            match written {
-                Ok(written_config) => {
-                    with_session_mut(session_data, |session| {
-                        propagate_saved(session, written_config)
-                    })?;
-                },
-                Err(ConfigWriteError { path, reason }) => {
-                    Err::<(), _>(anyhow!("{reason}"))
-                        .with_context(|| match &path {
-                            Some(path) => {
-                                format!("refusing to save the configuration to {}", path.display())
-                            },
-                            None => "refusing to save the configuration".to_owned(),
-                        })
-                        .non_fatal();
-                    with_session(session_data, |session| {
-                        session.report_config_write_failure(path, Some(reason.clone()))
-                    })?;
-                    return Err(anyhow!("{reason}"));
-                },
-            }
-        } else if runtime_config_changed {
+        if runtime_config_changed {
             let config_was_written_to_disk = false;
             with_session_mut(session_data, |session| {
                 session.propagate_configuration_changes(

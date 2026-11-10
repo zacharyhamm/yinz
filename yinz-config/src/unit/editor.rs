@@ -1562,3 +1562,232 @@ fn invalid_global_unbind_source_metadata_is_rejected_before_writing() {
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 }
+
+mod keybinding_saves {
+    use super::*;
+    use crate::config::{FIRST_RUN_CONFIG, MANAGED_CONFIG_FILE_NAME};
+    use yinz_types::{
+        data::InputMode,
+        input::{actions::Action, keybinds::Keybinds},
+        keys::KeyWithModifier,
+    };
+
+    fn key(chord: &str) -> KeyWithModifier {
+        chord.parse().unwrap()
+    }
+
+    /// A first-run config directory: the comment-only `config.kdl` and nothing else.
+    fn bootstrapped() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.kdl"), FIRST_RUN_CONFIG).unwrap();
+        dir
+    }
+
+    fn reload(dir: &tempfile::TempDir) -> Config {
+        Config::load(None, Some(dir.path()), false).unwrap()
+    }
+
+    fn save(dir: &tempfile::TempDir, changes: &[KeybindingChange]) {
+        Config::write_managed_fragment(
+            &dir.path().join("config.d"),
+            &keybinding_edits(changes).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn bind(mode: InputMode, chord: &str, actions: Vec<Action>) -> KeybindingChange {
+        KeybindingChange {
+            mode,
+            key: key(chord),
+            actions: Some(actions),
+        }
+    }
+
+    fn unbind(mode: InputMode, chord: &str) -> KeybindingChange {
+        KeybindingChange {
+            mode,
+            key: key(chord),
+            actions: None,
+        }
+    }
+
+    fn unwritable() -> Action {
+        Action::NewPane {
+            direction: None,
+            pane_name: Some("named".into()),
+            start_suppressed: false,
+        }
+    }
+
+    #[test]
+    fn keybinding_changes_list_each_difference_once_in_order() {
+        let mut saved = Keybinds::default();
+        let normal = saved.0.entry(InputMode::Normal).or_default();
+        normal.insert(key("Ctrl a"), vec![Action::Quit]);
+        normal.insert(key("Ctrl b"), vec![Action::Detach]);
+        normal.insert(key("Ctrl c"), vec![Action::NoOp]);
+        saved
+            .0
+            .entry(InputMode::Tab)
+            .or_default()
+            .insert(key("x"), vec![Action::NoOp]);
+        let mut target = saved.clone();
+        let normal = target.0.get_mut(&InputMode::Normal).unwrap();
+        normal.remove(&key("Ctrl a"));
+        normal.insert(key("Ctrl b"), vec![Action::Quit]);
+        target
+            .0
+            .entry(InputMode::Locked)
+            .or_default()
+            .insert(key("Ctrl z"), vec![Action::Quit]);
+        // A mode present but empty on one side is the same as a missing mode.
+        target.0.entry(InputMode::Scroll).or_default();
+
+        let changes = keybinding_changes(&saved, &target);
+        assert_eq!(
+            changes,
+            vec![
+                unbind(InputMode::Normal, "Ctrl a"),
+                bind(InputMode::Normal, "Ctrl b", vec![Action::Quit]),
+                bind(InputMode::Locked, "Ctrl z", vec![Action::Quit]),
+            ]
+        );
+        assert_eq!(keybinding_changes(&target, &target), vec![]);
+        // The written form is deterministic.
+        assert_eq!(
+            keybinding_edits(&changes).unwrap(),
+            keybinding_edits(&keybinding_changes(&saved, &target)).unwrap()
+        );
+    }
+
+    #[test]
+    fn successive_saves_in_one_mode_keep_earlier_bindings() {
+        let dir = bootstrapped();
+        save(
+            &dir,
+            &[bind(InputMode::Normal, "Ctrl Alt y", vec![Action::Quit])],
+        );
+        save(
+            &dir,
+            &[bind(InputMode::Normal, "Ctrl Alt u", vec![Action::Detach])],
+        );
+        let reloaded = reload(&dir).keybinds;
+        let normal = &reloaded.0[&InputMode::Normal];
+        assert_eq!(normal.get(&key("Ctrl Alt y")), Some(&vec![Action::Quit]));
+        assert_eq!(normal.get(&key("Ctrl Alt u")), Some(&vec![Action::Detach]));
+        let managed =
+            std::fs::read_to_string(dir.path().join("config.d").join(MANAGED_CONFIG_FILE_NAME))
+                .unwrap();
+        assert!(managed.contains(EDITS_BLOCK), "{managed}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.kdl")).unwrap(),
+            FIRST_RUN_CONFIG
+        );
+    }
+
+    #[test]
+    fn removing_a_default_binding_survives_reload_and_keeps_other_defaults() {
+        let dir = bootstrapped();
+        let defaults = reload(&dir).keybinds;
+        assert!(defaults.0[&InputMode::Locked].contains_key(&key("Ctrl g")));
+        save(&dir, &[unbind(InputMode::Locked, "Ctrl g")]);
+        let mut expected = defaults.clone();
+        expected
+            .0
+            .get_mut(&InputMode::Locked)
+            .unwrap()
+            .remove(&key("Ctrl g"));
+        assert_eq!(reload(&dir).keybinds, expected);
+    }
+
+    /// An unsaved rebinding moved a default key elsewhere in several modes; the later save
+    /// must record the whole difference, or the old key comes back on reload.
+    #[test]
+    fn saving_the_saved_to_runtime_difference_reloads_to_the_runtime_keymap() {
+        let dir = bootstrapped();
+        let saved = reload(&dir);
+        let mut target = saved.keybinds.clone();
+        let mut moved = 0;
+        for bindings in target.0.values_mut() {
+            if let Some(actions) = bindings.remove(&key("Ctrl g")) {
+                bindings.insert(key("Ctrl Alt g"), actions);
+                moved += 1;
+            }
+        }
+        assert!(moved > 1, "Ctrl g is bound in several modes by default");
+        let changes = keybinding_changes(&saved.keybinds, &target);
+        assert_eq!(changes.len(), moved * 2);
+        save(&dir, &changes);
+        let reloaded = reload(&dir);
+        assert_eq!(reloaded.keybinds, target);
+        // The loader's application of the edits is what a session marks saved.
+        assert_eq!(
+            apply(&saved, &keybinding_patches(&changes).unwrap()).unwrap(),
+            reloaded
+        );
+    }
+
+    #[test]
+    fn an_unwritable_action_refuses_only_a_changed_binding() {
+        let dir = bootstrapped();
+        save(
+            &dir,
+            &[bind(InputMode::Normal, "Ctrl Alt y", vec![Action::Quit])],
+        );
+        let managed = dir.path().join("config.d").join(MANAGED_CONFIG_FILE_NAME);
+        let before = std::fs::read(&managed).unwrap();
+
+        let error = keybinding_edits(&[bind(InputMode::Normal, "Ctrl Alt u", vec![unwritable()])])
+            .unwrap_err();
+        assert!(error.contains("Ctrl Alt u"), "{error}");
+        assert!(error.contains("normal"), "{error}");
+        assert_eq!(std::fs::read(&managed).unwrap(), before);
+
+        // The same action in a binding both keymaps share is not part of the save.
+        let mut saved = Keybinds::default();
+        saved
+            .0
+            .entry(InputMode::Normal)
+            .or_default()
+            .insert(key("Ctrl Alt p"), vec![unwritable()]);
+        let mut target = saved.clone();
+        target
+            .0
+            .get_mut(&InputMode::Normal)
+            .unwrap()
+            .insert(key("Ctrl Alt u"), vec![Action::Detach]);
+        let changes = keybinding_changes(&saved, &target);
+        assert_eq!(
+            changes,
+            vec![bind(InputMode::Normal, "Ctrl Alt u", vec![Action::Detach])]
+        );
+        keybinding_edits(&changes).unwrap();
+    }
+
+    /// Once the managed file holds edits, later managed writes are validated over the whole
+    /// configuration on disk rather than over the built-in defaults.
+    #[test]
+    fn a_legacy_fragment_after_keybinding_edits_is_validated_over_the_disk_config() {
+        let dir = bootstrapped();
+        let overlay = dir.path().join("config.d");
+        save(
+            &dir,
+            &[bind(InputMode::Normal, "Ctrl Alt y", vec![Action::Quit])],
+        );
+        Config::write_managed_fragment(&overlay, "pane_frames false\n").unwrap();
+        let reloaded = reload(&dir);
+        assert_eq!(reloaded.options.pane_frames, Some(false));
+        assert_eq!(
+            reloaded.keybinds.0[&InputMode::Normal].get(&key("Ctrl Alt y")),
+            Some(&vec![Action::Quit])
+        );
+
+        let managed = overlay.join(MANAGED_CONFIG_FILE_NAME);
+        let before = std::fs::read(&managed).unwrap();
+        let broken = overlay.join("broken.kdl");
+        std::fs::write(&broken, "pane_frames {\n").unwrap();
+        let error = Config::write_managed_fragment(&overlay, "mouse_mode false\n").unwrap_err();
+        assert!(error.contains("broken.kdl"), "{error}");
+        assert_eq!(std::fs::read(&managed).unwrap(), before);
+    }
+}

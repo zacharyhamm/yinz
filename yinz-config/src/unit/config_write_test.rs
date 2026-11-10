@@ -256,3 +256,120 @@ fn invalid_generated_backup_comment_cannot_replace_the_live_config() {
         .is_err());
     assert_eq!(fs::read_to_string(path).unwrap(), original);
 }
+
+mod first_run {
+    use super::*;
+    use crate::config::{FIRST_RUN_CONFIG, MANAGED_CONFIG_FILE_NAME};
+
+    #[test]
+    fn first_run_config_is_comment_only_and_loads_as_the_defaults() {
+        let document: kdl::KdlDocument = FIRST_RUN_CONFIG.parse().unwrap();
+        assert!(document.nodes().is_empty(), "{FIRST_RUN_CONFIG}");
+        let defaults = Config::from_default_assets().unwrap();
+        assert_eq!(
+            Config::from_kdl(FIRST_RUN_CONFIG, Some(defaults.clone())).unwrap(),
+            defaults
+        );
+    }
+
+    /// Startup reads the default path; the watcher reloads through the explicit path. Both
+    /// see the defaults with only the saved fragment on top.
+    #[test]
+    fn first_run_config_and_a_managed_fragment_load_as_defaults_plus_the_fragment() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_file = dir.path().join("config.kdl");
+        assert!(Config::write_config_to_disk_if_it_does_not_exist(
+            FIRST_RUN_CONFIG.to_owned(),
+            &Some(config_file.clone())
+        ));
+        let plain = Config::load(None, Some(dir.path()), false).unwrap();
+        assert_eq!(
+            plain,
+            Config::from_default_assets()
+                .unwrap()
+                .resolve_plugin_repositories(None, Some(dir.path()))
+                .unwrap()
+        );
+        let fragment =
+            "pane_frames false\nkeybinds { normal { bind \"Ctrl Alt y\" { Quit; }; }; }\n";
+        Config::write_managed_fragment(&dir.path().join("config.d"), fragment).unwrap();
+        let expected = Config::from_kdl(fragment, Some(plain.clone())).unwrap();
+        assert_ne!(expected, plain);
+        assert_eq!(
+            Config::load(None, Some(dir.path()), false).unwrap(),
+            expected
+        );
+        assert_eq!(
+            Config::load(Some(&config_file), Some(dir.path()), false).unwrap(),
+            expected
+        );
+        assert_eq!(fs::read_to_string(&config_file).unwrap(), FIRST_RUN_CONFIG);
+        assert!(dir
+            .path()
+            .join("config.d")
+            .join(MANAGED_CONFIG_FILE_NAME)
+            .exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn first_run_config_never_replaces_or_writes_through_an_existing_path() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.kdl");
+
+        let missing = dir.path().join("missing.kdl");
+        symlink(&missing, &path).unwrap();
+        assert!(!Config::write_config_to_disk_if_it_does_not_exist(
+            FIRST_RUN_CONFIG.to_owned(),
+            &Some(path.clone())
+        ));
+        assert!(!missing.exists());
+        assert_eq!(fs::read_link(&path).unwrap(), missing);
+        fs::remove_file(&path).unwrap();
+
+        let user = dir.path().join("user.kdl");
+        fs::write(&user, "mouse_mode false\n").unwrap();
+        symlink(&user, &path).unwrap();
+        assert!(!Config::write_config_to_disk_if_it_does_not_exist(
+            FIRST_RUN_CONFIG.to_owned(),
+            &Some(path.clone())
+        ));
+        assert_eq!(fs::read_link(&path).unwrap(), user);
+        assert_eq!(fs::read_to_string(&user).unwrap(), "mouse_mode false\n");
+        fs::remove_file(&path).unwrap();
+
+        fs::write(&path, "pane_frames false\n").unwrap();
+        assert!(!Config::write_config_to_disk_if_it_does_not_exist(
+            FIRST_RUN_CONFIG.to_owned(),
+            &Some(path.clone())
+        ));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "pane_frames false\n");
+        // Only `config.kdl` and `user.kdl`: nothing staged was left behind.
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn first_run_config_in_an_unwritable_directory_writes_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("yinz");
+        fs::create_dir(&config_dir).unwrap();
+        fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o555)).unwrap();
+        // Privileged users can write despite the mode bits; honor OS access checks.
+        let can_write = tempfile::NamedTempFile::new_in(&config_dir).is_ok();
+        let path = config_dir.join("config.kdl");
+        let written = Config::write_config_to_disk_if_it_does_not_exist(
+            FIRST_RUN_CONFIG.to_owned(),
+            &Some(path.clone()),
+        );
+        if can_write {
+            assert!(written);
+        } else {
+            assert!(!written);
+            assert_eq!(fs::read_dir(&config_dir).unwrap().count(), 0);
+        }
+        fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}

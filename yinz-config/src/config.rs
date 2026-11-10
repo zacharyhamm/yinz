@@ -474,6 +474,26 @@ use yinz_runtime::consts::CONFIG_OVERLAY_DIR_NAME;
 /// A person's own config file is never rewritten for those.
 pub const MANAGED_CONFIG_FILE_NAME: &str = "yinz-managed.kdl";
 
+/// What the first start writes to a missing `config.kdl`: comments only, no settings. The
+/// shipped defaults stay embedded, so a later release's defaults are not shadowed by a copy
+/// frozen on disk. The file still has to exist:
+///
+/// - Its no-clobber creation is the first-run signal. The server launches the setup wizard
+///   only when it created this file, so the wizard runs once per config directory.
+/// - The config watcher follows `config.d` and the themes directory only while it exists.
+/// - It is where a person writes their own settings.
+///
+/// It must stay valid KDL without nodes: any node here becomes an override of the defaults.
+pub const FIRST_RUN_CONFIG: &str = "\
+// Yinz configuration.
+//
+// Settings in this file override Yinz's built-in defaults, which are not copied here.
+// Run `yinz setup --dump-config` to print every option with its default value.
+//
+// Settings saved from inside Yinz (the setup wizard, the configuration plugin or
+// `yinz action reconfigure --write`) go to config.d/yinz-managed.kdl, not to this file.
+";
+
 impl Config {
     pub fn resolve_plugin_repositories(
         mut self,

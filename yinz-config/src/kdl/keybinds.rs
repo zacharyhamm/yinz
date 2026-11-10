@@ -255,7 +255,7 @@ fn serialize_mode_title_node(_value: &Keybinds, input_modes: &BTreeSet<InputMode
 /// The `bind` lines of one mode block. An action with no KDL spelling is an error naming the
 /// binding it sits in, never a line quietly left out: a binding that vanishes on save is a
 /// binding the user loses.
-fn serialize_mode_keybinds(
+pub(crate) fn serialize_mode_keybinds(
     input_modes: &BTreeSet<InputMode>,
     keybinds: &BTreeMap<KeyWithModifier, Vec<Action>>,
 ) -> Result<KdlDocument, NotWritableIn> {
