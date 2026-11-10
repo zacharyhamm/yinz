@@ -15595,6 +15595,44 @@ fn permission_setup() -> Screen {
 }
 
 #[test]
+fn claude_permission_overlay_keeps_the_bound_run_id() {
+    use yinz_types::agent::claude_permissions::Status;
+    for status in [Status::Inactive, Status::Active] {
+        let mut screen = permission_setup();
+        // The parent snapshot was captured from hook reports, which never carry a run id.
+        assert_eq!(
+            claude_lifecycle(&screen)
+                .claude
+                .parent
+                .as_ref()
+                .and_then(|parent| parent.run_id.clone()),
+            None
+        );
+        let mut bound = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+        bound.run_id = Some("claude:conversation".into());
+        screen
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .set_pane_agent(PANE, Some(bound));
+        report_kind(&mut screen, "claude", permission_sample(status, 500_000));
+        // Any later Claude hook reconciles the parent through the permission overlay.
+        report_kind(&mut screen, "claude", hook("PostToolUse"));
+        report_kind(&mut screen, "claude", hook("Stop"));
+        assert_eq!(
+            screen
+                .get_pane_info(PANE)
+                .unwrap()
+                .agent
+                .unwrap()
+                .run_id
+                .as_deref(),
+            Some("claude:conversation"),
+            "{status:?}"
+        );
+    }
+}
+
+#[test]
 fn claude_permission_registry_overlays_parent_and_normalizes_late_reminders() {
     use yinz_types::agent::claude_permissions::Status;
     let mut screen = permission_setup();

@@ -86,6 +86,19 @@ impl Screen {
             .clone()
             .or_else(|| self.agent_worker_waits.get(&pane).map(|w| w.parent.clone()))
             .or_else(|| self.get_pane_info(pane).and_then(|p| p.agent))?;
+        // Parent snapshots come from hook reports, which never carry the run id a history
+        // plugin binds later. They supply presentation only: keep the current record's run
+        // and checkout metadata, or overlaying them would silently unbind the run.
+        if let Some(current) = self
+            .get_pane_info(pane)
+            .and_then(|p| p.agent)
+            .filter(|current| current.kind == agent.kind && current.session_id == agent.session_id)
+        {
+            agent.run_id = current.run_id;
+            if agent.cwd.is_none() {
+                agent.cwd = current.cwd;
+            }
+        }
         if agent.state != AgentState::Waiting
             && let Some(workers) = self
                 .agent_worker_waits
