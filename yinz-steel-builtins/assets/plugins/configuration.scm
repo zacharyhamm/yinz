@@ -51,9 +51,12 @@
   (define new (filter (lambda (candidate) (if (equal? modifier candidate) (not (member candidate old)) (member candidate old))) bar-modifiers))
   (if (equal? focus "primary") (set! primary new) (set! secondary new))
   (set! dirty? #t))
+;; Saves go to the managed drop-in, never to config.kdl, so the message says where.
+(define (applied-notification save?)
+  (if save? "Applied and saved to config.d/yinz-managed.kdl." "Configuration applied to current session."))
 (define (apply-rebind save?)
   (yinz-command (hash "RebindKeys" (configuration-rebind-plan mode-info primary secondary main-leader (locked?) save?)))
-  (set! screen-notification (if save? "Configuration applied and saved to disk." "Configuration applied to current session."))
+  (set! screen-notification (applied-notification save?))
   (reset-rebind))
 (define (plain? key) (null? (get key "key_modifiers" '())))
 (define (ctrl? key character)
@@ -80,7 +83,7 @@
   (yinz-command (hash "Reconfigure" (list source save?)))
   (yinz-command (hash "SwitchToMode" (if locked "Locked" "Normal")))
   (if setup? (begin (set! screen "project") (configuration-project-start))
-    (set! screen-notification (if save? "Configuration applied and saved to disk." "Configuration applied to current session."))))
+    (set! screen-notification (applied-notification save?))))
 (define (preset-key key)
   (define bare (get key "bare_key" #f))
   (cond

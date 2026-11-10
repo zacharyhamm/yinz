@@ -58,6 +58,22 @@ pub fn try_create_home_config_dir() {
     platform::try_create_home_config_dir()
 }
 
+/// The first existing conventional config dir, creating the home one only when none exists.
+///
+/// For a save into `config.d` from a session without a config dir, such as one started with
+/// only `--config <file>`: the loader and the config watcher read `config.d` from
+/// `find_default_config_dir`, so what is written here is what they find, and an existing
+/// conventional dir is never shadowed by a new home one.
+///
+/// `Config::config_file_path` deliberately does not use this: it creates the home dir before
+/// looking, so a first start prefers `~/.config/yinz` over an existing system dir.
+pub fn find_or_create_default_config_dir() -> Option<PathBuf> {
+    find_default_config_dir().or_else(|| {
+        try_create_home_config_dir();
+        find_default_config_dir()
+    })
+}
+
 pub fn system_data_dir() -> PathBuf {
     platform::system_data_dir()
 }

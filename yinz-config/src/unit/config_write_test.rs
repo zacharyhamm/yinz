@@ -311,6 +311,56 @@ mod first_run {
             .exists());
     }
 
+    /// What the bootstrap text promises: `config.d` is applied after `config.kdl` and wins, a
+    /// wizard keymap replaces all of its keybinds, and removing the managed entry lets its own
+    /// setting apply again.
+    #[test]
+    fn managed_settings_override_the_bootstrap_config_as_its_text_says() {
+        use crate::editor::{keybinding_edits, KeybindingChange};
+        use std::str::FromStr;
+        use yinz_types::{data::InputMode, keys::KeyWithModifier};
+
+        let ctrl_y = KeyWithModifier::from_str("Ctrl y").unwrap();
+        let user_config = format!(
+            "{FIRST_RUN_CONFIG}keybinds {{ normal {{ bind \"Ctrl y\" {{ SwitchToMode \"locked\"; }}; }}; }}\n"
+        );
+        let removal = keybinding_edits(&[KeybindingChange {
+            mode: InputMode::Normal,
+            key: ctrl_y.clone(),
+            actions: None,
+        }])
+        .unwrap();
+        let load_with_managed = |managed: &str| {
+            let dir = tempfile::tempdir().unwrap();
+            fs::write(dir.path().join("config.kdl"), &user_config).unwrap();
+            Config::write_managed_fragment(&dir.path().join("config.d"), managed).unwrap();
+            Config::load(None, Some(dir.path()), false).unwrap()
+        };
+        let binds_ctrl_y = |config: &Config| {
+            config
+                .keybinds
+                .0
+                .get(&InputMode::Normal)
+                .is_some_and(|keys| keys.contains_key(&ctrl_y))
+        };
+
+        let wizard = load_with_managed(
+            "keybinds clear-defaults=true { normal { bind \"Ctrl g\" { SwitchToMode \"locked\"; }; }; }",
+        );
+        assert!(
+            !binds_ctrl_y(&wizard),
+            "a wizard keymap replaces config.kdl's keybinds"
+        );
+        assert!(
+            !binds_ctrl_y(&load_with_managed(&removal)),
+            "a managed removal wins"
+        );
+        assert!(
+            binds_ctrl_y(&load_with_managed("pane_frames false")),
+            "without a managed entry for it, config.kdl's binding applies"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn first_run_config_never_replaces_or_writes_through_an_existing_path() {

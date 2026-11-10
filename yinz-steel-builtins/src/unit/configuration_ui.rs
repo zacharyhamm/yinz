@@ -619,6 +619,23 @@ fn applying_leaders_rebinds_all_modes_preserves_escape_enter_and_unrelated_actio
         .contains("Configuration applied to current session."));
 }
 
+/// A saved rebind says where it went: the managed drop-in, not config.kdl.
+#[test]
+fn saving_leaders_names_the_managed_file() {
+    let mut plugin = Configuration::new(false);
+    plugin.mode(false, initial_bindings());
+    plugin.press("Down");
+    plugin.space();
+    plugin.ctrl("a");
+    assert_eq!(plugin.last("RebindKeys")["write_config_to_disk"], true);
+    let rendered = plugin.render(30, 100);
+    assert!(
+        rendered.contains("Applied and saved to config.d/yinz-managed.kdl."),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("Configuration applied to current session."));
+}
+
 #[test]
 fn secondary_modifier_changes_move_notification_shortcut_and_preserve_exclusions() {
     for locked in [false, true] {
@@ -765,6 +782,9 @@ fn preset_navigation_applies_session_or_saved_config_in_order_and_consumes_notif
         plugin.commands().last(),
         Some(&json!({"SwitchToMode":"Normal"}))
     );
+    assert!(plugin
+        .render(30, 100)
+        .contains("Configuration applied to current session."));
     plugin.press("Esc");
     assert!(!plugin.commands().contains(&json!("CloseSelf")));
     plugin.press("Down");
@@ -775,6 +795,9 @@ fn preset_navigation_applies_session_or_saved_config_in_order_and_consumes_notif
         plugin.commands().last(),
         Some(&json!({"SwitchToMode":"Locked"}))
     );
+    assert!(plugin
+        .render(30, 100)
+        .contains("Applied and saved to config.d/yinz-managed.kdl."));
     plugin.press("Esc");
     plugin.press("Esc");
     assert_eq!(plugin.commands().last(), Some(&json!("CloseSelf")));

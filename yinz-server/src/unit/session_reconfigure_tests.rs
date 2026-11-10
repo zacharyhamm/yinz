@@ -1498,4 +1498,75 @@ mod rebind_saves {
             assert_eq!(session.session_configuration.detached_runtime_config, None);
         });
     }
+
+    fn binding_edit() -> String {
+        yinz_config::editor::keybinding_edits(&[yinz_config::editor::KeybindingChange {
+            mode: InputMode::Normal,
+            key: key("Ctrl Alt y"),
+            actions: Some(vec![Action::Quit]),
+        }])
+        .unwrap()
+    }
+
+    /// A session's own config dir is the target; the default dir is not even looked up.
+    #[test]
+    fn a_fragment_goes_to_the_sessions_config_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        write_fragment_in_config_dir(
+            Some(dir.path().to_path_buf()),
+            || panic!("the default config dir was looked up"),
+            &binding_edit(),
+        )
+        .unwrap();
+        let managed = dir.path().join("config.d").join(MANAGED_CONFIG_FILE_NAME);
+        assert!(std::fs::read_to_string(managed)
+            .unwrap()
+            .contains("\"Ctrl Alt y\""));
+    }
+
+    /// A `--config <file>` session has no config dir: the save goes to the (created) default
+    /// one, which is where its next start and the watcher read `config.d` from, and the
+    /// explicit file is left alone.
+    #[test]
+    fn an_explicit_config_sessions_fragment_goes_to_the_default_config_dir() {
+        let explicit_dir = tempfile::tempdir().unwrap();
+        let explicit = explicit_dir.path().join("my.kdl");
+        std::fs::write(&explicit, "mouse_mode false\n").unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let created = home.path().join("yinz");
+
+        write_fragment_in_config_dir(
+            None,
+            || {
+                std::fs::create_dir(&created).unwrap();
+                Some(created.clone())
+            },
+            &binding_edit(),
+        )
+        .unwrap();
+
+        assert!(created
+            .join("config.d")
+            .join(MANAGED_CONFIG_FILE_NAME)
+            .exists());
+        assert!(!explicit_dir.path().join("config.d").exists());
+        assert_eq!(
+            std::fs::read_to_string(&explicit).unwrap(),
+            "mouse_mode false\n"
+        );
+        let next_start = Config::load(Some(&explicit), Some(&created), false).unwrap();
+        assert_eq!(
+            bound(&next_start.keybinds, InputMode::Normal, "Ctrl Alt y"),
+            Some(vec![Action::Quit])
+        );
+        assert_eq!(next_start.options.mouse_mode, Some(false));
+    }
+
+    /// With no config dir to be found or made, the reason says what to do, and fits.
+    #[test]
+    fn a_fragment_with_no_config_dir_fails_with_an_actionable_reason() {
+        let result = write_fragment_in_config_dir(None, || None, &binding_edit());
+        assert_eq!(result, Err((None, NO_CONFIG_DIR_REASON.to_owned())));
+        assert!(NO_CONFIG_DIR_REASON.contains("--config-dir"));
+    }
 }

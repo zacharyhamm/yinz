@@ -868,15 +868,34 @@ enum ConfigPersistence {
 /// Merge `fragment` into the session's `config.d/yinz-managed.kdl`. The inner `Err` is the
 /// file, when one was reached, and why the write failed; the outer one is an unavailable
 /// session.
+///
+/// A session without a config dir (one started with only `--config <file>`) saves into the
+/// conventional config dir, creating the home one when none exists: that is where the loader
+/// and the watcher look for `config.d`, so the save survives a restart. The folder beside the
+/// `--config` file is never read for drop-ins.
 fn write_managed_config_fragment(
     session_data: &Arc<RwLock<Option<SessionMetaData>>>,
     fragment: &str,
 ) -> Result<std::result::Result<(), (Option<PathBuf>, String)>> {
     let config_dir = with_session(session_data, |session| session.config_dir.clone())?.flatten();
-    let overlay_dir = yinz_runtime::home::get_config_overlay_dir(
-        config_dir.or_else(yinz_runtime::home::find_default_config_dir),
-    );
-    Ok(match overlay_dir {
+    Ok(write_fragment_in_config_dir(
+        config_dir,
+        yinz_runtime::home::find_or_create_default_config_dir,
+        fragment,
+    ))
+}
+
+/// Shown, cut to one line, by the plugin that asked for the save, so it says what to do.
+const NO_CONFIG_DIR_REASON: &str = "no config directory; start Yinz with --config-dir";
+
+/// Merge `fragment` into `config.d/yinz-managed.kdl` of `config_dir`, or of `default_dir()`
+/// when the session has none. `default_dir` is only called then.
+fn write_fragment_in_config_dir(
+    config_dir: Option<PathBuf>,
+    default_dir: impl FnOnce() -> Option<PathBuf>,
+    fragment: &str,
+) -> std::result::Result<(), (Option<PathBuf>, String)> {
+    match yinz_runtime::home::get_config_overlay_dir(config_dir.or_else(default_dir)) {
         Some(dir) => Config::write_managed_fragment(&dir, fragment)
             .map(|_| ())
             .map_err(|e| {
@@ -887,11 +906,10 @@ fn write_managed_config_fragment(
                 )
             }),
         None => {
-            let reason = "no config directory to persist the config fragment in";
-            log::error!("{reason}");
-            Err((None, reason.to_owned()))
+            log::error!("Failed to persist the config fragment: {NO_CONFIG_DIR_REASON}");
+            Err((None, NO_CONFIG_DIR_REASON.to_owned()))
         },
-    })
+    }
 }
 
 fn update_new_saved_config(

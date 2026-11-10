@@ -492,6 +492,11 @@ pub const FIRST_RUN_CONFIG: &str = "\
 //
 // Settings saved from inside Yinz (the setup wizard, the configuration plugin or
 // `yinz action reconfigure --write`) go to config.d/yinz-managed.kdl, not to this file.
+//
+// Files in config.d are applied after this file, so a setting or keybinding saved there
+// replaces the same one here. A keymap chosen in the setup wizard replaces all keybinds in
+// this file. To use this file's setting instead, remove that entry from
+// config.d/yinz-managed.kdl.
 ";
 
 impl Config {
