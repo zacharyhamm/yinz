@@ -563,6 +563,28 @@ impl Screen {
         }
     }
 
+    /// Carry a plugin's run binding into the presentation snapshots kept for `agent`, so a
+    /// later republish of either snapshot neither restores an old run nor revives an unbound one.
+    pub(super) fn rebind_agent_parent_runs(&mut self, pane: PaneId, agent: &AgentInfo) {
+        let same =
+            |parent: &AgentInfo| parent.kind == agent.kind && parent.session_id == agent.session_id;
+        if let Some(parent) = self
+            .agent_lifecycle
+            .get_mut(&pane)
+            .and_then(|l| l.claude.parent.as_mut())
+            .filter(|parent| same(parent))
+        {
+            parent.run_id = agent.run_id.clone();
+        }
+        if let Some(workers) = self
+            .agent_worker_waits
+            .get_mut(&pane)
+            .filter(|w| same(&w.parent))
+        {
+            workers.parent.run_id = agent.run_id.clone();
+        }
+    }
+
     /// Claude background work an idle wait must still see finish.
     fn claude_background_pending(&self, pane: PaneId) -> bool {
         self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {

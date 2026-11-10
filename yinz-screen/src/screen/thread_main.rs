@@ -3449,6 +3449,7 @@ pub fn screen_thread_main(
                             agent
                         });
                     if let Some(agent) = updated {
+                        screen.rebind_agent_parent_runs(pane_id, &agent);
                         if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
                             tab.set_pane_agent(pane_id, Some(agent));
                         }

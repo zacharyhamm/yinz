@@ -86,12 +86,12 @@ impl Screen {
             .clone()
             .or_else(|| self.agent_worker_waits.get(&pane).map(|w| w.parent.clone()))
             .or_else(|| self.get_pane_info(pane).and_then(|p| p.agent))?;
-        // Parent snapshots come from hook reports, which never carry the run id a history
-        // plugin binds later. They supply presentation only: keep the current record's run
-        // and checkout metadata, or overlaying them would silently unbind the run.
+        // Parent snapshots supply presentation only. A snapshot taken from a hook report has
+        // no run id, and one taken earlier can predate a plugin's rebinding: keep the current
+        // record's run and checkout metadata, or overlaying them would unbind or rebind the run.
         if let Some(current) = self
-            .get_pane_info(pane)
-            .and_then(|p| p.agent)
+            .tab_containing_pane(pane)
+            .and_then(|tab| tab.pane_agent_info(pane))
             .filter(|current| current.kind == agent.kind && current.session_id == agent.session_id)
         {
             agent.run_id = current.run_id;
