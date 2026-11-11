@@ -428,6 +428,10 @@ pub trait Pane {
     }
     /// The agent running in this pane, as the session knows it. Only terminal panes have one.
     fn retire_program_status(&mut self) {}
+    /// Runtime change counter for status ingestion; reading it never clones history.
+    fn program_status_revision(&self) -> u64 {
+        0
+    }
     fn program_status(&self) -> yinz_types::program_status::ProgramStatusView {
         Default::default()
     }

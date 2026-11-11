@@ -655,6 +655,7 @@ pub struct Grid {
     pub color_palette_notification_enabled: bool,
     pub search_results: SearchResult,
     pub pending_clipboard_updates: Vec<String>,
+    program_status_revision: u64,
     pub program_status: yinz_host_protocol::program_status::ProgramStatusRecords,
     pub applicable_program_status: yinz_host_protocol::program_status::ProgramStatusRecords,
     pub pending_osc7_cwd: Option<std::path::PathBuf>,
@@ -1038,6 +1039,7 @@ impl Grid {
             kitty_host_support: KittyHostSupport::Supported,
             sixel_host_support: true,
             pending_clipboard_updates: vec![],
+            program_status_revision: 0,
             program_status: Default::default(),
             applicable_program_status: Default::default(),
             pending_osc7_cwd: None,
@@ -3254,9 +3256,19 @@ impl Grid {
     pub fn mark_for_rerender(&mut self) {
         self.should_render = true;
     }
+    /// Changes during parsing can be detected without constructing presentation snapshots.
+    pub fn program_status_revision(&self) -> u64 {
+        self.program_status_revision
+    }
+    fn advance_program_status_revision(&mut self) {
+        self.program_status_revision = self.program_status_revision.wrapping_add(1);
+    }
     pub fn reset_terminal_state(&mut self) {
-        self.program_status.clear_all();
-        self.applicable_program_status.clear_all();
+        let changed = self.program_status.clear_all();
+        let applicable_changed = self.applicable_program_status.clear_all();
+        if changed || applicable_changed {
+            self.advance_program_status_revision();
+        }
         if let Some(alternate_screen_state) = self.alternate_screen_state.as_mut() {
             alternate_screen_state.kitty_grid.teardown();
         }

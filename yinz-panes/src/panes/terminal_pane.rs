@@ -1557,6 +1557,9 @@ impl Pane for TerminalPane {
         self.grid.applicable_program_status.clear_all();
         self.set_should_render(true);
     }
+    fn program_status_revision(&self) -> u64 {
+        self.grid.program_status_revision()
+    }
     fn program_status(&self) -> yinz_types::program_status::ProgramStatusView {
         yinz_types::program_status::ProgramStatusView {
             records: self.grid.program_status.all(),

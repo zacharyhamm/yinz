@@ -18661,3 +18661,93 @@ fn osc_status_replay_requests_a_manifest_with_the_parsed_status() {
         }));
     }
 }
+
+#[test]
+fn osc7501_programmatic_enter_publishes_retirement_without_pty_output() {
+    for automated_prompt in [false, true] {
+        let (mut screen, _messages, writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        let (to_plugin, plugins) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        screen.background_plugin_subscriptions.insert(
+            (PluginId::new(99), CLIENT),
+            HashSet::from([EventType::PaneUpdate]),
+        );
+        let (to_screen, instructions) = channels::unbounded();
+        screen
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .senders
+            .to_screen = Some(SenderWithContext::new(to_screen));
+        if automated_prompt {
+            screen.agent_control_with_clear(prompt(false), CLIENT, &writes);
+            finish_paste(&writes);
+        }
+        screen
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .get_pane_with_id_mut(PANE)
+            .unwrap()
+            .handle_pty_bytes(b"\x1b]7501;state=blocked:app=codex\x07".to_vec());
+        screen.log_and_report_session_state().unwrap();
+        plugins.try_iter().for_each(drop);
+        instructions.try_iter().for_each(drop);
+        if automated_prompt {
+            // Delivery completion allows the pending prompt to send its submit key.
+            let now = Instant::now();
+            screen.refresh_agent_controls_at(now);
+            screen.refresh_agent_controls_at(now + Duration::from_secs(1));
+            assert_eq!(finish_paste(&writes), b"\r");
+        } else {
+            let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+            let writer = tab.senders.to_pty_writer.take();
+            tab.senders.should_silently_fail = false;
+            assert!(tab
+                .write_key_to_pane_id(PANE, KeyWithModifier::new(BareKey::Enter), None)
+                .is_err());
+            tab.senders.to_pty_writer = writer;
+            tab.senders.should_silently_fail = true;
+            assert!(tab
+                .get_pane_with_id(PANE)
+                .unwrap()
+                .program_status()
+                .current
+                .is_some());
+            screen.agent_control(send_keys(vec![BareKey::Char('a')]), CLIENT);
+            assert!(instructions.try_iter().all(|(instruction, _)| !matches!(
+                instruction,
+                ScreenInstruction::RequestStateUpdateForPlugins
+            )));
+            assert!(screen
+                .get_pane_info(PANE)
+                .unwrap()
+                .program_status
+                .current
+                .is_some());
+            screen.agent_control(send_keys(vec![BareKey::Enter]), CLIENT);
+        }
+        let mut requested = false;
+        for (instruction, _) in instructions.try_iter() {
+            if matches!(instruction, ScreenInstruction::RequestStateUpdateForPlugins) {
+                requested = true;
+                screen.log_and_report_session_state().unwrap();
+            }
+        }
+        assert!(requested, "automated_prompt={automated_prompt}");
+        assert!(plugins.try_iter().any(|(instruction, _)| {
+            let PluginInstruction::Update(updates) = instruction else {
+                return false;
+            };
+            updates.into_iter().any(|(_, _, event)| {
+                let Event::PaneUpdate(manifest) = event else {
+                    return false;
+                };
+                manifest.panes.values().flatten().any(|pane| {
+                    pane.id == PANE
+                        && pane.program_status.current.is_none()
+                        && pane.program_status.records.len() == 1
+                })
+            })
+        }));
+    }
+}

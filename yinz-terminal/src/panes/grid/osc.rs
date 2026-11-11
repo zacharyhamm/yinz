@@ -33,8 +33,14 @@ impl Grid {
                         .pending_messages_to_pty
                         .push(query_reply(bell_terminated)),
                     Some(message) => {
-                        self.applicable_program_status.apply(message.clone(), 0);
-                        self.program_status.apply(message, 0);
+                        // Repeated sets also update retained-record ordering.
+                        let is_set = matches!(message, ProgramStatusMessage::Set(_));
+                        let applicable_changed =
+                            self.applicable_program_status.apply(message.clone(), 0);
+                        let changed = self.program_status.apply(message, 0);
+                        if is_set || changed || applicable_changed {
+                            self.advance_program_status_revision();
+                        }
                         self.should_render = true;
                     },
                     None => {},
@@ -202,8 +208,11 @@ impl Grid {
 
             b"133" | b"633" => {
                 if params.get(1) == Some(&b"A".as_slice()) {
-                    self.program_status.drop_transient();
-                    self.applicable_program_status.clear_all();
+                    let changed = self.program_status.drop_transient();
+                    let applicable_changed = self.applicable_program_status.clear_all();
+                    if changed || applicable_changed {
+                        self.advance_program_status_revision();
+                    }
                 }
                 let marker = params.get(1).and_then(|subcommand| match *subcommand {
                     b"A" => Some(Osc133MarkerKind::Prompt),

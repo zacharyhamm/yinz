@@ -265,3 +265,56 @@ fn osc7501_lifetime_and_screen_switching() {
     parser.advance(&mut grid, b"\x1bc");
     assert!(grid.program_status.is_empty());
 }
+
+#[test]
+fn osc7501_revision_tracks_parsed_changes_without_reading_history() {
+    let mut grid = create_grid_with_content("");
+    let mut parser = vte::Parser::new();
+    let initial = grid.program_status_revision();
+    for bytes in [
+        b"ordinary output".as_slice(),
+        b"\x1b]7501;?\x07",
+        b"\x1b]7501;state=invalid\x07",
+        b"\x1b]7501;state=clear\x07",
+        b"\x1b]133;A\x07",
+        b"\x1bc",
+    ] {
+        parser.advance(&mut grid, bytes);
+        assert_eq!(grid.program_status_revision(), initial);
+    }
+    // Fill the retained history with maximum-size messages.
+    let message = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        "a".repeat(yinz_host_protocol::program_status::MAX_MSG_DECODED_BYTES),
+    );
+    for id in 0..yinz_host_protocol::program_status::MAX_RECORDS {
+        parser.advance(
+            &mut grid,
+            format!("\x1b]7501;state=done:id=r{id}:msg={message}\x07").as_bytes(),
+        );
+    }
+    let populated = grid.program_status_revision();
+    parser.advance(&mut grid, b"ordinary output");
+    assert_eq!(grid.program_status_revision(), populated);
+    parser.advance(&mut grid, b"\x1b]7501;state=blocked:id=worker");
+    assert_eq!(grid.program_status_revision(), populated);
+    parser.advance(&mut grid, b"\x07");
+    assert_ne!(grid.program_status_revision(), populated);
+    let set = grid.program_status_revision();
+    parser.advance(&mut grid, b"\x1b]7501;state=blocked:id=worker\x07");
+    assert_ne!(grid.program_status_revision(), set);
+    let repeated = grid.program_status_revision();
+    parser.advance(&mut grid, b"\x1b]633;A\x07");
+    assert_ne!(grid.program_status_revision(), repeated);
+    assert!(grid.applicable_program_status.is_empty());
+    assert!(!grid.program_status.is_empty());
+    let retired = grid.program_status_revision();
+    parser.advance(&mut grid, b"ordinary output\x1b]133;A\x07");
+    assert_eq!(grid.program_status_revision(), retired);
+    parser.advance(&mut grid, b"\x1b]7501;state=clear:id=r1\x07");
+    assert_ne!(grid.program_status_revision(), retired);
+    let cleared = grid.program_status_revision();
+    parser.advance(&mut grid, b"\x1bc");
+    assert_ne!(grid.program_status_revision(), cleared);
+    assert!(grid.program_status.is_empty());
+}

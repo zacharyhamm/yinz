@@ -601,6 +601,7 @@ impl Grid {
                 state.applicable_program_status,
             )
             .map_err(|e| anyhow!(e))?;
+        self.advance_program_status_revision();
         self.title = state.title;
         self.is_scrolled = state.is_scrolled;
         self.ring_bell = state.ring_bell;

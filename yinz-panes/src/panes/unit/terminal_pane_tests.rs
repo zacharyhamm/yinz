@@ -3667,7 +3667,9 @@ fn osc7501_transfer_preserves_records_and_applicability() {
     assert_eq!(before.records.len(), 2);
     let state = pane.terminal_state().unwrap();
     let mut destination = agent_pane();
+    let revision = destination.program_status_revision();
     destination.restore_terminal_state(&state).unwrap();
+    assert_ne!(destination.program_status_revision(), revision);
     assert_eq!(destination.program_status(), before);
     destination.set_running_program(Some("codex".into()));
     destination.set_running_program(Some("bash".into()));
