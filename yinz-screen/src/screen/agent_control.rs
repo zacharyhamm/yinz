@@ -799,12 +799,12 @@ impl Screen {
                 });
         }
         // A pre-removal sample may already be frozen by the closing operation.
-        if self
-            .get_pane_info(pane)
-            .is_none_or(|info| info.agent.is_none())
-        {
-            // A validated SessionEnd may already have frozen the original identity.
-            // Keep its original insertion time through held/close callbacks.
+        if self.get_pane_info(pane).is_none_or(|info| {
+            info.agent
+                .is_none_or(|agent| agent.state == AgentState::Exited)
+        }) {
+            // SessionEnd or HoldPane may already have frozen the original identity.
+            // An exited record cannot resample completion; preserve the original TTL.
             return;
         }
         let Some(proof) = self.closed_agent_proof(pane) else {
@@ -2117,7 +2117,9 @@ impl Screen {
                 return;
             }
             self.prune_closed_agents(now);
-            if self.agent_status(pane, None).is_none()
+            if self
+                .agent_status(pane, None)
+                .is_none_or(|status| status.agent.state == AgentState::Exited)
                 && let Some((_, proof, _, _)) =
                     self.closed_agent_submissions
                         .iter()

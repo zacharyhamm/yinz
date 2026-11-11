@@ -17252,6 +17252,169 @@ fn issue85_session_end_freezes_completion_before_clearing_identity() {
 }
 
 #[test]
+fn issue85_hold_without_session_end_preserves_completion_through_pane_and_tab_close() {
+    for close_tab in [false, true] {
+        let (mut screen, messages, writes) = setup("claude");
+        report_kind(&mut screen, "claude", issue85_sourced(hook("SessionStart")));
+        screen.agent_control_with_clear(identified_prompt("held", true), CLIENT, &writes);
+        finish_paste(&writes);
+        report_kind(
+            &mut screen,
+            "claude",
+            issue85_sourced(hook("UserPromptSubmit")),
+        );
+        report_kind(&mut screen, "claude", issue85_answer(false));
+        replies(&messages, CLIENT);
+
+        // Match HoldPane's ordering without receiving a provider SessionEnd.
+        screen.invalidate_agent_lifecycle(PANE, "held");
+        let frozen = screen.closed_agent_submissions.clone();
+        assert_eq!(frozen.len(), 1);
+        let proof = &frozen.front().unwrap().1;
+        assert!(proof.answered && proof.quiescent);
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        tab.hold_pane(PANE, Some(0), false, tab.pane_run_command(PANE).unwrap());
+        let info = screen.get_pane_info(PANE).unwrap();
+        assert!(info.is_held && info.exited);
+        assert_eq!(info.agent.unwrap().state, AgentState::Exited);
+        assert!(!screen.agent_lifecycle.contains_key(&PANE));
+
+        for closed in [false, true] {
+            if closed {
+                if close_tab {
+                    screen.close_tab_by_id(TabId::new(0)).unwrap();
+                } else {
+                    screen.close_pane_explicitly(PANE, None);
+                }
+                assert!(screen.get_pane_info(PANE).is_none());
+            } else {
+                // Even a later cleanup callback must preserve the first sample's TTL.
+                screen
+                    .retain_closed_agent(PANE, frozen.front().unwrap().0 + Duration::from_secs(1));
+            }
+            assert_eq!(screen.closed_agent_submissions, frozen);
+            for _ in 0..2 {
+                screen.agent_control(wait_submission("held"), CLIENT);
+                let response = replies(&messages, CLIENT).pop().unwrap();
+                assert_eq!(response.outcome, AgentOutcome::Completed);
+                assert!(response.agents.is_empty());
+                assert!(response.acknowledged);
+                assert_eq!(response.submission_id.as_deref(), Some("held"));
+                assert_eq!(response.turn_id, proof.turn_id);
+                assert_eq!(response.prompt_delivery, Some(proof.prompt_delivery));
+                assert_eq!(response.message.as_deref(), Some("DONE"));
+                assert_eq!(response.retained_submission.as_ref(), Some(proof));
+                assert_eq!(screen.closed_agent_submissions, frozen);
+            }
+        }
+        assert!(finish_paste(&writes).is_empty());
+    }
+}
+
+#[test]
+fn issue85_hold_without_session_end_preserves_completion_guards() {
+    for case in [
+        "busy",
+        "background",
+        "interrupted",
+        "legacy",
+        "unknown-idle",
+        "input",
+        "replaced",
+        "expired",
+        "wrong-conversation",
+        "unpinned",
+        "wrong-submission",
+    ] {
+        let (mut screen, messages, writes) = setup("claude");
+        report_kind(&mut screen, "claude", issue85_sourced(hook("SessionStart")));
+        screen.agent_control_with_clear(identified_prompt("held-guard", true), CLIENT, &writes);
+        finish_paste(&writes);
+        report_kind(
+            &mut screen,
+            "claude",
+            issue85_sourced(hook("UserPromptSubmit")),
+        );
+        if case != "busy" {
+            let mut answer = issue85_answer(case == "background");
+            if case == "legacy" {
+                answer.claude_answered = None;
+            } else if case == "interrupted" {
+                answer.claude_answered = Some(false);
+            } else if case == "unknown-idle" {
+                answer.claude_background = None;
+            }
+            report_kind(&mut screen, "claude", answer);
+        }
+        replies(&messages, CLIENT);
+        screen.invalidate_agent_lifecycle(PANE, "held");
+        let qualified = !matches!(
+            case,
+            "busy" | "background" | "interrupted" | "legacy" | "unknown-idle"
+        );
+        assert_eq!(
+            screen.closed_agent_submissions.len(),
+            usize::from(qualified),
+            "{case}"
+        );
+        if case == "input" {
+            screen
+                .tab_containing_pane_mut(PANE)
+                .unwrap()
+                .write_key_to_pane_id(PANE, KeyWithModifier::new(BareKey::Char('x')), None)
+                .unwrap();
+            assert_eq!(finish_paste(&writes), b"x");
+        }
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        tab.hold_pane(PANE, Some(0), false, tab.pane_run_command(PANE).unwrap());
+        assert_eq!(
+            screen.get_pane_info(PANE).unwrap().agent.unwrap().state,
+            AgentState::Exited
+        );
+        if case == "replaced" {
+            screen.invalidate_agent_lifecycle(PANE, "rerun");
+        } else if case == "expired" {
+            screen.closed_agent_submissions.front_mut().unwrap().0 =
+                Instant::now() - Duration::from_secs(86401);
+        }
+
+        let mut request = wait_submission("held-guard");
+        if let AgentRequest::WaitTurn {
+            expected_session_id,
+            submission_id,
+            ..
+        } = &mut request
+        {
+            match case {
+                "wrong-conversation" => *expected_session_id = Some("other".into()),
+                "unpinned" => *expected_session_id = None,
+                "wrong-submission" => *submission_id = "other".into(),
+                _ => {},
+            }
+        }
+        for closed in [false, true] {
+            if closed {
+                screen.close_pane_explicitly(PANE, None);
+            }
+            for _ in 0..2 {
+                screen.agent_control(request.clone(), CLIENT);
+                let response = replies(&messages, CLIENT).pop().unwrap();
+                assert_ne!(
+                    response.outcome,
+                    AgentOutcome::Completed,
+                    "{case} closed={closed}"
+                );
+                assert!(
+                    response.retained_submission.is_none(),
+                    "{case} closed={closed}"
+                );
+            }
+        }
+        assert!(finish_paste(&writes).is_empty());
+    }
+}
+
+#[test]
 fn issue85_positive_interruption_is_terminal_after_uncertainty_and_repeated_waits() {
     for unavailable in [false, true] {
         for waiting_client in [false, true] {
