@@ -107,7 +107,12 @@ impl Screen {
                 id
             },
             PaneTabsCommand::Close { id } => {
-                self.pane_tabs_tab_mut(id)?.close_pane_tabs(id)?;
+                let pane = self
+                    .pane_tabs_tab_mut(id)?
+                    .pane_tabs_info(id)
+                    .context("unknown pane tabs")?
+                    .pane_id;
+                self.close_pane_explicitly(pane, None);
                 return Ok(None);
             },
         };

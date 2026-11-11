@@ -17890,3 +17890,329 @@ fn issue85_closing_lent_stand_in_does_not_archive_the_surviving_lender() {
     assert!(screen.closed_agent_submissions.is_empty());
     assert!(finish_paste(&writes).is_empty());
 }
+
+#[test]
+fn issue85_plugin_pane_tabs_close_retains_completion_and_cleans_up_once() {
+    for selected in ["terminal", "loaded", "loading"] {
+        issue85_plugin_pane_tabs_close_case(selected, "qualified");
+    }
+}
+
+#[test]
+fn issue85_plugin_pane_tabs_close_preserves_execution_guards() {
+    for state in [
+        "busy",
+        "background",
+        "person",
+        "input",
+        "replaced",
+        "interrupted",
+    ] {
+        issue85_plugin_pane_tabs_close_case("loaded", state);
+    }
+}
+
+fn issue85_plugin_pane_tabs_close_case(selected: &str, state: &str) {
+    use yinz_types::pane_tabs::{PaneTabDescriptor, PaneTabsCommand, PaneTabsLayout};
+    let (mut screen, messages, writes) = setup("claude");
+    let survivor = PaneId::Terminal(TerminalId::new(98));
+    let plugin = PluginId::new(100);
+    let (plugin_tx, plugins) = channels::unbounded();
+    let (pty_tx, ptys) = channels::unbounded();
+    let (screen_tx, notifications) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx.clone()));
+    let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(plugin_tx));
+    tab.senders.replace_to_pty(SenderWithContext::new(pty_tx));
+    tab.senders.to_screen = Some(SenderWithContext::new(screen_tx));
+    let command = tab.pane_run_command(PANE).unwrap();
+    tab.new_pane(
+        survivor,
+        None,
+        Some(Run::Command(command)),
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(CLIENT),
+        None,
+    )
+    .unwrap();
+    tab.handle_pty_bytes(TerminalId::new(98), b"\x1b[?2004h".to_vec())
+        .unwrap();
+    let info = screen
+        .pane_tabs_command(
+            PaneTabsCommand::Mount {
+                pane_id: PANE,
+                layout: PaneTabsLayout {
+                    active: 0,
+                    tabs: ["Worker", "Overview"]
+                        .map(|label| PaneTabDescriptor {
+                            label: label.into(),
+                            location: "yinz:fixture-plugin-for-tests".into(),
+                            configuration: BTreeMap::new(),
+                            initial_cwd: None,
+                        })
+                        .to_vec(),
+                },
+                existing: 0,
+            },
+            CLIENT,
+        )
+        .unwrap()
+        .unwrap();
+    screen
+        .pane_tabs_command(
+            PaneTabsCommand::Select {
+                id: info.id,
+                index: 1,
+            },
+            CLIENT,
+        )
+        .unwrap();
+    let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "yinz:fixture-plugin-for-tests",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
+    if selected != "loading" {
+        screen
+            .pane_tab_loaded(info.id, 1, 1, Ok((plugin, run.clone())))
+            .unwrap();
+    }
+    if selected == "terminal" {
+        screen
+            .pane_tabs_command(
+                PaneTabsCommand::Select {
+                    id: info.id,
+                    index: 0,
+                },
+                CLIENT,
+            )
+            .unwrap();
+    }
+    let mounted = screen
+        .tab_containing_pane(PANE)
+        .unwrap()
+        .pane_tabs_info(info.id)
+        .unwrap();
+    assert_eq!(mounted.active, usize::from(selected != "terminal"));
+    assert_eq!(
+        mounted.tabs[1].plugin_id,
+        (selected != "loading").then_some(plugin)
+    );
+
+    // Compose before acknowledgement; keep the provider live without a shutdown/held snapshot.
+    let mut original = None;
+    for (pane, submission) in [(PANE, "plugin-close"), (survivor, "survivor")] {
+        issue85_report_at(&mut screen, pane, issue85_sourced(hook("SessionStart")));
+        screen.agent_control_with_clear(issue85_prompt_at(pane, submission), CLIENT, &writes);
+        finish_paste(&writes);
+        issue85_report_at(&mut screen, pane, issue85_sourced(hook("UserPromptSubmit")));
+        if pane != PANE || state != "busy" {
+            let mut answer = issue85_answer(pane == PANE && state == "background");
+            if pane == PANE && state == "interrupted" {
+                answer.claude_turn_complete = Some(false);
+                answer.claude_answered = Some(false);
+                answer.claude_interrupted = Some(true);
+            }
+            issue85_report_at(&mut screen, pane, answer);
+        }
+        let response = replies(&messages, CLIENT).pop();
+        if pane == PANE {
+            original = response;
+        } else {
+            assert_eq!(response.unwrap().outcome, AgentOutcome::Completed);
+        }
+    }
+    match state {
+        "person" => report_kind(
+            &mut screen,
+            "claude",
+            issue85_sourced(permission_wait("claude")),
+        ),
+        "input" => {
+            screen
+                .tab_containing_pane_mut(PANE)
+                .unwrap()
+                .write_key_to_pane_id(PANE, KeyWithModifier::new(BareKey::Char('x')), None)
+                .unwrap();
+            assert_eq!(finish_paste(&writes), b"x");
+        },
+        "replaced" => report_kind(
+            &mut screen,
+            "claude",
+            with_notification_source(
+                HookEvent {
+                    session_id: "replacement".into(),
+                    ..hook("SessionStart")
+                },
+                replacement_source(),
+            ),
+        ),
+        _ => {},
+    }
+    assert!(screen.get_pane_info(PANE).unwrap().agent.is_some());
+    assert!(screen.closed_agent_submissions.is_empty());
+    if state == "qualified" {
+        assert_eq!(original.as_ref().unwrap().outcome, AgentOutcome::Completed);
+    }
+    let mut expected = vec![PANE, info.pane_id];
+    if selected != "loading" {
+        expected.push(PaneId::Plugin(plugin));
+    }
+    expected.sort();
+    expected.dedup();
+    screen
+        .current_pane_group
+        .borrow_mut()
+        .restore_client_group(CLIENT, expected.iter().copied().chain([survivor]).collect());
+    // Discard setup notifications; only closure effects below are counted.
+    plugins.try_iter().for_each(drop);
+    ptys.try_iter().for_each(drop);
+    notifications.try_iter().for_each(drop);
+    assert_eq!(
+        screen
+            .pane_tabs_command(PaneTabsCommand::Close { id: info.id }, CLIENT)
+            .unwrap(),
+        None
+    );
+    for pane in &expected {
+        assert!(screen.get_pane_info(*pane).is_none());
+        assert!(screen.destroyed_panes.contains(pane));
+        assert!(!screen.agent_submissions.contains_key(pane));
+    }
+    assert_eq!(
+        screen
+            .current_pane_group
+            .borrow()
+            .get_client_pane_group(&CLIENT),
+        [survivor].into_iter().collect()
+    );
+    assert!(screen.get_pane_info(survivor).is_some());
+    assert!(screen
+        .tab_containing_pane(survivor)
+        .unwrap()
+        .pane_tabs_info(info.id)
+        .is_none());
+    let focused = screen.get_active_pane_id(&CLIENT).unwrap();
+    assert!(!expected.contains(&focused));
+    assert!(screen.get_pane_info(focused).is_some());
+    let mut announced: Vec<_> = plugins
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PluginInstruction::Update(events) => events
+                .into_iter()
+                .filter_map(|(_, _, event)| match event {
+                    Event::PaneClosed(id) => Some(id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => vec![],
+        })
+        .collect();
+    announced.sort();
+    assert_eq!(announced, expected);
+    let mut terminated: Vec<_> = ptys
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PtyInstruction::ClosePane(id, _) => Some(id),
+            _ => None,
+        })
+        .collect();
+    terminated.sort();
+    assert_eq!(terminated, expected);
+    let mut deferred: Vec<_> = notifications
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            ScreenInstruction::NotifyPaneClosedToSubscribers { pane_id } => Some(pane_id),
+            _ => None,
+        })
+        .collect();
+    deferred.sort();
+    assert_eq!(deferred, expected);
+    let frozen = screen.closed_agent_submissions.clone();
+    assert!(frozen
+        .iter()
+        .all(|(_, proof, _, _)| proof.pane_id != survivor));
+    for _ in 0..2 {
+        screen.agent_control(wait_submission("plugin-close"), CLIENT);
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        assert!(response.agents.is_empty());
+        assert_eq!(response.submission_id.as_deref(), Some("plugin-close"));
+        if state == "qualified" {
+            let original = original.as_ref().unwrap();
+            assert_eq!(response.outcome, AgentOutcome::Completed, "{selected}");
+            assert_eq!(response.turn_id, original.turn_id);
+            assert_eq!(response.acknowledged, original.acknowledged);
+            assert_eq!(response.prompt_delivery, original.prompt_delivery);
+            assert_eq!(response.message.as_deref(), Some("DONE"));
+            let proof = response.retained_submission.unwrap();
+            assert_eq!(proof, frozen[0].1);
+            assert_eq!(proof.pane_id, PANE);
+            assert_eq!(proof.conversation_id, "conversation");
+            assert_eq!(
+                proof.server_instance,
+                yinz_bus::agent_launch::server_instance()
+            );
+            assert_eq!(proof.session, screen.session_name.to_string());
+            assert_eq!(proof.kind, "claude");
+            assert_eq!(proof.cwd, "/work");
+            assert_eq!(proof.submission_id, "plugin-close");
+            assert_eq!(proof.turn_id, original.turn_id);
+            assert_eq!(proof.prompt_id, "prompt");
+            assert_eq!(proof.acknowledged, original.acknowledged);
+            assert_eq!(Some(proof.prompt_delivery), original.prompt_delivery);
+            assert_eq!(proof.outcome, original.outcome);
+            assert_eq!(proof.message, original.message);
+            assert!(proof.answered && proof.quiescent);
+        } else {
+            assert_eq!(response.outcome, AgentOutcome::TargetClosed, "{state}");
+            assert!(response.retained_submission.is_none());
+        }
+        // The screen loop later processes these same removal notifications.
+        for pane in &deferred {
+            screen.cleanup_closed_pane(*pane);
+            assert!(screen.destroyed_panes.contains(pane));
+            assert!(!screen.agent_submissions.contains_key(pane));
+        }
+        assert_eq!(
+            screen
+                .pane_tabs_command(PaneTabsCommand::Close { id: info.id }, CLIENT)
+                .unwrap_err()
+                .to_string(),
+            "unknown pane tabs"
+        );
+        assert_eq!(screen.closed_agent_submissions, frozen);
+    }
+    assert!(!ptys
+        .try_iter()
+        .any(|(instruction, _)| matches!(instruction, PtyInstruction::ClosePane(..))));
+    assert!(!notifications.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        ScreenInstruction::NotifyPaneClosedToSubscribers { .. }
+    )));
+    assert!(!plugins
+        .try_iter()
+        .any(|(instruction, _)| match instruction {
+            PluginInstruction::Update(events) => events
+                .iter()
+                .any(|(_, _, event)| matches!(event, Event::PaneClosed(_))),
+            _ => false,
+        }));
+    // A child finishing its load after removal must be disposed, never resurrect the tabs.
+    screen
+        .pane_tab_loaded(info.id, 1, 1, Ok((PluginId::new(101), run)))
+        .unwrap();
+    assert!(plugins
+        .try_iter()
+        .any(|(instruction, _)| matches!(instruction,
+        PluginInstruction::Unload(id) if id == PluginId::new(101))));
+    assert!(screen
+        .get_pane_info(PaneId::Plugin(PluginId::new(101)))
+        .is_none());
+    assert_eq!(screen.closed_agent_submissions, frozen);
+    assert!(finish_paste(&writes).is_empty());
+}
