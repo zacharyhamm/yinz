@@ -2358,6 +2358,84 @@ fn smaller_client_centers_entire_view_and_detach_restores_origin() {
     assert_eq!(cursor, Some(pane_cursor(&mut screen, client)));
 }
 
+#[test]
+fn native_client_centers_entire_view_and_mouse_coordinates() {
+    let large = Size {
+        cols: 101,
+        rows: 31,
+    };
+    let mut screen = create_new_screen(large, true, true);
+    let client = ClientId::new(1);
+    let other = ClientId::new(2);
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.add_client(other).expect("TEST");
+    screen
+        .set_client_size(other, Size { cols: 80, rows: 24 })
+        .expect("TEST");
+    screen.resize_to_clients().expect("TEST");
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(1), b"CENTERED".to_vec())
+        .unwrap();
+    let receiver = screen_wired_to_server(&mut screen);
+    screen
+        .native_render_clients
+        .insert(client, Default::default());
+    screen.render_to_clients().unwrap();
+    let frames = receiver
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            ServerInstruction::RenderFrames(frames) => Some(frames),
+            _ => None,
+        })
+        .unwrap();
+    let frame = yinz_types::structured_render::decode(&frames[&client]).unwrap();
+    let cursor = Some((
+        frame.header().cursor_x as usize,
+        frame.header().cursor_y as usize,
+    ));
+    let logical_cursor = pane_cursor(&mut screen, client);
+    assert_eq!(cursor, Some((logical_cursor.0 + 10, logical_cursor.1 + 3)));
+    assert_eq!(screen.client_presentations[&client].1.offset(), (10, 3));
+    assert_eq!(screen.client_presentations[&other].1.offset(), (0, 0));
+    assert_eq!(
+        screen.client_presentations[&client].1.background,
+        screen.style.pane_surround()
+    );
+
+    let geometry = frame.geometry().unwrap();
+    assert!(geometry
+        .panes
+        .iter()
+        .all(|pane| pane.x >= 10 && pane.y >= 3));
+    assert!(frame.rows().any(|(row, cells)| row.y >= 3
+        && row.x0 >= 10
+        && cells.iter().any(|cell| cell.character() != ' ')));
+    let (to_plugin, plugin_receiver) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    screen.handle_mouse_event(
+        MouseEvent::new_right_press_event(Position::new(0, 0)),
+        client,
+    );
+    assert!(!plugin_receiver.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        PluginInstruction::RequestContextMenu { .. }
+    )));
+    screen.handle_mouse_event(
+        MouseEvent::new_right_press_event(Position::new(6, 16)),
+        client,
+    );
+    let click = plugin_receiver
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            PluginInstruction::RequestContextMenu { context, .. } => Some(context.click),
+            _ => None,
+        });
+    assert_eq!(click, Some((6, 3)));
+}
+
 fn centered_mouse_test_screen() -> Screen {
     let mut screen = create_new_screen(
         Size {

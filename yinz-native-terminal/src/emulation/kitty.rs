@@ -107,6 +107,18 @@ fn clipboard_body(osc: &[u8]) -> Option<String> {
     String::from_utf8(decoded).ok()
 }
 
+/// Decode terminal clipboard instructions without applying unrelated side effects.
+pub fn clipboard_update(content: &str) -> Option<String> {
+    let mut parser = ApcFilter::new();
+    let mut text = None;
+    for byte in content.bytes() {
+        if let Kind::Signal(OscSignal::Clipboard(value)) = parser.advance(byte).kind {
+            text = Some(value);
+        }
+    }
+    text
+}
+
 fn osc_signal(osc: &[u8]) -> Option<OscSignal> {
     if osc.starts_with(b"9;") || osc.starts_with(b"99;") {
         return notification_chunk(osc).map(OscSignal::Notification);

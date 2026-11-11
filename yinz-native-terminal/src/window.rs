@@ -35,6 +35,42 @@ use yinz_types::mouse::{MouseEvent, MouseEventType};
 use yinz_types::pane_size::{Size, SizeInPixels};
 use yinz_types::position::Position;
 
+#[derive(Default)]
+struct ScrollAccumulator {
+    x: f64,
+    y: f64,
+}
+
+impl ScrollAccumulator {
+    fn steps(&mut self, delta: MouseScrollDelta, width: f64, height: f64) -> (i32, i32) {
+        let (x, y) = match delta {
+            MouseScrollDelta::LineDelta(x, y) => (x as f64, y as f64),
+            MouseScrollDelta::PixelDelta(position) => (position.x / width, position.y / height),
+        };
+        fn accumulate(remainder: &mut f64, delta: f64) -> i32 {
+            if !delta.is_finite() {
+                return 0;
+            }
+            let total = *remainder + delta;
+            *remainder = total.fract();
+            // Discard excess whole steps so a large event cannot create a deferred tail.
+            total.trunc().clamp(-20.0, 20.0) as i32
+        }
+        let y = accumulate(&mut self.y, y);
+        // Keep the per-event budget at 20, with the server's vertical priority.
+        let budget = 20 - y.abs();
+        let x = accumulate(&mut self.x, x).clamp(-budget, budget);
+        (x, y)
+    }
+}
+
+fn open_link(uri: &str) {
+    links::open(uri)
+        .map_err(|error| anyhow!("{error}"))
+        .context("open native terminal hyperlink")
+        .non_fatal();
+}
+
 struct Surfaces {
     // Drop GPU resources while the context and window are still alive.
     renderer: Renderer,
@@ -60,6 +96,7 @@ struct App {
     composition: Composition,
     clipboard: ClipboardHandle,
     pointer: (f64, f64),
+    scroll: ScrollAccumulator,
     buttons: (bool, bool, bool),
     selection: Option<Selection>,
     mouse_mode: bool,
@@ -105,6 +142,7 @@ pub fn run(args: TerminalArgs, opts: CliArgs) -> Result<()> {
         alt_keys: keyboard::AltKeys::default(),
         composition: Composition::new(),
         pointer: (0.0, 0.0),
+        scroll: ScrollAccumulator::default(),
         buttons: (false, false, false),
         selection: None,
         mouse_mode: true,
@@ -153,6 +191,43 @@ fn font_options(settings: &TerminalConfig, zoom: f32) -> FontOptions {
             ..Default::default()
         },
         ..Default::default()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn native_option_as_alt(
+    setting: yinz_types::input::native_terminal::OptionAsAlt,
+) -> winit::platform::macos::OptionAsAlt {
+    use winit::platform::macos::OptionAsAlt as Native;
+    use yinz_types::input::native_terminal::OptionAsAlt;
+    match setting {
+        OptionAsAlt::None => Native::None,
+        OptionAsAlt::Left => Native::OnlyLeft,
+        OptionAsAlt::Right => Native::OnlyRight,
+        OptionAsAlt::Both => Native::Both,
+    }
+}
+
+// Consume one message per wake, keeping recoverable diagnostics out of the
+// window's fatal-error path while preserving connection and explicit exit errors.
+fn receive_message(
+    messages: Option<&Receiver<ServerToClientMsg>>,
+) -> Result<Option<ServerToClientMsg>> {
+    match messages.map(|messages| messages.try_recv()) {
+        Some(Ok(ServerToClientMsg::LogError { lines })) => {
+            for line in lines {
+                log::error!("{line}");
+            }
+            Ok(None)
+        },
+        Some(Ok(ServerToClientMsg::Exit {
+            exit_reason: yinz_ipc::ipc::ExitReason::Error(message),
+        })) => anyhow::bail!("{message}"),
+        Some(Ok(message)) => Ok(Some(message)),
+        Some(Err(mpsc::TryRecvError::Disconnected)) => {
+            anyhow::bail!("the native session connection closed unexpectedly")
+        },
+        _ => Ok(None),
     }
 }
 
@@ -230,6 +305,13 @@ impl App {
         {
             use winit::platform::wayland::WindowAttributesExtWayland;
             attrs = attrs.with_name("yinz", "Yinz");
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::WindowAttributesExtMacOS;
+            attrs = attrs.with_option_as_alt(native_option_as_alt(
+                self.settings.macos_option_as_alt.unwrap_or_default(),
+            ));
         }
         let (window, config) = DisplayBuilder::new()
             .with_window_attributes(Some(attrs))
@@ -385,6 +467,13 @@ impl App {
             surfaces
                 .window
                 .set_blur(self.settings.blur.unwrap_or(false));
+            #[cfg(target_os = "macos")]
+            {
+                use winit::platform::macos::WindowExtMacOS;
+                surfaces.window.set_option_as_alt(native_option_as_alt(
+                    self.settings.macos_option_as_alt.unwrap_or_default(),
+                ));
+            }
         }
         self.rebuild_fonts()
     }
@@ -422,9 +511,6 @@ impl App {
                 }
                 self.pacer.schedule();
             },
-            ServerToClientMsg::Exit {
-                exit_reason: yinz_ipc::ipc::ExitReason::Error(message),
-            } => anyhow::bail!("{message}"),
             ServerToClientMsg::Exit { .. } => event_loop.exit(),
             ServerToClientMsg::SwitchSession { connect_to_session } => {
                 // Reuse this window and its GPU resources for the new session.
@@ -438,10 +524,6 @@ impl App {
                     }
                 }
                 self.messages.take();
-                self.args.session_name = connect_to_session
-                    .name
-                    .as_ref()
-                    .map(|name| name.to_string());
                 self.args.create = true;
                 let connection = session::connect_to(
                     &self.args,
@@ -468,12 +550,17 @@ impl App {
                         let _ = proxy.send_event(());
                     })
                     .context("spawn switched native reader")?;
+                self.args.session_name = Some(connection.name);
                 self.messages = Some(rx);
                 self.state = TerminalState::new(self.state.size().rows, self.state.size().cols);
                 self.retained = RetainedScene::new();
                 self.resize()?;
             },
-            ServerToClientMsg::ClipboardUpdate { content } => self.set_clipboard(content),
+            ServerToClientMsg::ClipboardUpdate { content } => {
+                if let Some(text) = crate::emulation::kitty::clipboard_update(&content) {
+                    self.set_clipboard(text);
+                }
+            },
             ServerToClientMsg::ConfigFileUpdated => self.reload()?,
             ServerToClientMsg::SetMouseMode { enabled } => self.mouse_mode = enabled,
             ServerToClientMsg::ForwardQueryToHost {
@@ -499,7 +586,6 @@ impl App {
                 })?;
             },
             ServerToClientMsg::QueryTerminalSize => self.resize()?,
-            ServerToClientMsg::LogError { lines } => anyhow::bail!("{}", lines.join("\n")),
             // An initial ANSI repaint may already be queued before capability negotiation.
             ServerToClientMsg::Render { .. } => {},
             _ => {},
@@ -726,7 +812,7 @@ impl App {
                 {
                     let (row, col) = self.cell();
                     if let Some(link) = links::run_at(self.state.screen(), row, col) {
-                        links::open(&link.uri).map_err(|error| anyhow!("{error}"))?;
+                        open_link(&link.uri);
                     }
                 } else if button == MouseButton::Left
                     && (self.modifiers.shift_key() || !self.mouse_mode)
@@ -770,16 +856,17 @@ impl App {
                 }
             },
             WindowEvent::MouseWheel { delta, .. } => {
-                let (x, y) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (x as f64, y as f64),
-                    MouseScrollDelta::PixelDelta(position) => (
-                        position.x / self.cache.metrics().width as f64,
-                        position.y / self.cache.metrics().height as f64,
-                    ),
-                };
-                let steps = x.abs().max(y.abs()).ceil().min(20.0) as usize;
-                for _ in 0..steps {
-                    self.mouse(MouseEventType::Press, (y > 0.0, y < 0.0, x < 0.0, x > 0.0))?;
+                let metrics = self.cache.metrics();
+                let (x, y) = self
+                    .scroll
+                    .steps(delta, metrics.width as f64, metrics.height as f64);
+                // Wheel directions are separate events: the server handles only one
+                // direction per event, so combining axes would lose horizontal steps.
+                for _ in 0..y.abs() {
+                    self.mouse(MouseEventType::Press, (y > 0, y < 0, false, false))?;
+                }
+                for _ in 0..x.abs() {
+                    self.mouse(MouseEventType::Press, (false, false, x < 0, x > 0))?;
                 }
             },
             _ => {},
@@ -881,17 +968,14 @@ impl ApplicationHandler<()> for App {
         // The reader posts one wake for each bounded-queue message. Handle one
         // per event so continuous output cannot grow a backlog of stale wakes
         // while an unbounded drain loop keeps the window from drawing.
-        match self.messages.as_ref().map(|messages| messages.try_recv()) {
-            Some(Ok(message)) => {
+        match receive_message(self.messages.as_ref()) {
+            Ok(Some(message)) => {
                 if let Err(error) = self.handle_message(message, event_loop) {
                     self.fail(error, event_loop);
                 }
             },
-            Some(Err(mpsc::TryRecvError::Disconnected)) => self.fail(
-                anyhow!("the native session connection closed unexpectedly"),
-                event_loop,
-            ),
-            _ => {},
+            Err(error) => self.fail(error, event_loop),
+            Ok(None) => {},
         }
     }
 
@@ -951,3 +1035,7 @@ fn paints_for(
             cursor: None,
         })
 }
+
+#[cfg(test)]
+#[path = "unit/window_tests.rs"]
+mod tests;

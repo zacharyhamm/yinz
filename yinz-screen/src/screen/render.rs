@@ -627,8 +627,16 @@ impl Screen {
                         output.set_native_geometry(*client, tab.native_geometry(*client));
                     }
                 }
-                let native_frames =
-                    output.serialize_native(&mut self.native_render_clients, &self.client_sizes);
+                let presentations = self
+                    .client_presentations
+                    .iter()
+                    .map(|(client, (_, presentation))| (*client, *presentation))
+                    .collect();
+                let native_frames = output.serialize_native(
+                    &mut self.native_render_clients,
+                    &self.client_sizes,
+                    &presentations,
+                );
                 if !native_frames.is_empty() {
                     self.bus
                         .senders

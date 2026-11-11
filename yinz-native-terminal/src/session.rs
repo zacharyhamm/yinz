@@ -65,21 +65,10 @@ pub fn connect_to(
         .context("load native client configuration")?;
     let sessions = yinz_session::sessions::get_sessions()
         .map_err(|error| anyhow!("list local sessions: {error:?}"))?;
-    let name = if let Some(name) = args.session_name.as_ref().or(opts.session.as_ref()) {
-        yinz_session::sessions::validate_session_name(name).map_err(|error| anyhow!("{error}"))?;
-        name.clone()
-    } else {
-        match sessions.as_slice() {
-            [(name, _)] => name.to_string(),
-            [] => yinz_session::sessions::generate_random_name(),
-            _ => anyhow::bail!(
-                "several local sessions exist; select one with `yinz terminal <session>`"
-            ),
-        }
-    };
+    let name = select_session_name(args, opts, &sessions, target)?;
     let new = !sessions.iter().any(|(session, _)| session.as_str() == name);
     anyhow::ensure!(
-        !new || args.create || args.session_name.is_none(),
+        !new || target.is_some() || args.create || args.session_name.is_none(),
         "session {name:?} does not exist; use --create"
     );
     let path = yinz_runtime::consts::YINZ_SOCK_DIR.join(&name);
@@ -140,6 +129,39 @@ pub fn connect_to(
         receiver,
         name,
     })
+}
+
+fn select_session_name(
+    args: &TerminalArgs,
+    opts: &CliArgs,
+    sessions: &[(yinz_types::internal_ids::SessionName, Duration)],
+    target: Option<&yinz_types::data::SessionConnection>,
+) -> Result<String> {
+    let explicit = match target {
+        Some(target) => target.name.as_ref().map(|name| name.as_str()),
+        None => args.session_name.as_deref().or(opts.session.as_deref()),
+    };
+    if let Some(name) = explicit {
+        yinz_session::sessions::validate_session_name(name).map_err(|error| anyhow!("{error}"))?;
+        return Ok(name.to_owned());
+    }
+    // An unnamed reconnect requests a new session, regardless of startup arguments
+    // or how many sessions are already running.
+    if target.is_none() {
+        match sessions {
+            [(name, _)] => return Ok(name.to_string()),
+            [] => {},
+            _ => anyhow::bail!(
+                "several local sessions exist; select one with `yinz terminal <session>`"
+            ),
+        }
+    }
+    loop {
+        let name = yinz_session::sessions::generate_random_name();
+        if !sessions.iter().any(|(session, _)| session.as_str() == name) {
+            return Ok(name);
+        }
+    }
 }
 
 pub struct Recorder(Option<File>);
@@ -221,3 +243,7 @@ pub struct Geometry {
     pub cell_width: usize,
     pub cell_height: usize,
 }
+
+#[cfg(test)]
+#[path = "unit/session_tests.rs"]
+mod tests;

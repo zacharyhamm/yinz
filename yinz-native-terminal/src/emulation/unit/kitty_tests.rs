@@ -197,3 +197,31 @@ fn the_digest_separates_images_that_differ_by_one_byte() {
     assert_eq!(one.digest(), one.clone().digest());
     assert_ne!(one.digest(), other.digest());
 }
+
+#[test]
+fn clipboard_updates_decode_only_complete_osc52_writes() {
+    use base64::Engine as _;
+    for destination in ["c", "p"] {
+        for terminator in ["\x07", "\x1b\\"] {
+            for text in ["", "copied", "界\nselection"] {
+                let encoded = BASE64.encode(text);
+                let content = format!("\x1b]52;{destination};{encoded}{terminator}");
+                assert_eq!(clipboard_update(&content).as_deref(), Some(text));
+            }
+        }
+    }
+    for content in [
+        "plain text",
+        "\x1b]52;c;?\x07",
+        "\x1b]52;c;%%%\x07",
+        "\x1b]52;c;/w==\x07",
+        "\x1b]52;c;YQ==",
+        "\x1b]2;title\x07",
+    ] {
+        assert_eq!(clipboard_update(content), None, "{content:?}");
+    }
+    assert_eq!(
+        clipboard_update("\x1b]52;c;YQ==\x07\x1b]52;p;Yg==\x1b\\"),
+        Some("b".into())
+    );
+}

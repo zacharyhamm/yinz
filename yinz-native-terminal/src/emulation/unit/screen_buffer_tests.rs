@@ -501,3 +501,19 @@ fn a_reshape_leaves_no_link_behind() {
     assert_eq!(buffer.link_id_at(0, 0), 5);
     assert_eq!(buffer.link_at(0, 0), None);
 }
+
+#[test]
+fn default_cursor_requests_use_native_preferences() {
+    use yinz_types::structured_render::CURSOR_SHAPE_DEFAULT;
+    let mut buffer = ScreenBuffer::new(1, 2);
+    let mut builder = FrameBuilder::new(2, 1, 1);
+    builder.set_cursor(CursorState {
+        shape: CURSOR_SHAPE_DEFAULT,
+        visible: true,
+        ..CursorState::default()
+    });
+    apply(&mut buffer, &builder.finish()).unwrap();
+    for configured in [CursorShape::Beam, CursorShape::Underline] {
+        assert_eq!(buffer.cursor_shape().or(Some(configured)), configured);
+    }
+}

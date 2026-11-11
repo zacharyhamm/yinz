@@ -1,7 +1,7 @@
 //! Structured counterpart of the ANSI serializer. Both consume the same composed chunks.
 use super::*;
 use crate::panes::terminal_character::{AnsiStyledUnderline, NamedColor};
-use yinz_types::structured_render::*;
+use yinz_types::{data::PaletteColor, structured_render::*};
 
 #[derive(Default)]
 pub struct NativeRenderState {
@@ -11,6 +11,7 @@ pub struct NativeRenderState {
     cursor: CursorState,
     links: Vec<String>,
     size: Option<Size>,
+    presentation: Option<Presentation>,
 }
 
 impl NativeRenderState {
@@ -32,6 +33,7 @@ impl Output {
         &mut self,
         clients: &mut HashMap<ClientId, NativeRenderState>,
         sizes: &HashMap<ClientId, Size>,
+        presentations: &HashMap<ClientId, Presentation>,
     ) -> HashMap<ClientId, Vec<u8>> {
         let mut frames = HashMap::new();
         for (client, state) in clients {
@@ -42,17 +44,25 @@ impl Output {
                 cols: 120,
                 rows: 40,
             });
+            let presentation = presentations.get(client).copied();
+            let (dx, dy) = presentation.map_or((0, 0), Presentation::offset);
             state.seq += 1;
             let mut builder = FrameBuilder::new(
                 size.cols.min(u16::MAX as usize) as u16,
                 size.rows.min(u16::MAX as usize) as u16,
                 state.seq,
             );
-            let mut cleared =
-                self.clients_with_cleared_host_display.remove(client) || state.size != Some(size);
+            let mut cleared = self.clients_with_cleared_host_display.remove(client)
+                || state.size != Some(size)
+                || state.presentation != presentation;
+            if cleared {
+                // Full repaints reset the receiver's cells and hyperlink table together.
+                state.links.clear();
+            }
             builder.set_full_repaint(cleared);
             builder.set_clear(cleared);
             state.size = Some(size);
+            state.presentation = presentation;
             for instructions in [
                 self.pre_vte_instructions.remove(client),
                 self.post_vte_instructions.get(client).cloned(),
@@ -73,12 +83,15 @@ impl Output {
                         .extend_from_slice(instruction.as_bytes());
                 }
             }
+            if cleared && let Some(presentation) = presentation {
+                paint_native_margins(&mut builder, presentation);
+            }
             let handler = self
                 .client_link_handlers
                 .get(client)
                 .map(|handler| handler.borrow());
             for chunk in chunks {
-                if chunk.x >= size.cols || chunk.y >= size.rows {
+                if chunk.x + dx >= size.cols || chunk.y + dy >= size.rows {
                     continue;
                 }
                 let mut cells = Vec::new();
@@ -88,7 +101,7 @@ impl Output {
                     if width == 0 {
                         continue;
                     }
-                    if col + width > size.cols {
+                    if col + width + dx > size.cols {
                         break;
                     }
                     let styles = adjust_styles_for_custom_bg_fg(
@@ -124,7 +137,7 @@ impl Output {
                     }));
                     col += width;
                 }
-                builder.push_row(chunk.y as u16, chunk.x as u16, &cells);
+                builder.push_row((chunk.y + dy) as u16, (chunk.x + dx) as u16, &cells);
             }
             builder.push_links(&LinkRecord {
                 entries: state
@@ -137,10 +150,17 @@ impl Output {
                     })
                     .collect(),
             });
-            if let Some(geometry) = self.native_geometry.remove(client) {
+            if let Some(mut geometry) = self.native_geometry.remove(client) {
+                for pane in &mut geometry.panes {
+                    pane.x = pane.x.saturating_add(dx.min(u16::MAX as usize) as u16);
+                    pane.y = pane.y.saturating_add(dy.min(u16::MAX as usize) as u16);
+                }
                 builder.push_geometry(&geometry);
             }
-            builder.set_cursor(state.cursor);
+            let mut cursor = state.cursor;
+            cursor.x = cursor.x.saturating_add(dx.min(u16::MAX as usize) as u16);
+            cursor.y = cursor.y.saturating_add(dy.min(u16::MAX as usize) as u16);
+            builder.set_cursor(cursor);
             self.post_vte_instructions.remove(client);
             // Sixel already has cropped, occluded slices at this stage.
             if let Some(chunks) = self.sixel_chunks.remove(client) {
@@ -153,8 +173,8 @@ impl Output {
                         chunk.sixel_image_pixel_height,
                     ) {
                         builder.extend_graphics(&[GraphicsRecord::SixelChunk {
-                            cell_x: chunk.cell_x as u32,
-                            cell_y: chunk.cell_y as u32,
+                            cell_x: (chunk.cell_x + dx) as u32,
+                            cell_y: (chunk.cell_y + dy) as u32,
                             pixel_x: 0,
                             pixel_y: 0,
                             pixel_width: chunk.sixel_image_pixel_width as u32,
@@ -195,10 +215,52 @@ impl Output {
             )
             .context("flatten native graphics")
             .non_fatal();
+            for record in &mut records {
+                if let GraphicsRecord::Placement { cell_x, cell_y, .. } = record {
+                    *cell_x = cell_x.saturating_add(dx as u32);
+                    *cell_y = cell_y.saturating_add(dy as u32);
+                }
+            }
             builder.extend_graphics(&records);
             frames.insert(*client, builder.finish());
         }
         frames
+    }
+}
+
+// Gutters use explicit cells because native clients do not interpret ANSI erases.
+fn paint_native_margins(builder: &mut FrameBuilder, presentation: Presentation) {
+    let (dx, dy) = presentation.offset();
+    let bg = match presentation.background {
+        PaletteColor::Rgb((r, g, b)) => WireColor::Rgb(r, g, b),
+        PaletteColor::EightBit(n) => WireColor::Indexed(n),
+    }
+    .pack();
+    let cell = WireCell {
+        ch: ' ' as u32,
+        bg,
+        ..WireCell::default()
+    };
+    for y in 0..presentation.terminal.rows {
+        let spans = if y < dy || y >= dy + presentation.content.rows {
+            [(0, presentation.terminal.cols), (0, 0)]
+        } else {
+            [
+                (0, dx),
+                (
+                    dx + presentation.content.cols,
+                    presentation
+                        .terminal
+                        .cols
+                        .saturating_sub(dx + presentation.content.cols),
+                ),
+            ]
+        };
+        for (x, width) in spans {
+            if width > 0 {
+                builder.push_row(y as u16, x as u16, &vec![cell; width]);
+            }
+        }
     }
 }
 
@@ -226,6 +288,7 @@ impl vte::Perform for CursorControl<'_> {
             ('q', [b' ']) => {
                 let style = args.first().copied().unwrap_or(0);
                 self.cursor.shape = match style {
+                    0 => CURSOR_SHAPE_DEFAULT,
                     3 | 4 => CURSOR_SHAPE_UNDERLINE,
                     5 | 6 => CURSOR_SHAPE_BEAM,
                     _ => CURSOR_SHAPE_BLOCK,
