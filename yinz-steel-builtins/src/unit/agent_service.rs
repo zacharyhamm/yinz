@@ -1636,6 +1636,123 @@ fn weekly_usage_publishes_both_providers_and_throttles_requests() {
 }
 
 #[test]
+fn osc_status_observer_samples_provider_activity() {
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+    use yinz_types::program_status::{ProgramState, ProgramStatusRecord};
+
+    for source in [
+        AgentSource::Spawned,
+        AgentSource::Registered,
+        AgentSource::Reported,
+    ] {
+        for state in [ProgramState::Working, ProgramState::Blocked] {
+            let (mut runtime, host) = plugin_with_source(
+                "agent-service",
+                r#"
+                (require "./agent-service/state.scm" "./agent-service/observe.scm")
+                (define (load _)
+                  (as-reset!)
+                  (for-each (lambda (name) (as-register! name (lambda args (void))))
+                    '("resolve-repositories" "adopt-arrived-runs" "finish-run")))
+                (define (rebuild manifest) (as-set! "manifest" manifest) (as-rebuild!))
+                (define (observe) (as-call "observe"))
+                (define (view) (as-pane 7))
+                "#,
+                json!({}),
+                BTreeMap::from([(
+                    "GetPaneScrollback".into(),
+                    json!({
+                        "lines_above_viewport":[], "viewport":["provider output"],
+                        "lines_below_viewport":[], "is_scrolled":false, "last_output_ms_ago":0
+                    }),
+                )]),
+                "",
+            );
+            let mut pane = yinz_types::data::PaneInfo {
+                id: yinz_types::pane_id::PaneId::from_legacy(7, false),
+                title: "claude".into(),
+                terminal_command: Some("claude".into()),
+                agent: Some(AgentInfo {
+                    kind: "claude".into(),
+                    state: AgentState::Idle,
+                    session_id: Some("conversation".into()),
+                    source,
+                    detail: Some("provider detail".into()),
+                    waiting_on: None,
+                    wait_needs_a_person: false,
+                    cwd: Some("/work".into()),
+                    run_id: Some("provider-run".into()),
+                }),
+                ..Default::default()
+            };
+            let overlay = ProgramStatusRecord {
+                state: Some(state),
+                msg: Some("OSC detail".into()),
+                ..Default::default()
+            };
+            // The first sample is busy; an unchanged sample becomes idle. Both
+            // transitions must reach the provider while OSC owns the display.
+            for phase in [AgentState::Busy, AgentState::Idle, AgentState::Idle] {
+                pane.program_status.current = Some(overlay.clone());
+                runtime
+                    .invoke("rebuild", vec![json!({"panes":{"0":[pane]}})])
+                    .unwrap();
+                let view = runtime.invoke("view", vec![]).unwrap();
+                let provider = serde_json::to_value(pane.agent.as_ref().unwrap()).unwrap();
+                assert_eq!(view["provider_agent"], provider);
+                assert_eq!(view["agent"]["source"], "Reported");
+                assert_eq!(view["agent"]["detail"], "OSC detail");
+                assert_eq!(
+                    view["agent"]["state"],
+                    json!(pane.program_status.agent_state(AgentState::Idle))
+                );
+                host.lock().unwrap().commands.clear();
+
+                runtime.invoke("observe", vec![]).unwrap();
+
+                let updates: Vec<_> = host
+                    .lock()
+                    .unwrap()
+                    .commands
+                    .iter()
+                    .filter_map(|command| command.get("SetPaneAgentActivity").cloned())
+                    .collect();
+                let changes =
+                    source != AgentSource::Reported && pane.agent.as_ref().unwrap().state != phase;
+                assert_eq!(
+                    updates.len(),
+                    usize::from(changes),
+                    "{source:?}, {state:?}, {phase:?}"
+                );
+                if changes {
+                    assert_eq!(
+                        updates[0],
+                        json!({"pane_id":{"Terminal":7}, "expected":provider, "state":phase})
+                    );
+                    // Apply the guarded update as the host would, then publish
+                    // the new provider record under the same presentation status.
+                    pane.agent.as_mut().unwrap().state = phase;
+                }
+                runtime
+                    .invoke("rebuild", vec![json!({"panes":{"0":[pane]}})])
+                    .unwrap();
+                let view = runtime.invoke("view", vec![]).unwrap();
+                assert_eq!(view["agent"]["detail"], "OSC detail");
+                assert_eq!(view["provider_agent"], json!(pane.agent));
+
+                pane.program_status.current = None;
+                runtime
+                    .invoke("rebuild", vec![json!({"panes":{"0":[pane]}})])
+                    .unwrap();
+                let view = runtime.invoke("view", vec![]).unwrap();
+                assert_eq!(view["agent"], json!(pane.agent));
+                assert_eq!(view["agent"], view["provider_agent"]);
+            }
+        }
+    }
+}
+
+#[test]
 fn osc_status_preserves_provider_feeds_and_restores_display_when_cleared() {
     use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
     use yinz_types::program_status::{ProgramState, ProgramStatusRecord, ProgramStatusView};

@@ -3677,9 +3677,14 @@ impl Screen {
             .non_fatal();
     }
 
-    pub(super) fn agent_control_event(&mut self, event: &AgentEvent, hook: Option<&HookEvent>) {
+    /// Whether this event completed a correlated pending prompt.
+    pub(super) fn agent_control_event(
+        &mut self,
+        event: &AgentEvent,
+        hook: Option<&HookEvent>,
+    ) -> bool {
         if hook.is_some_and(|hook| hook.archive_only) {
-            return;
+            return false;
         }
         let pane = PaneId::Terminal(event.pane_id);
         let parent = hook.is_some_and(|hook| !hook.is_worker());
@@ -4079,7 +4084,7 @@ impl Screen {
             self.retain_claude_evidence(pane, hook);
         }
         self.reconcile_claude_activity(pane, event, hook);
-        self.correlate_agent_submissions(event, hook);
+        self.correlate_agent_submissions(event, hook)
     }
 
     /// A recovered turn already has its lifecycle. Native evidence may still acknowledge
@@ -4128,7 +4133,11 @@ impl Screen {
         self.correlate_agent_submissions(event, Some(hook));
     }
 
-    fn correlate_agent_submissions(&mut self, event: &AgentEvent, hook: Option<&HookEvent>) {
+    fn correlate_agent_submissions(
+        &mut self,
+        event: &AgentEvent,
+        hook: Option<&HookEvent>,
+    ) -> bool {
         let pane = PaneId::Terminal(event.pane_id);
         let parent = hook.is_some_and(|hook| !hook.is_worker());
         // Passive observations and matching shutdown preserve facts; actual activity invalidates them.
@@ -4168,6 +4177,7 @@ impl Screen {
                 .retain(|(_, proof, _, _)| proof.pane_id != pane);
         }
         let mut terminal_claim = None;
+        let mut completed = false;
         let claude_claims: Vec<_> = self
             .agent_controls
             .iter()
@@ -4229,6 +4239,7 @@ impl Screen {
                     .as_mut()
                     .and_then(|prompt| prompt.observe(event, hook))
             };
+            completed |= outcome == Some(AgentOutcome::Completed);
             if outcome == Some(AgentOutcome::Completed)
                 && parent
                 && hook.is_some_and(|hook| {
@@ -4343,6 +4354,7 @@ impl Screen {
             self.agent_terminal_claims.insert(pane, claim);
         }
         self.prune_agent_submissions(&protected);
+        completed
     }
 
     pub(super) fn agent_control_deadline(&self) -> Option<Duration> {

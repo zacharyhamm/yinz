@@ -123,7 +123,7 @@
           (or (not moved) (and (as-present? output-ago) (<= output-ago (as-get "poll-window"))))))
       (as-set! "activity" (as-model "Observe" (as-get "activity") id (if usable text json-null)))
       (define pane (as-pane id))
-      (define agent (and pane (hash-ref pane "agent")))
+      (define agent (and pane (hash-ref pane "provider_agent")))
       (define activity (as-map-get "activity" id #f))
       (when (and (as-present? agent) activity (not (equal? (hash-ref agent "source") "Reported")))
         (define phase (if (= (cadr activity) 0) "Busy" "Idle"))

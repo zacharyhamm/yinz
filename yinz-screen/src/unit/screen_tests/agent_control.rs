@@ -18381,6 +18381,152 @@ fn issue85_plugin_pane_tabs_close_case(selected: &str, state: &str) {
 }
 
 #[test]
+fn osc7501_correlated_completion_retires_status_after_removing_pending_control() {
+    for kind in ["claude", "agy", "codex"] {
+        for state in ["working", "blocked"] {
+            for wait in [false, true] {
+                let (mut screen, messages, writes) = setup(kind);
+                report_kind(&mut screen, kind, hook("SessionStart"));
+                screen.agent_control_with_clear(prompt(wait), CLIENT, &writes);
+                finish_paste(&writes);
+                report_kind(&mut screen, kind, hook("UserPromptSubmit"));
+                assert_eq!(screen.agent_controls.len(), 1);
+                assert!(screen
+                    .event_submission(PANE, &hook("UserPromptSubmit"))
+                    .is_some());
+                replies(&messages, CLIENT);
+                screen
+                    .tab_containing_pane_mut(PANE)
+                    .unwrap()
+                    .get_pane_with_id_mut(PANE)
+                    .unwrap()
+                    .handle_pty_bytes(
+                        format!("\x1b]7501;state={state}:app={kind}\x07").into_bytes(),
+                    );
+                assert!(screen
+                    .get_pane_info(PANE)
+                    .unwrap()
+                    .program_status
+                    .current
+                    .is_some());
+
+                report_kind(&mut screen, kind, hook("Stop"));
+
+                assert!(
+                    screen.agent_controls.is_empty(),
+                    "{kind}, {state}, wait={wait}"
+                );
+                assert!(screen
+                    .event_submission(PANE, &hook("UserPromptSubmit"))
+                    .is_none());
+                let pane = screen.get_pane_info(PANE).unwrap();
+                assert!(
+                    pane.program_status.current.is_none(),
+                    "{kind}, {state}, wait={wait}"
+                );
+                assert_eq!(pane.program_status.records.len(), 1);
+                assert_eq!(pane.agent.unwrap().state, AgentState::Idle);
+                if wait {
+                    assert_eq!(
+                        replies(&messages, CLIENT).pop().unwrap().outcome,
+                        AgentOutcome::Completed
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn osc7501_unaccepted_stops_preserve_status() {
+    for kind in ["claude", "agy", "codex"] {
+        for case in [
+            "unsubmitted",
+            "uncorrelated",
+            "unconfirmed",
+            "worker",
+            "archive",
+        ] {
+            for state in ["working", "blocked"] {
+                let (mut screen, _messages, writes) = setup(kind);
+                report_kind(&mut screen, kind, hook("SessionStart"));
+                screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+                finish_paste(&writes);
+                if case != "unsubmitted" {
+                    report_kind(&mut screen, kind, hook("UserPromptSubmit"));
+                }
+                screen
+                    .tab_containing_pane_mut(PANE)
+                    .unwrap()
+                    .get_pane_with_id_mut(PANE)
+                    .unwrap()
+                    .handle_pty_bytes(
+                        format!("\x1b]7501;state={state}:app={kind}\x07").into_bytes(),
+                    );
+                let status = screen.get_pane_info(PANE).unwrap().program_status;
+                let mut stop = hook("Stop");
+                match case {
+                    "uncorrelated" => {
+                        stop.prompt_id = Some("other-prompt".into());
+                        stop.turn_id = Some("other-turn".into());
+                    },
+                    "unconfirmed" => {
+                        stop.claude_turn_complete = None;
+                        stop.agy_turn_complete = None;
+                        if kind == "codex" {
+                            stop.turn_id = None;
+                        }
+                    },
+                    "worker" => stop.agent_id = Some("worker".into()),
+                    "archive" => stop.archive_only = true,
+                    _ => {},
+                }
+                report_kind(&mut screen, kind, stop);
+                assert_eq!(
+                    screen.get_pane_info(PANE).unwrap().program_status,
+                    status,
+                    "{kind}, {case}, {state}"
+                );
+                assert_eq!(screen.agent_controls.len(), 1, "{kind}, {case}, {state}");
+            }
+        }
+    }
+}
+
+#[test]
+fn osc7501_correlated_prompt_submission_retires_status() {
+    for kind in ["claude", "agy", "codex"] {
+        let (mut screen, _messages, writes) = setup(kind);
+        report_kind(&mut screen, kind, hook("SessionStart"));
+        screen.agent_control_with_clear(prompt(false), CLIENT, &writes);
+        finish_paste(&writes);
+        screen
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .get_pane_with_id_mut(PANE)
+            .unwrap()
+            .handle_pty_bytes(format!("\x1b]7501;state=blocked:app={kind}\x07").into_bytes());
+        let status = screen.get_pane_info(PANE).unwrap().program_status;
+        report_kind(
+            &mut screen,
+            kind,
+            HookEvent {
+                agent_id: Some("worker".into()),
+                ..hook("UserPromptSubmit")
+            },
+        );
+        assert_eq!(screen.get_pane_info(PANE).unwrap().program_status, status);
+        report_kind(&mut screen, kind, hook("UserPromptSubmit"));
+        assert!(screen
+            .event_submission(PANE, &hook("UserPromptSubmit"))
+            .is_some());
+        let pane = screen.get_pane_info(PANE).unwrap();
+        assert!(pane.program_status.current.is_none(), "{kind}");
+        assert_eq!(pane.program_status.records.len(), 1);
+    }
+}
+
+#[test]
 fn osc7501_enter_publishes_retirement_without_pty_output() {
     for sync in [false, true] {
         let (mut screen, _messages, _writes) = setup("codex");

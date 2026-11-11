@@ -440,7 +440,7 @@ pub(super) fn apply_queued_agent_report(
     );
     result?;
     if let Some(event) = &report.event {
-        screen.agent_control_event(event, hook.as_ref());
+        let completed = screen.agent_control_event(event, hook.as_ref());
         if trace.enabled {
             let lifecycle = screen
                 .get_pane_info(pane_id)
@@ -467,9 +467,9 @@ pub(super) fn apply_queued_agent_report(
         let retire_status = hook.as_ref().is_some_and(|hook| {
             !hook.is_worker()
                 && !hook.archive_only
-                && submission.is_some()
-                && (hook.hook_event_name == "UserPromptSubmit"
+                && ((hook.hook_event_name == "UserPromptSubmit" && submission.is_some())
                     || (hook.hook_event_name == "Stop"
+                        && completed
                         && (hook.claude_turn_complete == Some(true)
                             || hook.agy_turn_complete == Some(true)
                             || (report.kind == "codex" && hook.turn_id.is_some()))))
