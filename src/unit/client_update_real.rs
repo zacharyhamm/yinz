@@ -153,6 +153,15 @@ impl Fixture {
             "--create-background",
             SESSION,
         ]);
+        // The background command returns after sending startup assets, before
+        // the server has finished initializing. An immediate interactive attach
+        // can exhaust its short session probe and exit without ever attaching.
+        // Wait for the actual main-loop reply, then verify initialized inventory.
+        let mut source =
+            crate::live_update::transport::Connection::connect(&self.socket()).unwrap();
+        source
+            .request(&uuid::Uuid::new_v4().to_string(), SessionCommand::Inventory)
+            .unwrap();
     }
 }
 
@@ -336,7 +345,13 @@ impl Drop for Attached {
             let _ = capture.join();
         }
         if std::thread::panicking() {
-            eprintln!("terminal: {}", String::from_utf8_lossy(&self.screen.lock()));
+            let screen = self.screen.lock();
+            let tail = &screen[screen.len().saturating_sub(16 * 1024)..];
+            eprintln!(
+                "terminal tail ({} total bytes): {}",
+                screen.len(),
+                String::from_utf8_lossy(tail)
+            );
         }
     }
 }
@@ -860,6 +875,7 @@ fn coordinator_test_worker() {
     let path =
         std::env::var_os("YINZ_TEST_UPDATE_COORDINATOR").expect("coordinator fixture request");
     let request: CoordinatorFixture = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    eprintln!("coordinator stage: open journal");
     let mut store = crate::live_update::journal::Store::open_with_channel(
         &request.socket,
         &request.data,
@@ -868,7 +884,9 @@ fn coordinator_test_worker() {
         request.release.channel,
     )
     .unwrap();
+    eprintln!("coordinator stage: connect source");
     let mut source = crate::live_update::transport::Connection::connect(&request.socket).unwrap();
+    eprintln!("coordinator stage: inventory source");
     let mut inventory: Inventory = serde_json::from_value(
         source
             .request(&request.operation, SessionCommand::Inventory)
@@ -885,6 +903,7 @@ fn coordinator_test_worker() {
         // installation must be discovered and staged by the same transaction.
         inventory.clients.truncate(1);
     }
+    eprintln!("coordinator stage: execute release");
     crate::live_update::coordinator::execute_release(
         &mut store,
         &mut source,
@@ -892,6 +911,51 @@ fn coordinator_test_worker() {
         request.release,
     )
     .unwrap();
+    eprintln!("coordinator stage: complete");
+}
+
+fn coordinator_diagnostics(fixture: &Fixture, operation: &str, log_path: &Path) -> String {
+    let log = fs::read(log_path).unwrap_or_default();
+    let log = String::from_utf8_lossy(&log[log.len().saturating_sub(16 * 1024)..]);
+    let journal_path = fixture
+        .data
+        .join("updates")
+        .join(operation)
+        .join("journal.json");
+    let journal: serde_json::Value = fs::read(journal_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    let participants: Vec<_> = journal["participants"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|p| serde_json::json!({"route": p["route"], "state": p["state"]}))
+        .collect();
+    let mut transfers = Vec::new();
+    for data in [
+        &fixture.data,
+        &fixture.root.path().join("second-client-data"),
+    ] {
+        let directory = data
+            .join("updates")
+            .join(operation)
+            .join("source-artifacts");
+        for entry in fs::read_dir(directory).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if matches!(
+                path.extension().and_then(|s| s.to_str()),
+                Some("part" | "gz")
+            ) {
+                transfers.push(format!(
+                    "{}: {} bytes",
+                    path.display(),
+                    entry.metadata().map(|m| m.len()).unwrap_or_default()
+                ));
+            }
+        }
+    }
+    format!("log tail: {log}\nphase: {}; participants: {participants:?}; errors: {}; source transfers: {transfers:?}", journal["phase"], journal["errors"])
 }
 
 #[test]
@@ -1108,12 +1172,12 @@ fn check_full_update_coordinator(from_source: bool, stale_clients: bool) {
             |state| state.clone(),
             |state| format!(
                 "worker outcome: {state:?}; log: {}",
-                fs::read_to_string(&log_path).unwrap_or_default()
+                coordinator_diagnostics(&fixture, &operation, &log_path)
             ),
         )
     }).unwrap_or_else(|error| panic!(
         "{error}; log: {}",
-        fs::read_to_string(&log_path).unwrap_or_default()
+        coordinator_diagnostics(&fixture, &operation, &log_path)
     ));
     assert!(
         status.success(),
@@ -1258,6 +1322,16 @@ fn source_fixture_release(fixture: &Fixture, operation: &str) -> crate::update::
     let target = crate::update::target(std::env::consts::OS, std::env::consts::ARCH).unwrap();
     let binary = fixture.root.path().join("source-yinz");
     fs::copy(&fixture.binary, &binary).unwrap();
+    // Release packages strip symbols. Keep all of this checkout's executable
+    // code, but omit compiler/debug metadata from the transport fixture too.
+    // Otherwise chunk count grows with debug info rather than the behavior this
+    // correctness test covers, spending minutes launching per-chunk helpers.
+    let stripped = Command::new("strip")
+        .arg("--strip-all")
+        .arg(&binary)
+        .output()
+        .expect("source update fixture requires binutils strip");
+    assert!(stripped.status.success(), "strip fixture: {stripped:?}");
     // A changed executable with the same Cargo version makes a version-only
     // no-op or readiness check observable without building a second workspace.
     fs::OpenOptions::new()
@@ -1282,6 +1356,15 @@ fn source_fixture_release(fixture: &Fixture, operation: &str) -> crate::update::
         size: fs::metadata(&archive).unwrap().len(),
         binary_sha256: artifacts::digest_file(&binary).unwrap(),
     };
+    assert!(
+        artifact.size > 2 * artifacts::CHUNK_SIZE as u64,
+        "fixture must stream multiple bounded chunks"
+    );
+    eprintln!(
+        "source fixture: executable={} bytes, archive={} bytes",
+        fs::metadata(&binary).unwrap().len(),
+        artifact.size
+    );
     crate::update::Release {
         channel: Default::default(),
         source: Some(crate::update::SourceRelease {

@@ -233,9 +233,19 @@ impl Updates {
     }
 }
 
+fn write_participant_input(output: impl Write, invocation: &ParticipantInvocation) -> Result<()> {
+    // SourceChunk's JSON byte array produces a write for each number and separator.
+    // Batch those writes before reaching the temporary file; a source update can
+    // carry thousands of chunks through this path. Flush before measuring/rewinding
+    // the file, and propagate errors rather than relying on BufWriter's Drop.
+    let mut output = std::io::BufWriter::new(output);
+    serde_json::to_writer(&mut output, invocation).context("encode participant input")?;
+    output.flush().context("flush participant input")
+}
+
 fn participant(executable: &Path, invocation: ParticipantInvocation) -> Result<serde_json::Value> {
     let mut input = tempfile::tempfile().context("create participant input")?;
-    serde_json::to_writer(&mut input, &invocation).context("encode participant input")?;
+    write_participant_input(&mut input, &invocation)?;
     anyhow::ensure!(
         input.metadata().context("inspect participant input")?.len() <= MAX_HELPER_BYTES,
         "oversized participant input"

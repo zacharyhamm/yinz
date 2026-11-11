@@ -346,3 +346,71 @@ fn installation_identity_survives_replacement_and_cleanup() {
     assert_eq!(first, next);
     assert_eq!(std::fs::read(next).unwrap(), b"new");
 }
+
+#[test]
+fn source_chunk_helper_input_batches_writes_and_preserves_the_request() {
+    #[derive(Default)]
+    struct Writes {
+        bytes: Vec<u8>,
+        calls: usize,
+    }
+    impl Write for Writes {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.calls += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let invocation = ParticipantInvocation {
+        executable: "/fixture/yinz".into(),
+        data_dir: Some("/fixture/data".into()),
+        request: ParticipantRequest::SourceChunk {
+            operation: "operation".into(),
+            artifact: SourceArtifact {
+                target: "x86_64-unknown-linux-gnu".into(),
+                sha256: "a".repeat(64),
+                binary_sha256: "b".repeat(64),
+                size: 65536,
+            },
+            offset: 0,
+            bytes: (0..65536).map(|i| (i % 256) as u8).collect(),
+        },
+    };
+    let mut output = Writes::default();
+    write_participant_input(&mut output, &invocation).unwrap();
+    let decoded: ParticipantInvocation = serde_json::from_slice(&output.bytes).unwrap();
+    assert_eq!(decoded.executable, invocation.executable);
+    assert_eq!(decoded.data_dir, invocation.data_dir);
+    assert_eq!(decoded.request, invocation.request);
+    // A full chunk must use block writes. Direct serde_json serialization makes
+    // over 100,000 tiny file writes per chunk, dominating real source transfers.
+    assert!(
+        output.calls <= 64,
+        "{} writes for {} bytes",
+        output.calls,
+        output.bytes.len()
+    );
+}
+
+#[test]
+fn participant_input_flush_failure_is_reported_before_launch() {
+    struct BrokenFlush;
+    impl Write for BrokenFlush {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::other("fixture flush failure"))
+        }
+    }
+    let invocation = ParticipantInvocation {
+        executable: "/fixture/yinz".into(),
+        data_dir: None,
+        request: ParticipantRequest::Inventory,
+    };
+    let error = write_participant_input(BrokenFlush, &invocation).unwrap_err();
+    assert!(format!("{error:#}").contains("fixture flush failure"));
+}

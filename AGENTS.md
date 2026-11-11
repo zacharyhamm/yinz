@@ -7,6 +7,8 @@ running on embedded Steel. Configuration uses KDL.
 
 Use `cargo x` (`cargo xtask`). See `cargo x --help` for all commands.
 The toolchain is `stable`, with no MSRV policy. Install `protoc` and `cargo-nextest`.
+The Linux source-update fixture also uses `strip` from binutils to package the
+executable with release-like symbol removal.
 
 ```sh
 cargo x build                 # native binary (does not install builtin files)
