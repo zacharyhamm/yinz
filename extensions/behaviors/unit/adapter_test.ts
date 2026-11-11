@@ -213,7 +213,7 @@ sys.exit(1)
 `,
     );
     const { context } = fakeContext(repo);
-    for (const action of ["receipt", "closeout-preview", "closeout-cleanup"]) {
+    for (const action of ["closeout-preview", "closeout-cleanup"]) {
       const reply = {
         error:
           "Optional closeout deferred: worktree ownership lock is busy; retry resume-closeout",
@@ -249,7 +249,7 @@ sys.exit(1)
   }
 });
 
-Deno.test("closeout busy after summarize preserves completion and publishes the actionable reason", async () => {
+Deno.test("closeout receipt failure after summarize preserves completion and publishes the actionable reason", async () => {
   const repo = await tempRepo();
   const previousPath = Deno.env.get("PATH");
   try {
@@ -274,7 +274,7 @@ Deno.test("closeout busy after summarize preserves completion and publishes the 
       ci: { status: "passed", command: ["cargo", "x", "ci", "check"] },
     };
     const reason =
-      "Optional closeout deferred during merge-receipt validation: repository merge lock is busy; another lifecycle Git operation (possibly merge/CI) may be running. The completed outcome and recorded cleanup progress are unchanged. Let that operation finish, then retry closeout or resume-closeout.";
+      "Closeout requires a durable merged receipt; resume integration recovery before cleanup.";
     await Deno.writeTextFile(
       join(repo, "scripts", "issue_lifecycle", "git_ops.py"),
       `import json, sys
@@ -289,12 +289,14 @@ elif action == "inspect":
         "b".repeat(40)
       }", "clean": True}
 elif action == "receipt":
-    if request.get("failIfBusy"):
-        print(json.dumps({"error": ${
-        JSON.stringify(reason)
-      }, "code": "lock_busy", "stage": "merge-receipt validation", "lock": "repository merge"}))
-        sys.exit(1)
+    assert "failIfBusy" not in request
     result = json.loads(${JSON.stringify(JSON.stringify(raw))})
+elif action == "closeout-receipt":
+    assert "failIfBusy" not in request
+    assert request["issueKey"] == "default/85"
+    assert request["issueDigest"] == "${state.issue.digest}"
+    print(json.dumps({"error": ${JSON.stringify(reason)}}))
+    sys.exit(1)
 else:
     raise AssertionError(request)
 print(json.dumps(result))

@@ -150,9 +150,8 @@ async function validate(
   await deps.completed(state.issue);
   normalizeReceipt(
     await deps.git(context, {
-      action: "receipt",
-      attemptId: request.attemptId,
-      failIfBusy: true,
+      action: "closeout-receipt",
+      ...request,
     }),
     state,
   );

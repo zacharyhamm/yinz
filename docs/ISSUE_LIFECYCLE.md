@@ -705,31 +705,41 @@ state, unchanged merged HEAD, local-main ancestry and branch checkouts. It
 protects control/main/store and containing directories, and refuses locks,
 unfinished operations and submodules requiring manual handling.
 
-Lock order is issue, repository merge, then worktree ownership. The helper
-reserves ownership with the cleanup UUID, writes durable intent before each
-step, removes the worktree with non-force Git removal, then compare-and-deletes
-the expected local branch OID. It retains a helper receipt after releasing the
-exact ownership entry. Arbitrary manual Git and external processes do not share
-these locks; uncertain or changed targets fail closed. No remote Git is used.
+Closeout validates the recorded merged receipt with the read-only
+`closeout-receipt` Git-helper action. It checks issue/attempt identity and local
+`main` containment without taking the repository merge lock or reconciling a
+receipt. An unreconciled `verified` receipt still needs normal integration recovery
+before cleanup. Mandatory integration and pre-completion receipt reconciliation
+retain their existing merge-lock wait behavior.
 
-Optional close-out attempts its Git locks without queuing. If another lifecycle
-Git operation holds a required lock, receipt validation, preview or cleanup
-returns promptly with the blocked stage, lock and retry action. For example:
+Closeout lock order is issue, then the brief worktree ownership guard; Git also
+uses its native locks. Standalone deletion of an already-merged worktree and local
+branch does not require the lifecycle merge lock and can complete during another
+issue's rebase/CI/merge. The helper reserves ownership with the cleanup UUID,
+writes durable intent before each step, removes the worktree with non-force Git
+removal, then compare-and-deletes the expected local branch OID. It retains a
+helper receipt after releasing the exact ownership entry. Arbitrary manual Git
+and external processes do not share the lifecycle guard; uncertain or changed
+targets fail closed. No remote Git is used.
 
-> Optional closeout deferred during merge-receipt validation: repository merge
-> lock is busy; another lifecycle Git operation (possibly merge/CI) may be running.
+Optional close-out attempts the worktree ownership guard without queuing for
+preview or cleanup. If that guard is busy, it returns promptly with the blocked
+stage, lock and retry action. For example:
+
+> Optional closeout deferred during cleanup preview: worktree ownership lock is
+> busy; another lifecycle operation holds the brief worktree ownership guard.
 > The completed outcome and recorded cleanup progress are unchanged.
 > Let that operation finish, then retry closeout or resume-closeout.
 
-Receipt/preview contention creates no new offer or consent. For an already accepted
+Preview contention creates no new offer or consent. For an already accepted
 partial cleanup, a busy result during `Git cleanup` leaves the pane open and keeps
 the same cleanup UUID, prior deletions and ownership reservation. It performs no
 new cleanup step and does not mean all resources still exist. Inspect the existing
-operation, let it finish, then explicitly retry `closeout` or `resume-closeout`.
-Do not cancel another issue's merge gate, remove lock files or delete resources
-manually. Retry still revalidates targets and may require fresh pane consent.
-Mandatory integration and pre-completion receipt reconciliation retain their
-existing lock-wait behavior.
+ownership operation, let it finish, then explicitly retry `closeout` or
+`resume-closeout`. This brief contention is independent of another issue's merge
+CI. Do not cancel another issue's merge gate, remove lock files or delete resources
+manually to bypass the guard. Retry still revalidates targets and may require
+fresh pane consent.
 
 Git results are saved in Swamp before the final pane-close intent. The server
 compares the exact fence and closes within the same screen-thread operation;

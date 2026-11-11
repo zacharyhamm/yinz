@@ -254,29 +254,63 @@ raise SystemExit(result.returncode)
                 self.assertIn("retry closeout or resume-closeout", result["error"])
                 self.assertNotIn("Waiting for", stderr)
                 self.assertEqual(self.closeout_snapshot(request), before)
-                if name == "worktree-ownership":
-                    # Exiting the nested busy acquisition must release merge.
-                    with (directory / "merge.lock").open("a+") as merge:
-                        fcntl.flock(merge, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.assertNotIn("merge/CI", result["error"])
                 return result
             finally:
                 self.stop(child)
 
-    def test_closeout_fail_if_busy_defers_each_stage_without_effects(self):
+    def test_closeout_receipt_preview_and_deletion_complete_while_merge_lock_is_held(self):
+        worktree, request, merged = self.closeout_fixture()
+        directory = self.repo / ".git/yinz-lifecycle"
+        # Local main can advance for another issue while this receipt stays valid.
+        self.git(self.repo, "commit", "--allow-empty", "-m", "another issue")
+        before = self.closeout_snapshot(request)
+        with (directory / "merge.lock").open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Read-only validation does not need even the ownership guard.
+            with (directory / "worktree-ownership.lock").open("a+") as owner:
+                fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                receipt = self.run_request({**request, "action": "closeout-receipt"})
+                self.assertEqual(receipt, merged)
+                self.assertEqual(self.closeout_snapshot(request), before)
+            for policy in ({}, {"failIfBusy": False}, {"failIfBusy": True}):
+                target = self.run_request({**request, **policy, "action": "closeout-preview"})
+                self.assertEqual(target, request["target"])
+                self.assertEqual(self.closeout_snapshot(request), before)
+            result = self.run_request({**request, "failIfBusy": True})
+            self.assertEqual((result["worktree"], result["branch"]), ("removed", "removed"))
+            replay = self.run_request(request)
+            self.assertEqual({key: value for key, value in replay.items() if key != "timestamp"},
+                             {key: value for key, value in result.items() if key != "timestamp"})
+        self.assertFalse(worktree.exists())
+        self.assertEqual(len(self.event_rows()), 2, "cleanup must not run CI")
+
+    def test_closeout_ownership_busy_defers_preview_and_cleanup_without_effects(self):
         worktree, request, _ = self.closeout_fixture()
-        for action, stage in (("receipt", "merge-receipt validation"),
-                              ("closeout-preview", "cleanup preview"),
+        for action, stage in (("closeout-preview", "cleanup preview"),
                               ("closeout-cleanup", "Git cleanup")):
-            with self.subTest(action=action, lock="merge"):
-                self.assert_closeout_busy({**request, "action": action}, "merge", stage, "repository merge")
-            if action != "receipt":
-                with self.subTest(action=action, lock="ownership"):
-                    self.assert_closeout_busy({**request, "action": action}, "worktree-ownership", stage, "worktree ownership")
+            with self.subTest(action=action):
+                self.assert_closeout_busy({**request, "action": action}, "worktree-ownership", stage, "worktree ownership")
         self.assertTrue(worktree.exists())
-        self.assertEqual(self.run_request({**request, "action": "receipt", "failIfBusy": False})["status"], "merged")
         self.assertEqual(self.run_request({**request, "failIfBusy": True})["branch"], "removed")
         self.assertFalse(worktree.exists())
         self.assertEqual(len(self.event_rows()), 2)
+
+    def test_closeout_partial_cleanup_recovers_while_merge_lock_is_held(self):
+        for stage in ("after-worktree", "before-branch"):
+            with self.subTest(stage=stage):
+                worktree, request, _ = self.closeout_fixture(stage)
+                marker = self.root / "closeout-fault"
+                marker.unlink(missing_ok=True)
+                self.closeout_fault(stage)
+                with (self.repo / ".git/yinz-lifecycle/merge.lock").open("a+") as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    partial = self.run_request(request, success=False)["closeout"]
+                    self.assertIn(partial["worktree"], ("removing", "removed"))
+                    self.assertFalse(worktree.exists())
+                    result = self.run_request({**request, "failIfBusy": True})
+                    self.assertEqual((result["worktree"], result["branch"]), ("removed", "removed"))
+                    self.assertEqual(self.run_request({**request, "action": "closeout-receipt"})["status"], "merged")
 
     def test_closeout_busy_preserves_partial_receipt_and_reserved_operation(self):
         worktree, request, _ = self.closeout_fixture()
@@ -284,9 +318,8 @@ raise SystemExit(result.returncode)
         partial = self.run_request(request, success=False)["closeout"]
         self.assertEqual((partial["worktree"], partial["branch"]), ("removed", "deleting"))
         self.assertFalse(worktree.exists())
-        for name, label in (("merge", "repository merge"), ("worktree-ownership", "worktree ownership")):
-            busy = self.assert_closeout_busy(request, name, "Git cleanup", label)
-            self.assertEqual(busy["closeout"], partial)
+        busy = self.assert_closeout_busy(request, "worktree-ownership", "Git cleanup", "worktree ownership")
+        self.assertEqual(busy["closeout"], partial)
         owners = json.loads((self.repo / ".git/yinz-lifecycle/worktree-owners.json").read_text())["owners"]
         self.assertEqual(owners, [{**request["target"]["owner"], "cleanupId": request["cleanupId"]}])
         # Resuming the original identity succeeds with the directory absent;
@@ -294,15 +327,16 @@ raise SystemExit(result.returncode)
         self.assertEqual(self.run_request({**request, "failIfBusy": True})["branch"], "removed")
         self.assertEqual(len(self.event_rows()), 2)
 
-    def test_closeout_omitted_busy_policy_still_waits_then_serializes(self):
+    def test_closeout_omitted_busy_policy_waits_for_ownership_and_receipt_still_waits_for_merge(self):
         _, request, _ = self.closeout_fixture()
         for action in ("receipt", "closeout-preview", "closeout-cleanup"):
             with self.subTest(action=action):
-                with (self.repo / ".git/yinz-lifecycle/merge.lock").open("a+") as lock:
+                name, label = ("merge", "repository merge") if action == "receipt" else ("worktree-ownership", "worktree ownership")
+                with (self.repo / ".git/yinz-lifecycle" / f"{name}.lock").open("a+") as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     child = self.start_request({**request, "action": action})
                     try:
-                        self.assertIn("Waiting for the repository merge lock", child.stderr.readline())
+                        self.assertIn(f"Waiting for the {label} lock", child.stderr.readline())
                         self.assertIsNone(child.poll())
                         fcntl.flock(lock, fcntl.LOCK_UN)
                         stdout, stderr = child.communicate(timeout=10)
@@ -318,10 +352,56 @@ raise SystemExit(result.returncode)
                 with self.subTest(action=action, value=value):
                     result = self.run_request({"action": action, "failIfBusy": value}, success=False)
                     self.assertIn("failIfBusy must be a boolean", result["error"])
-        for action in ("inspect", "integrate", "prepare", "claim", "confirm", "check", "agenda-workspace"):
+        for action in ("inspect", "integrate", "prepare", "claim", "confirm", "check", "agenda-workspace", "closeout-receipt"):
             for value in (True, False):
                 result = self.run_request({"action": action, "failIfBusy": value}, success=False)
                 self.assertIn("for receipt, closeout-preview or closeout-cleanup only", result["error"])
+
+    def test_closeout_missing_receipt_does_not_create_lifecycle_storage(self):
+        directory = self.repo / ".git/yinz-lifecycle"
+        error = self.run_request({"action": "closeout-receipt", "repoPath": str(self.repo),
+                                  "attemptId": str(uuid.uuid4()), "issueKey": "default/7",
+                                  "issueDigest": self.issue_digest()}, success=False)
+        self.assertIn("durable merged receipt", error["error"])
+        self.assertFalse(directory.exists())
+
+    def test_closeout_rejects_unreconciled_mismatched_and_unmerged_receipts_without_writing(self):
+        worktree, request, merged = self.closeout_fixture()
+        path = self.repo / ".git/yinz-lifecycle/merges" / f"{request['attemptId']}.json"
+        for mutation, message in (
+            ({"status": "verified"}, "resume integration recovery"),
+            ({"status": "failed"}, "resume integration recovery"),
+            ({"issueKey": "other"}, "does not match"),
+            ({"issueDigest": "other"}, "does not match"),
+            ({"attemptId": str(uuid.uuid4())}, "does not match"),
+            ({"mergedCommit": merged["baseCommit"]}, "different merged commit"),
+            ({"ci": {"command": ["cargo", "x", "ci", "check"], "status": "failed"}}, "valid CI result"),
+        ):
+            with self.subTest(mutation=mutation):
+                path.write_text(json.dumps({**merged, **mutation}))
+                before = self.closeout_snapshot(request)
+                for action in ("closeout-receipt", "closeout-preview", "closeout-cleanup"):
+                    error = self.run_request({**request, "action": action}, success=False)
+                    self.assertIn(message, error["error"])
+                    self.assertEqual(self.closeout_snapshot(request), before)
+        path.write_text(json.dumps(merged))
+        self.git(self.repo, "reset", "--hard", merged["baseCommit"])
+        before = self.closeout_snapshot(request)
+        for action in ("closeout-receipt", "closeout-preview", "closeout-cleanup"):
+            error = self.run_request({**request, "action": action}, success=False)
+            self.assertIn("no longer contained", error["error"])
+            self.assertEqual(self.closeout_snapshot(request), before)
+        self.assertTrue(worktree.exists())
+
+    def test_closeout_rejects_a_changed_worktree_branch(self):
+        worktree, request, _ = self.closeout_fixture()
+        self.git(worktree, "switch", "-c", "replacement")
+        before = self.closeout_snapshot(request)
+        for action in ("closeout-preview", "closeout-cleanup"):
+            error = self.run_request({**request, "action": action}, success=False)
+            self.assertIn("branch or HEAD changed", error["error"])
+            self.assertEqual(self.closeout_snapshot(request), before)
+        self.assertTrue(worktree.exists())
 
     def test_closeout_lost_worktree_ack_reserves_claim_and_resumes_without_opening_missing_path(self):
         worktree, request, _ = self.closeout_fixture()
@@ -359,7 +439,7 @@ raise SystemExit(result.returncode)
         self.assertIn("recreated", self.run_request(request, success=False)["error"])
         self.assertEqual(self.git(self.repo, "rev-parse", "refs/heads/closeout"), oid)
 
-    def test_closeout_killed_helper_keeps_both_locks_and_concurrent_claim_prepare_cannot_recycle(self):
+    def test_closeout_killed_helper_keeps_ownership_guard_and_concurrent_claim_prepare_cannot_recycle(self):
         worktree, request, _ = self.closeout_fixture()
         real_git = __import__("shutil").which("git")
         ready = self.root / "removal-ready"
@@ -383,11 +463,12 @@ raise SystemExit(subprocess.run([{real_git!r}, *args]).returncode)
             waiting.append(child)
         runner.kill()
         runner.wait(timeout=10)
-        # The still-running native-command wrapper inherited both lock FDs.
-        for name in ("merge", "worktree-ownership"):
-            with (self.repo / ".git/yinz-lifecycle" / f"{name}.lock").open("a+") as lock:
-                with self.assertRaises(BlockingIOError):
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # The still-running native-command wrapper inherited the ownership FD.
+        with (self.repo / ".git/yinz-lifecycle/worktree-ownership.lock").open("a+") as lock:
+            with self.assertRaises(BlockingIOError):
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with (self.repo / ".git/yinz-lifecycle/merge.lock").open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         release.touch()
         runner.communicate(timeout=10)
         for child in waiting:

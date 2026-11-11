@@ -4935,17 +4935,17 @@ Deno.test("driver closeout renewed consent and declined partial cleanup reach th
       };
       if (decision === "offered") {
         for (const authorized of [false, true]) {
-          for (const stage of ["merge-receipt validation", "cleanup preview"]) {
+          for (const stage of ["cleanup preview", "Git cleanup"]) {
             const contended = structuredClone(initial);
             if (!authorized) delete contended.closeout;
             else contended.closeout!.decision = "accepted";
             const reason =
-              `Optional closeout deferred during ${stage}: repository merge lock is busy; another lifecycle Git operation may be running. Retry closeout or resume-closeout after it finishes.`;
+              `Optional closeout deferred during ${stage}: worktree ownership lock is busy; another lifecycle operation holds the brief worktree ownership guard. Retry closeout or resume-closeout after it finishes.`;
             const busy = harness(contended, triage, () => {
               throw new GitOperationError(reason, {
                 code: "lock_busy",
                 stage,
-                lock: "repository merge",
+                lock: "worktree ownership",
               });
             });
             const beforeBusy = await loadState(busy.context);

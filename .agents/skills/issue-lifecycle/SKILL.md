@@ -110,14 +110,21 @@ inspection/dialogs.
 | `complete` | Present completed result and retained cleanup decision/results. |
 | `blocked` | Read matching recovery section below, resolve deliberately, then `drive`. |
 
-For `authorize_closeout` or `resume_closeout`, optional Git-lock contention returns
-promptly with the blocked stage, lock and retry action. Before an offer exists,
-no consent is created; after acceptance, saved progress, prior deletions and any
-reservation remain recorded and the pane stays open. Inspect the existing
-operation and let it finish, then explicitly retry `closeout`/`resume-closeout`.
-Do not cancel another issue's merge/CI gate, remove lock files or delete resources
-manually. Retry still requires target validation and fresh consent for an expired
-pane fence. See [close-out recovery](references/recovery.md#close-out-failures).
+For `authorize_closeout` or `resume_closeout`, read-only `closeout-receipt`
+validation does not acquire the repository merge lock or reconcile receipts.
+Unreconciled receipts need normal integration recovery first. Preview and deletion
+use only the brief worktree ownership guard and Git's native locks; standalone
+deletion of an already-merged worktree and branch can proceed during another
+issue's merge/CI. Merge/rebase/CI serialization remains unchanged.
+
+Ownership-guard contention returns promptly with the blocked stage, lock and retry
+action. Before an offer exists, no consent is created; after acceptance, saved
+progress, prior deletions and any reservation remain recorded and the pane stays
+open. Inspect the ownership operation and let it finish, then explicitly retry
+`closeout`/`resume-closeout`. Do not cancel another issue's merge/CI gate, remove
+lock files or delete resources manually to bypass the guard. Retry still requires
+target validation and fresh consent for an expired pane fence. See
+[close-out recovery](references/recovery.md#close-out-failures).
 
 ## Review and authorization
 
