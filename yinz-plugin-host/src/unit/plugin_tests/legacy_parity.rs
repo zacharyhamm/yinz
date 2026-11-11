@@ -116,7 +116,14 @@ fn actual_wasm_and_steel_configuration_leader_edits_and_unlock_capture() {
     pair.viewports();
     pair.key("Alt Esc");
     pair.key("Ctrl a");
-    pair.viewports();
+    // A saved rebind now names the managed file it was written to. The configuration UI tests
+    // pin that message; with the recorded wording, every frame keeps parity.
+    pair.with_legacy_text(
+        "screen-notification",
+        "Configuration applied and saved to disk.",
+        "Applied and saved to config.d/yinz-managed.kdl.",
+        Pair::viewports,
+    );
 }
 
 #[test]

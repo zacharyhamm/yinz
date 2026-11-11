@@ -543,6 +543,36 @@ impl Pair {
             plain(&right)
         );
     }
+    /// Runs `compare` with the Steel guest's `variable` holding the recorded `legacy` text in
+    /// place of the `current` text it now holds on purpose. The guest must hold exactly
+    /// `current`, and every cell and command is still compared against the recording, including
+    /// the layout around the text. The guest holds `current` again afterwards.
+    pub(crate) fn with_legacy_text(
+        &mut self,
+        variable: &str,
+        legacy: &str,
+        current: &str,
+        compare: impl FnOnce(&mut Self),
+    ) {
+        self.replace_steel_text(variable, current, legacy);
+        compare(self);
+        self.replace_steel_text(variable, legacy, current);
+    }
+    fn replace_steel_text(&mut self, variable: &str, from: &str, to: &str) {
+        let [from, to] = [from, to].map(|text| serde_json::to_string(text).unwrap());
+        let replaced = self
+            .steel
+            .runtime
+            .eval(&format!(
+                "(if (equal? {variable} {from}) (begin (set! {variable} {to}) 1) 0)"
+            ))
+            .unwrap();
+        assert_eq!(
+            replaced.values,
+            ["1"],
+            "the Steel guest's {variable} holds {from}"
+        );
+    }
     pub(crate) fn viewports(&mut self) {
         for (rows, cols) in [(30, 120), (30, 100), (20, 60), (12, 34), (6, 20)] {
             self.render(rows, cols);
