@@ -475,3 +475,22 @@ fn fractional_timer_deadlines_arm_the_whole_millisecond_they_resolve_at() {
     assert_eq!(runtime.value("slept").unwrap(), true);
     assert_eq!(host.armed, 1);
 }
+
+#[test]
+fn unscoped_service_timer_failures_still_rethrow_with_their_source() {
+    for timer in ["yinz-after", "yinz-every"] {
+        let (mut runtime, _, _) = runtime("");
+        runtime
+            .eval_with_path(
+                &format!("({timer} 0 (lambda ()\n  (error \"ordinary-timer-failure\")))"),
+                Some(std::path::Path::new("/virtual/ordinary-timer.scm")),
+            )
+            .unwrap();
+        let failure = runtime
+            .update(json!({"Timer":0.0}))
+            .unwrap_err()
+            .to_string();
+        assert!(failure.contains("ordinary-timer-failure"), "{failure}");
+        assert!(failure.contains("ordinary-timer.scm:2"), "{failure}");
+    }
+}

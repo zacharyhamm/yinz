@@ -85,7 +85,8 @@
           (set! best (vector score route (cdr matched))))))) %web-routes)
   best)
 (define (%web-failure failure)
-  (%async-log (string-append "web handler: " (%async-error failure)))
+  ;; Keep the error object for deferred source formatting after the VM returns.
+  (with-handler (lambda (_) (void)) (%web-diagnostic (%async-original failure)))
   (define typed (%web-error-response (%async-error failure)))
   (yinz-web-error (hash-ref typed "status") (hash-ref typed "code")))
 (define (%web-remember id)

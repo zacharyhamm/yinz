@@ -1084,6 +1084,18 @@ routes return 404. Raised/rejected or invalid responses return generic 500
 token, with 64 active slots and 1,024 recent IDs. Old native reply ownership is
 the final duplicate fence. Send failures are logged without a second reply.
 
+A callback failure in a handler-created `yinz-after` or `yinz-every` (including
+fire-and-forget timers and rejected deferred callback results) fails only its
+request. Timer delivery succeeds, and other requests and published pages stay
+available. Timers created outside a request keep their existing plugin-wide
+failure behavior. Local web diagnostics retain the original failing source file
+and line for synchronous and deferred exceptions, including imported helpers.
+Plain-string rejections have no invented source location. Diagnostics keep at most
+64 records, 2 KiB of message and the primary source span per record, and 16 KiB
+per formatted record within the existing 4 MiB log budget. Optional call stacks
+are omitted; truncation/dropped records are marked. Logging saturation does not
+fail a handled request. These diagnostics never enter HTTP responses or frames.
+
 Handler-created deferreds, chains, event listeners, waits, timers and RPCs belong
 to a private request scope, including work created in resumed continuations.
 Completion/deadline/unload closes that scope, detaches observations and retires

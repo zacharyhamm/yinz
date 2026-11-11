@@ -1089,3 +1089,62 @@ fn client_timezone_helpers_select_the_actor_and_preserve_null_and_raw_events() {
     runtime.update(event.clone()).unwrap();
     assert_eq!(runtime.value("last-event").unwrap(), event);
 }
+
+#[test]
+fn web_sdk_diagnostics_bound_messages_queue_output_and_clear_on_drain() {
+    let mut runtime = runtime();
+    runtime
+        .eval(
+            r#"
+      (for-each (lambda (_) (%web-diagnostic (make-string 10000 #\日))) (range 70))
+    "#,
+        )
+        .unwrap();
+    let logs = runtime.take_logs().unwrap();
+    assert_eq!(logs.matches("web handler:").count(), 64);
+    assert!(logs.contains("truncated or dropped"));
+    assert!(logs.len() < 64 * 16 * 1024 + 100);
+    assert!(runtime.take_logs().unwrap().is_empty());
+    assert!(runtime.take_output().unwrap().is_empty());
+
+    runtime
+        .eval(&format!(
+            r#"(yinz-log (make-string {} #\x)) (%web-diagnostic "private fallback")"#,
+            MAX_OUTPUT_BYTES - 1
+        ))
+        .unwrap();
+    let logs = runtime.take_logs().unwrap();
+    assert!(logs.len() <= MAX_OUTPUT_BYTES);
+    assert!(logs.ends_with("[web diagnostics truncated or dropped]\n"));
+    assert!(runtime.take_logs().unwrap().is_empty());
+    // Saturation is secondary: subsequent evaluation and logging stay usable.
+    runtime
+        .eval(r#"(%web-diagnostic "plain rejection")"#)
+        .unwrap();
+    let logs = runtime.take_logs().unwrap();
+    assert!(logs.contains("plain rejection"));
+    assert!(!logs.contains("private fallback"));
+    assert!(!logs.contains(".scm:"));
+}
+
+#[test]
+fn web_sdk_diagnostics_clip_large_errors_after_preserving_the_failing_location() {
+    let mut runtime = runtime();
+    let source = format!(
+        r#"(define (huge-failure) (error "{}"))
+(yinz-web-route "GET" "/" (lambda (_) (huge-failure)))"#,
+        "日".repeat(20_000)
+    );
+    runtime
+        .eval_with_path(
+            &source,
+            Some(std::path::Path::new("/virtual/huge-error.scm")),
+        )
+        .unwrap();
+    runtime.web(json!({"id":1,"method":"GET","path":"/","segments":[],"deadline_ms":9_000_000_000_000u64})).unwrap();
+    let logs = runtime.take_logs().unwrap();
+    assert!(logs.contains("huge-error.scm:1"), "{logs}");
+    assert!(logs.contains("truncated or dropped"));
+    assert!(logs.len() <= 16 * 1024);
+    assert!(runtime.take_logs().unwrap().is_empty());
+}

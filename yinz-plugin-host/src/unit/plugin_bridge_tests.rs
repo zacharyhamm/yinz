@@ -8848,8 +8848,14 @@ const WEB_TRANSPORT_HANDLER: &str = r#"
 "#;
 
 fn web_transport_fixture(source: &str) -> (TestBridge, PluginId, u64) {
+    web_transport_fixture_with_site(source, Default::default())
+}
+fn web_transport_fixture_with_site(
+    source: &str,
+    site: yinz_types::web::SiteHandle,
+) -> (TestBridge, PluginId, u64) {
     let mut test = TestBridge::new();
-    test.bridge.web = crate::web_host::WebHost::new(Some(Default::default()));
+    test.bridge.web = crate::web_host::WebHost::new(Some(site));
     let id = PluginId::new(501);
     test.bridge.web.set_target(Some(id));
     test.connect(&[ClientId::new(1)]);
@@ -9252,5 +9258,95 @@ fn web_sdk_real_host_sync_deferred_and_detached_actor() {
         panic!("missing deferred response")
     };
     assert_eq!(deferred.body, "deferred");
+    test.bridge.unload_plugin(plugin).unwrap();
+}
+
+#[test]
+fn web_sdk_timer_failure_keeps_generation_publication_and_concurrent_requests_alive() {
+    use yinz_types::web::{SiteHandle, WebReply};
+    let site = SiteHandle::default();
+    let (mut test, plugin, generation) = web_transport_fixture_with_site(
+        r#"
+      (define held (yinz-deferred))
+      (yinz-web-route "GET" "/api/publish" (lambda (_)
+        (yinz-web-page "/" "text/html; charset=utf-8" (lambda () (yinz-h "p" (hash) "published")))
+        (yinz-web-text "published")))
+      (yinz-web-route "GET" "/api/wait" (lambda (_) (yinz-then held (lambda (_) (yinz-web-text "concurrent")))))
+      (yinz-web-route "GET" "/api/bad" (lambda (_)
+        (yinz-then (yinz-after 0 (lambda () (error "private host timer failure")))
+          (lambda (_) (yinz-web-text "unexpected")))))
+      (yinz-web-route "GET" "/api/finish" (lambda (_) (yinz-resolve! held #t) (yinz-web-text "healthy")))
+    "#,
+        site.clone(),
+    );
+    let instance = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(plugin, None)
+        .unwrap();
+    let (_, mut publication) = web_transport_request(&test, plugin, generation, 1, "/api/publish");
+    test.wait_for_executor(plugin);
+    assert!(matches!(
+        publication.try_recv().unwrap(),
+        WebReply::Response(_)
+    ));
+    let published = site.current().expect("page published");
+    assert_eq!(published.generation, generation);
+    assert_eq!(published.pages["/"].bytes.as_ref(), b"<p>published</p>");
+    let (_, mut concurrent) = web_transport_request(&test, plugin, generation, 2, "/api/wait");
+    let (_, mut failure) = web_transport_request(&test, plugin, generation, 3, "/api/bad");
+    test.wait_for_executor(plugin);
+    assert!(matches!(
+        concurrent.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    // Use normal host event routing with a zero-duration guest timer; no timing sleep is needed.
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    test.bridge
+        .update_plugins(
+            vec![(
+                Some(plugin),
+                None,
+                Event::Timer(yinz_types::units::FractionalSeconds::new(0.0)),
+            )],
+            shutdown,
+        )
+        .unwrap();
+    test.wait_for_executor(plugin);
+    let WebReply::Response(response) = failure.try_recv().unwrap() else {
+        panic!("missing isolated 500")
+    };
+    assert_eq!(response.status, 500);
+    assert_eq!(response.body, r#"{"error":{"code":"internal"}}"#);
+    assert!(!instance.lock().unwrap().is_unavailable());
+    assert_eq!(test.bridge.web.selected(plugin), Some(generation));
+    assert!(Arc::ptr_eq(
+        &published,
+        &site.current().expect("publication survives")
+    ));
+    assert!(matches!(
+        concurrent.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    let (_, mut healthy) = web_transport_request(&test, plugin, generation, 4, "/api/finish");
+    test.wait_for_executor(plugin);
+    for (receiver, body) in [(&mut concurrent, "concurrent"), (&mut healthy, "healthy")] {
+        let WebReply::Response(response) = receiver.try_recv().unwrap() else {
+            panic!("unaffected request unavailable")
+        };
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, body);
+    }
+    let current = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(plugin, None)
+        .unwrap();
+    assert!(Arc::ptr_eq(&instance, &current));
+    assert_eq!(current.lock().unwrap().generation(), Some(generation));
     test.bridge.unload_plugin(plugin).unwrap();
 }

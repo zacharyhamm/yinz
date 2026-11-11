@@ -1,9 +1,114 @@
 //! Pure web syntax and error boundaries; host authorization remains authoritative.
 use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
 use steel::{
     rvals::{Result, SteelVal},
     steel_vm::{engine::Engine, register_fn::RegisterFn},
 };
+
+const MAX_DIAGNOSTICS: usize = 64;
+const MAX_MESSAGE: usize = 2048;
+const MAX_DIAGNOSTIC: usize = 16 * 1024;
+const TRUNCATED: &str = "\n[web diagnostics truncated or dropped]\n";
+
+#[derive(Default)]
+pub(crate) struct Diagnostics {
+    errors: Vec<steel::SteelErr>,
+    dropped: bool,
+}
+
+/// Copy only a bounded message and the failing span. No guest values or trace graphs survive.
+/// The primary span is sufficient for file/line diagnosis; optional call stacks are omitted.
+fn diagnostic_error(value: &SteelVal) -> steel::SteelErr {
+    if let SteelVal::Custom(custom) = value {
+        let guard = custom.read();
+        if let Some(error) = steel::rvals::as_underlying_type::<steel::SteelErr>(guard.as_ref()) {
+            // Steel exposes Display but keeps message() private. Cap writes while formatting
+            // rather than allocating the original (potentially very large) message first.
+            let mut message = BoundedMessage::default();
+            let _ = std::fmt::write(&mut message, format_args!("{error}"));
+            let mut bounded = steel::SteelErr::new(error.kind(), message.finish());
+            if let Some(span) = error.span() {
+                bounded = bounded.with_span(span);
+            }
+            return bounded;
+        }
+    }
+    let message = match value {
+        SteelVal::StringV(text) => text.as_str(),
+        _ => "unavailable web error diagnostic",
+    };
+    err(clipped(message, MAX_MESSAGE))
+}
+
+#[derive(Default)]
+struct BoundedMessage {
+    text: String,
+    truncated: bool,
+}
+impl std::fmt::Write for BoundedMessage {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        let remaining = MAX_MESSAGE.saturating_sub(self.text.len());
+        let mut end = text.len().min(remaining);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        self.text.push_str(&text[..end]);
+        self.truncated |= end != text.len();
+        Ok(())
+    }
+}
+impl BoundedMessage {
+    fn finish(self) -> String {
+        if self.truncated {
+            clipped(&(self.text + TRUNCATED), MAX_MESSAGE)
+        } else {
+            self.text
+        }
+    }
+}
+
+fn clipped(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_owned();
+    }
+    let mut end = limit.saturating_sub(TRUNCATED.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{TRUNCATED}", &text[..end])
+}
+
+impl Diagnostics {
+    pub(crate) fn drain(
+        &mut self,
+        mut output: String,
+        format: impl Fn(steel::SteelErr) -> String,
+        limit: usize,
+    ) -> String {
+        let mut dropped = std::mem::take(&mut self.dropped);
+        for error in std::mem::take(&mut self.errors) {
+            // Put the useful message before any optional source excerpt is clipped.
+            let message = error.to_string();
+            let diagnostic = clipped(
+                &format!("web handler: {message}\n{}\n", format(error)),
+                MAX_DIAGNOSTIC,
+            );
+            if output.len().saturating_add(diagnostic.len())
+                <= limit.saturating_sub(TRUNCATED.len())
+            {
+                output.push_str(&diagnostic);
+            } else {
+                dropped = true;
+            }
+        }
+        if dropped {
+            output = clipped(&output, limit.saturating_sub(TRUNCATED.len()));
+            output.push_str(TRUNCATED);
+        }
+        output
+    }
+}
 fn err(e: impl std::fmt::Display) -> steel::rerrs::SteelErr {
     crate::scheme_error(e)
 }
@@ -53,7 +158,16 @@ fn validate(value: SteelVal) -> Result<SteelVal> {
     }
     crate::to_scheme(&json!({"status":status,"headers":normalized,"body":body})).map_err(err)
 }
-pub(crate) fn register(engine: &mut Engine) {
+pub(crate) fn register(engine: &mut Engine, diagnostics: Arc<Mutex<Diagnostics>>) {
+    engine.register_fn("%web-diagnostic", move |value: SteelVal| {
+        // Best effort only: diagnostic saturation must never fail a handled request.
+        let mut records = diagnostics.lock().unwrap_or_else(|e| e.into_inner());
+        if records.errors.len() < MAX_DIAGNOSTICS {
+            records.errors.push(diagnostic_error(&value));
+        } else {
+            records.dropped = true;
+        }
+    });
     engine.register_fn(
         "yinz-web-agent-app",
         |_configuration: SteelVal| -> Result<SteelVal> {

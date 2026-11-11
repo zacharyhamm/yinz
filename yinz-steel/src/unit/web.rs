@@ -367,3 +367,168 @@ fn request_owned_event_handler_failure_completes_once_and_preserves_other_work()
     assert_eq!(h.sent("HttpRespond").len(), 1);
     assert_eq!(dispatch(&mut h, 2, "GET", "/ok")["body"], "ok");
 }
+
+#[test]
+fn service_timer_failures_stay_request_local_and_release_owned_work() {
+    for timer in ["yinz-after", "yinz-every"] {
+        for callback in [
+            r#"(error "private-timer-failure")"#,
+            r#"(define rejected (yinz-deferred)) (yinz-reject! rejected "private-rejection") rejected"#,
+        ] {
+            let mut h = Harness::new(&format!(
+                r#"
+              (define borrowed (yinz-deferred))
+              (define closed-scope #f)
+              (yinz-web-route "GET" "/bad" (lambda (_)
+                (yinz-then ({timer} 0 (lambda () {callback})) (lambda (_) (yinz-web-text "unexpected")))))
+              (yinz-web-route "GET" "/background" (lambda (_)
+                (set! closed-scope %async-scope)
+                ({timer} 0 (lambda () {callback})) (yinz-deferred)))
+              (yinz-web-route "GET" "/wait" (lambda (_) (yinz-then borrowed (lambda (_) (yinz-web-text "concurrent")))))
+              (yinz-web-route "GET" "/ok" (lambda (_) (yinz-web-text "healthy")))
+            "#
+            ));
+            for (id, path) in [(1, "/bad"), (2, "/background")] {
+                h.runtime.web(request(id, "GET", path)).unwrap();
+            }
+            h.runtime
+                .invoke("yinz-async-enter", vec![json!(3)])
+                .unwrap();
+            h.runtime.web(request(3, "GET", "/wait")).unwrap();
+            h.advance(1); // Also asserts Timer update succeeds, rather than merely observing 500.
+            h.advance(1);
+            h.eval("(%async-with-scope closed-scope (lambda () (%async-fail \"late failure\")))");
+            let replies = h.sent("HttpRespond");
+            assert_eq!(replies.len(), 2);
+            for reply in replies {
+                let response: Value =
+                    serde_json::from_str(reply["response"].as_str().unwrap()).unwrap();
+                assert_eq!(response["status"], 500);
+                assert_eq!(response["body"], r#"{"error":{"code":"internal"}}"#);
+            }
+            h.eval("(yinz-resolve! borrowed #t)");
+            assert_eq!(h.sent("HttpRespond").last().unwrap()["request_id"], 3);
+            assert_eq!(
+                h.commands
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .rev()
+                    .find(|(c, _)| c.get("HttpRespond").is_some())
+                    .unwrap()
+                    .1,
+                3
+            );
+            assert_eq!(dispatch(&mut h, 4, "GET", "/ok")["body"], "healthy");
+            h.eval("(define counts (list (length (hash-keys->list %async-operations)) (length (hash-keys->list %async-timers)) (length (hash-keys->list %async-owners)) (length (hash-keys->list %async-events)) (length %async-jobs) (hash-ref %async-required \"Timer\")))");
+            assert_eq!(h.value("counts"), json!([0, 0, 0, 0, 0, 0]));
+        }
+    }
+}
+
+#[test]
+fn handled_failures_log_the_original_named_source_and_line() {
+    let mut h = Harness::new("");
+    h.runtime.eval_with_path(
+        "(define (private-sync)\n  (error \"private-sync-failure\"))\n(define (private-chain _)\n  (error \"private-chain-failure\"))\n(yinz-web-route \"GET\" \"/sync\" (lambda (_) (private-sync)))\n(yinz-web-route \"GET\" \"/chain\" (lambda (_) (yinz-then (yinz-sleep 0) private-chain)))",
+        Some(std::path::Path::new("/virtual/web-helper.scm")),
+    ).unwrap();
+    assert_eq!(dispatch(&mut h, 1, "GET", "/sync")["status"], 500);
+    h.runtime.web(request(2, "GET", "/chain")).unwrap();
+    h.advance(1);
+    let logs = h.runtime.take_logs().unwrap();
+    for expected in [
+        "private-sync-failure",
+        "private-chain-failure",
+        "web-helper.scm:2",
+        "web-helper.scm:4",
+    ] {
+        assert!(logs.contains(expected), "missing {expected}: {logs}");
+    }
+    assert!(h.runtime.take_logs().unwrap().is_empty());
+    assert!(h.runtime.take_output().unwrap().is_empty());
+    for reply in h.sent("HttpRespond") {
+        let response = reply["response"].as_str().unwrap();
+        assert!(!response.contains("private"));
+        assert!(!response.contains("web-helper"));
+    }
+}
+
+#[test]
+fn service_registration_and_cleanup_failures_use_the_saved_owner() {
+    let mut h = Harness::new(
+        r#"
+      (yinz-web-route "GET" "/registration" (lambda (_)
+        (define arm %async-arm-timer)
+        (set! %async-arm-timer (lambda () (error "private-registration")))
+        (define handle (yinz-after 0 (lambda () (error "must not run"))))
+        (set! %async-arm-timer arm)
+        handle))
+      (define cleanup-resource #f)
+      (yinz-web-route "GET" "/cleanup" (lambda (_)
+        (define handle (yinz-deferred))
+        (vector-set! handle 4 (lambda () (error "private-cleanup")))
+        (set! cleanup-resource handle)
+        (yinz-then handle (lambda (_) (yinz-web-text "unexpected")))))
+      (yinz-web-route "GET" "/ok" (lambda (_) (yinz-web-text "ok")))
+    "#,
+    );
+    assert_eq!(dispatch(&mut h, 1, "GET", "/registration")["status"], 500);
+    h.runtime.web(request(2, "GET", "/cleanup")).unwrap();
+    h.runtime
+        .invoke("yinz-async-enter", vec![json!(9)])
+        .unwrap();
+    h.eval("(yinz-resolve! cleanup-resource #t)");
+    assert_eq!(
+        h.commands
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|(c, _)| c.get("HttpRespond").is_some())
+            .unwrap()
+            .1,
+        2
+    );
+    let responses = h.sent("HttpRespond");
+    assert_eq!(responses.len(), 2);
+    assert_eq!(
+        serde_json::from_str::<Value>(responses[1]["response"].as_str().unwrap()).unwrap()
+            ["status"],
+        500
+    );
+    assert_eq!(h.value("%async-owners"), json!({}));
+    assert_eq!(h.value("%async-operations"), json!({}));
+    assert_eq!(dispatch(&mut h, 3, "GET", "/ok")["body"], "ok");
+}
+
+#[test]
+fn scoped_timer_failure_never_erases_an_unrelated_global_failure() {
+    let mut h = Harness::new(
+        r#"
+      (define (unscoped-failure) (error "unrelated-global-failure"))
+      (yinz-after 0 unscoped-failure)
+      (yinz-web-route "GET" "/scoped" (lambda (_)
+        (yinz-after 0 (lambda () (error "request-local-failure")))
+        (define resource (yinz-deferred))
+        (vector-set! resource 4 (lambda () (error "request-cleanup-failure")))
+        resource))
+    "#,
+    );
+    h.runtime.web(request(1, "GET", "/scoped")).unwrap();
+    let failure = h
+        .runtime
+        .update(json!({"Timer":0.0}))
+        .unwrap_err()
+        .to_string();
+    assert!(failure.contains("unrelated-global-failure"), "{failure}");
+    assert!(!failure.contains("request-local-failure"), "{failure}");
+    let responses = h.sent("HttpRespond");
+    assert_eq!(responses.len(), 1);
+    assert_eq!(
+        serde_json::from_str::<Value>(responses[0]["response"].as_str().unwrap()).unwrap()
+            ["status"],
+        500
+    );
+    assert_eq!(h.value("%async-operations"), json!({}));
+}

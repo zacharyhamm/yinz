@@ -303,6 +303,18 @@ unload, send failures and more than 4,096 cumulative deferred creations. The
 one-response token is independent of the 1,024 recent-ID FIFO. Ordinary async,
 panes, services, consumers, RPC, palette, trace and module callers remain selected.
 
+Timer failure regressions assert both a single sanitized 500 and successful
+Timer delivery through Runtime and the supervised worker. They cover chained and
+fire-and-forget `yinz-after`/`yinz-every`, rejected callback results, registration
+and cleanup failures, concurrent actors, late delivery and healthy follow-up
+requests. A separate global timer failure must still escape; request cleanup
+must never erase that failure. The real host fixture also holds a concurrent
+reply slot and checks the same generation, availability and frozen page after
+an isolated timer failure. Named virtual sources and confined imported helpers
+assert the actual failing file and line in local logs, with no private messages
+or paths in HTTP replies or rendered content. Diagnostic tests exercise UTF-8
+clipping, the 64-record cap, the full log port fallback and an empty second drain.
+
 Issue 81 implementation validation (Linux, 2026-11-10): 124 selected Steel tests,
 4 final HTML budget tests, 30 Markdown crate tests (plus its doctest pass),
 15 focused host/harness/transport tests, 5 native request/service tests, and the

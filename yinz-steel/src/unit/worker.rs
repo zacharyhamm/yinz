@@ -600,3 +600,89 @@ fn web_sdk_worker_deferred_success_failure_and_deadline_cleanup() {
     assert!(replies[0]["response"].as_str().unwrap().contains("done"));
     assert!(!replies[1]["response"].as_str().unwrap().contains("private"));
 }
+
+#[test]
+fn web_sdk_worker_timer_failures_preserve_requests_and_imported_source_logs() {
+    use serde_json::{json, Value};
+    use std::sync::{Arc, Mutex};
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("helper.scm"),
+        "(provide sync-failure chain-failure timer-failure)\n(define (sync-failure)\n  (error \"private-sync\"))\n(define (chain-failure _)\n  (error \"private-chain\"))\n(define (timer-failure)\n  (error \"private-timer\"))").unwrap();
+    let root = crate::modules::SourceRoot::file(&directory.path().join("main.scm"), None).unwrap();
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let output = commands.clone();
+    let mut worker = super::WorkerRuntime::new(&binary(), move |command| {
+        output.lock().unwrap().push(command);
+        Ok(Value::Null)
+    })
+    .unwrap();
+    worker.set_source_root(root);
+    worker.eval(r#"
+      (require "./helper.scm")
+      (set! yinz-now-ms (lambda () 0))
+      (define shared (yinz-deferred))
+      (yinz-web-route "GET" "/sync" (lambda (_) (sync-failure)))
+      (yinz-web-route "GET" "/chain" (lambda (_) (yinz-then (yinz-sleep 0) chain-failure)))
+      (yinz-web-route "GET" "/timer" (lambda (_) (yinz-then (yinz-after 0 timer-failure) (lambda (_) (yinz-web-text "unexpected")))))
+      (yinz-web-route "GET" "/every" (lambda (_) (yinz-every 0 timer-failure) (yinz-deferred)))
+      (yinz-web-route "GET" "/wait" (lambda (_) (yinz-then shared (lambda (_) (yinz-web-text "concurrent")))))
+      (yinz-web-route "GET" "/ok" (lambda (_) (yinz-web-text "healthy")))
+      (define (render rows cols) "visible")
+    "#).unwrap();
+    let pid = worker.process_id();
+    let req = |id, path: &str| json!({"id":id,"method":"GET","path":path,"segments":[path.trim_start_matches('/')],"deadline_ms":9_000_000_000_000u64});
+    worker.invoke("yinz-async-enter", vec![json!(2)]).unwrap();
+    for (id, path) in [(1, "/sync"), (2, "/chain"), (3, "/timer"), (4, "/every")] {
+        worker.web(req(id, path)).unwrap();
+    }
+    worker.invoke("yinz-async-enter", vec![json!(3)]).unwrap();
+    worker.web(req(5, "/wait")).unwrap();
+    worker.invoke("yinz-async-enter", vec![json!(9)]).unwrap();
+    worker.update(json!({"Timer":0.0})).unwrap();
+    worker.update(json!({"Timer":0.0})).unwrap();
+    let logs = worker.take_logs().unwrap();
+    for expected in [
+        "private-sync",
+        "private-chain",
+        "private-timer",
+        "helper.scm:3",
+        "helper.scm:5",
+        "helper.scm:7",
+    ] {
+        assert!(logs.contains(expected), "missing {expected}: {logs}");
+    }
+    assert!(worker.take_logs().unwrap().is_empty());
+    worker.eval("(yinz-resolve! shared #t)").unwrap();
+    worker.invoke("yinz-async-poll", vec![]).unwrap();
+    worker.web(req(6, "/ok")).unwrap();
+    assert_eq!(worker.process_id(), pid);
+    assert_eq!(worker.render(10, 80).unwrap(), "visible");
+    worker.eval("(define counts (list (length (hash-keys->list %async-operations)) (length (hash-keys->list %async-owners)) (length (hash-keys->list %async-timers))))").unwrap();
+    assert_eq!(worker.value("counts").unwrap(), json!([0, 0, 0]));
+    let sent = commands.lock().unwrap();
+    let replies: Vec<_> = sent
+        .iter()
+        .filter_map(|c| {
+            c.pointer("/__yinz_runtime/command/HttpRespond")
+                .map(|r| (r, &c["__yinz_runtime"]["client"]))
+        })
+        .collect();
+    assert_eq!(replies.len(), 6);
+    for (reply, actor) in replies {
+        let response: Value = serde_json::from_str(reply["response"].as_str().unwrap()).unwrap();
+        let id = reply["request_id"].as_u64().unwrap();
+        assert_eq!(response["status"], if id <= 4 { 500 } else { 200 });
+        assert_eq!(
+            *actor,
+            json!(if id <= 4 {
+                2
+            } else if id == 5 {
+                3
+            } else {
+                9
+            })
+        );
+        assert!(!response.to_string().contains("private"));
+        assert!(!response.to_string().contains("helper.scm"));
+    }
+}

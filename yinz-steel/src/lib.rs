@@ -110,6 +110,7 @@ pub struct Runtime {
     engine: Engine,
     output: Output,
     logs: Output,
+    web_diagnostics: Arc<Mutex<web::Diagnostics>>,
     metadata: Arc<OnceLock<ServerMetadata>>,
     plugin_resolver: Arc<OnceLock<PluginResolver>>,
 }
@@ -164,6 +165,7 @@ impl Runtime {
         let mut engine = sandbox::engine().context("creating confined Steel engine")?;
         let output = Output::new(MAX_RENDER_BYTES, "Steel render output exceeds 16 MiB");
         let logs = Output::new(MAX_OUTPUT_BYTES, "Steel diagnostic output exceeds 4 MiB");
+        let web_diagnostics = Arc::new(Mutex::new(web::Diagnostics::default()));
         let metadata = Arc::new(OnceLock::<ServerMetadata>::new());
         let plugin_resolver = Arc::new(OnceLock::<PluginResolver>::new());
         let resolver = plugin_resolver.clone();
@@ -328,7 +330,7 @@ impl Runtime {
             },
         );
         html::register(&mut engine);
-        web::register(&mut engine);
+        web::register(&mut engine, web_diagnostics.clone());
         ui::register(&mut engine);
         agent_model::register(&mut engine);
         engine
@@ -383,6 +385,7 @@ impl Runtime {
             engine,
             output,
             logs,
+            web_diagnostics,
             metadata,
             plugin_resolver,
         })
@@ -590,7 +593,13 @@ impl Runtime {
 
     /// Diagnostic messages never become part of a rendered frame.
     pub fn take_logs(&mut self) -> Result<String> {
-        Self::drain_output(&self.logs)
+        let output = Self::drain_output(&self.logs)?;
+        // Formatting reads registered engine sources only after VM execution has finished.
+        Ok(self
+            .web_diagnostics
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(output, |error| self.diagnostic(error), MAX_OUTPUT_BYTES))
     }
 
     fn drain_output(output: &Output) -> Result<String> {
