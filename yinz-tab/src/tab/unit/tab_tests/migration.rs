@@ -229,3 +229,61 @@ fn suppressed_panes_leaving_a_closing_tab_take_their_queued_output_along() {
     assert!(!pane.is_scrolled());
     assert!(pane.dump_screen(true, None).contains("QUEUED-OUTPUT"));
 }
+
+#[test]
+fn osc_status_publication_follows_parsing_including_buffered_replay() {
+    use yinz_bus::screen::ScreenInstruction;
+    for delivery in ["immediate", "scrolled", "forwarded"] {
+        let mut tab = create_new_tab(Size { cols: 80, rows: 10 }, false);
+        let pid = TerminalId::new(1);
+        let id = PaneId::Terminal(pid);
+        let (tx, rx) = unbounded();
+        tab.senders.to_screen = Some(SenderWithContext::new(tx));
+        let requests = || {
+            rx.try_iter()
+                .filter(|(instruction, _)| {
+                    matches!(instruction, ScreenInstruction::RequestStateUpdateForPlugins)
+                })
+                .count()
+        };
+        if delivery == "scrolled" {
+            tab.handle_pty_bytes(pid, b"line\r\n".repeat(30)).unwrap();
+            tab.scroll_terminal_up(pid).unwrap();
+            assert!(tab.get_pane_with_id(id).unwrap().is_scrolled());
+        } else if delivery == "forwarded" {
+            tab.get_pane_with_id_mut(id)
+                .unwrap()
+                .terminal_io_mut()
+                .unwrap()
+                .arm_forward_pause();
+        }
+        assert_eq!(requests(), 0);
+        tab.handle_pty_bytes(pid, b"\x1b]7501;state=blocked\x07".to_vec())
+            .unwrap();
+        if delivery != "immediate" {
+            assert_eq!(requests(), 0, "{delivery}: buffered bytes are not parsed");
+            assert!(tab
+                .get_pane_with_id(id)
+                .unwrap()
+                .program_status()
+                .current
+                .is_none());
+            if delivery == "scrolled" {
+                tab.get_pane_with_id_mut(id).unwrap().clear_scroll();
+                tab.process_pending_vte_events(pid).unwrap();
+            } else {
+                tab.resume_pane_after_forward(pid, vec![]).unwrap();
+            }
+        }
+        assert_eq!(requests(), 1, "{delivery}");
+        assert!(tab
+            .get_pane_with_id(id)
+            .unwrap()
+            .program_status()
+            .current
+            .is_some());
+        tab.handle_pty_bytes(pid, b"ordinary output".to_vec())
+            .unwrap();
+        assert_eq!(requests(), 0);
+    }
+}

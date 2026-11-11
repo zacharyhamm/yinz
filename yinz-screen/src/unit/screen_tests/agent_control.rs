@@ -18451,3 +18451,67 @@ fn osc7501_enter_publishes_retirement_without_pty_output() {
         }
     }
 }
+
+#[test]
+fn osc_status_replay_requests_a_manifest_with_the_parsed_status() {
+    for forwarded in [false, true] {
+        let (mut screen, _messages, _writes) = setup("codex");
+        let (to_plugin, plugins) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        screen.background_plugin_subscriptions.insert(
+            (PluginId::new(99), CLIENT),
+            HashSet::from([EventType::PaneUpdate]),
+        );
+        let (to_screen, instructions) = channels::unbounded();
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        tab.senders.to_screen = Some(SenderWithContext::new(to_screen));
+        let pid = TerminalId::new(7);
+        if forwarded {
+            tab.get_pane_with_id_mut(PANE)
+                .unwrap()
+                .terminal_io_mut()
+                .unwrap()
+                .arm_forward_pause();
+        } else {
+            tab.handle_pty_bytes(pid, b"line\r\n".repeat(60)).unwrap();
+            tab.scroll_terminal_up(pid).unwrap();
+            assert!(tab.get_pane_with_id(PANE).unwrap().is_scrolled());
+        }
+        tab.handle_pty_bytes(pid, b"\x1b]7501;state=blocked:app=codex\x07".to_vec())
+            .unwrap();
+        assert!(instructions.try_iter().all(|(instruction, _)| !matches!(
+            instruction,
+            ScreenInstruction::RequestStateUpdateForPlugins
+        )));
+        if forwarded {
+            screen.resume_pane_after_forward(PANE, vec![]).unwrap();
+        } else {
+            tab.get_pane_with_id_mut(PANE).unwrap().clear_scroll();
+            tab.process_pending_vte_events(pid).unwrap();
+        }
+        let mut published = false;
+        for (instruction, _) in instructions.try_iter() {
+            if matches!(instruction, ScreenInstruction::RequestStateUpdateForPlugins) {
+                // Dispatch the status publication requested by Tab, as the screen loop does.
+                screen.log_and_report_session_state().unwrap();
+                published = true;
+            }
+        }
+        assert!(published);
+        assert!(plugins.try_iter().any(|(instruction, _)| {
+            let PluginInstruction::Update(updates) = instruction else {
+                return false;
+            };
+            updates.into_iter().any(|(_, _, event)| {
+                let Event::PaneUpdate(manifest) = event else {
+                    return false;
+                };
+                manifest
+                    .panes
+                    .values()
+                    .flatten()
+                    .any(|pane| pane.id == PANE && pane.program_status.current.is_some())
+            })
+        }));
+    }
+}

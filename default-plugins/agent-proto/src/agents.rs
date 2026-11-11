@@ -112,10 +112,12 @@ pub struct AgentPane {
     /// no two readers can disagree about what is an agent.
     #[serde(default)]
     pub detected: Option<String>,
-    /// The session's own record of the agent here, off the pane manifest. Written by the
-    /// spawn path, a plugin, or the agent's hooks; the one answer every reader shares.
+    /// Presentation copy of the agent, including applicable OSC status overrides.
     #[serde(default)]
     pub agent: Option<AgentInfo>,
+    /// Accepted provider record, without OSC presentation overrides. Used for hook feeds.
+    #[serde(default)]
+    pub provider_agent: Option<AgentInfo>,
     /// When the host last accepted a live hook for this pane, in Unix milliseconds.
     /// `None` until a hook arrives; pane updates and screen activity do not advance it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -386,8 +388,8 @@ impl HookPhase {
 /// this wins.
 ///
 /// The session carries the record itself (`PaneInfo::agent`), whichever road a report took;
-/// a feed is that record read back off the manifest, so nothing here expires on a clock and
-/// nothing here can disagree with what every other reader of the manifest sees.
+/// a feed is that provider record read back off the manifest. OSC display overrides
+/// are applied separately and never change this notification feed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookFeed {
     pub phase: HookPhase,

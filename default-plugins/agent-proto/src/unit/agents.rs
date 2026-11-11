@@ -77,6 +77,7 @@ fn pane(pane_id: u32, title: &str, command: Option<&str>) -> AgentPane {
         tab: None,
         detected: None,
         agent: None,
+        provider_agent: None,
         last_hook_at_ms: None,
     }
 }

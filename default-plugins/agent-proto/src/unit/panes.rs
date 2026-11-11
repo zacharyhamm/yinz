@@ -201,3 +201,57 @@ fn pane_hook_recency_comes_from_the_host_manifest() {
         Some(123)
     );
 }
+
+#[test]
+fn osc_display_keeps_provider_record_unchanged() {
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+    use yinz_types::program_status::{ProgramState, ProgramStatusRecord, ProgramStatusView};
+    let provider = AgentInfo {
+        kind: "claude".into(),
+        state: AgentState::Waiting,
+        session_id: Some("conversation".into()),
+        source: AgentSource::Reported,
+        detail: Some("provider detail".into()),
+        waiting_on: Some("Allow Bash?".into()),
+        wait_needs_a_person: true,
+        cwd: Some("/work".into()),
+        run_id: None,
+    };
+    for state in [
+        ProgramState::Idle,
+        ProgramState::Working,
+        ProgramState::Blocked,
+    ] {
+        let mut pane = PaneInfo {
+            agent: Some(provider.clone()),
+            program_status: ProgramStatusView {
+                current: Some(ProgramStatusRecord {
+                    state: Some(state),
+                    msg: Some("OSC detail".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let converted = agent_pane(&pane, None);
+        assert_eq!(converted.provider_agent.as_ref(), Some(&provider));
+        assert_eq!(
+            converted.agent.as_ref().unwrap().detail.as_deref(),
+            Some("OSC detail")
+        );
+        assert_eq!(
+            converted.agent.as_ref().unwrap().state,
+            pane.program_status.agent_state(provider.state)
+        );
+        pane.program_status = ProgramStatusView::default();
+        let cleared = agent_pane(&pane, None);
+        assert_eq!(cleared.agent, cleared.provider_agent);
+        let mut legacy = serde_json::to_value(cleared).unwrap();
+        legacy.as_object_mut().unwrap().remove("provider_agent");
+        assert!(serde_json::from_value::<agents::AgentPane>(legacy)
+            .unwrap()
+            .provider_agent
+            .is_none());
+    }
+}

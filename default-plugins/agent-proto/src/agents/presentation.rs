@@ -11,6 +11,17 @@ use unicode_width::UnicodeWidthStr;
 use yinz_tile::prelude::TabId;
 use yinz_types::agent::{AgentState, LiveAgentOrder};
 
+/// Resolve display reports locally; notification feeds remain provider-only.
+fn presentation_feeds(panes: &[AgentPane], hooks: &HookFeeds) -> HookFeeds {
+    let mut display = hooks.clone();
+    for pane in panes {
+        if let Some(feed) = pane.agent.as_ref().and_then(super::HookFeed::from_agent) {
+            display.insert(pane.pane_id, feed);
+        }
+    }
+    display
+}
+
 /// How many lines of a pane the model sees for each agent in one `agent_list`.
 pub(super) const PREVIEW_LINES: usize = 20;
 /// The hard ceiling on one preview, whatever those lines hold.
@@ -229,6 +240,8 @@ pub fn strip_rows(
     summaries: &Summaries,
     hooks: &HookFeeds,
 ) -> Vec<StripRow> {
+    let display_feeds = presentation_feeds(panes, hooks);
+    let hooks = &display_feeds;
     let mut agents: Vec<_> = panes
         .iter()
         .filter_map(|pane| {
@@ -458,6 +471,8 @@ pub fn mention_context(
     activity: &Activity,
     hooks: &HookFeeds,
 ) -> Option<String> {
+    let display_feeds = presentation_feeds(panes, hooks);
+    let hooks = &display_feeds;
     // (mention as typed, pane id), deduped by pane, first-appearance order.
     let mut found: Vec<(String, u32)> = Vec::new();
     let mut claim = |body: &str, pane_id: u32| {
@@ -563,6 +578,8 @@ pub fn list_json(
     hooks: &HookFeeds,
     mut read: impl FnMut(u32) -> String,
 ) -> String {
+    let display_feeds = presentation_feeds(panes, hooks);
+    let hooks = &display_feeds;
     let items: Vec<Value> = panes
         .iter()
         .filter_map(|pane| {

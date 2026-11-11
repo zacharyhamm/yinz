@@ -196,7 +196,7 @@
         (as-map-remove! "latched" id)
         (as-set! "pending-release" (filter (lambda (other) (not (= id other))) (as-get "pending-release")))
         (as-call "finish-run" id "Replaced" (yinz-wall-clock-ms)) (as-forget! id))
-      (define agent (hash-ref pane "agent"))
+      (define agent (hash-ref pane "provider_agent"))
       (when (as-present? agent)
         (cond ((equal? (hash-ref agent "state") "Exited")
             (as-call "finish-run" id "Closed" (yinz-wall-clock-ms))
@@ -205,8 +205,7 @@
             (as-set! "event-fed" (filter (lambda (other) (not (= id other))) (as-get "event-fed"))))
           (else
             (define feed (as-model "HookFeed" agent))
-            ;; Clearing an OSC override can return the presentation record to Spawned
-            ;; or Registered. Its synthetic feed is no longer applicable.
+            ;; Spawned and Registered records do not carry provider hook state.
             (unless (as-present? feed)
               (as-map-remove! "hooks" id)
               (as-map-remove! "waiting-transitions" id))
@@ -225,7 +224,7 @@
       (define id (hash-ref pane "pane_id"))
       (define cwd (hash-ref pane "cwd"))
       (when (as-present? cwd) (as-record-cwd! id cwd))
-      (define agent (hash-ref pane "agent"))
+      (define agent (hash-ref pane "provider_agent"))
       (define run (as-map-get "runs" id #f))
       (when (and (not (member id (as-get "observed-runs"))) run (as-present? agent) (equal? (hash-ref pane "status") "Running")
           (not (equal? (hash-ref agent "state") "Exited")) (not (equal? (hash-ref run "session_id") ""))

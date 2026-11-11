@@ -885,9 +885,6 @@ impl Screen {
         vte_bytes: VteBytes,
         pending: &mut PendingEvents,
     ) -> Result<()> {
-        let previous_status = self
-            .get_pane_info(PaneId::Terminal(pid))
-            .map(|pane| pane.program_status);
         self.mark_subscriber_pane_dirty(PaneId::Terminal(pid));
         self.pane_output_activity
             .insert(PaneId::Terminal(pid), Instant::now());
@@ -933,13 +930,6 @@ impl Screen {
                 .entry(PaneId::Terminal(pid))
                 .or_default()
                 .push(ScreenInstruction::PtyBytes(pid, vte_bytes));
-        }
-        if previous_status
-            != self
-                .get_pane_info(PaneId::Terminal(pid))
-                .map(|pane| pane.program_status)
-        {
-            self.log_and_report_session_state()?;
         }
         Ok(())
     }

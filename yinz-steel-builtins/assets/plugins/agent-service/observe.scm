@@ -43,7 +43,7 @@
               "session_id" (hash-ref event "session_id") "cwd" (hash-ref event "cwd")))
           ;; PaneUpdate precedes AgentEvent. Use the host's accepted state rather
           ;; than independently reinterpreting a hook after lifecycle reconciliation.
-          (define agent (hash-ref pane "agent"))
+          (define agent (hash-ref pane "provider_agent"))
           (when (and (as-present? agent)
               (equal? (hash-ref agent "kind") kind)
               (equal? (hash-ref agent "session_id") (hash-ref event "session_id")))

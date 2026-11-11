@@ -192,7 +192,15 @@ impl Tab {
                 )
                 .with_context(err_context)?;
             }
+            let previous_status = terminal_output.program_status();
             terminal_output.handle_pty_bytes(bytes);
+            // All delivery paths, including scrollback and forwarded-query replay,
+            // parse here. Arrival at the screen can precede parsing by any amount.
+            if terminal_output.program_status() != previous_status {
+                self.senders
+                    .send_to_screen(ScreenInstruction::RequestStateUpdateForPlugins)
+                    .context("publish parsed program status")?;
+            }
             let Some(terminal_output) = terminal_output.terminal_io_mut() else {
                 return Ok(());
             };

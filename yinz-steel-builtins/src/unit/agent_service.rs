@@ -1636,7 +1636,7 @@ fn weekly_usage_publishes_both_providers_and_throttles_requests() {
 }
 
 #[test]
-fn clearing_osc_status_retires_only_inapplicable_manifest_feeds() {
+fn osc_status_preserves_provider_feeds_and_restores_display_when_cleared() {
     use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
     use yinz_types::program_status::{ProgramState, ProgramStatusRecord, ProgramStatusView};
 
@@ -1713,19 +1713,13 @@ fn clearing_osc_status_retires_only_inapplicable_manifest_feeds() {
                 .unwrap();
             let view = runtime.invoke("view", vec![]).unwrap();
             assert_eq!(list(&view)["hooks"], true);
-            assert_eq!(view["hooks"]["7"]["detail"], "OSC detail");
-            assert_eq!(
-                view["hooks"]["7"]["phase"],
-                if state == ProgramState::Blocked {
-                    "Waiting"
-                } else {
-                    "Busy"
-                }
-            );
-            assert_eq!(
-                view["waiting"].get("7").is_some(),
-                state == ProgramState::Blocked
-            );
+            assert_eq!(view["waiting"], json!({}));
+            if source == AgentSource::Reported {
+                assert_eq!(view["hooks"]["7"]["detail"], "provider detail");
+                assert_eq!(view["hooks"]["7"]["phase"], "Idle");
+            } else {
+                assert_eq!(view["hooks"], json!({}));
+            }
 
             pane.program_status = ProgramStatusView::default();
             for _ in 0..2 {
@@ -1766,7 +1760,10 @@ fn clearing_osc_status_retires_only_inapplicable_manifest_feeds() {
 
 #[test]
 fn waiting_manifest_preserves_one_permission_or_question_toast() {
-    for question in [false, true] {
+    for (osc, question) in [None, Some("Idle"), Some("Working"), Some("Blocked")]
+        .into_iter()
+        .flat_map(|osc| [false, true].map(|q| (osc, q)))
+    {
         let (mut runtime, host) = plugin_with_source(
             "agent-service",
             r#"
@@ -1802,7 +1799,30 @@ fn waiting_manifest_preserves_one_permission_or_question_toast() {
             ..Default::default()
         };
         let mut manifest = json!({"panes":{"0":[pane]}});
+        if let Some(osc) = osc {
+            manifest["panes"]["0"][0]["program_status"] =
+                json!(yinz_types::program_status::ProgramStatusView {
+                    current: Some(yinz_types::program_status::ProgramStatusRecord {
+                        state: Some(serde_json::from_value(json!(osc)).unwrap()),
+                        msg: Some("OSC detail".into()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                });
+        }
         runtime.invoke("rebuild", vec![manifest.clone()]).unwrap();
+        runtime
+            .invoke(
+                "hook",
+                vec![json!({"hook_event_name":"UserPromptSubmit", "session_id":"conversation"})],
+            )
+            .unwrap();
+        assert!(host
+            .lock()
+            .unwrap()
+            .commands
+            .iter()
+            .all(|c| c.get("Notify").is_none()));
         manifest["panes"]["0"][0]["agent"]["state"] = json!("Waiting");
         manifest["panes"]["0"][0]["agent"]["waiting_on"] = json!(if question {
             "Which option?"
