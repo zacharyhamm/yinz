@@ -616,6 +616,8 @@ pub(crate) struct Screen {
     closed_agent_submissions: std::collections::VecDeque<(
         std::time::Instant,
         yinz_types::agent::control::RetainedSubmission,
+        u64, // Input revision frozen before normal provider shutdown.
+        Option<yinz_types::agent::claude_notifications::Source>,
     )>,
     agent_submissions: HashMap<PaneId, std::collections::VecDeque<agent_control::Submission>>,
     agent_launches: HashMap<PaneId, yinz_types::agent::SpawnedAgent>,

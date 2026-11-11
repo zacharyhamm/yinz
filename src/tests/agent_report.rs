@@ -1601,6 +1601,15 @@ mod claude_permission_observer;
 
 #[test]
 fn issue85_claude_observer_retries_completion_after_report_ack_loss() {
+    issue85_observer_ack_loss(false);
+}
+
+#[test]
+fn issue85_claude_observer_retries_positive_interruption_after_report_ack_loss() {
+    issue85_observer_ack_loss(true);
+}
+
+fn issue85_observer_ack_loss(interrupted: bool) {
     struct Observer(Child);
     impl Drop for Observer {
         fn drop(&mut self) {
@@ -1615,7 +1624,12 @@ fn issue85_claude_observer_retries_completion_after_report_ack_loss() {
     std::fs::write(&transcript, [
         serde_json::json!({"type":"user","promptId":"prompt","uuid":"accepted"}),
         serde_json::json!({"type":"assistant","parentUuid":"accepted","uuid":"answer","message":{"content":[{"type":"text","text":"DONE"}]}}),
-        serde_json::json!({"type":"system","subtype":"turn_duration","parentUuid":"answer"}),
+        if interrupted {
+            serde_json::json!({"type":"user","parentUuid":"answer","uuid":"interruption",
+                "interruptedMessageId":"answer","message":{"content":"[Request interrupted by user]"}})
+        } else {
+            serde_json::json!({"type":"system","subtype":"turn_duration","parentUuid":"answer"})
+        },
     ].iter().map(|row| format!("{row}\n")).collect::<String>()).unwrap();
     let pid = sysinfo::Pid::from_u32(std::process::id());
     let mut system = sysinfo::System::new();
@@ -1672,7 +1686,10 @@ fn issue85_claude_observer_retries_completion_after_report_ack_loss() {
         // First report was delivered, but the acknowledgement is lost with this socket.
     }
     assert_eq!(hooks[0], hooks[1]);
-    assert_eq!(hooks[1].claude_answered, Some(true));
+    assert_eq!(hooks[1].claude_answered, Some(!interrupted));
+    assert_eq!(hooks[1].claude_interrupted, Some(interrupted));
+    assert_eq!(hooks[1].claude_turn_complete, Some(!interrupted));
+    assert_eq!(hooks[1].session_id, "conversation");
     assert_eq!(hooks[1].prompt_id.as_deref(), Some("prompt"));
     assert_eq!(hooks[1].last_assistant_message.as_deref(), Some("DONE"));
     assert!(observer.0.wait().unwrap().success());

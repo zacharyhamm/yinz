@@ -1895,3 +1895,66 @@ fn issue85_confirmed_interruption_cannot_become_a_completed_answer() {
         Some(AgentOutcome::Interrupted)
     );
 }
+
+#[test]
+fn issue85_positive_interruption_finishes_observation_but_uncertainty_does_not() {
+    let mut observation = PromptObservation::new("claude", "conversation", "review");
+    observe(
+        &mut observation,
+        &event(
+            "claude",
+            "UserPromptSubmit",
+            Some("current"),
+            Some("review"),
+        ),
+    );
+    let mut hook = HookEvent {
+        hook_event_name: "Stop".into(),
+        session_id: "conversation".into(),
+        prompt_id: Some("current".into()),
+        claude_turn_complete: Some(false),
+        ..Default::default()
+    };
+    let stop = event("claude", "Stop", Some("current"), None);
+    assert_eq!(
+        observation.observe(&stop, Some(&hook)),
+        Some(AgentOutcome::StatusUnavailable)
+    );
+    hook.claude_interrupted = Some(true);
+    assert_eq!(
+        observation.observe(&stop, Some(&hook)),
+        Some(AgentOutcome::Interrupted)
+    );
+    hook.claude_turn_complete = Some(true);
+    hook.claude_interrupted = Some(false);
+    assert_eq!(observation.observe(&stop, Some(&hook)), None);
+}
+
+#[test]
+fn issue85_conflicting_interruption_provenance_cannot_complete_a_turn() {
+    for complete in [false, true] {
+        let mut observation = PromptObservation::new("claude", "conversation", "review");
+        observe(
+            &mut observation,
+            &event(
+                "claude",
+                "UserPromptSubmit",
+                Some("current"),
+                Some("review"),
+            ),
+        );
+        let hook = HookEvent {
+            hook_event_name: "Stop".into(),
+            session_id: "conversation".into(),
+            prompt_id: Some("current".into()),
+            claude_turn_complete: Some(complete),
+            claude_interrupted: Some(true),
+            claude_answered: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(
+            observation.observe(&event("claude", "Stop", Some("current"), None), Some(&hook)),
+            Some(AgentOutcome::StatusUnavailable)
+        );
+    }
+}

@@ -357,7 +357,8 @@ impl Screen {
                         lifecycle.claude.turns.get(prompt).is_some_and(|turn| {
                             turn.confirmation.is_none()
                                 || (turn.confirmation == Some(false)
-                                    && hook.claude_turn_complete == Some(true))
+                                    && (hook.claude_turn_complete == Some(true)
+                                        || hook.is_claude_interruption()))
                         })
                     })
             });
@@ -615,7 +616,8 @@ impl Screen {
                 lifecycle.claude_background = None;
             }
         } else if hook.hook_event_name == "Stop"
-            && hook.claude_turn_complete == Some(true)
+            && (hook.claude_turn_complete == Some(true)
+                || (hook.is_claude_interruption() && hook.claude_background.is_some()))
             && lifecycle
                 .claude
                 .turns
@@ -653,7 +655,9 @@ impl Screen {
                         },
                     );
                 }
-            } else if matches!(event.hook.as_str(), "StopFailure" | "Interrupt") {
+            } else if matches!(event.hook.as_str(), "StopFailure" | "Interrupt")
+                || hook.is_claude_interruption()
+            {
                 if let Some(turn) = hook
                     .prompt_id
                     .as_ref()
@@ -787,23 +791,44 @@ impl Screen {
     /// Sample positive quiescence while the pane still exists. Cleanup after removal
     /// cannot reconstruct it from absence.
     pub(super) fn retain_closed_agent(&mut self, pane: PaneId, now: Instant) {
+        if self.get_pane_info(pane).is_some() {
+            let revision = self.agent_input_revision(pane);
+            self.closed_agent_submissions
+                .retain(|(_, proof, saved_revision, _)| {
+                    proof.pane_id != pane || *saved_revision == revision
+                });
+        }
         // A pre-removal sample may already be frozen by the closing operation.
-        if self.get_pane_info(pane).is_none() {
+        if self
+            .get_pane_info(pane)
+            .is_none_or(|info| info.agent.is_none())
+        {
+            // A validated SessionEnd may already have frozen the original identity.
+            // Keep its original insertion time through held/close callbacks.
             return;
         }
         let Some(proof) = self.closed_agent_proof(pane) else {
             self.closed_agent_submissions
-                .retain(|(_, old)| old.pane_id != pane);
+                .retain(|(_, old, _, _)| old.pane_id != pane);
             return;
         };
         if self
             .closed_agent_submissions
             .iter()
-            .any(|(_, old)| old.submission_id == proof.submission_id && old.pane_id == pane)
+            .any(|(_, old, _, _)| old.submission_id == proof.submission_id && old.pane_id == pane)
         {
             return;
         }
-        self.closed_agent_submissions.push_back((now, proof));
+        let source = self
+            .agent_lifecycle
+            .get(&pane)
+            .and_then(|l| l.claude.obligations.source.clone());
+        self.closed_agent_submissions.push_back((
+            now,
+            proof,
+            self.agent_input_revision(pane),
+            source,
+        ));
         self.prune_closed_agents(now);
     }
 
@@ -867,7 +892,7 @@ impl Screen {
         while self
             .closed_agent_submissions
             .front()
-            .is_some_and(|(at, _)| now.saturating_duration_since(*at) >= RETENTION)
+            .is_some_and(|(at, _, _, _)| now.saturating_duration_since(*at) >= RETENTION)
             || self.closed_agent_submissions.len() > CAPACITY
         {
             self.closed_agent_submissions.pop_front();
@@ -886,9 +911,9 @@ impl Screen {
             "pane_closed" | "held" | "agent_cleared" | "agent_exited"
         ) {
             self.retain_closed_agent(pane, Instant::now());
-        } else {
+        } else if reason != "session_ended" {
             self.closed_agent_submissions
-                .retain(|(_, proof)| proof.pane_id != pane);
+                .retain(|(_, proof, _, _)| proof.pane_id != pane);
         }
         self.agent_terminal_claims.remove(&pane);
         self.remove_agent_lifecycle(pane, reason);
@@ -938,7 +963,8 @@ impl Screen {
         }
         if report.kind == "claude"
             && hook.is_some_and(|hook| {
-                matches!(hook.hook_event_name.as_str(), "Interrupt" | "StopFailure")
+                (matches!(hook.hook_event_name.as_str(), "Interrupt" | "StopFailure")
+                    || hook.is_claude_interruption())
                     && !hook.is_worker()
                     && self.agent_lifecycle.get(&pane).is_none_or(|l| {
                         hook.prompt_id.is_none()
@@ -993,6 +1019,25 @@ impl Screen {
                                 && hook.session_id != input.conversation))
                 })
         });
+        let preserve_shutdown = !clear_transition
+            && report.kind == "claude"
+            && matches!(report.state, AgentReportState::Clear)
+            && hook.is_some_and(|hook| {
+                hook.hook_event_name == "SessionEnd"
+                    && !hook.is_worker()
+                    && !hook.archive_only
+                    && self.has_agent_lifecycle(pane, "claude", &hook.session_id)
+                    && report.event.as_ref().is_some_and(|event| {
+                        event.kind == report.kind
+                            && PaneId::Terminal(event.pane_id) == pane
+                            && event.hook == hook.hook_event_name
+                            && event.session_id.as_deref() == Some(hook.session_id.as_str())
+                    })
+            })
+            && self.closed_agent_proof(pane).is_some();
+        if preserve_shutdown {
+            self.retain_closed_agent(pane, Instant::now());
+        }
         if !clear_transition
             && hook.is_some_and(|hook| {
                 !hook.is_worker()
@@ -1279,8 +1324,12 @@ impl Screen {
         let clear_input = clear_transition
             .then(|| self.agent_clear_inputs.remove(&pane))
             .flatten();
-        let result = super::agent_reports::stage_pane_agent_report(self, pane, visible)
-            .context("apply parent state and worker waits")?;
+        let result = if preserve_shutdown {
+            super::agent_reports::stage_pane_agent_shutdown(self, pane)
+        } else {
+            super::agent_reports::stage_pane_agent_report(self, pane, visible)
+        }
+        .context("apply parent state and worker waits")?;
         if result && let Some(wait) = permission_wait {
             self.claude_permission_waits.insert(pane, wait);
         }
@@ -2069,12 +2118,14 @@ impl Screen {
             }
             self.prune_closed_agents(now);
             if self.agent_status(pane, None).is_none()
-                && let Some((_, proof)) =
+                && let Some((_, proof, _, _)) =
                     self.closed_agent_submissions
                         .iter()
                         .rev()
-                        .find(|(_, proof)| {
-                            proof.pane_id == pane
+                        .find(|(_, proof, revision, _)| {
+                            (self.get_pane_info(pane).is_none()
+                                || *revision == self.agent_input_revision(pane))
+                                && proof.pane_id == pane
                                 && proof.submission_id == *submission_id
                                 && expected == Some(proof.conversation_id.as_str())
                         })
@@ -3680,19 +3731,7 @@ impl Screen {
         // Accepted nonpositive registry observations describe presentation, not a
         // new lifecycle hook. Real hooks and positive input evidence retain the
         // recovery fence, including when they carry registry enrichment.
-        let passive_permission = event.kind == "claude"
-            && event.hook == yinz_types::agent::claude_permissions::EVENT
-            && hook.is_some_and(|hook| {
-                hook.hook_event_name == event.hook
-                    && event.session_id.as_deref() == Some(hook.session_id.as_str())
-                    && hook.claude_permission.as_ref().is_some_and(|sample| {
-                        matches!(
-                            sample.status,
-                            yinz_types::agent::claude_permissions::Status::Inactive
-                                | yinz_types::agent::claude_permissions::Status::Unavailable
-                        )
-                    })
-            });
+        let passive_permission = passive_claude_permission(event, hook);
         if !passive_permission && let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
             lifecycle.last_report = Instant::now();
         }
@@ -3919,6 +3958,16 @@ impl Screen {
                     "Interrupt" | "StopFailure" => hook
                         .and_then(|hook| hook.turn_id.clone())
                         .filter(|turn| !turn.is_empty()),
+                    "Stop"
+                        if event.kind == "claude"
+                            && hook.is_some_and(|hook| {
+                                hook.is_claude_interruption()
+                                    && previous
+                                        .is_some_and(|l| hook.prompt_id == l.claude_prompt_id)
+                            }) =>
+                    {
+                        hook.and_then(|hook| hook.turn_id.clone())
+                    },
                     "UserPromptSubmit" if !notification => None,
                     "PreInvocation" => None,
                     _ => previous.and_then(|previous| previous.ended_turn.clone()),
@@ -3983,7 +4032,8 @@ impl Screen {
                         } else if event.hook == "UserPromptSubmit" {
                             None
                         } else if event.kind == "claude"
-                            && matches!(event.hook.as_str(), "StopFailure" | "Interrupt")
+                            && (matches!(event.hook.as_str(), "StopFailure" | "Interrupt")
+                                || hook.is_some_and(HookEvent::is_claude_interruption))
                         {
                             Some(true)
                         } else {
@@ -4077,19 +4127,41 @@ impl Screen {
     fn correlate_agent_submissions(&mut self, event: &AgentEvent, hook: Option<&HookEvent>) {
         let pane = PaneId::Terminal(event.pane_id);
         let parent = hook.is_some_and(|hook| !hook.is_worker());
-        // Any activity beyond an exact duplicate confirmation invalidates a closure claim.
-        if !hook.is_some_and(|hook| {
-            hook.hook_event_name == "Stop"
-                && hook.claude_answered == Some(true)
-                && hook.claude_background == Some(false)
-                && self
-                    .agent_terminal_claims
-                    .get(&pane)
-                    .is_none_or(|(_, _, prompt)| hook.prompt_id.as_ref() == Some(prompt))
-        }) {
+        // Passive observations and matching shutdown preserve facts; actual activity invalidates them.
+        let frozen_shutdown = event.kind == "claude"
+            && event.hook == "SessionEnd"
+            && parent
+            && self
+                .closed_agent_submissions
+                .iter()
+                .any(|(_, proof, revision, source)| {
+                    // Match the live source-admission contract for older reporters.
+                    // An explicitly different process cannot reuse the snapshot.
+                    let same_source = hook
+                        .and_then(|h| h.claude_notifications.as_ref())
+                        .and_then(|e| e.source.as_ref())
+                        .is_none_or(|incoming| source.as_ref().is_none_or(|old| old == incoming));
+                    proof.pane_id == pane
+                        && *revision == self.agent_input_revision(pane)
+                        && proof.kind == event.kind
+                        && event.session_id.as_deref() == Some(proof.conversation_id.as_str())
+                        && same_source
+                });
+        if !passive_claude_permission(event, hook)
+            && !frozen_shutdown
+            && !hook.is_some_and(|hook| {
+                hook.hook_event_name == "Stop"
+                    && hook.claude_answered == Some(true)
+                    && hook.claude_background == Some(false)
+                    && self
+                        .agent_terminal_claims
+                        .get(&pane)
+                        .is_none_or(|(_, _, prompt)| hook.prompt_id.as_ref() == Some(prompt))
+            })
+        {
             self.agent_terminal_claims.remove(&pane);
             self.closed_agent_submissions
-                .retain(|(_, proof)| proof.pane_id != pane);
+                .retain(|(_, proof, _, _)| proof.pane_id != pane);
         }
         let mut terminal_claim = None;
         let claude_claims: Vec<_> = self
@@ -4168,20 +4240,22 @@ impl Screen {
             if outcome == Some(AgentOutcome::Submitted) && pending.conversation.is_none() {
                 pending.conversation = event.session_id.clone();
             }
-            let interrupted = (outcome == Some(AgentOutcome::Interrupted)
-                && event.hook == "Interrupt")
-                .then(|| SubmissionResult {
-                    outcome: AgentOutcome::Interrupted,
-                    message: Some(
-                        format!(
-                            "{} The turn was interrupted.",
-                            event.last_message.as_deref().unwrap_or_default()
-                        )
-                        .trim()
-                        .to_owned(),
-                    ),
-                    background: false,
-                });
+            let positive_interrupt = outcome == Some(AgentOutcome::Interrupted)
+                && (event.hook == "Interrupt"
+                    || (event.kind == "claude"
+                        && hook.is_some_and(HookEvent::is_claude_interruption)));
+            let interrupted = positive_interrupt.then(|| SubmissionResult {
+                outcome: AgentOutcome::Interrupted,
+                message: Some(
+                    format!(
+                        "{} The turn was interrupted.",
+                        event.last_message.as_deref().unwrap_or_default()
+                    )
+                    .trim()
+                    .to_owned(),
+                ),
+                background: false,
+            });
             self.record_submission(&pending, interrupted);
             match outcome {
                 Some(AgentOutcome::Submitted) => {
@@ -4199,27 +4273,28 @@ impl Screen {
                 },
                 Some(outcome) => {
                     pending.resolved =
-                        matches!(outcome, AgentOutcome::Completed | AgentOutcome::Failed);
-                    let retain_claim = (pending.resolved && pending.delivery.is_some())
-                        || matches!(
-                            outcome,
-                            AgentOutcome::Interrupted
-                                | AgentOutcome::StatusUnavailable
-                                | AgentOutcome::NeedsInput
-                        );
-                    let message =
-                        if event.hook == "Interrupt" && outcome == AgentOutcome::Interrupted {
-                            Some(
-                                format!(
-                                    "{} The turn was interrupted.",
-                                    event.last_message.as_deref().unwrap_or_default()
-                                )
-                                .trim()
-                                .to_owned(),
+                        matches!(outcome, AgentOutcome::Completed | AgentOutcome::Failed)
+                            || (positive_interrupt && event.hook == "Stop");
+                    let retain_claim = pending.delivery.is_some()
+                        || (!pending.resolved
+                            && matches!(
+                                outcome,
+                                AgentOutcome::Interrupted
+                                    | AgentOutcome::StatusUnavailable
+                                    | AgentOutcome::NeedsInput
+                            ));
+                    let message = if positive_interrupt {
+                        Some(
+                            format!(
+                                "{} The turn was interrupted.",
+                                event.last_message.as_deref().unwrap_or_default()
                             )
-                        } else {
-                            event.last_message.clone()
-                        };
+                            .trim()
+                            .to_owned(),
+                        )
+                    } else {
+                        event.last_message.clone()
+                    };
                     if retain_claim {
                         pending.blocks_steering = outcome != AgentOutcome::NeedsInput;
                     }
@@ -4232,21 +4307,21 @@ impl Screen {
                             .flatten()
                             .or(other_claim),
                     );
-                    if matches!(
-                        outcome,
-                        AgentOutcome::Interrupted
-                            | AgentOutcome::StatusUnavailable
-                            | AgentOutcome::NeedsInput
-                    ) {
+                    if !pending.resolved
+                        && matches!(
+                            outcome,
+                            AgentOutcome::Interrupted
+                                | AgentOutcome::StatusUnavailable
+                                | AgentOutcome::NeedsInput
+                        )
+                    {
                         pending.client = None;
                         pending.deadline = None;
                         pending.abandoned = true;
                         pending.blocks_steering = outcome != AgentOutcome::NeedsInput;
                         pending.enter_at = None;
                         keep.push(pending);
-                    } else if pending.delivery.is_some()
-                        && matches!(outcome, AgentOutcome::Completed | AgentOutcome::Failed)
-                    {
+                    } else if pending.delivery.is_some() && pending.resolved {
                         pending.resolved = true;
                         pending.abandoned = true;
                         pending.blocks_steering = true;
@@ -4918,4 +4993,21 @@ impl Screen {
             self.agent_draft_clears.insert(pane, operation);
         }
     }
+}
+
+/// Called only after source/conversation and permission-sample admission.
+fn passive_claude_permission(event: &AgentEvent, hook: Option<&HookEvent>) -> bool {
+    event.kind == "claude"
+        && event.hook == yinz_types::agent::claude_permissions::EVENT
+        && hook.is_some_and(|hook| {
+            hook.hook_event_name == event.hook
+                && event.session_id.as_deref() == Some(hook.session_id.as_str())
+                && hook.claude_permission.as_ref().is_some_and(|sample| {
+                    matches!(
+                        sample.status,
+                        yinz_types::agent::claude_permissions::Status::Inactive
+                            | yinz_types::agent::claude_permissions::Status::Unavailable
+                    )
+                })
+        })
 }

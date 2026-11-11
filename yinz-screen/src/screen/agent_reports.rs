@@ -337,7 +337,7 @@ pub(super) fn apply_queued_agent_report(
             "agy" => hook.agy_turn_complete,
             _ => None,
         };
-        if complete != Some(true) {
+        if complete != Some(true) && !(report.kind == "claude" && hook.is_claude_interruption()) {
             if let yinz_types::agent::report::AgentReportState::Set(agent) = &mut normalized.state {
                 agent.state = yinz_types::agent::AgentState::Busy;
             }
@@ -534,7 +534,7 @@ pub(crate) fn apply_pane_agent_report(
     pane_id: PaneId,
     agent: Option<AgentInfo>,
 ) -> Result<bool> {
-    set_pane_agent_report(screen, pane_id, agent, true, true)
+    set_pane_agent_report(screen, pane_id, agent, true, true, false)
 }
 
 pub(super) fn stage_pane_agent_report(
@@ -543,7 +543,12 @@ pub(super) fn stage_pane_agent_report(
     agent: Option<AgentInfo>,
 ) -> Result<bool> {
     screen.claude_permission_waits.remove(&pane_id);
-    set_pane_agent_report(screen, pane_id, agent, false, false)
+    set_pane_agent_report(screen, pane_id, agent, false, false, false)
+}
+
+/// Only the validated SessionEnd path may preserve a proof frozen before record removal.
+pub(super) fn stage_pane_agent_shutdown(screen: &mut Screen, pane_id: PaneId) -> Result<bool> {
+    set_pane_agent_report(screen, pane_id, None, false, false, true)
 }
 
 /// Stage aggregated activity without replacing the parent or its native input ownership.
@@ -552,7 +557,7 @@ pub(super) fn stage_pane_agent_activity(
     pane_id: PaneId,
     agent: AgentInfo,
 ) -> Result<bool> {
-    set_pane_agent_report(screen, pane_id, Some(agent), false, false)
+    set_pane_agent_report(screen, pane_id, Some(agent), false, false, false)
 }
 
 /// Publish aggregated activity without replacing the underlying parent state or its wait.
@@ -561,7 +566,7 @@ pub(super) fn publish_pane_agent_activity(
     pane_id: PaneId,
     agent: AgentInfo,
 ) -> Result<bool> {
-    set_pane_agent_report(screen, pane_id, Some(agent), true, false)
+    set_pane_agent_report(screen, pane_id, Some(agent), true, false, false)
 }
 
 fn set_pane_agent_report(
@@ -570,6 +575,7 @@ fn set_pane_agent_report(
     agent: Option<AgentInfo>,
     publish: bool,
     remember_parent: bool,
+    preserve_shutdown: bool,
 ) -> Result<bool> {
     if remember_parent {
         screen.claude_permission_waits.remove(&pane_id);
@@ -628,6 +634,7 @@ fn set_pane_agent_report(
             .as_ref()
             .is_some_and(|agent| agent.kind == "muse" && agent.session_id.is_some());
     if !provisional_muse_bind
+        && (previous.is_some() || agent.is_some())
         && (previous
             .as_ref()
             .map(|agent| (&agent.kind, &agent.session_id))
@@ -636,7 +643,9 @@ fn set_pane_agent_report(
                 .as_ref()
                 .is_none_or(|agent| agent.state == yinz_types::agent::AgentState::Exited))
     {
-        let reason = if agent.is_none() {
+        let reason = if agent.is_none() && preserve_shutdown {
+            "session_ended"
+        } else if agent.is_none() {
             "record_cleared"
         } else if previous.as_ref().map(|agent| &agent.kind)
             != agent.as_ref().map(|agent| &agent.kind)

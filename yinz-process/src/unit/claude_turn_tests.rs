@@ -1821,3 +1821,13 @@ fn issue85_completion_delivery_retry_has_an_absolute_deadline() {
     .unwrap();
     assert!(error.to_string().contains("deadline"));
 }
+
+#[test]
+fn issue85_linked_interruption_has_terminal_provenance_without_an_answer() {
+    let mut turn = Turn::new("claude", &hook());
+    turn.record(&json!({"type":"user","promptId":"prompt","uuid":"tool-result"}))
+        .unwrap();
+    assert!(turn.record(&interruption_record()).unwrap());
+    assert!(turn.interrupted);
+    assert!(!turn.answer_boundary);
+}

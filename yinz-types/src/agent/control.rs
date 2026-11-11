@@ -799,7 +799,10 @@ impl PromptObservation {
                 outcome,
                 AgentOutcome::Completed | AgentOutcome::Failed | AgentOutcome::TargetChanged
             )
-        }) {
+        }) || (outcome == Some(AgentOutcome::Interrupted)
+            && self.kind == "claude"
+            && hook.is_some_and(HookEvent::is_claude_interruption))
+        {
             self.finished = true;
         }
         outcome
@@ -956,7 +959,11 @@ impl PromptObservation {
                 }
                 hook.claude_turn_complete.map(|complete| {
                     if hook.claude_interrupted == Some(true) {
-                        AgentOutcome::Interrupted
+                        if hook.is_claude_interruption() {
+                            AgentOutcome::Interrupted
+                        } else {
+                            AgentOutcome::StatusUnavailable
+                        }
                     } else if complete {
                         self.background = hook.claude_background == Some(true);
                         AgentOutcome::Completed

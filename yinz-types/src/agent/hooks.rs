@@ -816,6 +816,16 @@ pub struct CapturedMessage {
 }
 
 impl HookEvent {
+    /// Internal root-transcript evidence, never an unverified Stop or worker event.
+    pub fn is_claude_interruption(&self) -> bool {
+        self.hook_event_name == "Stop"
+            && self.claude_turn_complete == Some(false)
+            && self.claude_interrupted == Some(true)
+            && self.claude_answered != Some(true)
+            && !self.is_worker()
+            && !self.archive_only
+    }
+
     pub fn is_worker(&self) -> bool {
         self.agent_id.is_some()
             || matches!(
@@ -1089,6 +1099,9 @@ pub fn hook_state_for(kind: &str, event: &HookEvent) -> Option<AgentState> {
         )
         && event.source.as_deref() == Some("idle")
     {
+        return Some(AgentState::Idle);
+    }
+    if kind == "claude" && event.is_claude_interruption() {
         return Some(AgentState::Idle);
     }
     if event.hook_event_name == "Stop"

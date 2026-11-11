@@ -180,6 +180,7 @@ function harness(
     agenda: issue,
     failEventOnce: false,
     failTaskCompletionOnce: false,
+    failChildResultOnce: false,
     failWrite: undefined as
       | ((
         spec: string,
@@ -325,6 +326,10 @@ function harness(
           readResource: (name) =>
             Promise.resolve(structuredClone(child.get(name) ?? null)),
           writeResource: (_spec, name, value) => {
+            if (name === "result" && controls.failChildResultOnce) {
+              controls.failChildResultOnce = false;
+              return Promise.reject(new Error("child publication interrupted"));
+            }
             child.set(name, structuredClone(value));
             return Promise.resolve({ name });
           },
@@ -531,8 +536,11 @@ function harness(
 }
 
 /** Exercise the real provider state machine while controlling turn responses. */
-function observedHarness() {
-  const h = harness();
+function observedHarness(
+  initial = createState(issue),
+  evidence: unknown = triage,
+) {
+  const h = harness(initial, evidence);
   const cli: { args: string[]; stdin?: string }[] = [];
   const turns: {
     response: Record<string, unknown> | Error;
@@ -5043,4 +5051,166 @@ Deno.test("issue85 accepted original assignment imports once through closed subm
       .length,
     1,
   );
+});
+
+// These consumer fixtures use the native retained response shape. Screen tests produce
+// that shape through passive-report and SessionEnd paths; no receipt creates a proof.
+for (const continuing of [false, true]) {
+  for (const closure of ["passive-close", "session-end"]) {
+    for (const fault of ["child-result", "parent-event"]) {
+      Deno.test(`issue85 accepted implementation ${continuing ? "continuation" : "original"} imports once after ${closure} and ${fault}`, async () => {
+        const initial = implementing();
+        const h = observedHarness(initial, {
+          summary: "Implemented",
+          commit: head,
+        });
+        if (continuing) {
+          h.turns.push({ response: { outcome: "completed" } });
+          await rejects(
+            () =>
+              h.methods.run_agent.execute(
+                { ...options, role: "implement" },
+                h.context,
+              ),
+            "submission_required",
+          );
+        }
+        h.turns.push({
+          response: {
+            outcome: "status_unavailable",
+            acknowledged: true,
+            turn_id: "native-turn",
+          },
+          submit: true,
+        });
+        const taskBefore = continuing
+          ? AgentTaskSchema.parse(h.resources.get("agent-task"))
+          : undefined;
+        await rejects(
+          () =>
+            continuing
+              ? h.methods.continue_agent.execute({
+                taskId: taskBefore!.id,
+                request: "Submit existing work",
+              }, h.context)
+              : h.methods.run_agent.execute(
+                { ...options, role: "implement" },
+                h.context,
+              ),
+          "status_unavailable",
+        );
+        const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+        const child = AgentStateSchema.parse(h.child.get("state"));
+        const receipt = SubmissionSchema.parse(
+          h.submissions.get(task.submission!.behaviorName)?.get("submission"),
+        );
+        assert(receipt.status === "accepted");
+        h.turns.push({
+          response: {
+            outcome: "completed",
+            agents: [],
+            acknowledged: true,
+            prompt_delivery: "started",
+            server_instance: child.launchServer,
+            turn_id: child.turnId,
+            retained_submission: {
+              server_instance: child.launchServer,
+              session: task.config.session,
+              pane_id: child.paneId,
+              kind: task.config.kind,
+              cwd: task.config.cwd,
+              conversation_id: child.conversationId,
+              submission_id: child.submissionId,
+              turn_id: child.turnId,
+              prompt_id: "original-provider-prompt",
+              acknowledged: true,
+              prompt_delivery: "started",
+              outcome: "completed",
+              message: "Finished",
+              answered: true,
+              quiescent: true,
+            },
+          },
+        });
+        h.controls.failChildResultOnce = fault === "child-result";
+        h.controls.failEventOnce = fault === "parent-event";
+        await rejects(
+          () => h.methods.resume_agent.execute({}, h.context),
+          fault === "child-result"
+            ? "child publication interrupted"
+            : "event write failed",
+        );
+        await h.methods.resume_agent.execute({}, h.context);
+        const imported = AgentTaskSchema.parse(h.resources.get("agent-task"));
+        await h.methods.resume_agent.execute({}, h.context);
+        equal(AgentTaskSchema.parse(h.resources.get("agent-task")), imported);
+        equal(imported.id, task.id);
+        equal(imported.promptDigest, task.promptDigest);
+        equal(imported.status, "completed");
+        equal(imported.evidence, receipt.receipt);
+        equal(h.controls.repo.head, head);
+        equal(await loadState(h.context), initial);
+        equal(h.cli.filter((c) => c.args[3] === "spawn").length, 1);
+        equal(
+          h.cli.filter((c) => c.args[3] === "prompt").length,
+          continuing ? 2 : 1,
+        );
+        equal(
+          h.cli.filter((c) =>
+            c.args[3] === "wait" && c.args.includes("--submission")
+          ).length,
+          1,
+        );
+        equal(h.writes.filter(({ spec }) => spec === "event").length, 1);
+        equal(h.controls.cleanupCalls, 1);
+        equal(
+          AgentStateSchema.parse(h.child.get("state")).submissionId,
+          child.submissionId,
+        );
+      });
+    }
+  }
+}
+
+Deno.test("issue85 accepted implementation receipt never promotes positively interrupted execution", async () => {
+  const initial = implementing();
+  const h = observedHarness(initial, { summary: "Implemented", commit: head });
+  h.turns.push({
+    response: {
+      outcome: "status_unavailable",
+      acknowledged: true,
+      turn_id: "native-turn",
+    },
+    submit: true,
+  });
+  await rejects(
+    () =>
+      h.methods.run_agent.execute({ ...options, role: "implement" }, h.context),
+    "status_unavailable",
+  );
+  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    h.turns.push({
+      response: {
+        outcome: "interrupted",
+        acknowledged: true,
+        prompt_delivery: "started",
+        message: "The turn was interrupted.",
+      },
+    });
+    await rejects(
+      () => h.methods.resume_agent.execute({}, h.context),
+      "interrupted",
+    );
+    equal(await loadState(h.context), initial);
+    equal(AgentTaskSchema.parse(h.resources.get("agent-task")).id, task.id);
+    assert(
+      AgentTaskSchema.parse(h.resources.get("agent-task")).status !==
+        "completed",
+    );
+    equal(h.controls.repo.head, head);
+    equal(h.writes.filter(({ spec }) => spec === "event").length, 0);
+  }
+  equal(h.cli.filter((c) => c.args[3] === "prompt").length, 1);
+  equal(h.cli.filter((c) => c.args[3] === "spawn").length, 1);
 });

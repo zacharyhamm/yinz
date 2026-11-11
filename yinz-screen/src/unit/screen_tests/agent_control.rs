@@ -17084,7 +17084,7 @@ fn issue85_positive_completion_survives_closure_but_activity_and_expiry_block_it
                 newer.submission_id = format!("newer-{index}");
                 screen
                     .closed_agent_submissions
-                    .push_back((Instant::now(), newer));
+                    .push_back((Instant::now(), newer, 0, None));
             }
             screen.agent_control(wait_submission("issue85-original"), CLIENT);
             let evicted = replies(&messages, CLIENT).pop().unwrap();
@@ -17103,5 +17103,370 @@ fn issue85_positive_completion_survives_closure_but_activity_and_expiry_block_it
             assert_ne!(response.outcome, AgentOutcome::Completed, "{case}");
             assert!(response.retained_submission.is_none(), "{case}");
         }
+    }
+}
+
+fn issue85_sourced(hook: HookEvent) -> HookEvent {
+    with_notification_source(hook, notification_source())
+}
+
+fn issue85_answer(background: bool) -> HookEvent {
+    issue85_sourced(HookEvent {
+        claude_answered: Some(true),
+        claude_background: Some(background),
+        cwd: Some("/work".into()),
+        last_assistant_message: Some("DONE".into()),
+        ..hook("Stop")
+    })
+}
+
+#[test]
+fn issue85_passive_permission_reports_preserve_only_existing_completion() {
+    use yinz_types::agent::claude_permissions::Status;
+    for before in [false, true] {
+        for status in [Status::Inactive, Status::Unavailable, Status::Active] {
+            for background in [false, true] {
+                let (mut screen, messages, writes) = setup("claude");
+                report_kind(&mut screen, "claude", issue85_sourced(hook("SessionStart")));
+                screen.agent_control_with_clear(
+                    identified_prompt("passive", true),
+                    CLIENT,
+                    &writes,
+                );
+                finish_paste(&writes);
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    issue85_sourced(hook("UserPromptSubmit")),
+                );
+                if before {
+                    report_kind(&mut screen, "claude", permission_sample(status, 500_000));
+                }
+                report_kind(&mut screen, "claude", issue85_answer(background));
+                if !before {
+                    report_kind(&mut screen, "claude", permission_sample(status, 500_001));
+                    report_kind(&mut screen, "claude", permission_sample(status, 500_002));
+                }
+                replies(&messages, CLIENT);
+                screen.close_pane_explicitly(PANE, None);
+                for _ in 0..2 {
+                    screen.agent_control(wait_submission("passive"), CLIENT);
+                    let response = replies(&messages, CLIENT).pop().unwrap();
+                    let eligible = status != Status::Active && !background;
+                    assert_eq!(
+                        response.outcome == AgentOutcome::Completed,
+                        eligible,
+                        "{before} {status:?} {background}"
+                    );
+                    assert_eq!(response.retained_submission.is_some(), eligible);
+                    assert!(response.agents.is_empty());
+                }
+                assert!(finish_paste(&writes).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn issue85_session_end_freezes_completion_before_clearing_identity() {
+    for case in [
+        "closed",
+        "held",
+        "tab",
+        "background",
+        "busy",
+        "input",
+        "person",
+        "legacy",
+    ] {
+        let (mut screen, messages, writes) = setup("claude");
+        report_kind(&mut screen, "claude", issue85_sourced(hook("SessionStart")));
+        screen.agent_control_with_clear(identified_prompt("shutdown", true), CLIENT, &writes);
+        finish_paste(&writes);
+        report_kind(
+            &mut screen,
+            "claude",
+            issue85_sourced(hook("UserPromptSubmit")),
+        );
+        if case != "busy" {
+            let mut stop = issue85_answer(case == "background");
+            if case == "legacy" {
+                stop.claude_answered = None;
+            }
+            report_kind(&mut screen, "claude", stop);
+        }
+        if case == "input" {
+            screen.agent_control(send_keys(vec![BareKey::Char('x')]), CLIENT);
+            finish_paste(&writes);
+        }
+        if case == "person" {
+            report_kind(
+                &mut screen,
+                "claude",
+                issue85_sourced(permission_wait("claude")),
+            );
+        }
+        replies(&messages, CLIENT);
+        report_kind(&mut screen, "claude", issue85_sourced(hook("SessionEnd")));
+        assert!(screen.get_pane_info(PANE).unwrap().agent.is_none());
+        let eligible = matches!(case, "closed" | "held" | "tab");
+        for stage in 0..3 {
+            if stage == 1 {
+                let frozen = screen.closed_agent_submissions.clone();
+                report_kind(&mut screen, "claude", issue85_sourced(hook("SessionEnd")));
+                screen.invalidate_agent_lifecycle(PANE, "held");
+                let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+                tab.hold_pane(PANE, Some(0), false, tab.pane_run_command(PANE).unwrap());
+                assert_eq!(
+                    screen.closed_agent_submissions, frozen,
+                    "shutdown must not refresh TTL"
+                );
+            } else if stage == 2 {
+                if case == "tab" {
+                    let id = TabId::new(0);
+                    screen.close_tab_by_id(id).unwrap();
+                } else {
+                    screen.close_pane_explicitly(PANE, None);
+                }
+            }
+            screen.agent_control(wait_submission("shutdown"), CLIENT);
+            let response = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(
+                response.outcome == AgentOutcome::Completed,
+                eligible,
+                "{case} stage {stage}"
+            );
+            assert_eq!(response.retained_submission.is_some(), eligible);
+            if eligible {
+                assert!(response.agents.is_empty());
+                assert_eq!(response.message.as_deref(), Some("DONE"));
+                assert_eq!(response.submission_id.as_deref(), Some("shutdown"));
+            }
+        }
+        assert!(finish_paste(&writes).is_empty());
+    }
+}
+
+#[test]
+fn issue85_positive_interruption_is_terminal_after_uncertainty_and_repeated_waits() {
+    for unavailable in [false, true] {
+        for waiting_client in [false, true] {
+            let (mut screen, messages, writes) = setup("claude");
+            report_kind(&mut screen, "claude", issue85_sourced(hook("SessionStart")));
+            screen.agent_control_with_clear(
+                identified_prompt("interrupted", waiting_client),
+                CLIENT,
+                &writes,
+            );
+            finish_paste(&writes);
+            report_kind(
+                &mut screen,
+                "claude",
+                issue85_sourced(hook("UserPromptSubmit")),
+            );
+            replies(&messages, CLIENT);
+            let uncertain = issue85_sourced(HookEvent {
+                claude_turn_complete: Some(false),
+                ..hook("Stop")
+            });
+            if unavailable {
+                report_kind(&mut screen, "claude", uncertain.clone());
+                replies(&messages, CLIENT);
+            }
+            let interrupted = issue85_sourced(HookEvent {
+                claude_turn_complete: Some(false),
+                claude_interrupted: Some(true),
+                claude_answered: Some(false),
+                claude_background: Some(false),
+                ..hook("Stop")
+            });
+            report_kind(&mut screen, "claude", interrupted.clone());
+            let first = replies(&messages, CLIENT);
+            if waiting_client && !unavailable {
+                assert_eq!(first.len(), 1);
+                assert_eq!(first[0].outcome, AgentOutcome::Interrupted);
+                assert!(first[0].acknowledged);
+                assert_ne!(
+                    first[0].agents[0].not_ready_reason,
+                    Some(NotReadyReason::UnresolvedTurn)
+                );
+            }
+            for later in [interrupted, uncertain, issue85_answer(false)] {
+                report_kind(&mut screen, "claude", later);
+                screen.agent_control(wait_submission("interrupted"), CLIENT);
+                let response = replies(&messages, CLIENT).pop().unwrap();
+                assert_eq!(
+                    response.outcome,
+                    AgentOutcome::Interrupted,
+                    "{unavailable} {waiting_client}"
+                );
+                assert!(response.acknowledged);
+                assert_eq!(response.submission_id.as_deref(), Some("interrupted"));
+                assert!(response.turn_id.is_some());
+                assert!(response.message.as_deref().unwrap().contains("interrupted"));
+                assert!(response.retained_submission.is_none());
+                assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+                assert_ne!(
+                    screen.agent_status_for_test().not_ready_reason,
+                    Some(NotReadyReason::UnresolvedTurn)
+                );
+            }
+            assert!(finish_paste(&writes).is_empty());
+        }
+    }
+}
+
+#[test]
+fn issue85_interruption_preserves_background_and_newer_foreground_work() {
+    for case in [
+        "background",
+        "newer",
+        "newer-person",
+        "worker",
+        "archive",
+        "wrong-source",
+        "wrong-prompt",
+        "wrong-conversation",
+        "unavailable",
+    ] {
+        let (mut screen, messages, writes) = setup("claude");
+        report_kind(&mut screen, "claude", issue85_sourced(hook("SessionStart")));
+        screen.agent_control_with_clear(identified_prompt("cancel", false), CLIENT, &writes);
+        finish_paste(&writes);
+        report_kind(
+            &mut screen,
+            "claude",
+            issue85_sourced(hook("UserPromptSubmit")),
+        );
+        replies(&messages, CLIENT);
+        if matches!(case, "newer" | "newer-person") {
+            let mut next = issue85_sourced(hook("UserPromptSubmit"));
+            next.prompt_id = Some("newer".into());
+            next.turn_id = Some("newer-turn".into());
+            report_kind(&mut screen, "claude", next);
+            if case == "newer-person" {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    issue85_sourced(permission_wait("claude")),
+                );
+            }
+        }
+        let mut stop = issue85_sourced(HookEvent {
+            claude_turn_complete: Some(false),
+            claude_interrupted: Some(true),
+            claude_answered: Some(false),
+            claude_background: Some(case == "background"),
+            ..hook("Stop")
+        });
+        match case {
+            "worker" => stop.agent_id = Some("worker".into()),
+            "archive" => stop.archive_only = true,
+            "wrong-source" => stop = with_notification_source(stop, replacement_source()),
+            "wrong-prompt" => stop.prompt_id = Some("foreign".into()),
+            "wrong-conversation" => stop.session_id = "foreign".into(),
+            "unavailable" => stop.claude_interrupted = None,
+            _ => {},
+        }
+        report_kind(&mut screen, "claude", stop);
+        screen.agent_control(wait_submission("cancel"), CLIENT);
+        let responses = replies(&messages, CLIENT);
+        if matches!(case, "background" | "newer" | "newer-person") {
+            let response = responses.last().unwrap();
+            assert_eq!(response.outcome, AgentOutcome::Interrupted);
+            assert_eq!(
+                screen.agent_status_for_test().agent.state,
+                if case == "newer-person" {
+                    AgentState::Waiting
+                } else {
+                    AgentState::Busy
+                }
+            );
+            if case == "background" {
+                assert!(screen.agent_status_for_test().background);
+            }
+        } else {
+            assert!(
+                !responses
+                    .iter()
+                    .any(|r| r.outcome == AgentOutcome::Interrupted),
+                "{case}"
+            );
+        }
+        assert!(screen.closed_agent_submissions.is_empty());
+        assert!(finish_paste(&writes).is_empty());
+    }
+}
+
+#[test]
+fn issue85_shutdown_proof_cannot_survive_later_input_replacement_or_clear() {
+    for case in [
+        "input-after",
+        "replacement-after",
+        "foreign-end-after",
+        "clear-pending",
+        "control-pending",
+        "unknown-idle",
+    ] {
+        let (mut screen, messages, writes) = setup("claude");
+        report_kind(&mut screen, "claude", issue85_sourced(hook("SessionStart")));
+        screen.agent_control_with_clear(identified_prompt("shutdown-guard", true), CLIENT, &writes);
+        finish_paste(&writes);
+        report_kind(
+            &mut screen,
+            "claude",
+            issue85_sourced(hook("UserPromptSubmit")),
+        );
+        let mut answer = issue85_answer(false);
+        if case == "unknown-idle" {
+            answer.claude_background = None;
+        }
+        report_kind(&mut screen, "claude", answer);
+        replies(&messages, CLIENT);
+        match case {
+            "clear-pending" => deliver_clear(&mut screen, &writes),
+            "control-pending" => {
+                screen.agent_control_with_clear(
+                    identified_prompt("pending", true),
+                    CLIENT,
+                    &writes,
+                );
+                finish_paste(&writes);
+            },
+            _ => {},
+        }
+        report_kind(&mut screen, "claude", issue85_sourced(hook("SessionEnd")));
+        if case == "input-after" {
+            screen
+                .tab_containing_pane_mut(PANE)
+                .unwrap()
+                .write_key_to_pane_id(PANE, KeyWithModifier::new(BareKey::Char('x')), None)
+                .unwrap();
+            assert_eq!(finish_paste(&writes), b"x");
+        } else if case == "foreign-end-after" {
+            report_kind(
+                &mut screen,
+                "claude",
+                with_notification_source(hook("SessionEnd"), replacement_source()),
+            );
+        } else if case == "replacement-after" {
+            let mut start = with_notification_source(hook("SessionStart"), replacement_source());
+            start.session_id = "replacement".into();
+            report_kind(&mut screen, "claude", start);
+        }
+        replies(&messages, CLIENT);
+        screen.agent_control(wait_submission("shutdown-guard"), CLIENT);
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        // A live replacement can still report historical failure/completion via its
+        // separate live window; it cannot return this closed-target success proof.
+        assert!(response.retained_submission.is_none(), "{case}");
+        if case != "replacement-after" {
+            assert_ne!(response.outcome, AgentOutcome::Completed, "{case}");
+        }
+        screen.close_pane_explicitly(PANE, None);
+        screen.agent_control(wait_submission("shutdown-guard"), CLIENT);
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        assert_ne!(response.outcome, AgentOutcome::Completed, "{case}");
+        assert!(response.retained_submission.is_none());
     }
 }

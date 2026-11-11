@@ -1340,8 +1340,12 @@ deferred.
 
 After a positively answered root Claude turn with a linked transcript boundary and
 a same-process registry idle observation, the screen can preserve its correlated
-completion at pane closure. No later input, turn, background activity or identity
-replacement may intervene. Resume with the original command and conversation pin:
+completion before a matching normal SessionEnd clears the live record, or at
+pane closure. Validated passive permission samples from the same process and
+conversation preserve existing claims without establishing completion themselves.
+Duplicate SessionEnd, held exit and pane/tab closure keep the frozen proof's
+original expiry. No later input, turn, background activity or identity replacement
+may intervene. Resume with the original command and conversation pin:
 
 ```sh
 yinz --session <session> agent wait terminal_<id> --submission <saved-id> --conversation <saved-conversation> --json
@@ -1361,6 +1365,10 @@ provenance, interrupted/unknown completion and missing positive quiescence block
 reconciliation. These bounds are not a durable event stream or cross-restart
 idempotency guarantee. A closed reply without proof preserves its actual cause
 and requested ID; it is never success inferred from absence.
+
+A positively observed transcript interruption is saved as `interrupted` for
+repeated original-submission waits. It cannot become a successful retained proof;
+background work and newer foreground turns keep their own activity state.
 
 The lifecycle saves a validated proof before publishing its completed child
 result. A later resume can finish that publication even after native retention

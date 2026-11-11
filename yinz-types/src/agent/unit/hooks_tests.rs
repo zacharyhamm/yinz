@@ -1673,3 +1673,27 @@ fn issue85_internal_terminal_provenance_survives_bounded_hook_copy() {
     assert_eq!(roundtrip.claude_answered, Some(false));
     assert_eq!(roundtrip.claude_interrupted, Some(true));
 }
+
+#[test]
+fn issue85_interrupted_root_stop_is_idle_without_claiming_an_answer() {
+    let hook = HookEvent {
+        hook_event_name: "Stop".into(),
+        claude_turn_complete: Some(false),
+        claude_interrupted: Some(true),
+        claude_answered: Some(false),
+        ..Default::default()
+    };
+    assert_eq!(hook_state_for("claude", &hook), Some(AgentState::Idle));
+    assert_eq!(hook_state_for("agy", &hook), Some(AgentState::Busy));
+    assert!(hook.pruned().is_claude_interruption());
+    for change in ["worker", "archive", "unavailable", "answer"] {
+        let mut invalid = hook.clone();
+        match change {
+            "worker" => invalid.agent_id = Some("worker".into()),
+            "archive" => invalid.archive_only = true,
+            "answer" => invalid.claude_answered = Some(true),
+            _ => invalid.claude_interrupted = None,
+        }
+        assert!(!invalid.is_claude_interruption(), "{change}");
+    }
+}

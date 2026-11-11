@@ -62,7 +62,7 @@ function ready(conversation = "conversation-1", kind = "claude") {
 function completed(overrides: Record<string, unknown> = {}) {
   return {
     outcome: "completed",
-    agents: [agent()],
+    agents: ready().agents,
     submission_id: "submission-1",
     message: "Implemented the fix.",
     ...overrides,
@@ -537,7 +537,11 @@ Deno.test("background timeout does not turn an interim answer into success", asy
     spawned,
     ready(),
     completed({ background_tasks: ["worker-1"] }),
-    { outcome: "timed_out", agents: [agent()], background_tasks: ["worker-1"] },
+    {
+      outcome: "timed_out",
+      agents: ready().agents,
+      background_tasks: ["worker-1"],
+    },
   ]);
   await rejects(
     () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
@@ -1480,4 +1484,38 @@ Deno.test("issue85 retained completion rejects conflicting or missing positive f
     );
     assert(!h.records.has("result"));
   }
+});
+
+Deno.test("issue85 positive interruption remains distinct on repeated original-submission recovery", async () => {
+  const interrupted = {
+    outcome: "interrupted",
+    submission_id: "submission-1",
+    acknowledged: true,
+    prompt_delivery: "started",
+    turn_id: "turn-1",
+    message: "The turn was interrupted.",
+    agents: ready().agents,
+  };
+  const h = harness([
+    spawned,
+    ready(),
+    {
+      outcome: "status_unavailable",
+      submission_id: "submission-1",
+      acknowledged: true,
+    },
+    interrupted,
+    interrupted,
+  ]);
+  await rejects(
+    () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+    "status_unavailable",
+  );
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await rejects(() => resumeAgent(h.context, h.dependencies), "interrupted");
+    equal(h.records.get("state")?.outcome, "interrupted");
+    assert(!h.records.has("result"));
+    assert(!h.records.get("state")?.retainedSubmission);
+  }
+  equal(h.calls.filter((c) => c.args.includes("prompt")).length, 1);
 });
