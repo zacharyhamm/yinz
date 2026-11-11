@@ -38,6 +38,9 @@ fn test_child() {
         .join("cache");
     std::fs::create_dir_all(&cache).unwrap();
     std::fs::write(cache.join("artifact"), "test output").unwrap();
+    // Deliberately leave a normal tempfile behind, as abrupt test exits do.
+    let temporary = tempfile::NamedTempFile::new().unwrap().keep().unwrap();
+    assert!(temporary.1.starts_with(std::env::var_os("TMPDIR").unwrap()));
     println!("READY");
     if mode == "killed" {
         let _ = std::io::stdin().read(&mut [0]);
@@ -52,9 +55,11 @@ fn removes_artifacts_after_passing_failing_and_killed_children() {
     for mode in ["passed", "failed", "killed"] {
         let run = TestRun::new().unwrap();
         let path = run.path().to_path_buf();
+        let worker = run.retain_worker(Path::new("/usr/bin/true")).unwrap();
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "test_run::tests::test_child", "--nocapture"])
             .env(TEST_CACHE_ROOT_ENV, &path)
+            .env("TMPDIR", run.temp_dir())
             .env("YINZ_TEST_RUN_CHILD", mode)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -80,7 +85,28 @@ fn removes_artifacts_after_passing_failing_and_killed_children() {
             .join(child.id().to_string())
             .join("cache/artifact")
             .exists());
+        assert!(worker.exists());
+        assert_eq!(std::fs::read_dir(run.temp_dir()).unwrap().count(), 1);
         drop(run);
         assert!(!path.exists(), "{mode} child's files survived runner exit");
     }
+}
+
+#[test]
+fn worker_snapshot_survives_source_writes_and_replacement_until_runner_exit() {
+    let source = tempfile::tempdir().unwrap();
+    let binary = source.path().join("yinz");
+    std::fs::copy("/usr/bin/true", &binary).unwrap();
+    let run = TestRun::new().unwrap();
+    let worker = run.retain_worker(&binary).unwrap();
+    // A hardlink to a Cargo artifact would change along with an in-place write.
+    std::fs::write(&binary, b"overwritten build artifact").unwrap();
+    assert!(Command::new(&worker).status().unwrap().success());
+    let replacement = source.path().join("replacement");
+    std::fs::copy("/usr/bin/false", &replacement).unwrap();
+    std::fs::rename(replacement, &binary).unwrap();
+    assert!(!Command::new(&binary).status().unwrap().success());
+    assert!(Command::new(&worker).status().unwrap().success());
+    drop(run);
+    assert!(!worker.exists());
 }

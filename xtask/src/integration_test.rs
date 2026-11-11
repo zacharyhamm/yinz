@@ -7,6 +7,7 @@ pub fn integration_test(sh: &Shell, flags: flags::IntegrationTest) -> anyhow::Re
     crate::test_run::private_creation_mask();
     let run = crate::test_run::TestRun::new()?;
     let _cache_root = sh.push_env(crate::owned_dir::TEST_CACHE_ROOT_ENV, run.path());
+    let _tmpdir = sh.push_env("TMPDIR", run.temp_dir());
     let err_context = "failed to run task 'integration-test'";
 
     let _pd = sh.push_dir(crate::project_root());
@@ -21,10 +22,9 @@ pub fn integration_test(sh: &Shell, flags: flags::IntegrationTest) -> anyhow::Re
     cmd!(sh, "{cargo} build --bin yinz")
         .run()
         .context(err_context)?;
-    let _worker = sh.push_env(
-        "YINZ_COMPILATION_WORKER",
-        crate::project_root().join("target/debug/yinz"),
-    );
+    let worker = run.retain_worker(&crate::project_root().join("target/debug/yinz"))?;
+    let _worker = sh.push_env("YINZ_COMPILATION_WORKER", &worker);
+    let _generation = sh.push_env("YINZ_TEST_WORKER_GENERATION", &worker);
 
     let nextest_available = cmd!(sh, "{cargo} nextest --version")
         .quiet()

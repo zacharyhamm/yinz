@@ -14,6 +14,7 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
     crate::test_run::private_creation_mask();
     let run = crate::test_run::TestRun::new()?;
     let _cache_root = sh.push_env(crate::owned_dir::TEST_CACHE_ROOT_ENV, run.path());
+    let _tmpdir = sh.push_env("TMPDIR", run.temp_dir());
     let _socket_root = sh.push_env("YINZ_SOCKET_DIR", run.path().join("sockets"));
     let err_context = "failed to run task 'test'";
 
@@ -25,10 +26,9 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
     cmd!(sh, "{cargo} build --bin yinz")
         .run()
         .context(err_context)?;
-    let _worker = sh.push_env(
-        "YINZ_COMPILATION_WORKER",
-        crate::project_root().join("target/debug/yinz"),
-    );
+    let worker = run.retain_worker(&crate::project_root().join("target/debug/yinz"))?;
+    let _worker = sh.push_env("YINZ_COMPILATION_WORKER", &worker);
+    let _generation = sh.push_env("YINZ_TEST_WORKER_GENERATION", &worker);
 
     println!();
     let msg = ">> Testing the workspace";

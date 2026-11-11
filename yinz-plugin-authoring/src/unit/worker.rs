@@ -5,7 +5,7 @@ fn worker_generation_survives_installed_executable_replacement_and_cleans_up() {
     let root = tempfile::tempdir().unwrap();
     let binary = root.path().join("yinz");
     yinz_test_support::write_warm_script(&binary, "#!/bin/sh\nprintf old-worker\n");
-    let pinned = pin_executable(&binary).unwrap();
+    let pinned = pin_executable(&binary, None).unwrap();
     let retained = pinned.path.clone();
     let replacement = root.path().join("replacement");
     yinz_test_support::write_warm_script(&replacement, "#!/bin/sh\nprintf new-worker\n");
@@ -17,6 +17,44 @@ fn worker_generation_survives_installed_executable_replacement_and_cleans_up() {
     assert_eq!(
         Command::new(&binary).output().unwrap().stdout,
         b"new-worker"
+    );
+    drop(pinned);
+    assert!(!retained.exists());
+}
+
+#[test]
+fn worker_generation_borrows_only_the_runners_matching_snapshot() {
+    use std::os::unix::fs::MetadataExt;
+    let root = tempfile::tempdir().unwrap();
+    let generation = root.path().join("generation");
+    yinz_test_support::write_warm_script(&generation, "#!/bin/sh\nprintf shared-worker\n");
+    // Multiple test processes (or sequential sessions) must keep using the same
+    // inode without allocating another executable or taking ownership of cleanup.
+    for _ in 0..16 {
+        let pinned = pin_executable(&generation, Some(&generation)).unwrap();
+        assert!(pinned._directory.is_none());
+        assert_eq!(
+            std::fs::metadata(&pinned.path).unwrap().ino(),
+            std::fs::metadata(&generation).unwrap().ino(),
+        );
+        assert_eq!(
+            Command::new(&pinned.path).output().unwrap().stdout,
+            b"shared-worker"
+        );
+        drop(pinned);
+        assert!(generation.exists());
+    }
+    // A child that overrides its worker must still retain its own generation,
+    // even if it inherited the runner's snapshot metadata.
+    let other = root.path().join("other");
+    yinz_test_support::write_warm_script(&other, "#!/bin/sh\nprintf other-worker\n");
+    let pinned = pin_executable(&other, Some(&generation)).unwrap();
+    let retained = pinned.path.clone();
+    assert!(pinned._directory.is_some());
+    std::fs::remove_file(other).unwrap();
+    assert_eq!(
+        Command::new(&retained).output().unwrap().stdout,
+        b"other-worker"
     );
     drop(pinned);
     assert!(!retained.exists());

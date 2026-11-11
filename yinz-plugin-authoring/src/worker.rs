@@ -137,6 +137,7 @@ static PINNED_EXECUTABLE: std::sync::Mutex<std::sync::Weak<PinnedExecutable>> =
 
 /// Keeps future worker launches on the live server's build after installation
 /// publication. The plugin thread retains this guard through worker shutdown.
+/// Test runners can instead own a shared snapshot for all their test processes.
 pub struct PinnedExecutable {
     path: PathBuf,
     _directory: Option<tempfile::TempDir>,
@@ -157,7 +158,14 @@ pub fn pin_server_executable() -> Result<std::sync::Arc<PinnedExecutable>> {
     } else {
         binary
     };
-    let pinned = std::sync::Arc::new(pin_executable(&binary)?);
+    // Only an explicit test worker may borrow the runner's snapshot. Inherited
+    // test metadata must never change how a production server pins itself.
+    let test_generation = std::env::var_os("YINZ_TEST_WORKER_GENERATION")
+        .filter(|_| std::env::var_os("YINZ_COMPILATION_WORKER").is_some());
+    let pinned = std::sync::Arc::new(pin_executable(
+        &binary,
+        test_generation.as_deref().map(Path::new),
+    )?);
     #[cfg(target_os = "macos")]
     if std::env::var_os("YINZ_COMPILATION_WORKER").is_none() {
         // Validate the copied inode too: another installation sharing this
@@ -168,7 +176,25 @@ pub fn pin_server_executable() -> Result<std::sync::Arc<PinnedExecutable>> {
     Ok(pinned)
 }
 
-fn pin_executable(binary: &Path) -> Result<PinnedExecutable> {
+fn pin_executable(binary: &Path, test_generation: Option<&Path>) -> Result<PinnedExecutable> {
+    if let Some(generation) = test_generation {
+        let generation = generation
+            .canonicalize()
+            .context("resolve shared test worker generation")?;
+        if binary
+            .canonicalize()
+            .context("resolve test worker executable")?
+            == generation
+        {
+            // cargo x made a detached copy before launching tests. Its run lease
+            // owns cleanup, even when a test exits without unwinding server threads.
+            // Copying here would allocate a full debug binary per nextest process.
+            return Ok(PinnedExecutable {
+                path: generation,
+                _directory: None,
+            });
+        }
+    }
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::fs::MetadataExt;
