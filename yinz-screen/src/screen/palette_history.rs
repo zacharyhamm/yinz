@@ -38,7 +38,10 @@ impl LiveAgent {
     ) -> yinz_types::agent::LiveAgentOrder<'a> {
         let labels = labels.get(&self.id());
         yinz_types::agent::LiveAgentOrder::new(
-            self.pane.agent.as_ref().map(|agent| agent.state),
+            self.pane
+                .agent
+                .as_ref()
+                .map(|agent| self.pane.program_status.agent_state(agent.state)),
             self.pane.last_hook_at_ms,
             labels.map(|labels| labels.project.as_str()),
             labels.map(|labels| labels.branch.as_str()),
@@ -324,7 +327,13 @@ impl Screen {
             let mut metadata = BTreeMap::from([
                 ("title".into(), pane.title.clone()),
                 ("provider".into(), a.kind.clone()),
-                ("state".into(), a.state.to_string().to_lowercase()),
+                (
+                    "state".into(),
+                    pane.program_status
+                        .agent_state(a.state)
+                        .to_string()
+                        .to_lowercase(),
+                ),
                 ("source".into(), format!("{:?}", a.source).to_lowercase()),
                 ("session".into(), session.to_string()),
                 ("host".into(), host.clone()),

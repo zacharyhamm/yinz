@@ -76,6 +76,25 @@ impl Screen {
     /// Called immediately after placement, before queued reports or terminal bytes are drained.
     /// Returns whether a staged identity was applied, even without a tracking payload.
     pub(in crate::screen) fn restore_staged_transfer_state(&mut self, pane: PaneId) -> bool {
+        let restored = self
+            .pending_agent_tracking
+            .remove(&pane)
+            .and_then(|(agent, tracking)| {
+                // Apply identity first: changing it retires the destination's old OSC status.
+                // Absence is part of the snapshot too: SessionEnd may have cleared the source
+                // record while the destination command synthesized a new Busy record.
+                match super::super::agent_reports::stage_pane_agent_report(self, pane, agent)
+                    .context("restore adopted agent identity")
+                {
+                    Ok(true) => Some(tracking),
+                    Ok(false) => None,
+                    Err(error) => {
+                        Err::<(), _>(error).non_fatal();
+                        None
+                    },
+                }
+            });
+        // Restore independently of identity/tracking availability or acceptance.
         if let Some(state) = self.pending_terminal_states.remove(&pane) {
             // PTY preflight validated the complete snapshot before attaching any supervisor.
             for tab in self.tabs.values_mut() {
@@ -89,21 +108,9 @@ impl Screen {
                 }
             }
         }
-        let Some((agent, tracking)) = self.pending_agent_tracking.remove(&pane) else {
+        let Some(tracking) = restored else {
             return false;
         };
-        // Absence is part of the snapshot too: SessionEnd may have cleared the source
-        // record while the destination command synthesized a new Busy record.
-        match super::super::agent_reports::stage_pane_agent_report(self, pane, agent)
-            .context("restore adopted agent identity")
-        {
-            Ok(true) => {},
-            Ok(false) => return false,
-            Err(error) => {
-                Err::<(), _>(error).non_fatal();
-                return false;
-            },
-        }
         let Some(mut tracking) = tracking else {
             return true;
         };

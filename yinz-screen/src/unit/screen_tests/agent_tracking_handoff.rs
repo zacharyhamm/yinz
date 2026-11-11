@@ -388,6 +388,82 @@ fn transfer_into(source: &mut Screen, destination: &mut Screen) {
 }
 
 #[test]
+fn warp_tracking_restores_osc_status_after_identity_and_without_tracking() {
+    use yinz_types::{agent::AgentSource, program_status::ProgramState};
+
+    for mode in [
+        "tracking",
+        "identity only",
+        "no identity",
+        "cleared identity",
+        "invalid tracking",
+    ] {
+        let (mut source, _, _) = setup_tracking("codex");
+        report(&mut source, hook("SessionStart"));
+        report(&mut source, hook("UserPromptSubmit"));
+        source
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .handle_pty_bytes(
+                TerminalId::new(7),
+                b"\x1b]7501;state=blocked:app=codex:kind=permission\x07".to_vec(),
+            )
+            .unwrap();
+        let expected = source.get_pane_info(PANE).unwrap().program_status;
+        assert_eq!(
+            expected.current.as_ref().unwrap().state(),
+            ProgramState::Blocked
+        );
+        let state = source
+            .tab_containing_pane(PANE)
+            .unwrap()
+            .get_pane_with_id(PANE)
+            .unwrap()
+            .terminal_state()
+            .unwrap();
+        let mut tracking = source.capture_agent_tracking(PANE).unwrap();
+        assert_eq!(tracking.agent.session_id.as_deref(), Some("conversation"));
+        let (mut destination, _, _) = setup_tracking("codex");
+        let spawned = destination.get_pane_info(PANE).unwrap().agent.unwrap();
+        assert_eq!(spawned.source, AgentSource::Spawned);
+        assert!(spawned.session_id.is_none());
+        let agent = tracking.agent.clone();
+        if mode == "invalid tracking" {
+            tracking.agent.session_id = Some("other conversation".into());
+        }
+        if mode != "no identity" {
+            destination.pending_agent_tracking.insert(
+                PANE,
+                (
+                    (mode != "cleared identity").then_some(agent.clone()),
+                    matches!(mode, "tracking" | "invalid tracking").then_some(tracking),
+                ),
+            );
+        }
+        destination.pending_terminal_states.insert(PANE, state);
+        assert_eq!(
+            destination.restore_staged_transfer_state(PANE),
+            mode != "no identity"
+        );
+        let restored = destination.get_pane_info(PANE).unwrap();
+        assert_eq!(restored.program_status, expected, "{mode}");
+        if matches!(mode, "tracking" | "identity only" | "invalid tracking") {
+            assert_eq!(restored.agent, Some(agent));
+        }
+        assert_eq!(
+            destination.has_agent_lifecycle(PANE, "codex", "conversation"),
+            mode == "tracking"
+        );
+        assert!(!destination.pending_terminal_states.contains_key(&PANE));
+        assert!(!destination.restore_staged_transfer_state(PANE));
+        assert_eq!(
+            destination.get_pane_info(PANE).unwrap().program_status,
+            expected
+        );
+    }
+}
+
+#[test]
 fn warp_tracking_legacy_worker_wait_cannot_be_released_by_a_newer_tool() {
     let (mut source, _, _) = setup_tracking("claude");
     report_kind(&mut source, "claude", hook("SessionStart"));

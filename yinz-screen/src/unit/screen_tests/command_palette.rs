@@ -8762,6 +8762,112 @@ fn agent_prompt_retries_keep_identity_and_unsuccessful_submissions_restart_polli
 }
 
 #[test]
+fn live_agent_palette_resolves_osc_status_for_presentation_filtering_and_order() {
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+
+    let mut screen = screen();
+    let pane_id = PaneId::Terminal(TerminalId::new(1));
+    let agent = AgentInfo {
+        kind: "codex".into(),
+        state: AgentState::Busy,
+        source: AgentSource::Reported,
+        detail: Some("local task".into()),
+        waiting_on: None,
+        wait_needs_a_person: false,
+        cwd: None,
+        session_id: Some("conversation".into()),
+        run_id: None,
+    };
+    screen.with_pane(pane_id, |pane| {
+        pane.set_agent_info(Some(agent.clone()));
+        pane.set_last_hook_at_ms(100);
+    });
+    screen.log_and_report_session_state().unwrap();
+    for (name, stamp, state) in [
+        ("busy", 200, AgentState::Busy),
+        ("waiting", 50, AgentState::Waiting),
+    ] {
+        let peer = warp_peer(&mut screen, name);
+        for pane in screen
+            .peer_sessions_cache
+            .get_mut(&peer)
+            .unwrap()
+            .panes
+            .panes
+            .values_mut()
+            .flatten()
+        {
+            pane.last_hook_at_ms = Some(stamp);
+            let agent = pane.agent.as_mut().unwrap();
+            agent.state = state;
+            agent.detail = Some(format!("{name} task"));
+            agent.waiting_on = agent.detail.clone();
+        }
+    }
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    for (report, state, names) in [
+        (
+            // OSC text fields are base64; this message is "local task".
+            "blocked:app=codex:msg=bG9jYWwgdGFzaw==",
+            AgentState::Waiting,
+            ["local task", "waiting task", "busy task"],
+        ),
+        (
+            "clear",
+            AgentState::Busy,
+            ["waiting task", "busy task", "local task"],
+        ),
+    ] {
+        screen
+            .get_active_tab_mut(CLIENT)
+            .unwrap()
+            .handle_pty_bytes(
+                TerminalId::new(1),
+                format!("\x1b]7501;state={report}\x07").into_bytes(),
+            )
+            .unwrap();
+        assert_eq!(
+            screen.get_pane_info(pane_id).unwrap().agent,
+            Some(agent.clone())
+        );
+        let local = screen
+            .live_palette_agents()
+            .into_iter()
+            .find(|live| live.session == screen.session_name)
+            .unwrap();
+        assert_eq!(local.pane.agent, Some(agent.clone()));
+        assert_eq!(local.presentation().unwrap().state, state);
+        assert_eq!(local.metadata["state"], state.to_string().to_lowercase());
+
+        palette_search(&mut screen, "provider:codex");
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        let positions = names.map(|name| {
+            frame
+                .find(name)
+                .unwrap_or_else(|| panic!("missing {name}: {frame}"))
+        });
+        assert!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "{frame}"
+        );
+        screen.toggle_command_palette(CLIENT);
+        for (query, expected) in [
+            ("state:waiting", AgentState::Waiting),
+            ("state:busy", AgentState::Busy),
+        ] {
+            palette_search(&mut screen, query);
+            let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+            assert_eq!(frame.contains("local task"), state == expected, "{frame}");
+            if state == AgentState::Waiting && state == expected {
+                assert!(frame.contains("! codex  needs input"), "{frame}");
+            }
+            screen.toggle_command_palette(CLIENT);
+        }
+    }
+}
+
+#[test]
 fn live_agent_order_uses_peer_timestamps_and_refreshes_root_and_picker() {
     use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
     for picker in [false, true] {
