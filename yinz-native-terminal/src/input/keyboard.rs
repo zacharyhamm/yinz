@@ -68,9 +68,28 @@ impl Press {
         matches!(&self.logical, Key::Named(named) if *named != NamedKey::Space)
     }
 
+    fn shifted_punctuation(&self) -> bool {
+        let Key::Character(text) = &self.logical else {
+            return false;
+        };
+        let Some(character) = sole_char(text) else {
+            return false;
+        };
+        let Some(base) = shifted_punctuation_base(character) else {
+            return false;
+        };
+        match &self.unmodified {
+            Some(Key::Character(plain)) => sole_char(plain) == Some(base),
+            None => true,
+            _ => false,
+        }
+    }
+
     fn effective_modifiers(&self) -> ModifiersState {
         let mut modifiers = self.modifiers;
-        if !self.option_as_alt && alt_shifted_the_character(&self.logical, self.unmodified.as_ref())
+        if !self.option_as_alt
+            && alt_shifted_the_character(&self.logical, self.unmodified.as_ref())
+            && !(modifiers.shift_key() && self.shifted_punctuation())
         {
             modifiers.remove(ModifiersState::ALT);
         }
@@ -205,6 +224,15 @@ fn unmodified_key(_event: &KeyEvent) -> Option<Key> {
     None
 }
 
+// Winit supplies no Shift-only logical key. Recognize these known layout pairs
+// rather than treating every changed character as evidence that Alt was consumed.
+fn shifted_punctuation_base(character: char) -> Option<char> {
+    "~!@#$%^&*()_+{}|:\"<>?"
+        .chars()
+        .zip("`1234567890-=[]\\;',./".chars())
+        .find_map(|(shifted, base)| (shifted == character).then_some(base))
+}
+
 pub fn alt_shifted_the_character(logical: &Key, unmodified: Option<&Key>) -> bool {
     let (Key::Character(typed), Some(Key::Character(plain))) = (logical, unmodified) else {
         return false;
@@ -242,7 +270,17 @@ pub fn chord(press: &Press) -> Option<KeyWithModifier> {
 
 pub fn key_message(press: &Press) -> Option<ClientToServerMsg> {
     typed(press).map(|typed| match typed {
-        Typed::Key(key) => key_press_message(key),
+        Typed::Key(key) => {
+            // Encode the application key before normalizing the server binding key.
+            let mut message = key_press_message(key);
+            if press.modifiers.shift_key()
+                && press.shifted_punctuation()
+                && let ClientToServerMsg::Key { key, .. } = &mut message
+            {
+                key.key_modifiers.remove(&KeyModifier::Shift);
+            }
+            message
+        },
         Typed::Text(text) => text_message(text),
     })
 }

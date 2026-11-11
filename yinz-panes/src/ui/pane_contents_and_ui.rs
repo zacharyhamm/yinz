@@ -343,17 +343,11 @@ impl<'a> PaneContentsAndUi<'a> {
                     })
                     .unwrap_or(false);
                 if cursor_is_visible
-                    && let Some(vte_output) = self.pane.render_fake_cursor(colors.0, colors.1)
+                    && let Some(cursor) = self.pane.render_fake_cursor(colors.0, colors.1)
                 {
-                    self.output.add_post_vte_instruction_to_client(
-                        client_id,
-                        &format!(
-                            "\u{1b}[{};{}H\u{1b}[m{}",
-                            self.pane.y() + 1,
-                            self.pane.render_geom().x + 1,
-                            vte_output
-                        ),
-                    );
+                    self.output
+                        .add_character_chunks_to_client(client_id, vec![cursor], self.z_index)
+                        .context("failed to render multiplayer cursor")?;
                 }
             }
         }

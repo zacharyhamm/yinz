@@ -344,7 +344,7 @@ pub trait Pane {
         &mut self,
         cursor_color: PaletteColor,
         text_color: PaletteColor,
-    ) -> Option<String>;
+    ) -> Option<CharacterChunk>;
     fn render_terminal_title(
         &mut self,
         input_mode: InputMode,

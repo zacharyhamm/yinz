@@ -1148,7 +1148,7 @@ impl Pane for MockPane {
         &mut self,
         _cursor_color: PaletteColor,
         _text_color: PaletteColor,
-    ) -> Option<String> {
+    ) -> Option<CharacterChunk> {
         unimplemented!()
     }
     fn render_terminal_title(

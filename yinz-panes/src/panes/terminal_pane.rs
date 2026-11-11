@@ -792,8 +792,8 @@ impl Pane for TerminalPane {
         &mut self,
         cursor_color: PaletteColor,
         text_color: PaletteColor,
-    ) -> Option<String> {
-        let mut vte_output = None;
+    ) -> Option<CharacterChunk> {
+        let mut cursor_chunk = None;
         if let Some((cursor_x, cursor_y, true)) = self.cursor_coordinates() {
             // the character at the cell we are about to draw on, which is not necessarily the
             // one under the pty cursor (a keyboard selection moves the cursor to its live end)
@@ -807,16 +807,14 @@ impl Pane for TerminalPane {
             });
             // we keep track of these so that we can clear them up later (see render function)
             self.fake_cursor_locations.insert((cursor_y, cursor_x));
-            let mut fake_cursor = format!(
-                "\u{1b}[{};{}H\u{1b}[m{}",           // goto row column and clear styles
-                self.get_content_y() + cursor_y + 1, // + 1 because goto is 1 indexed
-                self.get_content_x() + cursor_x + 1,
-                character_under_cursor.styles,
+            let fake_cursor = CharacterChunk::new(
+                vec![character_under_cursor],
+                self.get_content_x() + cursor_x,
+                self.get_content_y() + cursor_y,
             );
-            fake_cursor.push(character_under_cursor.character);
-            vte_output = Some(fake_cursor);
+            cursor_chunk = Some(fake_cursor);
         }
-        vte_output
+        cursor_chunk
     }
     fn render_terminal_title(
         &mut self,

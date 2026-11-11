@@ -792,7 +792,7 @@ impl Pane for PluginPane {
         &mut self,
         _cursor_color: PaletteColor,
         _text_color: PaletteColor,
-    ) -> Option<String> {
+    ) -> Option<CharacterChunk> {
         None
     }
     fn render_terminal_title(

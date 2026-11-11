@@ -815,3 +815,63 @@ fn shift_survives_characters_that_cannot_absorb_it() {
         assert_eq!(bytes(&character(text), both), encoded.as_bytes());
     }
 }
+
+#[test]
+fn shifted_punctuation_preserves_alt_and_normalizes_only_the_binding_key() {
+    for (shifted, base) in "~!@#$%^&*()_+{}|:\"<>?"
+        .chars()
+        .zip("`1234567890-=[]\\;',./".chars())
+    {
+        for extra in [
+            none(),
+            ModifiersState::ALT,
+            ModifiersState::CONTROL,
+            ModifiersState::SUPER,
+        ] {
+            let pressed = layered(
+                &shifted.to_string(),
+                &base.to_string(),
+                ModifiersState::SHIFT | extra,
+            );
+            let Typed::Key(application_key) = typed(&pressed).unwrap() else {
+                panic!("expected key")
+            };
+            assert!(application_key.key_modifiers.contains(&KeyModifier::Shift));
+            assert_eq!(
+                application_key.key_modifiers.contains(&KeyModifier::Alt),
+                extra.alt_key()
+            );
+            let Some(ClientToServerMsg::Key { key, raw_bytes, .. }) = key_message(&pressed) else {
+                panic!("expected key message")
+            };
+            let mut expected = application_key.clone();
+            expected.key_modifiers.remove(&KeyModifier::Shift);
+            assert_eq!(key, expected);
+            let ClientToServerMsg::Key {
+                raw_bytes: application_bytes,
+                ..
+            } = key_press_message(application_key)
+            else {
+                panic!("expected key message")
+            };
+            assert_eq!(raw_bytes, application_bytes);
+        }
+    }
+}
+
+#[test]
+fn unchanged_punctuation_and_alt_layout_characters_keep_shift() {
+    for (logical, base) in [("+", "+"), ("±", "="), ("@", "q")] {
+        let pressed = layered(logical, base, ModifiersState::SHIFT | ModifiersState::ALT);
+        let Some(ClientToServerMsg::Key { key, .. }) = key_message(&pressed) else {
+            panic!("expected key")
+        };
+        assert!(key.key_modifiers.contains(&KeyModifier::Shift));
+    }
+    let Some(ClientToServerMsg::Key { key, .. }) =
+        key_message(&layered("+", "=", ModifiersState::SHIFT))
+    else {
+        panic!("expected key")
+    };
+    assert_eq!(key, KeyWithModifier::new(BareKey::Char('+')));
+}

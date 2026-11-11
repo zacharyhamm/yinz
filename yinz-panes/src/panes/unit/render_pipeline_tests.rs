@@ -590,3 +590,63 @@ fn a_wide_character_in_a_one_column_pane_erases_the_previous_frame() {
     check_frame(&mut surface, &mut host, 1, 3);
     assert_eq!(cells(&mut host.panes[0])[1][0].character, ' ');
 }
+
+#[test]
+fn multiplayer_cursor_cells_reach_native_and_ansi_and_restore_after_moving() {
+    use yinz_terminal::output::NativeRenderState;
+    use yinz_types::{
+        data::PaletteColor,
+        structured_render::{decode, WireColor},
+    };
+    let mut surface = Surface::new(&[geom(3, 2, 8, 3)]);
+    let pane = &mut surface.panes[0];
+    pane.handle_pty_bytes(b"ab\x1b[1;1H".to_vec());
+    pane.render(Some(CLIENT)).unwrap();
+    let cursor = pane
+        .render_fake_cursor(
+            PaletteColor::Rgb((10, 20, 30)),
+            PaletteColor::Rgb((40, 50, 60)),
+        )
+        .unwrap();
+    assert_eq!((cursor.x, cursor.y), (3, 2));
+    assert_eq!(cursor.terminal_characters[0].character, 'a');
+    let ansi = ClientId::new(2);
+    let mut output = Output::default();
+    output.add_clients(&HashSet::from([CLIENT, ansi]), surface.links.clone(), None);
+    for client in [CLIENT, ansi] {
+        output
+            .add_character_chunks_to_client(client, vec![cursor.clone()], None)
+            .unwrap();
+    }
+    let frames = output.serialize_native(
+        &mut HashMap::from([(CLIENT, NativeRenderState::default())]),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+    let frame = decode(&frames[&CLIENT]).unwrap();
+    let (row, cells) = frame.rows().next().unwrap();
+    assert_eq!((row.x0, row.y), (3, 2));
+    assert_eq!(cells[0].ch, 'a' as u32);
+    assert_eq!(WireColor::unpack(cells[0].bg), WireColor::Rgb(10, 20, 30));
+    assert_eq!(WireColor::unpack(cells[0].fg), WireColor::Rgb(40, 50, 60));
+    assert!(output.serialize().unwrap()[&ansi].contains('a'));
+    assert_eq!(pane.drain_fake_cursors().unwrap(), HashSet::from([(0, 0)]));
+    pane.handle_pty_bytes(b"\x1b[1;2H".to_vec());
+    let (chunks, _, _, _) = pane.render(Some(CLIENT)).unwrap().unwrap();
+    let restored = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.terminal_characters)
+        .find(|cell| cell.character == 'a')
+        .unwrap();
+    assert_ne!(
+        restored.styles.background,
+        Some(AnsiCode::RgbCode((10, 20, 30)))
+    );
+    let moved = pane
+        .render_fake_cursor(
+            PaletteColor::Rgb((10, 20, 30)),
+            PaletteColor::Rgb((40, 50, 60)),
+        )
+        .unwrap();
+    assert_eq!((moved.x, moved.y), (4, 2));
+}
