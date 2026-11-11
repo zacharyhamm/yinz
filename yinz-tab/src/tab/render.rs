@@ -886,6 +886,16 @@ impl Tab {
                             .map(|pane| (id, pane, PANE_FLOATING))
                     }),
             )
+            .chain(
+                self.overlay_panes
+                    .rendered_pane_ids()
+                    .into_iter()
+                    .filter_map(|id| {
+                        self.overlay_panes
+                            .get_pane(id)
+                            .map(|pane| (id, pane, PANE_FLOATING))
+                    }),
+            )
             .map(|(id, pane, extra)| {
                 let x = pane.x();
                 let y = pane.y();

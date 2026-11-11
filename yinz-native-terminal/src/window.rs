@@ -765,12 +765,12 @@ impl App {
                             self.rebuild_fonts()?;
                             return Ok(());
                         },
-                        "-" => {
+                        "-" | "_" => {
                             self.zoom = (self.zoom / 1.1).max(0.25);
                             self.rebuild_fonts()?;
                             return Ok(());
                         },
-                        "0" => {
+                        "0" | ")" => {
                             self.zoom = 1.0;
                             self.rebuild_fonts()?;
                             return Ok(());

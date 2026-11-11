@@ -111,3 +111,82 @@ fn native_geometry_excludes_floats_covered_by_floating_fullscreen() {
         pane_bounds(&tab, fullscreen)
     );
 }
+
+fn add_geometry_overlay(tab: &mut Tab, id: PaneId, client: ClientId) {
+    let coordinates = yinz_types::geometry::FloatingPaneCoordinates::default()
+        .with_x_fixed(10)
+        .with_y_fixed(2)
+        .with_width_fixed(100)
+        .with_height_fixed(12);
+    tab.new_pane(
+        id,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(coordinates))),
+        Some(client),
+        None,
+    )
+    .unwrap();
+}
+
+#[test]
+fn native_geometry_places_an_overlay_spanning_tiled_splits_after_floating_panes() {
+    let client = ClientId::new(1);
+    let mut tab = create_tab_with_four_panes();
+    let floating = PaneId::Terminal(TerminalId::new(5));
+    tab.new_floating_pane(floating, None, None, false, true, None, None)
+        .unwrap();
+    tab.floating_panes.toggle_show_panes(true);
+    let baseline = tab.native_geometry(client).panes;
+    let overlay = PaneId::Terminal(TerminalId::new(6));
+    add_geometry_overlay(&mut tab, overlay, client);
+
+    let geometry = tab.native_geometry(client);
+    assert_eq!(geometry.panes.len(), baseline.len() + 1);
+    let rect = geometry.panes.last().unwrap();
+    assert_eq!(bounds(rect), pane_bounds(&tab, overlay));
+    assert_eq!(bounds(rect), (10, 2, 100, 12));
+    assert_ne!(rect.flags & PANE_FLOATING, 0);
+    assert_ne!(rect.flags & PANE_FOCUSED, 0);
+    assert_eq!(
+        bounds(&geometry.panes[geometry.panes.len() - 2]),
+        pane_bounds(&tab, floating)
+    );
+    // The overlay crosses a vertical tiled split rather than fitting inside one tile.
+    assert!(tab.tiled_panes.rendered_pane_ids().iter().any(|id| {
+        let (x, _, cols, _) = pane_bounds(&tab, *id);
+        x + cols > 10 && x + cols < 110
+    }));
+
+    assert!(tab.overlay_panes.hide_pane(overlay));
+    let hidden = tab.native_geometry(client);
+    assert_eq!(
+        hidden.panes.iter().map(bounds).collect::<Vec<_>>(),
+        baseline.iter().map(bounds).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn native_geometry_keeps_overlays_above_tiled_fullscreen() {
+    for covers_ui in [false, true] {
+        let client = ClientId::new(1);
+        let mut tab = create_tab_with_four_panes();
+        let tiled = PaneId::Terminal(TerminalId::new(1));
+        tab.tiled_panes.focus_pane(tiled, client);
+        if covers_ui {
+            tab.toggle_active_pane_no_ui_fullscreen(client);
+        } else {
+            tab.toggle_active_pane_fullscreen(client);
+        }
+        let overlay = PaneId::Terminal(TerminalId::new(5));
+        add_geometry_overlay(&mut tab, overlay, client);
+
+        let geometry = tab.native_geometry(client);
+        assert_eq!(geometry.panes.len(), 2);
+        assert_eq!(bounds(&geometry.panes[0]), pane_bounds(&tab, tiled));
+        assert_eq!(bounds(&geometry.panes[1]), pane_bounds(&tab, overlay));
+        assert_ne!(geometry.panes[1].flags & PANE_FLOATING, 0);
+    }
+}

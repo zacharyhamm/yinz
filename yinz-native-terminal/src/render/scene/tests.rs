@@ -1753,3 +1753,23 @@ fn the_scene_is_deterministic_for_one_frame() {
     };
     assert_eq!(scene_of(4, 20, paint), scene_of(4, 20, paint));
 }
+
+#[test]
+fn an_overlay_image_crosses_the_underlying_tiled_split() {
+    let mut overlay = clipping_pane(2, 1, 4, 2);
+    overlay.flags |= yinz_types::structured_render::PANE_FLOATING;
+    let geometry = GeometryRecord {
+        panes: vec![
+            clipping_pane(0, 0, 4, 4),
+            clipping_pane(4, 0, 4, 4),
+            clipping_pane(2, 0, 2, 4),
+            overlay,
+        ],
+    };
+    let quad = quad_at(16, 20, 32, 20);
+    assert_eq!(
+        clip_to_owning_pane(quad.clone(), 2, 1, &geometry, metrics_of(8, 20)),
+        Some(quad),
+        "the overlay owns the full image above the tiled split and the narrower float"
+    );
+}
