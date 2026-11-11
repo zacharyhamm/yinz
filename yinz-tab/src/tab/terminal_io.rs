@@ -683,9 +683,10 @@ impl Tab {
                 ))
                 .with_context(err_context)?;
             if record_input {
-                active_pane.record_agent_input(key_with_modifier.as_ref().is_some_and(|key| {
-                    key.is_key_without_modifier(yinz_types::keys::BareKey::Enter)
-                }));
+                should_update_ui |=
+                    active_pane.record_agent_input(key_with_modifier.as_ref().is_some_and(|key| {
+                        key.is_key_without_modifier(yinz_types::keys::BareKey::Enter)
+                    }));
             }
         }
         Ok(should_update_ui)

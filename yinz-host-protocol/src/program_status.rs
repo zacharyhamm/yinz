@@ -371,11 +371,29 @@ impl ProgramStatusRecords {
         }
     }
     pub fn deciding_record(&self) -> Option<(AttentionStatus, ProgramStatusRecord)> {
-        let root = self.root().cloned();
+        self.deciding_record_matching(|_| true)
+    }
+    /// Select among matching records after resolving their inherited app names.
+    pub fn deciding_record_matching(
+        &self,
+        matches: impl Fn(&ProgramStatusRecord) -> bool,
+    ) -> Option<(AttentionStatus, ProgramStatusRecord)> {
+        let resolve_app = |record: &ProgramStatusRecord| {
+            let mut record = record.clone();
+            if record.app.is_none() {
+                record.app = self.inherited_app(&record.id);
+            }
+            record
+        };
+        let root = self.root().map(resolve_app).filter(&matches);
         let mut best: Option<(AttentionStatus, ProgramStatusRecord)> =
             root.map(|r| (r.state().attention_status(), r));
         for (key, (_, record)) in self.records.iter() {
             if key.is_empty() {
+                continue;
+            }
+            let record = resolve_app(record);
+            if !matches(&record) {
                 continue;
             }
             let child_status = match record.state() {
@@ -388,15 +406,10 @@ impl ProgramStatusRecords {
                 Some((status, _)) => child_status > *status,
             };
             if raises {
-                best = Some((child_status, record.clone()));
+                best = Some((child_status, record));
             }
         }
-        best.map(|(status, mut record)| {
-            if record.app.is_none() {
-                record.app = self.inherited_app(&record.id);
-            }
-            (status, record)
-        })
+        best
     }
 }
 

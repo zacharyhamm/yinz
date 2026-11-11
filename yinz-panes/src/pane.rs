@@ -449,7 +449,10 @@ pub trait Pane {
     fn agent_input_at(&self) -> Option<Instant> {
         None
     }
-    fn record_agent_input(&mut self, _is_enter: bool) {}
+    /// Record submitted input and return whether program-status applicability changed.
+    fn record_agent_input(&mut self, _is_enter: bool) -> bool {
+        false
+    }
     /// Replace the pane's agent record; answers whether it changed.
     fn set_agent_info(&mut self, _agent: Option<AgentInfo>) -> bool {
         false

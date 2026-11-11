@@ -205,6 +205,11 @@
             (as-set! "event-fed" (filter (lambda (other) (not (= id other))) (as-get "event-fed"))))
           (else
             (define feed (as-model "HookFeed" agent))
+            ;; Clearing an OSC override can return the presentation record to Spawned
+            ;; or Registered. Its synthetic feed is no longer applicable.
+            (unless (as-present? feed)
+              (as-map-remove! "hooks" id)
+              (as-map-remove! "waiting-transitions" id))
             (when (as-present? feed)
               (define previous (as-map-get "hooks" id #f))
               ;; PaneUpdate precedes AgentEvent. Preserve the waiting edge until the hook

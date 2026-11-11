@@ -1563,15 +1563,14 @@ impl Pane for TerminalPane {
             current: self
                 .grid
                 .applicable_program_status
-                .deciding_record()
-                .map(|(_, record)| record)
-                .filter(|record| {
+                .deciding_record_matching(|record| {
                     record.app.as_ref().is_none_or(|app| {
                         self.agent.as_ref().is_none_or(|agent| {
                             yinz_types::agent::kind_of(app).as_deref() == Some(agent.kind.as_str())
                         })
                     })
-                }),
+                })
+                .map(|(_, record)| record),
         }
     }
     fn agent_info(&self) -> Option<&AgentInfo> {
@@ -1589,13 +1588,18 @@ impl Pane for TerminalPane {
     fn agent_input_at(&self) -> Option<Instant> {
         self.agent_input_at
     }
-    fn record_agent_input(&mut self, is_enter: bool) {
+    fn record_agent_input(&mut self, is_enter: bool) -> bool {
+        let mut applicability_changed = false;
         self.agent_input_revision = self.agent_input_revision.wrapping_add(1);
         if is_enter {
-            self.grid.applicable_program_status.clear_all();
+            applicability_changed = self.grid.applicable_program_status.clear_all();
+            if applicability_changed {
+                self.set_should_render(true);
+            }
             self.agent_enter_revision = self.agent_input_revision;
         }
         self.agent_input_at = Some(Instant::now());
+        applicability_changed
     }
     fn last_hook_at_ms(&self) -> Option<i64> {
         self.last_hook_at_ms
@@ -1721,10 +1725,9 @@ impl Pane for TerminalPane {
             .and_then(|name| name.to_str())
             .map(|name| name.trim_start_matches('-').to_owned())
             .filter(|name| !name.is_empty());
-        if self.running_program.is_some() && self.running_program != program {
-            self.grid.program_status.drop_transient();
-            self.grid.applicable_program_status.clear_all();
-        }
+        // Foreground discovery can arrive after the new program's OSC 7501 reports.
+        // A command name cannot establish report ownership; retire at explicit
+        // lifecycle boundaries (such as a shell prompt) instead.
         if self.running_program != program {
             self.running_program = program;
             self.set_should_render(true);

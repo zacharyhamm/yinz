@@ -18379,3 +18379,75 @@ fn issue85_plugin_pane_tabs_close_case(selected: &str, state: &str) {
     assert_eq!(screen.closed_agent_submissions, frozen);
     assert!(finish_paste(&writes).is_empty());
 }
+
+#[test]
+fn osc7501_enter_publishes_retirement_without_pty_output() {
+    for sync in [false, true] {
+        let (mut screen, _messages, _writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        let (to_plugin, plugins) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        screen.background_plugin_subscriptions.insert(
+            (PluginId::new(99), CLIENT),
+            HashSet::from([EventType::PaneUpdate]),
+        );
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        if sync {
+            tab.toggle_sync_panes_is_active();
+        }
+        tab.get_pane_with_id_mut(PANE)
+            .unwrap()
+            .handle_pty_bytes(b"\x1b]7501;state=blocked:app=codex\x07".to_vec());
+        screen.log_and_report_session_state().unwrap();
+        let published = |plugins: &Receiver<(PluginInstruction, ErrorContext)>| {
+            plugins
+                .try_iter()
+                .flat_map(|(instruction, _)| match instruction {
+                    PluginInstruction::Update(updates) => updates,
+                    _ => vec![],
+                })
+                .filter_map(|(_, _, event)| {
+                    let Event::PaneUpdate(manifest) = event else {
+                        return None;
+                    };
+                    manifest
+                        .panes
+                        .values()
+                        .flatten()
+                        .find(|pane| pane.id == PANE)
+                        .cloned()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(published(&plugins)
+            .iter()
+            .any(|pane| pane.program_status.current.is_some()));
+        let fallback = screen.get_pane_info(PANE).unwrap().agent.unwrap().state;
+        for (key, bytes, changed) in [
+            (BareKey::Char('a'), b"a".to_vec(), false),
+            (BareKey::Enter, b"\r".to_vec(), true),
+            (BareKey::Enter, b"\r".to_vec(), false),
+        ] {
+            screen
+                .write_character(
+                    Some(KeyWithModifier::new(key)),
+                    bytes,
+                    false,
+                    CLIENT,
+                    &HashMap::new(),
+                    None,
+                )
+                .unwrap();
+            let updates = published(&plugins);
+            if changed {
+                assert!(updates
+                    .iter()
+                    .any(|pane| pane.program_status.current.is_none()
+                        && pane.program_status.records.len() == 1
+                        && pane.agent.as_ref().unwrap().state == fallback));
+            } else {
+                assert!(updates.is_empty());
+            }
+        }
+    }
+}

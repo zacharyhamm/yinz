@@ -3625,13 +3625,36 @@ fn osc7501_prefers_display_but_preserves_agent_identity_and_completion_state() {
         "clear restores retained hook fallback"
     );
     pane.handle_pty_bytes(b"\x1b]7501;state=working\x07".to_vec());
-    pane.record_agent_input(true);
+    assert!(!pane.record_agent_input(false));
+    assert!(pane.record_agent_input(true));
+    assert!(!pane.record_agent_input(true));
+    assert_eq!(pane.program_status().records.len(), 1);
     assert_eq!(
         pane.agent_title().state,
         Some(AgentState::Waiting),
         "input retires prior-turn display without proving acceptance"
     );
     assert_eq!(pane.agent_info(), Some(&hook));
+}
+
+#[test]
+fn osc7501_reports_survive_delayed_foreground_discovery() {
+    for report in ["state=idle", "state=blocked:kind=question"] {
+        for app in ["", ":app=codex"] {
+            let mut pane = agent_pane();
+            pane.set_running_program(Some("/bin/bash".into()));
+            // A newly started program can report before the next foreground poll.
+            pane.handle_pty_bytes(format!("\x1b]7501;{report}{app}\x07").into_bytes());
+            let before = pane.program_status();
+            assert_eq!(before.records.len(), 1);
+            assert!(before.current.is_some());
+
+            pane.set_running_program(Some("/usr/bin/codex".into()));
+            assert_eq!(pane.program_status(), before, "{report}{app}");
+            pane.set_running_program(Some("/usr/bin/codex".into()));
+            assert_eq!(pane.program_status(), before, "{report}{app}");
+        }
+    }
 }
 
 #[test]
@@ -3648,6 +3671,35 @@ fn osc7501_transfer_preserves_records_and_applicability() {
     assert_eq!(destination.program_status(), before);
     destination.set_running_program(Some("codex".into()));
     destination.set_running_program(Some("bash".into()));
+    assert_eq!(destination.program_status(), before);
+    destination.handle_pty_bytes(b"\x1b]133;A\x07".to_vec());
     assert!(destination.program_status().current.is_none());
     assert_eq!(destination.program_status().records.len(), 1);
+}
+
+#[test]
+fn osc7501_incompatible_child_cannot_hide_compatible_root() {
+    let mut pane = agent_pane();
+    pane.set_agent_info(Some(AgentInfo {
+        kind: "codex".into(),
+        state: AgentState::Idle,
+        source: AgentSource::Reported,
+        detail: None,
+        waiting_on: None,
+        wait_needs_a_person: false,
+        cwd: None,
+        session_id: None,
+        run_id: None,
+    }));
+    pane.handle_pty_bytes(
+        b"\x1b]7501;state=working:app=codex\x07\x1b]7501;state=blocked:id=tool:app=terraform\x07"
+            .to_vec(),
+    );
+    assert_eq!(pane.agent_title().state, Some(AgentState::Busy));
+    assert_eq!(pane.program_status().current.unwrap().id, None);
+    assert_eq!(pane.program_status().records.len(), 2);
+    pane.handle_pty_bytes(b"\x1b]7501;state=blocked:id=worker\x07".to_vec());
+    let current = pane.program_status().current.unwrap();
+    assert_eq!(current.id.as_deref(), Some("worker"));
+    assert_eq!(current.app.as_deref(), Some("codex"));
 }

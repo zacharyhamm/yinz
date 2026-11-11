@@ -1636,6 +1636,135 @@ fn weekly_usage_publishes_both_providers_and_throttles_requests() {
 }
 
 #[test]
+fn clearing_osc_status_retires_only_inapplicable_manifest_feeds() {
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+    use yinz_types::program_status::{ProgramState, ProgramStatusRecord, ProgramStatusView};
+
+    for source in [
+        AgentSource::Spawned,
+        AgentSource::Registered,
+        AgentSource::Reported,
+    ] {
+        for state in [ProgramState::Blocked, ProgramState::Working] {
+            let (mut runtime, _) = plugin_with_source(
+                "agent-service",
+                r#"
+                (require "./agent-service/state.scm" "./agent-service/observe.scm")
+                (define (load _)
+                  (as-reset!)
+                  (for-each (lambda (name) (as-register! name (lambda args (void))))
+                    '("record-event" "drain" "persist" "resolve-repositories" "adopt-arrived-runs"
+                      "finish-run" "publish-arrangement")))
+                (define (rebuild manifest) (as-set! "manifest" manifest) (as-rebuild!))
+                (define (view) (hash "panes" (as-panes) "hooks" (as-get "hooks")
+                    "waiting" (as-get "waiting-transitions")))
+                (define (hook)
+                  (as-call "hook" 7 "claude" (hash-ref (as-model "HookEvent"
+                    "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"conversation\"}") "Ok")))
+                "#,
+                json!({}),
+                BTreeMap::new(),
+                "",
+            );
+            let mut pane = yinz_types::data::PaneInfo {
+                id: yinz_types::pane_id::PaneId::from_legacy(7, false),
+                title: "claude".into(),
+                terminal_command: Some("claude".into()),
+                agent: Some(AgentInfo {
+                    kind: "claude".into(),
+                    state: AgentState::Idle,
+                    session_id: Some("conversation".into()),
+                    source,
+                    detail: Some("provider detail".into()),
+                    waiting_on: None,
+                    wait_needs_a_person: false,
+                    cwd: None,
+                    run_id: None,
+                }),
+                ..Default::default()
+            };
+            let list = |view: &serde_json::Value| {
+                let panes: Vec<agent_proto::agents::AgentPane> =
+                    serde_json::from_value(view["panes"].clone()).unwrap();
+                let hooks = serde_json::from_value(view["hooks"].clone()).unwrap();
+                let result = agent_proto::agents::list_json(
+                    &panes,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &hooks,
+                    |_| String::new(),
+                );
+                serde_json::from_str::<serde_json::Value>(&result).unwrap()[0].clone()
+            };
+            runtime
+                .invoke("rebuild", vec![json!({"panes":{"0":[pane]}})])
+                .unwrap();
+            let baseline = list(&runtime.invoke("view", vec![]).unwrap());
+            pane.program_status.current = Some(ProgramStatusRecord {
+                state: Some(state),
+                msg: Some("OSC detail".into()),
+                ..Default::default()
+            });
+            runtime
+                .invoke("rebuild", vec![json!({"panes":{"0":[pane]}})])
+                .unwrap();
+            let view = runtime.invoke("view", vec![]).unwrap();
+            assert_eq!(list(&view)["hooks"], true);
+            assert_eq!(view["hooks"]["7"]["detail"], "OSC detail");
+            assert_eq!(
+                view["hooks"]["7"]["phase"],
+                if state == ProgramState::Blocked {
+                    "Waiting"
+                } else {
+                    "Busy"
+                }
+            );
+            assert_eq!(
+                view["waiting"].get("7").is_some(),
+                state == ProgramState::Blocked
+            );
+
+            pane.program_status = ProgramStatusView::default();
+            for _ in 0..2 {
+                runtime
+                    .invoke("rebuild", vec![json!({"panes":{"0":[pane]}})])
+                    .unwrap();
+                let view = runtime.invoke("view", vec![]).unwrap();
+                assert_eq!(
+                    list(&view),
+                    baseline,
+                    "source={source:?}, OSC state={state:?}"
+                );
+                assert_eq!(view["waiting"], json!({}));
+                if source == AgentSource::Reported {
+                    assert_eq!(view["hooks"]["7"]["detail"], "provider detail");
+                } else {
+                    assert_eq!(view["hooks"], json!({}));
+                }
+            }
+
+            // A hook delivered without a manifest agent still owns its feed.
+            pane.agent = None;
+            runtime
+                .invoke("rebuild", vec![json!({"panes":{"0":[pane]}})])
+                .unwrap();
+            runtime.invoke("hook", vec![]).unwrap();
+            for _ in 0..2 {
+                runtime
+                    .invoke("rebuild", vec![json!({"panes":{"0":[pane]}})])
+                    .unwrap();
+                let view = runtime.invoke("view", vec![]).unwrap();
+                assert_eq!(list(&view)["hooks"], true);
+                assert_eq!(view["hooks"]["7"]["phase"], "Busy");
+            }
+        }
+    }
+}
+
+#[test]
 fn waiting_manifest_preserves_one_permission_or_question_toast() {
     for question in [false, true] {
         let (mut runtime, host) = plugin_with_source(

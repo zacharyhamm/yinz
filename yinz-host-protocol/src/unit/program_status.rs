@@ -297,3 +297,29 @@ fn snapshots_preserve_update_order_and_reject_invalid_fields() {
     invalid[0].msg = Some("bad\nmessage".into());
     assert!(ProgramStatusRecords::restore(invalid).is_err());
 }
+
+#[test]
+fn matching_candidates_resolve_apps_before_attention_selection() {
+    let mut records = ProgramStatusRecords::default();
+    for body in [
+        "state=working:app=codex",
+        "state=blocked:id=tool:app=terraform",
+        "state=idle:id=tool/nested",
+    ] {
+        records.apply(parse_body(body).unwrap(), 1);
+    }
+    let compatible = |r: &ProgramStatusRecord| r.app.as_deref() == Some("codex");
+    let (_, root) = records.deciding_record_matching(compatible).unwrap();
+    assert_eq!(root.id, None);
+    records.apply(parse_body("state=blocked:id=tool/nested").unwrap(), 2);
+    assert_eq!(
+        records.deciding_record_matching(compatible).unwrap().1.id,
+        None
+    );
+    records.apply(parse_body("state=blocked:id=worker").unwrap(), 3);
+    let (_, child) = records.deciding_record_matching(compatible).unwrap();
+    assert_eq!(child.id.as_deref(), Some("worker"));
+    assert_eq!(child.app.as_deref(), Some("codex"));
+    assert!(records.deciding_record_matching(|_| false).is_none());
+    assert_eq!(records.all().len(), 4);
+}

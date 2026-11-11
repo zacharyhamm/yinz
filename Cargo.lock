@@ -5498,6 +5498,7 @@ dependencies = [
 name = "yinz-steel-builtins"
 version = "0.1.2-alpha.12"
 dependencies = [
+ "agent-proto",
  "anyhow",
  "serde",
  "serde_json",
