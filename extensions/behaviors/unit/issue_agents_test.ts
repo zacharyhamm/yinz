@@ -5054,9 +5054,10 @@ Deno.test("issue85 accepted original assignment imports once through closed subm
 });
 
 // These consumer fixtures use the native retained response shape. Screen tests produce
-// that shape through passive-report and SessionEnd paths; no receipt creates a proof.
+// that shape through passive-report, SessionEnd and composed-close paths;
+// no receipt creates a proof.
 for (const continuing of [false, true]) {
-  for (const closure of ["passive-close", "session-end"]) {
+  for (const closure of ["passive-close", "session-end", "composed-close"]) {
     for (const fault of ["child-result", "parent-event"]) {
       Deno.test(`issue85 accepted implementation ${continuing ? "continuation" : "original"} imports once after ${closure} and ${fault}`, async () => {
         const initial = implementing();

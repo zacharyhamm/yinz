@@ -1734,3 +1734,44 @@ fn panel_dismissal_preserves_modal_focus_and_unrelated_overlays() {
         assert_eq!(tab.get_active_pane_id(client), Some(panel));
     }
 }
+
+#[test]
+fn issue85_pane_tab_close_preview_matches_loaded_children_without_mutation() {
+    for close_child in [false, true] {
+        let (mut tab, receiver) =
+            create_new_tab_with_plugin_receiver(Size { cols: 80, rows: 24 }, ModeInfo::default());
+        let first = PaneId::Terminal(TerminalId::new(1));
+        let info = tab
+            .mount_pane_tabs(first, layout(), 0, ClientId::new(1))
+            .unwrap();
+        tab.select_pane_tab(info.id, 1, ClientId::new(1)).unwrap();
+        let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "yinz:fixture-plugin-for-tests",
+            &None,
+            None,
+            None,
+        )
+        .unwrap();
+        let second = PluginId::new(101);
+        tab.pane_tab_loaded(info.id, 1, 1, Ok((second, run)))
+            .unwrap();
+        let target = if close_child {
+            PaneId::Plugin(second)
+        } else {
+            first
+        };
+        let before = tab.pane_tabs_info(info.id).unwrap();
+        let focus = tab.get_active_pane_id(ClientId::new(1));
+        receiver.try_iter().for_each(drop);
+        let preview = tab.explicit_close_pane_ids(target);
+        assert_eq!(preview.len(), 2);
+        assert!(preview.contains(&first) && preview.contains(&PaneId::Plugin(second)));
+        assert_eq!(tab.pane_tabs_info(info.id).unwrap(), before);
+        assert_eq!(tab.get_active_pane_id(ClientId::new(1)), focus);
+        assert!(receiver.is_empty());
+        assert_eq!(tab.close_pane_explicitly(target, None), preview);
+        assert!(tab.pane_tabs_info(info.id).is_none());
+        assert!(preview.iter().all(|id| !tab.has_pane_with_pid(id)));
+        tab.assert_invariants();
+    }
+}

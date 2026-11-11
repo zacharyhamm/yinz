@@ -839,7 +839,9 @@ Validated passive permission samples from the same process/conversation preserve
 an existing completion claim; they never establish completion or quiescence.
 A matching normal SessionEnd freezes eligible facts before clearing the live
 record. Duplicate shutdown, held exit and pane/tab closure preserve that frozen
-proof and its original expiry. New input, activity or replacement still blocks it.
+proof and its original expiry. An explicit user close can remove several related
+panes; each eligible worker is sampled before any member is removed. New input,
+activity or replacement still blocks it.
 A positively observed interruption remains retrievable as `interrupted` on the
 original submission; it never supplies a successful retained proof or allows
 accepted evidence to advance the lifecycle.

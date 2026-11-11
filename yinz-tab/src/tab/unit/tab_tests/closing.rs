@@ -424,9 +424,14 @@ fn explicit_close_destroys_the_entire_live_replacement_chain() {
             None,
         )
         .unwrap();
+        let target = targeted
+            .map(|index| [source, view, helper][index])
+            .unwrap_or_else(|| tab.get_active_pane_id(ClientId::new(1)).unwrap());
+        let preview = issue85_close_preview(&tab, target);
+        assert_eq!(preview.len(), 3);
         if let Some(index) = targeted {
             let ids = [source, view, helper];
-            assert_eq!(tab.close_pane_explicitly(ids[index], None).len(), 3);
+            assert_eq!(tab.close_pane_explicitly(ids[index], None), preview);
             assert!(tab.close_pane_explicitly(ids[index], None).is_empty());
         } else {
             tab.close_focused_pane(ClientId::new(1), None).unwrap();
@@ -528,7 +533,29 @@ fn explicit_close_of_any_multipane_replacement_destroys_both_chains() {
         tab.focus_pane_with_id(chains[0][2], false, false, client)
             .unwrap();
 
-        let mut closed = tab.close_pane_explicitly(*targeted, None);
+        let queued = (
+            plugin_receiver.len(),
+            pty_receiver.len(),
+            screen_receiver.len(),
+        );
+        let (completion_tx, mut completion_rx) = tokio::sync::oneshot::channel();
+        let completion = crate::route::NotificationEnd::new(completion_tx);
+        let preview = issue85_close_preview(&tab, *targeted);
+        assert_eq!(
+            queued,
+            (
+                plugin_receiver.len(),
+                pty_receiver.len(),
+                screen_receiver.len()
+            )
+        );
+        assert!(matches!(
+            completion_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        let mut closed = tab.close_pane_explicitly(*targeted, Some(completion));
+        assert!(completion_rx.try_recv().is_ok());
+        assert_eq!(closed, preview);
         closed.sort();
         assert_eq!(closed, expected, "closing {targeted:?}");
         assert_eq!(tab.overlay_panes.len(), 0);
@@ -539,6 +566,10 @@ fn explicit_close_of_any_multipane_replacement_destroys_both_chains() {
         for id in &expected {
             assert!(tab.close_pane_explicitly(*id, None).is_empty());
         }
+        assert!(matches!(
+            completion_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
         let mut announced: Vec<_> = plugin_receiver
             .try_iter()
             .flat_map(|(instruction, _)| match instruction {
@@ -3427,11 +3458,10 @@ fn explicit_close_keeps_the_hook_cascade_and_closes_a_whole_stack_from_its_botto
             "hook" => stack.hook,
             _ => stack.gate,
         };
-        let mut closed: Vec<_> = tab
-            .close_pane_explicitly(id(target), None)
-            .into_iter()
-            .map(name)
-            .collect();
+        let preview = issue85_close_preview(&tab, id(target));
+        let removed = tab.close_pane_explicitly(id(target), None);
+        assert_eq!(removed, preview);
+        let mut closed: Vec<_> = removed.into_iter().map(name).collect();
         closed.sort();
         let mut expected_sorted = expected.clone();
         expected_sorted.sort();
@@ -3643,4 +3673,39 @@ fn a_plugin_opened_in_place_that_closes_the_replaced_pane_closes_its_process() {
         "the replaced terminal's process is closed"
     );
     tab.assert_invariants();
+}
+
+// Assert the shared discovery pass leaves the live topology, focus and restoration links intact.
+fn issue85_close_preview(tab: &Tab, target: PaneId) -> Vec<PaneId> {
+    let ids = tab.get_all_pane_ids();
+    let tabs: Vec<_> = tab.pane_tabs_infos().collect();
+    let compositions: Vec<_> = ids.iter().map(|id| tab.multipane_info(*id)).collect();
+    let links: Vec<_> = tab
+        .suppressed_panes
+        .iter()
+        .map(|(id, pane)| (*id, pane.restored_by))
+        .collect();
+    let focus = tab.get_active_pane_id(ClientId::new(1));
+    let preview = tab.explicit_close_pane_ids(target);
+    assert_eq!(preview, tab.explicit_close_pane_ids(target));
+    assert_eq!(tab.get_all_pane_ids(), ids);
+    assert_eq!(tab.pane_tabs_infos().collect::<Vec<_>>(), tabs);
+    assert_eq!(
+        ids.iter()
+            .map(|id| tab.multipane_info(*id))
+            .collect::<Vec<_>>(),
+        compositions
+    );
+    assert_eq!(
+        tab.suppressed_panes
+            .iter()
+            .map(|(id, pane)| (*id, pane.restored_by))
+            .collect::<Vec<_>>(),
+        links
+    );
+    assert_eq!(tab.get_active_pane_id(ClientId::new(1)), focus);
+    assert!(tab
+        .explicit_close_pane_ids(PaneId::Terminal(TerminalId::new(99999)))
+        .is_empty());
+    preview
 }

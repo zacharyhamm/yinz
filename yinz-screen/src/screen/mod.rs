@@ -3139,7 +3139,14 @@ impl Screen {
         id: PaneId,
         completion_tx: Option<NotificationEnd>,
     ) {
-        self.retain_closed_agent(id, std::time::Instant::now());
+        let closing = self
+            .tab_containing_pane(id)
+            .map(|tab| tab.explicit_close_pane_ids(id))
+            .unwrap_or_default();
+        let now = std::time::Instant::now();
+        for pane in closing {
+            self.retain_closed_agent(pane, now);
+        }
         self.repaint_tab_of_closing_overlay(id);
         let closed = self
             .tab_containing_pane_mut(id)

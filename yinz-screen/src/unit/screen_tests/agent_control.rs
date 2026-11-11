@@ -2827,11 +2827,15 @@ impl Screen {
         client: crate::screen::agent_control::Reply,
         writes: &Receiver<(PtyWriteInstruction, ErrorContext)>,
     ) {
-        let clearing = self.agent_draft_clears.contains_key(&PANE);
+        let pane = match &request {
+            AgentRequest::Prompt { pane_id, .. } => *pane_id,
+            _ => PANE,
+        };
+        let clearing = self.agent_draft_clears.contains_key(&pane);
         let prompt = matches!(request, AgentRequest::Prompt { .. });
         let now = Instant::now();
         let delay = if self
-            .agent_status(PANE, None)
+            .agent_status(pane, None)
             .is_some_and(|status| status.agent.kind == "pi")
         {
             600
@@ -2839,13 +2843,13 @@ impl Screen {
             0
         };
         self.agent_control_at(request, client, now - Duration::from_millis(251 + delay));
-        if prompt && !clearing && self.agent_draft_clears.contains_key(&PANE) {
+        if prompt && !clearing && self.agent_draft_clears.contains_key(&pane) {
             let marker = finish_paste(writes);
             assert!(marker.starts_with(b"\x1b[200~yz") && marker.ends_with(b"\x1b[201~"));
             self.refresh_agent_controls_at(now - Duration::from_millis(250 + delay));
             self.refresh_agent_controls_at(now - Duration::from_millis(250));
             let clear = finish_paste(writes);
-            let kind = self.agent_status_for_test().agent.kind;
+            let kind = self.agent_status(pane, None).unwrap().agent.kind;
             let provider = yinz_types::agent::provider::provider(&kind);
             let key = provider
                 .as_ref()
@@ -17469,4 +17473,420 @@ fn issue85_shutdown_proof_cannot_survive_later_input_replacement_or_clear() {
         assert_ne!(response.outcome, AgentOutcome::Completed, "{case}");
         assert!(response.retained_submission.is_none());
     }
+}
+
+#[test]
+fn issue85_indirect_explicit_close_retains_each_qualified_worker() {
+    use yinz_bus::pty::ReplacedPane;
+    use yinz_types::multipane::{MultipaneDirection, MultipaneSplit};
+    use yinz_types::pane_tabs::{PaneTabDescriptor, PaneTabsLayout};
+
+    for composition in [
+        "multipane",
+        "replacement",
+        "multipane-replacement",
+        "pane-tab-child",
+        "pane-tab-container",
+    ] {
+        let (mut screen, messages, writes) = setup("claude");
+        let other = PaneId::Terminal(TerminalId::new(1));
+        let editor = PaneId::Terminal(TerminalId::new(99));
+        let survivor = PaneId::Terminal(TerminalId::new(98));
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        let (sender, _plugins) = channels::unbounded();
+        tab.senders
+            .replace_to_plugin(SenderWithContext::new(sender));
+        tab.new_pane(
+            survivor,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::default(),
+            Some(CLIENT),
+            None,
+        )
+        .unwrap();
+        let target = match composition {
+            "multipane" | "multipane-replacement" => {
+                tab.create_multipane(
+                    [other, PANE],
+                    MultipaneSplit {
+                        direction: MultipaneDirection::LeftRight,
+                        ratio: 5000,
+                    },
+                    0,
+                    OverlayPlacement::dismissible(None),
+                )
+                .unwrap();
+                if composition == "multipane-replacement" {
+                    tab.suppress_pane_and_replace_with_pid(
+                        other,
+                        editor,
+                        ReplacedPane::Suppress,
+                        None,
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                    editor
+                } else {
+                    other
+                }
+            },
+            "replacement" => {
+                tab.suppress_pane_and_replace_with_pid(
+                    PANE,
+                    editor,
+                    ReplacedPane::Suppress,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+                editor
+            },
+            _ => {
+                let info = tab
+                    .mount_pane_tabs(
+                        PANE,
+                        PaneTabsLayout {
+                            active: 0,
+                            tabs: ["Worker", "Overview"]
+                                .map(|label| PaneTabDescriptor {
+                                    label: label.into(),
+                                    location: "yinz:fixture-plugin-for-tests".into(),
+                                    configuration: BTreeMap::new(),
+                                    initial_cwd: None,
+                                })
+                                .to_vec(),
+                        },
+                        0,
+                        CLIENT,
+                    )
+                    .unwrap();
+                tab.select_pane_tab(info.id, 1, CLIENT).unwrap();
+                let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+                    "yinz:fixture-plugin-for-tests",
+                    &None,
+                    None,
+                    None,
+                )
+                .unwrap();
+                let plugin = PluginId::new(100);
+                tab.pane_tab_loaded(info.id, 1, 1, Ok((plugin, run)))
+                    .unwrap();
+                if composition == "pane-tab-child" {
+                    PaneId::Plugin(plugin)
+                } else {
+                    info.pane_id
+                }
+            },
+        };
+        // Establish the original turn only after composition, with no earlier shutdown snapshot.
+        report_kind(&mut screen, "claude", issue85_sourced(hook("SessionStart")));
+        screen.agent_control_with_clear(identified_prompt("composed", true), CLIENT, &writes);
+        finish_paste(&writes);
+        report_kind(
+            &mut screen,
+            "claude",
+            issue85_sourced(hook("UserPromptSubmit")),
+        );
+        report_kind(&mut screen, "claude", issue85_answer(false));
+        let original = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(original.outcome, AgentOutcome::Completed, "{composition}");
+        assert!(screen.closed_agent_submissions.is_empty());
+        assert!(screen.get_pane_info(PANE).unwrap().agent.is_some());
+        if composition == "multipane" {
+            screen
+                .tab_containing_pane_mut(target)
+                .unwrap()
+                .focus_pane_with_id(target, false, false, CLIENT)
+                .unwrap();
+            assert_eq!(
+                screen.close_focused_pane(CLIENT, None).unwrap(),
+                Some(target)
+            );
+        } else {
+            screen.close_pane_explicitly(target, None);
+        }
+        assert!(screen.get_pane_info(PANE).is_none(), "{composition}");
+        assert!(screen.get_pane_info(target).is_none());
+        assert!(screen.get_pane_info(survivor).is_some());
+        let frozen = screen.closed_agent_submissions.clone();
+        for _ in 0..2 {
+            screen.agent_control(wait_submission("composed"), CLIENT);
+            let response = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(response.outcome, AgentOutcome::Completed, "{composition}");
+            assert!(response.agents.is_empty());
+            assert_eq!(response.submission_id, original.submission_id);
+            assert_eq!(response.turn_id, original.turn_id);
+            assert_eq!(response.acknowledged, original.acknowledged);
+            assert_eq!(response.prompt_delivery, original.prompt_delivery);
+            assert_eq!(response.message.as_deref(), Some("DONE"));
+            let proof = response.retained_submission.unwrap();
+            assert_eq!(proof.pane_id, PANE);
+            assert_eq!(proof.conversation_id, "conversation");
+            assert!(proof.answered && proof.quiescent);
+            screen.close_pane_explicitly(target, None);
+            screen.cleanup_closed_pane(PANE);
+            assert_eq!(screen.closed_agent_submissions, frozen);
+        }
+        assert!(finish_paste(&writes).is_empty());
+    }
+}
+
+fn issue85_report_at(screen: &mut Screen, pane: PaneId, event: HookEvent) {
+    let PaneId::Terminal(terminal) = pane else {
+        panic!("terminal fixture required")
+    };
+    let state = match hook_outcome("claude", &event) {
+        HookOutcome::Ended => AgentReportState::Clear,
+        HookOutcome::Reported(agent) => AgentReportState::Set(agent),
+        HookOutcome::Nothing => AgentReportState::Unchanged,
+    };
+    apply_queued_agent_report(
+        screen,
+        &AgentReport {
+            report_id: "00000000-0000-4000-8000-000000000001".into(),
+            pane_id: pane,
+            state,
+            event: Some(AgentEvent::from_hook(
+                "claude",
+                terminal,
+                &event,
+                serde_json::to_string(&event).unwrap(),
+            )),
+            trace: false,
+            process_id: ProcessId::new(42),
+            kind: "claude".into(),
+        },
+        Instant::now(),
+    )
+    .unwrap();
+    screen.refresh_agent_controls();
+}
+
+fn issue85_prompt_at(pane: PaneId, id: &str) -> AgentRequest {
+    let AgentRequest::Prompt {
+        expected_session_id,
+        prompt,
+        wait,
+        timeout_ms,
+        preserve_draft,
+        ..
+    } = identified_prompt(id, true)
+    else {
+        unreachable!()
+    };
+    AgentRequest::Prompt {
+        pane_id: pane,
+        submission_id: Some(id.into()),
+        expected_session_id,
+        prompt,
+        wait,
+        timeout_ms,
+        preserve_draft,
+    }
+}
+
+fn issue85_wait_at(pane: PaneId, id: &str) -> AgentRequest {
+    AgentRequest::WaitTurn {
+        pane_id: pane,
+        expected_session_id: Some("conversation".into()),
+        submission_id: id.into(),
+        timeout_ms: 30_000,
+    }
+}
+
+#[test]
+fn issue85_composed_close_checks_each_member_and_does_not_archive_survivors() {
+    use yinz_types::multipane::{MultipaneDirection, MultipaneSplit};
+    for case in [
+        "qualified",
+        "busy",
+        "background",
+        "person",
+        "input",
+        "new-turn",
+        "pending",
+        "replaced",
+        "unknown",
+        "interrupted",
+    ] {
+        let (mut screen, messages, writes) = setup("claude");
+        let sibling = PaneId::Terminal(TerminalId::new(90));
+        let unrelated = PaneId::Terminal(TerminalId::new(91));
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        let command = tab.pane_run_command(PANE).unwrap();
+        for pane in [sibling, unrelated] {
+            tab.new_pane(
+                pane,
+                None,
+                Some(Run::Command(command.clone())),
+                false,
+                true,
+                NewPanePlacement::default(),
+                Some(CLIENT),
+                None,
+            )
+            .unwrap();
+            let PaneId::Terminal(terminal) = pane else {
+                unreachable!()
+            };
+            tab.handle_pty_bytes(terminal, b"\x1b[?2004h".to_vec())
+                .unwrap();
+        }
+        tab.create_multipane(
+            [PANE, sibling],
+            MultipaneSplit {
+                direction: MultipaneDirection::LeftRight,
+                ratio: 5000,
+            },
+            0,
+            OverlayPlacement::dismissible(None),
+        )
+        .unwrap();
+        for (pane, id) in [
+            (PANE, "qualified"),
+            (sibling, "sibling"),
+            (unrelated, "unrelated"),
+        ] {
+            issue85_report_at(&mut screen, pane, issue85_sourced(hook("SessionStart")));
+            screen.agent_control_with_clear(issue85_prompt_at(pane, id), CLIENT, &writes);
+            finish_paste(&writes);
+            issue85_report_at(&mut screen, pane, issue85_sourced(hook("UserPromptSubmit")));
+            if pane != sibling || case != "busy" {
+                let mut answer = issue85_answer(pane == sibling && case == "background");
+                if pane == sibling && case == "unknown" {
+                    answer.claude_answered = None;
+                }
+                if pane == sibling && case == "interrupted" {
+                    answer.claude_turn_complete = Some(false);
+                    answer.claude_answered = Some(false);
+                    answer.claude_interrupted = Some(true);
+                }
+                issue85_report_at(&mut screen, pane, answer);
+            }
+            replies(&messages, CLIENT);
+        }
+        match case {
+            "person" => issue85_report_at(
+                &mut screen,
+                sibling,
+                issue85_sourced(permission_wait("claude")),
+            ),
+            "new-turn" => issue85_report_at(
+                &mut screen,
+                sibling,
+                issue85_sourced(HookEvent {
+                    prompt_id: Some("next".into()),
+                    turn_id: Some("next".into()),
+                    ..hook("UserPromptSubmit")
+                }),
+            ),
+            "input" => {
+                screen
+                    .tab_containing_pane_mut(sibling)
+                    .unwrap()
+                    .write_key_to_pane_id(sibling, KeyWithModifier::new(BareKey::Char('x')), None)
+                    .unwrap();
+                assert_eq!(finish_paste(&writes), b"x");
+            },
+            "pending" => {
+                screen.agent_control_with_clear(
+                    issue85_prompt_at(sibling, "pending"),
+                    CLIENT,
+                    &writes,
+                );
+                finish_paste(&writes);
+            },
+            "replaced" => issue85_report_at(
+                &mut screen,
+                sibling,
+                with_notification_source(
+                    HookEvent {
+                        session_id: "replacement".into(),
+                        ..hook("SessionStart")
+                    },
+                    replacement_source(),
+                ),
+            ),
+            _ => {},
+        }
+        replies(&messages, CLIENT);
+        assert!(screen.closed_agent_submissions.is_empty());
+        screen.close_pane_explicitly(sibling, None);
+        assert!(screen.get_pane_info(PANE).is_none());
+        assert!(screen.get_pane_info(sibling).is_none());
+        assert!(screen.get_pane_info(unrelated).is_some());
+        assert!(screen
+            .closed_agent_submissions
+            .iter()
+            .all(|(_, proof, _, _)| proof.pane_id != unrelated));
+        for (pane, id, eligible) in [
+            (PANE, "qualified", true),
+            (sibling, "sibling", case == "qualified"),
+        ] {
+            for _ in 0..2 {
+                screen.agent_control(issue85_wait_at(pane, id), CLIENT);
+                let response = replies(&messages, CLIENT).pop().unwrap();
+                assert_eq!(
+                    response.outcome == AgentOutcome::Completed,
+                    eligible,
+                    "{case} {pane:?}"
+                );
+                assert_eq!(
+                    response.retained_submission.is_some(),
+                    eligible,
+                    "{case} {pane:?}"
+                );
+                assert!(response.agents.is_empty());
+                if let Some(proof) = response.retained_submission {
+                    assert_eq!(proof.pane_id, pane);
+                    assert_eq!(proof.submission_id, id);
+                }
+            }
+        }
+        assert!(finish_paste(&writes).is_empty(), "{case}");
+    }
+}
+
+#[test]
+fn issue85_closing_lent_stand_in_does_not_archive_the_surviving_lender() {
+    let (mut screen, messages, writes) = setup("claude");
+    let stand_in = PaneId::Terminal(TerminalId::new(99));
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .suppress_pane_and_replace_with_pid(
+            PANE,
+            stand_in,
+            yinz_bus::pty::ReplacedPane::Lend,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    report_kind(&mut screen, "claude", issue85_sourced(hook("SessionStart")));
+    screen.agent_control_with_clear(identified_prompt("lender", true), CLIENT, &writes);
+    finish_paste(&writes);
+    report_kind(
+        &mut screen,
+        "claude",
+        issue85_sourced(hook("UserPromptSubmit")),
+    );
+    report_kind(&mut screen, "claude", issue85_answer(false));
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Completed
+    );
+    assert!(screen.closed_agent_submissions.is_empty());
+    screen.close_pane_explicitly(stand_in, None);
+    assert!(screen
+        .tab_containing_pane(PANE)
+        .unwrap()
+        .has_non_suppressed_pane_with_pid(&PANE));
+    assert!(screen.closed_agent_submissions.is_empty());
+    assert!(finish_paste(&writes).is_empty());
 }

@@ -1344,8 +1344,10 @@ completion before a matching normal SessionEnd clears the live record, or at
 pane closure. Validated passive permission samples from the same process and
 conversation preserve existing claims without establishing completion themselves.
 Duplicate SessionEnd, held exit and pane/tab closure keep the frozen proof's
-original expiry. No later input, turn, background activity or identity replacement
-may intervene. Resume with the original command and conversation pin:
+original expiry. An explicit user close can remove several related panes; each
+eligible worker is sampled before any member is removed. No later input, turn,
+background activity or identity replacement may intervene. Resume with the
+original command and conversation pin:
 
 ```sh
 yinz --session <session> agent wait terminal_<id> --submission <saved-id> --conversation <saved-conversation> --json

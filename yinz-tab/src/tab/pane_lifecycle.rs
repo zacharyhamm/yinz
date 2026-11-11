@@ -492,6 +492,9 @@ impl Tab {
             })
     }
 
+    /// Ordered panes removed by an explicit close, without changing topology or focus.
+    /// Screen uses this before removal to sample each member's live agent identity.
+    ///
     /// Explicit close destroys the replacement chain. Natural exits and `close_self`
     /// still use `close_pane`, which restores the pane behind an editor or exit view.
     ///
@@ -501,21 +504,16 @@ impl Tab {
     /// would, so a plugin's own pane survives the user closing a command it ran in its place.
     /// Closing the lender, or any pane behind it, still closes everything standing in front
     /// of it: closing the bottom of a stack is the way to close the whole stack.
-    pub fn close_pane_explicitly(
-        &mut self,
-        id: PaneId,
-        completion_tx: Option<NotificationEnd>,
-    ) -> Vec<PaneId> {
+    pub fn explicit_close_pane_ids(&self, id: PaneId) -> Vec<PaneId> {
         if !self.has_pane_with_pid(&id) {
             return vec![];
         }
-        let mut container = None;
         let mut closed = vec![id];
         let mut index = 0;
         while index < closed.len() {
             let current = closed[index];
             if let Some(tabs_id) = self.pane_tabs_of(current)
-                && let Some(tabs) = self.pane_tabs.remove(&tabs_id)
+                && let Some(tabs) = self.pane_tabs.get(&tabs_id)
             {
                 for pane in tabs
                     .info
@@ -527,23 +525,14 @@ impl Tab {
                     if !closed.contains(&pane) {
                         closed.push(pane);
                     }
-                    if let Some(child) = self.get_pane_with_id_mut(pane) {
-                        child.set_pane_tabs(None);
-                    }
                 }
             }
-            if let Some(owning_container) = self
-                .multipane_info(current)
-                .and_then(|_| self.overlay_panes.take_container(current))
-            {
-                for sibling in owning_container.pane_ids() {
+            if let Some(container) = self.multipane_info(current) {
+                for sibling in container.children {
                     if !closed.contains(&sibling) {
                         closed.push(sibling);
                     }
                 }
-                container = Some(owning_container);
-                self.set_should_clear_display_before_rendering();
-                self.set_force_render();
             }
             for (subject, suppressed) in &self.suppressed_panes {
                 if let Some(stand_in) = suppressed.restored_by {
@@ -564,6 +553,44 @@ impl Tab {
             }
             index += 1;
         }
+        closed
+    }
+
+    /// Destroy the enumerated composition, retaining normal lent-slot restoration.
+    pub fn close_pane_explicitly(
+        &mut self,
+        id: PaneId,
+        completion_tx: Option<NotificationEnd>,
+    ) -> Vec<PaneId> {
+        let closed = self.explicit_close_pane_ids(id);
+        if closed.is_empty() {
+            return closed;
+        }
+        let mut containers = vec![];
+        for current in &closed {
+            if let Some(tabs_id) = self.pane_tabs_of(*current)
+                && let Some(tabs) = self.pane_tabs.remove(&tabs_id)
+            {
+                for pane in tabs
+                    .info
+                    .tabs
+                    .iter()
+                    .filter_map(|tab| tab.pane_id())
+                    .chain([tabs.info.pane_id])
+                {
+                    if let Some(child) = self.get_pane_with_id_mut(pane) {
+                        child.set_pane_tabs(None);
+                    }
+                }
+            }
+            if self.multipane_info(*current).is_some()
+                && let Some(container) = self.overlay_panes.take_container(*current)
+            {
+                containers.push(container);
+                self.set_should_clear_display_before_rendering();
+                self.set_force_render();
+            }
+        }
         // Break restoration links before removing anything, including a suppressed stand-in.
         for id in &closed {
             if let Some(pane) = self.suppressed_panes.get_mut(id) {
@@ -571,9 +598,9 @@ impl Tab {
             }
         }
         for closing in closed.iter().rev() {
-            if container
-                .as_ref()
-                .is_some_and(|container| container.pane_ids().any(|pane| pane == *closing))
+            if containers
+                .iter()
+                .any(|container| container.pane_ids().any(|pane| pane == *closing))
             {
                 self.pending_command_respawns.remove(closing);
                 self.forget_departed_terminal(*closing);
