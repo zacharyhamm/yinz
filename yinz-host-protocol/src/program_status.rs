@@ -360,14 +360,22 @@ impl ProgramStatusRecords {
         before != self.records.len()
     }
     pub fn inherited_app(&self, id: &Option<String>) -> Option<String> {
-        let parent = |path: &str| path.rsplit_once('/').map(|(parent, _)| parent.to_owned());
-        let mut current = parent(id.as_ref()?);
+        self.inherited_app_ref(id.as_deref()).map(str::to_owned)
+    }
+    fn inherited_app_ref(&self, id: Option<&str>) -> Option<&str> {
+        fn parent(path: &str) -> Option<&str> {
+            path.rsplit_once('/').map(|(parent, _)| parent)
+        }
+        let mut current = parent(id?);
         loop {
-            let key = record_key(&current);
-            if let Some(app) = self.records.get(&key).and_then(|(_, r)| r.app.clone()) {
+            if let Some(app) = self
+                .records
+                .get(current.unwrap_or(""))
+                .and_then(|(_, r)| r.app.as_deref())
+            {
                 return Some(app);
             }
-            current = parent(&current?);
+            current = parent(current?);
         }
     }
     pub fn deciding_record(&self) -> Option<(AttentionStatus, ProgramStatusRecord)> {
@@ -385,15 +393,27 @@ impl ProgramStatusRecords {
             }
             record
         };
-        let root = self.root().map(resolve_app).filter(&matches);
-        let mut best: Option<(AttentionStatus, ProgramStatusRecord)> =
-            root.map(|r| (r.state().attention_status(), r));
+        self.deciding_record_matching_ref(|record, _| matches(&resolve_app(record)))
+            .map(|(status, record)| (status, resolve_app(record)))
+    }
+    /// Select borrowed records, passing their effective (possibly inherited) app separately.
+    pub fn deciding_record_matching_ref(
+        &self,
+        matches: impl Fn(&ProgramStatusRecord, Option<&str>) -> bool,
+    ) -> Option<(AttentionStatus, &ProgramStatusRecord)> {
+        let compatible = |record: &&ProgramStatusRecord| {
+            matches(
+                record,
+                record
+                    .app
+                    .as_deref()
+                    .or_else(|| self.inherited_app_ref(record.id.as_deref())),
+            )
+        };
+        let root = self.root().filter(compatible);
+        let mut best = root.map(|r| (r.state().attention_status(), r));
         for (key, (_, record)) in self.records.iter() {
-            if key.is_empty() {
-                continue;
-            }
-            let record = resolve_app(record);
-            if !matches(&record) {
+            if key.is_empty() || !compatible(&record) {
                 continue;
             }
             let child_status = match record.state() {
@@ -401,11 +421,10 @@ impl ProgramStatusRecords {
                 ProgramState::Error => AttentionStatus::Failed,
                 _ => continue,
             };
-            let raises = match &best {
-                None => true,
-                Some((status, _)) => child_status > *status,
-            };
-            if raises {
+            if best
+                .as_ref()
+                .is_none_or(|(status, _)| child_status > *status)
+            {
                 best = Some((child_status, record));
             }
         }

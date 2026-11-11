@@ -80,6 +80,18 @@ impl ProgramState {
             ProgramState::Error => AttentionStatus::Failed,
         }
     }
+    /// Basic display only: never use this to authorize input or complete a submission.
+    pub fn agent_state(self, fallback: crate::agent::AgentState) -> crate::agent::AgentState {
+        use crate::agent::AgentState;
+        if fallback == AgentState::Exited {
+            return fallback;
+        }
+        match self {
+            Self::Working => AgentState::Busy,
+            Self::Blocked => AgentState::Waiting,
+            Self::Idle | Self::Done | Self::Error => AgentState::Idle,
+        }
+    }
     pub fn is_transient(&self) -> bool {
         matches!(
             self,
@@ -121,15 +133,8 @@ impl ProgramStatusView {
     }
     /// Basic display only: never use this to authorize input or complete a submission.
     pub fn agent_state(&self, fallback: crate::agent::AgentState) -> crate::agent::AgentState {
-        use crate::agent::AgentState;
-        if fallback == AgentState::Exited {
-            return fallback;
-        }
-        match self.current.as_ref().map(ProgramStatusRecord::state) {
-            Some(ProgramState::Working) => AgentState::Busy,
-            Some(ProgramState::Blocked) => AgentState::Waiting,
-            Some(ProgramState::Idle | ProgramState::Done | ProgramState::Error) => AgentState::Idle,
-            None => fallback,
-        }
+        self.current
+            .as_ref()
+            .map_or(fallback, |record| record.state().agent_state(fallback))
     }
 }

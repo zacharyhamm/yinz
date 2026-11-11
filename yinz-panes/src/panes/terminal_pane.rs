@@ -1546,10 +1546,18 @@ impl Pane for TerminalPane {
     }
     fn agent_title(&self) -> crate::ui::agent_title::AgentTitle {
         crate::ui::agent_title::AgentTitle {
-            state: self
-                .agent
-                .as_ref()
-                .map(|agent| self.program_status().agent_state(agent.state)),
+            state: self.agent.as_ref().map(|agent| {
+                self.grid
+                    .applicable_program_status
+                    .deciding_record_matching_ref(|_, app| {
+                        app.is_none_or(|app| {
+                            yinz_types::agent::kind_of(app).as_deref() == Some(agent.kind.as_str())
+                        })
+                    })
+                    .map_or(agent.state, |(_, record)| {
+                        record.state().agent_state(agent.state)
+                    })
+            }),
             hook_flash: self.agent_hook_flash,
         }
     }

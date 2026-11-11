@@ -323,3 +323,33 @@ fn matching_candidates_resolve_apps_before_attention_selection() {
     assert!(records.deciding_record_matching(|_| false).is_none());
     assert_eq!(records.all().len(), 4);
 }
+
+#[test]
+fn borrowed_selection_preserves_priority_apps_and_ties() {
+    let mut records = ProgramStatusRecords::default();
+    for body in [
+        "state=working:app=codex",
+        "state=blocked:id=tool:app=terraform",
+        "state=blocked:id=tool/nested",
+        "state=error:id=a",
+        "state=error:id=b",
+    ] {
+        records.apply(parse_body(body).unwrap(), 1);
+    }
+    let select = |records: &ProgramStatusRecords| {
+        let (_, record) = records
+            .deciding_record_matching_ref(|_, app| app == Some("codex"))
+            .unwrap();
+        assert!(std::ptr::eq(
+            record,
+            records.get(record.id.as_deref().unwrap_or("")).unwrap()
+        ));
+        record.id.clone()
+    };
+    assert_eq!(select(&records).as_deref(), Some("a"));
+    records.apply(parse_body("state=blocked:id=b").unwrap(), 2);
+    assert_eq!(select(&records).as_deref(), Some("b"));
+    records.apply(parse_body("state=blocked:app=codex").unwrap(), 3);
+    assert_eq!(select(&records), None);
+    assert!(records.deciding_record_matching_ref(|_, _| false).is_none());
+}

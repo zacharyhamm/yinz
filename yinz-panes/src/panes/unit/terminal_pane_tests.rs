@@ -3705,3 +3705,31 @@ fn osc7501_incompatible_child_cannot_hide_compatible_root() {
     assert_eq!(current.id.as_deref(), Some("worker"));
     assert_eq!(current.app.as_deref(), Some("codex"));
 }
+
+#[test]
+fn osc7501_frame_status_matches_manifest_with_retained_history() {
+    let mut pane = agent_pane();
+    for fallback in [AgentState::Busy, AgentState::Waiting, AgentState::Exited] {
+        pane.set_agent_info(Some(AgentInfo {
+            kind: "codex".into(),
+            state: fallback,
+            source: AgentSource::Reported,
+            detail: None,
+            waiting_on: None,
+            wait_needs_a_person: false,
+            cwd: None,
+            session_id: None,
+            run_id: None,
+        }));
+        for state in ["idle", "working", "done", "blocked", "error"] {
+            pane.handle_pty_bytes(format!("\x1b]7501;state={state}:app=codex\x07").into_bytes());
+            assert_eq!(
+                pane.agent_title().state,
+                Some(pane.program_status().agent_state(fallback))
+            );
+        }
+        pane.retire_program_status();
+        assert!(!pane.program_status().records.is_empty());
+        assert_eq!(pane.agent_title().state, Some(fallback));
+    }
+}
