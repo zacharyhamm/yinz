@@ -1,0 +1,57 @@
+{
+  "date": "2026-11-11",
+  "provider": "Codex",
+  "displayedSettings": "GPT-6.1-Sol high; model, effort and permission flags omitted",
+  "fixtureCommit": "f7906c3a4800b243e3b564a466c766295cbe06a5",
+  "fixtureMain": "ca224b727300bc8629b6110833289ebca7d368d0",
+  "fixtureSourceSha256": "cc6b8aa552321dec7a0135f685666c48ec8e7527b0ae603b52bd3c3eaaa86b6d",
+  "conversations": {
+    "original": "01a1cbd9-621e-7cc2-a827-ffdbc9532cc6",
+    "context": "01a1cbd9-38f2-72d2-b156-cec4d1aa9f05"
+  },
+  "submissions": [
+    "continuity-original-1",
+    "continuity-context-1",
+    "continuity-original-schema-1",
+    "continuity-context-schema-1",
+    "continuity-context-complete-1"
+  ],
+  "artifacts": {
+    "context-accepted-tradeoff-state.json": "43f908a47b6fa4238355d2e1c9cf4216fefd5e525245c6141da250ffe159c829",
+    "context-approved-design-state.json": "1e21b2d27b34dfae379eebbce30a0158d700e7fa9a45a5e10132883c7130451e",
+    "context-completeness-correction.txt": "bdb55ec460510b9ec96076258ebc79522beb8280280e1ed35896c8eb4df49bc7",
+    "context-final.json": "00646787eedede83a796997e5552e6226d9b9954285f0f759c96f8837ce11764",
+    "context-outside-regression-state.json": "57479d7c9358ea20320495230c9462de24db643ad667c75bf51b305ff68393e2",
+    "context-prompt.txt": "510ac861a91998778165fd72daa0a525fc02e3be8d607e3797f25a3a0e37a3d1",
+    "context-repair-state.json": "423587919bacb2da1518d3ad0daf5dfc11deca28df707c04a9a7fc4881c1418b",
+    "original-final.json": "5000e9caa140e764bc241f6dd0880ef9e1bd83909fbc40fbd5e24c699dec534a",
+    "original-prompt.txt": "93e7995290671c6e66be93b54404a43da858e3ba7578a8cfd69edfbb628b3abe",
+    "schema-correction.txt": "d8978b1ae2900068d91f28f65368d51e675ecac623f73a9ff34633f725226963"
+  },
+  "observations": {
+    "original": {
+      "seededDefectsDetected": 3,
+      "seededDefects": 3,
+      "unsupportedReopening": 0,
+      "caseContractsAssessed": 4,
+      "priorFindingOutcomesSupplied": 0
+    },
+    "context": {
+      "seededDefectsDetected": 3,
+      "seededDefects": 3,
+      "unsupportedReopening": 0,
+      "caseContractsAssessed": 4,
+      "priorFindingOutcomesSupplied": 3,
+      "initialVisibleFindingOmissions": 1
+    }
+  },
+  "limitations": [
+    "One fresh conversation per four-case condition; cases are not statistically independent. No efficiency improvement can be inferred.",
+    "Initial evaluation wrapper omitted the concrete production schema. Both conversations reformatted their existing findings without new investigation.",
+    "Context initially omitted the visible unchanged concern despite a persists outcome. Structural validation rejected this; a no-investigation correction carried the historical concern. The production prompt/guidance now explicitly require it.",
+    "Final prompt compaction uses exact saved-snapshot references for repeated historical diffs and was checked by contract tests, not a fresh live reviewer round.",
+    "Acceptance context was seeded in worker-proposed planning decisions, not a real user authorization. No current authorization was inferred.",
+    "All histories are seeded fixture data, not real lifecycle approvals. Scope excludes real callers, processes, terminal UI, concurrency and timing.",
+    "No advisory execution reuse was supplied or measured. Failed advisory commands remain recorded."
+  ]
+}

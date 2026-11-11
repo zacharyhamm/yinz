@@ -22,8 +22,10 @@ import {
   effectivePlanFindings,
   initialPlanning,
   type LifecycleState,
+  priorImplementationFindings,
   recordMergeFailure,
   refreshIssue,
+  selectedRepairFindings,
   transition,
 } from "../_lib/lifecycle.ts";
 import { GitOperationError, loadState, saveState } from "../_lib/runtime.ts";
@@ -464,6 +466,17 @@ function harness(
     },
     inspect: () => Promise.resolve(controls.repo),
     gitOperation: (_context, request, log, spec) => {
+      if (request.action === "review-context") {
+        return Promise.resolve({
+          main: controls.repo.main,
+          mergeBase: controls.repo.main,
+          head: controls.repo.head,
+          featureDiff: "fixture full feature diff",
+          ancestry: "initial",
+          baselineChanged: false,
+          limitations: [],
+        });
+      }
       if (request.action !== "check") return Promise.resolve(controls.receipt);
       controls.checkCalls.push({ request, log, spec });
       return Promise.resolve(controls.checkOutcome(request));
@@ -2013,16 +2026,52 @@ function driverEvidence(
         commit: head,
       };
     case "plan_review_fixes":
-      return driverPlan;
+      return {
+        ...driverPlan,
+        findingMappings: selectedRepairFindings(task.before).map((p) => ({
+          finding: p.ref,
+          steps: driverPlan.steps.map((s) => s.id),
+          checks: driverPlan.checks.map((c) => c.id),
+        })),
+      };
     case "implement_review_fixes":
-      return { summary: "Fixed selected review findings", commit: head };
+      return {
+        summary: "Fixed selected review findings",
+        commit: head,
+        responses: selectedRepairFindings(task.before).map((p) => ({
+          finding: p.ref,
+          status: "addressed",
+          rationale: "Fixture repair implemented",
+          affectedPaths: ["lib.rs"],
+          evidence: ["lib.rs:2"],
+          checkIds: [],
+        })),
+      };
     case "review_ux":
-      return withUx(task.before).uxReview;
+      return {
+        ...withUx(task.before).uxReview,
+        priorFindings: priorImplementationFindings(task.before).filter((p) =>
+          p.ref.role === "review_ux" && !p.fixed
+        ).map((p) => ({
+          finding: p.ref,
+          outcome: "verified_fixed",
+          rationale: "Fixture interaction verified",
+          evidence: ["lib.rs:2"],
+        })),
+      };
     case "review_code":
       return {
         planVersion: task.before.plan!.version,
         commit: head,
         steps: [{ id: "fix", status: "implemented" }],
+        priorFindings: priorImplementationFindings(task.before).filter((p) =>
+          p.ref.role === "review_code" && !p.fixed
+        ).map((p) => ({
+          finding: p.ref,
+          outcome: "verified_fixed",
+          rationale: "Fixture repair verified",
+          evidence: ["lib.rs:2"],
+        })),
         findings: [],
         preliminaryChecks: [{
           command: "focused regression",
@@ -2128,7 +2177,7 @@ for (
       assert(
         task.prompt.includes(
           role === "review_code"
-            ? "Review the committed diff against local main"
+            ? "Review the committed diff from the captured merge base to reviewed HEAD"
             : "Review the supplied committed change specifically",
         ),
       );
@@ -2141,10 +2190,14 @@ for (
     );
     const finding = contract.properties.findings.items;
     equal(Object.keys(finding.properties).sort(), [
+      "affectedPaths",
+      "checkIds",
+      "crossRoleLinks",
       "description",
       "evidence",
       "id",
       "mechanism",
+      "origin",
       "reopening",
       "requirement",
       "resolution",
@@ -2677,6 +2730,8 @@ Deno.test("driver completes both reviews then asks which findings to address bef
           id: "bug",
           severity: "high",
           description: "Race remains",
+          affectedPaths: ["lib.rs"],
+          evidence: ["lib.rs:1"],
         }],
       }
       : driverEvidence(task);
@@ -3682,6 +3737,20 @@ for (
     const automatic = DriverSchema.parse(h.resources.get("driver"))
       .automaticRevision!;
     if (reserved) equal(automatic, reserved);
+    assert(
+      automatic.assignment.round?.assignmentId === automatic.assignment.id,
+    );
+    const rounds = h.resources.get("rounds") as {
+      records: { assignmentId: string }[];
+    };
+    const persisted = new Set(
+      h.writes.filter((w) => w.spec === "agent-task").map((w) => w.value.id),
+    );
+    equal(rounds.records.length, persisted.size);
+    assert(
+      rounds.records.every((r) => persisted.has(r.assignmentId)),
+      "Interrupted reservation must not create a phantom round",
+    );
     equal(
       h.calls.filter((c) =>
         c.name === automatic.assignment.behaviorName && c.method === "run"
@@ -4570,7 +4639,19 @@ async function reviewRepairHarness(
       return {
         ...evidence,
         commit: h.controls.repo.head,
+        priorFindings: priorImplementationFindings(task.before).filter((p) =>
+          p.ref.role === "review_code" && !p.fixed
+        ).map((p) => ({
+          finding: p.ref,
+          outcome: "persists",
+          rationale: "Race still present in fixture",
+          evidence: ["lib.rs:1"],
+        })),
         findings: [{
+          origin: priorImplementationFindings(task.before).find((p) =>
+            p.ref.role === "review_code" && p.finding.id === "race"
+          )?.ref,
+          affectedPaths: ["lib.rs"],
           id: "race",
           severity: "critical",
           description: "Lost work",
@@ -4580,7 +4661,11 @@ async function reviewRepairHarness(
     }
     if (task.role === "implement_review_fixes") {
       h.controls.repo.head = "d".repeat(40);
-      return { summary: "Repaired race", commit: h.controls.repo.head };
+      return {
+        ...evidence,
+        summary: "Repaired race",
+        commit: h.controls.repo.head,
+      };
     }
     return evidence;
   };
@@ -5278,4 +5363,57 @@ Deno.test("accepted evidence with missing original child state cannot launch a r
   );
   equal(h.calls.length, calls);
   equal((await loadState(h.context)).phase, "triaging");
+});
+
+Deno.test("continuity journals one reservation per assignment and keeps review attribution distinct from launch triggers", async () => {
+  const h = harness();
+  await h.methods.run_agent.execute({ ...options, role: "triage" }, h.context);
+  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  equal(task.contractVersion, 2);
+  assert(task.continuity?.assignmentId === task.id);
+  const before = JSON.stringify(h.resources.get("rounds"));
+  await h.methods.resume_agent.execute({}, h.context);
+  equal(JSON.stringify(h.resources.get("rounds")), before);
+  const journal = h.resources.get("rounds") as {
+    records: {
+      assignmentId: string;
+      predecessor?: string;
+      launchCauses: { kind: string }[];
+      corrections: unknown[];
+    }[];
+  };
+  equal(journal.records.length, 1);
+  equal(journal.records[0].launchCauses[0].kind, "initial_work");
+  const repairs = await reviewRepairHarness();
+  await repairs.drive.execute({}, repairs.context);
+  const planned = await loadState(repairs.context);
+  await saveState(
+    repairs.context,
+    "approve_review_fixes",
+    transition(planned, "approve_review_fixes", {
+      id: planned.reviewDecisions!.at(-1)!.id,
+      handoffId: result(repairs).id,
+      request: "Implement the exact repairs",
+    }),
+  );
+  await repairs.drive.execute({}, repairs.context);
+  const rounds = (repairs.resources.get("rounds") as typeof journal).records;
+  equal(new Set(rounds.map((r) => r.assignmentId)).size, rounds.length);
+  assert(
+    rounds.slice(1).every((r, i) => r.predecessor === rounds[i].assignmentId),
+  );
+  const review = rounds.findLast((r) =>
+    JSON.stringify(r.corrections).includes("incomplete_repair")
+  );
+  assert(
+    review,
+    "Persisting selected finding must record incomplete repair evidence",
+  );
+  assert(
+    !JSON.stringify(review.corrections).includes("introducedByRepair"),
+    "Chronology cannot establish introduction",
+  );
+  const saved = JSON.stringify(repairs.resources.get("rounds"));
+  await repairs.methods.resume_agent.execute({}, repairs.context);
+  equal(JSON.stringify(repairs.resources.get("rounds")), saved);
 });

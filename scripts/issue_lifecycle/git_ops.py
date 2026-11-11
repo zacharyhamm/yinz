@@ -9,6 +9,7 @@ guard and Git's native locks. No remote is consulted.
 
 from __future__ import annotations
 
+import base64
 import fcntl
 import hashlib
 import json
@@ -353,6 +354,76 @@ def inspect(request):
         "clean": not git(worktree, "status", "--porcelain", "--untracked-files=all")[1]
         and not unfinished_operation(worktree),
     }
+
+
+def review_context(request):
+    """Capture immutable endpoints and complete diffs; never substitute a missing object."""
+    state = inspect(request)
+    worktree = Path(state["worktree"])
+    head = state["head"]
+    if request.get("head") != head:
+        raise LifecycleError("Review HEAD changed before baseline capture")
+
+    def commit(value):
+        if not isinstance(value, str) or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", value):
+            raise LifecycleError("Review baseline requires full Git object IDs")
+        code, resolved, _ = git(worktree, "rev-parse", "--verify", value + "^{commit}", check=False)
+        if code or resolved != value:
+            raise LifecycleError(f"Required review baseline object is unavailable: {value}")
+        return value
+
+    def capture_diff(before, after):
+        # Git can classify non-UTF-8 files without NUL as text. Preserve every
+        # byte rather than failing decoding or replacing source evidence.
+        with tempfile.TemporaryDirectory(prefix="yinz-review-diff-") as directory:
+            output = Path(directory) / "feature.diff"
+            git(worktree, "diff", "--no-ext-diff", "--no-textconv", "--binary",
+                "--output=" + str(output), before, after, "--")
+            data = output.read_bytes()
+        try:
+            return data.decode("utf-8"), "utf8"
+        except UnicodeDecodeError:
+            return base64.b64encode(data).decode("ascii"), "base64"
+
+    pinned = request.get("baseline")
+    main = commit(pinned["main"] if pinned else state["main"])
+    commit(head)
+    merge_base = git(worktree, "merge-base", main, head)[1]
+    commit(merge_base)
+    if pinned and (pinned.get("head") != head or pinned.get("mergeBase") != merge_base):
+        raise LifecycleError("Technical/UX baseline no longer matches reviewed HEAD")
+    feature_diff, feature_encoding = capture_diff(merge_base, head)
+    result = {
+        "main": main, "mergeBase": merge_base, "head": head,
+        "featureDiff": feature_diff, "featureDiffEncoding": feature_encoding,
+        "ancestry": "initial", "baselineChanged": False, "baselineComparison": "initial", "limitations": [],
+    }
+    previous = request.get("previous")
+    if previous:
+        previous_head = previous.get("head")
+        result["previousHead"] = previous_head
+        if previous.get("main") and previous.get("mergeBase"):
+            result["baselineChanged"] = previous["main"] != main or previous["mergeBase"] != merge_base
+            result["baselineComparison"] = "changed" if result["baselineChanged"] else "same"
+        else:
+            result["baselineComparison"] = "unknown"
+            result["limitations"].append("Prior baseline identity was not recorded; baseline changes cannot be established.")
+        try:
+            commit(previous_head)
+        except LifecycleError:
+            result["ancestry"] = "missing"
+            result["limitations"].append("Prior commit unavailable; endpoint delta and advisory reuse assistance disabled. Review the complete available feature diff.")
+        else:
+            result["ancestry"] = "same" if previous_head == head else (
+                "descendant" if git(worktree, "merge-base", "--is-ancestor", previous_head, head, check=False)[0] == 0 else "divergent")
+            result["delta"], result["deltaEncoding"] = capture_diff(previous_head, head)
+            if result["ancestry"] == "divergent":
+                result["limitations"].append("Rebased or divergent history: endpoint delta is not a descendant repair diff.")
+    if pinned and state["main"] != main:
+        result["limitations"].append("Local main moved after technical dispatch; UX retains the captured technical baseline.")
+    if inspect(request)["head"] != head:
+        raise LifecycleError("Review HEAD changed during baseline capture")
+    return result
 
 
 def branch_name(repo, branch):
@@ -1231,7 +1302,7 @@ def main():
         request = json.load(sys.stdin)
         if not isinstance(request, dict):
             raise LifecycleError("Request must be a JSON object")
-        actions = {"inspect": inspect, "claim": claim, "confirm": confirm, "prepare": prepare, "integrate": integrate,
+        actions = {"inspect": inspect, "review-context": review_context, "claim": claim, "confirm": confirm, "prepare": prepare, "integrate": integrate,
                    "receipt": receipt_action, "closeout-receipt": closeout_receipt,
                    "agenda-workspace": configured_workspace,
                    "check": run_check, "closeout-preview": closeout_preview, "closeout-cleanup": closeout_cleanup}

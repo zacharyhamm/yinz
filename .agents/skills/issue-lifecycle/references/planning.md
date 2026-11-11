@@ -30,3 +30,27 @@ Final chat text is presentation and is never lifecycle evidence. Correct rejecte
 submissions in the same worker using the investigation already performed. For an
 older assignment, the controller supplies a submission-only continuation; do not
 restart the investigation or treat its old final-message contract as authority.
+
+## Review repair continuity
+
+Contract-2 repair assignments include the exact selected findings and their full
+origin identities, original evidence, ignored concerns, scoped planning decisions
+and controller/user authorizations, approved checks, previous repair responses,
+failure log references and captured Git endpoints. Use this packet as the source
+of repair obligations; preserve unaffected decisions. Worker-proposed tradeoffs
+are distinct from controller adjudications and user approval.
+
+A repair plan returns `findingMappings`, exactly one per selected finding, mapping
+its full identity to known repair `steps` and `checks`. Checks must cover the
+mapped steps. Unknown, duplicate or omitted findings/steps/checks are rejected.
+Record newly necessary scope in `scopeChanges` and proposed tradeoffs separately
+in `proposedTradeoffs`. Selection authorizes planning; the existing separate
+repair-plan approval authorizes implementation of the resulting scope.
+
+A repair implementation returns exactly one `responses` entry for each selected
+finding: `addressed`, `disputed` or `unresolved`, rationale, affected repository
+paths, source/check evidence and relevant approved check IDs. Disputes and partial
+repairs remain visible. Newly discovered implementation scope changes require a
+revised plan and approval; do not broaden implementation under the old approval.
+Implementation claims never close findings. Both fresh independent reviews and
+approved deterministic verification still follow every repair.

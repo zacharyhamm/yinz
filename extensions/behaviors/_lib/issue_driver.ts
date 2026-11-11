@@ -218,6 +218,7 @@ function present(
   for (const decision of state.reviewDecisions ?? []) {
     lines.push(
       `Review decision ${decision.id}: ${decision.request}`,
+      `Decision scope: ${decision.reviewFingerprint} at ${decision.commit}; historical decisions do not authorize current review evidence.`,
       `Selected repairs: ${
         decision.repair.map((f) => `${f.role}/${f.findingId}`).join(", ") ||
         "None"
@@ -233,6 +234,17 @@ function present(
         ...decision.plan.steps.map((step) =>
           `- ${step.id}: ${step.description} (${step.files.join(", ")})`
         ),
+        ...(decision.plan.findingMappings ?? []).map((m) =>
+          `- Repair mapping ${m.finding.role}/${m.finding.findingId} (${m.finding.reviewFingerprint}): steps ${
+            m.steps.join(", ")
+          }; checks ${m.checks.join(", ")}`
+        ),
+        ...(decision.plan.scopeChanges ?? []).map((change) =>
+          `Proposed scope change: ${change}`
+        ),
+        ...(decision.plan.proposedTradeoffs ?? []).map((tradeoff) =>
+          `Worker-proposed tradeoff: ${tradeoff}`
+        ),
         `Repair tests: ${decision.plan.testingStrategy}`,
         ...decision.plan.checks.map((check) =>
           `- ${check.id}: ${displayCommand(check.command)}`
@@ -243,6 +255,11 @@ function present(
     if (decision.result) {
       lines.push(
         `Repairs committed at ${decision.result.commit}: ${decision.result.summary}`,
+        ...(decision.result.responses ?? []).map((r) =>
+          `- Repair response ${r.finding.role}/${r.finding.findingId}: ${r.status}. ${r.rationale} Evidence: ${
+            r.evidence.join("; ")
+          }. Implementation claims require reviewer verification.`
+        ),
       );
     }
   }
@@ -258,7 +275,7 @@ function present(
     }
     if (context.acceptedDecisions.length) {
       lines.push(
-        "Accepted planning decisions:",
+        "Worker-proposed accepted planning decisions (retain their recorded approval scope):",
         ...context.acceptedDecisions.map((decision) => `- ${decision}`),
       );
     }
@@ -363,8 +380,12 @@ function present(
       ...(review.findings.length
         ? review.findings.map((finding) =>
           `- ${finding.severity} ${finding.id}: ${finding.description}${
-            finding.resolution ? ` Resolution: ${finding.resolution}` : ""
-          }${
+            finding.origin
+              ? ` ${
+                finding.reopening ? "Reopened concern" : "Historical continuity"
+              }: ${finding.origin.role}/${finding.origin.findingId} from ${finding.origin.reviewFingerprint}.`
+              : ""
+          }${finding.resolution ? ` Resolution: ${finding.resolution}` : ""}${
             finding.requirement ? ` Requirement: ${finding.requirement}` : ""
           }${finding.mechanism ? ` Failure: ${finding.mechanism}` : ""}${
             finding.evidence?.length

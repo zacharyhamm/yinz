@@ -1,5 +1,14 @@
 import { createHash } from "node:crypto";
 import { z } from "npm:zod@4.6.7";
+import {
+  AdvisoryEvidence,
+  FindingIdentity,
+  GitBaseline,
+  identityKey,
+  PriorFindingOutcome,
+  RepairMapping,
+  RepairResponse,
+} from "./review_continuity.ts";
 import { WorkerSelectionSchema } from "./worker_selection.ts";
 
 const Text = z.string().trim().min(1);
@@ -27,6 +36,10 @@ export const FindingSchema = z.object({
   requirement: Text.optional(),
   mechanism: Text.optional(),
   evidence: z.array(Text).optional(),
+  affectedPaths: z.array(Text).optional(),
+  checkIds: z.array(Text).optional(),
+  origin: FindingIdentity.optional(),
+  crossRoleLinks: z.array(FindingIdentity).optional(),
   reopening: z.object({ rationale: Text, evidence: z.array(Text).min(1) })
     .strict().optional(),
 }).strict();
@@ -197,6 +210,9 @@ const CodeReviewSchema = z.object({
     }).strict(),
   ),
   findings: FindingsSchema,
+  priorFindings: z.array(PriorFindingOutcome).optional(),
+  advisoryEvidence: z.array(AdvisoryEvidence).optional(),
+  baseline: GitBaseline.optional(),
   preliminaryChecks: z.array(
     z.object({
       command: Text,
@@ -211,6 +227,9 @@ export const UxReviewSchema = CodeReviewSchema.pick({
   commit: true,
   findings: true,
   preliminaryChecks: true,
+  priorFindings: true,
+  advisoryEvidence: true,
+  baseline: true,
 }).extend({
   assessment: z.object({
     impact: z.enum(["material", "no_material_impact"]),
@@ -235,9 +254,20 @@ const ReviewDecisionSchema = z.object({
   repair: FindingRefsSchema,
   ignore: FindingRefsSchema,
 }).strict();
-const RepairPlanSchema = CheckedPlanSchema.omit({ revision: true }).superRefine(
+const RepairPlanSchema = CheckedPlanSchema.omit({ revision: true }).extend({
+  findingMappings: z.array(RepairMapping).optional(),
+  scopeChanges: z.array(Text).optional(),
+  proposedTradeoffs: z.array(Text).optional(),
+}).superRefine(
   validateChecks,
 );
+export const RepairResultSchema = z.object({
+  summary: Text,
+  commit: Commit,
+  responses: z.array(RepairResponse).optional(),
+  scopeChanges: z.array(Text).optional(),
+  advisoryEvidence: z.array(AdvisoryEvidence).optional(),
+}).strict();
 const ReviewFixSchema = ReviewDecisionSchema.extend({
   planVersion: z.number().int().positive(),
   commit: Commit,
@@ -246,7 +276,7 @@ const ReviewFixSchema = ReviewDecisionSchema.extend({
   uxReview: UxReviewSchema,
   plan: RepairPlanSchema.optional(),
   approval: UserRequestSchema.optional(),
-  result: z.object({ summary: Text, commit: Commit }).strict().optional(),
+  result: RepairResultSchema.optional(),
 }).strict();
 const CheckResultSchema = CheckSchema.extend({
   // Null when the executable could not be started.
@@ -451,6 +481,17 @@ export const StateSchema = z.object({
   codeReview: CodeReviewSchema.optional(),
   uxReview: UxReviewSchema.optional(),
   reviewDecisions: z.array(ReviewFixSchema).optional(),
+  reviewHistory: z.array(
+    z.object({
+      issueDigest: Text,
+      generation: Text,
+      rollbackId: z.uuid().optional(),
+      role: z.enum(["review_code", "review_ux"]),
+      fingerprint: Text,
+      reason: Text,
+      review: z.union([CodeReviewSchema, UxReviewSchema]),
+    }).strict(),
+  ).optional(),
   verification: VerificationSchema.optional(),
   mergeAuthorization: z.object({
     commit: Commit,
@@ -464,6 +505,300 @@ export const StateSchema = z.object({
   lastFailure: Text.optional(),
 });
 export type LifecycleState = z.infer<typeof StateSchema>;
+
+/** Role fingerprints disambiguate findings without conflating the two reviews. */
+export function implementationReviewFingerprint(
+  state: LifecycleState,
+  role: "review_code" | "review_ux",
+  review = role === "review_code" ? state.codeReview : state.uxReview,
+) {
+  return createHash("sha256").update(JSON.stringify({
+    issue: state.issue.digest,
+    role,
+    review,
+  })).digest("hex");
+}
+export function archiveReviews(
+  state: LifecycleState,
+  reason: string,
+  only?: "review_code" | "review_ux",
+) {
+  for (const role of ["review_code", "review_ux"] as const) {
+    if (only && role !== only) continue;
+    const review = role === "review_code" ? state.codeReview : state.uxReview;
+    if (!review) continue;
+    const fingerprint = implementationReviewFingerprint(state, role, review);
+    if (
+      state.reviewHistory?.some((h) =>
+        h.fingerprint === fingerprint && h.role === role
+      )
+    ) continue;
+    (state.reviewHistory ??= []).push({
+      issueDigest: state.issue.digest,
+      generation: planningGeneration(state),
+      rollbackId: state.rollbackId,
+      role,
+      fingerprint,
+      reason,
+      review: structuredClone(review),
+    });
+  }
+}
+
+/** Omission never closes an obligation. Legacy history is used only where present. */
+export function priorImplementationFindings(state: LifecycleState) {
+  const history = [...(state.reviewHistory ?? [])];
+  for (const role of ["review_code", "review_ux"] as const) {
+    const review = role === "review_code" ? state.codeReview : state.uxReview;
+    if (review) {
+      history.push({
+        issueDigest: state.issue.digest,
+        generation: planningGeneration(state),
+        rollbackId: state.rollbackId,
+        role,
+        review,
+        fingerprint: implementationReviewFingerprint(state, role, review),
+        reason: "current review",
+      });
+    }
+  }
+  const records = new Map<string, {
+    ref: z.infer<typeof FindingIdentity>;
+    finding: z.infer<typeof FindingSchema>;
+    fixed: boolean;
+    sourceReview: string;
+    evidence: string[];
+  }>();
+  for (const entry of history) {
+    // Changed requirements retain archives as context but establish new obligations.
+    if (entry.issueDigest !== state.issue.digest) continue;
+    for (const outcome of entry.review.priorFindings ?? []) {
+      const prior = records.get(identityKey(outcome.finding));
+      if (prior) {
+        prior.fixed = outcome.outcome === "verified_fixed";
+        prior.evidence.push(...outcome.evidence);
+      }
+    }
+    for (const finding of entry.review.findings) {
+      const earlier = [...records.values()].find((r) =>
+        r.ref.role === entry.role && r.finding.id === finding.id
+      );
+      const ref = finding.origin ?? earlier?.ref ?? {
+        issue: `${state.issue.workspace}/${state.issue.itemId}`,
+        role: entry.role,
+        reviewFingerprint: entry.fingerprint,
+        findingId: finding.id,
+      };
+      records.set(identityKey(ref), {
+        ref,
+        finding,
+        fixed: !!finding.resolution,
+        sourceReview: entry.fingerprint,
+        evidence: [
+          ...(earlier?.evidence ?? []),
+          ...(finding.evidence ?? []),
+          ...(finding.reopening?.evidence ?? []),
+        ],
+      });
+    }
+  }
+  return [...records.values()];
+}
+export function selectedRepairFindings(state: LifecycleState) {
+  const fix = activeReviewFix(state);
+  if (!fix) return [];
+  const prior = priorImplementationFindings(state);
+  return fix.repair.map((selected) => {
+    const record = prior.find((p) =>
+      p.ref.role === selected.role && p.finding.id === selected.findingId
+    );
+    if (!record) {
+      throw new Error("Selected repair has no authoritative source finding");
+    }
+    return record;
+  });
+}
+function completeReferences(
+  expected: z.infer<typeof FindingIdentity>[],
+  actual: z.infer<typeof FindingIdentity>[],
+  label: string,
+) {
+  const keys = actual.map(identityKey);
+  if (
+    new Set(keys).size !== keys.length || expected.length !== actual.length ||
+    expected.some((ref) => !keys.includes(identityKey(ref)))
+  ) {
+    throw new Error(
+      `${label} must cover every selected/prior finding exactly once; unknown or duplicate references are rejected`,
+    );
+  }
+}
+export function validateRepairMappings(
+  state: LifecycleState,
+  plan: z.infer<typeof RepairPlanSchema>,
+  required: boolean,
+) {
+  if (!required && !plan.findingMappings) return;
+  const mappings = plan.findingMappings ?? [];
+  completeReferences(
+    selectedRepairFindings(state).map((p) => p.ref),
+    mappings.map((m) => m.finding),
+    "Repair mappings",
+  );
+  for (const mapping of mappings) {
+    if (
+      new Set(mapping.steps).size !== mapping.steps.length ||
+      new Set(mapping.checks).size !== mapping.checks.length ||
+      mapping.steps.some((id) => !plan.steps.some((s) => s.id === id)) ||
+      mapping.checks.some((id) => !plan.checks.some((c) => c.id === id)) ||
+      mapping.steps.some((id) =>
+        !plan.checks.some((c) =>
+          mapping.checks.includes(c.id) && c.covers.includes(id)
+        )
+      )
+    ) {
+      throw new Error(
+        "Repair mapping needs known steps and checks covering those steps",
+      );
+    }
+  }
+}
+export function validateRepairResponses(
+  state: LifecycleState,
+  result: z.infer<typeof RepairResultSchema>,
+  required: boolean,
+) {
+  if (!required && !result.responses) return;
+  completeReferences(
+    selectedRepairFindings(state).map((p) => p.ref),
+    (result.responses ?? []).map((r) => r.finding),
+    "Repair responses",
+  );
+  const ids = new Set(
+    [
+      ...(state.plan?.checks ?? []),
+      ...(activeReviewFix(state)?.plan?.checks ?? []),
+    ].map((c) => c.id),
+  );
+  for (const response of result.responses ?? []) {
+    if (response.checkIds.some((id) => !ids.has(id))) {
+      throw new Error("Repair response cites an unknown approved check");
+    }
+  }
+  if (result.scopeChanges?.length) {
+    throw new Error(
+      "New repair scope requires a revised repair plan and user approval",
+    );
+  }
+}
+export function validateImplementationReview(
+  state: LifecycleState,
+  role: "review_code" | "review_ux",
+  review: z.infer<typeof CodeReviewSchema> | z.infer<typeof UxReviewSchema>,
+  required: boolean,
+) {
+  const allPrior = priorImplementationFindings(state);
+  const prior = allPrior.filter((p) => p.ref.role === role);
+  const outcomes = review.priorFindings ?? [];
+  if (required || review.priorFindings) {
+    const obligations = prior.filter((p) => !p.fixed);
+    const extras = outcomes.filter((o) =>
+      !obligations.some((p) => identityKey(p.ref) === identityKey(o.finding))
+    );
+    if (
+      extras.some((o) =>
+        !prior.some((p) => identityKey(p.ref) === identityKey(o.finding))
+      )
+    ) {
+      throw new Error("Unknown prior review finding reference");
+    }
+    completeReferences(
+      [
+        ...obligations.map((p) => p.ref),
+        ...extras.map((o) => o.finding),
+      ],
+      outcomes.map((o) => o.finding),
+      "Review outcomes",
+    );
+  }
+  const checks = new Set(
+    [
+      ...(state.plan?.checks ?? []),
+      ...(state.reviewDecisions ?? []).flatMap((d) => d.plan?.checks ?? []),
+    ].map((c) => c.id),
+  );
+  for (const finding of review.findings) {
+    if (
+      required && (!finding.affectedPaths?.length || !finding.evidence?.length)
+    ) {
+      throw new Error(
+        "Review findings need affected paths and source/behavior evidence",
+      );
+    }
+    if (
+      finding.crossRoleLinks?.some((ref) =>
+        ref.role === role ||
+        !allPrior.some((p) => identityKey(p.ref) === identityKey(ref))
+      ) ||
+      new Set((finding.crossRoleLinks ?? []).map(identityKey)).size !==
+        (finding.crossRoleLinks ?? []).length
+    ) {
+      throw new Error(
+        "Cross-role links must cite distinct known findings from the independent other role",
+      );
+    }
+    if (finding.checkIds?.some((id) => !checks.has(id))) {
+      throw new Error("Finding cites an unknown approved check");
+    }
+    const old = prior.find((p) => p.finding.id === finding.id);
+    if (
+      finding.origin &&
+      (!old || identityKey(finding.origin) !== identityKey(old.ref))
+    ) throw new Error("Unknown finding lineage");
+    if (
+      required && old &&
+      (!finding.origin || identityKey(finding.origin) !== identityKey(old.ref))
+    ) throw new Error("Persistent findings must retain their origin identity");
+    if (old?.fixed && !finding.resolution) {
+      if (
+        !finding.reopening ||
+        !finding.reopening.evidence.some((e) => !old.evidence.includes(e))
+      ) {
+        throw new Error(
+          `Reopening ${finding.id} requires new evidence and a rationale addressing its prior disposition`,
+        );
+      }
+      if (
+        !outcomes.some((o) =>
+          identityKey(o.finding) === identityKey(old.ref) &&
+          o.outcome === "reopened"
+        )
+      ) throw new Error("Reopened finding needs an explicit review outcome");
+    }
+  }
+  for (const outcome of outcomes) {
+    const finding = review.findings.find((f) =>
+      f.id === outcome.finding.findingId
+    );
+    if (outcome.outcome === "persists" && (!finding || finding.resolution)) {
+      throw new Error("Persisting finding must remain visibly unresolved");
+    }
+    if (
+      outcome.outcome === "verified_fixed" && finding && !finding.resolution
+    ) {
+      throw new Error("Verified fixed outcome contradicts unresolved finding");
+    }
+    if (
+      outcome.outcome === "reopened" &&
+      (!finding || finding.resolution || !finding.reopening ||
+        !finding.reopening.evidence.some((e) => outcome.evidence.includes(e)))
+    ) {
+      throw new Error(
+        "Reopening needs a visible finding, rationale and concrete new evidence",
+      );
+    }
+  }
+}
 
 /** Lazily upgrade live state only; saved snapshots and prompts remain untouched. */
 export function planningContext(state: LifecycleState) {
@@ -714,6 +1049,13 @@ export function rollbackState(
   }
   if (index >= 7) requireCurrentReviews(state, state.implementation?.head);
   archivePlanning(state);
+  if (index <= 6) {
+    archiveReviews(
+      state,
+      `rollback to ${step}`,
+      index === 6 ? "review_ux" : undefined,
+    );
+  }
   state.rollbackId = z.uuid().parse(id);
   delete state.outcome;
   delete state.lastFailure;
@@ -769,7 +1111,7 @@ export const ActionSchemas = {
     handoffId: z.uuid(),
     request: UserRequestSchema,
   }).strict(),
-  implement_review_fixes: z.object({ summary: Text, commit: Commit }).strict(),
+  implement_review_fixes: RepairResultSchema,
   verify: z.object({ verification: VerificationSchema }).strict(),
   ready: z.object({ commit: Commit, mergeRequest: Text }).strict(),
   begin_merge: z.object({ attempt: AttemptSchema }).strict(),
@@ -977,6 +1319,7 @@ export function recordMergeFailure(
 }
 
 function clearReview(state: LifecycleState): void {
+  archiveReviews(state, "review invalidated");
   delete state.codeReview;
   delete state.uxReview;
   delete state.verification;
@@ -1013,6 +1356,7 @@ export function refreshIssue(
     );
   }
   archivePlanning(state);
+  archiveReviews(state, "requirements changed");
   const context = planningContext(state);
   context.generation += 1;
   context.initialPlanVersion = state.planVersion;
@@ -1025,6 +1369,8 @@ export function refreshIssue(
   delete state.planReview;
   delete state.approval;
   delete state.lastFailure;
+  delete state.codeReview;
+  delete state.uxReview;
   clearReview(state);
   return state;
 }
@@ -1055,6 +1401,7 @@ export function transition(
         "ready",
       ]);
       const content = ActionSchemas.plan.parse(args);
+      archiveReviews(state, "plan revised");
       archivePlanning(state);
       const context = planningContext(state);
       if (!initialPlanning(state)) context.automaticRevisionConsumed = true;
@@ -1072,6 +1419,8 @@ export function transition(
       delete state.planReview;
       delete state.approval;
       delete state.lastFailure;
+      delete state.codeReview;
+      delete state.uxReview;
       clearReview(state);
       break;
     }
@@ -1200,6 +1549,7 @@ export function transition(
       ) {
         throw new Error("Each plan deviation needs a justification");
       }
+      validateImplementationReview(state, "review_code", review, false);
       clearReview(state);
       state.codeReview = review;
       state.implementation.head = review.commit;
@@ -1220,6 +1570,8 @@ export function transition(
           "UX review requires current technical review of the same approved implementation commit",
         );
       }
+      validateImplementationReview(state, "review_ux", review, false);
+      archiveReviews(state, "UX review superseded", "review_ux");
       state.uxReview = review;
       delete state.verification;
       delete state.mergeAuthorization;
@@ -1282,7 +1634,9 @@ export function transition(
       if (!fix || fix.plan) {
         throw new Error("Select review findings before planning repairs");
       }
-      fix.plan = ActionSchemas.plan_review_fixes.parse(args);
+      const repairPlan = ActionSchemas.plan_review_fixes.parse(args);
+      validateRepairMappings(state, repairPlan, false);
+      fix.plan = repairPlan;
       break;
     }
     case "approve_review_fixes": {
@@ -1304,7 +1658,9 @@ export function transition(
       if (!fix?.plan || !fix.approval) {
         throw new Error("Approve the review repair plan before implementation");
       }
-      fix.result = ActionSchemas.implement_review_fixes.parse(args);
+      const result = ActionSchemas.implement_review_fixes.parse(args);
+      validateRepairResponses(state, result, false);
+      fix.result = result;
       clearReview(state);
       state.implementation!.head = fix.result.commit;
       break;

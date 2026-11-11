@@ -149,3 +149,61 @@ Deno.test("review evaluation sources retain the byte identities used by live rev
     );
   }
 });
+
+Deno.test("paired continuity evaluation artifacts retain evaluated source identity and valid role obligations", async () => {
+  const { ActionSchemas, StateSchema, validateImplementationReview } =
+    await import("../_lib/lifecycle.ts");
+  const root = new URL(
+    "../../../docs/evaluations/lifecycle-continuity/reviewer-results/",
+    import.meta.url,
+  );
+  const manifest = JSON.parse(
+    await Deno.readTextFile(new URL("manifest.json", root)),
+  );
+  const source = await Deno.readFile(
+    new URL("fixtures/issue_review/continuity.ts", import.meta.url),
+  );
+  const sha = async (bytes: Uint8Array) =>
+    Array.from(
+      new Uint8Array(
+        await crypto.subtle.digest("SHA-256", new Uint8Array(bytes)),
+      ),
+      (b) => b.toString(16).padStart(2, "0"),
+    ).join("");
+  assert(
+    await sha(source) === manifest.fixtureSourceSha256,
+    "Repeat bounded live evaluation after changing the continuity fixture",
+  );
+  for (const [name, expected] of Object.entries(manifest.artifacts)) {
+    assert(
+      await sha(await Deno.readFile(new URL(name, root))) === expected,
+      `Evaluated artifact ${name} changed`,
+    );
+  }
+  for (const mode of ["original", "context"]) {
+    const result = JSON.parse(
+      await Deno.readTextFile(new URL(`${mode}-final.json`, root)),
+    );
+    assert(
+      result.cases.length === 4,
+      "All paired scenarios must remain available",
+    );
+    for (const item of result.cases) {
+      const review = ActionSchemas.review_code.parse(item.review);
+      if (mode === "context") {
+        const state = StateSchema.parse(
+          JSON.parse(
+            await Deno.readTextFile(
+              new URL(`context-${item.case}-state.json`, root),
+            ),
+          ),
+        );
+        validateImplementationReview(state, "review_code", review, true);
+      }
+      assert(
+        review.findings.every((f) => !f.resolution),
+        "Neither new defects nor ignored continuity may be silently resolved",
+      );
+    }
+  }
+});

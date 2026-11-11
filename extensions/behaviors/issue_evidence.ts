@@ -44,6 +44,9 @@ const ParentTaskSchema = z.object({
   behaviorName: z.string(),
   role: AssignmentSchema.shape.role,
   config: AgentConfigSchema,
+  contractVersion: AssignmentSchema.shape.contractVersion,
+  continuity: AssignmentSchema.shape.continuity,
+  round: AssignmentSchema.shape.round,
   before: StateSchema,
   prompt: z.string().min(1),
   promptDigest: z.string(),
@@ -329,7 +332,7 @@ async function parentTaskWithIdentity(
 
 export const behavior = {
   type: "@yinz/issue-evidence",
-  version: "2026.11.08.2",
+  version: "2026.11.11.1",
   globalArguments: z.object({}).strict(),
   resources: {
     submission: {

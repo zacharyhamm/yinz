@@ -1,0 +1,117 @@
+This is one bounded read-only evaluation suite with four independent cases. Review each case independently within its stated function scope; do not treat another case's functions as its callers. Inspect only targets.ts and the named review guidance, never tests, other repository source, prior evaluation results or the other prompt. No subagents/background work. Complete within eight minutes. You may use foreground deno probes and git read-only commands. The source fixture is committed at f7906c3a4800b243e3b564a466c766295cbe06a5. No implementation edits, Git ref changes, lifecycle workers, remote operations or messages. Return JSON {cases:[{case:<case id>,review:<role review object>,requirementsCovered:[...],limitations:[...]}]}.
+
+CASE approved-design
+You are working on one Yinz issue lifecycle task in a visible Yinz pane.
+
+Work only in /tmp/lifecycle-continuity-evaluation. Follow its AGENTS.md and applicable repository instructions.
+
+Do not invoke the lifecycle launcher. Use only the assigned Swamp evidence interface described below. Do not merge or contact remote Git services.
+
+This is investigation or review: do not edit source files, Git refs, or configuration.
+
+Finish this task in the foreground. Do not leave background subagents or jobs running when returning your answer.
+
+Review the committed diff against local main, issue requirements and the approved plan. Independently assess whether the behavior is correct, including incorrect assumptions or defects in the approved approach. Trace affected callers and relevant state transitions, failure paths, cleanup, ownership, concurrency and platform behavior as applicable. Inspect tests for missing cases and assertions that could pass despite incorrect behavior. Prioritize actionable defects introduced or exposed by this change. For each finding identify the trigger, consequence and concrete source locations, explain severity and distinguish demonstrated behavior from assumptions. Avoid speculative concerns and unrelated cleanup. An empty findings array is valid after a real review. Cover each plan step exactly once and justify deviations. Record only preliminary checks actually performed. Preliminary checks are advisory; the lifecycle runs the approved plan checks itself. Do not invent passing checks. Return the supplied full commit hash and planVersion.
+
+Read /home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/review.md and /home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/dimensions.md before reviewing.
+
+Follow the shared evidence and severity standards. Leave resolution unset for a newly reported defect: a proposed fix is not a resolution. Use resolution only for a concern verified fixed or otherwise supported as resolved. Preserve finding IDs and supported dispositions; reopening a disposed concern requires new evidence and an explanation of why its disposition no longer holds. Historical evidence is not current approval. Follow AGENTS.md focused-test selection; do not run unfiltered full suites.
+
+Apply relevant Yinz review dimensions to the committed implementation and affected callers.
+
+When applicable, cite a dimension name in description and its authoritative source in evidence alongside concrete affected code or plan locations. Use the existing finding fields; do not add a category property. A dimension citation does not replace requirement, mechanism, source evidence, severity, finding identity, disposition or reopening rules. An inapplicable dimension creates no finding or additional testing obligation.
+
+Evaluation only: Return the review object in final JSON; do not invoke Swamp or any lifecycle operations. planVersion is 1. Include findings, steps and preliminaryChecks; context cases also include priorFindings. Write no files in the source tree. You may create temporary probes under /tmp.
+
+Current lifecycle snapshot (issue requirements and recorded evidence):
+
+{"issue":{"workspace":"evaluation","itemId":1,"text":"Execute every requested check in order. Permit merging only if every check passes. Empty input passes.","note":"Review only approvedDesign in targets.ts for case approved-design.","digest":"113e4d65b8d236b528d63c50c5f4983f684f5ad4e36f457f5d3c911fdf243bee"},"phase":"implementing","planVersion":1,"planningContext":{"generation":0,"initialPlanVersion":0,"automaticRevisionConsumed":false,"userFeedback":[],"history":[{"generation":0,"plan":{"summary":"Initialize success to true, execute every check and assign its result to success; return success. Existing check asserts callback count.","steps":[{"id":"change","description":"Initialize success to true, execute every check and assign its result to success; return success. Existing check asserts callback count.","files":["targets.ts"]}],"testingStrategy":"Inspect and exercise named functions","checks":[{"id":"probe","command":["deno","check","targets.ts"],"covers":["change"]}],"version":1},"adjudications":[]}],"adjudications":[],"acceptedDecisions":[]},"classification":{"classification":"maintenance","summary":"Bounded fixture"},"plan":{"summary":"Initialize success to true, execute every check and assign its result to success; return success. Existing check asserts callback count.","steps":[{"id":"change","description":"Initialize success to true, execute every check and assign its result to success; return success. Existing check asserts callback count.","files":["targets.ts"]}],"testingStrategy":"Inspect and exercise named functions","checks":[{"id":"probe","command":["deno","check","targets.ts"],"covers":["change"]}],"version":1},"planReview":{"planVersion":1,"findings":[]},"approval":{"planVersion":1,"request":"Fixture approval to implement this approach"},"implementation":{"worktree":"/tmp/lifecycle-continuity-evaluation","branch":"fixtures"}}
+
+The commit being reviewed is f7906c3a4800b243e3b564a466c766295cbe06a5.
+
+CASE repair
+You are working on one Yinz issue lifecycle task in a visible Yinz pane.
+
+Work only in /tmp/lifecycle-continuity-evaluation. Follow its AGENTS.md and applicable repository instructions.
+
+Do not invoke the lifecycle launcher. Use only the assigned Swamp evidence interface described below. Do not merge or contact remote Git services.
+
+This is investigation or review: do not edit source files, Git refs, or configuration.
+
+Finish this task in the foreground. Do not leave background subagents or jobs running when returning your answer.
+
+Review the committed diff against local main, issue requirements and the approved plan. Independently assess whether the behavior is correct, including incorrect assumptions or defects in the approved approach. Trace affected callers and relevant state transitions, failure paths, cleanup, ownership, concurrency and platform behavior as applicable. Inspect tests for missing cases and assertions that could pass despite incorrect behavior. Prioritize actionable defects introduced or exposed by this change. For each finding identify the trigger, consequence and concrete source locations, explain severity and distinguish demonstrated behavior from assumptions. Avoid speculative concerns and unrelated cleanup. An empty findings array is valid after a real review. Cover each plan step exactly once and justify deviations. Record only preliminary checks actually performed. Preliminary checks are advisory; the lifecycle runs the approved plan checks itself. Do not invent passing checks. Return the supplied full commit hash and planVersion.
+
+Read /home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/review.md and /home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/dimensions.md before reviewing.
+
+Follow the shared evidence and severity standards. Leave resolution unset for a newly reported defect: a proposed fix is not a resolution. Use resolution only for a concern verified fixed or otherwise supported as resolved. Preserve finding IDs and supported dispositions; reopening a disposed concern requires new evidence and an explanation of why its disposition no longer holds. Historical evidence is not current approval. Follow AGENTS.md focused-test selection; do not run unfiltered full suites.
+
+Apply relevant Yinz review dimensions to the committed implementation and affected callers.
+
+When applicable, cite a dimension name in description and its authoritative source in evidence alongside concrete affected code or plan locations. Use the existing finding fields; do not add a category property. A dimension citation does not replace requirement, mechanism, source evidence, severity, finding identity, disposition or reopening rules. An inapplicable dimension creates no finding or additional testing obligation.
+
+Evaluation only: Return the review object in final JSON; do not invoke Swamp or any lifecycle operations. planVersion is 1. Include findings, steps and preliminaryChecks; context cases also include priorFindings. Write no files in the source tree. You may create temporary probes under /tmp.
+
+Current lifecycle snapshot (issue requirements and recorded evidence):
+
+{"issue":{"workspace":"evaluation","itemId":2,"text":"Execute every requested check in order, even after a failure. Return success only if every check passes. Empty input passes.","note":"Review only repairedChecks in targets.ts for case repair.","digest":"ee3af923a1d8a1e518d37478d82eeef6b16209295b0afe0cc2703c39136be164"},"phase":"implementing","planVersion":1,"planningContext":{"generation":0,"initialPlanVersion":0,"automaticRevisionConsumed":false,"userFeedback":[],"history":[{"generation":0,"plan":{"summary":"Preserve earlier failures while looping through all checks. The repair worker claims to have addressed the run-all finding using conjunction.","steps":[{"id":"change","description":"Preserve earlier failures while looping through all checks. The repair worker claims to have addressed the run-all finding using conjunction.","files":["targets.ts"]}],"testingStrategy":"Inspect and exercise named functions","checks":[{"id":"probe","command":["deno","check","targets.ts"],"covers":["change"]}],"version":1},"adjudications":[]}],"adjudications":[],"acceptedDecisions":[]},"classification":{"classification":"maintenance","summary":"Bounded fixture"},"plan":{"summary":"Preserve earlier failures while looping through all checks. The repair worker claims to have addressed the run-all finding using conjunction.","steps":[{"id":"change","description":"Preserve earlier failures while looping through all checks. The repair worker claims to have addressed the run-all finding using conjunction.","files":["targets.ts"]}],"testingStrategy":"Inspect and exercise named functions","checks":[{"id":"probe","command":["deno","check","targets.ts"],"covers":["change"]}],"version":1},"planReview":{"planVersion":1,"findings":[]},"approval":{"planVersion":1,"request":"Fixture approval to implement this approach"},"implementation":{"worktree":"/tmp/lifecycle-continuity-evaluation","branch":"fixtures"}}
+
+The commit being reviewed is f7906c3a4800b243e3b564a466c766295cbe06a5.
+
+CASE outside-regression
+You are working on one Yinz issue lifecycle task in a visible Yinz pane.
+
+Work only in /tmp/lifecycle-continuity-evaluation. Follow its AGENTS.md and applicable repository instructions.
+
+Do not invoke the lifecycle launcher. Use only the assigned Swamp evidence interface described below. Do not merge or contact remote Git services.
+
+This is investigation or review: do not edit source files, Git refs, or configuration.
+
+Finish this task in the foreground. Do not leave background subagents or jobs running when returning your answer.
+
+Review the committed diff against local main, issue requirements and the approved plan. Independently assess whether the behavior is correct, including incorrect assumptions or defects in the approved approach. Trace affected callers and relevant state transitions, failure paths, cleanup, ownership, concurrency and platform behavior as applicable. Inspect tests for missing cases and assertions that could pass despite incorrect behavior. Prioritize actionable defects introduced or exposed by this change. For each finding identify the trigger, consequence and concrete source locations, explain severity and distinguish demonstrated behavior from assumptions. Avoid speculative concerns and unrelated cleanup. An empty findings array is valid after a real review. Cover each plan step exactly once and justify deviations. Record only preliminary checks actually performed. Preliminary checks are advisory; the lifecycle runs the approved plan checks itself. Do not invent passing checks. Return the supplied full commit hash and planVersion.
+
+Read /home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/review.md and /home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/dimensions.md before reviewing.
+
+Follow the shared evidence and severity standards. Leave resolution unset for a newly reported defect: a proposed fix is not a resolution. Use resolution only for a concern verified fixed or otherwise supported as resolved. Preserve finding IDs and supported dispositions; reopening a disposed concern requires new evidence and an explanation of why its disposition no longer holds. Historical evidence is not current approval. Follow AGENTS.md focused-test selection; do not run unfiltered full suites.
+
+Apply relevant Yinz review dimensions to the committed implementation and affected callers.
+
+When applicable, cite a dimension name in description and its authoritative source in evidence alongside concrete affected code or plan locations. Use the existing finding fields; do not add a category property. A dimension citation does not replace requirement, mechanism, source evidence, severity, finding identity, disposition or reopening rules. An inapplicable dimension creates no finding or additional testing obligation.
+
+Evaluation only: Return the review object in final JSON; do not invoke Swamp or any lifecycle operations. planVersion is 1. Include findings, steps and preliminaryChecks; context cases also include priorFindings. Write no files in the source tree. You may create temporary probes under /tmp.
+
+Current lifecycle snapshot (issue requirements and recorded evidence):
+
+{"issue":{"workspace":"evaluation","itemId":3,"text":"All checks must run in order and aggregate failures. Preserve greetingBefore output for every input string when implementing greetingAfterRepair. Repair selection concerns only check aggregation.","note":"Review only completeChecks, greetingBefore and greetingAfterRepair in targets.ts for case outside-regression.","digest":"1d4d194a883dc7d708fb85457d1c3f055745c50410dc5443e74993967044f045"},"phase":"implementing","planVersion":1,"planningContext":{"generation":0,"initialPlanVersion":0,"automaticRevisionConsumed":false,"userFeedback":[],"history":[{"generation":0,"plan":{"summary":"Repair aggregation in completeChecks, without changing greeting behavior. The focused repair delta highlights completeChecks; review the complete supplied feature scope.","steps":[{"id":"change","description":"Repair aggregation in completeChecks, without changing greeting behavior. The focused repair delta highlights completeChecks; review the complete supplied feature scope.","files":["targets.ts"]}],"testingStrategy":"Inspect and exercise named functions","checks":[{"id":"probe","command":["deno","check","targets.ts"],"covers":["change"]}],"version":1},"adjudications":[]}],"adjudications":[],"acceptedDecisions":[]},"classification":{"classification":"maintenance","summary":"Bounded fixture"},"plan":{"summary":"Repair aggregation in completeChecks, without changing greeting behavior. The focused repair delta highlights completeChecks; review the complete supplied feature scope.","steps":[{"id":"change","description":"Repair aggregation in completeChecks, without changing greeting behavior. The focused repair delta highlights completeChecks; review the complete supplied feature scope.","files":["targets.ts"]}],"testingStrategy":"Inspect and exercise named functions","checks":[{"id":"probe","command":["deno","check","targets.ts"],"covers":["change"]}],"version":1},"planReview":{"planVersion":1,"findings":[]},"approval":{"planVersion":1,"request":"Fixture approval to implement this approach"},"implementation":{"worktree":"/tmp/lifecycle-continuity-evaluation","branch":"fixtures"}}
+
+The commit being reviewed is f7906c3a4800b243e3b564a466c766295cbe06a5.
+
+CASE accepted-tradeoff
+You are working on one Yinz issue lifecycle task in a visible Yinz pane.
+
+Work only in /tmp/lifecycle-continuity-evaluation. Follow its AGENTS.md and applicable repository instructions.
+
+Do not invoke the lifecycle launcher. Use only the assigned Swamp evidence interface described below. Do not merge or contact remote Git services.
+
+This is investigation or review: do not edit source files, Git refs, or configuration.
+
+Finish this task in the foreground. Do not leave background subagents or jobs running when returning your answer.
+
+Review the committed diff against local main, issue requirements and the approved plan. Independently assess whether the behavior is correct, including incorrect assumptions or defects in the approved approach. Trace affected callers and relevant state transitions, failure paths, cleanup, ownership, concurrency and platform behavior as applicable. Inspect tests for missing cases and assertions that could pass despite incorrect behavior. Prioritize actionable defects introduced or exposed by this change. For each finding identify the trigger, consequence and concrete source locations, explain severity and distinguish demonstrated behavior from assumptions. Avoid speculative concerns and unrelated cleanup. An empty findings array is valid after a real review. Cover each plan step exactly once and justify deviations. Record only preliminary checks actually performed. Preliminary checks are advisory; the lifecycle runs the approved plan checks itself. Do not invent passing checks. Return the supplied full commit hash and planVersion.
+
+Read /home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/review.md and /home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/dimensions.md before reviewing.
+
+Follow the shared evidence and severity standards. Leave resolution unset for a newly reported defect: a proposed fix is not a resolution. Use resolution only for a concern verified fixed or otherwise supported as resolved. Preserve finding IDs and supported dispositions; reopening a disposed concern requires new evidence and an explanation of why its disposition no longer holds. Historical evidence is not current approval. Follow AGENTS.md focused-test selection; do not run unfiltered full suites.
+
+Apply relevant Yinz review dimensions to the committed implementation and affected callers.
+
+When applicable, cite a dimension name in description and its authoritative source in evidence alongside concrete affected code or plan locations. Use the existing finding fields; do not add a category property. A dimension citation does not replace requirement, mechanism, source evidence, severity, finding identity, disposition or reopening rules. An inapplicable dimension creates no finding or additional testing obligation.
+
+Evaluation only: Return the review object in final JSON; do not invoke Swamp or any lifecycle operations. planVersion is 1. Include findings, steps and preliminaryChecks; context cases also include priorFindings. Write no files in the source tree. You may create temporary probes under /tmp.
+
+Current lifecycle snapshot (issue requirements and recorded evidence):
+
+{"issue":{"workspace":"evaluation","itemId":4,"text":"Preserve greetingBefore output for every input string. Surrounding whitespace has always been trimmed; preserve that API behavior.","note":"Review only greetingBefore and greetingAfterExtraction plus trimName in targets.ts for case accepted-tradeoff.","digest":"b738492605e8ed703e027d2f71c7660284f7f874d0db5f2d6eb15e314337bcf3"},"phase":"implementing","planVersion":1,"planningContext":{"generation":0,"initialPlanVersion":0,"automaticRevisionConsumed":false,"userFeedback":[],"history":[{"generation":0,"plan":{"summary":"Extract trimming into a private helper and preserve public output.","steps":[{"id":"change","description":"Extract trimming into a private helper and preserve public output.","files":["targets.ts"]}],"testingStrategy":"Inspect and exercise named functions","checks":[{"id":"probe","command":["deno","check","targets.ts"],"covers":["change"]}],"version":1},"adjudications":[]}],"adjudications":[],"acceptedDecisions":[]},"classification":{"classification":"maintenance","summary":"Bounded fixture"},"plan":{"summary":"Extract trimming into a private helper and preserve public output.","steps":[{"id":"change","description":"Extract trimming into a private helper and preserve public output.","files":["targets.ts"]}],"testingStrategy":"Inspect and exercise named functions","checks":[{"id":"probe","command":["deno","check","targets.ts"],"covers":["change"]}],"version":1},"planReview":{"planVersion":1,"findings":[]},"approval":{"planVersion":1,"request":"Fixture approval to implement this approach"},"implementation":{"worktree":"/tmp/lifecycle-continuity-evaluation","branch":"fixtures"}}
+
+The commit being reviewed is f7906c3a4800b243e3b564a466c766295cbe06a5.

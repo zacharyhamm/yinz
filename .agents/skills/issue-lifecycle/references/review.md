@@ -84,3 +84,51 @@ Plan checks are valid command argument arrays executed directly without a shell,
 using supported flags and covering changed behavior and affected callers.
 See the bounded [reviewer evaluation](review-evaluation.md) for measured outcomes
 and limits; fixture reviews are not approval of a real implementation.
+
+## Durable implementation review continuity (assignment contract 2)
+
+New assignments carry a versioned `continuity` binding and a complete deterministic
+review packet. Read the saved packet, source reviews and referenced failure logs.
+The captured `baseline.main`, `mergeBase` and `head` are full object IDs. Review
+`featureDiff` across the complete merge-base-to-HEAD scope; `delta` is optional
+endpoint assistance. A moved local main never changes the technical/UX pair's
+baseline. Divergent/rebased history is not a descendant repair. Missing previous
+objects explicitly disable delta and reuse assistance; missing required current
+objects block dispatch. Binary diffs are included without silent truncation.
+
+Reference each prior finding by `{issue, role, reviewFingerprint, findingId}`.
+Keep IDs and origins for persistent concerns; identical IDs in the two review
+roles remain separate obligations. Cross-role links cite the other role and
+never discharge its review. New findings include `affectedPaths`, source or
+behavioral `evidence`, and relevant approved `checkIds` (an empty check list may
+indicate a coverage gap).
+
+Return `priorFindings` outcomes for every prior unresolved finding of your role:
+`persists`, `verified_fixed`, or `reopened`, each with rationale and evidence.
+For `persists`, also carry the same finding and its origin in `findings`, leaving
+`resolution` unset. Describe an unchanged ignored concern as historical
+continuity, not a newly discovered defect. Ignored concerns remain unresolved and
+need fresh user decisions against the exact current review pair; a previous
+acceptance never renews itself. Omission does not establish closure. A repair
+worker's `addressed` claim does not establish closure either. Reopening a
+verified-fixed concern requires concrete new evidence and a rationale addressing
+the prior decision, plus an explicit `reopened` outcome. Structural validation
+checks completeness and references; reviewers remain responsible for evidence
+quality and recognizing the same underlying concern under changed wording.
+
+Independently inspect current requirements, approved assumptions, affected callers,
+tests and failure paths across the complete feature change, even when the delta
+is small. Incorrect approved designs, incomplete selected repairs and newly
+introduced defects outside the selected repairs remain reportable. Historical
+archives inform review and never satisfy a current approval or review gate.
+
+Optional `advisoryEvidence` records original task/commit/requirements, argv/cwd,
+result, durable output reference, relevant files/tests, platform/toolchain,
+prerequisites, cleanliness and dependency scope. Reused evidence retains that
+original provenance and names the current commit with an applicability rationale.
+For a changed commit, document comparison of implementation, callers, tests,
+fixtures, dependencies, build configuration, requirements and environment.
+Patch identity alone is insufficient. Missing logs/objects, unknown dependencies,
+dirty execution and failed/flaky results cannot support passing reuse. Free-text
+`preliminaryChecks` remain available: never describe reused output as a fresh
+execution. Advisory reuse never replaces approved verification or rebased merge CI.

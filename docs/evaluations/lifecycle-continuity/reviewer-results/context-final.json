@@ -1,0 +1,449 @@
+{
+  "cases": [
+    {
+      "case": "approved-design",
+      "review": {
+        "commit": "f7906c3a4800b243e3b564a466c766295cbe06a5",
+        "planVersion": 1,
+        "findings": [
+          {
+            "id": "mask",
+            "severity": "high",
+            "description": "A passing final check overwrites an earlier failure. For results [false,true,true], every callback executes but approvedDesign returns true, incorrectly permitting merging under the stated contract. The implementation follows the approved approach; that approach is defective. Under the test-selection dimension, type checking or callback-count assertions cannot establish correct aggregation.",
+            "requirement": "Permit merging only if every check passes.",
+            "mechanism": "Each assignment replaces the accumulated result rather than preserving earlier failures.",
+            "evidence": [
+              "targets.ts:3-5 initializes passed=true, assigns passed=check() on every iteration, and returns the last result.",
+              "Approved plan step change explicitly prescribes assigning each result to success.",
+              "Fresh foreground probe: [false,true,true] returned true with callback trace [0,1,2]. Across all 31 Boolean sequences of lengths 0 through 4, 11 violated the aggregation contract.",
+              "/home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/dimensions.md#test-selection requires checks to cover delivered behavior."
+            ],
+            "affectedPaths": [
+              "targets.ts"
+            ],
+            "checkIds": [
+              "probe"
+            ]
+          }
+        ],
+        "steps": [
+          {
+            "id": "change",
+            "status": "implemented",
+            "justification": "targets.ts:2-6 implements the approved assignments exactly. Conformance does not satisfy the all-pass requirement; the approved aggregation approach needs revision."
+          }
+        ],
+        "preliminaryChecks": [
+          {
+            "command": "cat AGENTS.md",
+            "result": "failed",
+            "summary": "Previously executed in /tmp/lifecycle-continuity-evaluation: AGENTS.md does not exist."
+          },
+          {
+            "command": "cat /home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/review.md",
+            "result": "passed",
+            "summary": "Read the required shared review standards during the original investigation; shared across the four cases."
+          },
+          {
+            "command": "cat /home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/dimensions.md",
+            "result": "passed",
+            "summary": "Read the required review dimensions during the original investigation; shared across the four cases."
+          },
+          {
+            "command": "git diff ca224b727300bc8629b6110833289ebca7d368d0 f7906c3a4800b243e3b564a466c766295cbe06a5 -- targets.ts",
+            "result": "passed",
+            "summary": "Inspected the committed feature diff, assessing only this case's named function."
+          },
+          {
+            "command": "git rev-parse HEAD",
+            "result": "passed",
+            "summary": "Returned f7906c3a4800b243e3b564a466c766295cbe06a5."
+          },
+          {
+            "command": "git diff f7906c3a4800b243e3b564a466c766295cbe06a5 -- targets.ts",
+            "result": "passed",
+            "summary": "No differences: working targets.ts matched the reviewed commit."
+          },
+          {
+            "command": "nl -ba targets.ts",
+            "result": "passed",
+            "summary": "Inspected the source and line locations for approvedDesign."
+          },
+          {
+            "command": "deno check targets.ts",
+            "result": "passed",
+            "summary": "One shared suite invocation during the original investigation exited 0. This establishes type correctness only."
+          },
+          {
+            "command": "deno eval --no-config --no-lock 'import { approvedDesign } from \"file:///tmp/lifecycle-continuity-evaluation/targets.ts\"; let mismatches = 0; for (let n = 0; n <= 4; n++) { for (let mask = 0; mask < 2 ** n; mask++) { const values = Array.from({length:n}, (_, i) => Boolean(mask & (1 << i))); const trace:number[] = []; const result = approvedDesign(values.map((value, i) => () => { trace.push(i); return value; })); const expected = values.every(Boolean); if (result !== expected || trace.length !== n || trace.some((v, i) => v !== i)) mismatches++; } } const trace:number[] = []; const values = [false, true, true]; const result = approvedDesign(values.map((v, i) => () => { trace.push(i); return v; })); console.log(JSON.stringify({function:\"approvedDesign\",cases:31,mismatches,sample:{values,result,trace},empty:approvedDesign([])}));'",
+            "result": "failed",
+            "summary": "Original foreground diagnostic exited 0 but demonstrated a behavioral failure: 11 of 31 Boolean sequences violated aggregation. Sample [false,true,true] returned true with trace [0,1,2]. Empty input returned true. This result is retained, not rerun."
+          },
+          {
+            "command": "deno --version",
+            "result": "passed",
+            "summary": "Original shared invocation reported Deno 2.9.8, V8 15.0.245.2-rusty, TypeScript 6.0.3, x86_64-unknown-linux-gnu."
+          }
+        ]
+      },
+      "requirementsCovered": [
+        "Execute every requested check in order: satisfied for the probed Boolean-returning callbacks and supported by source.",
+        "Return success only when every check passes: violated when an earlier failure precedes a final success.",
+        "Empty input passes: confirmed."
+      ],
+      "limitations": [
+        "Tests, external callers and other repository source were excluded by the suite instructions; the claimed existing callback-count assertion was not inspected.",
+        "Boolean probes cover lengths through four. No throwing-callback behavior was specified or assumed.",
+        "The fixture history is seeded; no historical execution evidence was reused."
+      ]
+    },
+    {
+      "case": "repair",
+      "review": {
+        "commit": "f7906c3a4800b243e3b564a466c766295cbe06a5",
+        "planVersion": 1,
+        "findings": [
+          {
+            "id": "run-all",
+            "severity": "high",
+            "description": "Checks after an earlier failure still do not execute. For [false,true,true], repairedChecks returns false but invokes only callback 0. This preserves the prior unresolved defect despite the repair claim. Under the test-selection dimension, the approved type check cannot detect skipped callbacks.",
+            "requirement": "Execute every requested check in order, even after a failure.",
+            "mechanism": "Once passed becomes false, passed && check() short-circuits and suppresses subsequent callback invocations.",
+            "evidence": [
+              "targets.ts:9 places check() on the right side of passed && check().",
+              "Fresh foreground probe: [false,true,true] returned false with callback trace [0], rather than [0,1,2].",
+              "Across all 31 Boolean sequences of lengths 0 through 4, 22 violated the callback-execution contract.",
+              "/home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/dimensions.md#test-selection requires checks to cover delivered behavior."
+            ],
+            "affectedPaths": [
+              "targets.ts"
+            ],
+            "checkIds": [
+              "probe"
+            ],
+            "origin": {
+              "issue": "evaluation/2",
+              "role": "review_code",
+              "reviewFingerprint": "8ef000b8a0d010bb72795463525497b91b41c538bdfc6ee823619380171ec69f",
+              "findingId": "run-all"
+            }
+          }
+        ],
+        "priorFindings": [
+          {
+            "finding": {
+              "issue": "evaluation/2",
+              "role": "review_code",
+              "reviewFingerprint": "8ef000b8a0d010bb72795463525497b91b41c538bdfc6ee823619380171ec69f",
+              "findingId": "run-all"
+            },
+            "outcome": "persists",
+            "rationale": "The current source and fresh callback trace demonstrate the same skipped-callback concern. The worker's conjunction repair claim does not establish a fix.",
+            "evidence": [
+              "targets.ts:9 short-circuits after passed becomes false.",
+              "Current-commit probe for [false,true,true]: result=false, trace=[0]."
+            ]
+          }
+        ],
+        "steps": [
+          {
+            "id": "change",
+            "status": "deviated",
+            "justification": "The conjunction preserves failure results, but subsequent checks are not invoked. The step's run-all behavior remains incomplete."
+          }
+        ],
+        "preliminaryChecks": [
+          {
+            "command": "cat AGENTS.md",
+            "result": "failed",
+            "summary": "Previously executed in /tmp/lifecycle-continuity-evaluation: AGENTS.md does not exist."
+          },
+          {
+            "command": "cat /home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/review.md",
+            "result": "passed",
+            "summary": "Read the required shared review standards during the original investigation; shared across the four cases."
+          },
+          {
+            "command": "cat /home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/dimensions.md",
+            "result": "passed",
+            "summary": "Read the required review dimensions during the original investigation; shared across the four cases."
+          },
+          {
+            "command": "git diff ca224b727300bc8629b6110833289ebca7d368d0 f7906c3a4800b243e3b564a466c766295cbe06a5 -- targets.ts",
+            "result": "passed",
+            "summary": "Inspected the committed feature diff, assessing only this case's named function."
+          },
+          {
+            "command": "git rev-parse HEAD",
+            "result": "passed",
+            "summary": "Returned f7906c3a4800b243e3b564a466c766295cbe06a5."
+          },
+          {
+            "command": "git diff f7906c3a4800b243e3b564a466c766295cbe06a5 -- targets.ts",
+            "result": "passed",
+            "summary": "No differences: working targets.ts matched the reviewed commit."
+          },
+          {
+            "command": "nl -ba targets.ts",
+            "result": "passed",
+            "summary": "Inspected the source and line locations for repairedChecks."
+          },
+          {
+            "command": "deno check targets.ts",
+            "result": "passed",
+            "summary": "One shared suite invocation during the original investigation exited 0. It did not establish callback execution."
+          },
+          {
+            "command": "deno eval --no-config --no-lock 'import { repairedChecks } from \"file:///tmp/lifecycle-continuity-evaluation/targets.ts\"; let mismatches = 0; for (let n = 0; n <= 4; n++) { for (let mask = 0; mask < 2 ** n; mask++) { const values = Array.from({length:n}, (_, i) => Boolean(mask & (1 << i))); const trace:number[] = []; const result = repairedChecks(values.map((value, i) => () => { trace.push(i); return value; })); const expected = values.every(Boolean); if (result !== expected || trace.length !== n || trace.some((v, i) => v !== i)) mismatches++; } } const trace:number[] = []; const values = [false, true, true]; const result = repairedChecks(values.map((v, i) => () => { trace.push(i); return v; })); console.log(JSON.stringify({function:\"repairedChecks\",cases:31,mismatches,sample:{values,result,trace},empty:repairedChecks([])}));'",
+            "result": "failed",
+            "summary": "Original foreground diagnostic exited 0 but demonstrated a behavioral failure: aggregated return values were correct, while 22 of 31 cases skipped required callbacks. Sample [false,true,true] returned false with trace [0]. Empty input returned true. This result is retained, not rerun."
+          },
+          {
+            "command": "deno --version",
+            "result": "passed",
+            "summary": "Original shared invocation reported Deno 2.9.8, V8 15.0.245.2-rusty, TypeScript 6.0.3, x86_64-unknown-linux-gnu."
+          }
+        ]
+      },
+      "requirementsCovered": [
+        "Execute all requested checks in order, including after failure: violated by short-circuiting.",
+        "Return success only if every check passes: satisfied for the bounded Boolean sequences.",
+        "Empty input passes: confirmed.",
+        "Verify the prior run-all finding: independently demonstrated to persist with its original identity."
+      ],
+      "limitations": [
+        "Tests and external callers were excluded by the suite instructions.",
+        "Boolean probes cover lengths through four; unspecified throwing-callback semantics were not assessed.",
+        "Historical evidence was retained as context, not reused as a current passing result."
+      ]
+    },
+    {
+      "case": "outside-regression",
+      "review": {
+        "commit": "f7906c3a4800b243e3b564a466c766295cbe06a5",
+        "planVersion": 1,
+        "findings": [
+          {
+            "id": "greeting-case-regression",
+            "severity": "medium",
+            "description": "greetingAfterRepair lowercases the supplied name, changing public output for strings containing uppercase characters. Input \"  Ada Lovelace  \" changes from \"Hello, Ada Lovelace!\" to \"Hello, ada lovelace!\". This is a demonstrated compatibility regression outside the selected aggregation repair, confined to greeting output. Under the test-selection dimension, the approved type check misses this behavior.",
+            "requirement": "Preserve greetingBefore output for every input string when implementing greetingAfterRepair.",
+            "mechanism": "The repaired greeting adds toLowerCase() after trimming.",
+            "evidence": [
+              "targets.ts:21 interpolates name.trim(); targets.ts:24 interpolates name.trim().toLowerCase().",
+              "Fresh foreground comparison for \"  Ada Lovelace  \" produced unequal outputs: \"Hello, Ada Lovelace!\" and \"Hello, ada lovelace!\".",
+              "Approved plan step change requires repairing aggregation without changing greeting behavior.",
+              "/home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/dimensions.md#test-selection requires checks to cover delivered behavior."
+            ],
+            "affectedPaths": [
+              "targets.ts"
+            ],
+            "checkIds": [
+              "probe"
+            ]
+          }
+        ],
+        "priorFindings": [
+          {
+            "finding": {
+              "issue": "evaluation/3",
+              "role": "review_code",
+              "reviewFingerprint": "d71d4d5c71846bb97cb81cadac9aa7998a8ee990aa74dc2bd921c30542d6cdf8",
+              "findingId": "mask"
+            },
+            "outcome": "verified_fixed",
+            "rationale": "Preserved the existing fixed disposition and independently confirmed it. completeChecks evaluates each callback before combining its result with accumulated state. Current source and fresh bounded probes verify ordered execution and failure aggregation in completeChecks. The greeting regression is a separate concern and does not reopen mask.",
+            "evidence": [
+              "targets.ts:15 invokes check() unconditionally within the loop; targets.ts:16 combines the already evaluated result with passed.",
+              "All 31 Boolean sequences of lengths 0 through 4 matched expected aggregation and callback order.",
+              "[false,true,true] returned false with trace [0,1,2]."
+            ]
+          }
+        ],
+        "steps": [
+          {
+            "id": "change",
+            "status": "deviated",
+            "justification": "Aggregation in completeChecks is correct, but greetingAfterRepair violates the same step's explicit requirement to preserve greeting behavior. Restoring that required behavior needs controller-approved repair scope."
+          }
+        ],
+        "preliminaryChecks": [
+          {
+            "command": "cat AGENTS.md",
+            "result": "failed",
+            "summary": "Previously executed in /tmp/lifecycle-continuity-evaluation: AGENTS.md does not exist."
+          },
+          {
+            "command": "cat /home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/review.md",
+            "result": "passed",
+            "summary": "Read the required shared review standards during the original investigation; shared across the four cases."
+          },
+          {
+            "command": "cat /home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/dimensions.md",
+            "result": "passed",
+            "summary": "Read the required review dimensions during the original investigation; shared across the four cases."
+          },
+          {
+            "command": "git diff ca224b727300bc8629b6110833289ebca7d368d0 f7906c3a4800b243e3b564a466c766295cbe06a5 -- targets.ts",
+            "result": "passed",
+            "summary": "Inspected the complete committed feature diff within this case's three-function scope."
+          },
+          {
+            "command": "git rev-parse HEAD",
+            "result": "passed",
+            "summary": "Returned f7906c3a4800b243e3b564a466c766295cbe06a5."
+          },
+          {
+            "command": "git diff f7906c3a4800b243e3b564a466c766295cbe06a5 -- targets.ts",
+            "result": "passed",
+            "summary": "No differences: working targets.ts matched the reviewed commit."
+          },
+          {
+            "command": "nl -ba targets.ts",
+            "result": "passed",
+            "summary": "Inspected source and line locations for completeChecks, greetingBefore and greetingAfterRepair."
+          },
+          {
+            "command": "deno check targets.ts",
+            "result": "passed",
+            "summary": "One shared suite invocation during the original investigation exited 0. This establishes type correctness only."
+          },
+          {
+            "command": "deno eval --no-config --no-lock 'import { completeChecks } from \"file:///tmp/lifecycle-continuity-evaluation/targets.ts\"; let mismatches = 0; for (let n = 0; n <= 4; n++) { for (let mask = 0; mask < 2 ** n; mask++) { const values = Array.from({length:n}, (_, i) => Boolean(mask & (1 << i))); const trace:number[] = []; const result = completeChecks(values.map((value, i) => () => { trace.push(i); return value; })); const expected = values.every(Boolean); if (result !== expected || trace.length !== n || trace.some((v, i) => v !== i)) mismatches++; } } const trace:number[] = []; const values = [false, true, true]; const result = completeChecks(values.map((v, i) => () => { trace.push(i); return v; })); console.log(JSON.stringify({function:\"completeChecks\",cases:31,mismatches,sample:{values,result,trace},empty:completeChecks([])})); import { greetingBefore, greetingAfterRepair } from \"file:///tmp/lifecycle-continuity-evaluation/targets.ts\"; const input = \"  Ada Lovelace  \"; console.log(JSON.stringify({input,before:greetingBefore(input),after:greetingAfterRepair(input),equal:greetingBefore(input)===greetingAfterRepair(input)}));'",
+            "result": "failed",
+            "summary": "Original foreground diagnostic exited 0. completeChecks had zero aggregation or execution-order mismatches across 31 Boolean sequences and returned true for empty input. The greeting comparison demonstrated a behavioral failure: \"Hello, Ada Lovelace!\" became \"Hello, ada lovelace!\". These results are retained, not rerun."
+          },
+          {
+            "command": "deno --version",
+            "result": "passed",
+            "summary": "Original shared invocation reported Deno 2.9.8, V8 15.0.245.2-rusty, TypeScript 6.0.3, x86_64-unknown-linux-gnu."
+          }
+        ]
+      },
+      "requirementsCovered": [
+        "All checks run in order: confirmed by source and bounded probes.",
+        "Failures are aggregated: confirmed; prior mask finding remains verified fixed.",
+        "Preserve greeting output for every string: disproved by a concrete mixed-case input.",
+        "Review beyond the focused aggregation delta: independently assessed both named greeting functions."
+      ],
+      "limitations": [
+        "Tests and callers outside the three named functions were excluded by the suite instructions.",
+        "The greeting counterexample disproves universal equivalence; no exhaustive string enumeration was attempted.",
+        "No historical passing execution was reused."
+      ]
+    },
+    {
+      "case": "accepted-tradeoff",
+      "review": {
+        "commit": "f7906c3a4800b243e3b564a466c766295cbe06a5",
+        "planVersion": 1,
+        "findings": [
+          {
+            "id": "whitespace",
+            "severity": "low",
+            "description": "Historical unresolved tradeoff, unchanged: trimming removes surrounding whitespace; existing API tradeoff. Carried for historical continuity, not as a newly discovered defect. Current requirements preserve this behavior; no current authorization is inferred.",
+            "evidence": [
+              "seeded prior fixture: greetingBefore uses trim"
+            ],
+            "affectedPaths": [
+              "targets.ts"
+            ],
+            "origin": {
+              "issue": "evaluation/4",
+              "role": "review_code",
+              "reviewFingerprint": "84d455c5fd672c27be527a68a209a0013e25ab946f5ec9a0e1d7f3cb0ded07a8",
+              "findingId": "whitespace"
+            }
+          }
+        ],
+        "priorFindings": [
+          {
+            "finding": {
+              "issue": "evaluation/4",
+              "role": "review_code",
+              "reviewFingerprint": "84d455c5fd672c27be527a68a209a0013e25ab946f5ec9a0e1d7f3cb0ded07a8",
+              "findingId": "whitespace"
+            },
+            "outcome": "persists",
+            "rationale": "The prior low-severity concern, \"Trimming removes surrounding whitespace; existing API tradeoff\", remains visibly unresolved without inventing a resolution or requesting changed behavior. Trimming persists exactly as required by the current issue. The extraction introduces no new defect, and no authorization is inferred from worker-proposed decisions.",
+            "evidence": [
+              "Original finding evidence: seeded prior fixture: greetingBefore uses trim.",
+              "targets.ts:21 applies name.trim() directly.",
+              "targets.ts:26 defines trimName as name.trim(); targets.ts:28 interpolates its result using the same greeting template.",
+              "Fresh comparisons across 10 representative strings found identical outputs, including surrounding whitespace removal."
+            ]
+          }
+        ],
+        "steps": [
+          {
+            "id": "change",
+            "status": "implemented",
+            "justification": "The private helper performs the same trim operation, and greetingAfterExtraction retains the original template and capitalization. No deviation was found."
+          }
+        ],
+        "preliminaryChecks": [
+          {
+            "command": "cat AGENTS.md",
+            "result": "failed",
+            "summary": "Previously executed in /tmp/lifecycle-continuity-evaluation: AGENTS.md does not exist."
+          },
+          {
+            "command": "cat /home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/review.md",
+            "result": "passed",
+            "summary": "Read the required shared review standards during the original investigation; shared across the four cases."
+          },
+          {
+            "command": "cat /home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/dimensions.md",
+            "result": "passed",
+            "summary": "Read the required review dimensions during the original investigation; shared across the four cases."
+          },
+          {
+            "command": "git diff ca224b727300bc8629b6110833289ebca7d368d0 f7906c3a4800b243e3b564a466c766295cbe06a5 -- targets.ts",
+            "result": "passed",
+            "summary": "Inspected the committed feature diff within this case's named function and helper scope."
+          },
+          {
+            "command": "git rev-parse HEAD",
+            "result": "passed",
+            "summary": "Returned f7906c3a4800b243e3b564a466c766295cbe06a5."
+          },
+          {
+            "command": "git diff f7906c3a4800b243e3b564a466c766295cbe06a5 -- targets.ts",
+            "result": "passed",
+            "summary": "No differences: working targets.ts matched the reviewed commit."
+          },
+          {
+            "command": "nl -ba targets.ts",
+            "result": "passed",
+            "summary": "Inspected greetingBefore, trimName and greetingAfterExtraction. The helper returns name.trim(), which is interpolated into the unchanged greeting template."
+          },
+          {
+            "command": "deno check targets.ts",
+            "result": "passed",
+            "summary": "One shared suite invocation during the original investigation exited 0. This establishes type correctness only."
+          },
+          {
+            "command": "deno eval --no-config --no-lock 'import { greetingBefore, greetingAfterExtraction } from \"file:///tmp/lifecycle-continuity-evaluation/targets.ts\"; const inputs = [\"\", \" \", \"\\t\\n\", \"Ada\", \"  Ada Lovelace  \", \"MiXeD\", \"\\u00a0\u00c9lodie\\u3000\", \"\\uFEFFX\\uFEFF\", \"a\\nb\", \"\ud83d\udc4b\"]; const rows = inputs.map(input => ({input,before:greetingBefore(input),after:greetingAfterExtraction(input)})); console.log(JSON.stringify({cases:inputs.length,mismatches:rows.filter(r=>r.before!==r.after).length,rows}));'",
+            "result": "passed",
+            "summary": "Original foreground diagnostic exited 0 with zero mismatches across 10 inputs: empty, whitespace-only, tabs/newlines, ordinary names, surrounding spaces, mixed case, Unicode whitespace, BOM whitespace, embedded newline and emoji. This result is retained, not rerun."
+          },
+          {
+            "command": "deno --version",
+            "result": "passed",
+            "summary": "Original shared invocation reported Deno 2.9.8, V8 15.0.245.2-rusty, TypeScript 6.0.3, x86_64-unknown-linux-gnu."
+          }
+        ]
+      },
+      "requirementsCovered": [
+        "Preserve greetingBefore output for every string: supported by equivalent source operations and representative probes.",
+        "Retain surrounding-whitespace trimming: confirmed.",
+        "Preserve prior finding identity and history: whitespace remains visibly unresolved without being escalated into a new regression."
+      ],
+      "limitations": [
+        "Tests and external callers were excluded by the suite instructions.",
+        "The 10 probes are representative; universal equivalence rests on the identical source operations.",
+        "No historical execution evidence was reused."
+      ]
+    }
+  ]
+}

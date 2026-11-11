@@ -10,8 +10,11 @@ import {
   type RoleEvidence,
   SubmissionSchema,
   SubmitArgsSchema,
+  validateEvidence,
+  validateReceipt,
 } from "../_lib/issue_evidence.ts";
 import {
+  archiveReviews,
   codeReviewFingerprint,
   createState,
   transition,
@@ -56,7 +59,10 @@ const plan = {
   }],
 };
 
-async function fixture(role: RoleEvidence["role"] = "triage") {
+async function fixture(
+  role: RoleEvidence["role"] = "triage",
+  withHistory = false,
+) {
   let state = createState(issue);
   if (role !== "triage") state = transition(state, "triage", triage);
   if (
@@ -132,6 +138,7 @@ async function fixture(role: RoleEvidence["role"] = "triage") {
       });
     }
   }
+  if (withHistory) archiveReviews(state, "Earlier review", "review_code");
   const prompt = "Investigate once and submit through Swamp";
   const task = {
     id: taskId,
@@ -306,6 +313,74 @@ for (
     );
   });
 }
+
+Deno.test("legacy accepted repair receipts recover without new archives and retain bound history", async () => {
+  for (const withHistory of [false, true]) {
+    const h = await fixture("implement_review_fixes", withHistory);
+    const payload = {
+      role: "implement_review_fixes" as const,
+      evidence: { summary: "Repaired", commit: head },
+    };
+    // Reconstruct the legacy saved transition independently of receipt replay.
+    const next = transition(
+      h.assignment.before,
+      payload.role,
+      payload.evidence,
+    );
+    assert(
+      next.reviewHistory!.length >
+        (h.assignment.before.reviewHistory?.length ?? 0),
+    );
+    if (withHistory) {
+      next.reviewHistory = structuredClone(h.assignment.before.reviewHistory!);
+    } else {
+      delete next.reviewHistory;
+    }
+    const receipt = {
+      taskId,
+      assignmentDigest: h.assignment.digest,
+      payloadDigest: evidenceDigest(payload),
+      acceptedAt: "2026-11-08T18:00:00.000Z",
+      payload,
+      next,
+    };
+    equal(validateEvidence(h.assignment, payload).next, next);
+    equal(validateReceipt(h.assignment, receipt), receipt);
+    h.records.set("submission", {
+      status: "accepted",
+      assignment: h.assignment,
+      receipt,
+    });
+    const writes = h.writes.length;
+    await h.submit();
+    equal(h.writes.length, writes);
+    const saved = SubmissionSchema.parse(h.records.get("submission"));
+    assert(saved.status === "accepted");
+    equal(saved.receipt, receipt);
+    for (
+      const patch of [
+        { next: { ...next, planVersion: 2 } },
+        { next: { ...next, reviewHistory: [] } },
+        { payloadDigest: "f".repeat(64) },
+        { assignmentDigest: "f".repeat(64) },
+        { taskId: operationId },
+      ]
+    ) {
+      await rejects(
+        () => validateReceipt(h.assignment, { ...receipt, ...patch }),
+        "original assignment",
+      );
+    }
+    await rejects(
+      () =>
+        validateReceipt({
+          ...h.assignment,
+          before: { ...h.assignment.before, planVersion: 2 },
+        }, receipt),
+      "assignment digest",
+    );
+  }
+});
 
 Deno.test("invalid or truncated submission is rejected before acceptance and corrected with the same assignment", async () => {
   const h = await fixture("review_plan");

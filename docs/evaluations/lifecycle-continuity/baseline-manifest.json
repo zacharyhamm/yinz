@@ -1,0 +1,25 @@
+{
+  "frozenAt": "2026-11-11T18:28:50.328938+00:00",
+  "sampleSha256": "9d46b66b02808968ad633edf4f35a6261c10b507270fb3c69dca79d27da95d31",
+  "sourceDigest": "a10fdf0e0b7fc514a30bb0a4e01349f4d5795299a25e6a9c9e7b0ff04c511690",
+  "issues": [
+    "issue-yinz-16",
+    "issue-yinz-17",
+    "issue-yinz-57",
+    "issue-yinz-66",
+    "issue-yinz-68",
+    "issue-yinz-69",
+    "issue-yinz-70",
+    "issue-yinz-73",
+    "issue-yinz-74",
+    "issue-yinz-75",
+    "issue-yinz-77",
+    "issue-yinz-78",
+    "issue-yinz-79",
+    "issue-yinz-80",
+    "issue-yinz-81",
+    "issue-yinz-85"
+  ],
+  "source": "Read-only Swamp data query of issue-yinz state, agent-task and recovery historical versions in the canonical control checkout. All queries reported limited:false. Fields projected before export to avoid oversized full-snapshot output. Source references identify exact versions and projection digests; no missing findings or causes inferred.",
+  "pilot": "First 20 distinct issues completed after frozenAt with at least one contractVersion:2 assignment. Not yet observed."
+}

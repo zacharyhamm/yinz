@@ -45,6 +45,7 @@ import {
   saveState,
   withIssue,
 } from "./_lib/runtime.ts";
+import { RoundRecord } from "./_lib/review_continuity.ts";
 import { runVerification } from "./_lib/verification.ts";
 import { WorkerSelectionSchema } from "./_lib/worker_selection.ts";
 
@@ -148,9 +149,16 @@ function recordedTransition<K extends keyof typeof ActionSchemas>(
 /** Local behavior; the issue's state and every decision are versioned Swamp data. */
 export const behavior = {
   type: "@yinz/issue-lifecycle",
-  version: "2026.11.09.1",
+  version: "2026.11.11.1",
   globalArguments: GlobalArgsSchema,
   resources: {
+    rounds: {
+      description:
+        "Append-only assignment reservations and evidence-backed cause corrections",
+      schema: z.object({ records: z.array(RoundRecord) }).strict(),
+      lifetime: "infinite",
+      garbageCollection: 1000,
+    },
     "controller-origin": {
       description:
         "First controller binding, separately frozen from worker placement",

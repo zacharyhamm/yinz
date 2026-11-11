@@ -6,7 +6,11 @@ import { AgentKindSchema } from "./worker_selection.ts";
 import {
   activeReviewFix,
   codeReviewFingerprint,
+  describeMergeFailure,
+  implementationReviewFingerprint,
   initialPlanning,
+  planningGeneration,
+  priorImplementationFindings,
   readAgenda,
   recordFeedback,
   refreshIssue,
@@ -25,6 +29,7 @@ import {
   EvidenceReceiptSchema,
   EvidenceTargetSchema,
   ImplementationResult,
+  reviewPacket,
   RoleSchema,
   submissionInstructions,
   SubmissionSchema,
@@ -53,6 +58,12 @@ import {
   promptDigest,
 } from "./yinz_agent.ts";
 
+import {
+  ContinuityContext,
+  GitBaseline,
+  RoundRecord,
+} from "./review_continuity.ts";
+
 const Role = RoleSchema;
 export const AgentInputSchema = z.object({
   role: Role,
@@ -77,6 +88,9 @@ export const AgentTaskSchema = z.object({
   prompt: z.string().min(1),
   promptDigest: z.string().regex(/^[0-9a-f]{64}$/),
   request: z.string().min(1).optional(),
+  contractVersion: z.literal(2).optional(),
+  continuity: ContinuityContext.optional(),
+  round: RoundRecord.optional(),
   before: StateSchema,
   next: StateSchema.optional(),
   createdAt: z.iso.datetime(),
@@ -222,11 +236,14 @@ async function assertNoPendingRecovery(context: Context) {
 
 async function saveTask(context: Context, task: Task) {
   await invalidateHandoff(context);
-  return context.writeResource(
+  const saved = await context.writeResource(
     "agent-task",
     "agent-task",
     AgentTaskSchema.parse(task),
   );
+  await appendReservedRound(context, task);
+  await recordRoundOutcomes(context, task);
+  return saved;
 }
 
 export function taskPrompt(
@@ -237,6 +254,7 @@ export function taskPrompt(
   submission: string,
   commit?: string,
   request?: string,
+  continuity?: z.infer<typeof ContinuityContext>,
 ) {
   const instructions = {
     triage:
@@ -264,7 +282,24 @@ export function taskPrompt(
       ? "Only this task may edit the issue worktree."
       : "This is investigation or review: do not edit source files, Git refs, or configuration.",
     "Finish this task in the foreground. Do not leave background subagents or jobs running when returning your answer.",
-    instructions,
+    continuity && role === "review_code"
+      ? instructions.replace(
+        "against local main",
+        "from the captured merge base to reviewed HEAD",
+      )
+      : instructions,
+    ...(continuity
+      ? [
+        "Assignment contract version 2. The bound packet below contains authoritative findings and decisions; do not truncate or reconstruct history. Worker-proposed tradeoffs are proposals; controller dispositions and exact user authorizations have their recorded scope only.",
+        "Preserve unaffected decisions and identify newly necessary scope changes. Repair planners return findingMappings with one exact finding identity per selected finding, approved step IDs and check IDs. Implementers return responses (addressed, disputed or unresolved), rationale, affectedPaths, source/check evidence and checkIds for every selected finding. Implementation claims never close findings. Broader work requires a revised plan and approval through the controller.",
+        "Review the complete feature diff, current requirements, approved assumptions, affected callers, tests and failure paths independently. Endpoint delta prioritizes investigation; it never bounds scope. Decode featureDiff/delta from base64 when their encoding field says base64; otherwise they are UTF-8. Rebased/divergent history is not a descendant repair. Return priorFindings with an outcome (persists, verified_fixed or reopened), rationale and evidence for every prior unresolved finding of your role; keep persistent IDs and origin identities. For a persists outcome, also include the same finding with its origin in findings and leave resolution unset; label an unchanged ignored concern as historical continuity, not a new defect. Keep ignored findings visibly unresolved. Prior acceptance does not authorize a changed review. Reopening a verified-fixed/disposed concern requires new concrete source or behavioral evidence and rationale addressing the earlier decision. New defects anywhere in the full feature scope remain reportable. Findings include affectedPaths and relevant approved checkIds.",
+        "Structured advisoryEvidence names producingTask, original full commit, requirementDigest, argv/cwd, result, durable outputRef, relevantFiles/tests, platform/toolchain and prerequisites. Reused evidence must retain original attribution and explain applicability at the current commit. Changed commits require a documented comparison of implementation, callers, tests, fixtures, dependencies, build configuration, requirements and environment; patch identity alone is insufficient. Missing objects/logs, dirty state, unknown dependencies or failed/flaky execution cannot support passing reuse. Free-text preliminaryChecks remain available; reused evidence is never newly executed. Advisory evidence cannot replace approved deterministic verification or rebased merge CI.",
+        `Bound review continuity: ${JSON.stringify(continuity)}`,
+        `Authoritative repair/review packet (complete saved snapshot references): ${
+          JSON.stringify(reviewPacket(state))
+        }`,
+      ]
+      : []),
     ...(["plan", "review_plan", "plan_review_fixes"].includes(role)
       ? [
         `Read ${join(references, "planning.md")} and ${
@@ -298,7 +333,18 @@ export function taskPrompt(
       : []),
     submission,
     "Current lifecycle snapshot (issue requirements and recorded evidence):",
-    JSON.stringify(state),
+    continuity
+      ? JSON.stringify({
+        phase: state.phase,
+        planVersion: state.planVersion,
+        rollbackId: state.rollbackId,
+        classification: state.classification,
+        implementation: state.implementation,
+        sourceRef: "assignment.before",
+        note:
+          "Complete requirements and review obligations are in the packet. The full original snapshot, including referenced historical diffs, remains in this task's authorized submission record.",
+      })
+      : JSON.stringify(state),
     ...(commit ? [`The commit being reviewed is ${commit}.`] : []),
   ].join("\n\n");
 }
@@ -760,9 +806,7 @@ export async function prepareTask(
   }
   // The dispatched commit belongs to task evidence, not prior code review.
   const promptState = structuredClone(state);
-  if (commit && promptState.implementation) {
-    promptState.implementation.head = commit;
-  }
+  // The current endpoint is in continuity.baseline; retain the saved decision snapshot.
   // Issue worktrees may predate the shared standards; read the control checkout's.
   const references = join(
     state.implementation ? await dependencies.realPath(context.repoDir) : cwd,
@@ -786,7 +830,71 @@ export async function prepareTask(
     config,
     before: state,
     ...(commit ? { reviewCommit: commit } : {}),
+    contractVersion: 2 as const,
+    createdAt: dependencies.now(),
+    round: undefined as z.infer<typeof RoundRecord> | undefined,
+    continuity: undefined as z.infer<typeof ContinuityContext> | undefined,
   };
+  let baseline: z.infer<typeof GitBaseline> | undefined;
+  if (
+    state.implementation &&
+    [
+      "implement",
+      "review_code",
+      "review_ux",
+      "plan_review_fixes",
+      "implement_review_fixes",
+    ].includes(args.role)
+  ) {
+    const role = args.role === "review_ux" ? "review_ux" : "review_code";
+    const currentReview = role === "review_ux"
+      ? state.uxReview
+      : state.codeReview;
+    const priorReview = currentReview ??
+      state.reviewHistory?.findLast((h) =>
+        h.role === role && h.issueDigest === state.issue.digest
+      )?.review;
+    const repo = await dependencies.inspect(context, cwd);
+    baseline = GitBaseline.parse(
+      await dependencies.gitOperation(context, {
+        action: "review-context",
+        worktree: cwd,
+        head: commit ?? repo.head,
+        ...(priorReview
+          ? { previous: priorReview.baseline ?? { head: priorReview.commit } }
+          : {}),
+        ...(args.role === "review_ux" && state.codeReview?.baseline
+          ? { baseline: state.codeReview.baseline }
+          : {}),
+      }, `review-baseline-${identity.id}`),
+    );
+    if (args.role === "review_ux" && !state.codeReview?.baseline) {
+      baseline.limitations.push(
+        "Legacy technical review has no captured baseline. Equivalence cannot be established; UX reviews the complete currently captured feature scope without retroactive technical reinvestigation.",
+      );
+    }
+    if (baseline.head !== (commit ?? repo.head)) {
+      throw new Error("Captured review baseline differs from dispatch HEAD");
+    }
+  }
+  identity.continuity = ContinuityContext.parse({
+    version: 1,
+    assignmentId: identity.id,
+    issueDigest: state.issue.digest,
+    generation: planningGeneration(state),
+    rollbackId: state.rollbackId,
+    planVersion: state.planVersion,
+    packetDigest: evidenceDigest(reviewPacket(state)),
+    reviewFingerprints: (["review_code", "review_ux"] as const).flatMap((
+      role,
+    ) =>
+      (role === "review_code" ? state.codeReview : state.uxReview)
+        ? [implementationReviewFingerprint(state, role)]
+        : []
+    ),
+    baseline,
+  });
+  identity.round = await createRound(context, identity);
   await dependencies.captureCloseoutOrigin?.(context, args.control);
   const controlDir = await dependencies.realPath(context.repoDir);
   const submission = EvidenceTargetSchema.parse({
@@ -805,16 +913,194 @@ export async function prepareTask(
     submissionInstructions(identity, submission),
     commit,
     args.request,
+    identity.continuity,
   );
   const task: Task = {
     ...identity,
     submission,
     prompt,
     promptDigest: await promptDigest(prompt),
-    createdAt: dependencies.now(),
     status: "running",
   };
   return task;
+}
+
+/** Reservation journal is independent of lifecycle gates and completion recovery. */
+async function createRound(
+  context: Context,
+  task: Pick<
+    Task,
+    "id" | "role" | "before" | "createdAt" | "request" | "continuity"
+  >,
+) {
+  const raw = await context.readResource("rounds");
+  const journal = z.object({ records: z.array(RoundRecord) }).strict().parse(
+    raw ?? { records: [] },
+  );
+  const existing = journal.records.find((r) => r.assignmentId === task.id);
+  if (existing) return existing;
+  const previous = journal.records.at(-1);
+  const savedTask = AgentTaskSchema.safeParse(
+    await context.readResource("agent-task"),
+  );
+  const predecessor = previous?.assignmentId ??
+    (savedTask.success && savedTask.data.id !== task.id
+      ? savedTask.data.id
+      : undefined);
+  const causes: z.infer<typeof RoundRecord>["launchCauses"] = [];
+  const state = task.before;
+  if (!predecessor && task.role === "triage" && state.phase === "triaging") {
+    causes.push({
+      kind: "initial_work",
+      explanation: "First recorded assignment under the new contract",
+      evidence: [`assignment:${task.id}`],
+      source: "controller",
+    });
+  }
+  if (previous && previous.issueDigest !== state.issue.digest) {
+    causes.push({
+      kind: "changed_requirements",
+      explanation: "Requirements digest changed",
+      evidence: [previous.issueDigest, state.issue.digest],
+      source: "controller",
+    });
+  }
+  if (state.lastFailure) {
+    const gateFailure = state.verification?.status === "failed" ||
+      state.mergeFailures?.some((f) =>
+        describeMergeFailure(f) === state.lastFailure
+      );
+    causes.push({
+      kind: gateFailure ? "verification_merge_failure" : "unknown",
+      explanation: state.lastFailure,
+      evidence: [
+        ...(state.mergeFailures ?? []).map((f) => f.logResource),
+        ...(state.verification
+          ? [`verification:${state.verification.id}`]
+          : []),
+        `assignment:${task.id}:before.lastFailure`,
+      ],
+      source: "controller",
+    });
+  }
+  const recovery = await context.readResource("recovery");
+  if (
+    state.rollbackId && recovery && typeof recovery === "object" &&
+    "id" in recovery && recovery.id === state.rollbackId
+  ) {
+    causes.push({
+      kind: "recovery",
+      explanation: "Assignment follows recorded rollback/restart",
+      evidence: [`recovery:${state.rollbackId}`],
+      source: "recovery",
+    });
+  }
+  const fix = activeReviewFix(state);
+  if (fix) {
+    causes.push({
+      kind: "newly_discovered_defect",
+      explanation:
+        "User selected review findings for repair; introduction is unattributed",
+      evidence: [`review-decision:${fix.id}`, fix.reviewFingerprint],
+      source: "user",
+    });
+  }
+  if (!causes.length) {
+    causes.push({
+      kind: "unknown",
+      explanation: task.request ??
+        "Ordinary phase dispatch; no further cause established",
+      evidence: [`assignment:${task.id}`],
+      source: task.request ? "user" : "controller",
+    });
+  }
+  return RoundRecord.parse({
+    assignmentId: task.id,
+    predecessor,
+    role: task.role,
+    at: task.createdAt,
+    issueDigest: state.issue.digest,
+    generation: task.continuity!.generation,
+    launchCauses: causes,
+    corrections: [],
+  });
+}
+
+/** The original round is saved atomically inside a task/reserved driver assignment.
+ * This journal projection reconciles after interrupted publication, without phantom
+ * rounds for assignments whose reservation never persisted. */
+async function appendReservedRound(context: Context, task: Task) {
+  if (task.contractVersion !== 2 || !task.round) return;
+  const raw = await context.readResource("rounds");
+  const journal = z.object({ records: z.array(RoundRecord) }).strict().parse(
+    raw ?? { records: [] },
+  );
+  if (journal.records.some((r) => r.assignmentId === task.id)) return;
+  journal.records.push(task.round);
+  await context.writeResource("rounds", "rounds", journal);
+}
+
+async function recordRoundOutcomes(context: Context, task: Task) {
+  const payload = task.evidence?.payload;
+  if (
+    task.contractVersion !== 2 || !payload ||
+    (payload.role !== "review_code" && payload.role !== "review_ux")
+  ) return;
+  const raw = await context.readResource("rounds");
+  if (!raw) return;
+  const journal = z.object({ records: z.array(RoundRecord) }).strict().parse(
+    raw,
+  );
+  const record = journal.records.find((r) => r.assignmentId === task.id);
+  if (!record) return;
+  let changed = false;
+  for (const outcome of payload.evidence.priorFindings ?? []) {
+    if (outcome.outcome !== "persists") continue;
+    const fix = task.before.reviewDecisions?.findLast((d) =>
+      d.result &&
+      d.repair.some((r) =>
+        r.role === outcome.finding.role &&
+        r.findingId === outcome.finding.findingId
+      )
+    );
+    if (!fix) continue;
+    const source = `review:${task.id}:${evidenceDigest(outcome)}`;
+    if (record.corrections.some((c) => c.source === source)) continue;
+    record.corrections.push({
+      at: task.evidence!.acceptedAt,
+      source,
+      cause: {
+        kind: "incomplete_repair",
+        explanation: outcome.rationale,
+        evidence: [`review-decision:${fix.id}`, ...outcome.evidence],
+        source: "worker",
+      },
+    });
+    changed = true;
+  }
+  const prior = priorImplementationFindings(task.before);
+  for (const finding of payload.evidence.findings) {
+    if (
+      finding.resolution ||
+      prior.some((p) =>
+        p.ref.role === payload.role && p.finding.id === finding.id
+      )
+    ) continue;
+    const source = `review:${task.id}:new:${evidenceDigest(finding)}`;
+    if (record.corrections.some((c) => c.source === source)) continue;
+    record.corrections.push({
+      at: task.evidence!.acceptedAt,
+      source,
+      cause: {
+        kind: "newly_discovered_defect",
+        explanation: finding.description,
+        evidence: [`assignment:${task.id}`, ...(finding.evidence ?? [])],
+        source: "worker",
+      },
+    });
+    changed = true;
+  }
+  if (changed) await context.writeResource("rounds", "rounds", journal);
 }
 
 export async function runTask(

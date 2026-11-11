@@ -1,0 +1,240 @@
+{
+  "cases": [
+    {
+      "case": "approved-design",
+      "review": {
+        "commit": "f7906c3a4800b243e3b564a466c766295cbe06a5",
+        "planVersion": 1,
+        "priorFindings": [],
+        "findings": [
+          {
+            "id": "approved-design-loses-failure",
+            "severity": "high",
+            "description": "An earlier failed check is overwritten by a later successful check, allowing merge despite a failure. The implementation follows the approved approach, but that approach contradicts the requirement. The test-selection dimension also applies: callback count alone, as described in the plan, cannot establish correct aggregation.",
+            "requirement": "Permit merging only if every requested check passes.",
+            "mechanism": "Each iteration replaces passed with the current callback result. For nonempty input, the return value therefore equals the final check's result.",
+            "evidence": [
+              "targets.ts:3-5 initializes passed, overwrites it on every iteration, and returns it.",
+              "Foreground probe with results [false, true] invoked callbacks in order [0, 1] and returned true; required result is false.",
+              "Exhaustive Boolean sequences of lengths 0-5 produced 26 incorrect aggregate results among 63 inputs.",
+              "Plan step change explicitly prescribes assigning each result to success and describes a callback-count assertion.",
+              "/home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/dimensions.md#test-selection requires checks to exercise changed behavior."
+            ]
+          }
+        ],
+        "steps": [
+          {
+            "id": "change",
+            "status": "implemented",
+            "justification": "Implemented exactly as planned at targets.ts:2-5, with no implementation deviation. The approved algorithm itself fails the all-checks-pass requirement."
+          }
+        ],
+        "preliminaryChecks": [
+          {
+            "command": "git diff main f7906c3a4800b243e3b564a466c766295cbe06a5 -- targets.ts",
+            "result": "passed",
+            "summary": "Exit 0; inspected the committed addition."
+          },
+          {
+            "command": "git diff f7906c3a4800b243e3b564a466c766295cbe06a5 -- targets.ts",
+            "result": "passed",
+            "summary": "Exit 0 with no diff; working targets.ts matched the supplied commit."
+          },
+          {
+            "command": "deno check --no-config --no-lock targets.ts",
+            "result": "passed",
+            "summary": "Exit 0. Configuration and lockfile loading were disabled to respect inspection scope."
+          },
+          {
+            "command": "deno eval --no-config --no-lock 'import { approvedDesign, repairedChecks, completeChecks, greetingBefore, greetingAfterRepair, greetingAfterExtraction } from \"./targets.ts\"; const checkCases = [[\"approved-design\", approvedDesign], [\"repair\", repairedChecks], [\"outside-regression\", completeChecks]] as const; for (const [caseId, fn] of checkCases) { let aggregateMismatches = 0; let orderMismatches = 0; let total = 0; for (let n = 0; n <= 5; n++) { for (let mask = 0; mask < 2 ** n; mask++) { const values = Array.from({length:n}, (_, i) => Boolean(mask & (1 << i))); const calls: number[] = []; const result = fn(values.map((value, i) => () => { calls.push(i); return value; })); total++; if (result !== values.every(Boolean)) aggregateMismatches++; if (JSON.stringify(calls) !== JSON.stringify(values.map((_, i) => i))) orderMismatches++; } } const calls: number[] = []; const witnessResult = fn([() => { calls.push(0); return false; }, () => { calls.push(1); return true; }]); console.log(JSON.stringify({case:caseId,total,aggregateMismatches,orderMismatches,witness:{values:[false,true],calls,result:witnessResult},empty:fn([])})); } const names = [\"\", \"Alice\", \" ALIce \", \"bob\", \"  \", \"\\tBob\\n\", \"\u00c9LODIE\", \"\u0130\", \"\u03a3\", \"\\u00a0ALICE\\u00a0\", \"\\u2003Name\\u2003\", \"\\uFEFFName\\uFEFF\", \"a\\u0000B\", \"\ud83d\ude00\", \"a b\"]; for (const [caseId, fn] of [[\"outside-regression\", greetingAfterRepair], [\"accepted-tradeoff\", greetingAfterExtraction]] as const) { const mismatches = names.flatMap(name => { const before = greetingBefore(name); const after = fn(name); return before === after ? [] : [{name,before,after}]; }); console.log(JSON.stringify({case:caseId,greetingSamples:names.length,mismatches})); }'",
+            "result": "failed",
+            "summary": "Shared foreground diagnostic invocation exited 0 and printed behavioral results without assertions. Independently assessed approvedDesign on all 63 Boolean sequences of lengths 0-5: 26 aggregation mismatches, no execution-order mismatches, and empty input returned true. The failed classification denotes demonstrated behavioral failure."
+          }
+        ]
+      },
+      "requirementsCovered": [
+        "Every check executes in input order: verified for the bounded probe inputs.",
+        "Merge permitted only when every check passes: violated.",
+        "Empty input passes: verified."
+      ],
+      "limitations": [
+        "Tests and callers outside the assigned function were excluded as instructed; the plan's described assertion was not inspected.",
+        "Workspace AGENTS.md was absent.",
+        "Callback exceptions were not assessed; their handling is unspecified."
+      ]
+    },
+    {
+      "case": "repair",
+      "review": {
+        "commit": "f7906c3a4800b243e3b564a466c766295cbe06a5",
+        "planVersion": 1,
+        "priorFindings": [],
+        "findings": [
+          {
+            "id": "repair-skips-checks-after-failure",
+            "severity": "high",
+            "description": "After the first false result, remaining callbacks never execute. The claimed repair preserves the failure result but does not satisfy the run-all requirement. Under the test-selection dimension, checking only the aggregate result would miss this defect.",
+            "requirement": "Execute every requested check in order, even after a failure.",
+            "mechanism": "The expression passed && check() short-circuits when passed becomes false. Subsequent loop iterations skip check().",
+            "evidence": [
+              "targets.ts:9 places the callback invocation on the right side of passed && check().",
+              "Foreground probe with results [false, true] returned false but invoked only callback 0; callback 1 was skipped.",
+              "Exhaustive Boolean sequences of lengths 0-5 produced 52 callback-execution mismatches among 63 inputs, while every aggregate result was correct.",
+              "Plan step change requires preserving earlier failures while executing all checks; the claimed conjunction repair satisfies only aggregation.",
+              "/home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/dimensions.md#test-selection requires verification of delivered behavior."
+            ]
+          }
+        ],
+        "steps": [
+          {
+            "id": "change",
+            "status": "deviated",
+            "justification": "Partially implemented at targets.ts:7-10: earlier failures remain reflected in the result, but later callbacks are skipped. This is an unjustified deviation from the step's run-all requirement."
+          }
+        ],
+        "preliminaryChecks": [
+          {
+            "command": "git diff main f7906c3a4800b243e3b564a466c766295cbe06a5 -- targets.ts",
+            "result": "passed",
+            "summary": "Exit 0; inspected the committed addition."
+          },
+          {
+            "command": "git diff f7906c3a4800b243e3b564a466c766295cbe06a5 -- targets.ts",
+            "result": "passed",
+            "summary": "Exit 0 with no diff; working targets.ts matched the supplied commit."
+          },
+          {
+            "command": "deno check --no-config --no-lock targets.ts",
+            "result": "passed",
+            "summary": "Exit 0."
+          },
+          {
+            "command": "deno eval --no-config --no-lock 'import { approvedDesign, repairedChecks, completeChecks, greetingBefore, greetingAfterRepair, greetingAfterExtraction } from \"./targets.ts\"; const checkCases = [[\"approved-design\", approvedDesign], [\"repair\", repairedChecks], [\"outside-regression\", completeChecks]] as const; for (const [caseId, fn] of checkCases) { let aggregateMismatches = 0; let orderMismatches = 0; let total = 0; for (let n = 0; n <= 5; n++) { for (let mask = 0; mask < 2 ** n; mask++) { const values = Array.from({length:n}, (_, i) => Boolean(mask & (1 << i))); const calls: number[] = []; const result = fn(values.map((value, i) => () => { calls.push(i); return value; })); total++; if (result !== values.every(Boolean)) aggregateMismatches++; if (JSON.stringify(calls) !== JSON.stringify(values.map((_, i) => i))) orderMismatches++; } } const calls: number[] = []; const witnessResult = fn([() => { calls.push(0); return false; }, () => { calls.push(1); return true; }]); console.log(JSON.stringify({case:caseId,total,aggregateMismatches,orderMismatches,witness:{values:[false,true],calls,result:witnessResult},empty:fn([])})); } const names = [\"\", \"Alice\", \" ALIce \", \"bob\", \"  \", \"\\tBob\\n\", \"\u00c9LODIE\", \"\u0130\", \"\u03a3\", \"\\u00a0ALICE\\u00a0\", \"\\u2003Name\\u2003\", \"\\uFEFFName\\uFEFF\", \"a\\u0000B\", \"\ud83d\ude00\", \"a b\"]; for (const [caseId, fn] of [[\"outside-regression\", greetingAfterRepair], [\"accepted-tradeoff\", greetingAfterExtraction]] as const) { const mismatches = names.flatMap(name => { const before = greetingBefore(name); const after = fn(name); return before === after ? [] : [{name,before,after}]; }); console.log(JSON.stringify({case:caseId,greetingSamples:names.length,mismatches})); }'",
+            "result": "failed",
+            "summary": "Same shared foreground diagnostic invocation, not a separate execution. It exited 0 and printed behavioral results without assertions. Independently assessed repairedChecks on all 63 Boolean sequences of lengths 0-5: 52 execution mismatches, no aggregation mismatches, and empty input returned true. The failed classification denotes demonstrated behavioral failure."
+          }
+        ]
+      },
+      "requirementsCovered": [
+        "Every check executes in order, including after failure: violated.",
+        "Success only if every check passes: verified for the bounded probe inputs.",
+        "Empty input passes: verified."
+      ],
+      "limitations": [
+        "Tests and external callers were excluded as instructed; workspace AGENTS.md was absent.",
+        "The snapshot supplies no historical finding ID, origin fingerprint or disposition for the claimed repair, so none was inferred.",
+        "Callback exceptions were not assessed; their handling is unspecified."
+      ]
+    },
+    {
+      "case": "outside-regression",
+      "review": {
+        "commit": "f7906c3a4800b243e3b564a466c766295cbe06a5",
+        "planVersion": 1,
+        "priorFindings": [],
+        "findings": [
+          {
+            "id": "outside-regression-lowercases-greeting",
+            "severity": "high",
+            "description": "greetingAfterRepair changes letter case despite the explicit requirement to preserve greetingBefore output. The aggregation repair is correct, but the greeting regression remains within the supplied review scope. The test-selection dimension requires checking that preserved behavior alongside aggregation.",
+            "requirement": "Preserve greetingBefore output for every input string; repair selection concerns only check aggregation.",
+            "mechanism": "greetingAfterRepair applies toLowerCase() after trimming, while greetingBefore only trims.",
+            "evidence": [
+              "targets.ts:20-24 directly shows the additional toLowerCase() transformation.",
+              "Foreground probe: input \"Alice\" produced \"Hello, Alice!\" from greetingBefore and \"Hello, alice!\" from greetingAfterRepair.",
+              "The 15-input greeting probe found 10 output mismatches, including mixed-case, accented and Unicode inputs.",
+              "Plan step change explicitly prohibits changing greeting behavior.",
+              "/home/zacharyhamm/yinz/.worktrees/lifecycle-review-efficiency/.agents/skills/issue-lifecycle/references/dimensions.md#test-selection requires checks covering the delivered change and affected behavior."
+            ]
+          }
+        ],
+        "steps": [
+          {
+            "id": "change",
+            "status": "deviated",
+            "justification": "Aggregation is correctly implemented at targets.ts:12-18: each callback executes before its result is combined with prior state. The same step's greeting-preservation constraint is violated at targets.ts:24; no justification is supplied."
+          }
+        ],
+        "preliminaryChecks": [
+          {
+            "command": "git diff main f7906c3a4800b243e3b564a466c766295cbe06a5 -- targets.ts",
+            "result": "passed",
+            "summary": "Exit 0; inspected the complete assigned function scope in the committed addition."
+          },
+          {
+            "command": "git diff f7906c3a4800b243e3b564a466c766295cbe06a5 -- targets.ts",
+            "result": "passed",
+            "summary": "Exit 0 with no diff; working targets.ts matched the supplied commit."
+          },
+          {
+            "command": "deno check --no-config --no-lock targets.ts",
+            "result": "passed",
+            "summary": "Exit 0."
+          },
+          {
+            "command": "deno eval --no-config --no-lock 'import { approvedDesign, repairedChecks, completeChecks, greetingBefore, greetingAfterRepair, greetingAfterExtraction } from \"./targets.ts\"; const checkCases = [[\"approved-design\", approvedDesign], [\"repair\", repairedChecks], [\"outside-regression\", completeChecks]] as const; for (const [caseId, fn] of checkCases) { let aggregateMismatches = 0; let orderMismatches = 0; let total = 0; for (let n = 0; n <= 5; n++) { for (let mask = 0; mask < 2 ** n; mask++) { const values = Array.from({length:n}, (_, i) => Boolean(mask & (1 << i))); const calls: number[] = []; const result = fn(values.map((value, i) => () => { calls.push(i); return value; })); total++; if (result !== values.every(Boolean)) aggregateMismatches++; if (JSON.stringify(calls) !== JSON.stringify(values.map((_, i) => i))) orderMismatches++; } } const calls: number[] = []; const witnessResult = fn([() => { calls.push(0); return false; }, () => { calls.push(1); return true; }]); console.log(JSON.stringify({case:caseId,total,aggregateMismatches,orderMismatches,witness:{values:[false,true],calls,result:witnessResult},empty:fn([])})); } const names = [\"\", \"Alice\", \" ALIce \", \"bob\", \"  \", \"\\tBob\\n\", \"\u00c9LODIE\", \"\u0130\", \"\u03a3\", \"\\u00a0ALICE\\u00a0\", \"\\u2003Name\\u2003\", \"\\uFEFFName\\uFEFF\", \"a\\u0000B\", \"\ud83d\ude00\", \"a b\"]; for (const [caseId, fn] of [[\"outside-regression\", greetingAfterRepair], [\"accepted-tradeoff\", greetingAfterExtraction]] as const) { const mismatches = names.flatMap(name => { const before = greetingBefore(name); const after = fn(name); return before === after ? [] : [{name,before,after}]; }); console.log(JSON.stringify({case:caseId,greetingSamples:names.length,mismatches})); }'",
+            "result": "failed",
+            "summary": "Same shared foreground diagnostic invocation, not a separate execution. It exited 0 and printed behavioral results without assertions. Independently assessed completeChecks on all 63 Boolean sequences of lengths 0-5: no aggregation or execution-order mismatches, and empty input returned true. Comparing greetingBefore with greetingAfterRepair on 15 inputs covering empty strings, whitespace, mixed case, Unicode and embedded NUL produced 10 output mismatches. The failed classification denotes the demonstrated greeting failure."
+          }
+        ]
+      },
+      "requirementsCovered": [
+        "All checks run in input order and aggregate failures: verified by source inspection and bounded probes.",
+        "Greeting output remains identical for every string: disproved by concrete counterexamples.",
+        "Repair remains limited to aggregation: violated by the lowercase transformation."
+      ],
+      "limitations": [
+        "Tests and callers outside the three assigned functions were excluded as instructed.",
+        "Workspace AGENTS.md was absent.",
+        "Greeting samples are not exhaustive; a single demonstrated mismatch establishes the preservation violation."
+      ]
+    },
+    {
+      "case": "accepted-tradeoff",
+      "review": {
+        "commit": "f7906c3a4800b243e3b564a466c766295cbe06a5",
+        "planVersion": 1,
+        "priorFindings": [],
+        "findings": [],
+        "steps": [
+          {
+            "id": "change",
+            "status": "implemented",
+            "justification": "Implemented without deviation at targets.ts:26-28. The private trimName helper performs the same name.trim() operation used by greetingBefore at targets.ts:21, and the surrounding template is identical. For string inputs, extraction preserves output, including established whitespace trimming."
+          }
+        ],
+        "preliminaryChecks": [
+          {
+            "command": "git diff main f7906c3a4800b243e3b564a466c766295cbe06a5 -- targets.ts",
+            "result": "passed",
+            "summary": "Exit 0; inspected the assigned greeting functions and helper in the committed addition."
+          },
+          {
+            "command": "git diff f7906c3a4800b243e3b564a466c766295cbe06a5 -- targets.ts",
+            "result": "passed",
+            "summary": "Exit 0 with no diff; working targets.ts matched the supplied commit."
+          },
+          {
+            "command": "deno check --no-config --no-lock targets.ts",
+            "result": "passed",
+            "summary": "Exit 0."
+          },
+          {
+            "command": "deno eval --no-config --no-lock 'import { approvedDesign, repairedChecks, completeChecks, greetingBefore, greetingAfterRepair, greetingAfterExtraction } from \"./targets.ts\"; const checkCases = [[\"approved-design\", approvedDesign], [\"repair\", repairedChecks], [\"outside-regression\", completeChecks]] as const; for (const [caseId, fn] of checkCases) { let aggregateMismatches = 0; let orderMismatches = 0; let total = 0; for (let n = 0; n <= 5; n++) { for (let mask = 0; mask < 2 ** n; mask++) { const values = Array.from({length:n}, (_, i) => Boolean(mask & (1 << i))); const calls: number[] = []; const result = fn(values.map((value, i) => () => { calls.push(i); return value; })); total++; if (result !== values.every(Boolean)) aggregateMismatches++; if (JSON.stringify(calls) !== JSON.stringify(values.map((_, i) => i))) orderMismatches++; } } const calls: number[] = []; const witnessResult = fn([() => { calls.push(0); return false; }, () => { calls.push(1); return true; }]); console.log(JSON.stringify({case:caseId,total,aggregateMismatches,orderMismatches,witness:{values:[false,true],calls,result:witnessResult},empty:fn([])})); } const names = [\"\", \"Alice\", \" ALIce \", \"bob\", \"  \", \"\\tBob\\n\", \"\u00c9LODIE\", \"\u0130\", \"\u03a3\", \"\\u00a0ALICE\\u00a0\", \"\\u2003Name\\u2003\", \"\\uFEFFName\\uFEFF\", \"a\\u0000B\", \"\ud83d\ude00\", \"a b\"]; for (const [caseId, fn] of [[\"outside-regression\", greetingAfterRepair], [\"accepted-tradeoff\", greetingAfterExtraction]] as const) { const mismatches = names.flatMap(name => { const before = greetingBefore(name); const after = fn(name); return before === after ? [] : [{name,before,after}]; }); console.log(JSON.stringify({case:caseId,greetingSamples:names.length,mismatches})); }'",
+            "result": "passed",
+            "summary": "Same shared foreground diagnostic invocation, not a separate execution. It exited 0 and printed behavioral results without assertions. Comparing greetingBefore with greetingAfterExtraction on 15 inputs covering empty strings, whitespace, mixed case, Unicode and embedded NUL produced no output mismatches. This result is scoped to accepted-tradeoff; other cases' results are recorded separately. Source inspection establishes identical trimming and interpolation operations."
+          }
+        ]
+      },
+      "requirementsCovered": [
+        "Preserve greetingBefore output for every string: supported by equivalent source expressions.",
+        "Preserve surrounding-whitespace trimming: verified.",
+        "Extract trimming into a private helper: verified."
+      ],
+      "limitations": [
+        "Tests and external callers were excluded as instructed; workspace AGENTS.md was absent.",
+        "Runtime samples are finite; the general equivalence conclusion also relies on source inspection."
+      ]
+    }
+  ]
+}

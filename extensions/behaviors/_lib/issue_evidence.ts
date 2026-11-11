@@ -3,15 +3,28 @@ import { createHash } from "node:crypto";
 import { z } from "npm:zod@4.6.7";
 import {
   ActionSchemas,
+  activeReviewFix,
+  implementationReviewFingerprint,
   initialPlanning,
   planningGeneration,
   previousPlanFindings,
+  priorImplementationFindings,
   recordFeedback,
+  RepairResultSchema,
   RevisionPlanSchema,
+  selectedRepairFindings,
   StateSchema,
   transition,
+  validateImplementationReview,
   validatePlanReview,
+  validateRepairMappings,
+  validateRepairResponses,
 } from "./lifecycle.ts";
+import {
+  ContinuityContext,
+  RoundRecord,
+  validateAdvisory,
+} from "./review_continuity.ts";
 import { AgentConfigSchema } from "./yinz_agent.ts";
 
 const Digest = z.string().regex(/^[0-9a-f]{64}$/);
@@ -38,7 +51,7 @@ export const RoleSchemas = {
   review_code: ActionSchemas.review_code,
   review_ux: ActionSchemas.review_ux,
   plan_review_fixes: ActionSchemas.plan_review_fixes,
-  implement_review_fixes: ImplementationResult,
+  implement_review_fixes: RepairResultSchema,
 };
 export const RoleEvidenceSchema = z.discriminatedUnion("role", [
   z.object({ role: z.literal("triage"), evidence: RoleSchemas.triage })
@@ -98,6 +111,9 @@ const AssignmentCoreSchema = z.object({
   generation: z.string().min(1),
   request: z.string().min(1).optional(),
   reviewCommit: Commit.optional(),
+  contractVersion: z.literal(2).optional(),
+  continuity: ContinuityContext.optional(),
+  round: RoundRecord.optional(),
 }).strict();
 export const AssignmentSchema = AssignmentCoreSchema.extend({
   digest: Digest,
@@ -153,6 +169,9 @@ export type AssignmentTask = {
   before: z.infer<typeof StateSchema>;
   request?: string;
   reviewCommit?: string;
+  contractVersion?: 2;
+  continuity?: z.infer<typeof ContinuityContext>;
+  round?: z.infer<typeof RoundRecord>;
 };
 export function assignmentCore(
   parent: { modelId: string; definition: { name: string } },
@@ -172,10 +191,124 @@ export function assignmentCore(
     generation: planningGeneration(task.before),
     request: task.request,
     reviewCommit: task.reviewCommit,
+    contractVersion: task.contractVersion,
+    continuity: task.continuity,
+    round: task.round,
   });
+}
+/** Complete obligations; repeated historical diffs have exact saved-snapshot references. */
+export function reviewPacket(state: z.infer<typeof StateSchema>) {
+  const review = (
+    value: NonNullable<typeof state.codeReview | typeof state.uxReview>,
+    source: string,
+  ) => ({
+    ...value,
+    sourceRef: `assignment.before.${source}`,
+    ...(value.baseline
+      ? {
+        baseline: {
+          ...value.baseline,
+          featureDiff: {
+            sourceRef: `assignment.before.${source}.baseline.featureDiff`,
+          },
+          ...(value.baseline.delta !== undefined
+            ? {
+              delta: {
+                sourceRef: `assignment.before.${source}.baseline.delta`,
+              },
+            }
+            : {}),
+        },
+      }
+      : {}),
+  });
+  const decisions = (state.reviewDecisions ?? []).map((decision, index) => ({
+    ...decision,
+    sourceRef: `assignment.before.reviewDecisions[${index}]`,
+    codeReview: review(
+      decision.codeReview,
+      `reviewDecisions[${index}].codeReview`,
+    ),
+    uxReview: review(decision.uxReview, `reviewDecisions[${index}].uxReview`),
+  }));
+  const fix = activeReviewFix(state);
+  return {
+    requirements: state.issue,
+    currentPlan: state.plan,
+    approvedPlan: state.approval?.planVersion === state.plan?.version
+      ? state.plan
+      : undefined,
+    planReview: state.planReview,
+    planApproval: state.approval,
+    planningContext: state.planningContext,
+    workerProposedAcceptedDecisions: state.planningContext?.acceptedDecisions ??
+      [],
+    controllerAdjudications: state.planningContext?.adjudications ?? [],
+    userReviewAuthorizations: decisions,
+    selectedFindings: selectedRepairFindings(state),
+    priorFindings: priorImplementationFindings(state),
+    currentReviews: {
+      technical: state.codeReview
+        ? review(state.codeReview, "codeReview")
+        : undefined,
+      ux: state.uxReview ? review(state.uxReview, "uxReview") : undefined,
+    },
+    reviewArchives: (state.reviewHistory ?? []).map((entry, index) => ({
+      ...entry,
+      review: review(entry.review, `reviewHistory[${index}].review`),
+    })),
+    approvedRepair: fix ? decisions.find((d) => d.id === fix.id) : undefined,
+    verification: state.verification,
+    mergeFailures: state.mergeFailures ?? [],
+    lastFailure: state.lastFailure,
+    limitations: [
+      "Historical records are context, never current approval. Saved-snapshot sourceRef paths are retrievable from the assigned submission's content.assignment.before via its authorized data query. Historical diffs are referenced without truncation; the current baseline includes the complete feature diff. Failure log references retain complete output where summary lists are bounded.",
+    ],
+  };
 }
 export function validateAssignment(assignment: Assignment) {
   const { digest, promptDigest: _prompt, ...core } = assignment;
+  if (assignment.contractVersion === 2) {
+    const c = assignment.continuity;
+    const fingerprints = (["review_code", "review_ux"] as const).flatMap((
+      role,
+    ) =>
+      (role === "review_code"
+          ? assignment.before.codeReview
+          : assignment.before.uxReview)
+        ? [implementationReviewFingerprint(assignment.before, role)]
+        : []
+    );
+    if (
+      !assignment.round ||
+      assignment.round.assignmentId !== assignment.taskId ||
+      assignment.round.role !== assignment.role ||
+      assignment.round.issueDigest !== assignment.before.issue.digest ||
+      assignment.round.generation !== assignment.generation ||
+      !c || c.assignmentId !== assignment.taskId ||
+      c.issueDigest !== assignment.before.issue.digest ||
+      c.generation !== assignment.generation ||
+      c.rollbackId !== assignment.before.rollbackId ||
+      c.planVersion !== assignment.before.planVersion ||
+      c.packetDigest !== evidenceDigest(reviewPacket(assignment.before)) ||
+      canonical(c.reviewFingerprints) !== canonical(fingerprints) ||
+      (assignment.reviewCommit &&
+        c.baseline?.head !== assignment.reviewCommit) ||
+      ([
+        "implement",
+        "review_code",
+        "review_ux",
+        "plan_review_fixes",
+        "implement_review_fixes",
+      ].includes(assignment.role) && !c.baseline)
+    ) {
+      throw new Error(
+        "Review continuity does not match its assignment snapshot and baseline",
+      );
+    }
+  } else if (assignment.continuity) {
+    throw new Error("Legacy assignment cannot carry a new continuity contract");
+  }
   if (
     evidenceDigest(AssignmentCoreSchema.parse(core)) !== digest
   ) throw new Error("Submission assignment digest does not match its binding");
@@ -183,11 +316,77 @@ export function validateAssignment(assignment: Assignment) {
 
 /** Explicitly validate before writing: Swamp resource schemas only warn. */
 export function validateEvidence(assignment: Assignment, raw: unknown) {
+  validateAssignment(assignment);
   const payload = RoleEvidenceSchema.parse(raw);
   if (payload.role !== assignment.role) {
     throw new Error("Evidence role does not match the assigned task");
   }
   const state = structuredClone(assignment.before);
+  if (assignment.contractVersion === 2) {
+    if (payload.role === "plan_review_fixes") {
+      validateRepairMappings(state, payload.evidence, true);
+    }
+    if (payload.role === "implement_review_fixes") {
+      validateRepairResponses(state, payload.evidence, true);
+    }
+    if (payload.role === "review_code" || payload.role === "review_ux") {
+      validateImplementationReview(state, payload.role, payload.evidence, true);
+      if (
+        payload.evidence.baseline &&
+        canonical(payload.evidence.baseline) !==
+          canonical(assignment.continuity!.baseline)
+      ) throw new Error("Reviewer baseline differs from assignment");
+      // Controller provenance, never a claim of worker execution.
+      payload.evidence.baseline = assignment.continuity!.baseline;
+    }
+    if ("advisoryEvidence" in payload.evidence) {
+      for (const advisory of payload.evidence.advisoryEvidence ?? []) {
+        validateAdvisory(
+          advisory,
+          state.issue.digest,
+          "commit" in payload.evidence
+            ? payload.evidence.commit
+            : assignment.reviewCommit!,
+        );
+        if (!advisory.reuse && advisory.producingTask !== assignment.taskId) {
+          throw new Error(
+            "New advisory execution must name its producing assignment",
+          );
+        }
+        if (advisory.reuse) {
+          const sources = [
+            state.codeReview,
+            state.uxReview,
+            ...(state.reviewHistory ?? []).map((h) => h.review),
+            ...(state.reviewDecisions ?? []).flatMap((
+              d,
+            ) => [d.codeReview, d.uxReview, d.result]),
+          ];
+          const original = ({ reuse: _reuse, ...execution }: typeof advisory) =>
+            execution;
+          if (
+            !sources.some((s) =>
+              s?.advisoryEvidence?.some((e) =>
+                canonical(original(e)) === canonical(original(advisory))
+              )
+            )
+          ) {
+            throw new Error(
+              "Reused advisory execution must match retained original provenance",
+            );
+          }
+        }
+        if (
+          advisory.reuse &&
+          assignment.continuity?.baseline?.ancestry === "missing"
+        ) {
+          throw new Error(
+            "Missing prior objects disable advisory reuse assistance",
+          );
+        }
+      }
+    }
+  }
   if (payload.role === "plan" && !initialPlanning(state)) {
     const { revision } = RevisionPlanSchema.parse(payload.evidence);
     for (
@@ -223,6 +422,15 @@ export function validateEvidence(assignment: Assignment, raw: unknown) {
   const next = payload.role === "implement"
     ? state
     : transition(state, payload.role, payload.evidence);
+  // Replay the contract that accepted the receipt. Legacy transitions did not
+  // archive reviews, but any history already bound into the snapshot is evidence.
+  if (assignment.contractVersion !== 2) {
+    if (assignment.before.reviewHistory === undefined) {
+      delete next.reviewHistory;
+    } else {
+      next.reviewHistory = structuredClone(assignment.before.reviewHistory);
+    }
+  }
   return { payload, next };
 }
 

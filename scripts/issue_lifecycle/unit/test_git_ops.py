@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import fcntl
 import hashlib
 import json
@@ -627,6 +628,64 @@ raise SystemExit(subprocess.run([{real_git!r}, *args]).returncode)
         worktree = self.root / name
         self.git(self.repo, "worktree", "add", "-b", name, str(worktree))
         return worktree
+
+    def test_review_context_captures_full_diff_and_pins_both_reviewers_when_main_moves(self):
+        worktree = self.feature_worktree("review-context")
+        base = self.git(self.repo, "rev-parse", "HEAD")
+        (worktree / "feature.txt").write_text("feature\n")
+        self.git(worktree, "add", ".")
+        self.git(worktree, "commit", "-m", "feature")
+        head = self.git(worktree, "rev-parse", "HEAD")
+        request = {"action": "review-context", "repoPath": str(self.repo), "worktree": str(worktree), "head": head}
+        baseline = self.run_request(request)
+        self.assertEqual((baseline["main"], baseline["mergeBase"], baseline["head"]), (base, base, head))
+        self.assertIn("+feature\n", baseline["featureDiff"])
+        (self.repo / "main.txt").write_text("moved main\n")
+        self.git(self.repo, "add", ".")
+        self.git(self.repo, "commit", "-m", "main moved")
+        ux = self.run_request({**request, "baseline": baseline})
+        self.assertEqual(ux["featureDiff"], baseline["featureDiff"])
+        self.assertEqual(ux["main"], base)
+        self.assertTrue(ux["limitations"])
+        moved = self.run_request({**request, "previous": baseline})
+        self.assertTrue(moved["baselineChanged"])
+        self.assertEqual(moved["ancestry"], "same")
+        self.git(worktree, "rebase", "main")
+        rebased = self.git(worktree, "rev-parse", "HEAD")
+        divergent = self.run_request({**request, "head": rebased, "previous": baseline})
+        self.assertEqual(divergent["ancestry"], "divergent")
+        self.assertIn("+moved main", divergent["delta"])
+        missing = self.run_request({**request, "head": rebased, "previous": {"head": "f" * 40}})
+        self.assertEqual(missing["ancestry"], "missing")
+        self.assertEqual(missing["baselineComparison"], "unknown")
+        self.assertNotIn("delta", missing)
+        self.assertTrue(missing["featureDiff"])
+        error = self.run_request({**request, "head": rebased, "baseline": {**baseline, "main": "f" * 40}}, success=False)
+        self.assertIn("unavailable", error["error"])
+        stale = self.run_request(request, success=False)
+        self.assertIn("HEAD changed", stale["error"])
+
+    def test_review_context_preserves_non_utf8_diff_bytes(self):
+        worktree = self.feature_worktree("review-non-utf8")
+        (worktree / "latin1.txt").write_bytes(b"caf\xe9\n")
+        self.git(worktree, "add", ".")
+        self.git(worktree, "commit", "-m", "latin1 fixture")
+        head = self.git(worktree, "rev-parse", "HEAD")
+        result = self.run_request({"action": "review-context", "repoPath": str(self.repo), "worktree": str(worktree), "head": head})
+        self.assertEqual(result["featureDiffEncoding"], "base64")
+        self.assertIn(b"+caf\xe9\n", base64.b64decode(result["featureDiff"]))
+
+    def test_review_context_descendant_delta_does_not_replace_complete_feature_scope(self):
+        worktree = self.feature_worktree("review-descendant")
+        request = {"action": "review-context", "repoPath": str(self.repo), "worktree": str(worktree), "head": self.git(worktree, "rev-parse", "HEAD")}
+        initial = self.run_request(request)
+        (worktree / "later.txt").write_text("later\n")
+        self.git(worktree, "add", ".")
+        self.git(worktree, "commit", "-m", "later")
+        current = self.run_request({**request, "head": self.git(worktree, "rev-parse", "HEAD"), "previous": initial})
+        self.assertEqual(current["ancestry"], "descendant")
+        self.assertIn("+later\n", current["delta"])
+        self.assertIn("+later\n", current["featureDiff"])
 
     def test_claim_reserves_canonical_worktree_for_one_issue(self):
         worktree = self.feature_worktree("origin")

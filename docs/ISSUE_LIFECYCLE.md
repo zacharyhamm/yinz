@@ -882,3 +882,133 @@ identities, exact inconsistent workflow run IDs and recovery actions. A workflow
 still recorded running after its issue reaches done is an inconsistent
 observation, not proof of a dead controller. Status never cancels, finalizes or
 rewrites historical runs, and its observations never authorize evidence import.
+
+## Review continuity and assessment
+
+New worker assignments use `contractVersion: 2` alongside the unchanged submission
+protocol. Their optional-on-disk `continuity` context is mandatory for new dispatch
+and bound by the assignment digest to task ID, requirements digest/generation,
+rollback identity, plan version, current role review fingerprints, packet digest
+and captured full Git object IDs. Saved legacy assignments retain their original
+schema, prompts and submission supplements. Strong completeness checks apply only
+to new assignments; old records are never rewritten or made to reinvestigate.
+
+Before implementation/review dispatch, the Git helper captures local main,
+merge-base and reviewed HEAD, complete binary-capable feature diff, optional prior
+endpoint delta, ancestry, changed-baseline flag and explicit limitations. UX pins
+the technical review's endpoints even if local main moves. Rebased or divergent
+history is explicitly labelled; missing prior objects disable delta/reuse
+assistance, while missing required current objects block dispatch. Captured diffs
+are untruncated, with explicit base64 encoding for non-UTF-8 diff bytes; the saved assignment is authoritative even if named refs move.
+
+`reviewHistory` archives superseded role reviews before ordinary implementation,
+plan change, review replacement, requirements refresh and rollback clear them.
+Archives retain requirements/generation, rollback, role and fingerprint. A UX-only
+rollback archives only UX and retains matching technical evidence. Archives never
+satisfy current gates. Concern identity includes issue, role, origin fingerprint
+and stable finding ID. Cross-role links preserve independent obligations. The
+packet carries complete saved planning/review decisions, user authorizations,
+selected findings, repair plans/responses, approved checks and failure log
+references; it distinguishes worker-proposed tradeoffs from dispositions and
+actual approvals. Changed requirements retain archives as context without
+importing their old obligations into the new digest.
+
+Repair planners map every selected full finding identity to repair steps and
+checks. Implementers respond to every selection with `addressed`, `disputed` or
+`unresolved`, rationale, affected paths and source/check evidence. A new scope
+proposal returns through repair planning/approval. Implementation claims never
+close findings. Subsequent reviewers respond to prior unresolved findings with
+`persists`, `verified_fixed` or `reopened`. Persistent concerns remain in current
+findings with their original identity. Omission cannot close a concern. Reopening
+verified-fixed concerns requires new evidence and rationale addressing the earlier
+decision. An unchanged ignored concern is labelled historical continuity and
+remains unresolved; acceptance still needs an exact current review fingerprint.
+
+Requirements review remains independent of the approved design. Full feature
+scope, assumptions, callers, tests and failure paths remain review obligations;
+the repair delta only prioritizes investigation. Technical and UX reviews remain
+sequential and fresh after repairs. Selection, repair-plan approval, current
+finding acceptance, deterministic verification and merge authorization remain
+separate gates. Rebased merge CI and its explicit per-merge waiver rules are
+unchanged.
+
+Optional structured `advisoryEvidence` preserves producing task, original commit,
+requirements, argv/cwd, result, durable output reference, dependency files/tests,
+platform/toolchain and environmental prerequisites. Reuse retains original
+attribution, names the current commit and explains applicability. Changed commits
+need a comparison of implementation, callers, tests, fixtures, dependencies,
+build configuration, requirements and environment. Missing evidence/objects,
+unknown scope, dirty execution or failed/flaky results cannot justify passing
+reuse. Original provenance must match retained evidence. Availability and
+comparison declarations are worker evidence assessed by reviewers, not a claim
+that schema validation independently proves dependency equivalence. Existing
+free-text preliminary checks remain advisory. Neither form can supply a lifecycle
+verification receipt or bypass rebased merge CI.
+
+`rounds` is an append-only journal keyed by assignment ID, recorded at reservation
+and idempotently reused on resume. The original round is bound inside the saved
+assignment, including a driver reservation that has not dispatched. The separate
+journal reconciles that record after task publication, so interrupted reservation
+writes do not create phantom rounds. Each record links its predecessor and stores
+launch causes separately from later evidence-backed classifications/corrections.
+Supported causes are initial work, newly discovered defect, incomplete repair,
+changed requirements, verification/merge failure, recovery, explained other and
+unknown. Review evidence can establish an incomplete repair or new discovery; it
+cannot establish that a repair introduced a defect without comparison evidence.
+Recovery facts are consumed without changing stale-run detection, completion
+recovery or worker terminality requirements.
+
+The read-only report at `scripts/issue_lifecycle/continuity_report.py` consumes
+exported records and never connects to Swamp, Git or Agenda. It deduplicates
+assignment IDs, retains unknown historical causes, separates launch attribution
+from review observations, and reports per-issue rounds, elapsed span, first-repair
+closure, incomplete-repair evidence, unsupported reopening, requirement coverage,
+advisory executions claimed avoided, gate defects and recorded later regressions.
+Evidence-backed quality annotations require both `source` and `evidence`; absent
+annotations remain unknown rather than becoming zero. Findings persisting after
+repair indicate incomplete closure, not proven introduction by that repair.
+Only corrections with an explicit `replaces` index update a launch cause, in
+journal order; observations leave unknown launch causes unknown. Repair outcomes
+use the first eligible review per role whose assignment snapshot already contains
+the completed repair decision and whose reviewed commit matches its result.
+
+The frozen pre-change sample and source/version projection references are under
+`docs/evaluations/lifecycle-continuity/`. It contains all 16 completed issues
+available at capture, 231 distinct observed assignments; historical causes and
+first-repair closure are unassessable where their original records lack them.
+Its median observed elapsed span is 12,444,562.5 ms; this includes user waits and
+recovery and is not active work time. The next 20 distinct completed issues with
+at least one new-contract assignment and completion after the frozen timestamp
+form the pilot. No future completions are manufactured or lifecycle workers run
+to populate it.
+
+```sh
+python scripts/issue_lifecycle/continuity_report.py --normalize /tmp/export.json > /tmp/pilot.json
+python scripts/issue_lifecycle/continuity_report.py \
+  --baseline docs/evaluations/lifecycle-continuity/pre-change-sample.json.gz \
+  --pilot /tmp/pilot.json
+```
+
+An export has `{results, limited:false}` with each record's `modelName`, `name`,
+`specName`, `version`, `createdAt` and parsed `content`. Include all relevant
+historical state, agent-task, rounds, driver reservations and recovery versions; paginate or query per
+issue to avoid oversized output. Project task content to ID, role, createdAt,
+contractVersion, round, before.issue.digest/rollbackId, before.reviewDecisions
+(including each decision's ID and result) and evidence (acceptedAt, payload,
+payloadDigest); project state to issue digest, phase, receipt, reviewDecisions,
+mergeFailures and verification. Normalization omits prompts/prose while retaining
+source-version projection digests. The normalized format has schemaVersion,
+frozenAt, sourceDigest, timingLimitations and issues; callers may append attributed
+quality observations without changing the frozen baseline. Gzip exports are
+accepted. Preserve additional timing-map limitations in `timingLimitations`.
+Schema version 1 adds `completedRepairDecisionIds` to normalized reviewer
+assignments. Older normalized exports remain readable; repair closure stays
+unknown when this snapshot correlation is absent.
+
+Comparison stratifies by changed requirements, recovery and gate failures. A
+claimed benefit requires less repeated investigation/repair at comparable scope
+with no observed reduction in defect detection or safeguard compliance. Report
+small-sample uncertainty, missing attribution/follow-up and quality regressions.
+The report deliberately makes no automatic improvement claim. Bounded paired
+reviewer conversations and their limitations are recorded in the review evaluation
+guide; passing contract tests alone are not review-quality evidence.
