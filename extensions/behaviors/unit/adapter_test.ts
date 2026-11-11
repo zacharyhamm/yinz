@@ -503,12 +503,35 @@ Deno.test("lifecycle origin and implementation adoption canonicalize aliases and
     const nested = join(args.worktree, "nested");
     await Deno.mkdir(nested);
     fixture.resources.set("state", null);
+    const selection = {
+      kind: "codex" as const,
+      model: "custom",
+      effort: "deep",
+    };
+    const write = fixture.context.writeResource;
+    // Interrupt after durable state creation, before the claim is confirmed.
+    fixture.context.writeResource = async (spec, name, value) => {
+      const handle = await write(spec, name, value);
+      if (spec === "state") throw new Error("Interrupted initial start");
+      return handle;
+    };
+    await rejects(
+      () =>
+        behavior.methods.start.execute(
+          { workerWorktree: nested, agent: selection },
+          fixture.context,
+        ),
+      "Interrupted initial start",
+    );
+    equal((await loadState(fixture.context)).workerAgent, selection);
+    fixture.context.writeResource = write;
     await behavior.methods.start.execute(
-      { workerWorktree: nested },
+      { workerWorktree: nested, agent: { kind: "claude" } },
       fixture.context,
     );
     const started = await loadState(fixture.context);
     equal(started.workerWorktree, canonical);
+    equal(started.workerAgent, selection);
     const writeCount = fixture.writes.length;
     await behavior.methods.start.execute(
       { workerWorktree: repo },

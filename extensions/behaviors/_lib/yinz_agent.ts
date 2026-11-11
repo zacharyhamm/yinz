@@ -1,5 +1,6 @@
 import { z } from "npm:zod@4.6.7";
 import { isAbsolute } from "node:path";
+import { AgentKindSchema } from "./worker_selection.ts";
 
 const Text = z.string().trim().min(1);
 const Pane = z.string().regex(/^terminal_[0-9]+$/);
@@ -11,7 +12,7 @@ export const AgentConfigSchema = z.object({
   session: Text,
   control: ControlIdentitySchema.optional(),
   stackWorkers: z.boolean().optional(),
-  kind: z.enum(["claude", "codex", "muse", "pi", "agy"]),
+  kind: AgentKindSchema,
   cwd: Text.refine(isAbsolute, "cwd must be an absolute path"),
   model: z.string().trim().optional(),
   effort: z.string().trim().optional(),

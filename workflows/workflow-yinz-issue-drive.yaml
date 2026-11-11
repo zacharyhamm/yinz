@@ -36,7 +36,6 @@ inputs:
               type: string
         agent:
           type: object
-          required: [session, kind]
           additionalProperties: false
           properties:
             control:

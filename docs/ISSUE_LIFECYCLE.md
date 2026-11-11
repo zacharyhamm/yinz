@@ -100,8 +100,9 @@ returned item ID identify the issue.
 Installed Swamp loads `@yinz/issue-lifecycle` and `@yinz/agent`. Python 3.11+,
 Agenda and Git must be on `PATH`; verification needs normal Yinz build
 prerequisites. Pane tasks need installed `yinz`, a running local session and the
-selected provider. Session selection is explicit: `YINZ_SESSION_NAME` alone does
-not select a worker session. Installed command help defines unfamiliar flags;
+selected provider. With a saved worker choice, `drive` infers the session from
+the controlling pane; outside that environment supply `agent.session` and control
+identity. Legacy issues still need explicit provider settings. Installed command help defines unfamiliar flags;
 JSON is the machine-read format. Input evidence files are issue-scoped to prevent
 concurrent overwrites; paths and text are arguments, never issue text interpolated
 into shell programs.
@@ -133,6 +134,56 @@ Local `main` must be checked out in exactly one clean worktree; the issue uses a
 different local branch in the same repository. Worker origin is spawn-directory
 selection. The earlier [execution-boundary experiment](plans/issue-26-checkout-boundary-proof.md)
 is superseded historical research, not a gate.
+
+### Worker defaults and issue overrides
+
+Optionally create `.yinz/issue-lifecycle.json` in the canonical control checkout:
+
+```json
+{
+  "agent": {"kind": "codex", "model": "your-model", "effort": "your-effort"}
+}
+```
+
+Supported kinds are `claude`, `codex`, `muse`, `pi` and `agy`. Model and effort
+are provider-defined strings; omit them for provider defaults. Unknown fields,
+unsupported kinds, empty strings and malformed configuration are errors. The
+launcher reads this file only for `start`, always from `--control`, even when
+invoked in another worktree.
+
+`start --input-file` accepts an optional `agent` override. For example, save
+`{"agent": {"effort": "your-effort"}}` in an issue-scoped JSON file to change only
+effort. `{"agent": {"kind": "claude"}}` changes provider and clears inherited
+model and effort; supply either field explicitly to select it for the new
+provider. `{"agent": {"model": null, "effort": null}}` clears both to provider
+defaults while keeping the configured kind. Without configuration, supply a
+kind in the start override or retain the existing explicit-agent flow.
+
+The resolved choice is saved as `state.workerAgent` with initial state creation,
+before the worktree claim is confirmed. Repeated or interrupted starts retain
+that original selection. Configuration changes apply to newly started issues.
+Status JSON and readable handoffs show the saved choice. Direct start workflow
+calls accept an already resolved `agent` object; they do not read the launcher
+configuration or apply partial overrides.
+
+Start captures the choice without launching triage. In a controlling Yinz pane:
+
+```sh
+scripts/issue-lifecycle --control <control> --item <id> start --input-file /tmp/issue-<id>-start.json
+scripts/issue-lifecycle --control <control> --item <id> drive
+# Later resumes use the saved choice and identity.
+scripts/issue-lifecycle --control <control> --item <id> drive
+```
+
+Outside a pane, use `drive --input-file /tmp/issue-<id>-drive.json` with
+`{"agent": {"session": "development"}, "control": {"session": "development", "paneId": "terminal_7"}}`.
+Launch options such as `permissionMode` and timeouts may accompany the session.
+An explicit `drive.agent.kind` retains the existing replacement behavior: supply
+the desired model and effort there or omit them for provider defaults. The driver
+persists explicit settings for future workers without changing `state.workerAgent`.
+Pending workers and saved revision assignments always retain their original
+configuration. Legacy states without a saved choice still require explicit
+`drive.agent` provider settings; no model or effort is hardcoded.
 
 ## Stages and evidence
 

@@ -46,11 +46,19 @@ import {
   withIssue,
 } from "./_lib/runtime.ts";
 import { runVerification } from "./_lib/verification.ts";
+import { WorkerSelectionSchema } from "./_lib/worker_selection.ts";
 
 // Swamp delivers globals alongside method arguments. Strip them here; the
 // pure transitions still validate their own inputs with strict schemas.
 const Empty = z.object({}).strip();
-const StartArgs = z.object({ workerWorktree: z.string().trim().min(1) })
+const StartArgs = z.object({
+  workerWorktree: z.string().trim().min(1),
+  // The workflow supplies {} when no default was selected.
+  agent: z.union([
+    WorkerSelectionSchema,
+    z.object({}).strict().transform(() => undefined),
+  ]).optional(),
+})
   .strip();
 const ClaimSchema = z.object({ worktree: z.string().min(1) });
 const IntegrateArgs = z.object({ skipCiRequest: z.string().trim().default("") })
@@ -286,7 +294,7 @@ export const behavior = {
           const saved = await saveState(
             context,
             "start",
-            createState(issue, origin.worktree),
+            createState(issue, origin.worktree, StartArgs.parse(args).agent),
           );
           await gitOperation(context, {
             action: "confirm",

@@ -7,5 +7,6 @@ behaviors:
   - yinz_agent.ts
 include:
   - _lib/yinz_agent.ts
+  - _lib/worker_selection.ts
 workflows:
   - workflow-yinz-agent-task.yaml

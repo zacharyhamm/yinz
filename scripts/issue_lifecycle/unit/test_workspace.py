@@ -94,6 +94,77 @@ else:
         self.assertTrue(all(call["args"][call["args"].index("--repo-dir") + 1] == str(self.control.resolve())
                             for call in self.calls()))
 
+    def write_agent_config(self, value, root=None):
+        path = (root or self.control) / ".yinz" / "issue-lifecycle.json"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(json.dumps(value))
+        return path
+
+    def test_start_resolves_only_control_config_and_field_overrides(self):
+        self.write_agent_config({"agent": {"kind": "claude", "model": "wrong"}}, self.origin)
+        self.write_agent_config({"agent": {"kind": "codex", "model": "custom", "effort": "deep"}})
+        for override, expected in (
+            (None, {"kind": "codex", "model": "custom", "effort": "deep"}),
+            ({"effort": "brief"}, {"kind": "codex", "model": "custom", "effort": "brief"}),
+            ({"kind": "codex", "model": "other"}, {"kind": "codex", "model": "other", "effort": "deep"}),
+            ({"kind": "claude"}, {"kind": "claude"}),
+            ({"kind": "pi", "model": "pi-model"}, {"kind": "pi", "model": "pi-model"}),
+            ({"model": None, "effort": None}, {"kind": "codex"}),
+            ({"effort": None}, {"kind": "codex", "model": "custom"}),
+        ):
+            with self.subTest(override=override):
+                args = []
+                if override is not None:
+                    inputs = self.root / "start.json"
+                    inputs.write_text(json.dumps({"agent": override}))
+                    args = ["--input-file", str(inputs)]
+                result = self.launch("start", *args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.calls()[-1]["input"]["agent"], expected)
+
+    def test_start_without_control_default_keeps_explicit_flow_or_uses_input(self):
+        self.write_agent_config({"agent": {"kind": "claude"}}, self.origin)
+        result = self.launch("start")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("agent", self.calls()[-1]["input"])
+        inputs = self.root / "start.json"
+        inputs.write_text(json.dumps({"agent": {"kind": "agy", "model": None}}))
+        result = self.launch("start", "--input-file", str(inputs))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls()[-1]["input"]["agent"], {"kind": "agy"})
+
+    def test_start_rejects_invalid_config_and_inputs_before_dispatch(self):
+        for config in ([], None, {"agents": {}}, {"agent": None}, {"agent": {}},
+                       {"agent": {"kind": "unknown"}}, {"agent": {"kind": ["codex"]}},
+                       {"agent": {"kind": "codex", "session": "dev"}},
+                       {"agent": {"kind": "codex", "model": 1}},
+                       {"agent": {"kind": "codex", "effort": " "}}):
+            with self.subTest(config=config):
+                path = self.write_agent_config(config)
+                result = self.launch("start")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(str(path), result.stderr)
+                self.assertFalse(self.log.exists())
+        path.write_text("{")
+        result = self.launch("start")
+        self.assertIn("Invalid JSON", result.stderr)
+        path.unlink()
+        for value in ({"agent": {"model": "missing-kind"}}, {"agent": None},
+                      {"agent": {"kind": "codex", "effort": False}}, {"other": 1}):
+            with self.subTest(value=value):
+                inputs = self.root / "start.json"
+                inputs.write_text(json.dumps(value))
+                result = self.launch("start", "--input-file", str(inputs))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("start", result.stderr)
+                self.assertFalse(self.log.exists())
+
+    def test_drive_does_not_reread_new_issue_configuration(self):
+        path = self.write_agent_config({})
+        path.write_text("invalid")
+        result = self.launch("drive")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_later_invocations_do_not_supply_an_origin(self):
         self.launch("start")
         for command in ("drive", "agent", "restart-agent", "resume-agent", "resume-rollback"):

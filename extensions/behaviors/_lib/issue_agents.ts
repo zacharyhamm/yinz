@@ -2,6 +2,7 @@ import { captureCloseoutOrigin, offerCloseout } from "./issue_closeout.ts";
 /** Assign pane work and consume acknowledged Swamp evidence independently of chat. */
 import { join } from "node:path";
 import { z } from "npm:zod@4.6.7";
+import { AgentKindSchema } from "./worker_selection.ts";
 import {
   activeReviewFix,
   codeReviewFingerprint,
@@ -59,7 +60,7 @@ export const AgentInputSchema = z.object({
   session: z.string().trim().min(1),
   // Optional while decoding saved settings and tasks from older lifecycles.
   control: ControlIdentitySchema.optional(),
-  kind: z.enum(["claude", "codex", "muse", "pi", "agy"]),
+  kind: AgentKindSchema,
   model: z.string().trim().min(1).optional(),
   effort: z.string().trim().min(1).optional(),
   permissionMode: z.string().trim().min(1).optional(),

@@ -48,8 +48,16 @@ import {
 import { AgentResponseSchema, ControlIdentitySchema } from "./yinz_agent.ts";
 
 const Settings = AgentInputSchema.omit({ role: true, request: true });
+const SettingsOverride = Settings.omit({
+  startupTimeoutSeconds: true,
+  timeoutSeconds: true,
+}).partial().extend({
+  startupTimeoutSeconds: Settings.shape.startupTimeoutSeconds.removeDefault()
+    .optional(),
+  timeoutSeconds: Settings.shape.timeoutSeconds.removeDefault().optional(),
+});
 export const DriveInputSchema = z.object({
-  agent: Settings.optional(),
+  agent: SettingsOverride.optional(),
   control: ControlIdentitySchema.optional(),
   revisionApproval: z.object({
     handoffId: z.uuid(),
@@ -174,6 +182,13 @@ function present(
     ...(handoff.planVersion ? [`Plan version: ${handoff.planVersion}`] : []),
     ...(handoff.commit ? [`Commit: ${handoff.commit}`] : []),
     `Requirements: ${state.issue.note}`,
+    ...(state.workerAgent
+      ? [
+        `Saved worker choice: ${state.workerAgent.kind}; model: ${
+          state.workerAgent.model ?? "provider default"
+        }; effort: ${state.workerAgent.effort ?? "provider default"}`,
+      ]
+      : ["Saved worker choice: none; explicit agent settings required."]),
   ];
   if (handoff.decision === "authorize_plan_revision") {
     lines.push(
@@ -580,7 +595,28 @@ async function drive(
       );
     }
     const currentTask = await task();
+    const state = await loadState(context);
     if (input.agent) {
+      // A complete explicit provider selection keeps its existing replacement
+      // semantics. Session/launch-only inputs inherit the issue or driver choice.
+      const inherited = input.agent.kind
+        ? {}
+        : driver.agent ?? (currentTask
+          ? Settings.strip().parse(currentTask.config)
+          : state.workerAgent);
+      const session = input.agent.session ?? driver.agent?.session ??
+        input.agent.control?.session ?? input.control?.session ??
+        currentTask?.config.session;
+      if (!session) {
+        throw new Error(
+          "Worker session is required; run drive from a controlling Yinz pane or supply agent.session and control identity",
+        );
+      }
+      const requestedAgent = Settings.parse({
+        ...inherited,
+        ...input.agent,
+        session,
+      });
       if (currentTask && ["running", "applying"].includes(currentTask.status)) {
         const {
           cwd: _cwd,
@@ -588,7 +624,7 @@ async function drive(
           stackWorkers: _stackWorkers,
           ...original
         } = currentTask.config;
-        const { control: _inputControl, ...requested } = input.agent;
+        const { control: _inputControl, ...requested } = requestedAgent;
         if (
           JSON.stringify(Settings.parse(original)) !==
             JSON.stringify(requested)
@@ -598,10 +634,10 @@ async function drive(
           );
         }
       }
-      const control = input.agent.control ?? driver.agent?.control ??
+      const control = requestedAgent.control ?? driver.agent?.control ??
         currentTask?.config.control;
       driver.agent = {
-        ...input.agent,
+        ...requestedAgent,
         ...(control ? { control } : {}),
       };
       if (currentTask) driver.assignmentId = currentTask.id;
@@ -620,6 +656,15 @@ async function drive(
         currentTask.config;
       driver.agent = Settings.parse(original);
       driver.assignmentId = currentTask.id;
+    }
+    if (!driver.agent && state.workerAgent) {
+      const session = input.control?.session;
+      if (!session) {
+        throw new Error(
+          "Worker session is required; run drive from a controlling Yinz pane or supply agent.session and control identity",
+        );
+      }
+      driver.agent = Settings.parse({ ...state.workerAgent, session });
     }
     // Placement applies only to future launches; never rewrite an active task.
     if (driver.agent && input.control) {

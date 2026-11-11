@@ -40,10 +40,28 @@ selection without inferring a new origin.
 
 ## Drive and resume
 
-After start, `drive` accepts
-`{agent: {session, kind, model?, effort?, permissionMode?, startupTimeoutSeconds?, timeoutSeconds?}}`.
-Select the intended running session/provider; omitted options preserve defaults.
-Settings persist; ordinary resume is `drive` with no input. New workers resolve the
+Optional defaults live in the canonical control checkout's
+`.yinz/issue-lifecycle.json`, for example
+`{"agent": {"kind": "codex", "model": "your-model", "effort": "your-effort"}}`.
+Omit model/effort for provider defaults. `start --input-file` accepts an optional
+`agent`: `{"agent": {"effort": "your-effort"}}` overrides one field;
+`{"agent": {"kind": "claude"}}` changes kind and clears inherited model/effort;
+`{"agent": {"model": null, "effort": null}}` resets those fields to provider
+defaults. The launcher reads only `--control` configuration. Start saves one
+resolved `workerAgent` for every issue role before confirming the worktree claim;
+repeated/interrupted starts preserve it. Changed defaults affect new issues.
+Inspect the saved choice in status and readable handoffs. Start does not launch
+triage.
+
+With a saved choice, `drive` infers the session from the controlling pane and
+needs no agent input. Outside a pane, supply
+`{agent: {session}, control: {session, paneId}}`; launch options
+`permissionMode`, `startupTimeoutSeconds` and `timeoutSeconds` are optional.
+Explicit `drive.agent.kind` replaces provider settings: supply model/effort or
+omit them for provider defaults. Legacy issues or absent defaults retain the
+explicit `{agent: {session, kind, model?, effort?, ...}}` flow.
+Settings persist; ordinary resume is `drive` with no input. Pending workers and
+saved revision assignments keep their original configuration. New workers resolve the
 control pane's current tab and join its separate worker stack; existing workers
 keep tabs/submissions. Sessions must match. Outside the pane environment use saved
 identity or `control: {session, paneId}` alongside `agent` (role options for

@@ -15,6 +15,20 @@ inputs:
       type: string
     workerWorktree:
       type: string
+    agent:
+      type: object
+      default: {}
+      additionalProperties: false
+      properties:
+        kind:
+          type: string
+          enum: [claude, codex, muse, pi, agy]
+        model:
+          type: string
+          minLength: 1
+        effort:
+          type: string
+          minLength: 1
 jobs:
   - name: capture
     steps:
@@ -29,6 +43,7 @@ jobs:
             itemId: ${{ inputs.itemId }}
           inputs:
             workerWorktree: ${{ inputs.workerWorktree }}
+            agent: ${{ inputs.agent }}
         dependsOn: []
         weight: 0
         allowFailure: false

@@ -36,7 +36,7 @@ class InstalledSwampSmokeTest(unittest.TestCase):
         for name in (".swamp.yaml", ".gitignore"):
             shutil.copy2(SOURCE / name, self.repo / name)
         (self.repo / "scripts" / "issue_lifecycle").mkdir(parents=True)
-        for name in ("issue-lifecycle", "issue_lifecycle/git_ops.py", "issue_lifecycle/workspace.py"):
+        for name in ("issue-lifecycle", "issue_lifecycle/git_ops.py", "issue_lifecycle/workspace.py", "issue_lifecycle/agent.py"):
             shutil.copy2(SOURCE / "scripts" / name, self.repo / "scripts" / name)
         self.bin = self.root / "bin"
         self.bin.mkdir()
@@ -328,6 +328,32 @@ print(json.dumps(response))
         prepared = json.loads(self.lifecycle("drive"))
         self.assertEqual(prepared["decision"], "prepare_worktree")
         self.assertEqual(len(self.yinz_log.read_text().splitlines()), len(calls))
+
+    def test_installed_saved_worker_choice_survives_config_changes_and_resume(self):
+        worktree = self.root / "configured-origin"
+        self.git(self.repo, "worktree", "add", "-b", "configured-origin", str(worktree))
+        config = self.repo / ".yinz" / "issue-lifecycle.json"
+        config.parent.mkdir(exist_ok=True)
+        config.write_text(json.dumps({"agent": {"kind": "claude", "model": "fixture-model", "effort": "deep"}}))
+        self.lifecycle("start", {"agent": {"effort": None}}, cwd=worktree)
+        expected = {"kind": "claude", "model": "fixture-model"}
+        self.assertEqual(self.state()["workerAgent"], expected)
+        config.write_text(json.dumps({"agent": {"kind": "codex", "model": "changed"}}))
+        self.lifecycle("start")
+        self.assertEqual(self.state()["workerAgent"], expected)
+        handoff = json.loads(self.lifecycle("drive", {"agent": {"timeoutSeconds": 42}}))
+        self.assertEqual(handoff["decision"], "approve_plan", handoff)
+        self.assertEqual(handoff["state"]["workerAgent"], expected)
+        self.assertIn("Saved worker choice: claude; model: fixture-model; effort: provider default", handoff["presentation"])
+        calls = self.yinz_log.read_text()
+        spawns = [json.loads(line)["args"] for line in calls.splitlines()
+                  if json.loads(line)["args"][3] == "spawn"]
+        self.assertEqual(len(spawns), 3)
+        for args in spawns:
+            self.assertEqual(args[args.index("--model") + 1], "fixture-model")
+            self.assertNotIn("--effort", args)
+        self.assertEqual(json.loads(self.lifecycle("drive"))["id"], handoff["id"])
+        self.assertEqual(self.yinz_log.read_text(), calls)
 
     def start_submission_fixture(self):
         worktree = self.root / "typed-worker"

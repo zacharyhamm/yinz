@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 from issue_lifecycle.workspace import agenda_workspace, local_environment
+from issue_lifecycle.agent import resolve_agent
 
 
 METHODS = (
@@ -101,6 +102,9 @@ def main():
         inputs = json.loads(sys.stdin.read() if str(args.input_file) == "-" else args.input_file.read_text())
     if not isinstance(inputs, dict):
         parser.error("input file must contain a JSON object")
+    if args.command == "start":
+        agent = resolve_agent(control, inputs)
+        inputs = {"agent": agent} if agent else {}
     if args.command in ("drive", "agent", "restart-agent"):
         session = os.environ.get("YINZ_SESSION_NAME", "").strip()
         pane = os.environ.get("YINZ_PANE_ID", "")
@@ -139,10 +143,8 @@ def main():
             sys.stderr.write(validation.stderr + validation.stdout)
             return validation.returncode
         if args.command == "start":
-            if inputs:
-                parser.error("start takes no method inputs")
             inputs = {"workspace": workspace, "itemId": args.item, "issueName": name,
-                      "workerWorktree": worker_worktree}
+                      "workerWorktree": worker_worktree, **inputs}
         elif args.command == "verify":
             if inputs:
                 parser.error("verify takes no method inputs")

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "npm:zod@4.6.7";
+import { WorkerSelectionSchema } from "./worker_selection.ts";
 
 const Text = z.string().trim().min(1);
 const Commit = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
@@ -422,6 +423,7 @@ export const StateSchema = z.object({
   issue: IssueSchema,
   // Absent only in legacy states, which retain implementation/control selection.
   workerWorktree: Text.optional(),
+  workerAgent: WorkerSelectionSchema.optional(),
   closeout: CloseoutSchema.optional(),
   closeoutHistory: z.array(CloseoutSchema).optional(),
   phase: z.enum([
@@ -780,10 +782,12 @@ export type LifecycleAction = keyof typeof ActionSchemas;
 export function createState(
   issue: Issue,
   workerWorktree?: string,
+  workerAgent?: z.infer<typeof WorkerSelectionSchema>,
 ): LifecycleState {
   return StateSchema.parse({
     issue,
     workerWorktree,
+    workerAgent,
     phase: "triaging",
     planVersion: 0,
   });

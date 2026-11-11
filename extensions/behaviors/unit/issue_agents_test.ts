@@ -2205,6 +2205,114 @@ function result(h: ReturnType<typeof harness>) {
   return HandoffSchema.parse(h.resources.get("handoff"));
 }
 
+const savedChoice = { kind: "codex" as const, model: "custom", effort: "deep" };
+
+for (const phase of ["triaging", "implementing"] as const) {
+  Deno.test(`driver uses the saved worker choice for ${phase} roles and resumes`, async () => {
+    const initial = phase === "triaging" ? createState(issue) : implementing();
+    initial.workerAgent = savedChoice;
+    const h = harness(initial);
+    h.controls.evidenceForRole = driverEvidence;
+    await h.drive.execute({ control: options.control }, h.context);
+    equal(
+      result(h).decision,
+      phase === "triaging" ? "approve_plan" : "authorize_merge",
+    );
+    equal(
+      dispatchedRoles(h),
+      phase === "triaging"
+        ? ["triage", "plan", "review_plan"]
+        : ["implement", "review_code", "review_ux"],
+    );
+    for (const call of h.calls) {
+      equal(call.arguments?.kind, savedChoice.kind);
+      equal(call.arguments?.model, savedChoice.model);
+      equal(call.arguments?.effort, savedChoice.effort);
+      equal(call.arguments?.session, options.session);
+    }
+    equal((await loadState(h.context)).workerAgent, savedChoice);
+    assert(
+      result(h).presentation.includes(
+        "Saved worker choice: codex; model: custom; effort: deep",
+      ),
+    );
+    const count = h.calls.length;
+    await h.drive.execute({}, h.context);
+    equal(h.calls.length, count);
+  });
+}
+
+Deno.test("saved worker choice requires session identity and accepts session/launch options without a repeated provider", async () => {
+  const h = harness(createState(issue, undefined, savedChoice));
+  h.controls.evidenceForRole = driverEvidence;
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "blocked");
+  assert(result(h).reason.includes("Worker session is required"));
+  equal(h.calls.length, 0);
+  await h.drive.execute({
+    agent: {
+      session: options.session,
+      permissionMode: "custom-mode",
+      timeoutSeconds: 42,
+    },
+    control: options.control,
+  }, h.context);
+  equal(result(h).decision, "approve_plan");
+  for (const call of h.calls) {
+    equal(call.arguments?.kind, "codex");
+    equal(call.arguments?.model, "custom");
+    equal(call.arguments?.permissionMode, "custom-mode");
+    equal(call.arguments?.timeoutSeconds, 42);
+  }
+});
+
+Deno.test("explicit drive provider settings override the saved choice and retain their replacement semantics", async () => {
+  const h = harness(createState(issue, undefined, savedChoice));
+  h.controls.evidenceForRole = driverEvidence;
+  await h.drive.execute({ agent: options }, h.context);
+  equal(result(h).decision, "approve_plan");
+  for (const call of h.calls) {
+    equal(call.arguments?.kind, "claude");
+    equal(call.arguments?.model, undefined);
+    equal(call.arguments?.effort, undefined);
+  }
+  equal((await loadState(h.context)).workerAgent, savedChoice);
+});
+
+Deno.test("pending workers retain their saved choice across interrupted controller recovery", async () => {
+  const h = harness(createState(issue, undefined, savedChoice));
+  h.controls.evidenceForRole = driverEvidence;
+  const abort = new AbortController();
+  h.context.signal = abort.signal;
+  const run = h.context.runModel;
+  h.context.runModel = () => {
+    abort.abort(new Error("Interrupted saved-choice worker"));
+    return Promise.reject(abort.signal.reason);
+  };
+  await rejects(
+    () => h.drive.execute({ control: options.control }, h.context),
+    "Interrupted saved-choice",
+  );
+  const pending = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  equal(pending.config.model, savedChoice.model);
+  h.context.signal = new AbortController().signal;
+  h.context.runModel = run;
+  await h.drive.execute(
+    { agent: { ...options, model: "replacement" } },
+    h.context,
+  );
+  equal(result(h).decision, "blocked");
+  equal(AgentTaskSchema.parse(h.resources.get("agent-task")), pending);
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "approve_plan");
+  equal(h.calls[0].name, pending.behaviorName);
+  equal(h.calls[0].method, "recover");
+  equal(h.calls.length, 3);
+  const resumed = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  equal(resumed.config.kind, savedChoice.kind);
+  equal(resumed.config.model, savedChoice.model);
+});
+
 Deno.test("driver takes planning through fresh review to a reusable approval handoff without implementing", async () => {
   const h = harness();
   h.controls.evidenceForRole = driverEvidence;
@@ -2258,6 +2366,27 @@ function revisionApproval(h: ReturnType<typeof harness>) {
     request: "Revise this plan once to address the findings",
   };
 }
+
+Deno.test("a reserved revision retains the issue worker choice when future drive settings change", async () => {
+  const h = harness(createState(issue, undefined, savedChoice));
+  h.controls.evidenceForRole = blockedPlanEvidence;
+  h.controls.failWrite = (spec, _name, value) =>
+    spec === "agent-task" && value.status === "running" &&
+    value.role === "plan" && (value.before as LifecycleState).planVersion === 1;
+  await h.drive.execute({ control: options.control }, h.context);
+  equal(result(h).decision, "blocked");
+  const reserved =
+    DriverSchema.parse(h.resources.get("driver")).automaticRevision!.assignment;
+  equal(reserved.config.kind, savedChoice.kind);
+  await h.drive.execute({ agent: options }, h.context);
+  equal(result(h).decision, "authorize_plan_revision");
+  const launch = h.calls.find((call) =>
+    call.name === reserved.behaviorName && call.method === "run"
+  )!;
+  equal(launch.arguments?.kind, savedChoice.kind);
+  equal(launch.arguments?.model, savedChoice.model);
+  equal(launch.arguments?.effort, savedChoice.effort);
+});
 
 Deno.test("driver automatically revises once then stops at a stable revision proposal and one authorization permits only one revision and review", async () => {
   const h = harness();
@@ -4401,8 +4530,12 @@ Deno.test("legacy ready without UX blocks with recovery guidance and no worker o
   equal(h.controls.checkCalls.length, 0);
 });
 
-async function reviewRepairHarness() {
-  const h = harness(driverImplementing());
+async function reviewRepairHarness(
+  workerAgent?: LifecycleState["workerAgent"],
+) {
+  const state = driverImplementing();
+  if (workerAgent) state.workerAgent = workerAgent;
+  const h = harness(state);
   h.controls.evidenceForRole = (task) => {
     const evidence = driverEvidence(task) as Record<string, unknown>;
     if (task.role === "review_code") {
@@ -4423,15 +4556,18 @@ async function reviewRepairHarness() {
     }
     return evidence;
   };
-  await h.drive.execute({ agent: options }, h.context);
+  await h.drive.execute(
+    workerAgent ? { control: options.control } : { agent: options },
+    h.context,
+  );
   equal(result(h).decision, "address_review_findings");
-  const state = await loadState(h.context);
+  const reviewed = await loadState(h.context);
   await saveState(
     h.context,
     "decide_review",
-    transition(state, "decide_review", {
+    transition(reviewed, "decide_review", {
       id: result(h).id,
-      reviewFingerprint: codeReviewFingerprint(state),
+      reviewFingerprint: codeReviewFingerprint(reviewed),
       request: "Plan a fix for the race",
       repair: [{ role: "review_code", findingId: "race" }],
       ignore: [],
@@ -4439,6 +4575,30 @@ async function reviewRepairHarness() {
   );
   return h;
 }
+Deno.test("review repair planners and implementers inherit the issue worker choice", async () => {
+  const h = await reviewRepairHarness(savedChoice);
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "approve_review_fixes");
+  const state = await loadState(h.context);
+  await saveState(
+    h.context,
+    "approve_review_fixes",
+    transition(state, "approve_review_fixes", {
+      id: state.reviewDecisions!.at(-1)!.id,
+      handoffId: result(h).id,
+      request: "Implement the saved-choice repair plan",
+    }),
+  );
+  await h.drive.execute({}, h.context);
+  assert(dispatchedRoles(h).includes("plan_review_fixes"));
+  assert(dispatchedRoles(h).includes("implement_review_fixes"));
+  for (const call of h.calls) {
+    equal(call.arguments?.kind, savedChoice.kind);
+    equal(call.arguments?.model, savedChoice.model);
+    equal(call.arguments?.effort, savedChoice.effort);
+  }
+  equal((await loadState(h.context)).workerAgent, savedChoice);
+});
 Deno.test("review repair loop plans only selected findings, waits for approval and repeats both reviews", async () => {
   const h = await reviewRepairHarness();
   const originalPlan = (await loadState(h.context)).plan;
