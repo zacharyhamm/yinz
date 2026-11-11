@@ -4999,6 +4999,7 @@ fn test_server_messages() {
         test_server_roundtrip!(ServerToClientMsg::AgentControl(AgentResponse {
             launch: None,
             server_instance: None,
+            retained_submission: None,
             closeout_target: None,
             outcome,
             agents: vec![status.clone()],
@@ -6548,4 +6549,45 @@ fn closeout_agent_control_json_roundtrip_is_additive() {
     }));
     let legacy: AgentResponse = serde_json::from_value(serde_json::json!({"outcome":"ok", "agents":[], "spawned":null, "output":null,"message":null,"acknowledged":false,"turn_id":null})).unwrap();
     assert!(legacy.closeout_target.is_none());
+}
+
+#[test]
+fn issue85_retained_submission_survives_the_server_wire() {
+    use yinz_types::agent::control::{
+        AgentOutcome, AgentResponse, PromptDelivery, RetainedSubmission,
+    };
+    let proof = RetainedSubmission {
+        server_instance: "incarnation".into(),
+        session: "development".into(),
+        pane_id: PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7)),
+        kind: "claude".into(),
+        cwd: "/repo".into(),
+        conversation_id: "conversation-7".into(),
+        submission_id: "submission-7".into(),
+        turn_id: Some("turn-7".into()),
+        prompt_id: "prompt-7".into(),
+        acknowledged: true,
+        prompt_delivery: PromptDelivery::Started,
+        outcome: AgentOutcome::Completed,
+        message: Some("The submitted turn completed.".into()),
+        answered: true,
+        quiescent: true,
+    };
+    test_server_roundtrip!(ServerToClientMsg::AgentControl(AgentResponse {
+        outcome: proof.outcome,
+        server_instance: Some(proof.server_instance.clone()),
+        acknowledged: proof.acknowledged,
+        submission_id: Some(proof.submission_id.clone()),
+        turn_id: proof.turn_id.clone(),
+        prompt_delivery: Some(proof.prompt_delivery),
+        message: proof.message.clone(),
+        retained_submission: Some(proof),
+        ..Default::default()
+    }));
+    let legacy: AgentResponse = serde_json::from_value(serde_json::json!({
+        "outcome":"target_closed", "agents":[], "spawned":null, "output":null,
+        "message":"target pane does not exist", "acknowledged":false, "turn_id":null
+    }))
+    .unwrap();
+    assert!(legacy.retained_submission.is_none());
 }
