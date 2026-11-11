@@ -49,7 +49,9 @@ if args[:2] == ["vault", "read-secret"]:
     assert args[2:4] == ["default", "AGENDA_WORKSPACE"]
     print(pathlib.Path(os.environ["TEST_VAULT_VALUE"]).read_text())
 elif args[:2] == ["data", "query"]:
-    print(json.dumps({{"results": [{{"status": "current", "presentation": "Fixture handoff"}}]}}))
+    print(os.environ.get("TEST_DATA_JSON", json.dumps({{"results": [{{"status": "current", "presentation": "Fixture handoff"}}]}})))
+elif args[:3] == ["workflow", "history", "search"]:
+    print(os.environ.get("TEST_HISTORY_JSON", '{{"results": []}}'))
 else:
     print("{{}}")
 ''')
@@ -70,10 +72,23 @@ else:
         result = self.launch()
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
         self.assertIn("issue-work-7", calls[1]["args"][2])
         self.assertTrue(all(call["cwd"] == str(self.control) for call in calls))
         self.assertTrue(all(call["args"][call["args"].index("--repo-dir") + 1] == str(self.control) for call in calls))
+
+    def test_status_reports_exact_inconsistent_run_without_mutation(self):
+        self.env["TEST_DATA_JSON"] = json.dumps({"results": [{"issue": {}, "phase": "done"}]})
+        self.env["TEST_HISTORY_JSON"] = json.dumps({"results": [
+            {"runId": "original-run", "status": "running", "inputs": {"issueName": "issue-work-7"}},
+            {"runId": "other-run", "status": "running", "inputs": {"issueName": "other"}},
+        ]})
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        diagnostics = json.loads(result.stdout)["diagnostics"]
+        self.assertEqual([entry["runId"] for entry in diagnostics], ["original-run"])
+        self.assertEqual([entry["args"][:2] for entry in self.calls()],
+                         [["vault", "read-secret"], ["data", "query"], ["workflow", "history"]])
 
     def test_closeout_dispatch_is_thin_and_recovery_does_not_replace_target(self):
         self.env.update(YINZ_SESSION_NAME="recovery", YINZ_PANE_ID="99")

@@ -860,3 +860,25 @@ deleted cannot be reconstructed by this path. Restart/rollback and cleanup still
 require their existing controller authority; do not repeat finished work merely
 to rebuild bookkeeping. See docs/AGENT_CLI.md, “Closed submission reconciliation”,
 for the response fields and direct wait syntax.
+
+### Completion recovery and inconsistent run observations
+
+Controller recovery first checks the original child's durable completion when
+its typed receipt is already accepted. It validates the same result and receipt
+used by ordinary import, including assignment, conversation, submission and
+commit freshness. It does not invoke the completed worker again. Interrupted
+imports retain their existing event and task reconciliation guards; cleanup
+remains separately retryable.
+
+Wait failures carry an optional `failureKind` (`timeout` or `other`). Only a
+fresh, correlated timeout with matching available server, turn and directory
+identity is eligible for automatic observation. Transport errors cannot reuse a
+previous timeout's raw response. Legacy records acquire this classification on
+the next observation; elapsed time never determines worker staleness.
+
+The launcher's read-only `status` adds `workerObservation` and `diagnostics` to
+its existing JSON response. Diagnostics include reason codes, original worker
+identities, exact inconsistent workflow run IDs and recovery actions. A workflow
+still recorded running after its issue reaches done is an inconsistent
+observation, not proof of a dead controller. Status never cancels, finalizes or
+rewrites historical runs, and its observations never authorize evidence import.

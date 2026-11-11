@@ -840,6 +840,34 @@ export async function runTask(
         );
       }
     }
+    // A controller can lose its response after the child saved completion. Read
+    // durable state first; applyResult still validates the result and receipt.
+    if (recover && task.submission) {
+      const receipt = await context.dataRepository.getContent(
+        "@yinz/issue-evidence",
+        task.submission.behaviorName,
+        "submission",
+      );
+      const accepted = receipt && SubmissionSchema.parse(
+            JSON.parse(new TextDecoder().decode(receipt)),
+          ).status === "accepted";
+      const bytes = await context.dataRepository.getContent(
+        "@yinz/agent",
+        task.behaviorName,
+        "state",
+      );
+      if (accepted && !bytes) {
+        throw new Error(
+          "Accepted evidence has no durable original worker state; inspect the original child and submission before recovery, do not launch or resend",
+        );
+      }
+      if (accepted && bytes) {
+        const child = await childState(context, task);
+        if (child.phase === "completed") {
+          return await applyResult(context, task, dependencies);
+        }
+      }
+    }
     const continuing = recover && task.continuation;
     const outcome = await context.runModel({
       modelType: "@yinz/agent",

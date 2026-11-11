@@ -154,6 +154,7 @@ export const AgentStateSchema = z.object({
   backgroundTasks: z.array(z.string()).default([]),
   rawResponse: z.string().optional(),
   lastError: Text.optional(),
+  failureKind: z.enum(["timeout", "other"]).optional(),
   cleanedUp: z.boolean().optional(),
   continuation: z.object({
     id: z.uuid(),
@@ -506,6 +507,7 @@ async function finish(
   state.phase = "completed";
   state.outcome = "completed";
   delete state.lastError;
+  delete state.failureKind;
   return [
     resultHandle,
     await save(context, state, dependencies),
@@ -538,7 +540,10 @@ async function observeBackground(
     dependencies,
   );
   if (value.outcome !== "ok" && value.outcome !== "completed") {
-    throw new Error(`Background work has not completed: ${value.outcome}`);
+    throw new ObservationError(
+      `Background work has not completed: ${value.outcome}`,
+      value.outcome,
+    );
   }
   const { agent } = selectedAgent(state, value);
   if (
@@ -584,10 +589,11 @@ async function acceptSubmission(
     throw new Error("Yinz response does not match the saved submission ID");
   }
   if (value.outcome !== "completed") {
-    throw new Error(
+    throw new ObservationError(
       `Agent task has not completed: ${value.outcome}${
         value.message ? ": " + value.message : ""
       }`,
+      value.outcome,
     );
   }
   if (!value.submission_id) {
@@ -651,7 +657,10 @@ async function submit(
     dependencies,
   );
   if (value.outcome !== "ok") {
-    throw new Error(`Agent startup is not ready: ${value.outcome}`);
+    throw new ObservationError(
+      `Agent startup is not ready: ${value.outcome}`,
+      value.outcome,
+    );
   }
   const { agent, conversation } = selectedAgent(state, value);
   if (
@@ -862,6 +871,12 @@ async function acceptLaunch(
   return await submit(context, state, dependencies);
 }
 
+class ObservationError extends Error {
+  constructor(message: string, readonly outcome: string) {
+    super(message);
+  }
+}
+
 async function guarded(
   context: AgentContext,
   state: AgentState,
@@ -871,6 +886,10 @@ async function guarded(
   try {
     return { dataHandles: await operation() };
   } catch (error) {
+    state.failureKind =
+      error instanceof ObservationError && error.outcome === "timed_out"
+        ? "timeout"
+        : "other";
     state.lastError = error instanceof Error ? error.message : String(error);
     await save(context, state, dependencies);
     throw error;

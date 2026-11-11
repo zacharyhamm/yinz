@@ -345,3 +345,26 @@ deleted cannot be reconstructed by this path. Restart/rollback and cleanup still
 require their existing controller authority; do not repeat finished work merely
 to rebuild bookkeeping. See docs/AGENT_CLI.md, “Closed submission reconciliation”,
 for the response fields and direct wait syntax.
+
+## Completion and stale-run diagnostics
+
+Read `status` for `workerObservation` and `diagnostics`. An accepted receipt with
+`completion_unreconciled` means the child reports completion: `resume-agent`
+validates and imports the original result without invoking the worker again.
+`evidence_waiting_for_completion` and `background_work` retain the completion
+fence; continue observing the original submission. Neither transcript EOF nor
+pane closure proves termination. A qualified retained submission can supply the
+proof after closure; an expired or unavailable record cannot.
+
+`worker_identity_mismatch` or `child_state_missing` requires inspection of the
+recorded assignment and original child. Never substitute a replacement
+conversation or resend the prompt. A controller interrupted after evidence or
+completion persistence resumes the same task; duplicate recovery preserves the
+existing import/event and cleanup guards.
+
+`workflow_running_after_issue_done` names the exact historical run whose status
+conflicts with lifecycle completion. Inspect that run with the command in its
+`action` and inspect controller liveness separately. Do not infer a live or dead
+controller from workflow status or elapsed time. No historical run is rewritten
+by this diagnostic. `workflow_history_unavailable` means status could not inspect
+history; it makes no claim about run liveness.

@@ -271,7 +271,7 @@ function harness(
             name,
             AgentTaskSchema.parse(resources.get("agent-task")).behaviorName,
           );
-          value = child.get(resource);
+          value = name === childBehavior ? child.get(resource) : undefined;
         }
         return Promise.resolve(
           value == null
@@ -1341,6 +1341,7 @@ function recoveryRunner(failed: boolean, calls: string[][]): YinzRunner {
 Deno.test("recorded dispatch without child state recovers the original task", async () => {
   const h = harness();
   h.controls.runError = "Interrupted before initialization";
+  h.controls.submitEvidence = false;
   h.controls.afterRun = () => h.child.clear();
   await rejects(
     () =>
@@ -1350,6 +1351,7 @@ Deno.test("recorded dispatch without child state recovers the original task", as
   const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
   const calls: string[][] = [];
   h.controls.agentRunner = recoveryRunner(false, calls);
+  h.controls.submitEvidence = true;
   await h.methods.resume_agent.execute({}, h.context);
   await h.methods.resume_agent.execute({}, h.context);
   equal(h.calls[1].name, original.behaviorName);
@@ -2533,7 +2535,7 @@ for (const fault of ["dispatch", "worker", "event", "completion"]) {
     equal(planners.filter((call) => call.method === "run").length, 1);
     equal(
       planners.filter((call) => call.method === "recover").length,
-      fault === "worker" ? 1 : 0,
+      0,
     );
     equal(
       DriverSchema.parse(h.resources.get("driver")).revisionAuthorization!
@@ -2979,6 +2981,10 @@ Deno.test("driver waits on the original acknowledged submission across timeouts 
   for (
     const scenario of [
       "timeouts",
+      "timeout-detail",
+      "stale-turn",
+      "stale-server",
+      "stale-cwd",
       "startup",
       "dialog",
       "uncertain",
@@ -3030,12 +3036,26 @@ Deno.test("driver waits on the original acknowledged submission across timeouts 
             outcome: scenario === "failure" ? "failed" : "timed_out",
             submission_id: "submission-1",
             acknowledged: scenario !== "uncertain",
+            ...(scenario === "timeout-detail"
+              ? { message: "Still executing original work" }
+              : {}),
+            ...(scenario === "stale-turn"
+              ? {
+                turn_id: args[3] === "prompt"
+                  ? "original-turn"
+                  : "replacement-turn",
+              }
+              : {}),
+            ...(scenario === "stale-server"
+              ? { server_instance: "replacement-server" }
+              : {}),
             agents: [{
               ...agent,
               agent: {
                 ...agent.agent,
                 state: scenario === "dialog" ? "Waiting" : "Busy",
               },
+              ...(scenario === "stale-cwd" ? { cwd: "/replacement" } : {}),
               not_ready_reason: "unresolved_turn",
             }],
           }
@@ -3054,7 +3074,7 @@ Deno.test("driver waits on the original acknowledged submission across timeouts 
       });
     };
     await h.drive.execute({ agent: options }, h.context);
-    if (["timeouts", "startup"].includes(scenario)) {
+    if (["timeouts", "timeout-detail", "startup"].includes(scenario)) {
       equal(result(h).decision, "approve_plan");
       equal(cli.filter((args) => args[3] === "spawn").length, 3);
       equal(cli.filter((args) => args[3] === "prompt").length, 3);
@@ -3925,7 +3945,7 @@ Deno.test("legacy workers retain implementation/control selection and pending ta
     h.context.repoDir = "/repo/later-invocation";
     h.controls.runError = undefined;
     await h.methods.resume_agent.execute({}, h.context);
-    equal(h.calls.map((call) => call.arguments?.cwd), [expected, expected]);
+    equal(h.calls.map((call) => call.arguments?.cwd), [expected]);
     equal(
       AgentTaskSchema.parse(h.resources.get("agent-task")).config,
       original.config,
@@ -5214,4 +5234,48 @@ Deno.test("issue85 accepted implementation receipt never promotes positively int
   }
   equal(h.cli.filter((c) => c.args[3] === "prompt").length, 1);
   equal(h.cli.filter((c) => c.args[3] === "spawn").length, 1);
+});
+
+Deno.test("late durable completion reconciles after a lost controller response without invoking the worker", async () => {
+  const h = harness();
+  h.controls.runError = "Controller lost child response";
+  await rejects(
+    () =>
+      h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+    "Controller lost",
+  );
+  const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const runModel = h.context.runModel;
+  h.context.runModel = (request) => {
+    if (request.modelType === "@yinz/agent" && request.method !== "cleanup") {
+      throw new Error("Completed worker must not be observed again");
+    }
+    return runModel(request);
+  };
+  h.controls.runError = undefined;
+  await h.methods.resume_agent.execute({}, h.context);
+  const writes = h.writes.length;
+  await h.methods.resume_agent.execute({}, h.context);
+  equal(h.writes.length, writes);
+  equal(AgentTaskSchema.parse(h.resources.get("agent-task")).id, original.id);
+  equal((await loadState(h.context)).phase, "classified");
+  equal(h.calls.map((call) => call.method), ["run"]);
+});
+
+Deno.test("accepted evidence with missing original child state cannot launch a recovery worker", async () => {
+  const h = harness();
+  h.controls.runError = "Controller interrupted";
+  await rejects(
+    () =>
+      h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+    "Controller interrupted",
+  );
+  h.child.delete("state");
+  const calls = h.calls.length;
+  await rejects(
+    () => h.methods.resume_agent.execute({}, h.context),
+    "no durable original worker state",
+  );
+  equal(h.calls.length, calls);
+  equal((await loadState(h.context)).phase, "triaging");
 });

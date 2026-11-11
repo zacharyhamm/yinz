@@ -458,16 +458,15 @@ async function ordinaryTimeout(
   error: unknown,
 ) {
   const child = await childState(context, task);
-  const expected = child.phase === "background"
-    ? "Background work has not completed: timed_out"
-    : child.phase === "spawned"
-    ? "Agent startup is not ready: timed_out"
-    : "Agent task has not completed: timed_out";
+  // Match the current persisted failure, not a particular human-readable error.
+  // A transport error after an older timeout must never reuse that timeout.
   if (
     !["spawned", "waiting", "background"].includes(child.phase) ||
-    child.outcome !== "timed_out" || !child.paneId ||
-    !child.rawResponse || child.lastError !== expected ||
-    !(error instanceof Error && error.message.includes(expected)) ||
+    child.failureKind !== "timeout" ||
+    child.outcome !== "timed_out" || !child.paneId || !child.rawResponse ||
+    !(error instanceof Error) ||
+    (child.lastError !== error.message &&
+      `Error: ${child.lastError}` !== error.message) ||
     (child.phase !== "spawned" &&
       (!child.conversationId || !child.submissionId))
   ) return false;
@@ -480,6 +479,10 @@ async function ordinaryTimeout(
   if (matches.length !== 1) return false;
   const agent = matches[0];
   return response.outcome === "timed_out" &&
+    (!child.launchServer || !response.server_instance ||
+      response.server_instance === child.launchServer) &&
+    (!child.turnId || !response.turn_id || response.turn_id === child.turnId) &&
+    (!agent.cwd || agent.cwd === task.config.cwd) &&
     response.prompt_delivery !== "not_sent" &&
     (child.phase === "spawned" || response.acknowledged || !!response.turn_id ||
       (child.phase === "background" && !!child.turnId)) &&
@@ -493,6 +496,37 @@ async function ordinaryTimeout(
     agent.agent.state.toLowerCase() === "busy" &&
     (agent.not_ready_reason == null ||
       ["not_idle", "unresolved_turn"].includes(agent.not_ready_reason));
+}
+
+async function workerBlocker(
+  context: IssueAgentContext,
+  task: Task,
+  error: unknown,
+) {
+  const child = await childState(context, task).catch(() => undefined);
+  let observed: string | undefined;
+  if (child?.rawResponse) {
+    try {
+      const response = AgentResponseSchema.parse(JSON.parse(child.rawResponse));
+      observed = `Latest response: outcome ${response.outcome}, server ${
+        response.server_instance ?? "unspecified"
+      }, turn ${response.turn_id ?? "unspecified"}, submission ${
+        response.submission_id ?? "unspecified"
+      }; expected server ${child.launchServer ?? "unknown"}, turn ${
+        child.turnId ?? "unknown"
+      }.`;
+    } catch { /* The original error retains malformed-response details. */ }
+  }
+  return new Error([
+    error instanceof Error ? error.message : String(error),
+    ...(observed ? [observed] : []),
+    `Original task ${task.id}, child ${task.behaviorName}, session ${task.config.session}, pane ${
+      child?.paneId ?? "unknown"
+    }, conversation ${child?.conversationId ?? "unknown"}, submission ${
+      child?.submissionId ?? "unknown"
+    }.`,
+    "Completion is not reconciled. Inspect the saved child state and original submission with resume-agent; do not resend the prompt or infer termination from a closed pane or elapsed time.",
+  ].join("\n"));
 }
 
 /** The caller owns the issue lock. Helpers here deliberately do not acquire it again. */
@@ -753,7 +787,7 @@ async function drive(
             !await ordinaryTimeout(context, assignment, error).catch(() =>
               false
             )
-          ) throw error;
+          ) throw await workerBlocker(context, assignment, error);
           context.logger.info(
             "Continuing original pane task {task} after an ordinary wait timeout",
             { task: assignment.id },
@@ -1085,7 +1119,7 @@ async function drive(
       } catch (error) {
         context.signal.throwIfAborted();
         if (!await ordinaryTimeout(context, next, error).catch(() => false)) {
-          throw error;
+          throw await workerBlocker(context, next, error);
         }
         context.logger.info(
           "Continuing original pane task {task} after an ordinary wait timeout",

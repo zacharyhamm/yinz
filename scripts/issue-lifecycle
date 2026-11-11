@@ -13,6 +13,7 @@ import sys
 
 from issue_lifecycle.workspace import agenda_workspace, local_environment
 from issue_lifecycle.agent import resolve_agent
+from issue_lifecycle.observations import diagnose
 
 
 METHODS = (
@@ -134,6 +135,29 @@ def main():
             submission = query_resource(task["submission"]["behaviorName"], "submission", tail, control, env)
             if submission is not None:
                 document["results"].append(submission)
+        state = next((record for record in document["results"] if "issue" in record and "phase" in record), None)
+        child = query_resource(task["behaviorName"], "state", tail, control, env) if task else None
+        history = subprocess.run([
+            "swamp", "workflow", "history", "search", "--input", f"issueName={name}",
+            "--json", *tail,
+        ], cwd=control, env=env, capture_output=True, text=True)
+        runs = []
+        history_error = None
+        try:
+            if history.returncode:
+                raise ValueError(history.stderr or history.stdout)
+            runs = json.loads(history.stdout)["results"]
+            if not isinstance(runs, list):
+                raise ValueError("workflow history results must be a list")
+        except (ValueError, KeyError) as error:
+            history_error = str(error)
+        document["diagnostics"] = diagnose(name, state, task, child,
+                                           submission if task and task.get("submission") else None, runs)
+        document["workerObservation"] = child
+        if history_error:
+            document["diagnostics"].append({"code": "workflow_history_unavailable",
+                                            "message": history_error,
+                                            "action": "Inspect workflow history in the canonical store; no liveness conclusion is available."})
         print(json.dumps(document))
         return 0
     if args.command in ("start", "merge", "drive", "verify"):
