@@ -4985,3 +4985,62 @@ Deno.test("driver closeout renewed consent and declined partial cleanup reach th
     }
   }
 });
+
+Deno.test("issue85 accepted original assignment imports once through closed submission proof", async () => {
+  const h = observedHarness();
+  h.turns.push({
+    response: { outcome: "status_unavailable", acknowledged: true },
+    submit: true,
+  });
+  await rejects(
+    () =>
+      h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+    "status_unavailable",
+  );
+  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const child = AgentStateSchema.parse(h.child.get("state"));
+  assert(child.launchServer);
+  h.turns.push({
+    response: {
+      outcome: "completed",
+      agents: [],
+      acknowledged: true,
+      prompt_delivery: "started",
+      server_instance: child.launchServer,
+      turn_id: null,
+      retained_submission: {
+        server_instance: child.launchServer,
+        session: task.config.session,
+        pane_id: child.paneId,
+        kind: task.config.kind,
+        cwd: task.config.cwd,
+        conversation_id: child.conversationId,
+        submission_id: child.submissionId,
+        turn_id: null,
+        prompt_id: "original-provider-prompt",
+        acknowledged: true,
+        prompt_delivery: "started",
+        outcome: "completed",
+        message: "Finished",
+        answered: true,
+        quiescent: true,
+      },
+    },
+  });
+  h.controls.failEventOnce = true;
+  await rejects(() => h.methods.resume_agent.execute({}, h.context), "");
+  await h.methods.resume_agent.execute({}, h.context);
+  await h.methods.resume_agent.execute({}, h.context);
+  equal((await loadState(h.context)).phase, "classified");
+  equal(
+    AgentTaskSchema.parse(h.resources.get("agent-task")).status,
+    "completed",
+  );
+  equal(h.cli.filter((c) => c.args[3] === "spawn").length, 1);
+  equal(h.cli.filter((c) => c.args[3] === "prompt").length, 1);
+  equal(
+    h.cli.filter((c) => c.args[3] === "wait" && c.args.includes("--submission"))
+      .length,
+    1,
+  );
+});

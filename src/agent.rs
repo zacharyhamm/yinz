@@ -1072,6 +1072,10 @@ fn write_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
             writeln!(out, "  background: true").context("cannot write background work")?;
         }
     }
+    if response.retained_submission.is_some() {
+        writeln!(out, "Retained completion: the qualified past turn ended; no live agent availability is implied.")
+            .context("cannot write retained completion guidance")?;
+    }
     if let Some(id) = &response.submission_id {
         writeln!(out, "submission: {id}").context("cannot write submission identity")?;
     }

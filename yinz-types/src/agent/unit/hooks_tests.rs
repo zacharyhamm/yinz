@@ -1654,3 +1654,22 @@ fn claude_permission_watermark_fences_reordered_release_loss_and_cancel() {
         "loss cannot erase the equal-timestamp release fence"
     );
 }
+
+#[test]
+fn issue85_internal_terminal_provenance_survives_bounded_hook_copy() {
+    let hook = HookEvent {
+        hook_event_name: "Stop".into(),
+        claude_turn_complete: Some(false),
+        claude_answered: Some(false),
+        claude_interrupted: Some(true),
+        ..Default::default()
+    };
+    let pruned = hook.pruned_to(128);
+    assert_eq!(pruned.claude_answered, Some(false));
+    assert_eq!(pruned.claude_interrupted, Some(true));
+    let json = serde_json::to_value(&pruned).unwrap();
+    assert_eq!(json["_yinz_claude_interrupted"], true);
+    let roundtrip: HookEvent = serde_json::from_value(json).unwrap();
+    assert_eq!(roundtrip.claude_answered, Some(false));
+    assert_eq!(roundtrip.claude_interrupted, Some(true));
+}

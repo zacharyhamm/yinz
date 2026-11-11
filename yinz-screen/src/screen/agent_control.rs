@@ -784,6 +784,96 @@ impl Screen {
         );
     }
 
+    /// Sample positive quiescence while the pane still exists. Cleanup after removal
+    /// cannot reconstruct it from absence.
+    pub(super) fn retain_closed_agent(&mut self, pane: PaneId, now: Instant) {
+        // A pre-removal sample may already be frozen by the closing operation.
+        if self.get_pane_info(pane).is_none() {
+            return;
+        }
+        let Some(proof) = self.closed_agent_proof(pane) else {
+            self.closed_agent_submissions
+                .retain(|(_, old)| old.pane_id != pane);
+            return;
+        };
+        if self
+            .closed_agent_submissions
+            .iter()
+            .any(|(_, old)| old.submission_id == proof.submission_id && old.pane_id == pane)
+        {
+            return;
+        }
+        self.closed_agent_submissions.push_back((now, proof));
+        self.prune_closed_agents(now);
+    }
+
+    fn closed_agent_proof(
+        &self,
+        pane: PaneId,
+    ) -> Option<yinz_types::agent::control::RetainedSubmission> {
+        let (revision, id, prompt_id) = self.agent_terminal_claims.get(&pane)?;
+        let status = self.agent_status(pane, None)?;
+        if *revision != self.agent_input_revision(pane)
+            || !status.ready
+            || !status.status_available
+            || status.background
+            || status.agent.state != AgentState::Idle
+            || self
+                .agent_controls
+                .iter()
+                .any(|pending| pending.pane == pane)
+            || self.agent_dialog_inputs.contains_key(&pane)
+            || self.agent_clear_inputs.contains_key(&pane)
+            || self.agent_draft_clears.contains_key(&pane)
+            || self.agent_worker_waits.contains_key(&pane)
+            || self.claude_permission_waits.contains_key(&pane)
+        {
+            return None;
+        }
+        let submission = self.submission(pane, id)?;
+        let result = submission.result.as_ref()?;
+        if !submission.acknowledged
+            || result.outcome != AgentOutcome::Completed
+            || result.background
+            || submission.conversation != status.agent.session_id
+            || submission.prompt_delivery != Some(PromptDelivery::Started)
+        {
+            return None;
+        }
+        let cwd = status.cwd?;
+        let conversation_id = submission.conversation.clone()?;
+        Some(yinz_types::agent::control::RetainedSubmission {
+            server_instance: yinz_bus::agent_launch::server_instance().to_owned(),
+            session: self.session_name.to_string(),
+            pane_id: pane,
+            kind: submission.kind.clone(),
+            cwd,
+            conversation_id,
+            submission_id: id.clone(),
+            turn_id: submission.turn_id.clone(),
+            prompt_id: prompt_id.clone(),
+            acknowledged: true,
+            prompt_delivery: PromptDelivery::Started,
+            outcome: result.outcome,
+            message: result.message.clone(),
+            answered: true,
+            quiescent: true,
+        })
+    }
+
+    fn prune_closed_agents(&mut self, now: Instant) {
+        const RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
+        const CAPACITY: usize = 1024;
+        while self
+            .closed_agent_submissions
+            .front()
+            .is_some_and(|(at, _)| now.saturating_duration_since(*at) >= RETENTION)
+            || self.closed_agent_submissions.len() > CAPACITY
+        {
+            self.closed_agent_submissions.pop_front();
+        }
+    }
+
     pub(super) fn invalidate_agent_lifecycle(&mut self, pane: PaneId, reason: &str) {
         if let Some(operation) = self.agent_draft_clears.get_mut(&pane) {
             operation.failure = Some((
@@ -791,6 +881,16 @@ impl Screen {
                 "agent identity invalidated".into(),
             ));
         }
+        if matches!(
+            reason,
+            "pane_closed" | "held" | "agent_cleared" | "agent_exited"
+        ) {
+            self.retain_closed_agent(pane, Instant::now());
+        } else {
+            self.closed_agent_submissions
+                .retain(|(_, proof)| proof.pane_id != pane);
+        }
+        self.agent_terminal_claims.remove(&pane);
         self.remove_agent_lifecycle(pane, reason);
         self.agent_dialog_inputs.remove(&pane);
         self.agent_clear_inputs.remove(&pane);
@@ -1561,7 +1661,8 @@ impl Screen {
         })
     }
 
-    pub(super) fn agent_reply(&self, reply: &Reply, response: AgentResponse) {
+    pub(super) fn agent_reply(&self, reply: &Reply, mut response: AgentResponse) {
+        response.server_instance = Some(yinz_bus::agent_launch::server_instance().to_owned());
         let client = match reply {
             Reply::Client(client) => *client,
             Reply::Host(sender) => {
@@ -1920,8 +2021,16 @@ impl Screen {
                 ..
             } => (*pane_id, expected_session_id.as_deref()),
         };
+        let requested_submission = match &request {
+            WaitTurn { submission_id, .. } => Some(submission_id.clone()),
+            _ => None,
+        };
         let reject = |screen: &Self, outcome, message: &str| {
             let mut response = screen.agent_result(pane, outcome, Some(message.into()));
+            response.submission_id = requested_submission.clone();
+            if outcome == AgentOutcome::TargetClosed && requested_submission.is_some() {
+                response.message = Some(format!("{message}; no qualifying retained completion (missing proof, expired retention, or server restart)"));
+            }
             if outcome == AgentOutcome::StatusUnavailable
                 && let Some(readiness) = response.agents.first().and_then(|s| s.readiness.as_ref())
             {
@@ -1939,6 +2048,47 @@ impl Screen {
                 "target must be a terminal pane",
             );
             return;
+        }
+        if let WaitTurn {
+            submission_id,
+            timeout_ms,
+            ..
+        } = &request
+        {
+            if let Err(message) = validate_submission_id(submission_id) {
+                reject(self, AgentOutcome::Rejected, message);
+                return;
+            }
+            if deadline(now, *timeout_ms).is_none() {
+                reject(
+                    self,
+                    AgentOutcome::Rejected,
+                    "timeout must be between 1ms and 24h",
+                );
+                return;
+            }
+            self.prune_closed_agents(now);
+            if self.agent_status(pane, None).is_none()
+                && let Some((_, proof)) =
+                    self.closed_agent_submissions
+                        .iter()
+                        .rev()
+                        .find(|(_, proof)| {
+                            proof.pane_id == pane
+                                && proof.submission_id == *submission_id
+                                && expected == Some(proof.conversation_id.as_str())
+                        })
+            {
+                let mut response = AgentResponse::new(AgentOutcome::Completed);
+                response.submission_id = Some(proof.submission_id.clone());
+                response.turn_id = proof.turn_id.clone();
+                response.acknowledged = true;
+                response.prompt_delivery = Some(proof.prompt_delivery);
+                response.message = proof.message.clone();
+                response.retained_submission = Some(proof.clone());
+                self.agent_reply(&client, response);
+                return;
+            }
         }
         let status = self.agent_status(pane, None);
         // SessionEnd clears the live record before a managed command enters its held state.
@@ -3927,6 +4077,21 @@ impl Screen {
     fn correlate_agent_submissions(&mut self, event: &AgentEvent, hook: Option<&HookEvent>) {
         let pane = PaneId::Terminal(event.pane_id);
         let parent = hook.is_some_and(|hook| !hook.is_worker());
+        // Any activity beyond an exact duplicate confirmation invalidates a closure claim.
+        if !hook.is_some_and(|hook| {
+            hook.hook_event_name == "Stop"
+                && hook.claude_answered == Some(true)
+                && hook.claude_background == Some(false)
+                && self
+                    .agent_terminal_claims
+                    .get(&pane)
+                    .is_none_or(|(_, _, prompt)| hook.prompt_id.as_ref() == Some(prompt))
+        }) {
+            self.agent_terminal_claims.remove(&pane);
+            self.closed_agent_submissions
+                .retain(|(_, proof)| proof.pane_id != pane);
+        }
+        let mut terminal_claim = None;
         let claude_claims: Vec<_> = self
             .agent_controls
             .iter()
@@ -3988,6 +4153,18 @@ impl Screen {
                     .as_mut()
                     .and_then(|prompt| prompt.observe(event, hook))
             };
+            if outcome == Some(AgentOutcome::Completed)
+                && parent
+                && hook.is_some_and(|hook| {
+                    hook.claude_answered == Some(true) && hook.claude_background == Some(false)
+                })
+                && let (Some(id), Some(prompt_id)) = (
+                    pending.submission_id.clone(),
+                    hook.and_then(|hook| hook.prompt_id.clone()),
+                )
+            {
+                terminal_claim = Some((pending.input_revision, id, prompt_id));
+            }
             if outcome == Some(AgentOutcome::Submitted) && pending.conversation.is_none() {
                 pending.conversation = event.session_id.clone();
             }
@@ -4083,6 +4260,9 @@ impl Screen {
             }
         }
         self.agent_controls = keep;
+        if let Some(claim) = terminal_claim {
+            self.agent_terminal_claims.insert(pane, claim);
+        }
         self.prune_agent_submissions(&protected);
     }
 

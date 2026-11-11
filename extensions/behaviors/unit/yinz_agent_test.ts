@@ -1368,3 +1368,116 @@ Deno.test("launch transaction refuses a changed digest or server on observation"
     equal(h.calls.filter((call) => call.args[3] === "spawn").length, 1);
   }
 });
+
+function issue85Proof(overrides: Record<string, unknown> = {}) {
+  return {
+    server_instance: "server-test",
+    session: "dev",
+    pane_id: "terminal_7",
+    kind: "claude",
+    cwd: "/work/issue",
+    conversation_id: "conversation-1",
+    submission_id: "submission-1",
+    turn_id: null,
+    prompt_id: "provider-prompt",
+    acknowledged: true,
+    prompt_delivery: "started",
+    outcome: "completed",
+    message: "Finished before closure.",
+    answered: true,
+    quiescent: true,
+    ...overrides,
+  };
+}
+function issue85Retained(overrides: Record<string, unknown> = {}) {
+  return {
+    outcome: "completed",
+    agents: [],
+    submission_id: "submission-1",
+    turn_id: null,
+    acknowledged: true,
+    prompt_delivery: "started",
+    server_instance: "server-test",
+    retained_submission: issue85Proof(),
+    ...overrides,
+  };
+}
+Deno.test("issue85 legacy closed target preserves its actual diagnostic", async () => {
+  const h = harness([spawned, ready(), {
+    outcome: "status_unavailable",
+    submission_id: "submission-1",
+    acknowledged: true,
+  }, {
+    outcome: "target_closed",
+    agents: [],
+    message: "target pane does not exist",
+  }]);
+  await rejects(
+    () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+    "status_unavailable",
+  );
+  await rejects(
+    () => resumeAgent(h.context, h.dependencies),
+    "target_closed: target pane does not exist",
+  );
+  equal(h.calls.filter((c) => c.args.includes("prompt")).length, 1);
+});
+Deno.test("issue85 retained completion is durable before result publication and resumes without live wait", async () => {
+  const h = harness([spawned, ready(), {
+    outcome: "status_unavailable",
+    submission_id: "submission-1",
+    acknowledged: true,
+  }, issue85Retained()]);
+  await rejects(
+    () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+    "status_unavailable",
+  );
+  const write = h.context.writeResource;
+  let interrupted = false;
+  h.context.writeResource = (...args) => {
+    if (args[1] === "result" && !interrupted) {
+      interrupted = true;
+      return Promise.reject(new Error("controller interrupted"));
+    }
+    return write(...args);
+  };
+  await rejects(
+    () => resumeAgent(h.context, h.dependencies),
+    "controller interrupted",
+  );
+  assert(h.records.get("state")?.retainedSubmission);
+  const calls = h.calls.length;
+  await resumeAgent(h.context, h.dependencies);
+  await resumeAgent(h.context, h.dependencies);
+  equal(h.calls.length, calls);
+  equal(h.records.get("state")?.phase, "completed");
+  equal(h.records.get("result")?.message, "Finished before closure.");
+});
+Deno.test("issue85 retained completion rejects conflicting or missing positive facts", async () => {
+  for (
+    const patch of [
+      { server_instance: "another-server" },
+      { conversation_id: "replacement" },
+      { submission_id: "another-submission" },
+      { cwd: "/elsewhere" },
+      { pane_id: "terminal_9" },
+      { answered: false },
+      { quiescent: false },
+      { outcome: "interrupted" },
+      { acknowledged: false },
+      { prompt_delivery: "not_sent" },
+      { kind: "codex" },
+    ]
+  ) {
+    const h = harness([
+      spawned,
+      ready(),
+      issue85Retained({ retained_submission: issue85Proof(patch) }),
+    ]);
+    await rejects(
+      () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+      "",
+    );
+    assert(!h.records.has("result"));
+  }
+});

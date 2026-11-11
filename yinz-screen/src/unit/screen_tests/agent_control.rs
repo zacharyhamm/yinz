@@ -16973,3 +16973,135 @@ fn web_agents_guarded_prompt_delivers_once_and_preserves_submission_identity() {
     assert_eq!(retry.submission_id, response.submission_id);
     assert!(finish_paste(&writes).is_empty());
 }
+
+#[test]
+fn issue85_early_wait_rejections_echo_the_requested_submission() {
+    let (mut screen, messages, _) = setup("bash");
+    for timeout in [0, 30_000] {
+        screen.agent_control(
+            AgentRequest::WaitTurn {
+                pane_id: PaneId::Terminal(TerminalId::new(999)),
+                expected_session_id: Some("conversation".into()),
+                submission_id: "issue85-original".into(),
+                timeout_ms: timeout,
+            },
+            CLIENT,
+        );
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(response.submission_id.as_deref(), Some("issue85-original"));
+        assert_eq!(
+            response.outcome,
+            if timeout == 0 {
+                AgentOutcome::Rejected
+            } else {
+                AgentOutcome::TargetClosed
+            }
+        );
+    }
+}
+
+#[test]
+fn issue85_positive_completion_survives_closure_but_activity_and_expiry_block_it() {
+    for case in [
+        "closed",
+        "input",
+        "background",
+        "interrupted",
+        "expired",
+        "replaced",
+        "legacy",
+    ] {
+        let (mut screen, messages, writes) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        screen.agent_control_with_clear(
+            identified_prompt("issue85-original", true),
+            CLIENT,
+            &writes,
+        );
+        finish_paste(&writes);
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        let mut unavailable = hook("Stop");
+        unavailable.claude_turn_complete = Some(false);
+        report_kind(&mut screen, "claude", unavailable);
+        replies(&messages, CLIENT);
+        let mut stop = hook("Stop");
+        stop.claude_answered = (case != "legacy").then_some(case != "interrupted");
+        stop.claude_background = Some(case == "background");
+        stop.last_assistant_message = Some("DONE".into());
+        stop.cwd = Some("/work".into());
+        report_kind(&mut screen, "claude", stop);
+        if case == "input" {
+            let mut next = hook("UserPromptSubmit");
+            next.prompt_id = Some("next".into());
+            next.turn_id = Some("next".into());
+            report_kind(&mut screen, "claude", next);
+        }
+        let now = Instant::now();
+        screen.retain_closed_agent(PANE, now);
+        if case == "closed" {
+            assert!(
+                !screen.closed_agent_submissions.is_empty(),
+                "claims={:?} submissions={:?} controls={:?}",
+                screen.agent_terminal_claims,
+                screen.agent_submissions,
+                screen.agent_controls.len()
+            );
+        }
+        if case == "expired" {
+            // Inject the original insertion time, avoiding wall-clock waits.
+            screen.closed_agent_submissions.front_mut().unwrap().0 =
+                now - Duration::from_secs(86401);
+        }
+        screen.invalidate_agent_lifecycle(
+            PANE,
+            if case == "replaced" {
+                "rerun"
+            } else {
+                "pane_closed"
+            },
+        );
+        // Remove the live identity without emitting another provider event.
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        tab.close_pane(PANE, false, None);
+        screen.agent_control(wait_submission("issue85-original"), CLIENT);
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        if case == "closed" {
+            assert_eq!(response.outcome, AgentOutcome::Completed);
+            assert!(response.agents.is_empty());
+            let proof = response.retained_submission.unwrap();
+            assert!(proof.answered && proof.quiescent);
+            assert_eq!(proof.message.as_deref(), Some("DONE"));
+            let json = serde_json::to_value(&proof).unwrap();
+            assert_eq!(json["pane_id"], "terminal_7");
+            assert_eq!(
+                serde_json::from_value::<yinz_types::agent::control::RetainedSubmission>(json)
+                    .unwrap(),
+                proof
+            );
+            // Overflow evicts the oldest closed submission deterministically.
+            for index in 0..1024 {
+                let mut newer = proof.clone();
+                newer.submission_id = format!("newer-{index}");
+                screen
+                    .closed_agent_submissions
+                    .push_back((Instant::now(), newer));
+            }
+            screen.agent_control(wait_submission("issue85-original"), CLIENT);
+            let evicted = replies(&messages, CLIENT).pop().unwrap();
+            assert_ne!(evicted.outcome, AgentOutcome::Completed);
+            assert_eq!(screen.closed_agent_submissions.len(), 1024);
+            assert_eq!(
+                screen
+                    .closed_agent_submissions
+                    .front()
+                    .unwrap()
+                    .1
+                    .submission_id,
+                "newer-0"
+            );
+        } else {
+            assert_ne!(response.outcome, AgentOutcome::Completed, "{case}");
+            assert!(response.retained_submission.is_none(), "{case}");
+        }
+    }
+}

@@ -144,6 +144,7 @@ impl Screen {
         exit_status: Option<i32>,
         pending: &mut PendingEvents,
     ) -> Result<()> {
+        self.retain_closed_agent(id, std::time::Instant::now());
         // A headless plugin has no pane to close, nor has one still resolving its repository:
         // closing it unloads it. The plugin thread reports the unload with `PluginUnloaded`; the
         // action is done once it is asked.

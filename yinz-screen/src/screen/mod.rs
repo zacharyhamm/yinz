@@ -612,6 +612,11 @@ pub(crate) struct Screen {
     agent_worktrees: agent_worktrees::Worktrees,
     agent_controls: Vec<agent_control::Pending>,
     agent_draft_clears: HashMap<PaneId, agent_control::DraftClear>,
+    agent_terminal_claims: HashMap<PaneId, (u64, String, String)>,
+    closed_agent_submissions: std::collections::VecDeque<(
+        std::time::Instant,
+        yinz_types::agent::control::RetainedSubmission,
+    )>,
     agent_submissions: HashMap<PaneId, std::collections::VecDeque<agent_control::Submission>>,
     agent_launches: HashMap<PaneId, yinz_types::agent::SpawnedAgent>,
     managed_reservations: HashMap<TerminalId, yinz_bus::route::AgentTabPlacement>,
@@ -1457,6 +1462,8 @@ impl Screen {
             agent_worktrees: Default::default(),
             agent_controls: Vec::new(),
             agent_draft_clears: HashMap::new(),
+            agent_terminal_claims: HashMap::new(),
+            closed_agent_submissions: std::collections::VecDeque::new(),
             agent_submissions: HashMap::new(),
             agent_launches: HashMap::new(),
             managed_reservations: HashMap::new(),
@@ -3130,6 +3137,7 @@ impl Screen {
         id: PaneId,
         completion_tx: Option<NotificationEnd>,
     ) {
+        self.retain_closed_agent(id, std::time::Instant::now());
         self.repaint_tab_of_closing_overlay(id);
         let closed = self
             .tab_containing_pane_mut(id)

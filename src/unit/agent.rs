@@ -1342,3 +1342,28 @@ fn closeout_request_translation_preserves_every_fence_field() {
     .unwrap();
     assert!(matches!(wire, AgentRequest::CloseoutSnapshot { .. }));
 }
+
+#[test]
+fn issue85_retained_completion_json_and_human_output_distinguish_past_execution() {
+    let response: AgentResponse = serde_json::from_value(json!({
+        "outcome":"completed","agents":[],"spawned":null,"output":null,
+        "message":"DONE","acknowledged":true,"turn_id":null,"submission_id":"original",
+        "retained_submission":{
+            "server_instance":"server","session":"dev","pane_id":"terminal_7","kind":"claude",
+            "cwd":"/work","conversation_id":"conversation","submission_id":"original",
+            "turn_id":null,"prompt_id":"prompt","acknowledged":true,"prompt_delivery":"started",
+            "outcome":"completed","message":"DONE","answered":true,"quiescent":true
+        }
+    }))
+    .unwrap();
+    let mut output = Vec::new();
+    print_response(&response, true, &mut output).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["retained_submission"]["submission_id"], "original");
+    assert_eq!(json["agents"], json!([]));
+    output.clear();
+    print_response(&response, false, &mut output).unwrap();
+    let text = String::from_utf8(output).unwrap();
+    assert!(text.contains("Retained completion"));
+    assert!(text.contains("no live agent availability"));
+}

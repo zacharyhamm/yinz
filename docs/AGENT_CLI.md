@@ -677,8 +677,9 @@ preserves the failure and status observations and never submits replacement work
 
 The server retains a recent window of 32 submissions per pane/conversation in memory,
 keeping unresolved submissions even when they exceed that window.
-Target replacement, exit, closure, and server restart discard this history. Unknown or expired
-IDs return `rejected`; reusing a retained ID for another prompt is refused without
+Target replacement and server restart discard this live history. Closure can
+retain a separately qualified past completion; see [closed submission reconciliation](#closed-submission-reconciliation).
+Unknown or expired live IDs return `status_unavailable`; reusing a retained ID for another prompt is refused without
 sending input. These IDs are not durable idempotency keys. An unavailable result
 does not prove a task never ran, so inspect the work before deciding to resubmit.
 
@@ -838,7 +839,9 @@ retried automatically after an uncertain reply.
 
 Exit status is `0` for `ok`, `submitted` and `completed`. Other operation outcomes
 return `1`. CLI syntax errors return `2`. With `--json`, inspect `outcome`,
-`submission_id`, `acknowledged`, `turn_id` and `message`. With `--json`, connection
+`submission_id`, `acknowledged`, `turn_id` and `message`, plus optional
+`retained_submission` for qualified closed-target completion (with no live agents;
+see [closed submission reconciliation](#closed-submission-reconciliation)). With `--json`, connection
 and local input errors also produce a JSON response on stdout and return `1`.
 Malformed CLI arguments still produce plain errors on stderr and return `2`.
 
@@ -930,7 +933,8 @@ provide cross-session event delivery.
 Idle alone does not establish completion. Timeouts, missing confirmations, and
 interrupted observation do not establish a failed or interrupted turn. Provider
 outcome coverage still depends on the installed hooks and runtime confirmation.
-Correlation retains the same 32-turn window as submission history. Evicting an
+Live correlation retains the same 32-turn window as live submission history;
+the separate closed archive is described in [closed submission reconciliation](#closed-submission-reconciliation). Evicting an
 unfinished turn produces `observation_uncertain` with reason `turn_tracking_limit`.
 
 ### Startup, replay, and loss
@@ -1331,3 +1335,38 @@ It is local even with `--remote`, honors `--config`/`--config-dir` and `--data-d
 and never changes Tailscale configuration. Native bearer login, session, logout
 and logout-all are available. The mobile UI, plugin bridge and agent API remain
 deferred.
+
+### Closed submission reconciliation
+
+After a positively answered root Claude turn with a linked transcript boundary and
+a same-process registry idle observation, the screen can preserve its correlated
+completion at pane closure. No later input, turn, background activity or identity
+replacement may intervene. Resume with the original command and conversation pin:
+
+```sh
+yinz --session <session> agent wait terminal_<id> --submission <saved-id> --conversation <saved-conversation> --json
+```
+
+An eligible closed-target response has `outcome: "completed"`, `agents: []`,
+the original `submission_id`, `turn_id`, `acknowledged` and `prompt_delivery`,
+and optional `retained_submission`. The proof contains `server_instance`,
+`session`, `pane_id`, `kind`, `cwd`, `conversation_id`, `submission_id`,
+`turn_id`, `prompt_id`, `outcome`, `message`, `acknowledged`,
+`prompt_delivery`, `answered` and `quiescent`. It proves qualified past
+execution ended; it does not report a live available agent or authorize new input.
+
+The separate in-memory closed archive holds at most 1024 records for 24 hours in
+the same server incarnation. Eviction, restart, replacement, legacy missing
+provenance, interrupted/unknown completion and missing positive quiescence block
+reconciliation. These bounds are not a durable event stream or cross-restart
+idempotency guarantee. A closed reply without proof preserves its actual cause
+and requested ID; it is never success inferred from absence.
+
+The lifecycle saves a validated proof before publishing its completed child
+result. A later resume can finish that publication even after native retention
+expires, then import the accepted assignment once using its existing evidence,
+task, prompt and commit guards. A receipt alone cannot finish a running worker.
+Use ordinary lifecycle drive/resume for that saved assignment. When proof was
+already lost (including historical #78), inspect the original state and work;
+neither transcript EOF nor receipt acceptance rebuilds the lost native facts.
+Live `recover` still requires its existing live identity and explicit safeguards.

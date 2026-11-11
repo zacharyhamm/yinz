@@ -31,8 +31,9 @@ acknowledged wait timeouts keep observing that submission. A timeout does not
 authorize a restart or a new prompt. Do not rerun `agent` as an automatic retry.
 
 `needs_input`, interruptions, target replacement and timeouts are not successful
-evidence. Unknown or expired submissions remain unresolved until an explicitly
-requested rollback or restart; inspect the retained pane and state. Background
+evidence. Unknown or expired submissions without a validated saved terminal proof
+remain unresolved; inspect the retained pane and state before any explicitly
+requested rollback or restart. Background
 tasks require another observation of the same conversation's final idle answer
 before success. Completed handoffs persist across resume; changed state or
 assignments, including rollback/restart, invalidate superseded handoffs.
@@ -310,3 +311,28 @@ Same-incarnation exact absence can reconcile an unknown pane close; confirmed
 closure remains a fact. Changed requirements/merge identity/targets block reuse
 without discarding historical effects. Before restarting
 implementation after cleanup, deliberately select a new valid worktree.
+
+
+### Qualified completion after closure
+
+Ordinary drive/resume observes the saved submission without repeating implementation.
+Claude observation retries initial transcript absence and exact completion delivery
+under an absolute deadline and the original process/conversation identity. A
+linked answer plus positive registry idle can qualify a screen-thread closure
+snapshot, provided no input or activity intervened. Accepted evidence remains
+insufficient until execution is positively terminal and quiescent.
+
+The same server retains at most 1024 closed proofs for 24 hours. The child checks
+launch incarnation, session, provider, cwd, pane, conversation, submission and
+saved turn identity, then saves the proof before publishing its result. Interrupted
+publication resumes from that durable proof; normal parent import guards and
+stable events still apply. Retained completion does not imply live availability.
+
+Missing/legacy proof, expiry, eviction, restart, replacement, interruption and
+unknown/background work remain blocked with their actual diagnostic. Inspect
+saved identity and execution facts; do not infer success from receipt acceptance,
+elapsed time, absence, raw Stop, end_turn or EOF. Historical #78 facts already
+deleted cannot be reconstructed by this path. Restart/rollback and cleanup still
+require their existing controller authority; do not repeat finished work merely
+to rebuild bookkeeping. See docs/AGENT_CLI.md, “Closed submission reconciliation”,
+for the response fields and direct wait syntax.

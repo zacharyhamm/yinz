@@ -1865,3 +1865,33 @@ fn web_guarded_control_is_a_distinct_closed_wire_contract() {
         assert!(action.validate().is_err());
     }
 }
+
+#[test]
+fn issue85_confirmed_interruption_cannot_become_a_completed_answer() {
+    let mut observation = PromptObservation::new("claude", "conversation", "review");
+    observe(
+        &mut observation,
+        &event(
+            "claude",
+            "UserPromptSubmit",
+            Some("current"),
+            Some("review"),
+        ),
+    );
+    let confirmation = HookEvent {
+        hook_event_name: "Stop".into(),
+        session_id: "conversation".into(),
+        prompt_id: Some("current".into()),
+        claude_turn_complete: Some(false),
+        claude_answered: Some(false),
+        claude_interrupted: Some(true),
+        ..Default::default()
+    };
+    assert_eq!(
+        observation.observe(
+            &event("claude", "Stop", Some("current"), None),
+            Some(&confirmation)
+        ),
+        Some(AgentOutcome::Interrupted)
+    );
+}

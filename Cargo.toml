@@ -73,6 +73,7 @@ name = "agent_report"
 path = "src/tests/agent_report.rs"
 
 [dev-dependencies]
+sysinfo = { version = "0.39.5", default-features = false, features = ["system"] }
 yinz-bus = { path = "yinz-bus" }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 insta = "1.48"

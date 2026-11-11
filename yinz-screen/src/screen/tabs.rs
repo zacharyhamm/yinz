@@ -1160,6 +1160,14 @@ impl Screen {
                 "Arrange panes: destination closed; arrangement cancelled".into(),
             );
         }
+        let closing_panes = self
+            .tabs
+            .get(&tab_id)
+            .map(|tab| tab.get_all_pane_ids())
+            .unwrap_or_default();
+        for pane in closing_panes {
+            self.retain_closed_agent(pane, std::time::Instant::now());
+        }
         let mut tab_to_close = self.tabs.remove(&tab_id).with_context(err_context)?;
         self.tabs_needing_reflow.remove(&tab_id);
         if self.departed_followed_tab_id == Some(tab_id) {

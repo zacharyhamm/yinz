@@ -824,3 +824,28 @@ explain the primitive boundaries. Yinz preserves typed state methods, DAG
 orchestration and agent-supplied reviewed evidence, replacing Swamp Club/GitHub
 stages with Agenda identity, local verification and a local merge receipt.
 It does not synthesize evidence for ad-hoc work or complete unmet outcomes.
+
+
+### Qualified completion after closure
+
+Ordinary drive/resume observes the saved submission without repeating implementation.
+Claude observation retries initial transcript absence and exact completion delivery
+under an absolute deadline and the original process/conversation identity. A
+linked answer plus positive registry idle can qualify a screen-thread closure
+snapshot, provided no input or activity intervened. Accepted evidence remains
+insufficient until execution is positively terminal and quiescent.
+
+The same server retains at most 1024 closed proofs for 24 hours. The child checks
+launch incarnation, session, provider, cwd, pane, conversation, submission and
+saved turn identity, then saves the proof before publishing its result. Interrupted
+publication resumes from that durable proof; normal parent import guards and
+stable events still apply. Retained completion does not imply live availability.
+
+Missing/legacy proof, expiry, eviction, restart, replacement, interruption and
+unknown/background work remain blocked with their actual diagnostic. Inspect
+saved identity and execution facts; do not infer success from receipt acceptance,
+elapsed time, absence, raw Stop, end_turn or EOF. Historical #78 facts already
+deleted cannot be reconstructed by this path. Restart/rollback and cleanup still
+require their existing controller authority; do not repeat finished work merely
+to rebuild bookkeeping. See docs/AGENT_CLI.md, “Closed submission reconciliation”,
+for the response fields and direct wait syntax.

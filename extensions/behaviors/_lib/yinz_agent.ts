@@ -79,9 +79,28 @@ export const LaunchReceiptSchema = z.object({
   disposition: z.enum(["reserved", "available", "closed", "unknown"]),
 }).passthrough();
 
+export const RetainedSubmissionSchema = z.object({
+  server_instance: Text,
+  session: Text,
+  pane_id: Pane,
+  kind: Text,
+  cwd: Text,
+  conversation_id: Text,
+  submission_id: Text,
+  turn_id: Text.nullable(),
+  prompt_id: Text,
+  acknowledged: z.literal(true),
+  prompt_delivery: z.literal("started"),
+  outcome: z.literal("completed"),
+  message: z.string().nullable(),
+  answered: z.literal(true),
+  quiescent: z.literal(true),
+}).strict();
+
 export const AgentResponseSchema = z.object({
   outcome: Text,
   launch: LaunchReceiptSchema.optional(),
+  retained_submission: RetainedSubmissionSchema.optional(),
   output: z.string().nullable().optional(),
   server_instance: Text.optional(),
   agents: z.array(AgentStatusSchema).default([]),
@@ -124,6 +143,7 @@ export const AgentStateSchema = z.object({
   launchRequestDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   launchServer: Text.optional(),
   launchReceipt: LaunchReceiptSchema.optional(),
+  retainedSubmission: RetainedSubmissionSchema.optional(),
   paneId: Pane.optional(),
   tabId: z.number().int().optional(),
   conversationId: Text.optional(),
@@ -401,7 +421,18 @@ async function response(
   }
   state.outcome = parsed.outcome;
   if (parsed.message != null) state.message = parsed.message;
-  if (parsed.turn_id) state.turnId = parsed.turn_id;
+  // Preserve acknowledged turn identity only after matching the original live target.
+  if (
+    parsed.submission_id === state.submissionId && parsed.turn_id &&
+    state.turnId === undefined && parsed.acknowledged &&
+    parsed.outcome !== "completed" && parsed.agents.length === 1 &&
+    parsed.agents[0].pane_id === state.paneId &&
+    parsed.agents[0].session === state.config.session &&
+    parsed.agents[0].agent.kind === state.config.kind &&
+    parsed.agents[0].agent.session_id === state.conversationId
+  ) {
+    state.turnId = parsed.turn_id;
+  }
   state.backgroundTasks = parsed.background_tasks;
   if (
     state.phase === "launching" && !state.launchId &&
@@ -520,19 +551,69 @@ async function observeBackground(
   return await finish(context, state, dependencies);
 }
 
+function validateRetained(
+  state: AgentState,
+  proof: z.infer<typeof RetainedSubmissionSchema>,
+) {
+  RetainedSubmissionSchema.parse(proof);
+  if (
+    state.phase === "background" || state.backgroundTasks.length > 0 ||
+    !state.launchServer || proof.server_instance !== state.launchServer ||
+    proof.session !== state.config.session ||
+    proof.kind !== state.config.kind ||
+    proof.cwd !== state.config.cwd || proof.pane_id !== state.paneId ||
+    proof.conversation_id !== state.conversationId ||
+    proof.submission_id !== state.submissionId ||
+    (state.turnId !== undefined && proof.turn_id !== state.turnId)
+  ) {
+    throw new Error(
+      "Retained completion does not match the original launch and submission",
+    );
+  }
+}
+
 async function acceptSubmission(
   context: AgentContext,
   state: AgentState,
   value: AgentResponse,
   dependencies: Dependencies,
 ): Promise<ResourceHandle[]> {
-  if (value.submission_id !== state.submissionId) {
+  if (
+    value.submission_id != null && value.submission_id !== state.submissionId
+  ) {
     throw new Error("Yinz response does not match the saved submission ID");
   }
   if (value.outcome !== "completed") {
-    throw new Error(`Agent task has not completed: ${value.outcome}`);
+    throw new Error(
+      `Agent task has not completed: ${value.outcome}${
+        value.message ? ": " + value.message : ""
+      }`,
+    );
+  }
+  if (!value.submission_id) {
+    throw new Error("Completed response lacks submission identity");
+  }
+  if (state.turnId && value.turn_id !== state.turnId) {
+    throw new Error("Yinz response does not match the saved turn ID");
+  }
+  if (value.retained_submission) {
+    validateRetained(state, value.retained_submission);
+    if (
+      value.background_tasks.length || value.agents.length ||
+      value.turn_id !== value.retained_submission.turn_id ||
+      !value.acknowledged || value.prompt_delivery !== "started" ||
+      value.server_instance !== value.retained_submission.server_instance
+    ) {
+      throw new Error("Retained completion has conflicting execution facts");
+    }
+    state.retainedSubmission = value.retained_submission;
+    if (value.turn_id) state.turnId = value.turn_id;
+    state.message = value.retained_submission.message?.trim() || undefined;
+    await save(context, state, dependencies);
+    return await finish(context, state, dependencies);
   }
   const { agent, conversation } = selectedAgent(state, value);
+  if (value.turn_id) state.turnId = value.turn_id;
   if (!conversation) {
     throw new Error("Completed task has no bound provider conversation");
   }
@@ -943,6 +1024,11 @@ export async function resumeAgent(
       }
       return [];
     }
+    if (state.retainedSubmission) {
+      validateRetained(state, state.retainedSubmission);
+      state.message = state.retainedSubmission.message?.trim() || undefined;
+      return await finish(context, state, dependencies);
+    }
     if (isRejectedLaunch(state)) {
       throw new Error(
         "Agent launch has definitive terminal process facts; use discard-agent deliberately for this original task",
@@ -1066,6 +1152,7 @@ export async function continueAgent(
     delete state.submissionId;
     delete state.message;
     delete state.turnId;
+    delete state.retainedSubmission;
     delete state.outcome;
     await save(context, state, dependencies);
     return submit(context, state, dependencies);

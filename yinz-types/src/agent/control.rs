@@ -451,6 +451,8 @@ pub struct AgentResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_instance: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_submission: Option<RetainedSubmission>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closeout_target: Option<CloseoutFence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<ProviderUsage>,
@@ -478,6 +480,27 @@ impl AgentResponse {
             ..Default::default()
         }
     }
+}
+
+/// Qualified past execution, never a claim of live agent availability.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RetainedSubmission {
+    pub server_instance: String,
+    pub session: String,
+    #[serde(with = "pane_string")]
+    pub pane_id: PaneId,
+    pub kind: String,
+    pub cwd: String,
+    pub conversation_id: String,
+    pub submission_id: String,
+    pub turn_id: Option<String>,
+    pub prompt_id: String,
+    pub acknowledged: bool,
+    pub prompt_delivery: PromptDelivery,
+    pub outcome: AgentOutcome,
+    pub message: Option<String>,
+    pub answered: bool,
+    pub quiescent: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, strum_macros::Display)]
@@ -932,7 +955,9 @@ impl PromptObservation {
                     return None;
                 }
                 hook.claude_turn_complete.map(|complete| {
-                    if complete {
+                    if hook.claude_interrupted == Some(true) {
+                        AgentOutcome::Interrupted
+                    } else if complete {
                         self.background = hook.claude_background == Some(true);
                         AgentOutcome::Completed
                     } else {

@@ -631,6 +631,19 @@ pub struct HookEvent {
         skip_serializing_if = "Option::is_none"
     )]
     pub claude_turn_complete: Option<bool>,
+    /// Positive linked answer boundary; absent for legacy or registry-only completion.
+    #[serde(
+        default,
+        rename = "_yinz_claude_answered",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub claude_answered: Option<bool>,
+    #[serde(
+        default,
+        rename = "_yinz_claude_interrupted",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub claude_interrupted: Option<bool>,
     /// Preceding transcript prompt for a recovered queued human acceptance. Internal
     /// evidence only: it cannot acknowledge submitted input or start another observer.
     #[serde(
@@ -864,6 +877,8 @@ impl HookEvent {
             prompt_id: self.prompt_id.clone(),
             transcript_path: self.transcript_path.clone(),
             claude_turn_complete: self.claude_turn_complete,
+            claude_answered: self.claude_answered,
+            claude_interrupted: self.claude_interrupted,
             claude_recovered_after: self.claude_recovered_after.clone(),
             claude_background: self.claude_background,
             claude_notifications: self.claude_notifications.as_ref().map(|e| e.bounded()),

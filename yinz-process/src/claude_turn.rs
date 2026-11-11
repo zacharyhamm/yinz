@@ -529,6 +529,22 @@ fn follow_with_api_reporting(
     api: Option<AgyApi>,
     mut report: impl FnMut(&HookEvent) -> Result<()>,
 ) -> Result<Turn> {
+    follow_with_limits(
+        observation,
+        api,
+        &mut report,
+        Duration::from_secs(yinz_types::agent::CLAUDE_HOOK_TIMEOUT_SECONDS),
+        Duration::from_millis(yinz_types::agent::control::MAX_TIMEOUT_MS),
+    )
+}
+
+fn follow_with_limits(
+    observation: &Observation,
+    api: Option<AgyApi>,
+    mut report: impl FnMut(&HookEvent) -> Result<()>,
+    creation_window: Duration,
+    observation_window: Duration,
+) -> Result<Turn> {
     let kind = &observation.kind;
     let (process_id, _) = observation
         .process
@@ -549,15 +565,44 @@ fn follow_with_api_reporting(
         "agy" => yinz_types::agent::AGY_HOOK_TIMEOUT_SECONDS,
         _ => yinz_types::agent::CLAUDE_HOOK_TIMEOUT_SECONDS,
     };
-    let creation_deadline = Instant::now() + Duration::from_secs(timeout_seconds);
+    let deadline = Instant::now() + observation_window;
+    let creation_deadline = Instant::now()
+        + if kind == "claude" {
+            creation_window
+        } else {
+            Duration::from_secs(timeout_seconds)
+        };
+    let mut unavailable_reported = false;
     let file = loop {
         alive(&mut system)?;
         match options.open(path) {
             Ok(file) => break file,
             Err(error)
                 if error.kind() == std::io::ErrorKind::NotFound
-                    && Instant::now() < creation_deadline =>
+                    && Instant::now()
+                        < if kind == "claude" {
+                            deadline
+                        } else {
+                            creation_deadline
+                        } =>
             {
+                if kind == "claude" && !unavailable_reported && Instant::now() >= creation_deadline
+                {
+                    let mut hook = observation.hook.clone();
+                    hook.hook_event_name = "Stop".into();
+                    hook.prompt = None;
+                    hook.prompt_sha256 = None;
+                    hook.claude_turn_complete = Some(false);
+                    log::debug!(
+                        "Claude transcript acquisition retry process={:?} prompt={:?}",
+                        observation.process,
+                        hook.prompt_id
+                    );
+                    // This report is advisory; keep ownership of the original observation.
+                    if report(&hook).is_ok() {
+                        unavailable_reported = true;
+                    }
+                }
                 std::thread::sleep(Duration::from_millis(100));
             },
             Err(error) => return Err(error).with_context(|| format!("open {kind} transcript")),
@@ -585,8 +630,6 @@ fn follow_with_api_reporting(
     }
     let mut line = Vec::new();
     let mut offset = 0;
-    let deadline =
-        Instant::now() + Duration::from_millis(yinz_types::agent::control::MAX_TIMEOUT_MS);
     loop {
         if Instant::now() >= deadline {
             return Err(anyhow!("{kind} turn observation expired"));
@@ -601,11 +644,25 @@ fn follow_with_api_reporting(
             return Err(anyhow!("{kind} transcript replaced or truncated"));
         }
         loop {
-            let bytes = reader
+            let read = reader
                 .by_ref()
                 .take((16 * 1024 * 1024 + 1 - line.len()) as u64)
-                .read_until(b'\n', &mut line)
-                .with_context(|| format!("read {kind} transcript record"))?;
+                .read_until(b'\n', &mut line);
+            let bytes = match read {
+                Ok(bytes) => bytes,
+                Err(error)
+                    if kind == "claude"
+                        && matches!(
+                            error.kind(),
+                            std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
+                        ) =>
+                {
+                    break
+                },
+                Err(error) => {
+                    return Err(error).with_context(|| format!("read {kind} transcript record"))
+                },
+            };
             offset += bytes as u64;
             if line.len() > 16 * 1024 * 1024 {
                 return Err(anyhow!("{kind} transcript record exceeds 16 MiB"));
@@ -625,7 +682,7 @@ fn follow_with_api_reporting(
                 hook.claude_notifications
                     .get_or_insert_with(Default::default)
                     .notice = Some(notice.clone());
-                report(&hook)?;
+                report_with_retry(observation, &hook, deadline, &mut report)?;
                 turn.notice = Some(notice);
             }
             if !completed && turn.record(&record)? {
@@ -633,7 +690,7 @@ fn follow_with_api_reporting(
                 if kind != "claude" {
                     return Ok(turn);
                 }
-                confirm(observation, &mut turn, &mut report)?;
+                confirm(observation, &mut turn, deadline, &mut report)?;
             }
         }
         if completed {
@@ -672,7 +729,7 @@ fn follow_with_api_reporting(
                 && current.dev() == metadata.dev()
                 && current.len() == offset
             {
-                confirm(observation, &mut turn, &mut report)?;
+                confirm(observation, &mut turn, deadline, &mut report)?;
                 return Ok(turn);
             }
         }
@@ -684,13 +741,14 @@ fn follow_with_api_reporting(
 fn confirm(
     observation: &Observation,
     turn: &mut Turn,
+    deadline: Instant,
     report: &mut impl FnMut(&HookEvent) -> Result<()>,
 ) -> Result<()> {
     let mut hook = observation.hook.clone();
     hook.hook_event_name = "Stop".into();
     hook.prompt = None;
     hook.prompt_sha256 = None;
-    hook.claude_turn_complete = Some(true);
+    hook.claude_turn_complete = Some(!turn.interrupted);
     hook.last_assistant_message = turn.last_text.clone();
     if let Some(notice) = &turn.notice {
         if !turn.answer_boundary {
@@ -704,9 +762,37 @@ fn confirm(
             .notice = Some(notice.clone());
     }
     hook.claude_background = settle_background(observation);
-    report(&hook)?;
+    hook.claude_answered = Some(turn.answer_boundary);
+    hook.claude_interrupted = Some(turn.interrupted);
+    report_with_retry(observation, &hook, deadline, report)?;
     turn.reported = true;
     turn.background = hook.claude_background == Some(true);
+    Ok(())
+}
+
+fn report_with_retry(
+    observation: &Observation,
+    hook: &HookEvent,
+    deadline: Instant,
+    report: &mut impl FnMut(&HookEvent) -> Result<()>,
+) -> Result<()> {
+    let mut system = System::new();
+    loop {
+        alive(&mut system, observation)?;
+        match report(hook) {
+            Ok(()) => break,
+            Err(error) if Instant::now() >= deadline => {
+                return Err(error).context("Claude completion report deadline expired");
+            },
+            Err(error) => {
+                log::debug!(
+                    "Claude completion report retry prompt={:?}: {error:#}",
+                    hook.prompt_id
+                );
+                std::thread::sleep(Duration::from_millis(100));
+            },
+        }
+    }
     Ok(())
 }
 
@@ -738,11 +824,12 @@ fn settle_background(observation: &Observation) -> Option<bool> {
 const BACKGROUND_SIGNAL_GRACE: Duration = Duration::from_secs(2);
 
 /// After a turn confirmed with background work, report once the registry shows Claude idle.
-/// Any other end of observation also reports, so a lost signal degrades to hook-derived state.
+/// Lost identity or signal leaves background work unresolved.
 fn watch_background(
     observation: &Observation,
     mut report: impl FnMut(&HookEvent) -> Result<()>,
 ) -> Result<()> {
+    let mut idle = false;
     if let (Some(process), Some(status)) = (observation.process, &observation.claude_status) {
         let mut system = System::new();
         let deadline =
@@ -755,7 +842,10 @@ fn watch_background(
                 .and_then(working)
             {
                 Some(true) => unknown_since = None,
-                Some(false) => break,
+                Some(false) => {
+                    idle = true;
+                    break;
+                },
                 // A read can land between a rewrite's truncation and its contents. Only a
                 // record that stays unreadable or unrecognized counts as a lost signal.
                 None => {
@@ -768,6 +858,9 @@ fn watch_background(
             }
             std::thread::sleep(Duration::from_millis(100));
         }
+    }
+    if !idle {
+        return Err(anyhow!("Claude background observation lost its identity or idle signal; completion remains unverified"));
     }
     let mut hook = observation.hook.clone();
     hook.hook_event_name = yinz_types::agent::CLAUDE_BACKGROUND_IDLE.into();
@@ -806,6 +899,7 @@ fn alive(system: &mut System, observation: &Observation) -> Result<()> {
 struct Turn {
     notice: Option<yinz_types::agent::claude_notifications::Notice>,
     answer_boundary: bool,
+    interrupted: bool,
     reported: bool,
     kind: String,
     session: String,
@@ -827,6 +921,7 @@ impl Turn {
         Self {
             notice: None,
             answer_boundary: false,
+            interrupted: false,
             reported: false,
             kind: kind.to_owned(),
             session: hook.session_id.clone(),
@@ -903,6 +998,7 @@ impl Turn {
                             })
                         })
                 };
+            self.interrupted = interrupted;
             self.answer_boundary =
                 record["type"] == "system" && record["subtype"] == "turn_duration";
             return Ok(interrupted || self.answer_boundary);

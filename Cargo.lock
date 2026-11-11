@@ -4816,6 +4816,7 @@ dependencies = [
  "signal-hook",
  "ssh2",
  "suggest",
+ "sysinfo",
  "tar",
  "tempfile",
  "thiserror 2.0.19",

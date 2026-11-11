@@ -1598,3 +1598,82 @@ read -r gate
 #[cfg(target_os = "linux")]
 #[path = "../unit/claude_permission_observer.rs"]
 mod claude_permission_observer;
+
+#[test]
+fn issue85_claude_observer_retries_completion_after_report_ack_loss() {
+    struct Observer(Child);
+    impl Drop for Observer {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    warm_binary();
+    let dir = tempfile::tempdir().unwrap();
+    let listener = listener(dir.path());
+    let transcript = dir.path().join("root.jsonl");
+    std::fs::write(&transcript, [
+        serde_json::json!({"type":"user","promptId":"prompt","uuid":"accepted"}),
+        serde_json::json!({"type":"assistant","parentUuid":"accepted","uuid":"answer","message":{"content":[{"type":"text","text":"DONE"}]}}),
+        serde_json::json!({"type":"system","subtype":"turn_duration","parentUuid":"answer"}),
+    ].iter().map(|row| format!("{row}\n")).collect::<String>()).unwrap();
+    let pid = sysinfo::Pid::from_u32(std::process::id());
+    let mut system = sysinfo::System::new();
+    system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+    let started = system.process(pid).unwrap().start_time();
+    let child = Command::new(env!("CARGO_BIN_EXE_yinz"))
+        .arg("--claude-turn-observer")
+        .env("YINZ_SOCKET_DIR", dir.path())
+        .env("TMPDIR", dir.path())
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env_remove("YINZ_PANE_REF")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut observer = Observer(child);
+    write_event(
+        &mut observer.0,
+        &serde_json::json!({
+            "kind":"claude",
+            "hook":{"hook_event_name":"UserPromptSubmit","session_id":"conversation",
+                "prompt_id":"prompt","transcript_path":transcript},
+            "process":[std::process::id(),started],
+            "route":{"Local":{"session":"report-test","pane":"terminal_7"}}
+        })
+        .to_string(),
+    );
+    let mut hooks = Vec::new();
+    for attempt in 0..2 {
+        let mut receiver =
+            IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
+        receiver
+            .set_recv_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        let IpcRecv::Msg(ClientToServerMsg::AgentReport(report), _) = receiver.recv_client_msg()
+        else {
+            panic!("expected correlated completion");
+        };
+        hooks.push(
+            serde_json::from_str::<yinz_types::agent::HookEvent>(&report.event.unwrap().raw)
+                .unwrap(),
+        );
+        if attempt == 1 {
+            receiver
+                .get_sender::<ServerToClientMsg>()
+                .unwrap()
+                .send_server_msg(ServerToClientMsg::AgentReportAccepted {
+                    report_id: report.report_id,
+                })
+                .unwrap();
+        }
+        // First report was delivered, but the acknowledgement is lost with this socket.
+    }
+    assert_eq!(hooks[0], hooks[1]);
+    assert_eq!(hooks[1].claude_answered, Some(true));
+    assert_eq!(hooks[1].prompt_id.as_deref(), Some("prompt"));
+    assert_eq!(hooks[1].last_assistant_message.as_deref(), Some("DONE"));
+    assert!(observer.0.wait().unwrap().success());
+}

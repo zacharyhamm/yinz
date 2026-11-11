@@ -220,7 +220,14 @@ fn missing_transcripts_and_exited_processes_are_unavailable() {
         recovery: false,
         permissions: false,
     };
-    assert!(follow(&observation).is_err());
+    assert!(follow_with_limits(
+        &observation,
+        None,
+        |_| Ok(()),
+        Duration::ZERO,
+        Duration::from_millis(10)
+    )
+    .is_err());
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("turn.jsonl");
     std::fs::write(&path, "").unwrap();
@@ -233,7 +240,14 @@ fn missing_transcripts_and_exited_processes_are_unavailable() {
         process: Some((std::process::id(), started + 1)),
         ..observation
     };
-    assert!(follow(&observation).is_err());
+    assert!(follow_with_limits(
+        &observation,
+        None,
+        |_| Ok(()),
+        Duration::ZERO,
+        Duration::from_millis(10)
+    )
+    .is_err());
 }
 
 #[test]
@@ -505,7 +519,7 @@ fn background_watch_reports_idle_for_the_turn_once_the_registry_is_idle() {
     assert_eq!(reports[0].claude_background, Some(false));
     assert!(reports[0].prompt.is_none());
 
-    // A replaced conversation or a lost registry also ends the watch, degrading to hooks.
+    // Lost identity or signal must never clear background work.
     std::fs::write(&status_path, registry("busy", now_ms())).unwrap();
     std::fs::write(&marker, "replacement").unwrap();
     let mut reports = vec![];
@@ -513,16 +527,16 @@ fn background_watch_reports_idle_for_the_turn_once_the_registry_is_idle() {
         reports.push(hook.clone());
         Ok(())
     })
-    .unwrap();
-    assert_eq!(reports.len(), 1);
+    .unwrap_err();
+    assert_eq!(reports.len(), 0);
     std::fs::write(&marker, "conversation").unwrap();
     std::fs::remove_file(&status_path).unwrap();
     watch_background(&observation, |hook| {
         reports.push(hook.clone());
         Ok(())
     })
-    .unwrap();
-    assert_eq!(reports.len(), 2);
+    .unwrap_err();
+    assert_eq!(reports.len(), 0);
 }
 
 #[test]
@@ -1748,4 +1762,62 @@ fn claude_permission_observer_lock_has_independent_namespace_and_releases() {
     assert!(permissions::lock(&observation, dir.path())
         .unwrap()
         .is_some());
+}
+
+#[test]
+fn issue85_missing_transcript_then_lost_confirmation_ack_recovers_original_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("delayed.jsonl");
+    let observation = observation(&path, None);
+    let mut unavailable = 0;
+    let mut confirmations = Vec::new();
+    let turn = follow_with_limits(
+        &observation, None,
+        |hook| {
+            if hook.claude_turn_complete == Some(false) {
+                unavailable += 1;
+                std::fs::write(&path, [
+                    json!({"type":"user","promptId":"prompt","uuid":"accepted"}),
+                    json!({"type":"assistant","parentUuid":"accepted","uuid":"answer","message":{"content":[{"type":"text","text":"DONE"}]}}),
+                    json!({"type":"system","subtype":"turn_duration","parentUuid":"answer"}),
+                ].iter().map(|row| format!("{row}\n")).collect::<String>()).unwrap();
+                return Ok(());
+            }
+            confirmations.push(hook.clone());
+            if confirmations.len() == 1 {
+                // Simulate delivery followed by a lost acknowledgement.
+                return Err(anyhow!("injected acknowledgement loss"));
+            }
+            Ok(())
+        },
+        Duration::ZERO, Duration::from_secs(5),
+    ).unwrap();
+    assert_eq!(unavailable, 1);
+    assert_eq!(confirmations.len(), 2);
+    assert_eq!(confirmations[0], confirmations[1]);
+    assert_eq!(confirmations[1].prompt_id.as_deref(), Some("prompt"));
+    assert_eq!(confirmations[1].claude_answered, Some(true));
+    assert_eq!(turn.last_text.as_deref(), Some("DONE"));
+    assert!(turn.reported);
+}
+
+#[test]
+fn issue85_completion_delivery_retry_has_an_absolute_deadline() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("turn.jsonl");
+    std::fs::write(&path, [
+        json!({"type":"user","promptId":"prompt","uuid":"accepted"}),
+        json!({"type":"assistant","parentUuid":"accepted","uuid":"answer","message":{"content":[]}}),
+        json!({"type":"system","subtype":"turn_duration","parentUuid":"answer"}),
+    ].iter().map(|row| format!("{row}\n")).collect::<String>()).unwrap();
+    let error = follow_with_limits(
+        &observation(&path, None),
+        None,
+        |_| Err(anyhow!("injected delivery failure")),
+        Duration::ZERO,
+        Duration::from_millis(10),
+    )
+    .err()
+    .unwrap();
+    assert!(error.to_string().contains("deadline"));
 }
