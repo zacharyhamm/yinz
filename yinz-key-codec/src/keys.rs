@@ -436,13 +436,9 @@ pub fn serialize_native_key(key: &KeyWithModifier) -> Option<String> {
         }
     };
     let encoded = match key.bare_key {
-        BareKey::Char(c) if !(alt || ctrl || sup) => {
-            if shift {
-                c.to_uppercase().collect()
-            } else {
-                c.to_string()
-            }
-        },
+        // Native characters already include the keyboard layout's case resolution.
+        // Shift remains on the binding key, but must not transform the produced text.
+        BareKey::Char(c) if !(alt || ctrl || sup) => c.to_string(),
         BareKey::Char(c) => {
             let mut lowercase = c.to_lowercase();
             match (lowercase.next(), lowercase.next()) {

@@ -202,7 +202,7 @@ impl<'a> PaneContentsAndUi<'a> {
             && self.pane.get_content_y() > self.pane.y()
             && self.pane.get_content_rows() > 0
         {
-            for client in clients {
+            for client in clients.iter().copied() {
                 let characters = crate::pane_tabs::render_bar(
                     tabs,
                     self.pane.pane_tabs_view(client),
@@ -223,6 +223,12 @@ impl<'a> PaneContentsAndUi<'a> {
                     )
                     .context("render terminal pane tabs")?;
             }
+        }
+        // Clear old cursor cells with the contents above before painting new cursors.
+        // Structured cells obey chunk order just like the ANSI output does.
+        for client in clients {
+            self.render_fake_cursor_if_needed(client)
+                .context(err_context)?;
         }
         Ok(())
     }

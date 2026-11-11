@@ -872,3 +872,20 @@ fn unchanged_punctuation_and_alt_layout_characters_keep_shift() {
     };
     assert_eq!(key, KeyWithModifier::new(BareKey::Char('+')));
 }
+
+#[test]
+fn layout_resolved_case_is_preserved_with_shift_and_caps_lock() {
+    for text in ["a", "A", "é", "É", "ß"] {
+        for modifiers in [none(), ModifiersState::SHIFT] {
+            let press = press(character(text), modifiers);
+            let expected_key = translate(&press).unwrap();
+            let Some(ClientToServerMsg::Key { key, raw_bytes, .. }) = key_message(&press) else {
+                panic!("expected a key message");
+            };
+            assert_eq!(key, expected_key);
+            assert_eq!(raw_bytes, text.as_bytes(), "{text}, {modifiers:?}");
+        }
+    }
+    let key = translated(&character("a"), ModifiersState::SHIFT);
+    assert!(key.key_modifiers.contains(&KeyModifier::Shift));
+}

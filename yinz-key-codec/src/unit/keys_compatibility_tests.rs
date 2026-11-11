@@ -87,3 +87,12 @@ fn terminal_keys_preserve_bytes_and_binding_precedence() {
         vec![KeyWithModifier::new(BareKey::Char('a'))]
     );
 }
+
+#[test]
+fn native_character_encoding_preserves_resolved_text_and_binding_modifiers() {
+    for character in ['a', 'A', 'é', 'É', 'ß'] {
+        let key = KeyWithModifier::new(BareKey::Char(character)).with_shift_modifier();
+        assert_eq!(serialize_native_key(&key), Some(character.to_string()));
+        assert!(key.key_modifiers.contains(&KeyModifier::Shift));
+    }
+}

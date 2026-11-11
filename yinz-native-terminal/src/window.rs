@@ -734,10 +734,7 @@ impl App {
                 );
                 if event.logical_key == Key::Named(NamedKey::Insert) && self.modifiers.shift_key() {
                     if let Some(chars) = self.get_clipboard() {
-                        self.action(Action::Paste {
-                            chars,
-                            pane_id: None,
-                        })?;
+                        self.send(ClientToServerMsg::Paste(chars))?;
                     }
                     return Ok(());
                 }
@@ -756,10 +753,7 @@ impl App {
                         },
                         "v" => {
                             if let Some(chars) = self.get_clipboard() {
-                                self.action(Action::Paste {
-                                    chars,
-                                    pane_id: None,
-                                })?;
+                                self.send(ClientToServerMsg::Paste(chars))?;
                             }
                             return Ok(());
                         },
@@ -830,10 +824,7 @@ impl App {
                     && self.settings.middle_click_paste.unwrap_or(true)
                 {
                     if let Some(chars) = self.get_clipboard() {
-                        self.action(Action::Paste {
-                            chars,
-                            pane_id: None,
-                        })?;
+                        self.send(ClientToServerMsg::Paste(chars))?;
                     }
                 } else if self.mouse_mode {
                     // A release names the button being released, even though it is no

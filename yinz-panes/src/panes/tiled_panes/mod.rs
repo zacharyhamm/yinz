@@ -1663,9 +1663,11 @@ impl TiledPanes {
                     );
                     // this is done for panes that don't have their own cursor (eg. panes of
                     // another user)
-                    pane_contents_and_ui
-                        .render_fake_cursor_if_needed(*client_id)
-                        .with_context(err_context)?;
+                    if let PaneId::Plugin(..) = kind {
+                        pane_contents_and_ui
+                            .render_fake_cursor_if_needed(*client_id)
+                            .with_context(err_context)?;
+                    }
                 }
                 if let PaneId::Terminal(..) = kind
                     && !pane_is_one_liner_in_stack

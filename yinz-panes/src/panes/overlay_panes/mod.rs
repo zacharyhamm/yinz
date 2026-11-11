@@ -2042,9 +2042,11 @@ impl OverlayPanes {
                         session_name,
                         &mut self.window_title,
                     );
-                    pane_contents_and_ui
-                        .render_fake_cursor_if_needed(*client_id)
-                        .with_context(err_context)?;
+                    if let PaneId::Plugin(..) = pane_id {
+                        pane_contents_and_ui
+                            .render_fake_cursor_if_needed(*client_id)
+                            .with_context(err_context)?;
+                    }
                 }
                 if !has_content {
                     continue;

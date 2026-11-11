@@ -650,3 +650,84 @@ fn multiplayer_cursor_cells_reach_native_and_ansi_and_restore_after_moving() {
         .unwrap();
     assert_eq!((moved.x, moved.y), (4, 2));
 }
+
+#[test]
+fn multiplayer_cursors_are_painted_after_shared_pane_contents() {
+    use crate::ui::pane_contents_and_ui::PaneContentsAndUi;
+    use yinz_terminal::output::NativeRenderState;
+    use yinz_types::{
+        data::PaletteColor,
+        multiplayer::AttachedClients,
+        structured_render::{decode, WireColor},
+    };
+    let viewer = ClientId::new(2);
+    let ansi_client = ClientId::new(3);
+    let clients = HashSet::from([CLIENT, viewer, ansi_client]);
+    let attached: AttachedClients = clients.iter().copied().collect();
+    let mut style = Style::default();
+    style.colors.multiplayer_user_colors.player_1 = PaletteColor::Rgb((10, 20, 30));
+    // The shared path is used by tiled panes and by elevated floating/overlay panes.
+    for z_index in [None, Some(1)] {
+        let mut surface = Surface::new(&[geom(3, 2, 8, 3)]);
+        let mut pane: Box<dyn Pane> = Box::new(surface.panes.remove(0));
+        let focus = HashMap::from([(CLIENT, pane.pid())]);
+        pane.handle_pty_bytes(b"ab\x1b[1;1H".to_vec());
+        let mut native = HashMap::from([(viewer, NativeRenderState::default())]);
+        let mut host = Surface::new(&[geom(0, 0, 16, 8)]);
+        for column in [0, 1] {
+            if column == 1 {
+                pane.handle_pty_bytes(b"\x1b[1;2H".to_vec());
+            }
+            let mut output = Output::default();
+            output.add_clients(&clients, surface.links.clone(), None);
+            PaneContentsAndUi::new(
+                &mut pane,
+                &mut output,
+                style,
+                &focus,
+                attached.snapshot(),
+                z_index,
+                false,
+                false,
+                false,
+                &HashMap::new(),
+                HashMap::new(),
+                false,
+                false,
+                false,
+                HashSet::new(),
+            )
+            .render_pane_contents_to_multiple_clients(clients.iter().copied())
+            .unwrap();
+            let frames = output.serialize_native(&mut native, &HashMap::new(), &HashMap::new());
+            let frame = decode(&frames[&viewer]).unwrap();
+            let mut painted = HashMap::new();
+            for (row, cells) in frame.rows() {
+                for (offset, cell) in cells.iter().enumerate() {
+                    painted.insert((row.x0 as usize + offset, row.y as usize), *cell);
+                }
+            }
+            let cursor = painted[&(3 + column, 2)];
+            assert_eq!(WireColor::unpack(cursor.bg), WireColor::Rgb(10, 20, 30));
+            if column == 1 {
+                assert_ne!(
+                    WireColor::unpack(painted[&(3, 2)].bg),
+                    WireColor::Rgb(10, 20, 30)
+                );
+            }
+            let ansi = output.serialize().unwrap();
+            host.panes[0].handle_pty_bytes(ansi[&ansi_client].as_bytes().to_vec());
+            let rendered = cells(&mut host.panes[0]);
+            assert_eq!(
+                rendered[2][3 + column].styles.background,
+                Some(AnsiCode::RgbCode((10, 20, 30)))
+            );
+            if column == 1 {
+                assert_ne!(
+                    rendered[2][3].styles.background,
+                    Some(AnsiCode::RgbCode((10, 20, 30)))
+                );
+            }
+        }
+    }
+}

@@ -231,6 +231,15 @@ fn committed_text_is_not_pasted_even_when_bracketed_paste_is_enabled() {
 
 #[test]
 fn committed_text_updates_names_and_search_without_writing_to_the_pane() {
+    text_updates_names_and_search_without_writing_to_the_pane(false);
+}
+
+#[test]
+fn clipboard_paste_updates_names_and_search_without_writing_to_the_pane() {
+    text_updates_names_and_search_without_writing_to_the_pane(true);
+}
+
+fn text_updates_names_and_search_without_writing_to_the_pane(paste: bool) {
     let client = ClientId::new(1);
     for mode in [
         InputMode::RenameTab,
@@ -246,9 +255,12 @@ fn committed_text_updates_names_and_search_without_writing_to_the_pane() {
             .set_pane_frames(PaneFrameStyle::Full);
         screen.change_mode(mode, None, client).unwrap();
         capture.drain_pty_writes();
-        screen
-            .text_from_client("你好é".into(), client, None)
-            .unwrap();
+        if paste {
+            screen.paste_from_client("你好é".into(), client, None)
+        } else {
+            screen.text_from_client("你好é".into(), client, None)
+        }
+        .unwrap();
         assert!(capture.drain_pty_writes().is_empty(), "{mode:?}");
         match mode {
             InputMode::RenameTab => assert!(screen
