@@ -13,6 +13,36 @@ fn osc133_a_b_c_d_selects_command_and_output_without_prompt() {
 }
 
 #[test]
+fn osc633_a_b_c_d_selects_command_and_output_without_prompt() {
+    let mut grid = create_grid_with_content(
+        "\x1b]633;A\x07$ \x1b]633;B\x07echo hi\x1b]633;C\x07\r\nhi\x1b]633;D;0\x07 suffix",
+    );
+
+    assert_eq!(
+        select_with_click_count(&mut grid, Position::new(1, 0), 3),
+        "echo hi\nhi"
+    );
+}
+
+#[test]
+fn osc633_properties_and_osc133_aliases_do_not_split_command_selection() {
+    for report in ["P;Cwd=/work", "I"] {
+        let mut grid = create_grid_with_content(&format!(
+            "\x1b]633;A\x07$ \x1b]633;B\x07echo hi\x1b]633;C\x07\r\nfirst\r\n\x1b]633;{report}\x07second\x1b]633;D;0\x07"
+        ));
+
+        for output in ["first", "second"] {
+            let position = viewport_position_of(&grid, output);
+            assert_eq!(
+                select_with_click_count(&mut grid, position, 3),
+                "echo hi\nfirst\nsecond",
+                "{report} at {output}"
+            );
+        }
+    }
+}
+
+#[test]
 fn osc133_p_i_aliases_select_command_and_output_without_prompt() {
     let mut grid = create_grid_with_content(
         "\x1b]133;P\x07> \x1b]133;I\x07pwd\x1b]133;C\x07\r\n/tmp\x1b]133;D\x07",

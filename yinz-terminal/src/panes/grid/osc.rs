@@ -206,8 +206,11 @@ impl Grid {
                     self.applicable_program_status.clear_all();
                 }
                 let marker = params.get(1).and_then(|subcommand| match *subcommand {
-                    b"A" | b"P" => Some(Osc133MarkerKind::Prompt),
-                    b"B" | b"I" => Some(Osc133MarkerKind::Input),
+                    b"A" => Some(Osc133MarkerKind::Prompt),
+                    b"B" => Some(Osc133MarkerKind::Input),
+                    // OSC 633 uses P for properties, not the OSC 133 prompt alias.
+                    b"P" if params[0] == b"133" => Some(Osc133MarkerKind::Prompt),
+                    b"I" if params[0] == b"133" => Some(Osc133MarkerKind::Input),
                     b"C" => Some(Osc133MarkerKind::Output),
                     b"D" => Some(Osc133MarkerKind::End),
                     _ => None,

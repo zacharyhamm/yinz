@@ -226,6 +226,25 @@ fn osc7501_capability_query_is_ordered_and_uses_the_request_terminator() {
 }
 
 #[test]
+fn osc633_properties_preserve_status_and_prompt_retires_it() {
+    let mut grid = create_grid_with_content("");
+    let mut parser = vte::Parser::new();
+    parser.advance(
+        &mut grid,
+        b"\x1b]7501;state=done\x07\x1b]7501;state=blocked:id=worker\x07",
+    );
+    parser.advance(&mut grid, b"\x1b]633;P;Cwd=/work\x07");
+    assert_eq!(grid.program_status.len(), 2);
+    assert_eq!(grid.applicable_program_status.len(), 2);
+
+    parser.advance(&mut grid, b"\x1b]633;A\x07");
+    assert_eq!(grid.program_status.len(), 1);
+    assert!(grid.program_status.root().is_some());
+    assert!(grid.program_status.get("worker").is_none());
+    assert!(grid.applicable_program_status.is_empty());
+}
+
+#[test]
 fn osc7501_lifetime_and_screen_switching() {
     let mut grid = create_grid_with_content("");
     let mut parser = vte::Parser::new();

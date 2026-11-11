@@ -94,6 +94,20 @@ fn prompt_jumps_do_nothing_in_a_pane_without_osc133_markers() {
 }
 
 #[test]
+fn osc633_properties_and_osc133_aliases_do_not_create_navigation_targets() {
+    for report in ["P;Cwd=/work", "I"] {
+        let content: String = (0..12)
+            .map(|index| format!("\x1b]633;{report}\x07line{index}\r\n"))
+            .collect();
+        let mut grid = six_row_grid_with(&content);
+
+        assert!(!grid.scroll_to_previous_prompt(), "{report}");
+        assert!(!grid.scroll_to_next_prompt(), "{report}");
+        assert!(!is_scrolled(&grid));
+    }
+}
+
+#[test]
 fn an_input_marker_stands_in_for_a_prompt_the_shell_never_marked() {
     let mut grid = six_row_grid_with(&commands_marked_without_prompts(12));
 
