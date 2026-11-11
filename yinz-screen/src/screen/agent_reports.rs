@@ -462,7 +462,22 @@ pub(super) fn apply_queued_agent_report(
         let submission = hook
             .as_ref()
             .and_then(|hook| screen.event_submission(pane_id, hook));
+        // Correlated provider boundaries can retire a stale presentation report. This
+        // never turns an OSC report into completion evidence or releases input ownership.
+        let retire_status = hook.as_ref().is_some_and(|hook| {
+            !hook.is_worker()
+                && !hook.archive_only
+                && submission.is_some()
+                && (hook.hook_event_name == "UserPromptSubmit"
+                    || (hook.hook_event_name == "Stop"
+                        && (hook.claude_turn_complete == Some(true)
+                            || hook.agy_turn_complete == Some(true)
+                            || (report.kind == "codex" && hook.turn_id.is_some()))))
+        });
         screen.observe_agent_event(event, hook.as_ref(), submission);
+        if retire_status {
+            screen.with_pane(pane_id, |pane| pane.retire_program_status());
+        }
     }
     let current = screen.get_pane_info(pane_id).and_then(|pane| pane.agent);
     if previous != current {

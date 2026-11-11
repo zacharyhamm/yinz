@@ -21,14 +21,20 @@ impl AgentPresentation {
     pub fn from_pane(pane: &PaneInfo) -> Option<Self> {
         let agent = pane.agent.as_ref()?;
         let provider = one_line(&agent.kind.replace('◆', ""));
-        let activity = match agent.state {
-            AgentState::Waiting => agent.waiting_on.as_deref(),
-            AgentState::Busy => agent.detail.as_deref(),
-            AgentState::Idle | AgentState::Exited => None,
-        }
-        .map(one_line)
-        .filter(|text| !text.is_empty())
-        .unwrap_or_else(|| one_line(&pane.title));
+        let state = pane.program_status.agent_state(agent.state);
+        let activity = pane
+            .program_status
+            .current
+            .as_ref()
+            .and_then(|r| r.msg.as_deref())
+            .or(match state {
+                AgentState::Waiting => agent.waiting_on.as_deref(),
+                AgentState::Busy => agent.detail.as_deref(),
+                AgentState::Idle | AgentState::Exited => None,
+            })
+            .map(one_line)
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| one_line(&pane.title));
         Some(Self {
             project: String::new(),
             branch: String::new(),
@@ -37,7 +43,7 @@ impl AgentPresentation {
             } else {
                 provider
             },
-            state: agent.state,
+            state,
             host: pane.target.display().map(|host| one_line(&host)),
             pane_id: pane.id.legacy_parts().0.to_string(),
             activity,

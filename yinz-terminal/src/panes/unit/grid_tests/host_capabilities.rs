@@ -202,3 +202,47 @@ fn disabling_the_kitty_keyboard_protocol_forgets_the_saved_primary_screen_negoti
         assert!(grid.supports_kitty_keyboard_protocol);
     }
 }
+
+#[test]
+fn osc7501_capability_query_is_ordered_and_uses_the_request_terminator() {
+    for terminator in ["\x07", "\x1b\\"] {
+        let mut grid = create_grid_with_content("");
+        let mut parser = vte::Parser::new();
+        for byte in format!("\x1b]7501;?{terminator}\x1b[c").bytes() {
+            parser.advance(&mut grid, &[byte]);
+        }
+        assert_eq!(
+            grid.pending_messages_to_pty[0],
+            yinz_host_protocol::program_status::query_reply(terminator == "\x07")
+        );
+        assert_eq!(grid.pending_messages_to_pty.len(), 2);
+        parser.advance(&mut grid, b"\x1b]7501;?:states=idle\x07");
+        assert_eq!(
+            grid.pending_messages_to_pty.len(),
+            2,
+            "replies never cause replies"
+        );
+    }
+}
+
+#[test]
+fn osc7501_lifetime_and_screen_switching() {
+    let mut grid = create_grid_with_content("");
+    let mut parser = vte::Parser::new();
+    parser.advance(
+        &mut grid,
+        b"\x1b]7501;state=done\x07\x1b]7501;state=blocked:id=worker\x07",
+    );
+    parser.advance(&mut grid, b"\x1b[?1049h\x1b[?1049l\x1b[!p");
+    assert_eq!(grid.program_status.len(), 2);
+    parser.advance(&mut grid, b"\x1b]133;A\x07");
+    assert_eq!(grid.program_status.len(), 1);
+    assert!(grid.applicable_program_status.is_empty());
+    parser.advance(&mut grid, b"\x1b]7501;state=working:id=new\x07");
+    assert!(
+        grid.applicable_program_status.root().is_none(),
+        "new reports do not reactivate historical results"
+    );
+    parser.advance(&mut grid, b"\x1bc");
+    assert!(grid.program_status.is_empty());
+}

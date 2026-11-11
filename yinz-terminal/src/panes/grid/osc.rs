@@ -24,6 +24,22 @@ impl Grid {
         }
 
         match params[0] {
+            b"7501" => {
+                use yinz_host_protocol::program_status::{
+                    parse, query_reply, ProgramStatusMessage,
+                };
+                match parse(params, bell_terminated) {
+                    Some(ProgramStatusMessage::Query) => self
+                        .pending_messages_to_pty
+                        .push(query_reply(bell_terminated)),
+                    Some(message) => {
+                        self.applicable_program_status.apply(message.clone(), 0);
+                        self.program_status.apply(message, 0);
+                        self.should_render = true;
+                    },
+                    None => {},
+                }
+            },
             // Set window title.
             b"0" | b"2" => {
                 if params.len() >= 2 {
@@ -184,7 +200,11 @@ impl Grid {
                 // get/set cursor color currently unimplemented
             },
 
-            b"133" => {
+            b"133" | b"633" => {
+                if params.get(1) == Some(&b"A".as_slice()) {
+                    self.program_status.drop_transient();
+                    self.applicable_program_status.clear_all();
+                }
                 let marker = params.get(1).and_then(|subcommand| match *subcommand {
                     b"A" | b"P" => Some(Osc133MarkerKind::Prompt),
                     b"B" | b"I" => Some(Osc133MarkerKind::Input),

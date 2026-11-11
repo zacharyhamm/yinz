@@ -4951,6 +4951,7 @@ fn test_server_messages() {
     use yinz_types::agent::control::{AgentOutcome, AgentResponse, AgentStatus};
     let pane_id = PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7));
     let status = AgentStatus {
+        program_status: Default::default(),
         pane_id,
         host_id: "host".into(),
         tab_id: None,

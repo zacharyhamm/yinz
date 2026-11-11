@@ -655,6 +655,8 @@ pub struct Grid {
     pub color_palette_notification_enabled: bool,
     pub search_results: SearchResult,
     pub pending_clipboard_updates: Vec<String>,
+    pub program_status: yinz_host_protocol::program_status::ProgramStatusRecords,
+    pub applicable_program_status: yinz_host_protocol::program_status::ProgramStatusRecords,
     pub pending_osc7_cwd: Option<std::path::PathBuf>,
     pub pending_desktop_notifications: Vec<PendingNotification>,
     notification_tracker: NotificationTracker,
@@ -1036,6 +1038,8 @@ impl Grid {
             kitty_host_support: KittyHostSupport::Supported,
             sixel_host_support: true,
             pending_clipboard_updates: vec![],
+            program_status: Default::default(),
+            applicable_program_status: Default::default(),
             pending_osc7_cwd: None,
             pending_desktop_notifications: Vec::new(),
             notification_tracker: NotificationTracker::default(),
@@ -3251,6 +3255,8 @@ impl Grid {
         self.should_render = true;
     }
     pub fn reset_terminal_state(&mut self) {
+        self.program_status.clear_all();
+        self.applicable_program_status.clear_all();
         if let Some(alternate_screen_state) = self.alternate_screen_state.as_mut() {
             alternate_screen_state.kitty_grid.teardown();
         }

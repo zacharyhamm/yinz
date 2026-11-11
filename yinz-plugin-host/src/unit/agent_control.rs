@@ -165,6 +165,7 @@ fn git(root: &std::path::Path, args: &[&str]) {
 
 fn agent_status(cwd: &std::path::Path) -> AgentStatus {
     AgentStatus {
+        program_status: Default::default(),
         pane_id: PaneId::Terminal(crate::TerminalId::new(7)),
         session: "session".into(),
         host_id: "host".into(),

@@ -104,7 +104,22 @@ pub fn agent_pane(pane: &PaneInfo, tab: Option<(TabId, String)>) -> agents::Agen
         // A manifest says nothing about what a pane was running a moment ago.
         // Only the daemon knows that, and it writes it back on afterwards.
         detected: None,
-        agent: pane.agent.clone(),
+        agent: pane.agent.clone().map(|mut agent| {
+            agent.state = pane.program_status.agent_state(agent.state);
+            // This model is a presentation copy, never the host identity/control record.
+            if pane.program_status.current.is_some() {
+                agent.source = yinz_types::agent::AgentSource::Reported;
+            }
+            if let Some(record) = &pane.program_status.current
+                && let Some(msg) = &record.msg
+            {
+                agent.detail = Some(msg.clone());
+                if agent.state == yinz_types::agent::AgentState::Waiting {
+                    agent.waiting_on = Some(msg.clone());
+                }
+            }
+            agent
+        }),
         last_hook_at_ms: pane.last_hook_at_ms,
     }
 }

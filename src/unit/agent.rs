@@ -199,6 +199,7 @@ fn successful_read_prints_only_terminal_text_and_json_keeps_metadata() {
     let mut response = AgentResponse::new(AgentOutcome::Ok);
     response.message = Some("metadata must not contaminate terminal output".into());
     response.agents.push(AgentStatus {
+        program_status: Default::default(),
         pane_id: "terminal_7".parse().unwrap(),
         session: "development".into(),
         host_id: "host".into(),

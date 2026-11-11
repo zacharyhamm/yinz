@@ -11,6 +11,10 @@ const FORMAT: u32 = yinz_types::data::WARP_TERMINAL_STATE_VERSION;
 struct Snapshot {
     format: u32,
     #[serde(default)]
+    program_status: Vec<yinz_types::program_status::ProgramStatusRecord>,
+    #[serde(default)]
+    applicable_program_status: Vec<yinz_types::program_status::ProgramStatusRecord>,
+    #[serde(default)]
     lock_renders: bool,
     #[serde(default)]
     completed_text: Option<Vec<Vec<ChunkState>>>,
@@ -402,6 +406,8 @@ impl Grid {
         });
         let snapshot = Snapshot {
             format: FORMAT,
+            program_status: self.program_status.snapshot(),
+            applicable_program_status: self.applicable_program_status.snapshot(),
             lock_renders,
             completed_text,
             ui_component_bytes: self.ui_component_bytes.clone(),
@@ -587,6 +593,14 @@ impl Grid {
         self.detected_theme_interval = state.detected_theme_interval;
         self.copied_text_selection = state.copied_text_selection;
         self.text_selection_active = state.text_selection_active;
+        self.program_status =
+            yinz_host_protocol::program_status::ProgramStatusRecords::restore(state.program_status)
+                .map_err(|e| anyhow!(e))?;
+        self.applicable_program_status =
+            yinz_host_protocol::program_status::ProgramStatusRecords::restore(
+                state.applicable_program_status,
+            )
+            .map_err(|e| anyhow!(e))?;
         self.title = state.title;
         self.is_scrolled = state.is_scrolled;
         self.ring_bell = state.ring_bell;

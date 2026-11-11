@@ -840,6 +840,7 @@ fn serialize_session_update_event_with_non_default_values() {
                 host: "build-box".to_owned(),
             },
             agent: None,
+            program_status: Default::default(),
             id: yinz_types::pane_id::PaneId::from_legacy(1, false),
             is_focused: true,
             is_fullscreen: true,
@@ -877,6 +878,7 @@ fn serialize_session_update_event_with_non_default_values() {
             host: None,
             target: Default::default(),
             agent: None,
+            program_status: Default::default(),
             id: yinz_types::pane_id::PaneId::from_legacy(1, true),
             is_focused: true,
             is_fullscreen: true,
@@ -1124,4 +1126,24 @@ fn pane_hook_recency_roundtrips_through_plugin_manifest() {
         let wire = ProtobufPaneInfo::try_from(pane.clone()).unwrap();
         assert_eq!(PaneInfo::try_from(wire).unwrap(), pane);
     }
+}
+
+#[test]
+fn osc7501_manifest_roundtrip_preserves_reported_status_separately_from_identity() {
+    let mut pane = yinz_types::data::PaneInfo::default();
+    let report = yinz_types::program_status::ProgramStatusRecord {
+        state: Some(yinz_types::program_status::ProgramState::Blocked),
+        kind: Some(yinz_types::program_status::BlockedKind::Auth),
+        msg: Some("Log in".into()),
+        ..Default::default()
+    };
+    pane.program_status.records.push(report.clone());
+    pane.program_status.current = Some(report);
+    let wire = super::ProtobufPaneInfo::try_from(pane.clone()).unwrap();
+    let restored = yinz_types::data::PaneInfo::try_from(wire).unwrap();
+    assert_eq!(restored, pane);
+    assert!(
+        restored.agent.is_none(),
+        "a status report cannot register an agent"
+    );
 }

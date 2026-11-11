@@ -1380,3 +1380,7 @@ Use ordinary lifecycle drive/resume for that saved assignment. When proof was
 already lost (including historical #78), inspect the original state and work;
 neither transcript EOF nor receipt acceptance rebuilds the lost native facts.
 Live `recover` still requires its existing live identity and explicit safeguards.
+
+## Native program status
+
+OSC 7501 reports take precedence for basic displayed status. JSON exposes raw records and applicable presentation in `program_status`; `agent` retains provider identity and correlated state. Keep hooks enabled for submission acknowledgement, conversation identity, guarded completion and unsupported agents. See [Program status](PROGRAM_STATUS.md) for precedence, lifetime, partial support and remote behavior.

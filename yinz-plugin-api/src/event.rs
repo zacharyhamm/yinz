@@ -2352,6 +2352,13 @@ impl TryFrom<ProtobufPaneInfo> for PaneInfo {
                 None => PaneTarget::parse_display(protobuf_pane_info.host.as_deref()),
             },
             host: protobuf_pane_info.host,
+            program_status: protobuf_pane_info
+                .program_status_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|_| "invalid program status")?
+                .unwrap_or_default(),
             agent: protobuf_pane_info
                 .agent
                 .map(AgentInfo::try_from)
@@ -2386,6 +2393,10 @@ impl TryFrom<PaneInfo> for ProtobufPaneInfo {
             restart_error: pane_info.restart_error,
             last_agent_session_id: pane_info.last_agent_session_id,
             last_hook_at_ms: pane_info.last_hook_at_ms,
+            program_status_json: Some(
+                serde_json::to_string(&pane_info.program_status)
+                    .map_err(|_| "invalid program status")?,
+            ),
             pane_x: u32::try_from(pane_info.pane_x).map_err(|_| "pane_x exceeds u32")?,
             pane_content_x: u32::try_from(pane_info.pane_content_x)
                 .map_err(|_| "pane_content_x exceeds u32")?,

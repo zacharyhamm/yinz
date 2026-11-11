@@ -427,6 +427,10 @@ pub trait Pane {
         (None, None)
     }
     /// The agent running in this pane, as the session knows it. Only terminal panes have one.
+    fn retire_program_status(&mut self) {}
+    fn program_status(&self) -> yinz_types::program_status::ProgramStatusView {
+        Default::default()
+    }
     fn agent_info(&self) -> Option<&AgentInfo> {
         None
     }
@@ -1089,6 +1093,7 @@ pub fn pane_info_for_pane(
         default_fg,
         default_bg,
         agent: pane.agent_info().cloned(),
+        program_status: pane.program_status(),
         ..Default::default()
     };
 

@@ -1021,11 +1021,30 @@ fn write_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
             "{}  {}  {}  {}  {}",
             status.pane_id,
             status.agent.kind,
-            status.agent.state.to_string().to_lowercase(),
+            status
+                .program_status
+                .current
+                .as_ref()
+                .map(|r| r.state().as_str().to_owned())
+                .unwrap_or_else(|| status.agent.state.to_string().to_lowercase()),
             status.agent.source.to_string().to_lowercase(),
             status.session
         )
         .context("cannot write agent status")?;
+        if let Some(record) = &status.program_status.current {
+            writeln!(
+                out,
+                "  program_status: {}  kind: {}  progress: {}  message: {}",
+                record.state().as_str(),
+                record.kind.map(|kind| kind.as_str()).unwrap_or("-"),
+                record
+                    .progress
+                    .map(|p| format!("{p}%"))
+                    .unwrap_or_else(|| "-".into()),
+                record.msg.as_deref().unwrap_or("-")
+            )
+            .context("cannot write reported program status")?;
+        }
         writeln!(
             out,
             "  ready: {}  status_available: {}  prompt_supported: {}  is_suppressed: {}",

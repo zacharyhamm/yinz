@@ -1534,6 +1534,7 @@ impl Screen {
             host_id: yinz_runtime::host_identity::host_id(),
             tab_id: self.tab_containing_pane(pane_id).map(|tab| tab.id),
             is_suppressed: info.is_suppressed,
+            program_status: info.program_status.clone(),
             target: info.target,
             cwd,
             branch: self
@@ -1632,6 +1633,7 @@ impl Screen {
             host_id: yinz_runtime::host_identity::host_id(),
             tab_id: self.tab_containing_pane(pane_id).map(|tab| tab.id),
             is_suppressed: info.is_suppressed,
+            program_status: info.program_status.clone(),
             target: info.target,
             cwd: cwd.clone(),
             branch: None,

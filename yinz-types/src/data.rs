@@ -1296,6 +1296,12 @@ pub struct PaneInfo {
     /// The agent running in this pane, if the session knows of one. See [`AgentInfo`].
     #[serde(default)]
     pub agent: Option<AgentInfo>,
+    /// OSC presentation only; never a correlated completion or identity proof.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::program_status::ProgramStatusView::is_empty"
+    )]
+    pub program_status: crate::program_status::ProgramStatusView,
     /// Receipt time of the last accepted live hook. Replay and display updates do not change it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_hook_at_ms: Option<i64>,

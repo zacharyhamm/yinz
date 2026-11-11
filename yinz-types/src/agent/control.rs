@@ -605,6 +605,12 @@ pub struct AgentStatus {
     pub is_suppressed: bool,
     pub target: crate::command::PaneTarget,
     pub agent: AgentInfo,
+    /// Reported presentation only, never completion evidence.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::program_status::ProgramStatusView::is_empty"
+    )]
+    pub program_status: crate::program_status::ProgramStatusView,
     pub cwd: Option<String>,
     pub branch: Option<String>,
     /// Whether a text prompt can safely be submitted. Independent of activity:

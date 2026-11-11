@@ -1407,3 +1407,36 @@ fn lifecycle_identified_notification_gap_never_publishes_idle() {
         Some("FINAL")
     );
 }
+
+#[test]
+fn osc7501_done_does_not_complete_a_correlated_provider_turn() {
+    let (mut screen, messages, _writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    start(&mut screen, &messages, EventSubscription::default());
+    report(&mut screen, hook("UserPromptSubmit"));
+    events(&mut screen, &messages);
+    let pane_id = PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7));
+    screen
+        .tab_containing_pane_mut(pane_id)
+        .unwrap()
+        .get_pane_with_id_mut(pane_id)
+        .unwrap()
+        .handle_pty_bytes(b"\x1b]7501;state=done:app=codex\x07".to_vec());
+    let status = screen.agent_status_for_test();
+    assert_eq!(status.agent.state, yinz_types::agent::AgentState::Busy);
+    assert_eq!(
+        status.program_status.current.unwrap().state(),
+        yinz_types::program_status::ProgramState::Done
+    );
+    assert!(!events(&mut screen, &messages)
+        .iter()
+        .any(|e| e["event_type"] == "turn_completed"));
+    report(&mut screen, hook("Stop"));
+    assert_eq!(
+        events(&mut screen, &messages)
+            .iter()
+            .filter(|e| e["event_type"] == "turn_completed")
+            .count(),
+        1
+    );
+}

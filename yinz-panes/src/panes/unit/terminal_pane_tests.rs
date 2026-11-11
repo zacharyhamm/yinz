@@ -3587,3 +3587,67 @@ fn warp_snapshot_refuses_graphics_in_either_screen_buffer() {
     pane.handle_pty_bytes(b"\x1b[?1049htext-only alternate screen".to_vec());
     assert!(pane.terminal_state().unwrap_err().contains("graphics"));
 }
+
+#[test]
+fn osc7501_prefers_display_but_preserves_agent_identity_and_completion_state() {
+    let mut pane = create_guest_modal_pane();
+    let agent = AgentInfo {
+        kind: "codex".into(),
+        state: AgentState::Busy,
+        source: AgentSource::Reported,
+        detail: Some("tool".into()),
+        waiting_on: None,
+        wait_needs_a_person: false,
+        cwd: None,
+        session_id: Some("conversation".into()),
+        run_id: Some("run".into()),
+    };
+    pane.set_agent_info(Some(agent.clone()));
+    pane.handle_pty_bytes(b"\x1b]7501;state=done:app=codex\x07".to_vec());
+    assert_eq!(
+        pane.agent_info(),
+        Some(&agent),
+        "done cannot finish a submission or replace identity"
+    );
+    assert_eq!(pane.agent_title().state, Some(AgentState::Idle));
+    let mut hook = agent.clone();
+    hook.state = AgentState::Waiting;
+    pane.set_agent_info(Some(hook.clone()));
+    assert_eq!(
+        pane.agent_title().state,
+        Some(AgentState::Idle),
+        "same-conversation hook cannot overwrite OSC"
+    );
+    pane.handle_pty_bytes(b"\x1b]7501;state=clear\x07".to_vec());
+    assert_eq!(
+        pane.agent_title().state,
+        Some(AgentState::Waiting),
+        "clear restores retained hook fallback"
+    );
+    pane.handle_pty_bytes(b"\x1b]7501;state=working\x07".to_vec());
+    pane.record_agent_input(true);
+    assert_eq!(
+        pane.agent_title().state,
+        Some(AgentState::Waiting),
+        "input retires prior-turn display without proving acceptance"
+    );
+    assert_eq!(pane.agent_info(), Some(&hook));
+}
+
+#[test]
+fn osc7501_transfer_preserves_records_and_applicability() {
+    let mut pane = agent_pane();
+    pane.handle_pty_bytes(
+        b"\x1b]7501;state=done\x07\x1b]7501;state=blocked:id=worker:kind=auth\x07".to_vec(),
+    );
+    let before = pane.program_status();
+    assert_eq!(before.records.len(), 2);
+    let state = pane.terminal_state().unwrap();
+    let mut destination = agent_pane();
+    destination.restore_terminal_state(&state).unwrap();
+    assert_eq!(destination.program_status(), before);
+    destination.set_running_program(Some("codex".into()));
+    destination.set_running_program(Some("bash".into()));
+    assert!(destination.program_status().current.is_none());
+    assert_eq!(destination.program_status().records.len(), 1);
+}

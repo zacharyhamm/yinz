@@ -1386,6 +1386,8 @@ impl Pane for TerminalPane {
         // would leave the resume hint up over a dead pane forever.
         self.suspended = false;
         self.is_held = Some((exit_status, is_first_run, run_command));
+        self.grid.program_status.drop_transient();
+        self.grid.applicable_program_status.clear_all();
         self.clear_waiting_pulse();
         if let Some(agent) = self.agent.as_mut() {
             agent.state = AgentState::Exited;
@@ -1544,8 +1546,32 @@ impl Pane for TerminalPane {
     }
     fn agent_title(&self) -> crate::ui::agent_title::AgentTitle {
         crate::ui::agent_title::AgentTitle {
-            state: self.agent.as_ref().map(|agent| agent.state),
+            state: self
+                .agent
+                .as_ref()
+                .map(|agent| self.program_status().agent_state(agent.state)),
             hook_flash: self.agent_hook_flash,
+        }
+    }
+    fn retire_program_status(&mut self) {
+        self.grid.applicable_program_status.clear_all();
+        self.set_should_render(true);
+    }
+    fn program_status(&self) -> yinz_types::program_status::ProgramStatusView {
+        yinz_types::program_status::ProgramStatusView {
+            records: self.grid.program_status.all(),
+            current: self
+                .grid
+                .applicable_program_status
+                .deciding_record()
+                .map(|(_, record)| record)
+                .filter(|record| {
+                    record.app.as_ref().is_none_or(|app| {
+                        self.agent.as_ref().is_none_or(|agent| {
+                            yinz_types::agent::kind_of(app).as_deref() == Some(agent.kind.as_str())
+                        })
+                    })
+                }),
         }
     }
     fn agent_info(&self) -> Option<&AgentInfo> {
@@ -1566,6 +1592,7 @@ impl Pane for TerminalPane {
     fn record_agent_input(&mut self, is_enter: bool) {
         self.agent_input_revision = self.agent_input_revision.wrapping_add(1);
         if is_enter {
+            self.grid.applicable_program_status.clear_all();
             self.agent_enter_revision = self.agent_input_revision;
         }
         self.agent_input_at = Some(Instant::now());
@@ -1612,6 +1639,9 @@ impl Pane for TerminalPane {
                 != agent.as_ref().map(|a| (&a.kind, &a.session_id))
         {
             self.last_hook_at_ms = None;
+            if self.agent.is_some() || agent.is_none() {
+                self.grid.applicable_program_status.clear_all();
+            }
         }
         if let Some(agent) = &agent {
             if self.last_agent_kind.as_deref() != Some(agent.kind.as_str()) {
@@ -1691,6 +1721,10 @@ impl Pane for TerminalPane {
             .and_then(|name| name.to_str())
             .map(|name| name.trim_start_matches('-').to_owned())
             .filter(|name| !name.is_empty());
+        if self.running_program.is_some() && self.running_program != program {
+            self.grid.program_status.drop_transient();
+            self.grid.applicable_program_status.clear_all();
+        }
         if self.running_program != program {
             self.running_program = program;
             self.set_should_render(true);

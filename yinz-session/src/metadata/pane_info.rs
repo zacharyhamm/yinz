@@ -113,6 +113,7 @@ pub fn decode_from_kdl(
         host: None,
         target: Default::default(),
         agent: None,
+        program_status: Default::default(),
         id: yinz_types::pane_id::PaneId::from_legacy(id, is_plugin),
         is_focused,
         is_fullscreen,

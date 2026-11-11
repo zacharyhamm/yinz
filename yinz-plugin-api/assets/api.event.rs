@@ -797,6 +797,8 @@ pub struct PaneInfo {
     pub last_agent_session_id: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(int64, optional, tag="40")]
     pub last_hook_at_ms: ::core::option::Option<i64>,
+    #[prost(string, optional, tag="41")]
+    pub program_status_json: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
