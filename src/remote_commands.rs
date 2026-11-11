@@ -109,7 +109,8 @@ fn route(command: Option<&Command>) -> Route {
             | yinz_cli::args::PtyHosts::KillAll => Route::Local,
         },
         Some(
-            Command::Update { .. }
+            Command::Terminal(_)
+            | Command::Update { .. }
             | Command::RemoteCommand { .. }
             | Command::RemoteSessions { .. }
             | Command::RemoteSession { .. }

@@ -17,6 +17,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+yinz-native-terminal = { path = "yinz-native-terminal", optional = true }
 project-data = { path = "default-plugins/project-data" }
 isahc = { workspace = true }
 sha2 = { workspace = true }
@@ -103,6 +104,7 @@ members = [
     "yinz-codex",
     "yinz-muse",
     "yinz-terminal",
+    "yinz-native-terminal",
     "yinz-terminal-graphics",
     "yinz-screen",
     "yinz-pty",
@@ -303,7 +305,8 @@ assets = [
 ]
 
 [features]
-default = ["vendored_curl"]
+default = ["vendored_curl", "native-terminal"]
+native-terminal = ["dep:yinz-native-terminal"]
 vendored_curl = ["dep:openssl-sys", "dep:curl-sys", "curl-sys/static-curl"]
 unstable = ["yinz-client/unstable"]
 # The dockerized end-to-end suite. Off by default so an ordinary `cargo test` does not build
@@ -321,3 +324,8 @@ path = "src/unit/portable_cli.rs"
 [[test]]
 name = "session_recreation"
 path = "src/unit/session_recreation.rs"
+
+[[test]]
+name = "native_terminal"
+path = "src/unit/native_terminal.rs"
+required-features = ["native-terminal"]

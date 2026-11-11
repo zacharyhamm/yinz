@@ -1968,6 +1968,27 @@ pub fn screen_thread_main(
                     screen.update_kitty_graphics_support(client_id, supported);
                     screen.render()?;
                 },
+                ScreenInstruction::SetStructuredRenderSupport {
+                    client_id,
+                    supported,
+                } => {
+                    if supported {
+                        screen.native_render_clients.entry(client_id).or_default();
+                        screen.update_kitty_graphics_support(client_id, true);
+                        screen.update_sixel_support(client_id, true);
+                        for tab in screen.tabs.values_mut() {
+                            tab.set_force_render();
+                        }
+                    } else {
+                        screen.native_render_clients.remove(&client_id);
+                    }
+                    screen.render()?;
+                },
+                ScreenInstruction::RenderFrameAck { client_id, seq } => {
+                    if let Some(state) = screen.native_render_clients.get_mut(&client_id) {
+                        state.acknowledge(seq);
+                    }
+                },
                 ScreenInstruction::SetSixelSupport {
                     client_id,
                     supported,

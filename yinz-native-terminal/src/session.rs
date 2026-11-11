@@ -1,0 +1,223 @@
+use crate::emulation::terminal::TerminalState;
+use std::fs::File;
+use std::io::Write;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use yinz_cli::args::{CliArgs, TerminalArgs};
+use yinz_ipc::ipc::{
+    ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg,
+};
+use yinz_runtime::errors::prelude::*;
+use yinz_types::input::actions::Action;
+use yinz_types::pane_size::Size;
+
+pub type Sender = Arc<Mutex<IpcSenderWithContext<ClientToServerMsg>>>;
+pub struct Connection {
+    pub sender: Sender,
+    pub receiver: IpcReceiverWithContext<ServerToClientMsg>,
+    pub name: String,
+}
+pub fn send(sender: &Sender, message: ClientToServerMsg) -> Result<()> {
+    sender
+        .lock()
+        .map_err(|_| anyhow!("native IPC sender lock poisoned"))?
+        .send_client_msg(message)
+        .context("send native client message")
+}
+pub fn action(sender: &Sender, action: Action) -> Result<()> {
+    send(
+        sender,
+        ClientToServerMsg::Action {
+            action,
+            terminal_id: None,
+            client_id: None,
+            is_cli_client: false,
+        },
+    )
+}
+pub fn connect(args: &TerminalArgs, opts: &CliArgs, size: Size) -> Result<Connection> {
+    connect_to(args, opts, size, None)
+}
+pub fn connect_to(
+    args: &TerminalArgs,
+    original_opts: &CliArgs,
+    size: Size,
+    target: Option<&yinz_types::data::SessionConnection>,
+) -> Result<Connection> {
+    let mut opts = original_opts.clone();
+    if let Some(target) = target {
+        opts.layout = None;
+        opts.layout_string = None;
+        if let Some(layout) = &target.layout {
+            match layout {
+                yinz_types::data::LayoutInfo::File(path, _)
+                | yinz_types::data::LayoutInfo::BuiltIn(path) => opts.layout = Some(path.into()),
+                yinz_types::data::LayoutInfo::Stringified(text) => {
+                    opts.layout_string = Some(text.clone())
+                },
+            }
+        }
+    }
+    let opts = &opts;
+    let (config, layout, options, _, _) = yinz_cli::setup::Setup::from_cli_args(opts)
+        .map_err(|error| anyhow!("{error}"))
+        .context("load native client configuration")?;
+    let sessions = yinz_session::sessions::get_sessions()
+        .map_err(|error| anyhow!("list local sessions: {error:?}"))?;
+    let name = if let Some(name) = args.session_name.as_ref().or(opts.session.as_ref()) {
+        yinz_session::sessions::validate_session_name(name).map_err(|error| anyhow!("{error}"))?;
+        name.clone()
+    } else {
+        match sessions.as_slice() {
+            [(name, _)] => name.to_string(),
+            [] => yinz_session::sessions::generate_random_name(),
+            _ => anyhow::bail!(
+                "several local sessions exist; select one with `yinz terminal <session>`"
+            ),
+        }
+    };
+    let new = !sessions.iter().any(|(session, _)| session.as_str() == name);
+    anyhow::ensure!(
+        !new || args.create || args.session_name.is_none(),
+        "session {name:?} does not exist; use --create"
+    );
+    let path = yinz_runtime::consts::YINZ_SOCK_DIR.join(&name);
+    let cwd = args
+        .working_directory
+        .as_ref()
+        .map(|path| std::fs::canonicalize(path).context("resolve native working directory"))
+        .transpose()?;
+    if new {
+        std::fs::create_dir_all(&*yinz_runtime::consts::YINZ_SOCK_DIR)
+            .context("create session socket directory")?;
+        yinz_client::spawn_server_with_termios(
+            &path,
+            opts.debug,
+            &name.clone().into(),
+            &config.env,
+            Some(&None),
+        )
+        .context("spawn native session server")?;
+    }
+    let stream =
+        yinz_ipc::consts::ipc_connect(&path).context("connect native client to session")?;
+    let mut sender = IpcSenderWithContext::new(stream);
+    let receiver = sender
+        .get_receiver()
+        .context("clone native session receiver")?;
+    let mut opening = yinz_client::native_first_message(
+        opts,
+        &options,
+        &config.env,
+        layout,
+        size,
+        new,
+        target.and_then(|target| target.cwd.clone()).or(cwd),
+    );
+    if let (
+        Some(target),
+        ClientToServerMsg::AttachClient {
+            tab_number_to_focus,
+            pane_to_focus,
+            ..
+        },
+    ) = (target, &mut opening)
+    {
+        *tab_number_to_focus = target.tab_position;
+        *pane_to_focus = target.pane_id;
+    }
+    sender
+        .send_client_msg(opening)
+        .context("send native session handshake")?;
+    let sender = Arc::new(Mutex::new(sender));
+    send(
+        &sender,
+        ClientToServerMsg::StructuredRenderSupport { supported: true },
+    )?;
+    Ok(Connection {
+        sender,
+        receiver,
+        name,
+    })
+}
+
+pub struct Recorder(Option<File>);
+impl Recorder {
+    pub fn new(path: Option<&Path>) -> Result<Self> {
+        Ok(Self(
+            path.map(File::create)
+                .transpose()
+                .context("create native frame recording")?,
+        ))
+    }
+    pub fn frame(&mut self, bytes: &[u8]) -> Result<()> {
+        if let Some(file) = &mut self.0 {
+            let len = u32::try_from(bytes.len()).context("native frame too large to record")?;
+            file.write_all(&len.to_le_bytes())
+                .context("write native frame length")?;
+            file.write_all(bytes).context("write native frame")?;
+        }
+        Ok(())
+    }
+}
+
+pub fn headless(mut connection: Connection, args: &TerminalArgs) -> Result<()> {
+    let mut state = TerminalState::new(args.rows as usize, args.cols as usize);
+    let mut recorder = Recorder::new(args.record.as_deref())?;
+    let started = Instant::now();
+    let finish = args
+        .duration_secs
+        .map(|seconds| started + Duration::from_secs(seconds));
+    let mut seen_frame = false;
+    loop {
+        let deadline = if seen_frame {
+            finish.unwrap_or_else(|| Instant::now() + Duration::from_secs(3600))
+        } else {
+            (started + Duration::from_secs(10))
+                .min(finish.unwrap_or(started + Duration::from_secs(10)))
+        };
+        if Instant::now() >= deadline {
+            if !seen_frame && !finish.is_some_and(|finish| Instant::now() >= finish) {
+                anyhow::bail!("server did not send structured rendering; restart the session with this Yinz build");
+            }
+            break;
+        }
+        let received = connection.receiver.recv_server_msg_until(deadline);
+        if let Some((message, _)) = received.msg() {
+            match message {
+                ServerToClientMsg::RenderFrame { frame } => {
+                    let applied = state
+                        .apply_frame(&frame)
+                        .context("apply headless native frame")?;
+                    seen_frame = true;
+                    recorder.frame(&frame)?;
+                    send(
+                        &connection.sender,
+                        ClientToServerMsg::RenderFrameAck { seq: applied.seq },
+                    )?;
+                },
+                ServerToClientMsg::Exit {
+                    exit_reason: yinz_ipc::ipc::ExitReason::Error(message),
+                } => anyhow::bail!("{message}"),
+                ServerToClientMsg::Exit { .. } => break,
+                ServerToClientMsg::LogError { lines } => anyhow::bail!("{}", lines.join("\n")),
+                _ => {},
+            }
+        } else if finish.is_some_and(|finish| Instant::now() >= finish) {
+            break;
+        } else {
+            anyhow::bail!("native session stopped responding before a structured frame arrived");
+        }
+    }
+    send(&connection.sender, ClientToServerMsg::ClientExited).non_fatal();
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Geometry {
+    pub rows: usize,
+    pub cols: usize,
+    pub cell_width: usize,
+    pub cell_height: usize,
+}

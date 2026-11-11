@@ -828,6 +828,12 @@ pub(crate) fn route_thread_main(
                                 })
                                 .with_context(err_context)?;
                         },
+                        ClientToServerMsg::StructuredRenderSupport { supported } => {
+                            to_server.send(ServerInstruction::StructuredRenderSupport { client_id, supported }).with_context(err_context)?;
+                        },
+                        ClientToServerMsg::RenderFrameAck { seq } => {
+                            send_to_screen_or_retry_queue!(senders, ScreenInstruction::RenderFrameAck { client_id, seq }, instruction, retry_queue).with_context(err_context)?;
+                        },
                         ClientToServerMsg::SixelSupport { supported } => {
                             send_to_screen_or_retry_queue!(
                                 senders,

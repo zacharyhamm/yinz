@@ -274,6 +274,8 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
                     supported,
                 })
             },
+            ClientToServerMsg::StructuredRenderSupport { supported } => client_to_server_msg::Message::StructuredRenderSupport(crate::client_server_contract::client_server_contract::StructuredRenderSupportMsg { supported }),
+            ClientToServerMsg::RenderFrameAck { seq } => client_to_server_msg::Message::RenderFrameAck(crate::client_server_contract::client_server_contract::RenderFrameAckMsg { seq }),
             ClientToServerMsg::SixelSupport { supported } => {
                 client_to_server_msg::Message::SixelSupport(SixelSupportMsg { supported })
             },
@@ -520,6 +522,14 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                     supported: msg.supported,
                 })
             },
+            Some(client_to_server_msg::Message::StructuredRenderSupport(msg)) => {
+                Ok(ClientToServerMsg::StructuredRenderSupport {
+                    supported: msg.supported,
+                })
+            },
+            Some(client_to_server_msg::Message::RenderFrameAck(msg)) => {
+                Ok(ClientToServerMsg::RenderFrameAck { seq: msg.seq })
+            },
             Some(client_to_server_msg::Message::SixelSupport(msg)) => {
                 Ok(ClientToServerMsg::SixelSupport {
                     supported: msg.supported,
@@ -634,6 +644,9 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
                     report_id,
                 })
             },
+            ServerToClientMsg::RenderFrame { frame } => server_to_client_msg::Message::RenderFrame(
+                crate::client_server_contract::client_server_contract::RenderFrameMsg { frame },
+            ),
             ServerToClientMsg::Render { content } => {
                 server_to_client_msg::Message::Render(RenderMsg { content })
             },
@@ -766,6 +779,9 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
 
     fn try_from(msg: ProtoServerToClientMsg) -> Result<Self> {
         match msg.message {
+            Some(server_to_client_msg::Message::RenderFrame(msg)) => {
+                Ok(ServerToClientMsg::RenderFrame { frame: msg.frame })
+            },
             Some(server_to_client_msg::Message::KillSessionComplete(msg)) => {
                 Ok(ServerToClientMsg::KillSessionComplete { error: msg.error })
             },

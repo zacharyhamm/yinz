@@ -161,6 +161,12 @@ pub struct EventSubscription {
     strum_macros::VariantNames,
 )]
 pub enum ClientToServerMsg {
+    StructuredRenderSupport {
+        supported: bool,
+    },
+    RenderFrameAck {
+        seq: u64,
+    },
     UpdateReply(yinz_types::update_client::Reply),
     SessionUpdate(yinz_types::session_update::Request),
     SessionReply(yinz_types::session_destination::Reply),
@@ -286,6 +292,9 @@ pub enum ClientToServerMsg {
     strum_macros::VariantNames,
 )]
 pub enum ServerToClientMsg {
+    RenderFrame {
+        frame: Vec<u8>,
+    },
     UpdateRequest(yinz_types::update_client::Request),
     SessionUpdateReply(yinz_types::session_update::Reply),
     SessionRequest(yinz_types::session_destination::Request),

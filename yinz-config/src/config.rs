@@ -58,6 +58,8 @@ pub struct Config {
     /// The mobile web interface; see `input::web`. Read at session start.
     #[serde(default)]
     pub web: WebConfig,
+    #[serde(default)]
+    pub terminal: yinz_types::input::native_terminal::TerminalConfig,
 }
 
 #[derive(Error, Debug, Serialize, Deserialize)]

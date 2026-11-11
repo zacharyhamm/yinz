@@ -1,0 +1,43 @@
+[package]
+name = "yinz-native-terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native GPU window client for Yinz"
+
+[lints]
+workspace = true
+
+[dependencies]
+libc = { workspace = true }
+yinz-key-codec = { workspace = true }
+yinz-session = { workspace = true }
+yinz-types = { workspace = true }
+yinz-runtime = { workspace = true }
+yinz-ipc = { workspace = true }
+yinz-cli = { workspace = true }
+yinz-config = { workspace = true }
+yinz-client = { path = "../yinz-client" }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+unicode-width = { workspace = true }
+interprocess = { workspace = true }
+glow = { version = "0.17", default-features = false }
+glutin = { version = "0.32", default-features = false, features = ["egl", "x11", "wayland", "libloading"] }
+glutin-winit = { version = "0.5", default-features = false, features = ["egl", "x11", "wayland"] }
+winit = { version = "0.30", default-features = false, features = ["x11", "wayland", "wayland-dlopen", "rwh_06"] }
+swash = { version = "0.2", default-features = false, features = ["scale", "render", "std"] }
+libloading = { version = "0.8", default-features = false }
+memmap2 = { version = "0.9", default-features = false }
+png = { version = "0.17", default-features = false }
+sixel-tokenizer = { version = "0.1.0", default-features = false }
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
+
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+fontdb = { version = "0.23", default-features = false, features = ["std", "fs", "memmap"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -3784,7 +3784,7 @@ impl ThemeHue {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientToServerMsg {
-    #[prost(oneof="client_to_server_msg::Message", tags="40, 41, 38, 37, 33, 34, 36, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 35, 11, 39, 12, 32, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29, 30, 31")]
+    #[prost(oneof="client_to_server_msg::Message", tags="42, 43, 40, 41, 38, 37, 33, 34, 36, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 35, 11, 39, 12, 32, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29, 30, 31")]
     pub message: ::core::option::Option<client_to_server_msg::Message>,
 }
 /// Nested message and enum types in `ClientToServerMsg`.
@@ -3792,6 +3792,10 @@ pub mod client_to_server_msg {
     #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Message {
+        #[prost(message, tag="42")]
+        StructuredRenderSupport(super::StructuredRenderSupportMsg),
+        #[prost(message, tag="43")]
+        RenderFrameAck(super::RenderFrameAckMsg),
         #[prost(string, tag="40")]
         UpdateReplyJson(::prost::alloc::string::String),
         #[prost(string, tag="41")]
@@ -4088,6 +4092,18 @@ pub struct DataRequestMsg {
     #[prost(string, tag="2")]
     pub request_json: ::prost::alloc::string::String,
 }
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StructuredRenderSupportMsg {
+    #[prost(bool, tag="1")]
+    pub supported: bool,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RenderFrameAckMsg {
+    #[prost(uint64, tag="1")]
+    pub seq: u64,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum HostTerminalThemeIndication {
@@ -4117,7 +4133,7 @@ impl HostTerminalThemeIndication {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerToClientMsg {
-    #[prost(oneof="server_to_client_msg::Message", tags="34, 32, 33, 31, 30, 29, 28, 23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 26, 14, 15, 16, 18, 20, 21, 22, 27")]
+    #[prost(oneof="server_to_client_msg::Message", tags="35, 34, 32, 33, 31, 30, 29, 28, 23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 26, 14, 15, 16, 18, 20, 21, 22, 27")]
     pub message: ::core::option::Option<server_to_client_msg::Message>,
 }
 /// Nested message and enum types in `ServerToClientMsg`.
@@ -4125,6 +4141,8 @@ pub mod server_to_client_msg {
     #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Message {
+        #[prost(message, tag="35")]
+        RenderFrame(super::RenderFrameMsg),
         #[prost(message, tag="34")]
         WarpAdoptionFailed(super::WarpAdoptionFailure),
         #[prost(string, tag="32")]
@@ -4361,4 +4379,10 @@ pub struct WarpReplay {
     pub control_socket: ::prost::alloc::string::String,
     #[prost(bytes="vec", tag="2")]
     pub buffered: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RenderFrameMsg {
+    #[prost(bytes="vec", tag="1")]
+    pub frame: ::prost::alloc::vec::Vec<u8>,
 }

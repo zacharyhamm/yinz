@@ -290,3 +290,32 @@ pub(crate) struct AttachFocus {
     pub tab_number: Option<TabNumber>,
     pub pane: Option<yinz_types::pane_id::PaneId>,
 }
+
+/// Build the normal session handshake without acquiring a controlling terminal.
+pub fn native_first_message(
+    args: &CliArgs,
+    options: &Options,
+    env: &EnvironmentVariables,
+    layout: Option<LayoutInfo>,
+    size: Size,
+    new_session: bool,
+    cwd: Option<PathBuf>,
+) -> ClientToServerMsg {
+    let mut context = StartupContext::detached(args, options, env);
+    context.terminal_window_size = size;
+    let layout = context.resolve_layout(layout, options);
+    let mut cli_assets = context.build_cli_assets(options, layout, false, cwd);
+    // Native windows do not participate in replacement of a terminal-attached process.
+    cli_assets.supports_in_place_update = false;
+    cli_assets.supports_source_update = false;
+    cli_assets.supports_session_requests = false;
+    if new_session {
+        ClientToServerMsg::FirstClientConnected { cli_assets }
+    } else {
+        ClientToServerMsg::AttachClient {
+            cli_assets,
+            tab_number_to_focus: None,
+            pane_to_focus: None,
+        }
+    }
+}

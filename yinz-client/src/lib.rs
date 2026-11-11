@@ -116,6 +116,7 @@ impl From<ServerToClientMsg> for ClientInstruction {
     fn from(instruction: ServerToClientMsg) -> Self {
         match instruction {
             ServerToClientMsg::Exit { exit_reason } => ClientInstruction::Exit(exit_reason),
+            ServerToClientMsg::RenderFrame { .. } => ClientInstruction::UnblockInputThread,
             ServerToClientMsg::Render { content } => ClientInstruction::Render(content),
             ServerToClientMsg::UnblockInputThread => ClientInstruction::UnblockInputThread,
             ServerToClientMsg::Connected {
@@ -1198,3 +1199,5 @@ pub mod remote_recovery;
 pub mod remote_sessions;
 pub mod session_discovery;
 mod session_switch;
+
+pub use startup::native_first_message;

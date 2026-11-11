@@ -861,3 +861,63 @@ impl Tab {
         }
     }
 }
+
+impl Tab {
+    /// Visible pane boundaries let the GPU client shape text within each pane.
+    pub fn native_geometry(
+        &self,
+        client: ClientId,
+    ) -> yinz_types::structured_render::GeometryRecord {
+        use yinz_types::structured_render::*;
+        let focused = self.get_active_pane_id(client);
+        let panes = self
+            .get_tiled_panes()
+            .map(|(id, pane)| (id, pane, 0))
+            .chain(
+                self.get_floating_panes()
+                    .filter(|_| self.are_floating_panes_visible())
+                    .map(|(id, pane)| (id, pane, PANE_FLOATING)),
+            )
+            .map(|(id, pane, extra)| {
+                let x = pane.x();
+                let y = pane.y();
+                let cols = pane.cols();
+                let rows = pane.rows();
+                let left = pane.get_content_x().saturating_sub(x);
+                let top = pane.get_content_y().saturating_sub(y);
+                let mut flags = extra;
+                if left > 0 || top > 0 {
+                    flags |= PANE_FRAMED;
+                }
+                if focused == Some(*id) {
+                    flags |= PANE_FOCUSED;
+                }
+                if pane.selectable() {
+                    flags |= PANE_SELECTABLE;
+                }
+                if pane.terminal_emulator_wants_mouse() {
+                    flags |= PANE_WANTS_MOUSE;
+                }
+                if matches!(id, PaneId::Plugin(_)) && !pane.supports_mouse_selection() {
+                    flags |= PANE_PLUGIN_UI;
+                }
+                PaneRect {
+                    x: x.min(u16::MAX as usize) as u16,
+                    y: y.min(u16::MAX as usize) as u16,
+                    cols: cols.min(u16::MAX as usize) as u16,
+                    rows: rows.min(u16::MAX as usize) as u16,
+                    left: left.min(u8::MAX as usize) as u8,
+                    top: top.min(u8::MAX as usize) as u8,
+                    right: cols
+                        .saturating_sub(left + pane.get_content_columns())
+                        .min(u8::MAX as usize) as u8,
+                    bottom: rows
+                        .saturating_sub(top + pane.get_content_rows())
+                        .min(u8::MAX as usize) as u8,
+                    flags,
+                }
+            })
+            .collect();
+        GeometryRecord { panes }
+    }
+}

@@ -1,4 +1,5 @@
 mod kdl_layout_parser;
+mod native_terminal;
 mod overlay_tab_plugins;
 mod web;
 use kdl_layout_parser::KdlLayoutParser;
@@ -1161,6 +1162,10 @@ impl Config {
             let config_ui = UiConfig::from_kdl(kdl_ui_config)?;
             config.ui = config.ui.merge(config_ui);
         }
+        if let Some(block) = single_top_level_block(&kdl_config, "terminal")? {
+            config.terminal =
+                native_terminal::merge(&config.terminal, native_terminal::from_kdl(block)?)?;
+        }
         if let Some(kdl_web) = single_top_level_block(&kdl_config, "web")? {
             let parsed_web = web::from_kdl(kdl_web)?;
             config.web = config.web.merge(parsed_web);
@@ -1227,6 +1232,9 @@ impl Config {
             document.nodes_mut().push(ui_config);
         }
 
+        if let Some(terminal) = native_terminal::to_kdl(&self.terminal) {
+            document.nodes_mut().push(terminal);
+        }
         if let Some(web) = web::to_kdl(&self.web) {
             document.nodes_mut().push(web);
         }
@@ -2071,3 +2079,7 @@ pub mod layout;
 pub mod keybinds;
 
 pub mod plugin_aliases;
+
+#[cfg(test)]
+#[path = "unit/native_terminal.rs"]
+mod native_terminal_tests;

@@ -89,6 +89,7 @@ impl Screen {
         self.active_tab_ids.remove(&client_id);
         self.tab_history.remove(&client_id);
         self.client_sizes.remove(&client_id);
+        self.native_render_clients.remove(&client_id);
         self.client_presentations.remove(&client_id);
         self.client_pixel_dimensions.remove(&client_id);
         self.client_cell_pixel_sizes.remove(&client_id);
@@ -343,6 +344,7 @@ impl Screen {
             self.push_sixel_host_support_to_tabs();
         }
         self.client_sizes.remove(&client_id);
+        self.native_render_clients.remove(&client_id);
         self.client_presentations.remove(&client_id);
         self.client_pixel_dimensions.remove(&client_id);
         self.client_cell_pixel_sizes.remove(&client_id);

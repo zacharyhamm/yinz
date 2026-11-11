@@ -6,6 +6,7 @@ import "common_types.proto";
 message ServerToClientMsg {
   reserved 11, 17, 19;
   oneof message {
+    RenderFrameMsg render_frame = 35;
     WarpAdoptionFailure warp_adoption_failed = 34;
     string update_request_json = 32;
     string session_update_reply_json = 33;
@@ -142,3 +143,5 @@ message WarpReplay {
   string control_socket = 1;
   bytes buffered = 2;
 }
+
+message RenderFrameMsg { bytes frame = 1; }

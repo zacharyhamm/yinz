@@ -618,6 +618,23 @@ impl Screen {
                 if trace_attach {
                     log::info!("attach trace: render output serialization begin");
                 }
+                for client in self.native_render_clients.keys() {
+                    if let Some(tab) = self
+                        .active_tab_ids
+                        .get(client)
+                        .and_then(|tab| self.tabs.get(tab))
+                    {
+                        output.set_native_geometry(*client, tab.native_geometry(*client));
+                    }
+                }
+                let native_frames =
+                    output.serialize_native(&mut self.native_render_clients, &self.client_sizes);
+                if !native_frames.is_empty() {
+                    self.bus
+                        .senders
+                        .send_to_server(ServerInstruction::RenderFrames(native_frames))
+                        .context(err_context)?;
+                }
                 let mut serialized_output = output.serialize().context(err_context)?;
                 for (client, bytes) in &mut serialized_output {
                     if let Some((_, presentation)) = self.client_presentations.get(client) {

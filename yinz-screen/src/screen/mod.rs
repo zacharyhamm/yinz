@@ -701,6 +701,7 @@ pub(crate) struct Screen {
     /// The indices of this [`Screen`]'s active [`Tab`]s.
     active_tab_ids: BTreeMap<ClientId, TabId>,
     client_sizes: HashMap<ClientId, Size>,
+    native_render_clients: HashMap<ClientId, yinz_terminal::output::NativeRenderState>,
     client_presentations: HashMap<ClientId, (TabId, crate::output::Presentation)>,
     /// The last session minimum, used to create tabs when no client contributes a size at all:
     /// before the first client reports one, and after every client has detached - a
@@ -1503,6 +1504,7 @@ impl Screen {
             connected_clients: Rc::new(RefCell::new(AttachedClients::default())),
             active_tab_ids: BTreeMap::new(),
             client_sizes: HashMap::new(),
+            native_render_clients: HashMap::new(),
             client_presentations: HashMap::new(),
             last_surface_size: client_attributes.size,
             unowned_strip_fill: HashMap::new(),

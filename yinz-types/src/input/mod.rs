@@ -9,3 +9,5 @@ pub mod layout;
 pub mod options;
 pub mod plugins;
 pub mod web;
+
+pub mod native_terminal;

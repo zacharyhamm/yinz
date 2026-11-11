@@ -6592,3 +6592,12 @@ fn issue85_retained_submission_survives_the_server_wire() {
     .unwrap();
     assert!(legacy.retained_submission.is_none());
 }
+
+#[test]
+fn structured_render_messages_roundtrip() {
+    test_client_roundtrip!(ClientToServerMsg::StructuredRenderSupport { supported: true });
+    test_client_roundtrip!(ClientToServerMsg::RenderFrameAck { seq: 123 });
+    test_server_roundtrip!(ServerToClientMsg::RenderFrame {
+        frame: vec![0, 1, 2, 255]
+    });
+}

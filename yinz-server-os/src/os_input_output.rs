@@ -219,6 +219,7 @@ impl SendQueueState {
     fn overflow(&self, reason: &'static str, msg: &ServerToClientMsg) -> QueueOverflow {
         let (rejected_render_len, rejected_render_capacity) = match msg {
             ServerToClientMsg::Render { content } => (content.len(), content.capacity()),
+            ServerToClientMsg::RenderFrame { frame } => (frame.len(), frame.capacity()),
             _ => (0, 0),
         };
         QueueOverflow {
@@ -237,6 +238,7 @@ fn message_size_and_kind(msg: &ServerToClientMsg) -> (&'static str, usize) {
     let kind = msg.into();
     let render_bytes = match msg {
         ServerToClientMsg::Render { content } => content.len(),
+        ServerToClientMsg::RenderFrame { frame } => frame.len(),
         ServerToClientMsg::PaneRenderUpdate {
             viewport,
             scrollback,
@@ -249,6 +251,14 @@ fn message_size_and_kind(msg: &ServerToClientMsg) -> (&'static str, usize) {
         _ => 0,
     };
     (kind, render_bytes)
+}
+
+fn render_capacity(message: &ServerToClientMsg) -> usize {
+    match message {
+        ServerToClientMsg::Render { content } => content.capacity(),
+        ServerToClientMsg::RenderFrame { frame } => frame.capacity(),
+        _ => 0,
+    }
 }
 
 /// Which slot of the queue a message belongs in.
@@ -327,8 +337,12 @@ impl CoalescingSendQueue {
                         None,
                     );
                 }
-                if let ServerToClientMsg::Render { content } = &msg {
-                    if content.capacity() > SEND_QUEUE_RENDER_BYTE_CAPACITY {
+                if matches!(
+                    &msg,
+                    ServerToClientMsg::Render { .. } | ServerToClientMsg::RenderFrame { .. }
+                ) {
+                    let content_capacity = render_capacity(&msg);
+                    if content_capacity > SEND_QUEUE_RENDER_BYTE_CAPACITY {
                         return (
                             SendQueuePush::ControlQueueFull(
                                 state.overflow("single_oversized_render", &msg),
@@ -336,7 +350,7 @@ impl CoalescingSendQueue {
                             None,
                         );
                     }
-                    if content.capacity() > SEND_QUEUE_RENDER_BYTE_CAPACITY - state.render_bytes {
+                    if content_capacity > SEND_QUEUE_RENDER_BYTE_CAPACITY - state.render_bytes {
                         return (
                             SendQueuePush::ControlQueueFull(
                                 state.overflow("render_allocation_bytes", &msg),
@@ -344,7 +358,7 @@ impl CoalescingSendQueue {
                             None,
                         );
                     }
-                    state.render_bytes += content.capacity();
+                    state.render_bytes += content_capacity;
                     state.queued_renders += 1;
                 }
                 if let ServerToClientMsg::PaneRenderUpdate { pane_id, .. } = &msg {
@@ -371,8 +385,12 @@ impl CoalescingSendQueue {
         let mut state = self.recover_state(self.state.lock());
         loop {
             if let Some(msg) = state.control.pop_front() {
-                if let ServerToClientMsg::Render { content } = &msg {
-                    state.render_bytes -= content.capacity();
+                if matches!(
+                    &msg,
+                    ServerToClientMsg::Render { .. } | ServerToClientMsg::RenderFrame { .. }
+                ) {
+                    let content_capacity = render_capacity(&msg);
+                    state.render_bytes -= content_capacity;
                     state.queued_renders -= 1;
                 }
                 let (kind, render_bytes) = message_size_and_kind(&msg);
@@ -601,7 +619,7 @@ impl ClientSender {
             while let Some(msg) = writer_queue.pop() {
                 let started_at = Instant::now();
                 let (message_kind, render_bytes) = message_size_and_kind(&msg);
-                let is_render = matches!(&msg, ServerToClientMsg::Render { .. });
+                let is_render = matches!(&msg, ServerToClientMsg::Render { .. } | ServerToClientMsg::RenderFrame { .. });
                 let trace_write = first_message || (first_render && is_render);
                 if trace_write {
                     let kind = match &msg {

@@ -63,6 +63,14 @@ pub type AgentEventProjectMemberships = BTreeMap<String, Result<Option<Vec<PaneI
 /// that mapping is total.
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum ScreenInstruction {
+    SetStructuredRenderSupport {
+        client_id: ClientId,
+        supported: bool,
+    },
+    RenderFrameAck {
+        client_id: ClientId,
+        seq: u64,
+    },
     CommitAgentLaunch {
         terminal_id: TerminalId,
         reply: std::sync::mpsc::Sender<bool>,
@@ -1156,6 +1164,8 @@ impl From<&ScreenInstruction> for ScreenContext {
             | ScreenInstruction::UpdateDetectedAgentTheme(..)
             | ScreenInstruction::PtyBytes(..)
             | ScreenInstruction::RemotePaneReady(..) => ScreenContext::HandlePtyBytes,
+            ScreenInstruction::SetStructuredRenderSupport { .. }
+            | ScreenInstruction::RenderFrameAck { .. } => ScreenContext::Render,
             ScreenInstruction::RenderWriterReady => ScreenContext::RenderToClients,
             ScreenInstruction::AgentWorktreeResolved { .. } => ScreenContext::RenderToClients,
             ScreenInstruction::ClearAllPluginHighlights(..) => ScreenContext::ClearPluginHighlights,

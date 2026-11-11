@@ -2435,3 +2435,29 @@ fn launch_transaction_cleanup_confirms_real_process_exit_after_termination() {
         .contains_key(&terminal));
     assert!(yinz_process::liveness::has_exited(child.unwrap().get()).unwrap());
 }
+
+#[test]
+fn native_frames_are_counted_and_bounded_as_ordered_render_allocations() {
+    let queue = CoalescingSendQueue::new();
+    let first = ServerToClientMsg::RenderFrame {
+        frame: vec![1, 2, 3],
+    };
+    let last = ServerToClientMsg::Exit {
+        exit_reason: yinz_ipc::ipc::ExitReason::Normal,
+    };
+    assert!(matches!(queue.push(first.clone()), SendQueuePush::Queued));
+    assert!(matches!(queue.push(last.clone()), SendQueuePush::Queued));
+    assert_eq!(queue.render_backlog().queued_renders, 1);
+    assert_eq!(queue.state.lock().unwrap().render_bytes, 3);
+    assert_eq!(queue.pop(), Some(first));
+    queue.finish_send();
+    assert_eq!(queue.render_backlog().queued_renders, 0);
+    assert_eq!(queue.state.lock().unwrap().render_bytes, 0);
+    assert_eq!(queue.pop(), Some(last));
+    let mut oversized = Vec::with_capacity(SEND_QUEUE_RENDER_BYTE_CAPACITY + 1);
+    oversized.push(1);
+    assert!(matches!(
+        queue.push(ServerToClientMsg::RenderFrame { frame: oversized }),
+        SendQueuePush::ControlQueueFull(_)
+    ));
+}

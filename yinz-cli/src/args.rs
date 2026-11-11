@@ -440,6 +440,8 @@ pub enum PtyHosts {
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Command {
+    /// Open a native GPU terminal window.
+    Terminal(TerminalArgs),
     /// Install the latest stable GitHub release into the current installation.
     Update {
         /// Include prereleases when selecting the highest published SemVer release.
@@ -2688,3 +2690,37 @@ tail -f /tmp/my-live-logfile | yinz action pipe --name logs --plugin file:/path/
 #[cfg(test)]
 #[path = "unit/args_tests.rs"]
 mod tests;
+
+/// Native terminal options. The default command continues to use the current terminal.
+#[derive(Debug, Parser, Clone, Default, Serialize, Deserialize)]
+pub struct TerminalArgs {
+    /// Local session name; without one, attach to the only session or create a new one.
+    pub session_name: Option<String>,
+    /// Create the named session if it does not exist.
+    #[clap(short, long)]
+    pub create: bool,
+    /// Start a new session in this directory.
+    #[clap(long)]
+    pub working_directory: Option<std::path::PathBuf>,
+    /// Open windowed, maximized, fullscreen, or using the remembered size.
+    #[clap(long, value_parser = parse_native_startup_mode)]
+    pub startup_mode: Option<yinz_types::input::native_terminal::StartupMode>,
+    #[clap(long, hide = true)]
+    pub headless: bool,
+    #[clap(long, hide = true)]
+    pub record: Option<std::path::PathBuf>,
+    #[clap(long, hide = true, default_value_t = 40, value_parser = clap::value_parser!(u16).range(1..=4096))]
+    pub rows: u16,
+    #[clap(long, hide = true, default_value_t = 120, value_parser = clap::value_parser!(u16).range(1..=4096))]
+    pub cols: u16,
+    #[clap(long, hide = true)]
+    pub duration_secs: Option<u64>,
+}
+
+fn parse_native_startup_mode(
+    value: &str,
+) -> Result<yinz_types::input::native_terminal::StartupMode, String> {
+    value
+        .parse()
+        .map_err(|_| "expected windowed, maximized, fullscreen, or remember".to_owned())
+}

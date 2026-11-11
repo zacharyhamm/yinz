@@ -284,6 +284,11 @@ pub fn stringified_from_dir(
     layout_dir: Option<&PathBuf>,
 ) -> Result<StringifiedLayout, ConfigError> {
     reject_remote_layout(layout)?;
+    // Absolute files do not need a configured layouts directory. A first native
+    // session can start before the user's config directory exists.
+    if layout.is_absolute() {
+        return stringified_from_path(layout);
+    }
     match layout_dir {
         Some(dir) => {
             let layout_path = &dir.join(layout);

@@ -335,6 +335,22 @@ fn main() {
     };
     let logger_started = std::time::Instant::now();
     configure_logger();
+    if let Some(Command::Terminal(args)) = &opts.command {
+        #[cfg(feature = "native-terminal")]
+        let result = yinz_native_terminal::run(args.clone(), opts.clone());
+        #[cfg(not(feature = "native-terminal"))]
+        let result: anyhow::Result<()> = {
+            let _ = args;
+            Err(anyhow::anyhow!(
+                "native terminal support is disabled; rebuild with --features native-terminal"
+            ))
+        };
+        if let Err(error) = result {
+            eprintln!("Error: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Some(kind) = startup_kind {
         use std::io::IsTerminal;
         log::info!(

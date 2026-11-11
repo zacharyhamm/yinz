@@ -1,3 +1,5 @@
+mod native;
+pub use native::NativeRenderState;
 mod presentation;
 pub use presentation::Presentation;
 mod translucency;
@@ -758,6 +760,7 @@ pub struct Output {
     post_vte_instructions: HashMap<ClientId, Vec<String>>,
     client_character_chunks: HashMap<ClientId, Vec<CharacterChunk>>,
     compositions: HashMap<ClientId, translucency::Composition>,
+    native_geometry: HashMap<ClientId, yinz_types::structured_render::GeometryRecord>,
     sixel_chunks: HashMap<ClientId, Vec<SixelImageChunk>>,
     client_kitty_chunks: HashMap<ClientId, HashMap<PaneId, Vec<KittyImageChunk>>>,
     client_rendered_kitty_panes: HashMap<ClientId, HashSet<PaneId>>,

@@ -2101,6 +2101,32 @@ pub fn start_server_impl(
                         session_data
                     );
                 },
+                ServerInstruction::StructuredRenderSupport {
+                    client_id,
+                    supported,
+                } => {
+                    with_session(&session_data, |session| {
+                        session
+                            .senders
+                            .send_to_screen(ScreenInstruction::SetStructuredRenderSupport {
+                                client_id,
+                                supported,
+                            })
+                            .context("set native render capability")
+                            .non_fatal();
+                    })?;
+                },
+                ServerInstruction::RenderFrames(frames) => {
+                    for (client_id, frame) in frames {
+                        send_to_client!(
+                            client_id,
+                            os_input,
+                            ServerToClientMsg::RenderFrame { frame },
+                            session_state,
+                            session_data
+                        );
+                    }
+                },
                 ServerInstruction::Render(serialized_output) => {
                     let client_ids = session_state
                         .read()

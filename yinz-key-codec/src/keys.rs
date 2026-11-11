@@ -390,3 +390,98 @@ pub fn cast_termwiz_key(
 #[cfg(test)]
 #[path = "unit/keys_compatibility_tests.rs"]
 mod compatibility_tests;
+
+/// Encode a native key event without losing modifiers to legacy control-byte aliases.
+pub fn serialize_native_key(key: &KeyWithModifier) -> Option<String> {
+    let shift = key.key_modifiers.contains(&KeyModifier::Shift);
+    let alt = key.key_modifiers.contains(&KeyModifier::Alt);
+    let ctrl = key.key_modifiers.contains(&KeyModifier::Ctrl);
+    let sup = key.key_modifiers.contains(&KeyModifier::Super);
+    let modifier_value =
+        |shift: bool| -> u8 { 1 + shift as u8 + 2 * alt as u8 + 4 * ctrl as u8 + 8 * sup as u8 };
+    let mods = modifier_value(shift);
+    let csi_u = |code: u32, mods: u8| {
+        if mods > 1 {
+            format!("\u{1b}[{};{}u", code, mods)
+        } else {
+            format!("\u{1b}[{}u", code)
+        }
+    };
+    let csi_letter = |letter: char| {
+        if mods > 1 {
+            format!("\u{1b}[1;{}{}", mods, letter)
+        } else {
+            format!("\u{1b}[{}", letter)
+        }
+    };
+    let ss3_or_csi_letter = |letter: char| {
+        if mods > 1 {
+            format!("\u{1b}[1;{}{}", mods, letter)
+        } else {
+            format!("\u{1b}O{}", letter)
+        }
+    };
+    let csi_tilde = |number: u8| {
+        if mods > 1 {
+            format!("\u{1b}[{};{}~", number, mods)
+        } else {
+            format!("\u{1b}[{}~", number)
+        }
+    };
+    let plain_or_csi_u = |plain: &str, code: u32| {
+        if mods > 1 {
+            csi_u(code, mods)
+        } else {
+            plain.to_owned()
+        }
+    };
+    let encoded = match key.bare_key {
+        BareKey::Char(c) if !(alt || ctrl || sup) => {
+            if shift {
+                c.to_uppercase().collect()
+            } else {
+                c.to_string()
+            }
+        },
+        BareKey::Char(c) => {
+            let mut lowercase = c.to_lowercase();
+            match (lowercase.next(), lowercase.next()) {
+                (Some(lower), None) if lower != c => csi_u(lower as u32, modifier_value(true)),
+                _ => csi_u(c as u32, mods),
+            }
+        },
+        BareKey::Enter => plain_or_csi_u("\r", 13),
+        BareKey::Tab => plain_or_csi_u("\t", 9),
+        BareKey::Backspace => plain_or_csi_u("\u{7f}", 127),
+        BareKey::Esc => csi_u(27, mods),
+        BareKey::Up => csi_letter('A'),
+        BareKey::Down => csi_letter('B'),
+        BareKey::Right => csi_letter('C'),
+        BareKey::Left => csi_letter('D'),
+        BareKey::Home => csi_letter('H'),
+        BareKey::End => csi_letter('F'),
+        BareKey::F(1) => ss3_or_csi_letter('P'),
+        BareKey::F(2) => ss3_or_csi_letter('Q'),
+        BareKey::F(3) => csi_tilde(13),
+        BareKey::F(4) => ss3_or_csi_letter('S'),
+        BareKey::F(5) => csi_tilde(15),
+        BareKey::F(6) => csi_tilde(17),
+        BareKey::F(7) => csi_tilde(18),
+        BareKey::F(8) => csi_tilde(19),
+        BareKey::F(9) => csi_tilde(20),
+        BareKey::F(10) => csi_tilde(21),
+        BareKey::F(11) => csi_tilde(23),
+        BareKey::F(12) => csi_tilde(24),
+        BareKey::F(n @ 13..=35) => csi_u(57376 + (n as u32 - 13), mods),
+        BareKey::F(_) => return None,
+        BareKey::Insert => csi_tilde(2),
+        BareKey::Delete => csi_tilde(3),
+        BareKey::PageUp => csi_tilde(5),
+        BareKey::PageDown => csi_tilde(6),
+        BareKey::PrintScreen => csi_u(57361, mods),
+        BareKey::Pause => csi_u(57362, mods),
+        BareKey::Menu => csi_u(57363, mods),
+        BareKey::CapsLock | BareKey::ScrollLock | BareKey::NumLock => return None,
+    };
+    Some(encoded)
+}

@@ -6,6 +6,8 @@ import "common_types.proto";
 message ClientToServerMsg {
   reserved 14, 15, 21, 26;
   oneof message {
+    StructuredRenderSupportMsg structured_render_support = 42;
+    RenderFrameAckMsg render_frame_ack = 43;
     string update_reply_json = 40;
     string session_update_json = 41;
     bool request_repaint = 38;
@@ -194,3 +196,6 @@ message DataRequestMsg {
   string request_id = 1;
   string request_json = 2;
 }
+
+message StructuredRenderSupportMsg { bool supported = 1; }
+message RenderFrameAckMsg { uint64 seq = 1; }

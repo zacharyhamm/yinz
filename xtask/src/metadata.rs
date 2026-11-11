@@ -20,6 +20,19 @@ pub fn check_dependency_boundaries(sh: &Shell) -> anyhow::Result<()> {
 }
 
 const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
+    (
+        "yinz-native-terminal",
+        &[
+            "yinz-types",
+            "yinz-runtime",
+            "yinz-ipc",
+            "yinz-cli",
+            "yinz-config",
+            "yinz-client",
+            "yinz-session",
+            "yinz-key-codec",
+        ],
+    ),
     ("yinz-types", &[]),
     ("yinz-plugin-location", &["yinz-types"]),
     ("yinz-runtime", &["yinz-types", "yinz-plugin-location"]),
