@@ -600,3 +600,24 @@ fn degenerate_dimensions_are_clamped_rather_than_panicking() {
     let state = TerminalState::new(0, 0);
     assert_eq!(state.size(), TermSize { rows: 1, cols: 1 });
 }
+
+#[test]
+fn large_clipboard_updates_survive_fragmented_frame_sidebands() {
+    use base64::Engine as _;
+    for text in ["a".repeat(7000), "界\n".repeat(7000)] {
+        for terminator in ["\x07", "\x1b\\"] {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&text);
+            let content = format!("\x1b]52;c;{encoded}{terminator}");
+            let mut state = TerminalState::new(2, 8);
+            let split = content.len() - terminator.len();
+            state
+                .apply_frame(&frame_of(8, 2, 0, &content.as_bytes()[..split]))
+                .unwrap();
+            assert_eq!(state.take_copied_text(), None);
+            state
+                .apply_frame(&frame_of(8, 2, 1, &content.as_bytes()[split..]))
+                .unwrap();
+            assert_eq!(state.take_copied_text(), Some(text.clone()));
+        }
+    }
+}

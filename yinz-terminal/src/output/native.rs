@@ -10,6 +10,7 @@ pub struct NativeRenderState {
     media: Vec<(u64, tempfile::NamedTempFile)>,
     cursor: CursorState,
     links: Vec<String>,
+    viewport_links: Vec<u8>,
     size: Option<Size>,
     presentation: Option<Presentation>,
 }
@@ -83,6 +84,33 @@ impl Output {
                         .extend_from_slice(instruction.as_bytes());
                 }
             }
+            if cleared {
+                state.viewport_links = vec![LINK_NONE; size.cols * size.rows];
+            }
+            // Release every overwritten cell before assigning IDs, including cells later
+            // in this frame. Clipping and continuation widths match the row serializer.
+            for chunk in &chunks {
+                if chunk.x + dx >= size.cols || chunk.y + dy >= size.rows {
+                    continue;
+                }
+                let mut col = chunk.x;
+                for character in &chunk.terminal_characters {
+                    let width = character.width();
+                    if width == 0 {
+                        continue;
+                    }
+                    if col + width + dx > size.cols {
+                        break;
+                    }
+                    let start = (chunk.y + dy) * size.cols + col + dx;
+                    state.viewport_links[start..start + width].fill(LINK_NONE);
+                    col += width;
+                }
+            }
+            let mut used_links = [false; MAX_LINK_ID as usize + 1];
+            for id in &state.viewport_links {
+                used_links[*id as usize] = true;
+            }
             if cleared && let Some(presentation) = presentation {
                 paint_native_margins(&mut builder, presentation);
             }
@@ -119,16 +147,26 @@ impl Output {
                     if let Some(uri) = handler
                         .as_ref()
                         .and_then(|handler| handler.uri(character.styles.link_anchor))
+                        .filter(|uri| uri.len() <= MAX_LINK_URI_LEN)
                     {
                         let index = state.links.iter().position(|link| link == uri).or_else(|| {
-                            if state.links.len() >= MAX_LINK_ID as usize {
-                                return None;
+                            if state.links.len() < MAX_LINK_ID as usize {
+                                state.links.push(uri.to_owned());
+                                Some(state.links.len() - 1)
+                            } else {
+                                let index =
+                                    (0..state.links.len()).find(|index| !used_links[index + 1])?;
+                                state.links[index] = uri.to_owned();
+                                Some(index)
                             }
-                            state.links.push(uri.to_owned());
-                            Some(state.links.len() - 1)
                         });
                         cell.link = index.map_or(0, |index| (index + 1) as u8);
                     }
+                    // Pin IDs used by any emitted row until the next frame, even if a
+                    // later overlapping chunk replaces that row's cells.
+                    used_links[cell.link as usize] = true;
+                    let start = (chunk.y + dy) * size.cols + col + dx;
+                    state.viewport_links[start..start + width].fill(cell.link);
                     cells.push(cell);
                     cells.extend((1..width).map(|_| WireCell {
                         ch: ' ' as u32,
@@ -337,6 +375,9 @@ fn substitute_changed_color(
         (Some(AnsiCode::ColorIndex(index)), Some(changed_colors)) => {
             changed_colors[index as usize].or(code)
         },
+        (Some(AnsiCode::NamedColor(named)), Some(changed_colors)) => {
+            changed_colors[named_color_index(named) as usize].or(code)
+        },
         _ => code,
     }
 }
@@ -390,7 +431,10 @@ fn wire_cell(
             chunk_changed_colors,
         )),
         underline_color: if styled_underlines {
-            wire_color(styles.underline_color)
+            wire_color(substitute_changed_color(
+                styles.underline_color,
+                chunk_changed_colors,
+            ))
         } else {
             WireColor::Default.pack()
         },

@@ -863,7 +863,8 @@ impl Tab {
 }
 
 impl Tab {
-    /// Visible pane boundaries let the GPU client shape text within each pane.
+    /// Visible pane boundaries in paint order let the GPU client shape text within each pane.
+    /// Reverse traversal must find the topmost pane for image ownership and text boundaries.
     pub fn native_geometry(
         &self,
         client: ClientId,
@@ -871,12 +872,19 @@ impl Tab {
         use yinz_types::structured_render::*;
         let focused = self.get_active_pane_id(client);
         let panes = self
-            .get_tiled_panes()
-            .map(|(id, pane)| (id, pane, 0))
+            .tiled_panes
+            .rendered_pane_ids()
+            .into_iter()
+            .filter_map(|id| self.tiled_panes.get_pane(id).map(|pane| (id, pane, 0)))
             .chain(
-                self.get_floating_panes()
-                    .filter(|_| self.are_floating_panes_visible())
-                    .map(|(id, pane)| (id, pane, PANE_FLOATING)),
+                self.floating_panes
+                    .rendered_pane_ids()
+                    .into_iter()
+                    .filter_map(|id| {
+                        self.floating_panes
+                            .get(&id)
+                            .map(|pane| (id, pane, PANE_FLOATING))
+                    }),
             )
             .map(|(id, pane, extra)| {
                 let x = pane.x();
@@ -889,7 +897,7 @@ impl Tab {
                 if left > 0 || top > 0 {
                     flags |= PANE_FRAMED;
                 }
-                if focused == Some(*id) {
+                if focused == Some(id) {
                     flags |= PANE_FOCUSED;
                 }
                 if pane.selectable() {

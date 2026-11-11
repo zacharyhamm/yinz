@@ -314,7 +314,12 @@ fn with_modifiers(bare_key: BareKey, modifiers: ModifiersState) -> KeyWithModifi
     if modifiers.super_key() {
         key_modifiers.insert(KeyModifier::Super);
     }
-    if modifiers.shift_key() && !matches!(bare_key, BareKey::Char(_)) {
+    // The Kitty encoder recovers Shift only from a distinct, single lowercase scalar.
+    let absorbs_shift = matches!(bare_key, BareKey::Char(character) if {
+        let mut lowercase = character.to_lowercase();
+        matches!((lowercase.next(), lowercase.next()), (Some(lower), None) if lower != character)
+    });
+    if modifiers.shift_key() && !absorbs_shift {
         key_modifiers.insert(KeyModifier::Shift);
     }
     KeyWithModifier::new_with_modifiers(bare_key, key_modifiers)

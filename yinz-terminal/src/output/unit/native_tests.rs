@@ -2,6 +2,84 @@ use super::super::*;
 use yinz_types::structured_render::{decode, WireColor, ATTR_BOLD};
 
 #[test]
+fn native_palette_overrides_apply_to_all_cell_colors() {
+    use crate::panes::terminal_character::NamedColor;
+
+    let replacement = AnsiCode::RgbCode((10, 20, 30));
+    let mut palette = [None; 256];
+    for index in [1, 9, 42] {
+        palette[index] = Some(replacement);
+    }
+    let cases = [
+        (
+            Some(AnsiCode::NamedColor(NamedColor::Red)),
+            WireColor::Named(1),
+            true,
+        ),
+        (
+            Some(AnsiCode::NamedColor(NamedColor::BrightRed)),
+            WireColor::Named(9),
+            true,
+        ),
+        (Some(AnsiCode::ColorIndex(42)), WireColor::Indexed(42), true),
+        (
+            Some(AnsiCode::NamedColor(NamedColor::Green)),
+            WireColor::Named(2),
+            false,
+        ),
+        (
+            Some(AnsiCode::ColorIndex(43)),
+            WireColor::Indexed(43),
+            false,
+        ),
+        (
+            Some(AnsiCode::RgbCode((1, 2, 3))),
+            WireColor::Rgb(1, 2, 3),
+            false,
+        ),
+        (Some(AnsiCode::Reset), WireColor::Default, false),
+        (None, WireColor::Default, false),
+    ];
+    for changed_colors in [None, Some(palette)] {
+        let client = ClientId::new(1);
+        let mut output = Output::default();
+        let characters = cases
+            .iter()
+            .map(|(color, _, _)| {
+                TerminalCharacter::new_styled(
+                    'x',
+                    CharacterStyles {
+                        foreground: *color,
+                        background: *color,
+                        underline_color: *color,
+                        ..DEFAULT_STYLES
+                    }
+                    .into(),
+                )
+            })
+            .collect();
+        let mut chunk = CharacterChunk::new(characters, 0, 0);
+        chunk.add_changed_colors(changed_colors);
+        output.client_character_chunks.insert(client, vec![chunk]);
+        let mut states = HashMap::from([(client, NativeRenderState::default())]);
+        let frames = output.serialize_native(&mut states, &HashMap::new(), &HashMap::new());
+        let frame = decode(&frames[&client]).unwrap();
+        let (_, cells) = frame.rows().next().unwrap();
+        assert_eq!(cells.len(), cases.len());
+        for (cell, (color, original, overridden)) in cells.iter().zip(cases) {
+            let expected = if changed_colors.is_some() && overridden {
+                WireColor::Rgb(10, 20, 30)
+            } else {
+                original
+            };
+            for actual in [cell.fg, cell.bg, cell.underline_color] {
+                assert_eq!(WireColor::unpack(actual), expected, "color {color:?}");
+            }
+        }
+    }
+}
+
+#[test]
 fn native_and_ansi_clients_receive_the_same_composed_cells() {
     let native = ClientId::new(1);
     let ansi = ClientId::new(2);
@@ -366,4 +444,228 @@ fn native_hyperlink_ids_are_reclaimed_on_full_repaint_and_stable_in_deltas() {
         assert_eq!(frame.links().entries.len(), 2);
         assert_eq!(frame.links().entries[0].uri, "https://example.com/299");
     }
+}
+
+#[test]
+fn native_hyperlinks_are_bounded_before_assigning_ids() {
+    use yinz_types::structured_render::MAX_LINK_URI_LEN;
+    let client = ClientId::new(1);
+    let handler = Rc::new(RefCell::new(LinkHandler::new()));
+    let mut output = Output::default();
+    output.add_clients(&HashSet::from([client]), handler.clone(), None);
+    let mut states = HashMap::from([(client, NativeRenderState::default())]);
+    let maximum = "a".repeat(MAX_LINK_URI_LEN);
+    let uris = [
+        "a".repeat(MAX_LINK_URI_LEN + 1),
+        "界".to_owned() + &"a".repeat(MAX_LINK_URI_LEN - 1),
+        maximum.clone(),
+        "https://example.com".to_owned(),
+    ];
+    let characters = uris
+        .iter()
+        .map(|uri| {
+            let anchor = handler.borrow_mut().new_link_from_url(uri.clone());
+            TerminalCharacter::new_styled(
+                'x',
+                CharacterStyles {
+                    link_anchor: Some(anchor),
+                    ..DEFAULT_STYLES
+                }
+                .into(),
+            )
+        })
+        .collect();
+    output
+        .client_character_chunks
+        .insert(client, vec![CharacterChunk::new(characters, 0, 0)]);
+    let frames = output.serialize_native(&mut states, &HashMap::new(), &HashMap::new());
+    let frame = decode(&frames[&client]).unwrap();
+    let cells = frame.rows().next().unwrap().1;
+    assert_eq!(
+        cells.iter().map(|cell| cell.link).collect::<Vec<_>>(),
+        [0, 0, 1, 2]
+    );
+    assert!(cells.iter().all(|cell| cell.ch == 'x' as u32));
+    assert_eq!(
+        frame
+            .links()
+            .entries
+            .iter()
+            .map(|entry| entry.uri.as_str())
+            .collect::<Vec<_>>(),
+        [maximum.as_str(), "https://example.com"]
+    );
+}
+
+fn linked_character(handler: &mut LinkHandler, uri: &str, ch: char) -> TerminalCharacter {
+    let anchor = handler.new_link_from_url(uri.to_owned());
+    TerminalCharacter::new_styled(
+        ch,
+        CharacterStyles {
+            link_anchor: Some(anchor),
+            ..DEFAULT_STYLES
+        }
+        .into(),
+    )
+}
+
+#[test]
+fn native_hyperlinks_reuse_ids_after_delta_replacements() {
+    let client = ClientId::new(1);
+    let handler = Rc::new(RefCell::new(LinkHandler::new()));
+    let mut output = Output::default();
+    output.add_clients(&HashSet::from([client]), handler.clone(), None);
+    let mut states = HashMap::from([(client, NativeRenderState::default())]);
+    let retained = linked_character(&mut handler.borrow_mut(), "retained", 'r');
+    output
+        .client_character_chunks
+        .insert(client, vec![CharacterChunk::new(vec![retained], 1, 0)]);
+    let frames = output.serialize_native(&mut states, &HashMap::new(), &HashMap::new());
+    let retained_id = decode(&frames[&client]).unwrap().rows().next().unwrap().1[0].link;
+    for index in 0..520 {
+        let uri = format!("https://example.com/{index}");
+        let character = linked_character(&mut handler.borrow_mut(), &uri, 'x');
+        output
+            .client_character_chunks
+            .insert(client, vec![CharacterChunk::new(vec![character], 0, 0)]);
+        let frames = output.serialize_native(&mut states, &HashMap::new(), &HashMap::new());
+        let frame = decode(&frames[&client]).unwrap();
+        assert!(!frame.header().clear());
+        let id = frame.rows().next().unwrap().1[0].link;
+        assert_ne!(id, 0);
+        let links = frame.links();
+        assert_eq!(
+            links
+                .entries
+                .iter()
+                .find(|entry| entry.id == id)
+                .unwrap()
+                .uri,
+            uri
+        );
+        assert_eq!(
+            links
+                .entries
+                .iter()
+                .find(|entry| entry.id == retained_id)
+                .unwrap()
+                .uri,
+            "retained"
+        );
+    }
+}
+
+#[test]
+fn native_hyperlink_capacity_tracks_wide_cells_and_plain_overwrites() {
+    let client = ClientId::new(1);
+    let handler = Rc::new(RefCell::new(LinkHandler::new()));
+    let mut output = Output::default();
+    output.add_clients(&HashSet::from([client]), handler.clone(), None);
+    let mut states = HashMap::from([(client, NativeRenderState::default())]);
+    let sizes = HashMap::from([(client, Size { cols: 258, rows: 1 })]);
+    let mut characters = vec![linked_character(&mut handler.borrow_mut(), "wide", '界')];
+    for index in 1..255 {
+        characters.push(linked_character(
+            &mut handler.borrow_mut(),
+            &format!("link/{index}"),
+            'x',
+        ));
+    }
+    output
+        .client_character_chunks
+        .insert(client, vec![CharacterChunk::new(characters, 0, 0)]);
+    output.serialize_native(&mut states, &sizes, &HashMap::new());
+    // Replacing only the leading cell must leave the continuation's ID reserved.
+    for (col, expected) in [(0, 0), (1, 1)] {
+        let new = linked_character(&mut handler.borrow_mut(), "new", 'n');
+        output.client_character_chunks.insert(
+            client,
+            vec![
+                CharacterChunk::new(vec![new], 256, 0),
+                CharacterChunk::new(vec![TerminalCharacter::new(' ')], col, 0),
+            ],
+        );
+        let frames = output.serialize_native(&mut states, &sizes, &HashMap::new());
+        let frame = decode(&frames[&client]).unwrap();
+        assert_eq!(frame.rows().next().unwrap().1[0].link, expected);
+        let links = frame.links();
+        assert_eq!(
+            links
+                .entries
+                .iter()
+                .find(|entry| entry.id == 1)
+                .unwrap()
+                .uri,
+            if expected == 0 { "wide" } else { "new" }
+        );
+        assert_eq!(
+            links
+                .entries
+                .iter()
+                .find(|entry| entry.id == 255)
+                .unwrap()
+                .uri,
+            "link/254"
+        );
+    }
+    // A clipped wide character cannot allocate another ID in the full table.
+    let clipped = linked_character(&mut handler.borrow_mut(), "clipped", '界');
+    let new = linked_character(&mut handler.borrow_mut(), "overflow", 'o');
+    output.client_character_chunks.insert(
+        client,
+        vec![
+            CharacterChunk::new(vec![clipped], 257, 0),
+            CharacterChunk::new(vec![new], 257, 0),
+        ],
+    );
+    let frames = output.serialize_native(&mut states, &sizes, &HashMap::new());
+    let frame = decode(&frames[&client]).unwrap();
+    assert_eq!(frame.rows().last().unwrap().1[0].link, 0);
+}
+
+#[test]
+fn native_hyperlink_reuse_pins_all_rows_emitted_in_the_frame() {
+    let client = ClientId::new(1);
+    let handler = Rc::new(RefCell::new(LinkHandler::new()));
+    let mut output = Output::default();
+    output.add_clients(&HashSet::from([client]), handler.clone(), None);
+    let mut states = HashMap::from([(client, NativeRenderState::default())]);
+    let chunks = (0..256)
+        .map(|index| {
+            CharacterChunk::new(
+                vec![linked_character(
+                    &mut handler.borrow_mut(),
+                    &format!("link/{index}"),
+                    'x',
+                )],
+                0,
+                0,
+            )
+        })
+        .collect();
+    output.client_character_chunks.insert(client, chunks);
+    let frames = output.serialize_native(&mut states, &HashMap::new(), &HashMap::new());
+    let frame = decode(&frames[&client]).unwrap();
+    let links = frame.links();
+    for (index, (_, cells)) in frame.rows().enumerate() {
+        if index == 255 {
+            assert_eq!(cells[0].link, 0);
+        } else {
+            let entry = links
+                .entries
+                .iter()
+                .find(|entry| entry.id == cells[0].link)
+                .unwrap();
+            assert_eq!(entry.uri, format!("link/{index}"));
+        }
+    }
+    let new = linked_character(&mut handler.borrow_mut(), "next", 'n');
+    output
+        .client_character_chunks
+        .insert(client, vec![CharacterChunk::new(vec![new], 0, 0)]);
+    let frames = output.serialize_native(&mut states, &HashMap::new(), &HashMap::new());
+    assert_ne!(
+        decode(&frames[&client]).unwrap().rows().next().unwrap().1[0].link,
+        0
+    );
 }

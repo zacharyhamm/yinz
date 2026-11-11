@@ -505,10 +505,14 @@ fn a_converted_option_keeps_its_alt_on_a_shifted_symbol() {
     let pressed = converted("+", "=", both);
     assert_eq!(
         translate(&pressed),
-        Some(KeyWithModifier::new(BareKey::Char('+')).with_alt_modifier()),
-        "the conversion leaves Shift in the character; that is not Option being spent"
+        Some(
+            KeyWithModifier::new(BareKey::Char('+'))
+                .with_alt_modifier()
+                .with_shift_modifier()
+        ),
+        "the symbol cannot encode Shift, so both modifiers must survive"
     );
-    assert_eq!(sent(&pressed), b"\x1b[43;3u");
+    assert_eq!(sent(&pressed), b"\x1b[43;4u");
     let keys = vec![KeyWithModifier::new(BareKey::Char('+'))
         .with_alt_modifier()
         .with_shift_modifier()];
@@ -522,8 +526,11 @@ fn an_option_key_left_typing_characters_is_not_an_alt_chord() {
         let pressed = layered(logical, unmodified, modifiers);
         assert_eq!(
             key_message(&pressed),
-            key_message(&press(character(logical), none())),
-            "{} must arrive as plain text",
+            key_message(&press(
+                character(logical),
+                modifiers & ModifiersState::SHIFT
+            )),
+            "{} must arrive without Alt",
             logical
         );
     }
@@ -784,5 +791,27 @@ fn every_message_declares_the_kitty_encoding() {
             ..
         } => assert!(is_kitty_keyboard_protocol),
         other => panic!("expected a key message, got {:?}", other),
+    }
+}
+
+#[test]
+fn shift_survives_characters_that_cannot_absorb_it() {
+    let both = ModifiersState::CONTROL | ModifiersState::SHIFT;
+    for logical in [Key::Named(NamedKey::Space), character(" ")] {
+        let key = translated(&logical, both);
+        assert!(key.key_modifiers.contains(&KeyModifier::Shift));
+        assert_ne!(key, translated(&logical, ModifiersState::CONTROL));
+        assert_eq!(bytes(&logical, both), b"\x1b[32;6u");
+        assert_eq!(bytes(&logical, ModifiersState::CONTROL), b"\x1b[32;5u");
+    }
+    for (text, encoded) in [
+        ("!", "\x1b[33;6u"),
+        ("界", "\x1b[30028;6u"),
+        ("a", "\x1b[97;6u"),
+    ] {
+        assert!(translated(&character(text), both)
+            .key_modifiers
+            .contains(&KeyModifier::Shift));
+        assert_eq!(bytes(&character(text), both), encoded.as_bytes());
     }
 }

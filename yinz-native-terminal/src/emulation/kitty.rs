@@ -15,6 +15,7 @@ const BASE64: GeneralPurpose = GeneralPurpose::new(
 const MAX_CSI_PARAMS: usize = 32;
 const MAX_FORWARDED: usize = 2;
 const MAX_OSC_LEN: usize = 8192;
+const MAX_CLIPBOARD_OSC_LEN: usize = yinz_ipc::MAX_IPC_FRAME_LEN;
 const MAX_IMAGE_BYTES: usize = 104_857_600;
 const SHM_DIR: &str = "/dev/shm";
 
@@ -200,6 +201,7 @@ pub struct ApcFilter {
     state: FilterState,
     params: Vec<u8>,
     osc: Vec<u8>,
+    osc_overflow: bool,
 }
 
 impl ApcFilter {
@@ -208,6 +210,7 @@ impl ApcFilter {
             state: FilterState::Ground,
             params: Vec::new(),
             osc: Vec::new(),
+            osc_overflow: false,
         }
     }
 
@@ -231,6 +234,7 @@ impl ApcFilter {
                 b']' => {
                     self.state = FilterState::OscForward;
                     self.osc.clear();
+                    self.osc_overflow = false;
                     Step::forward(&[0x1b, b']'])
                 },
                 other => {
@@ -270,13 +274,27 @@ impl ApcFilter {
     }
 
     fn record_osc(&mut self, byte: u8) {
-        if self.osc.len() < MAX_OSC_LEN {
+        if self.osc_overflow {
+            return;
+        }
+        let limit = if self.osc.starts_with(b"52;") {
+            MAX_CLIPBOARD_OSC_LEN
+        } else {
+            MAX_OSC_LEN
+        };
+        if self.osc.len() < limit {
             self.osc.push(byte);
+        } else {
+            self.osc_overflow = true;
+            self.osc.clear();
         }
     }
 
     fn finish_osc(&mut self, terminator: &[u8]) -> Step {
         let body = std::mem::take(&mut self.osc);
+        if std::mem::take(&mut self.osc_overflow) {
+            return Step::boundary(terminator);
+        }
         match osc_signal(&body) {
             Some(signal) => Step::signal(terminator, signal),
             None => Step::boundary(terminator),

@@ -225,3 +225,45 @@ fn clipboard_updates_decode_only_complete_osc52_writes() {
         Some("b".into())
     );
 }
+
+#[test]
+fn clipboard_updates_preserve_large_ascii_and_unicode_selections() {
+    for text in ["a".repeat(7000), "界\n".repeat(7000)] {
+        for terminator in ["\x07", "\x1b\\"] {
+            let content = format!("\x1b]52;c;{}{terminator}", BASE64.encode(&text));
+            assert_eq!(clipboard_update(&content), Some(text.clone()));
+            assert_eq!(clipboard_update(content.trim_end_matches(terminator)), None);
+        }
+    }
+}
+
+#[test]
+fn osc_limits_reject_overflow_and_recover_at_the_terminator() {
+    for (prefix, limit) in [("2;", MAX_OSC_LEN), ("52;c;", MAX_CLIPBOARD_OSC_LEN)] {
+        for extra in [0, 1] {
+            for terminator in [b"\x07".as_slice(), b"\x1b\\", b"\x9c"] {
+                let mut parser = ApcFilter::new();
+                for byte in b"\x1b]".iter().copied().chain(prefix.bytes()) {
+                    parser.advance(byte);
+                }
+                // 'A' is a valid unpadded base64 payload at the exact clipboard limit.
+                for _ in prefix.len()..limit + extra {
+                    parser.advance(b'A');
+                }
+                let mut signal = None;
+                for &byte in terminator {
+                    if let Kind::Signal(value) = parser.advance(byte).kind {
+                        signal = Some(value);
+                    }
+                }
+                assert_eq!(signal.is_some(), extra == 0, "{prefix} + {extra}");
+                for &byte in b"\x1b]52;c;YQ==\x07" {
+                    if let Kind::Signal(value) = parser.advance(byte).kind {
+                        signal = Some(value);
+                    }
+                }
+                assert_eq!(signal, Some(OscSignal::Clipboard("a".into())));
+            }
+        }
+    }
+}

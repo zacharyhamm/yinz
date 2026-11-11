@@ -1436,3 +1436,20 @@ fn the_overlay_remaps_cluster_ids_from_several_frames() {
     assert_eq!(texts(&view, &row1.1), vec!["c\u{0301}", "b\u{0301}"]);
     assert_eq!(view.clusters().entries.len(), 3);
 }
+
+#[test]
+fn oversized_link_uris_are_omitted_without_corrupting_the_record() {
+    let maximum = "a".repeat(MAX_LINK_URI_LEN);
+    let record = LinkRecord {
+        entries: vec![
+            link(1, &"a".repeat(MAX_LINK_URI_LEN + 1)),
+            link(2, &("界".to_owned() + &"a".repeat(MAX_LINK_URI_LEN - 1))),
+            link(3, &maximum),
+            link(4, "https://example.com"),
+        ],
+    };
+    let mut builder = FrameBuilder::new(4, 1, 0);
+    builder.push_links(&record);
+    let frame = builder.finish();
+    assert_eq!(decode(&frame).unwrap().links().entries, record.entries[2..]);
+}

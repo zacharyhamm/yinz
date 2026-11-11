@@ -41,7 +41,7 @@ const SHIFT_ENTRY_LEN: usize = 10;
 
 pub const LINK_NONE: u8 = 0;
 pub const MAX_LINK_ID: u8 = u8::MAX;
-pub const MAX_LINK_URI_LEN: usize = 2048;
+pub const MAX_LINK_URI_LEN: usize = u16::MAX as usize;
 
 const GRAPHICS_MEDIUM_INLINE: u8 = 0;
 const GRAPHICS_MEDIUM_SHARED_FILE: u8 = 1;
@@ -810,14 +810,19 @@ impl LinkRecord {
     }
 
     fn encode_payload(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&(self.entries.len() as u16).to_le_bytes());
+        let entries = self
+            .entries
+            .iter()
+            .filter_map(|entry| u16::try_from(entry.uri.len()).ok().map(|len| (entry, len)))
+            .take(u16::MAX as usize);
+        out.extend_from_slice(&(entries.clone().count() as u16).to_le_bytes());
         out.extend_from_slice(&(LINK_ENTRY_HEADER_LEN as u16).to_le_bytes());
         put_u32(out, 0);
-        for entry in &self.entries {
+        for (entry, uri_len) in entries {
             let uri = entry.uri.as_bytes();
             out.push(entry.id);
             out.push(0);
-            out.extend_from_slice(&(uri.len() as u16).to_le_bytes());
+            out.extend_from_slice(&uri_len.to_le_bytes());
             out.extend_from_slice(uri);
         }
     }
