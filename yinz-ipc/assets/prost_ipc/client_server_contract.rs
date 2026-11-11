@@ -3784,7 +3784,7 @@ impl ThemeHue {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientToServerMsg {
-    #[prost(oneof="client_to_server_msg::Message", tags="42, 43, 40, 41, 38, 37, 33, 34, 36, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 35, 11, 39, 12, 32, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29, 30, 31")]
+    #[prost(oneof="client_to_server_msg::Message", tags="42, 43, 40, 41, 38, 37, 33, 34, 36, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 35, 44, 11, 39, 12, 32, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29, 30, 31")]
     pub message: ::core::option::Option<client_to_server_msg::Message>,
 }
 /// Nested message and enum types in `ClientToServerMsg`.
@@ -3832,6 +3832,8 @@ pub mod client_to_server_msg {
         Key(super::KeyMsg),
         #[prost(string, tag="35")]
         Paste(::prost::alloc::string::String),
+        #[prost(string, tag="44")]
+        Text(::prost::alloc::string::String),
         #[prost(message, tag="11")]
         ClientExited(super::ClientExitedMsg),
         #[prost(message, tag="39")]

@@ -26,6 +26,33 @@ impl Screen {
         Ok(cleared)
     }
 
+    pub(super) fn text_from_client(
+        &mut self,
+        text: String,
+        client_id: ClientId,
+        completion: Option<NotificationEnd>,
+    ) -> Result<()> {
+        match self.get_client_input_mode(client_id) {
+            Some(InputMode::Normal | InputMode::Locked) => {
+                if self.write_character(
+                    None,
+                    text.into_bytes(),
+                    false,
+                    client_id,
+                    &HashMap::new(),
+                    completion,
+                )? {
+                    self.render()?;
+                }
+                Ok(())
+            },
+            Some(InputMode::RenameTab | InputMode::RenamePane | InputMode::EnterSearch) => {
+                self.paste_from_client(text, client_id, completion)
+            },
+            _ => Ok(()),
+        }
+    }
+
     pub(super) fn paste_from_client(
         &mut self,
         text: String,

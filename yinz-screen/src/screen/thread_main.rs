@@ -551,6 +551,9 @@ pub fn screen_thread_main(
                             .retain(|(client, _), _| *client != client_id);
                     }
                 },
+                ScreenInstruction::TextFromClient(text, client_id, completion) => {
+                    screen.text_from_client(text, client_id, completion)?;
+                },
                 ScreenInstruction::PasteFromClient(text, client_id, completion) => {
                     screen.paste_from_client(text, client_id, completion)?;
                 },

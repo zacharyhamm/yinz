@@ -204,3 +204,85 @@ fn client_paste_preserves_plugin_client_context_and_pane_tab_focus() {
         assert!(capture.drain_pty_writes().is_empty());
     }
 }
+
+#[test]
+fn committed_text_is_not_pasted_even_when_bracketed_paste_is_enabled() {
+    let client = ClientId::new(1);
+    for mode in [InputMode::Normal, InputMode::Locked] {
+        let (mut screen, capture) =
+            create_new_screen_with_forward_capture(Size { cols: 80, rows: 20 });
+        new_tab(&mut screen, 1, TabId::new(0));
+        screen.change_mode(mode, None, client).unwrap();
+        screen
+            .get_active_tab_mut(client)
+            .unwrap()
+            .handle_pty_bytes(TerminalId::new(1), b"\x1b[?2004h".to_vec())
+            .unwrap();
+        capture.drain_pty_writes();
+        screen
+            .text_from_client("你好é".into(), client, None)
+            .unwrap();
+        assert_eq!(
+            capture.drain_pty_writes(),
+            vec![("你好é".as_bytes().to_vec(), TerminalId::new(1))]
+        );
+    }
+}
+
+#[test]
+fn committed_text_updates_names_and_search_without_writing_to_the_pane() {
+    let client = ClientId::new(1);
+    for mode in [
+        InputMode::RenameTab,
+        InputMode::RenamePane,
+        InputMode::EnterSearch,
+    ] {
+        let (mut screen, capture) =
+            create_new_screen_with_forward_capture(Size { cols: 80, rows: 20 });
+        new_tab(&mut screen, 1, TabId::new(0));
+        screen
+            .get_active_tab_mut(client)
+            .unwrap()
+            .set_pane_frames(PaneFrameStyle::Full);
+        screen.change_mode(mode, None, client).unwrap();
+        capture.drain_pty_writes();
+        screen
+            .text_from_client("你好é".into(), client, None)
+            .unwrap();
+        assert!(capture.drain_pty_writes().is_empty(), "{mode:?}");
+        match mode {
+            InputMode::RenameTab => assert!(screen
+                .get_active_tab(client)
+                .unwrap()
+                .name
+                .contains("你好é")),
+            InputMode::RenamePane => {
+                let pane = screen
+                    .get_active_tab_mut(client)
+                    .unwrap()
+                    .get_active_pane_mut(client)
+                    .unwrap();
+                assert!(pane.current_title().contains("你好é"));
+            },
+            InputMode::EnterSearch => {
+                screen.render_to_clients().unwrap();
+                let events: Vec<_> = capture
+                    .server_rx
+                    .try_iter()
+                    .map(|(event, _)| event)
+                    .collect();
+                let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
+                    events.iter(),
+                    Size { cols: 80, rows: 20 },
+                );
+                assert!(
+                    snapshots
+                        .iter()
+                        .any(|(_, snapshot)| snapshot.contains("SEARCHING:")
+                            && snapshot.contains("é"))
+                );
+            },
+            _ => unreachable!(),
+        }
+    }
+}

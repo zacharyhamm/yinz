@@ -4135,6 +4135,10 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Paste("café\n東京\t🦀".into()));
     test_client_roundtrip!(ClientToServerMsg::Paste(String::new()));
+    test_client_roundtrip!(ClientToServerMsg::Text("café東京🦀".into()));
+    test_client_roundtrip!(ClientToServerMsg::Text(String::new()));
+    test_client_roundtrip!(ClientToServerMsg::StructuredRenderSupport { supported: true });
+    test_client_roundtrip!(ClientToServerMsg::RenderFrameAck { seq: u64::MAX });
     test_client_roundtrip!(ClientToServerMsg::Key {
         key: KeyWithModifier {
             bare_key: BareKey::PageDown,
@@ -4921,6 +4925,9 @@ fn test_server_messages() {
     }
 
     use yinz_types::session_destination::*;
+    test_server_roundtrip!(ServerToClientMsg::RenderFrame {
+        frame: vec![0, 1, 255]
+    });
     test_server_roundtrip!(ServerToClientMsg::RepaintComplete);
     test_server_roundtrip!(ServerToClientMsg::DesktopNotification {
         content: "\x1b]99;i=notification:p=body;done\x07".into(),

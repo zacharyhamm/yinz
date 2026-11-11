@@ -554,6 +554,9 @@ impl App {
                 self.messages = Some(rx);
                 self.state = TerminalState::new(self.state.size().rows, self.state.size().cols);
                 self.retained = RetainedScene::new();
+                if let Some(surfaces) = &mut self.surfaces {
+                    surfaces.renderer.clear_images();
+                }
                 self.resize()?;
             },
             ServerToClientMsg::ClipboardUpdate { content } => {

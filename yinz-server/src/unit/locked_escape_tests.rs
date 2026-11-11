@@ -556,6 +556,7 @@ fn locked_escape_fallback_updates_mode_and_queues_unlock_before_returning_input(
             true,
         ),
         (ClientToServerMsg::Paste("g".into()), true),
+        (ClientToServerMsg::Text("你好".into()), true),
         (interactive_write, true),
         (cli_write, false),
     ] {

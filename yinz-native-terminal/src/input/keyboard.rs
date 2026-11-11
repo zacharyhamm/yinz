@@ -4,7 +4,6 @@ use winit::event::{KeyEvent, Modifiers};
 use winit::keyboard::{Key, ModifiersKeyState, ModifiersState, NamedKey};
 use yinz_ipc::ipc::ClientToServerMsg;
 use yinz_types::data::{BareKey, KeyModifier, KeyWithModifier};
-use yinz_types::input::actions::Action;
 use yinz_types::input::native_terminal::OptionAsAlt;
 
 use crate::platform::Platform;
@@ -306,12 +305,7 @@ pub fn key_press_message(key: KeyWithModifier) -> ClientToServerMsg {
 }
 
 pub fn text_message(chars: String) -> ClientToServerMsg {
-    ClientToServerMsg::Action {
-        action: Action::WriteChars { chars },
-        terminal_id: None,
-        client_id: None,
-        is_cli_client: false,
-    }
+    ClientToServerMsg::Text(chars)
 }
 
 pub fn typed(press: &Press) -> Option<Typed> {

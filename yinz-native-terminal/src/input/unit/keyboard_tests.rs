@@ -432,10 +432,7 @@ fn multi_character_text_is_typed_rather_than_pasted() {
 #[test]
 fn typed_text_carries_no_bracketed_paste_markers() {
     match text_message("你好".to_owned()) {
-        ClientToServerMsg::Action {
-            action: Action::WriteChars { chars },
-            ..
-        } => {
+        ClientToServerMsg::Text(chars) => {
             assert_eq!(chars, "你好");
             assert!(!chars.contains('\u{1b}'));
         },

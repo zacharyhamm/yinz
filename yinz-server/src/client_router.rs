@@ -427,7 +427,10 @@ pub(crate) fn route_thread_main(
                         return Ok(false);
                     }
 
-                    if matches!(&instruction, ClientToServerMsg::Key { .. }) {
+                    if matches!(
+                        &instruction,
+                        ClientToServerMsg::Key { .. } | ClientToServerMsg::Text(_)
+                    ) {
                         session_state
                             .write()
                             .to_anyhow()
@@ -460,6 +463,7 @@ pub(crate) fn route_thread_main(
                         &instruction,
                         ClientToServerMsg::Key { .. }
                             | ClientToServerMsg::Paste(_)
+                            | ClientToServerMsg::Text(_)
                             | ClientToServerMsg::AgentControl(_)
                             | ClientToServerMsg::PluginRequest { .. }
                     ) {
@@ -523,6 +527,26 @@ pub(crate) fn route_thread_main(
                             os_input.send_to_client(client_id, ServerToClientMsg::DataResponse { request_id, result }).context("reply to CLI data request")?;
                         },
                         ClientToServerMsg::AgentReport(_) => unreachable!("handled before action dispatch"),
+                        ClientToServerMsg::Text(text) => {
+                            if let Some(senders) = &senders {
+                                senders.send_to_screen(ScreenInstruction::ResetAgentEscape(client_id))
+                                    .with_context(err_context)?;
+                                senders.send_to_plugin(PluginInstruction::UserInput {
+                                    client_id,
+                                    action: Action::WriteChars { chars: text.clone() },
+                                    terminal_id: None,
+                                    cli_client_id: None,
+                                }).with_context(err_context)?;
+                                senders.send_to_plugin(PluginInstruction::Update(vec![(
+                                    None, Some(client_id), Event::InputReceived,
+                                )])).with_context(err_context)?;
+                                let (completion_tx, completion_rx) = oneshot::channel();
+                                senders.send_to_screen(ScreenInstruction::TextFromClient(
+                                    text, client_id, Some(NotificationEnd::new_client_input(completion_tx)),
+                                )).with_context(err_context)?;
+                                wait_for_action_completion(completion_rx, "TextFromClient", false);
+                            }
+                        },
                         ClientToServerMsg::Paste(text) => {
                             if let Some(senders) = &senders {
                                 senders.send_to_screen(ScreenInstruction::ResetAgentEscape(client_id))

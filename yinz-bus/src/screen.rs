@@ -144,6 +144,7 @@ pub enum ScreenInstruction {
         completion: Option<NotificationEnd>,
     },
     PasteFromClient(String, ClientId, Option<NotificationEnd>),
+    TextFromClient(String, ClientId, Option<NotificationEnd>),
     WriteCharacter(
         Option<KeyWithModifier>,
         Vec<u8>,

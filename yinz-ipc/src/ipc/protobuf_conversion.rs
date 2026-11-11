@@ -198,6 +198,7 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
                 client_id: client_id.map(|id| id.get()),
                 is_cli_client,
             }),
+            ClientToServerMsg::Text(text) => client_to_server_msg::Message::Text(text),
             ClientToServerMsg::Paste(text) => client_to_server_msg::Message::Paste(text),
             ClientToServerMsg::Key {
                 key,
@@ -454,6 +455,7 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                 client_id: action.client_id.map(ClientId::new),
                 is_cli_client: action.is_cli_client,
             }),
+            Some(client_to_server_msg::Message::Text(text)) => Ok(ClientToServerMsg::Text(text)),
             Some(client_to_server_msg::Message::Paste(text)) => Ok(ClientToServerMsg::Paste(text)),
             Some(client_to_server_msg::Message::Key(key)) => Ok(ClientToServerMsg::Key {
                 key: key.key.ok_or_else(|| anyhow!("Missing key"))?.try_into()?,

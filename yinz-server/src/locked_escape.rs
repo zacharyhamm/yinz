@@ -101,6 +101,7 @@ pub(crate) fn prepare_input(
         &instruction,
         ClientToServerMsg::Key { .. }
             | ClientToServerMsg::Paste(_)
+            | ClientToServerMsg::Text(_)
             | ClientToServerMsg::Action {
                 is_cli_client: false,
                 ..

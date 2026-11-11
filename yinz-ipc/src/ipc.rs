@@ -223,6 +223,8 @@ pub enum ClientToServerMsg {
         is_kitty_keyboard_protocol: bool,
     },
     Paste(String),
+    /// Committed text, resolved in the current input mode without paste markers or bindings.
+    Text(String),
     ClientExited,
     SignalQuit,
     KillSession,

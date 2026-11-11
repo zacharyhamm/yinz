@@ -15,7 +15,7 @@ mod rows;
 mod vertices;
 
 use atlas_upload::{atlas_texture, upload_atlas, AtlasTexture};
-use images::{ImageBatch, ImageTexture};
+use images::{ImageBatch, ImageDepth, ImageTexture};
 use programs::{
     attribute, draw_pass, link, premultiplied_blending, solid_pass, textured_pass, COLOR_FRAGMENT,
     GLYPH_FRAGMENT, GLYPH_VERTEX, SOLID_FRAGMENT, SOLID_VERTEX,
@@ -256,6 +256,16 @@ impl Renderer {
                     origin,
                 );
             }
+            self.gl.active_texture(glow::TEXTURE0);
+            self.draw_images(viewport, origin, ImageDepth::BelowBackground);
+            if let Some(layer) = layer {
+                self.draw_layer_images(
+                    &layer.images,
+                    viewport,
+                    origin,
+                    ImageDepth::BelowBackground,
+                );
+            }
             draw_rows(&self.gl, &self.solid, &self.solid_rows, viewport, origin);
             if let Some(layer) = layer {
                 self.layer_vertices.clear();
@@ -270,9 +280,9 @@ impl Renderer {
                 );
             }
             self.gl.active_texture(glow::TEXTURE0);
-            self.draw_images(viewport, origin, true);
+            self.draw_images(viewport, origin, ImageDepth::BelowText);
             if let Some(layer) = layer {
-                self.draw_layer_images(&layer.images, viewport, origin, true);
+                self.draw_layer_images(&layer.images, viewport, origin, ImageDepth::BelowText);
             }
             self.gl
                 .bind_texture(glow::TEXTURE_2D, Some(self.mask_atlas.texture));
@@ -304,9 +314,9 @@ impl Renderer {
                     origin,
                 );
             }
-            self.draw_images(viewport, origin, false);
+            self.draw_images(viewport, origin, ImageDepth::AboveText);
             if let Some(layer) = layer {
-                self.draw_layer_images(&layer.images, viewport, origin, false);
+                self.draw_layer_images(&layer.images, viewport, origin, ImageDepth::AboveText);
             }
             if let Some(opacity) = transparency.fade() {
                 self.fade_everything(opacity, viewport);
@@ -355,13 +365,9 @@ impl Renderer {
         }
     }
 
-    unsafe fn draw_images(&mut self, viewport: (f32, f32), origin: (f32, f32), below_text: bool) {
+    unsafe fn draw_images(&mut self, viewport: (f32, f32), origin: (f32, f32), depth: ImageDepth) {
         unsafe {
-            if !self
-                .image_batches
-                .iter()
-                .any(|batch| batch.below_text == below_text)
-            {
+            if !self.image_batches.iter().any(|batch| batch.depth == depth) {
                 return;
             }
             self.gl.use_program(Some(self.image.program));
@@ -373,7 +379,7 @@ impl Renderer {
             self.gl
                 .bind_buffer(glow::ARRAY_BUFFER, Some(self.image.buffer));
             for batch in &self.image_batches {
-                if batch.below_text != below_text || batch.count == 0 {
+                if batch.depth != depth || batch.count == 0 {
                     continue;
                 }
                 let Some(image) = self.images.get(&batch.key) else {
@@ -391,11 +397,11 @@ impl Renderer {
         images: &[ImageQuad],
         viewport: (f32, f32),
         origin: (f32, f32),
-        below_text: bool,
+        depth: ImageDepth,
     ) {
         unsafe {
             for quad in images {
-                if (quad.z < 0) != below_text {
+                if ImageDepth::for_z(quad.z) != depth {
                     continue;
                 }
                 let Some(texture) = self.images.get(&quad.key).map(|image| image.texture) else {
@@ -425,3 +431,6 @@ mod tests;
 
 #[cfg(test)]
 mod row_buffers;
+
+#[cfg(all(test, target_os = "linux"))]
+mod gpu_tests;

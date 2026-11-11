@@ -11,31 +11,61 @@ pub(super) struct ImageTexture {
     pub(super) revision: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ImageDepth {
+    BelowBackground,
+    BelowText,
+    AboveText,
+}
+
+impl ImageDepth {
+    pub(super) fn for_z(z: i32) -> Self {
+        if z < -1073741824 {
+            Self::BelowBackground
+        } else if z < 0 {
+            Self::BelowText
+        } else {
+            Self::AboveText
+        }
+    }
+}
+
 pub(super) struct ImageBatch {
     pub(super) key: ImageKey,
-    pub(super) below_text: bool,
+    pub(super) depth: ImageDepth,
     pub(super) first: i32,
     pub(super) count: i32,
 }
 
 impl Renderer {
+    /// Image identifiers and revisions belong to a single server connection.
+    pub fn clear_images(&mut self) {
+        for (_, image) in self.images.drain() {
+            unsafe { self.gl.delete_texture(image.texture) };
+        }
+        self.image_batches.clear();
+        self.image_vertices.clear();
+    }
+
     pub(super) fn sync_image_vertices(&mut self, images: &[ImageQuad]) {
         let floats_per_vertex = GLYPH_STRIDE as usize / 4;
         self.image_vertices.clear();
         self.image_batches.clear();
         let mut start = 0usize;
         while start < images.len() {
-            let (key, below_text) = (images[start].key, images[start].z < 0);
+            let (key, depth) = (images[start].key, ImageDepth::for_z(images[start].z));
             let first = (self.image_vertices.len() / floats_per_vertex) as i32;
             let mut end = start;
-            while end < images.len() && images[end].key == key && (images[end].z < 0) == below_text
+            while end < images.len()
+                && images[end].key == key
+                && ImageDepth::for_z(images[end].z) == depth
             {
                 push_image_vertices(&mut self.image_vertices, &images[end]);
                 end += 1;
             }
             self.image_batches.push(ImageBatch {
                 key,
-                below_text,
+                depth,
                 first,
                 count: (self.image_vertices.len() / floats_per_vertex) as i32 - first,
             });

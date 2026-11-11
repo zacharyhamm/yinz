@@ -26,6 +26,7 @@ message ClientToServerMsg {
     ActionMsg action = 9;
     KeyMsg key = 10;
     string paste = 35;
+    string text = 44;
     ClientExitedMsg client_exited = 11;
     ClientExitedMsg signal_quit = 39;
     KillSessionMsg kill_session = 12;

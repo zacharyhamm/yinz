@@ -27,6 +27,8 @@ impl Renderer {
         let viewport = (target.0 as f32, target.1 as f32);
         let origin = (0.0, 0.0);
         unsafe {
+            self.gl.active_texture(glow::TEXTURE0);
+            self.draw_images(viewport, origin, ImageDepth::BelowBackground);
             draw_pass(
                 &self.gl,
                 &self.solid,
@@ -36,7 +38,7 @@ impl Renderer {
                 origin,
             );
             self.gl.active_texture(glow::TEXTURE0);
-            self.draw_images(viewport, origin, true);
+            self.draw_images(viewport, origin, ImageDepth::BelowText);
             self.gl
                 .bind_texture(glow::TEXTURE_2D, Some(self.mask_atlas.texture));
             draw_pass(
@@ -57,7 +59,7 @@ impl Renderer {
                 viewport,
                 origin,
             );
-            self.draw_images(viewport, origin, false);
+            self.draw_images(viewport, origin, ImageDepth::AboveText);
             self.gl.bind_vertex_array(None);
         }
     }
@@ -67,9 +69,7 @@ impl Renderer {
     }
 
     pub fn forget_uploads(&mut self) {
-        for (_, image) in self.images.drain() {
-            unsafe { self.gl.delete_texture(image.texture) };
-        }
+        self.clear_images();
         self.mask_atlas.uploaded = None;
         self.color_atlas.uploaded = None;
         self.retained = None;
