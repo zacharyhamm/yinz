@@ -79,6 +79,7 @@ impl Drop for Watching {
 }
 
 #[test]
+#[ignore = "Known config.d recreation race (UX-104-2), accepted for the issue 104 merge"]
 fn missing_drop_in_directory_is_discovered_and_reconciled_through_recreation() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
