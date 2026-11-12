@@ -21,6 +21,39 @@ use yinz_types::data::{CommandType, Event, InputMode, ModeInfo, PipeMessage, Plu
 use yinz_types::internal_ids::PluginId;
 use yinz_types::own_pane::own_pane_command;
 
+// Retained recordings predate OSC display overlays. Their provider and display
+// records must still agree; dedicated OSC tests cover their intentional divergence.
+pub(crate) fn legacy_provider_agents(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            if object.contains_key("pane_id") && object.contains_key("provider_agent") {
+                assert_eq!(object.get("provider_agent"), object.get("agent"));
+                object.remove("provider_agent");
+            }
+            for child in object.values_mut() {
+                legacy_provider_agents(child);
+            }
+            object.sort_keys();
+        },
+        Value::Array(items) => {
+            for child in items {
+                legacy_provider_agents(child);
+            }
+        },
+        Value::String(text) if text.contains("\"pane_id\"") && text.contains("\"agent\"") => {
+            if let Ok(mut payload) = serde_json::from_str::<Value>(text) {
+                let newline = text.ends_with('\n');
+                legacy_provider_agents(&mut payload);
+                *text = payload.to_string();
+                if newline {
+                    text.push('\n');
+                }
+            }
+        },
+        _ => {},
+    }
+}
+
 pub(crate) type Responder = Arc<dyn Fn(&PluginCommand) -> Option<Vec<u8>> + Send + Sync>;
 type Commands = Arc<Mutex<Vec<Value>>>;
 
@@ -441,6 +474,7 @@ impl Pair {
                                 }
                             }
                         }
+                        legacy_provider_agents(&mut snapshot);
                         *payload = snapshot.to_string();
                         let seq = command
                             .pointer_mut("/MessageToPlugin/message_args/seq")
@@ -449,6 +483,7 @@ impl Pair {
                         *seq =
                             Value::String(number.checked_sub(sequence_offset).unwrap().to_string());
                     }
+                    legacy_provider_agents(&mut command);
                     normalize_command_settings(&mut command);
                     command
                 })

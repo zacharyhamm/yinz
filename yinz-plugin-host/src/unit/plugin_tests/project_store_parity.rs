@@ -219,6 +219,9 @@ impl Pair {
                         serde_json::from_str(message["message_payload"].as_str().unwrap()).unwrap();
                 }
             }
+            for command in &mut commands {
+                super::runtime_parity::legacy_provider_agents(command);
+            }
             commands
         };
         let mut actual = app(self.steel.take_commands());
