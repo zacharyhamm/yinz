@@ -3379,6 +3379,7 @@ fn stacked_pane_right_boundaries_stop_at_viewport_top() {
                         index == 0,
                         index == pane_count - 1,
                         under,
+                        false,
                     );
                     pane_y += geom.rows.as_usize();
                 }
@@ -3481,7 +3482,7 @@ fn frame_and_boundary_backgrounds_match_terminal_themes_and_ignore_application_o
                 cols: 100,
                 rows: 30,
             });
-            boundaries.add_rect(&pane, None, style.chrome_colors(), true, true, false);
+            boundaries.add_rect(&pane, None, style.chrome_colors(), true, true, false, false);
             let boundary = boundaries.render(None).unwrap();
             assert!(!boundary.is_empty());
             assert!(

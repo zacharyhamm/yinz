@@ -582,6 +582,7 @@ impl Tab {
                                 top,
                                 bottom,
                                 under,
+                                self.pane_frame_style.draws_titles(),
                             );
                         }
                         boundaries.add_gutter_edges(

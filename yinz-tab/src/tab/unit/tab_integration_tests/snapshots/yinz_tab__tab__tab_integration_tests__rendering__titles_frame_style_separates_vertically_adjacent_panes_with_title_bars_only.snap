@@ -1,0 +1,16 @@
+---
+source: yinz-tab/src/tab/./unit/tab_integration_tests/rendering.rs
+expression: rendered
+---
+00 (C):         👇 [0] Pane #1       │          [2] Pane #3         
+01 (C): LEFT0                        │RIGHT0                        
+02 (C): LEFT1                        │RIGHT1                        
+03 (C): LEFT2                        │RIGHT2                        
+04 (C): LEFT3                        │RIGHT3                        
+05 (C): LEFT4                        │RIGHT4                        
+06 (C):                          [1] Pane #2                        
+07 (C): BOTTOM0                                                     
+08 (C): BOTTOM1                                                     
+09 (C): BOTTOM2                                                     
+10 (C): BOTTOM3                                                     
+11 (C): BOTTOM4

@@ -619,6 +619,7 @@ impl<'a> PaneContentsAndUi<'a> {
             pane_is_on_top_of_stack,
             pane_is_on_bottom_of_stack,
             self.pane_is_stacked_under,
+            self.titles_style,
         );
     }
     fn frame_color(

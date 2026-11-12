@@ -65,6 +65,131 @@ fn titles_frame_style_keeps_the_only_pane_title() {
 }
 
 #[test]
+fn titles_frame_style_separates_vertically_adjacent_panes_with_title_bars_only() {
+    let layout = r#"
+        layout {
+            pane split_direction="vertical" {
+                pane
+                pane
+            }
+            pane
+        }
+    "#;
+    let size = Size { rows: 12, cols: 60 };
+    let client = ClientId::new(1);
+    let mut tab = create_new_tab_with_layout(size, ModeInfo::default(), layout);
+    let mut panes_by_position: Vec<(usize, usize, crate::TerminalId)> = tab
+        .tiled_panes
+        .get_panes()
+        .filter_map(|(pane_id, pane)| match pane_id {
+            PaneId::Terminal(terminal_id) => Some((pane.y(), pane.x(), *terminal_id)),
+            PaneId::Plugin(_) => None,
+        })
+        .collect();
+    panes_by_position.sort_unstable();
+    let [(_, _, left), (_, _, right), (bottom_y, _, bottom)] = panes_by_position[..] else {
+        panic!("unexpected panes: {panes_by_position:?}");
+    };
+    for (terminal, text) in [(left, "LEFT"), (right, "RIGHT"), (bottom, "BOTTOM")] {
+        // Fill every content row so a separator drawn over content would hide the last line.
+        let rows: Vec<String> = (0..bottom_y - 1)
+            .map(|row| format!("{text}{row}"))
+            .collect();
+        tab.handle_pty_bytes(terminal, rows.join("\r\n").into_bytes())
+            .unwrap();
+    }
+    let render = |tab: &mut Tab| {
+        tab.set_force_render();
+        let mut output = Output::default();
+        tab.render(&mut output, None).unwrap();
+        take_snapshot(
+            output.serialize().unwrap().get(&client).unwrap(),
+            size.rows,
+            size.cols,
+            Palette::default(),
+        )
+    };
+
+    tab.set_pane_frames(PaneFrameStyle::Titles);
+    let rendered = render(&mut tab);
+    for terminal in [left, right] {
+        let pane = tab.get_pane_with_id(PaneId::Terminal(terminal)).unwrap();
+        assert_eq!(pane.get_content_offset().bottom, 0, "{rendered}");
+        assert_eq!(pane.get_content_rows(), pane.rows() - 1, "{rendered}");
+    }
+    let lines: Vec<_> = rendered.lines().collect();
+    let last_top_row = lines[bottom_y - 1];
+    assert!(last_top_row.contains("LEFT"), "{rendered}");
+    assert!(last_top_row.contains("RIGHT"), "{rendered}");
+    assert!(lines[bottom_y].contains("Pane #"), "{rendered}");
+    assert!(lines[bottom_y + 1].contains("BOTTOM"), "{rendered}");
+    assert!(
+        !rendered.contains(['─', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼']),
+        "{rendered}"
+    );
+    assert_snapshot!(rendered);
+
+    // Without title bars the separator row is the only thing between the panes.
+    tab.set_pane_frames(PaneFrameStyle::None);
+    let rendered = render(&mut tab);
+    let pane = tab.get_pane_with_id(PaneId::Terminal(left)).unwrap();
+    assert_eq!(pane.get_content_offset().bottom, 1, "{rendered}");
+    assert!(rendered.contains('─'), "{rendered}");
+}
+
+#[test]
+fn titles_frame_style_stack_above_a_pane_has_no_separator_row() {
+    let layout = r#"
+        layout {
+            pane split_direction="vertical" {
+                pane stacked=true {
+                    pane
+                    pane
+                    pane
+                }
+                pane
+            }
+            pane
+        }
+    "#;
+    let size = Size { rows: 14, cols: 60 };
+    let client = ClientId::new(1);
+    let mut tab = create_new_tab_with_layout(size, ModeInfo::default(), layout);
+    tab.set_pane_frames(PaneFrameStyle::Titles);
+    let ids: Vec<_> = tab
+        .tiled_panes
+        .get_panes()
+        .filter_map(|(pane_id, _)| match pane_id {
+            PaneId::Terminal(terminal_id) => Some(*terminal_id),
+            PaneId::Plugin(_) => None,
+        })
+        .collect();
+    for terminal in ids {
+        tab.handle_pty_bytes(terminal, format!("CONTENT {terminal}").into_bytes())
+            .unwrap();
+    }
+    tab.set_force_render();
+    let mut output = Output::default();
+    tab.render(&mut output, None).unwrap();
+    let rendered = take_snapshot(
+        output.serialize().unwrap().get(&client).unwrap(),
+        size.rows,
+        size.cols,
+        Palette::default(),
+    );
+    // Stack titles pad themselves with `─`; that is the title, not a separator, so only the
+    // junctions a horizontal boundary would add are ruled out.
+    assert!(
+        !rendered.contains(['┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼']),
+        "{rendered}"
+    );
+    let lines: Vec<_> = rendered.lines().collect();
+    assert!(lines[6].contains("Pane #5"), "{rendered}");
+    assert!(lines[7].contains("Pane #2"), "{rendered}");
+    assert_snapshot!(rendered);
+}
+
+#[test]
 fn increase_tiled_pane_sizes_with_stacked_resizes() {
     // this is the default resizing algorithm
     let size = Size {

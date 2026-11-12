@@ -500,7 +500,9 @@ impl Offset {
     /// neighbour's top and left edges at `y - 1` and `x - 1`, inside this space, and
     /// `Pane::position_is_on_frame` gives clicks there to this pane. A stack member gets its
     /// stack's offsets, so for a collapsed member `bottom` places its title row that many rows
-    /// above its `y` instead. `shift_right_top_and_bottom` follows the same convention.
+    /// above its `y` instead. `shift_right_top_and_bottom` follows the same convention. With the
+    /// titles frame style no `bottom` row is reserved: the title bar of the pane below separates
+    /// the two, and `Boundaries` draws no horizontal edges.
     pub fn shift(bottom: usize, right: usize) -> Self {
         Self {
             bottom,

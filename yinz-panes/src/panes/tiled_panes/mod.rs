@@ -3454,6 +3454,16 @@ struct FrameContext {
     reserved_top_rows: HashMap<PaneId, usize>,
 }
 
+impl FrameContext {
+    /// `(columns, rows)` a frameless pane reserves for the separators it shares with the panes
+    /// to its right and below. With titles, the title bar of the pane below separates the two,
+    /// so no row is reserved for a horizontal line.
+    fn separator_offsets(&self, geom: &PaneGeom) -> (usize, usize) {
+        let (columns, rows) = pane_content_offset(geom, &self.viewport);
+        (columns, if self.draws_titles { 0 } else { rows })
+    }
+}
+
 /// Give one pane the frame and content offset the tab's current style calls for.
 ///
 /// The body of `set_pane_frames`'s loop, minus the pty resize: callers decide whom to
@@ -3482,8 +3492,7 @@ fn apply_frame(ctx: &FrameContext, pane: &mut Box<dyn Pane>) {
             });
         } else {
             let position_and_size = pane.current_geom();
-            let (pane_columns_offset, pane_rows_offset) =
-                pane_content_offset(&position_and_size, &ctx.viewport);
+            let (pane_columns_offset, pane_rows_offset) = ctx.separator_offsets(&position_and_size);
             let visible_member_title_rows = if ctx.draws_full_frames { 1 } else { 0 };
             pane.set_content_offset(Offset {
                 top: visible_member_title_rows + reserved_rows,
@@ -3512,8 +3521,7 @@ fn apply_frame(ctx: &FrameContext, pane: &mut Box<dyn Pane>) {
         {
             position_and_size = *position_and_size_of_stack;
         };
-        let (pane_columns_offset, pane_rows_offset) =
-            pane_content_offset(&position_and_size, &ctx.viewport);
+        let (pane_columns_offset, pane_rows_offset) = ctx.separator_offsets(&position_and_size);
         let reserve_title_row = if ctx.draws_titles {
             !pane_is_borderless && !is_one_liner_in_stack
         } else {

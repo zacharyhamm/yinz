@@ -553,10 +553,15 @@ impl Boundaries {
         pane_is_on_top_of_stack: bool,
         pane_is_on_bottom_of_stack: bool,
         pane_is_stacked_under: bool,
+        titles_style: bool,
     ) {
         let pane_is_stacked = rect.current_geom().is_stacked();
-        let should_skip_top_boundary = pane_is_stacked && !pane_is_on_top_of_stack;
-        let should_skip_bottom_boundary = pane_is_stacked && !pane_is_on_bottom_of_stack;
+        // With titles, each pane's title bar separates it from the pane above, so no horizontal
+        // edges are drawn and the vertical ones start on the title row with nothing to join.
+        let should_skip_top_boundary =
+            titles_style || (pane_is_stacked && !pane_is_on_top_of_stack);
+        let should_skip_bottom_boundary =
+            titles_style || (pane_is_stacked && !pane_is_on_bottom_of_stack);
         let content_offset = rect.get_content_offset();
         if !self.is_fully_inside_screen(rect) {
             return;
@@ -564,12 +569,18 @@ impl Boundaries {
         if rect.render_geom().x > self.viewport.x {
             // left boundary
             let boundary_x_coords = rect.render_geom().x - 1;
-            let first_row_coordinates =
-                self.rect_right_boundary_row_start(rect, pane_is_stacked_under, content_offset);
+            let first_row_coordinates = self.rect_right_boundary_row_start(
+                rect,
+                pane_is_stacked_under,
+                content_offset,
+                titles_style,
+            );
             let last_row_coordinates = self.rect_right_boundary_row_end(rect);
             for row in first_row_coordinates..last_row_coordinates {
                 let coordinates = Coordinates::new(boundary_x_coords, row);
-                let symbol_to_add = if row == first_row_coordinates && row != self.viewport.y {
+                let symbol_to_add = if row == first_row_coordinates && titles_style {
+                    BoundarySymbol::new(boundary_type::VERTICAL).color(color, chrome_colors)
+                } else if row == first_row_coordinates && row != self.viewport.y {
                     if pane_is_stacked {
                         BoundarySymbol::new(boundary_type::VERTICAL_RIGHT)
                             .color(color, chrome_colors)
@@ -621,27 +632,32 @@ impl Boundaries {
         if self.rect_right_boundary_is_before_screen_edge(rect) {
             // right boundary
             let boundary_x_coords = rect.render_geom().x + rect.render_geom().cols.as_usize() - 1;
-            let first_row_coordinates =
-                self.rect_right_boundary_row_start(rect, pane_is_stacked_under, content_offset);
+            let first_row_coordinates = self.rect_right_boundary_row_start(
+                rect,
+                pane_is_stacked_under,
+                content_offset,
+                titles_style,
+            );
             let last_row_coordinates = self.rect_right_boundary_row_end(rect);
             for row in first_row_coordinates..last_row_coordinates {
                 let coordinates = Coordinates::new(boundary_x_coords, row);
-                let symbol_to_add =
-                    if row == first_row_coordinates && row != self.viewport.y && pane_is_stacked {
-                        BoundarySymbol::new(boundary_type::VERTICAL_LEFT)
-                            .color(color, chrome_colors)
-                    } else if row == first_row_coordinates
-                        && (row != self.viewport.y || pane_is_stacked)
-                    {
-                        BoundarySymbol::new(boundary_type::TOP_RIGHT).color(color, chrome_colors)
-                    } else if row == last_row_coordinates - 1
-                        && row != self.viewport.y + self.viewport.rows - 1
-                        && content_offset.bottom > 0
-                    {
-                        BoundarySymbol::new(boundary_type::BOTTOM_RIGHT).color(color, chrome_colors)
-                    } else {
-                        BoundarySymbol::new(boundary_type::VERTICAL).color(color, chrome_colors)
-                    };
+                let symbol_to_add = if row == first_row_coordinates && titles_style {
+                    BoundarySymbol::new(boundary_type::VERTICAL).color(color, chrome_colors)
+                } else if row == first_row_coordinates && row != self.viewport.y && pane_is_stacked
+                {
+                    BoundarySymbol::new(boundary_type::VERTICAL_LEFT).color(color, chrome_colors)
+                } else if row == first_row_coordinates
+                    && (row != self.viewport.y || pane_is_stacked)
+                {
+                    BoundarySymbol::new(boundary_type::TOP_RIGHT).color(color, chrome_colors)
+                } else if row == last_row_coordinates - 1
+                    && row != self.viewport.y + self.viewport.rows - 1
+                    && content_offset.bottom > 0
+                {
+                    BoundarySymbol::new(boundary_type::BOTTOM_RIGHT).color(color, chrome_colors)
+                } else {
+                    BoundarySymbol::new(boundary_type::VERTICAL).color(color, chrome_colors)
+                };
                 let next_symbol = self
                     .boundary_characters
                     .remove(&coordinates)
@@ -728,9 +744,13 @@ impl Boundaries {
         rect: &dyn Pane,
         pane_is_stacked_under: bool,
         content_offset: Offset,
+        titles_style: bool,
     ) -> usize {
         let pane_is_stacked = rect.current_geom().is_stacked();
-        let horizontal_frame_offset = if pane_is_stacked_under {
+        let horizontal_frame_offset = if titles_style {
+            // no separator row above: the pane above keeps its last row as content
+            0
+        } else if pane_is_stacked_under {
             // these panes - panes that are in a stack below the flexible pane - need to have their
             // content offset taken into account when rendering them (i.e. they are rendered
             // one line above their actual y coordinates, since they are only 1 line)

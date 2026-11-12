@@ -3545,11 +3545,17 @@ fn width_limit_gutter_preserves_fallback_bottom_junction() {
         let geom = pane.render_geom();
         assert!(geom.x > pane.current_geom().x);
         assert_eq!(pane.get_content_columns(), 80);
+        // Without titles the gutter meets the separator below the agent. With titles there is
+        // no separator: the gutter runs down to the agent's last row, above the next title bar.
+        let expected = match style {
+            PaneFrameStyle::Titles => '│',
+            _ => '┴',
+        };
         assert_eq!(
             grid.get_character_at(geom.x - 1, geom.y + geom.rows.as_usize() - 1)
                 .unwrap()
                 .character,
-            '┴',
+            expected,
             "style={style:?}",
         );
     }
