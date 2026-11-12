@@ -17,7 +17,7 @@ Closing a window detaches its client and leaves the session running.
 
 Native support is enabled by the default `native-terminal` Cargo feature.
 For a build without graphical dependencies, use `--no-default-features` (and
-`--features vendored_curl` if the installation needs bundled curl/OpenSSL).
+`--features vendored_curl` if the installation needs bundled curl).
 The native command reports that support is disabled in such a build.
 
 Linux needs an X11 or Wayland desktop, libxkbcommon, and an EGL driver supporting

@@ -121,6 +121,11 @@ For development, `cargo x run` installs builtin files into its selected data
 directory. Use `cargo x run --quick-run` for `target/dev-data`. `cargo x build`
 does not install builtin files.
 
+The shared HTTP dependency bundles OpenSSL, including in individual-crate builds,
+so host OpenSSL upgrades do not break compilation. Building bundled OpenSSL needs
+a C compiler, Perl and Make. Leave `OPENSSL_NO_VENDOR` and its target-prefixed
+equivalents unset unless deliberately using a compatible system OpenSSL.
+
 The [local issue lifecycle](docs/ISSUE_LIFECYCLE.md) uses Agenda descriptions,
 Swamp workflows and visible Yinz agent panes to develop, verify and merge locally.
 It also documents the reusable `@yinz/agent` Swamp extension.
