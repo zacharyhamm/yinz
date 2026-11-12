@@ -1005,3 +1005,138 @@ fn list_panes_json_reports_each_panes_command_and_cwd() {
     }
     yinz.quit();
 }
+
+#[test]
+fn reconfigure_ligatures_unsaved_inputs_report_guidance_and_refuse_sibling_keybinds() {
+    for enabled in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("config");
+        std::fs::create_dir(&config_dir).unwrap();
+        let mut yinz = TestRunner::new(TERMINAL_SIZE)
+            .with_config_dir(config_dir.clone())
+            .with_config(&format!(
+                "terminal {{ ligatures {enabled}; }}\nkeybinds {{ normal {{ bind \"Ctrl y\" {{ NewPane; }}; }}; }}"
+            ))
+            .start();
+        claim_first_terminal_and_wait_for_prompt(&yinz);
+        for alias in ["ligatures", "font_ligatures"] {
+            let fragment = format!(
+                "terminal {{ {alias} {}; }}\nmouse_mode false\nkeybinds {{ normal {{ bind \"Ctrl y\" {{ Quit; }}; }}; }}",
+                !enabled
+            );
+            let file = dir.path().join("fragment.kdl");
+            std::fs::write(&file, &fragment).unwrap();
+            for input in ["kdl", "file"] {
+                let action = CliAction::Reconfigure {
+                    kdl: (input == "kdl").then(|| fragment.clone()),
+                    file: (input == "file").then(|| file.clone()),
+                    write: false,
+                };
+                let (status, output) = yinz.run_cli_action_reporting(action);
+                assert_ne!(status, 0, "{alias} via {input}: {output}");
+                for guidance in [
+                    "ligatures/font_ligatures",
+                    "--write",
+                    "configuration/drop-in",
+                    "entire fragment",
+                ] {
+                    assert!(output.contains(guidance), "{output}");
+                }
+                assert!(!config_dir.join("config.d").exists());
+            }
+        }
+        // The refused fragment tried to replace this key with Quit. Observe the original
+        // action through its resulting pane content, with no absence/timing assertion.
+        yinz.send_stdin(&keys::ctrl('y'));
+        yinz.expect_pty_spawn().output(PROMPT);
+        yinz.wait_until("original keybind survived refused fragments", |grid| {
+            grid.contains("Pane #2")
+        });
+        yinz.quit();
+    }
+}
+
+#[test]
+fn reconfigure_ligatures_write_persists_both_aliases_and_restores_enabled_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("config");
+    std::fs::create_dir(&config_dir).unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(config_dir.clone())
+        .start();
+    claim_first_terminal_and_wait_for_prompt(&yinz);
+    for (alias, enabled) in [("ligatures", false), ("font_ligatures", true)] {
+        let (status, output) = yinz.run_cli_action_reporting(CliAction::Reconfigure {
+            kdl: Some(format!("terminal {{ {alias} {enabled}; }}")),
+            file: None,
+            write: true,
+        });
+        assert_eq!(status, 0, "{output}");
+        let text = std::fs::read_to_string(config_dir.join("config.d/yinz-managed.kdl")).unwrap();
+        let config = yinz_config::config::Config::from_kdl(&text, None).unwrap();
+        assert_eq!(config.terminal.font_ligatures, Some(enabled));
+    }
+    yinz.quit();
+}
+
+#[test]
+fn reconfigure_ligatures_stdin_reports_refusal_before_applying_sibling_changes() {
+    // Reconfigure consumes stdin while constructing the action, before the fake client
+    // exists. Re-exec only this test with a real pipe to exercise that production parser.
+    const CHILD_BASE: &str = "YINZ_TEST_LIGATURE_STDIN_BASE";
+    if let Ok(enabled) = std::env::var(CHILD_BASE) {
+        assert!(["true", "false"].contains(&enabled.as_str()));
+        let mut yinz = TestRunner::new(TERMINAL_SIZE)
+            .with_config(&format!(
+                "terminal {{ ligatures {enabled}; }}\nkeybinds {{ normal {{ bind \"Ctrl y\" {{ NewPane; }}; }}; }}"
+            ))
+            .start();
+        claim_first_terminal_and_wait_for_prompt(&yinz);
+        let (status, output) = yinz.run_cli_action_reporting(CliAction::Reconfigure {
+            kdl: None,
+            file: None,
+            write: false,
+        });
+        assert_ne!(status, 0, "{output}");
+        for guidance in ["ligatures/font_ligatures", "--write", "entire fragment"] {
+            assert!(output.contains(guidance), "{output}");
+        }
+        yinz.send_stdin(&keys::ctrl('y'));
+        yinz.expect_pty_spawn().output(PROMPT);
+        yinz.wait_until("stdin refusal preserved the original keybind", |grid| {
+            grid.contains("Pane #2")
+        });
+        yinz.quit();
+        return;
+    }
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    for enabled in [true, false] {
+        for alias in ["ligatures", "font_ligatures"] {
+            let fragment = format!(
+                "terminal {{ {alias} {}; }}\nkeybinds {{ normal {{ bind \"Ctrl y\" {{ Quit; }}; }}; }}", !enabled
+            );
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "reconfigure_ligatures_stdin_reports_refusal_before_applying_sibling_changes",
+                    "--nocapture",
+                ])
+                .env(CHILD_BASE, enabled.to_string())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let written = child.stdin.take().unwrap().write_all(fragment.as_bytes());
+            // Await even a failed pipe write, so no child survives an assertion failure.
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                written.is_ok() && output.status.success(),
+                "{alias}, {enabled}: {written:?}\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}

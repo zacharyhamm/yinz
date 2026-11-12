@@ -534,3 +534,20 @@ fn set_password_modes_and_no_secret_arguments() {
         .join()
         .unwrap();
 }
+
+#[test]
+fn reconfigure_help_explains_saved_ligatures_and_atomic_refusal() {
+    let error = try_parse_cli(["yinz", "action", "reconfigure", "--help"]).unwrap_err();
+    assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+    let help = error.to_string();
+    let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    for guidance in [
+        "ligatures/font_ligatures",
+        "requires --write",
+        "saved config edit",
+        "entire fragment",
+        "write failures are errors",
+    ] {
+        assert!(help.contains(guidance), "missing {guidance}: {help}");
+    }
+}

@@ -1196,6 +1196,23 @@ pub async fn watch_config_file_changes<F, Fut>(
     F: Fn(Config) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send,
 {
+    watch_config_file_changes_inner(config_file_path, config_dir, on_config_change, || {}).await;
+}
+
+// The readiness callback is private: tests acknowledge actual registration before creating
+// optional directories, using exactly the production watcher loop.
+async fn watch_config_file_changes_inner<F, Fut>(
+    config_file_path: PathBuf,
+    config_dir: Option<&Path>,
+    on_config_change: F,
+    on_ready: impl FnOnce() + Send,
+) where
+    F: Fn(Config) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send,
+{
+    use yinz_runtime::errors::prelude::*;
+
+    let mut on_ready = Some(on_ready);
     // in a gist, what we do here is fire the `on_config_change` function whenever there is a
     // change in the config file or the configured theme directory, we do this by:
     // 1. Trying to watch the provided config file for changes
@@ -1236,13 +1253,16 @@ pub async fn watch_config_file_changes<F, Fut>(
         Some((config, theme_dir))
     }
 
-    fn existing_overlay_dir(config_dir: Option<&Path>) -> Option<PathBuf> {
+    fn expected_overlay_dir(config_dir: Option<&Path>) -> Option<PathBuf> {
         home::get_config_overlay_dir(
             config_dir
                 .map(Path::to_path_buf)
                 .or_else(home::find_default_config_dir),
         )
-        .filter(|dir| dir.exists())
+    }
+
+    fn existing_overlay_dir(config_dir: Option<&Path>) -> Option<PathBuf> {
+        expected_overlay_dir(config_dir).filter(|dir| dir.is_dir())
     }
 
     fn event_is_for_config_file(event: &Event, config_file_path: &Path) -> bool {
@@ -1258,7 +1278,6 @@ pub async fn watch_config_file_changes<F, Fut>(
         config_file_path: &Path,
         config_dir: Option<&Path>,
         watched_theme_dir: Option<&Path>,
-        watched_overlay_dir: Option<&Path>,
         on_config_change: &F,
     ) -> Option<bool>
     where
@@ -1280,10 +1299,9 @@ pub async fn watch_config_file_changes<F, Fut>(
                 },
             };
         on_config_change(new_config).await;
-        // A drop-in folder that appeared since the watcher started needs watching too.
-        let overlay_dir_changed =
-            existing_overlay_dir(config_dir).as_deref() != watched_overlay_dir;
-        Some(new_theme_dir.as_deref() != watched_theme_dir || overlay_dir_changed)
+        // Overlay topology is reconciled independently by the presence probe, which
+        // installs its watch before loading. Keep theme-directory behavior unchanged.
+        Some(new_theme_dir.as_deref() != watched_theme_dir)
     }
 
     loop {
@@ -1291,14 +1309,19 @@ pub async fn watch_config_file_changes<F, Fut>(
             let watched_theme_dir =
                 load_config_and_theme_dir(config_file_path.as_path(), config_dir)
                     .and_then(|(_, theme_dir)| theme_dir);
-            let watched_overlay_dir = existing_overlay_dir(config_dir);
+            let mut watched_overlay_dir = existing_overlay_dir(config_dir);
             let (tx, mut rx) = mpsc::unbounded_channel();
 
             let mut watcher = match PollWatcher::new(
                 move |res: Result<Event, notify::Error>| {
                     let _ = tx.send(res);
                 },
-                WatcherConfig::default().with_poll_interval(Duration::from_secs(1)),
+                // A newly discovered drop-in can be edited again in the same second.
+                // PollWatcher's default mtime comparison rounds to whole seconds, so
+                // compare contents as well to retain those edits after the first reload.
+                WatcherConfig::default()
+                    .with_poll_interval(Duration::from_secs(1))
+                    .with_compare_contents(true),
             ) {
                 Ok(watcher) => watcher,
                 Err(e) => {
@@ -1321,17 +1344,56 @@ pub async fn watch_config_file_changes<F, Fut>(
                     e,
                 );
             }
-            if let Some(watched_overlay_dir) = &watched_overlay_dir
-                && let Err(e) = watcher.watch(watched_overlay_dir, RecursiveMode::NonRecursive)
+            if let Some(overlay_dir) = &watched_overlay_dir
+                && let Err(e) = watcher.watch(overlay_dir, RecursiveMode::NonRecursive)
             {
                 log::error!(
-                    "Failed to watch config drop-in dir {:?}, continuing without it: {}",
-                    watched_overlay_dir,
-                    e,
+                    "Failed to watch config drop-in dir {:?}: {}",
+                    overlay_dir,
+                    e
                 );
+                watched_overlay_dir = None;
             }
-
-            while let Some(event_result) = rx.recv().await {
+            if let Some(on_ready) = on_ready.take() {
+                on_ready();
+            }
+            let mut presence_probe = tokio::time::interval(Duration::from_secs(1));
+            presence_probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                let event_result = tokio::select! {
+                    event = rx.recv() => match event {
+                        Some(event) => event,
+                        None => break,
+                    },
+                    _ = presence_probe.tick() => {
+                        let overlay_dir = existing_overlay_dir(config_dir);
+                        if overlay_dir != watched_overlay_dir {
+                            if let Some(previous) = watched_overlay_dir.take() {
+                                watcher.unwatch(&previous).context("unwatch removed config drop-in directory").non_fatal();
+                            }
+                            if let Some(directory) = overlay_dir {
+                                match watcher.watch(&directory, RecursiveMode::NonRecursive) {
+                                    Ok(()) => watched_overlay_dir = Some(directory),
+                                    Err(e) => {
+                                        log::error!("Failed to watch config drop-in dir {:?}: {}", directory, e);
+                                        continue;
+                                    },
+                                }
+                            }
+                            // Register before loading: writes during discovery must be included
+                            // in this load or arrive through the newly installed watch.
+                            if reload_config_after_change(
+                                config_file_path.as_path(),
+                                config_dir,
+                                watched_theme_dir.as_deref(),
+                                &on_config_change,
+                            ).await.unwrap_or(false) {
+                                break;
+                            }
+                        }
+                        continue;
+                    },
+                };
                 let event = match event_result {
                     Ok(event) => event,
                     Err(e) => {
@@ -1350,7 +1412,6 @@ pub async fn watch_config_file_changes<F, Fut>(
                             config_file_path.as_path(),
                             config_dir,
                             watched_theme_dir.as_deref(),
-                            watched_overlay_dir.as_deref(),
                             &on_config_change,
                         )
                         .await
@@ -1366,7 +1427,6 @@ pub async fn watch_config_file_changes<F, Fut>(
                         config_file_path.as_path(),
                         config_dir,
                         watched_theme_dir.as_deref(),
-                        watched_overlay_dir.as_deref(),
                         &on_config_change,
                     )
                     .await
@@ -1542,3 +1602,7 @@ mod overlay_tests;
 #[cfg(test)]
 #[path = "unit/config_kdl_discovery_tests.rs"]
 mod kdl_discovery_tests;
+
+#[cfg(test)]
+#[path = "unit/config_watcher_tests.rs"]
+mod watcher_tests;

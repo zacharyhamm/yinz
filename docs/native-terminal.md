@@ -93,7 +93,25 @@ from disabled discovery. CJK, emoji and symbols retain the existing fallback sta
 style faces with different metrics are fitted into the regular face's cell.
 
 Font settings reload automatically with the session's configuration updates,
-including drop-ins. Startup applies the effective ligature setting; a live
+including drop-ins. A `config.d` directory first created while the session is
+running is discovered during the normal polling/debounce cycle.
+
+Changing `ligatures` or `font_ligatures` with `action reconfigure` requires
+`--write`, or an edit to the session's saved configuration/drop-in. An unsaved
+change to the effective ligature value refuses the entire fragment, including
+sibling settings, with save guidance. Equivalent values and omitted ligatures
+remain valid runtime requests. For example, disable and then restore ligatures:
+
+```sh
+yinz --session work action reconfigure --write --kdl 'terminal { ligatures false; }'
+yinz --session work action reconfigure --write --kdl 'terminal { ligatures true; }'
+```
+
+`--write` persists into the session's managed drop-in. Write failures are errors.
+Attached native windows update through file reload; successful command completion
+does not mean the next native frame has already been drawn.
+
+Startup applies the effective ligature setting; a live
 ligature-only change clears cached shaped runs and redraws retained text rows.
 Faces, discovery, independent grapheme/emoji shaping, raster glyphs and atlases
 remain cached. Cells, column ownership, cursor coordinates, selection and copied

@@ -30,6 +30,7 @@ notify = { workspace = true }
 # The config and layout watchers use tokio::sync::mpsc.
 tokio = { workspace = true, features = ["sync"] }
 [dev-dependencies]
+yinz-test-support = { path = "../yinz-test-support" }
 directories = { version = "6.0", default-features = false }
 insta = "1.48"
 expect-test = "1.4.1"

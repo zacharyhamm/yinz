@@ -1570,3 +1570,283 @@ mod rebind_saves {
         assert!(NO_CONFIG_DIR_REASON.contains("--config-dir"));
     }
 }
+
+mod ligature_reconfigure {
+    use super::*;
+
+    struct Fixture {
+        dir: tempfile::TempDir,
+        data: Arc<RwLock<Option<SessionMetaData>>>,
+        state: Arc<RwLock<SessionState>>,
+        screen: channels::Receiver<(ScreenInstruction, yinz_types::diagnostics::ErrorContext)>,
+        plugin: channels::Receiver<(PluginInstruction, yinz_types::diagnostics::ErrorContext)>,
+        pty: channels::Receiver<(PtyInstruction, yinz_types::diagnostics::ErrorContext)>,
+    }
+
+    impl Fixture {
+        fn new(clients: &[ClientId], enabled: Option<bool>) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let main = dir.path().join("config.kdl");
+            std::fs::write(&main, "// unchanged main\n").unwrap();
+            let (screen_tx, screen) = channels::unbounded();
+            let (plugin_tx, plugin) = channels::unbounded();
+            let (pty_tx, pty) = channels::unbounded();
+            let mut session = reconfiguration_session(ThreadSenders {
+                to_screen: Some(SenderWithContext::new(screen_tx)),
+                to_plugin: Some(SenderWithContext::new(plugin_tx)),
+                to_pty: Some(SenderWithContext::new(pty_tx)),
+                should_silently_fail: true,
+                ..Default::default()
+            });
+            session.config_dir = Some(dir.path().to_path_buf());
+            session.config_file_path = Some(main);
+            let mut saved = Config::default();
+            saved.terminal.font_ligatures = enabled;
+            session
+                .session_configuration
+                .set_saved_configuration(saved.clone());
+            let mut state = SessionState::new();
+            for client in clients {
+                state.clients.insert(*client);
+                state.interactive_clients.insert(*client);
+                session
+                    .session_configuration
+                    .set_client_runtime_configuration(*client, saved.clone());
+            }
+            session.session_configuration.pending_editor_reload = Some(saved);
+            session.pending_mouse_updates.push((CLIENT, true));
+            Self {
+                dir,
+                data: Arc::new(RwLock::new(Some(session))),
+                state: Arc::new(RwLock::new(state)),
+                screen,
+                plugin,
+                pty,
+            }
+        }
+
+        fn with<R>(&self, f: impl FnOnce(&mut SessionMetaData) -> R) -> R {
+            with_session_mut(&self.data, f).unwrap().unwrap()
+        }
+
+        fn snapshot(&self) -> String {
+            self.with(|session| {
+                format!(
+                    "{:?} {:?}",
+                    session.session_configuration, session.pending_mouse_updates
+                )
+            })
+        }
+
+        fn all(&self, fragment: &str, write: bool) -> yinz_bus::route::ActionCompletionResult {
+            let (tx, mut rx) = tokio::sync::oneshot::channel();
+            reconfigure_all_clients(
+                fragment.into(),
+                write,
+                Some(NotificationEnd::new(tx)),
+                &self.state,
+                &self.data,
+            );
+            rx.try_recv().unwrap()
+        }
+
+        fn assert_no_propagation(&self) {
+            assert!(self.screen.is_empty());
+            assert!(self.plugin.is_empty());
+            assert!(self.pty.is_empty());
+            assert!(!self.dir.path().join("config.d").exists());
+        }
+    }
+
+    fn guidance(error: &str) {
+        for word in [
+            "ligatures/font_ligatures",
+            "--write",
+            "configuration/drop-in",
+            "entire fragment",
+        ] {
+            assert!(error.contains(word), "{error}");
+        }
+    }
+
+    #[test]
+    fn unsaved_changes_refuse_both_aliases_atomically_at_both_entry_points() {
+        for clients in [vec![CLIENT], vec![]] {
+            for enabled in [true, false] {
+                for alias in ["ligatures", "font_ligatures"] {
+                    let fixture = Fixture::new(&clients, Some(enabled));
+                    let before = fixture.snapshot();
+                    let fragment = format!(
+                        "terminal {{ {alias} {}; }}\nmouse_mode false\nkeybinds {{ normal {{ bind \"Ctrl y\" {{ NewPane; }}; }}; }}\nplugins {{ background location=\"file:/background.scm\"; }}\nload_plugins {{ background; }}", !enabled
+                    );
+                    for _ in 0..2 {
+                        let result = fixture.all(&fragment, false);
+                        assert_eq!(result.exit_status, Some(1));
+                        guidance(result.error_message.as_deref().unwrap());
+                        assert_eq!(fixture.snapshot(), before);
+                        fixture.assert_no_propagation();
+                        let error = reconfigure_client(
+                            CLIENT,
+                            fragment.clone(),
+                            false,
+                            &fixture.state,
+                            &fixture.data,
+                        )
+                        .unwrap_err();
+                        guidance(&format!("{error:#}"));
+                        assert_eq!(fixture.snapshot(), before);
+                        fixture.assert_no_propagation();
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn differing_client_later_in_batch_refuses_without_installing_earlier_changes() {
+        let fixture = Fixture::new(&[CLIENT, ClientId::new(2)], Some(true));
+        let order = fixture.state.read().unwrap().interactive_client_ids();
+        fixture.with(|session| {
+            let mut first = session
+                .session_configuration
+                .get_client_configuration(&order[0]);
+            first.terminal.font_ligatures = Some(false);
+            session
+                .session_configuration
+                .set_client_runtime_configuration(order[0], first);
+        });
+        let before = fixture.snapshot();
+        let result = fixture.all("terminal { ligatures false; }\nmouse_mode false", false);
+        assert_eq!(result.exit_status, Some(1));
+        guidance(result.error_message.as_deref().unwrap());
+        assert_eq!(fixture.snapshot(), before);
+        fixture.assert_no_propagation();
+    }
+
+    #[test]
+    fn equivalent_defaults_aliases_and_omissions_keep_runtime_changes_available() {
+        for clients in [vec![CLIENT], vec![]] {
+            for (enabled, fragment) in [
+                (None, "terminal { ligatures true; }"),
+                (None, "terminal { font_ligatures true; }"),
+                (Some(false), "terminal { ligatures false; }"),
+                (Some(false), "terminal { font_ligatures false; }"),
+                (Some(false), "terminal { padding 3; }"),
+                (Some(true), "pane_frames false"),
+            ] {
+                for all_clients in [true, false] {
+                    let fixture = Fixture::new(&clients, enabled);
+                    let fragment = format!("{fragment}\nmouse_mode false");
+                    if all_clients {
+                        let result = fixture.all(&fragment, false);
+                        assert_eq!(result.exit_status, None, "{result:?}");
+                        assert_eq!(result.error_message, None);
+                    } else {
+                        reconfigure_client(CLIENT, fragment, false, &fixture.state, &fixture.data)
+                            .unwrap();
+                    }
+                    let client = if clients.is_empty() {
+                        ClientId::NONE
+                    } else {
+                        CLIENT
+                    };
+                    fixture.with(|session| {
+                        let config = session
+                            .session_configuration
+                            .get_client_configuration(&client);
+                        assert_eq!(config.options.mouse_mode, Some(false));
+                        assert_eq!(
+                            config.terminal.font_ligatures.unwrap_or(true),
+                            enabled.unwrap_or(true)
+                        );
+                    });
+                    assert!(!fixture.dir.path().join("config.d").exists());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parse_failures_leave_full_session_unchanged_and_saved_changes_report_write_outcomes() {
+        for alias in ["ligatures", "font_ligatures"] {
+            for all_clients in [true, false] {
+                let fixture = Fixture::new(&[CLIENT], None);
+                let before = fixture.snapshot();
+                let invalid = format!("terminal {{ {alias} \"false\"; }}\nmouse_mode false");
+                if all_clients {
+                    let result = fixture.all(&invalid, false);
+                    assert_eq!(result.exit_status, Some(1));
+                } else {
+                    assert!(reconfigure_client(
+                        CLIENT,
+                        invalid,
+                        false,
+                        &fixture.state,
+                        &fixture.data
+                    )
+                    .is_err());
+                }
+                assert_eq!(fixture.snapshot(), before);
+                fixture.assert_no_propagation();
+                let fragment = format!("terminal {{ {alias} false; }}");
+                if all_clients {
+                    assert_eq!(fixture.all(&fragment, true).exit_status, None);
+                } else {
+                    reconfigure_client(CLIENT, fragment, true, &fixture.state, &fixture.data)
+                        .unwrap();
+                }
+                let managed = fixture.dir.path().join("config.d/yinz-managed.kdl");
+                let text = std::fs::read_to_string(managed).unwrap();
+                assert_eq!(
+                    Config::from_kdl(&text, None)
+                        .unwrap()
+                        .terminal
+                        .font_ligatures,
+                    Some(false)
+                );
+                assert_eq!(
+                    std::fs::read_to_string(fixture.dir.path().join("config.kdl")).unwrap(),
+                    "// unchanged main\n"
+                );
+
+                let failed = Fixture::new(&[CLIENT], None);
+                std::fs::write(failed.dir.path().join("config.d"), "not a directory").unwrap();
+                let fragment = format!("terminal {{ {alias} false; }}");
+                if all_clients {
+                    let result = failed.all(&fragment, true);
+                    assert_eq!(result.exit_status, Some(1));
+                    assert!(result.error_message.is_some());
+                } else {
+                    assert!(reconfigure_client(
+                        CLIENT,
+                        fragment,
+                        true,
+                        &failed.state,
+                        &failed.data
+                    )
+                    .is_err());
+                }
+                assert_eq!(
+                    std::fs::read_to_string(failed.dir.path().join("config.d")).unwrap(),
+                    "not a directory"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn departed_client_unsaved_requests_keep_existing_drop_policy() {
+        let fixture = Fixture::new(&[ClientId::new(2)], None);
+        let before = fixture.snapshot();
+        reconfigure_client(
+            CLIENT,
+            "terminal { ligatures false; }".into(),
+            false,
+            &fixture.state,
+            &fixture.data,
+        )
+        .unwrap();
+        assert_eq!(fixture.snapshot(), before);
+        fixture.assert_no_propagation();
+    }
+}

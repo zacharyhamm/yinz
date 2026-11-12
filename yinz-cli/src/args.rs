@@ -2376,9 +2376,11 @@ pub enum CliAction {
     RenameSession {
         name: String,
     },
-    /// Apply a KDL config fragment to the running session: options, keybinds, hooks, plugins,
-    /// anything config.kdl takes. Give it as --kdl, --file, or on stdin. A fragment that does not
-    /// parse is refused here. With --write it is also persisted.
+    /// Apply a KDL config fragment to the running session (options, keybinds, hooks, plugins).
+    /// Give it as --kdl, --file, or on stdin. Changing native terminal ligatures/font_ligatures
+    /// requires --write or a saved config edit for automatic file reload. An unsupported
+    /// unsaved ligature change refuses the entire fragment. Invalid fragments and write
+    /// failures are errors. With --write the fragment is also persisted.
     Reconfigure {
         /// The fragment itself, eg. 'keybinds { normal { bind "Ctrl y" { NewPane; } } }'
         #[clap(long, value_parser, conflicts_with = "file")]

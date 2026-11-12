@@ -6291,6 +6291,7 @@ dependencies = [
  "uuid",
  "yinz-project-config",
  "yinz-runtime",
+ "yinz-test-support",
  "yinz-types",
 ]
 

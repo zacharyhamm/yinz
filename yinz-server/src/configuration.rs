@@ -6,6 +6,19 @@ use yinz_types::keys::KeyWithModifier;
 #[path = "configuration_editor.rs"]
 mod configuration_editor;
 
+fn validate_unsaved_ligatures(current: &Config, requested: &Config) -> Result<()> {
+    if current.terminal.font_ligatures.unwrap_or(true)
+        != requested.terminal.font_ligatures.unwrap_or(true)
+    {
+        return Err(anyhow!(
+            "changing terminal ligatures/font_ligatures requires a saved configuration: \
+             repeat action reconfigure with --write, or edit the session's configuration/drop-in \
+             for automatic file reload; the entire fragment was refused"
+        ));
+    }
+    Ok(())
+}
+
 fn validate_background_plugins(config: &Config) -> Result<()> {
     for declaration in &config.background_plugins {
         let mut declaration = declaration.clone();
@@ -468,20 +481,27 @@ pub(super) fn reconfigure_client(
         return Ok(());
     };
     let Some(result) = with_session_mut(session_data, |session| {
-        // A save-only change is worked out on a copy: the session's configuration changes only
-        // once the change is saved, and then through the saved config.
-        let mut staged = target
-            .save_only
-            .then(|| session.session_configuration.clone());
-        staged
-            .as_mut()
-            .unwrap_or(&mut session.session_configuration)
-            .reconfigure_runtime_config(
-                &target.client_id,
-                config.clone(),
-                session.config_file_path.as_deref(),
-                session.config_dir.as_deref(),
-            )
+        // Unsaved changes must be validated before any live state (including editor and
+        // background-plugin state) changes. Save-only requests retain their existing policy.
+        let mut staged = session.session_configuration.clone();
+        let result = staged.reconfigure_runtime_config(
+            &target.client_id,
+            config.clone(),
+            session.config_file_path.as_deref(),
+            session.config_dir.as_deref(),
+        )?;
+        if !write_config_to_disk {
+            validate_unsaved_ligatures(
+                &session
+                    .session_configuration
+                    .get_client_configuration(&target.client_id),
+                &staged.get_client_configuration(&target.client_id),
+            )?;
+        }
+        if !target.save_only {
+            session.session_configuration = staged;
+        }
+        Ok::<_, anyhow::Error>(result)
     })?
     else {
         return Ok(());
@@ -548,6 +568,12 @@ pub(super) fn reconfigure_all_clients(
                         config.clone(),
                         session.config_file_path.as_deref(),
                         session.config_dir.as_deref(),
+                    )?;
+                    validate_unsaved_ligatures(
+                        &session
+                            .session_configuration
+                            .get_client_configuration(&client_id),
+                        &staged.get_client_configuration(&client_id),
                     )?;
                     if let (Some(new_config), true) = (new_config, changed) {
                         changes.push((client_id, new_config));
