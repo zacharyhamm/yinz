@@ -36,15 +36,15 @@ yinz-session = { workspace = true }
 yinz-types = { workspace = true }
 yinz-runtime = { workspace = true }
 yinz-storage = { workspace = true }
-yinz-process = { path = "yinz-process", version = "0.1.2-alpha.14" }
+yinz-process = { path = "yinz-process", version = "0.1.2-alpha.15" }
 yinz-codex = { workspace = true }
 yinz-muse = { workspace = true }
 yinz-steel = { workspace = true }
 yinz-web = { workspace = true }
 tokio = { workspace = true }
-yinz-client = { path = "yinz-client/", version = "0.1.2-alpha.14" }
-yinz-server = { path = "yinz-server/", version = "0.1.2-alpha.14" }
-yinz-server-os = { path = "yinz-server-os", version = "0.1.2-alpha.14" }
+yinz-client = { path = "yinz-client/", version = "0.1.2-alpha.15" }
+yinz-server = { path = "yinz-server/", version = "0.1.2-alpha.15" }
+yinz-server-os = { path = "yinz-server-os", version = "0.1.2-alpha.15" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 console = { workspace = true }
@@ -136,7 +136,7 @@ members = [
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/zacharyhamm/yinz"
-version = "0.1.2-alpha.14"
+version = "0.1.2-alpha.15"
 # Keep this aligned with the stable compiler used to validate the workspace.
 rust-version = "1.99.1"
 
@@ -166,26 +166,26 @@ too_many_arguments = "allow"
 result_large_err = "allow"
 
 [workspace.dependencies]
-yinz-cli = { path = "yinz-cli", version = "0.1.2-alpha.14" }
-yinz-session = { path = "yinz-session", version = "0.1.2-alpha.14" }
-yinz-ipc = { path = "yinz-ipc", version = "0.1.2-alpha.14" }
-yinz-plugin-api = { path = "yinz-plugin-api", version = "0.1.2-alpha.14" }
-yinz-plugin-authoring = { path = "yinz-plugin-authoring", version = "0.1.2-alpha.14" }
-yinz-config = { path = "yinz-config", version = "0.1.2-alpha.14" }
-yinz-project-config = { path = "yinz-project-config", version = "0.1.2-alpha.14" }
-yinz-steel = { path = "yinz-steel", version = "0.1.2-alpha.14" }
-yinz-steel-builtins = { path = "yinz-steel-builtins", version = "0.1.2-alpha.14" }
-yinz-storage = { path = "yinz-storage", version = "0.1.2-alpha.14" }
-yinz-types = { path = "yinz-types", version = "0.1.2-alpha.14" }
-yinz-process-api = { path = "yinz-process-api", version = "0.1.2-alpha.14" }
-yinz-runtime = { path = "yinz-runtime", version = "0.1.2-alpha.14" }
-yinz-plugin-location = { path = "yinz-plugin-location", version = "0.1.2-alpha.14" }
-yinz-key-codec = { path = "yinz-key-codec", version = "0.1.2-alpha.14" }
-yinz-host-protocol = { path = "yinz-host-protocol", version = "0.1.2-alpha.14" }
-yinz-codex = { path = "yinz-codex", version = "0.1.2-alpha.14" }
-yinz-muse = { path = "yinz-muse", version = "0.1.2-alpha.14" }
-yinz-terminal-graphics = { path = "yinz-terminal-graphics", version = "0.1.2-alpha.14" }
-yinz-web = { path = "yinz-web", version = "0.1.2-alpha.14" }
+yinz-cli = { path = "yinz-cli", version = "0.1.2-alpha.15" }
+yinz-session = { path = "yinz-session", version = "0.1.2-alpha.15" }
+yinz-ipc = { path = "yinz-ipc", version = "0.1.2-alpha.15" }
+yinz-plugin-api = { path = "yinz-plugin-api", version = "0.1.2-alpha.15" }
+yinz-plugin-authoring = { path = "yinz-plugin-authoring", version = "0.1.2-alpha.15" }
+yinz-config = { path = "yinz-config", version = "0.1.2-alpha.15" }
+yinz-project-config = { path = "yinz-project-config", version = "0.1.2-alpha.15" }
+yinz-steel = { path = "yinz-steel", version = "0.1.2-alpha.15" }
+yinz-steel-builtins = { path = "yinz-steel-builtins", version = "0.1.2-alpha.15" }
+yinz-storage = { path = "yinz-storage", version = "0.1.2-alpha.15" }
+yinz-types = { path = "yinz-types", version = "0.1.2-alpha.15" }
+yinz-process-api = { path = "yinz-process-api", version = "0.1.2-alpha.15" }
+yinz-runtime = { path = "yinz-runtime", version = "0.1.2-alpha.15" }
+yinz-plugin-location = { path = "yinz-plugin-location", version = "0.1.2-alpha.15" }
+yinz-key-codec = { path = "yinz-key-codec", version = "0.1.2-alpha.15" }
+yinz-host-protocol = { path = "yinz-host-protocol", version = "0.1.2-alpha.15" }
+yinz-codex = { path = "yinz-codex", version = "0.1.2-alpha.15" }
+yinz-muse = { path = "yinz-muse", version = "0.1.2-alpha.15" }
+yinz-terminal-graphics = { path = "yinz-terminal-graphics", version = "0.1.2-alpha.15" }
+yinz-web = { path = "yinz-web", version = "0.1.2-alpha.15" }
 ansi_term = { version = "0.12.1", default-features = false }
 anyhow = { version = "1.0.70", default-features = false, features = ["backtrace", "std"] }
 async-trait = { version = "0.1", default-features = false }
