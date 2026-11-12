@@ -1872,14 +1872,7 @@ fn restored_claude_observer_discovers_only_the_adopted_process_tree() {
     let directory = tempfile::tempdir().unwrap();
     let executable = directory.path().join("claude");
     std::fs::copy("/bin/sleep", &executable).unwrap();
-    struct ChildGuard(std::process::Child);
-    impl Drop for ChildGuard {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-    let child = ChildGuard(Command::new(executable).arg("60").spawn().unwrap());
+    let child = RestoredClaudeChild(Command::new(executable).arg("60").spawn().unwrap());
     let called = std::cell::Cell::new(false);
     observe_restored(child.0.id(), "missing-conversation", |state| {
         assert_eq!(state, None);
@@ -1893,17 +1886,122 @@ fn restored_claude_observer_discovers_only_the_adopted_process_tree() {
 }
 
 #[test]
+fn restored_claude_observer_recognizes_argv_zero() {
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("different-name");
+    std::fs::copy("/bin/sleep", &executable).unwrap();
+    let child = RestoredClaudeChild(
+        Command::new(executable)
+            .arg0("/opt/claude")
+            .arg("60")
+            .env("CLAUDE_CONFIG_DIR", directory.path())
+            .spawn()
+            .unwrap(),
+    );
+    let called = std::cell::Cell::new(false);
+    observe_restored(child.0.id(), "missing-conversation", |state| {
+        assert_eq!(state, None);
+        called.set(true);
+        false
+    });
+    assert!(called.get());
+}
+
+#[test]
+fn restored_claude_observer_rejects_two_actual_processes() {
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("claude");
+    std::fs::copy("/bin/sleep", &executable).unwrap();
+    let _first = RestoredClaudeChild(Command::new(&executable).arg("60").spawn().unwrap());
+    let _second = RestoredClaudeChild(Command::new(&executable).arg("60").spawn().unwrap());
+    observe_restored(std::process::id(), "missing-conversation", |_| {
+        panic!("two Claude processes in the same tree are ambiguous")
+    });
+}
+
+struct RestoredClaudeChild(Child);
+
+impl Drop for RestoredClaudeChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn restored_claude_thread_fixture() {
+    if std::env::var_os("YINZ_TEST_RESTORED_CLAUDE_THREAD").is_none() {
+        return;
+    }
+    // The harness names its test thread. Give it Claude's name before creating
+    // an unnamed worker, which inherits that name just as Claude's workers do.
+    nix::sys::prctl::set_name(c"claude").unwrap();
+    std::thread::spawn(|| {
+        let tid = nix::unistd::gettid();
+        assert_eq!(
+            std::fs::read_to_string(format!("/proc/self/task/{tid}/comm")).unwrap(),
+            "claude\n"
+        );
+        println!("RESTORED_CLAUDE_THREAD_READY");
+        std::io::stdout().flush().unwrap();
+        loop {
+            std::thread::park();
+        }
+    })
+    .join()
+    .unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn restored_claude_observer_ignores_inherited_thread_names() {
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("claude");
+    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), &executable).unwrap();
+    let mut child = RestoredClaudeChild(
+        Command::new(executable)
+            .args([
+                "--exact",
+                "claude_turn::tests::restored_claude_thread_fixture",
+                "--nocapture",
+            ])
+            .env("YINZ_TEST_RESTORED_CLAUDE_THREAD", "1")
+            .env("CLAUDE_CONFIG_DIR", directory.path())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let stdout = child.0.stdout.take().unwrap();
+    let (ready, received) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            if line.unwrap().contains("RESTORED_CLAUDE_THREAD_READY") {
+                ready.send(()).unwrap();
+                return;
+            }
+        }
+    });
+    received.recv_timeout(Duration::from_secs(10)).unwrap();
+    reader.join().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(format!("/proc/{}/comm", child.0.id())).unwrap(),
+        "claude\n"
+    );
+    let called = std::cell::Cell::new(false);
+    observe_restored(child.0.id(), "missing-conversation", |state| {
+        assert_eq!(state, None);
+        called.set(true);
+        false
+    });
+    assert!(called.get());
+}
+
+#[test]
 fn restored_claude_registry_uses_the_observed_process_environment() {
     let directory = tempfile::tempdir().unwrap();
     let executable = directory.path().join("claude");
     std::fs::copy("/bin/sleep", &executable).unwrap();
-    struct ChildGuard(std::process::Child);
-    impl Drop for ChildGuard {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
     for source in ["config", "home", "empty-config", "missing"] {
         let home = directory.path().join(source);
         let config = home.join("custom-config");
@@ -1921,7 +2019,7 @@ fn restored_claude_registry_uses_the_observed_process_environment() {
             },
             _ => {},
         }
-        let child = ChildGuard(command.spawn().unwrap());
+        let child = RestoredClaudeChild(command.spawn().unwrap());
         let root = if source == "config" {
             config
         } else {

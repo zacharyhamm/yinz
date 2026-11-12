@@ -549,7 +549,13 @@ pub(crate) fn apply_pane_agent_report(
     pane_id: PaneId,
     agent: Option<AgentInfo>,
 ) -> Result<bool> {
-    set_pane_agent_report(screen, pane_id, agent, true, true, false)
+    let accepted = set_pane_agent_report(screen, pane_id, agent, true, true, false)?;
+    if accepted {
+        // An authoritative report supersedes restored observation even when the
+        // record is identical. Observer activity uses its own publication path.
+        screen.restored_claude_observers.remove(&pane_id);
+    }
+    Ok(accepted)
 }
 
 pub(super) fn stage_pane_agent_report(

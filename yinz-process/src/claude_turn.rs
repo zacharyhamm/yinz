@@ -29,10 +29,16 @@ pub fn observe_restored(
     publish: impl Fn(Option<yinz_types::agent::AgentState>) -> bool,
 ) {
     let mut system = System::new();
-    system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .without_tasks()
+            .with_cmd(UpdateKind::Always),
+    );
     let mut candidates = Vec::new();
     for (pid, process) in system.processes() {
-        if process.name() != "claude" {
+        if !is_claude_process(process) {
             continue;
         }
         let mut ancestor = Some(*pid);
@@ -53,7 +59,9 @@ pub fn observe_restored(
     system.refresh_processes_specifics(
         ProcessesToUpdate::Some(&[pid]),
         true,
-        ProcessRefreshKind::nothing().with_environ(UpdateKind::Always),
+        ProcessRefreshKind::nothing()
+            .without_tasks()
+            .with_environ(UpdateKind::Always),
     );
     let Some(process) = system.process(pid).filter(|p| p.start_time() == identity.1) else {
         return;
@@ -67,7 +75,7 @@ pub fn observe_restored(
         system.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[pid]),
             true,
-            ProcessRefreshKind::nothing(),
+            ProcessRefreshKind::nothing().without_tasks(),
         );
         if !system.process(pid).is_some_and(|p| {
             p.start_time() == identity.1 && p.status() != sysinfo::ProcessStatus::Zombie
@@ -474,6 +482,15 @@ pub fn prepare_hook(hook: &mut HookEvent, local: bool) {
     }
 }
 
+fn is_claude_process(process: &sysinfo::Process) -> bool {
+    process.name() == "claude"
+        || process.cmd().first().is_some_and(|program| {
+            Path::new(program)
+                .file_name()
+                .is_some_and(|name| name == "claude")
+        })
+}
+
 fn agent_ancestor(kind: &str) -> Option<(u32, u64)> {
     let mut system = System::new();
     let mut pid = sysinfo::Pid::from_u32(std::process::id());
@@ -485,14 +502,7 @@ fn agent_ancestor(kind: &str) -> Option<(u32, u64)> {
         );
         let process = system.process(pid)?;
         let matches = match kind {
-            "claude" => {
-                process.name() == "claude"
-                    || process.cmd().first().is_some_and(|program| {
-                        std::path::Path::new(program)
-                            .file_name()
-                            .is_some_and(|name| name == "claude")
-                    })
-            },
+            "claude" => is_claude_process(process),
             "agy" => {
                 let name = process.name().to_string_lossy();
                 name == "agy"

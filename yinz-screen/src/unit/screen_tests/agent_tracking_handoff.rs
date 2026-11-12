@@ -1472,15 +1472,14 @@ fn restored_claude_registry_reconciles_orphan_without_completing_a_turn() {
         let (mut screen, _, _) = setup(command);
         report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
         screen.agent_lifecycle.remove(&PANE);
-        assert_eq!(
-            screen
-                .tab_containing_pane(PANE)
-                .unwrap()
-                .pane_run_command(PANE)
-                .unwrap()
-                .command,
-            std::path::PathBuf::from(command)
-        );
+        let run = screen
+            .tab_containing_pane(PANE)
+            .unwrap()
+            .pane_run_command(PANE)
+            .unwrap();
+        // The shared fixture launches the requested agent or shell through env.
+        assert_eq!(run.command, std::path::PathBuf::from("env"));
+        assert_eq!(run.args.last().map(String::as_str), Some(command));
         let info = screen.get_pane_info(PANE).unwrap();
         let expected = info.agent.unwrap();
         let revision = screen.tabs[&TabId::new(0)].agent_input_revision(PANE);
@@ -1522,6 +1521,25 @@ fn restored_claude_registry_reconciles_orphan_without_completing_a_turn() {
             current.program_status.current.unwrap().state(),
             yinz_types::program_status::ProgramState::Blocked
         );
+        for sample in [AgentState::Busy, AgentState::Waiting, AgentState::Idle] {
+            assert!(screen
+                .reconcile_restored_claude(
+                    PANE,
+                    generation,
+                    &expected,
+                    revision,
+                    info.last_hook_at_ms,
+                    Some(sample)
+                )
+                .unwrap());
+            assert_eq!(
+                screen.restored_claude_observers.get(&PANE),
+                Some(&generation)
+            );
+            let agent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+            assert_eq!(agent.state, sample);
+            assert_eq!(agent.wait_needs_a_person, sample == AgentState::Waiting);
+        }
         assert!(!screen.agent_lifecycle.contains_key(&PANE));
     }
 }
@@ -1593,6 +1611,70 @@ fn restored_claude_registry_rejects_superseded_observations() {
             assert_eq!(agent.state, AgentState::Busy, "{supersede}");
         }
     }
+}
+
+#[test]
+fn restored_claude_observer_retires_after_authoritative_report() {
+    for report in ["changed", "identical", "cleared"] {
+        let (mut screen, _, _) = setup("claude");
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        screen.agent_lifecycle.remove(&PANE);
+        let mut initial = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+        initial.run_id = Some("restored-run".into());
+        initial.detail = Some("original activity".into());
+        crate::screen::apply_pane_agent_report(&mut screen, PANE, Some(initial)).unwrap();
+        let info = screen.get_pane_info(PANE).unwrap();
+        let expected = info.agent.unwrap();
+        let revision = screen.tabs[&TabId::new(0)].agent_input_revision(PANE);
+        let generation = Instant::now();
+        screen.restored_claude_observers.insert(PANE, generation);
+        let agent = match report {
+            "changed" => {
+                let mut agent = expected.clone();
+                agent.state = AgentState::Waiting;
+                agent.detail = Some("authoritative activity".into());
+                agent.waiting_on = Some("answer a question".into());
+                agent.wait_needs_a_person = true;
+                Some(agent)
+            },
+            "identical" => Some(expected.clone()),
+            "cleared" => None,
+            _ => unreachable!(),
+        };
+        assert!(crate::screen::apply_pane_agent_report(&mut screen, PANE, agent.clone()).unwrap());
+        assert_eq!(screen.get_pane_info(PANE).unwrap().agent, agent, "{report}");
+        assert!(
+            !screen.restored_claude_observers.contains_key(&PANE),
+            "{report}"
+        );
+        assert!(
+            !screen
+                .reconcile_restored_claude(
+                    PANE,
+                    generation,
+                    &expected,
+                    revision,
+                    info.last_hook_at_ms,
+                    Some(AgentState::Idle)
+                )
+                .unwrap(),
+            "{report}"
+        );
+        assert_eq!(screen.get_pane_info(PANE).unwrap().agent, agent, "{report}");
+    }
+}
+
+#[test]
+fn restored_claude_observer_survives_report_deferred_for_absent_pane() {
+    let (mut screen, _, _) = setup("claude");
+    let absent = PaneId::Terminal(TerminalId::new(999));
+    let generation = Instant::now();
+    screen.restored_claude_observers.insert(absent, generation);
+    assert!(!crate::screen::apply_pane_agent_report(&mut screen, absent, None).unwrap());
+    assert_eq!(
+        screen.restored_claude_observers.get(&absent),
+        Some(&generation)
+    );
 }
 
 #[test]
