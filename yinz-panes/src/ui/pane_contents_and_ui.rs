@@ -411,7 +411,10 @@ impl<'a> PaneContentsAndUi<'a> {
             .collect();
         let pane_focused_for_differet_client = !other_focused_clients.is_empty();
 
-        let frame_color = self.frame_color(client_id, client_mode, session_is_mirrored);
+        let color_state = self.frame_color_state(client_id);
+        let use_frame_color_for_title =
+            color_state.has_title_color_effect(client_mode, session_is_mirrored);
+        let frame_color = frame_color(&self.style, color_state, client_mode, session_is_mirrored);
         let highlight_tooltip = self.pane.cached_hover_tooltip();
         let focused_client = if pane_focused_for_client_id {
             Some(client_id)
@@ -450,6 +453,7 @@ impl<'a> PaneContentsAndUi<'a> {
                 other_focused_clients: vec![],
                 style: self.style,
                 color: frame_color.map(|c| c.0),
+                use_frame_color_for_title,
                 other_cursors_exist_in_session: false,
                 pane_is_stacked_over: self.pane_is_stacked_over,
                 pane_is_stacked_under: self.pane_is_stacked_under,
@@ -483,6 +487,7 @@ impl<'a> PaneContentsAndUi<'a> {
                 other_focused_clients: other_focused_slots,
                 style: self.style,
                 color: frame_color.map(|c| c.0),
+                use_frame_color_for_title,
                 other_cursors_exist_in_session: self.multiplayer.multiple_users(),
                 pane_is_stacked_over: self.pane_is_stacked_over,
                 pane_is_stacked_under: self.pane_is_stacked_under,
@@ -624,28 +629,31 @@ impl<'a> PaneContentsAndUi<'a> {
     ) -> Option<(PaletteColor, usize)> {
         frame_color(
             &self.style,
-            FrameColorState {
-                host_colors: self.pane.host_colors(),
-                frame_color_override: self
-                    .pane
-                    .frame_color_override(client_id)
-                    .map(|color| (color, self.pane.frame_color_override_strength(client_id))),
-                waiting_pulse: self.pane.waiting_pulse(),
-                pane_is_focused: self.focused_clients.contains(&client_id),
-                pane_is_in_group: self
-                    .current_pane_group
-                    .get(&client_id)
-                    .map(|p| p.contains(&self.pane.pid()))
-                    .unwrap_or(false),
-                mouse_is_hovering_over_pane: self
-                    .mouse_is_hovering_over_pane_for_clients
-                    .contains(&client_id),
-                multiple_users_exist_in_session: self.multiplayer.multiple_users(),
-                color_slot: self.multiplayer.color_slot(client_id),
-            },
+            self.frame_color_state(client_id),
             mode,
             session_is_mirrored,
         )
+    }
+    fn frame_color_state(&self, client_id: ClientId) -> FrameColorState {
+        FrameColorState {
+            host_colors: self.pane.host_colors(),
+            frame_color_override: self
+                .pane
+                .frame_color_override(client_id)
+                .map(|color| (color, self.pane.frame_color_override_strength(client_id))),
+            waiting_pulse: self.pane.waiting_pulse(),
+            pane_is_focused: self.focused_clients.contains(&client_id),
+            pane_is_in_group: self
+                .current_pane_group
+                .get(&client_id)
+                .map(|p| p.contains(&self.pane.pid()))
+                .unwrap_or(false),
+            mouse_is_hovering_over_pane: self
+                .mouse_is_hovering_over_pane_for_clients
+                .contains(&client_id),
+            multiple_users_exist_in_session: self.multiplayer.multiple_users(),
+            color_slot: self.multiplayer.color_slot(client_id),
+        }
     }
 }
 
@@ -668,6 +676,20 @@ pub struct FrameColorState {
     /// The viewing client's multiplayer color, which a focused frame wears when several clients
     /// share the session.
     pub color_slot: Option<ColorSlot>,
+}
+
+impl FrameColorState {
+    fn has_title_color_effect(&self, mode: InputMode, session_is_mirrored: bool) -> bool {
+        self.pane_is_in_group
+            || self
+                .frame_color_override
+                .is_some_and(|(_, strength)| strength > 0.0)
+            || self.waiting_pulse.is_some_and(|strength| strength > 0.0)
+            || (self.mouse_is_hovering_over_pane && !self.pane_is_focused)
+            || (self.pane_is_focused
+                && (!matches!(mode, InputMode::Normal | InputMode::Locked)
+                    || (!session_is_mirrored && self.multiple_users_exist_in_session)))
+    }
 }
 
 /// The colour a pane's frame and boundary cells are drawn in, and the precedence that colour wins

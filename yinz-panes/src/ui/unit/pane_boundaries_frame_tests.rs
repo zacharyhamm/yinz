@@ -18,6 +18,7 @@ fn pane_frame_with(mouse_scroll_resize: bool, is_floating: bool, cols: usize) ->
             other_focused_clients: vec![],
             style: Style::default(),
             color: None,
+            use_frame_color_for_title: false,
             other_cursors_exist_in_session: false,
             pane_is_stacked_over: false,
             pane_is_stacked_under: false,
@@ -595,16 +596,7 @@ fn focused_idle_agent_title_marker_uses_normal_background_palette() {
 
 #[test]
 fn titles_style_fills_the_entire_row_with_the_viewing_clients_ribbon_colors() {
-    for (name, source) in [
-        (
-            "catppuccin-latte",
-            include_str!("../../../../yinz-config/assets/themes/catppuccin-latte.kdl"),
-        ),
-        (
-            "catppuccin-macchiato",
-            include_str!("../../../../yinz-config/assets/themes/catppuccin-macchiato.kdl"),
-        ),
-    ] {
+    for (name, source) in ribbon_theme_sources() {
         let themes = yinz_config::theme::Themes::from_string(source, false).unwrap();
         let theme = themes.get_theme(name).unwrap();
         for floating in [false, true] {
@@ -662,52 +654,51 @@ fn titles_style_fills_the_entire_row_with_the_viewing_clients_ribbon_colors() {
 #[test]
 fn titles_style_agent_status_uses_ribbon_emphasis_colors() {
     use yinz_types::agent::AgentState;
-    for focused in [false, true] {
-        for stacked in [false, true] {
-            for state in [
-                AgentState::Busy,
-                AgentState::Waiting,
-                AgentState::Idle,
-                AgentState::Exited,
-            ] {
-                for flash in [false, true] {
-                    let mut frame = pane_frame_with(false, false, 80);
-                    frame.titles_style = true;
-                    frame.should_draw_pane_frames = false;
-                    frame.is_main_client = focused;
-                    frame.agent_title.state = Some(state);
-                    frame.agent_title.hook_flash = flash;
-                    if stacked {
-                        frame.stack_list_entry = Some(StackListEntry {
-                            width: 20,
-                            label: "pane".into(),
-                            is_selected: focused,
-                            is_emphasized: false,
-                            stack_is_focused: focused,
-                            border_color: None,
-                        });
+    for (name, source) in ribbon_theme_sources() {
+        let themes = yinz_config::theme::Themes::from_string(source, false).unwrap();
+        let theme = themes.get_theme(name).unwrap();
+        for focused in [false, true] {
+            for stacked in [false, true] {
+                for state in [
+                    AgentState::Busy,
+                    AgentState::Waiting,
+                    AgentState::Idle,
+                    AgentState::Exited,
+                ] {
+                    for flash in [false, true] {
+                        let mut frame = pane_frame_with(false, false, 80);
+                        frame.titles_style = true;
+                        frame.should_draw_pane_frames = false;
+                        frame.is_main_client = focused;
+                        frame.agent_title.state = Some(state);
+                        frame.agent_title.hook_flash = flash;
+                        if stacked {
+                            frame.stack_list_entry = Some(StackListEntry {
+                                width: 20,
+                                label: "pane".into(),
+                                is_selected: focused,
+                                is_emphasized: false,
+                                stack_is_focused: focused,
+                                border_color: None,
+                            });
+                        }
+                        frame.style.colors = theme.palette;
+                        let colors = frame.title_colors();
+                        let (chunks, _) = frame.render().unwrap();
+                        let marker = chunks[0]
+                            .terminal_characters
+                            .iter()
+                            .find(|c| {
+                                c.character.to_string() == frame.agent_title.marker().unwrap()
+                            })
+                            .unwrap();
+                        assert_eq!(
+                            marker.styles.foreground,
+                            Some(frame.agent_title.marker_color(colors).into())
+                        );
+                        assert_eq!(marker.styles.background, Some(colors.background.into()));
+                        assert_ribbon_contrast(marker);
                     }
-                    let themes = yinz_config::theme::Themes::from_string(
-                        include_str!(
-                            "../../../../yinz-config/assets/themes/catppuccin-macchiato.kdl"
-                        ),
-                        false,
-                    )
-                    .unwrap();
-                    frame.style.colors = themes.get_theme("catppuccin-macchiato").unwrap().palette;
-                    let colors = frame.title_colors();
-                    let (chunks, _) = frame.render().unwrap();
-                    let marker = chunks[0]
-                        .terminal_characters
-                        .iter()
-                        .find(|c| c.character.to_string() == frame.agent_title.marker().unwrap())
-                        .unwrap();
-                    assert_eq!(
-                        marker.styles.foreground,
-                        Some(frame.agent_title.marker_color(colors).into())
-                    );
-                    assert_eq!(marker.styles.background, Some(colors.background.into()));
-                    assert_ne!(marker.styles.foreground, marker.styles.background);
                 }
             }
         }
@@ -750,44 +741,159 @@ fn titles_style_preserves_multiplayer_cursor_swatches() {
 
 #[test]
 fn inline_exit_status_stays_visible_on_ribbons_without_changing_undertitles() {
-    let themes = yinz_config::theme::Themes::from_string(
-        include_str!("../../../../yinz-config/assets/themes/catppuccin-macchiato.kdl"),
-        false,
-    )
-    .unwrap();
-    let theme = themes.get_theme("catppuccin-macchiato").unwrap();
-    for focused in [false, true] {
-        for status in [Some(0), Some(1), None] {
+    for (name, source) in ribbon_theme_sources() {
+        let themes = yinz_config::theme::Themes::from_string(source, false).unwrap();
+        let theme = themes.get_theme(name).unwrap();
+        for focused in [false, true] {
+            for status in [Some(0), Some(1), None] {
+                for stacked in [false, true] {
+                    let mut frame = pane_frame_with(false, false, 100);
+                    frame.style.colors = theme.palette;
+                    frame.color = Some(theme.palette.frame_selected.base);
+                    frame.is_main_client = focused;
+                    frame.add_exit_status(status);
+                    let before = frame.render_held_undertitle().unwrap();
+                    frame.titles_style = true;
+                    assert_eq!(before, frame.render_held_undertitle().unwrap());
+                    frame.should_draw_pane_frames = false;
+                    if stacked {
+                        frame.stack_list_entry = Some(StackListEntry {
+                            width: 12,
+                            label: "pane".into(),
+                            is_selected: focused,
+                            is_emphasized: false,
+                            stack_is_focused: focused,
+                            border_color: None,
+                        });
+                    }
+                    let (chunks, _) = frame.render().unwrap();
+                    let row = &chunks[0].terminal_characters;
+                    let text = characters_to_string(row);
+                    assert!(text.contains("EXIT"), "{text}");
+                    for character in row.iter().filter(|c| !c.character.is_whitespace()) {
+                        assert_ribbon_contrast(character);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn ribbon_theme_sources() -> [(&'static str, &'static str); 2] {
+    [
+        (
+            "catppuccin-latte",
+            include_str!("../../../../yinz-config/assets/themes/catppuccin-latte.kdl"),
+        ),
+        (
+            "catppuccin-macchiato",
+            include_str!("../../../../yinz-config/assets/themes/catppuccin-macchiato.kdl"),
+        ),
+    ]
+}
+
+fn assert_ribbon_contrast(character: &TerminalCharacter) {
+    let luminance = |color| {
+        let (r, g, b) = match color {
+            Some(AnsiCode::RgbCode(rgb)) => rgb,
+            Some(AnsiCode::ColorIndex(index)) => yinz_types::colors::eightbit_to_rgb(index),
+            other => panic!("expected explicit ribbon color, got {other:?}"),
+        };
+        let linear = |channel: u8| {
+            let value = f64::from(channel) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+    };
+    let fg = luminance(character.styles.foreground);
+    let bg = luminance(character.styles.background);
+    let ratio = (fg.max(bg) + 0.05) / (fg.min(bg) + 0.05);
+    assert!(ratio >= 4.5, "{character:?}: contrast {ratio:.2}:1 < 4.5:1");
+}
+
+#[test]
+fn titles_style_preserves_state_colors_and_returns_to_ribbon_defaults() {
+    for (name, source) in ribbon_theme_sources() {
+        let themes = yinz_config::theme::Themes::from_string(source, false).unwrap();
+        let theme = themes.get_theme(name).unwrap();
+        for focused in [false, true] {
             for stacked in [false, true] {
-                let mut frame = pane_frame_with(false, false, 100);
+                let mut frame = pane_frame_with(false, false, 80);
                 frame.style.colors = theme.palette;
-                frame.color = Some(theme.palette.frame_selected.base);
-                frame.is_main_client = focused;
-                frame.add_exit_status(status);
-                let before = frame.render_held_undertitle().unwrap();
                 frame.titles_style = true;
-                assert_eq!(before, frame.render_held_undertitle().unwrap());
                 frame.should_draw_pane_frames = false;
+                frame.is_main_client = focused;
                 if stacked {
                     frame.stack_list_entry = Some(StackListEntry {
-                        width: 12,
+                        width: 20,
                         label: "pane".into(),
                         is_selected: focused,
-                        is_emphasized: false,
+                        is_emphasized: true,
                         stack_is_focused: focused,
                         border_color: None,
                     });
                 }
-                let (chunks, _) = frame.render().unwrap();
-                let row = &chunks[0].terminal_characters;
-                let text = characters_to_string(row);
-                assert!(text.contains("EXIT"), "{text}");
-                for character in row.iter().filter(|c| !c.character.is_whitespace()) {
-                    assert_ne!(
-                        character.styles.foreground, character.styles.background,
-                        "{text}"
-                    );
+                let ribbon = frame.title_colors();
+                // A pulse sample, group highlight, and explicit override must survive
+                // even when they differ from the ribbon's normal foreground.
+                for color in [
+                    PaletteColor::Rgb((127, 142, 157)),
+                    theme.palette.frame_highlight.emphasis_0,
+                    PaletteColor::EightBit(196),
+                ] {
+                    frame.color = Some(color);
+                    for active in [true, false] {
+                        frame.use_frame_color_for_title = active;
+                        let (chunks, _) = frame.render().unwrap();
+                        let text = &chunks[0].terminal_characters;
+                        let title = text.iter().find(|c| c.character == 'p').unwrap();
+                        assert_eq!(
+                            title.styles.foreground,
+                            Some(if active { color } else { ribbon.base }.into())
+                        );
+                        assert_eq!(title.styles.background, Some(ribbon.background.into()));
+                    }
                 }
+            }
+        }
+    }
+}
+
+#[test]
+fn ribbon_statuses_fall_back_when_both_emphasis_and_base_are_unreadable() {
+    use yinz_types::{agent::AgentState, style::StyleDeclaration};
+    for background in [
+        PaletteColor::Rgb((0, 0, 0)),
+        PaletteColor::Rgb((255, 255, 255)),
+        PaletteColor::Rgb((100, 100, 100)),
+        PaletteColor::EightBit(244),
+    ] {
+        let unreadable = StyleDeclaration {
+            base: background,
+            background,
+            emphasis_0: background,
+            emphasis_1: background,
+            emphasis_2: background,
+            emphasis_3: background,
+        };
+        for status in [Some(0), Some(1), None] {
+            let mut frame = pane_frame_with(false, false, 80);
+            frame.titles_style = true;
+            frame.should_draw_pane_frames = false;
+            frame.agent_title.state = Some(AgentState::Waiting);
+            frame.style.colors.ribbon_selected = unreadable;
+            frame.style.colors.exit_code_error.base = background;
+            frame.style.colors.exit_code_success.base = background;
+            frame.add_exit_status(status);
+            let (chunks, _) = frame.render().unwrap();
+            let row = &chunks[0].terminal_characters;
+            assert!(characters_to_string(row).contains("EXIT"));
+            for character in row {
+                assert_ribbon_contrast(character);
             }
         }
     }

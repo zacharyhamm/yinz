@@ -301,6 +301,14 @@ fn targeted_stack_headers_preserve_all_clients_focus_and_emphasis() {
 
 fn stack_tab(size: Size, floating: bool, frames: PaneFrameStyle) -> Tab {
     let mut tab = create_new_tab_with_stacked_pane_list(size, ModeInfo::default(), true, None);
+    // The default test palette includes unreadable ribbons. Use readable pairs so
+    // repaint/geometry checks exercise declared colors rather than contrast fallback.
+    let mut colors = tab.style.colors;
+    colors.ribbon_selected.base = yinz_types::data::PaletteColor::Rgb((255, 255, 255));
+    colors.ribbon_selected.background = yinz_types::data::PaletteColor::Rgb((30, 60, 90));
+    colors.ribbon_unselected.base = yinz_types::data::PaletteColor::Rgb((255, 255, 255));
+    colors.ribbon_unselected.background = yinz_types::data::PaletteColor::Rgb((25, 25, 25));
+    tab.update_theme(colors);
     tab.set_pane_frames(frames);
     for id in 2..=3 {
         tab.new_pane(

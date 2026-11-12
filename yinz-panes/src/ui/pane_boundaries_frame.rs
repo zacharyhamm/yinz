@@ -33,6 +33,44 @@ fn styled_characters(
         .collect()
 }
 
+/// Indexed colors follow the same approximation as frame blending; host ANSI slots
+/// cannot be measured exactly without the host's palette.
+fn palette_luminance(color: PaletteColor) -> f64 {
+    let (r, g, b) = match color {
+        PaletteColor::Rgb(rgb) => rgb,
+        PaletteColor::EightBit(index) => yinz_types::colors::eightbit_to_rgb(index),
+    };
+    let linear = |channel: u8| {
+        let value = f64::from(channel) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+}
+
+fn ribbon_foreground(
+    foreground: PaletteColor,
+    base: PaletteColor,
+    background: PaletteColor,
+) -> PaletteColor {
+    let background = palette_luminance(background);
+    let contrast =
+        |foreground: f64| (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05);
+    for candidate in [foreground, base] {
+        if contrast(palette_luminance(candidate)) >= 4.5 {
+            return candidate;
+        }
+    }
+    if contrast(0.0) >= contrast(1.0) {
+        PaletteColor::Rgb((0, 0, 0))
+    } else {
+        PaletteColor::Rgb((255, 255, 255))
+    }
+}
+
 fn foreground_color(characters: &str, color: Option<PaletteColor>) -> Vec<TerminalCharacter> {
     styled_characters(characters, |styles| {
         styles.bold = Some(AnsiCode::On);
@@ -129,6 +167,8 @@ pub struct FrameParams {
     pub other_focused_clients: Vec<Option<ColorSlot>>,
     pub style: Style,
     pub color: Option<PaletteColor>,
+    /// Preserve transient frame effects instead of the ordinary ribbon foreground.
+    pub use_frame_color_for_title: bool,
     pub other_cursors_exist_in_session: bool,
     pub pane_is_stacked_under: bool,
     pub pane_is_stacked_over: bool,
@@ -164,6 +204,7 @@ pub struct PaneFrame {
     pub scroll_position: (usize, usize), // (position, length)
     pub style: Style,
     pub color: Option<PaletteColor>,
+    use_frame_color_for_title: bool,
     pub focused_client: Option<ClientId>,
     pub is_main_client: bool,
     pub other_cursors_exist_in_session: bool,
@@ -218,6 +259,7 @@ impl PaneFrame {
             scroll_position,
             style: frame_params.style,
             color: frame_params.color,
+            use_frame_color_for_title: frame_params.use_frame_color_for_title,
             focused_client: frame_params.focused_client,
             is_main_client: frame_params.is_main_client,
             other_focused_clients: frame_params.other_focused_clients,
@@ -254,17 +296,15 @@ impl PaneFrame {
             } else {
                 self.style.colors.ribbon_unselected
             };
-            // Some themes reuse the ribbon background as an emphasis color.
-            // Status markers still need to remain visible on a filled titlebar.
+            // Resolve every status role against the background that fill_titlebar uses.
+            colors.base = ribbon_foreground(colors.base, colors.base, colors.background);
             for emphasis in [
                 &mut colors.emphasis_0,
                 &mut colors.emphasis_1,
                 &mut colors.emphasis_2,
                 &mut colors.emphasis_3,
             ] {
-                if *emphasis == colors.background {
-                    *emphasis = colors.base;
-                }
+                *emphasis = ribbon_foreground(*emphasis, colors.base, colors.background);
             }
             colors
         } else {
@@ -273,7 +313,9 @@ impl PaneFrame {
     }
     fn title_foreground(&self) -> Option<PaletteColor> {
         if self.titles_style {
-            Some(self.title_colors().base)
+            self.color
+                .filter(|_| self.use_frame_color_for_title)
+                .or_else(|| Some(self.title_colors().base))
         } else {
             self.color
         }
@@ -283,6 +325,10 @@ impl PaneFrame {
             return;
         }
         let colors = self.title_colors();
+        let foreground = self
+            .color
+            .filter(|_| self.use_frame_color_for_title)
+            .unwrap_or(colors.base);
         for character in characters {
             character.styles.update(|styles| {
                 // Multiplayer cursor swatches carry an explicit background of their own.
@@ -290,7 +336,7 @@ impl PaneFrame {
                     styles.background = Some(colors.background.into());
                 }
                 if styles.foreground.is_none() || styles.foreground == Some(AnsiCode::Reset) {
-                    styles.foreground = Some(colors.base.into());
+                    styles.foreground = Some(foreground.into());
                 }
             });
         }
@@ -1762,8 +1808,9 @@ impl PaneFrame {
                 let colors = self.title_colors();
                 match segment.level {
                     HintLevel::Plain => Some(colors.base),
-                    _ if color == Some(colors.background) => Some(colors.base),
-                    _ => color,
+                    _ => {
+                        color.map(|color| ribbon_foreground(color, colors.base, colors.background))
+                    },
                 }
             } else {
                 color

@@ -15,6 +15,7 @@ pub(super) fn frame_params() -> FrameParams {
         other_focused_clients: vec![],
         style: Style::default(),
         color: None,
+        use_frame_color_for_title: false,
         other_cursors_exist_in_session: false,
         pane_is_stacked_over: false,
         pane_is_stacked_under: false,

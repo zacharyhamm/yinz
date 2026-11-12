@@ -425,3 +425,60 @@ fn a_focused_frame_wears_the_viewers_color_slot_when_several_clients_share_the_s
         "a lone client draws in the selected-frame color"
     );
 }
+
+#[test]
+fn title_color_effects_distinguish_default_focus_from_transient_highlights() {
+    for focused in [false, true] {
+        let ordinary = FrameColorState {
+            pane_is_focused: focused,
+            ..state()
+        };
+        assert!(!ordinary.has_title_color_effect(InputMode::Normal, false));
+        assert!(!ordinary.has_title_color_effect(InputMode::Locked, true));
+        for effect in [
+            FrameColorState {
+                pane_is_in_group: true,
+                ..state()
+            },
+            FrameColorState {
+                waiting_pulse: Some(0.7),
+                ..state()
+            },
+            FrameColorState {
+                frame_color_override: Some((PaletteColor::EightBit(196), 1.0)),
+                ..state()
+            },
+        ] {
+            let effect = FrameColorState {
+                pane_is_focused: focused,
+                ..effect
+            };
+            assert!(effect.has_title_color_effect(InputMode::Normal, false));
+        }
+    }
+    let hovered = FrameColorState {
+        mouse_is_hovering_over_pane: true,
+        ..state()
+    };
+    assert!(hovered.has_title_color_effect(InputMode::Normal, false));
+    let focused = FrameColorState {
+        pane_is_focused: true,
+        ..state()
+    };
+    assert!(focused.has_title_color_effect(InputMode::Pane, false));
+    let multiplayer = FrameColorState {
+        pane_is_focused: true,
+        multiple_users_exist_in_session: true,
+        ..state()
+    };
+    assert!(multiplayer.has_title_color_effect(InputMode::Normal, false));
+    assert!(!multiplayer.has_title_color_effect(InputMode::Normal, true));
+    for strength in [0.0, f32::NAN] {
+        let settled = FrameColorState {
+            waiting_pulse: Some(strength),
+            frame_color_override: Some((PaletteColor::EightBit(196), strength)),
+            ..state()
+        };
+        assert!(!settled.has_title_color_effect(InputMode::Normal, false));
+    }
+}

@@ -2625,6 +2625,7 @@ fn frame_params(is_main_client: bool) -> FrameParams {
         other_focused_clients: vec![],
         style: Style::default(),
         color: None,
+        use_frame_color_for_title: false,
         other_cursors_exist_in_session: false,
         pane_is_stacked_over: false,
         pane_is_stacked_under: false,
@@ -2719,6 +2720,33 @@ fn frames_are_cached_per_client_and_borderless_frames_are_not_cached() {
     pane.set_borderless(false);
     assert!(render(&mut pane, client));
     assert!(!render(&mut pane, client));
+}
+
+#[test]
+fn title_only_frame_effect_changes_invalidate_the_cache() {
+    let mut pane = agent_pane();
+    let client = ClientId::new(1);
+    let render = |pane: &mut TerminalPane, active| {
+        let mut params = frame_params(true);
+        params.titles_style = true;
+        params.should_draw_pane_frames = false;
+        params.color = Some(PaletteColor::Rgb((127, 142, 157)));
+        params.use_frame_color_for_title = active;
+        pane.render_frame(client, params, InputMode::Normal)
+            .unwrap()
+            .map(|(chunks, _)| {
+                chunks
+                    .into_iter()
+                    .flat_map(|chunk| chunk.terminal_characters)
+                    .collect::<Vec<_>>()
+            })
+    };
+    let ordinary = render(&mut pane, false).unwrap();
+    assert!(render(&mut pane, false).is_none());
+    let effect = render(&mut pane, true).unwrap();
+    assert_ne!(ordinary, effect);
+    assert!(render(&mut pane, true).is_none());
+    assert_eq!(render(&mut pane, false).unwrap(), ordinary);
 }
 
 #[test]
