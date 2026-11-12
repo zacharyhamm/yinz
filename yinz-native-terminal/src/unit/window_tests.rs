@@ -277,7 +277,7 @@ fn font_application_preserves_warmed_cache_for_equivalent_and_paint_only_setting
     ] {
         let requested = effective_font_options(&settings, 1.0, 1.0);
         let replacement = prepare_fonts(&active, &requested).unwrap();
-        assert!(replacement.is_none());
+        assert!(matches!(replacement, FontUpdate::Unchanged));
         apply_fonts(
             &mut active,
             &mut cache,
@@ -297,15 +297,7 @@ fn font_application_changes_each_font_input_and_failure_keeps_working_cache() {
     let base = effective_font_options(&settings, 1.0, 1.0);
     let mut variants = Vec::new();
     for field in [
-        "regular",
-        "bold",
-        "italic",
-        "both",
-        "weight",
-        "ligatures",
-        "system",
-        "line",
-        "size",
+        "regular", "bold", "italic", "both", "weight", "system", "line", "size",
     ] {
         let mut changed = settings.clone();
         match field {
@@ -314,7 +306,6 @@ fn font_application_changes_each_font_input_and_failure_keeps_working_cache() {
             "italic" => changed.font_italic = Some("Iosevka Term".into()),
             "both" => changed.font_bold_italic = Some("Iosevka Term".into()),
             "weight" => changed.font_weight = Some(700),
-            "ligatures" => changed.font_ligatures = Some(false),
             "system" => changed.system_fonts = Some(true),
             "line" => changed.line_height = Some(1.5),
             _ => changed.font_size = Some(18.0),
@@ -329,7 +320,7 @@ fn font_application_changes_each_font_input_and_failure_keeps_working_cache() {
         let generation = cache.generation();
         let mut retained = RetainedScene::new();
         let replacement = prepare_fonts(&active, &requested).unwrap();
-        assert!(replacement.is_some());
+        assert!(matches!(replacement, FontUpdate::Replacement(_)));
         apply_fonts(
             &mut active,
             &mut cache,
@@ -424,11 +415,10 @@ fn paint_only_reload_refreshes_retained_ink_without_replacing_fonts() {
     assert!(retained.rebuilt_everything());
     assert_ne!(retained.flatten(), before);
     assert_eq!(cache.generation(), generation);
-    assert!(
-        prepare_fonts(&active, &effective_font_options(&settings, 1.0, 1.0))
-            .unwrap()
-            .is_none()
-    );
+    assert!(matches!(
+        prepare_fonts(&active, &effective_font_options(&settings, 1.0, 1.0)).unwrap(),
+        FontUpdate::Unchanged
+    ));
     apply_settings(
         &mut settings,
         &mut paints,
@@ -508,7 +498,11 @@ fn font_reload_zoom_and_scale_geometry_share_selection_frame_and_copy_transition
                 crate::text::font::FontStack::build_with(&requested, Some(discovery)).unwrap(),
             )
         } else {
-            prepare_fonts(&initial, &requested).unwrap().unwrap()
+            let FontUpdate::Replacement(cache) = prepare_fonts(&initial, &requested).unwrap()
+            else {
+                panic!("expected font replacement");
+            };
+            *cache
         };
         let geometry = Geometry::calculate(width, height, 0, replacement.metrics()).unwrap();
         assert!(geometry.grid.cols < 70);
@@ -618,4 +612,171 @@ fn font_reload_zoom_and_scale_geometry_share_selection_frame_and_copy_transition
         .apply_frame(&mut state, &Painter::frame(3, 80, |p| p.text(0, 0, "new!")))
         .unwrap();
     assert_eq!(selection.text(state.screen()).as_deref(), Some("new!"));
+}
+
+#[test]
+fn ligature_reload_from_files_preserves_warmed_caches_cells_selection_and_geometry() {
+    use crate::testing::painter::Painter;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.kdl");
+    let drop_ins = directory.path().join("config.d");
+    std::fs::create_dir(&drop_ins).unwrap();
+    std::fs::write(&path, "terminal { system_fonts false; }").unwrap();
+    let opts = CliArgs {
+        config: Some(path.clone()),
+        config_dir: Some(directory.path().to_owned()),
+        ..Default::default()
+    };
+    let load = || {
+        yinz_cli::setup::Setup::config_without_layout(&opts)
+            .unwrap()
+            .0
+            .terminal
+    };
+    let mut settings = load();
+    let mut active = effective_font_options(&settings, 1.0, 1.0);
+    let mut cache = GlyphCache::new(active.stack(1.0).unwrap());
+    let mut retained = RetainedScene::new();
+    let state = Painter::state(3, 16, |p| {
+        p.text(0, 0, "a->b =>");
+        p.cluster(1, 0, "e\u{301}", 1);
+        p.wide(1, 3, '😀');
+        p.wide(2, 0, '中');
+        p.cursor(0, 10, crate::emulation::screen_buffer::CursorShape::Beam);
+    });
+    let mut selection = LocalSelection::default();
+    selection.start(0, 1);
+    selection.extend(0, 2);
+    retained.set_selection(selection.range());
+    let range = selection.range();
+    let cursor = state.cursor_position();
+    let cells: Vec<_> = (0..3)
+        .flat_map(|row| (0..16).map(move |col| (row, col)))
+        .map(|(row, col)| state.screen().cell(row, col))
+        .collect();
+    let refresh = |retained: &mut RetainedScene, cache: &mut GlyphCache| {
+        retained.refresh(
+            SceneInputs {
+                state: &state,
+                phase: BlinkPhase::On,
+                paints: &Paints::default(),
+                cursor: CursorOptions::default(),
+                hovered_link: None,
+                preedit: None,
+            },
+            cache,
+        );
+    };
+    refresh(&mut retained, &mut cache);
+    let joined = retained.flatten();
+    let original_geometry = Geometry::calculate(400, 200, 0, cache.metrics()).unwrap();
+    let generation = cache.generation();
+    let font = cache.primary_of(crate::text::font::FaceStyle::Regular);
+    let joined_ids = cache.shape(font, "->");
+    let mut previous = true;
+    for (name, enabled) in [
+        ("ligatures", true),
+        ("font_ligatures", true),
+        ("ligatures", false),
+        ("font_ligatures", false),
+        ("font_ligatures", true),
+        ("ligatures", false),
+        ("ligatures", true),
+    ] {
+        std::fs::write(
+            drop_ins.join("20-ligatures.kdl"),
+            format!("terminal {{ {name} {enabled}; }}"),
+        )
+        .unwrap();
+        let next = load();
+        let requested = effective_font_options(&next, 1.0, 1.0);
+        let update = prepare_fonts(&active, &requested).unwrap();
+        assert_eq!(
+            matches!(update, FontUpdate::LigaturesOnly),
+            previous != enabled
+        );
+        let entries = cache.entries();
+        let clusters = cache.cluster_entries();
+        let shaped_clusters = cache.shaped_clusters();
+        let atlas = (cache.atlases().mask.stamp(), cache.atlases().color.stamp());
+        apply_fonts(&mut active, &mut cache, &mut retained, requested, update);
+        if previous != enabled {
+            assert_eq!(cache.shaped_runs(), 0);
+        }
+        assert_eq!(cache.shaped_clusters(), shaped_clusters);
+        assert_eq!(cache.entries(), entries);
+        assert_eq!(cache.cluster_entries(), clusters);
+        assert_eq!(
+            (cache.atlases().mask.stamp(), cache.atlases().color.stamp()),
+            atlas
+        );
+        assert_eq!(cache.generation(), generation);
+        assert_eq!(
+            cache.primary_of(crate::text::font::FaceStyle::Regular),
+            font
+        );
+        assert!(Geometry::calculate(400, 200, 0, cache.metrics())
+            .unwrap()
+            .messages(Some(original_geometry))
+            .is_empty());
+        refresh(&mut retained, &mut cache);
+        if previous != enabled {
+            assert!(retained.rebuilt_everything());
+        }
+        if enabled {
+            assert_eq!(retained.flatten(), joined);
+        } else {
+            assert_ne!(retained.flatten(), joined);
+        }
+        let glyphs = cache.shape(font, "->");
+        // Disabled production scenes use nominal glyphs; direct shape() remains
+        // available for explicit feature callers and is bypassed by the scene.
+        if enabled {
+            assert_eq!(glyphs, joined_ids);
+        }
+        assert_eq!(selection.range(), range);
+        assert_eq!(selection.text(state.screen()).as_deref(), Some("->"));
+        assert_eq!(state.cursor_position(), cursor);
+        for (index, cell) in cells.iter().enumerate() {
+            assert_eq!(state.screen().cell(index / 16, index % 16), *cell);
+        }
+        assert_eq!(active, effective_font_options(&next, 1.0, 1.0));
+        settings = next;
+        previous = enabled;
+    }
+    // Invalid main configuration aborts loading before fonts/settings commit.
+    let before = retained.flatten();
+    let atlas = cache.atlases().mask.stamp();
+    std::fs::write(&path, "terminal { ligatures \"false\"; }").unwrap();
+    assert!(yinz_cli::setup::Setup::config_without_layout(&opts).is_err());
+    assert_eq!(settings.font_ligatures, Some(true));
+    let invalid = FontOptions {
+        size: f32::NAN,
+        ligatures: false,
+        ..active.clone()
+    };
+    assert!(prepare_fonts(&active, &invalid).is_err());
+    assert_eq!(cache.atlases().mask.stamp(), atlas);
+    assert_eq!(cache.generation(), generation);
+    assert_eq!(retained.flatten(), before);
+    assert_eq!(selection.range(), range);
+    assert_eq!(selection.text(state.screen()).as_deref(), Some("->"));
+    let mixed = FontOptions {
+        size: active.size + 2.0,
+        ligatures: false,
+        ..active.clone()
+    };
+    assert!(matches!(
+        prepare_fonts(&active, &mixed).unwrap(),
+        FontUpdate::Replacement(_)
+    ));
+    let features = FontOptions {
+        features: vec![crate::text::font::FontFeature::parse("zero").unwrap()],
+        ligatures: false,
+        ..active.clone()
+    };
+    assert!(matches!(
+        prepare_fonts(&active, &features).unwrap(),
+        FontUpdate::Replacement(_)
+    ));
 }

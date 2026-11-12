@@ -77,6 +77,7 @@ fn documented_native_terminal_example_loads() {
         .next()
         .unwrap();
     let config = Config::from_kdl(example, None).unwrap();
+    assert_eq!(config.terminal.font_ligatures, Some(true));
     assert_eq!(config.terminal.font_family.as_deref(), Some("Iosevka Term"));
     assert_eq!(config.terminal.font_bold, config.terminal.font_family);
     assert_eq!(config.terminal.font_italic, config.terminal.font_family);
@@ -84,4 +85,88 @@ fn documented_native_terminal_example_loads() {
         config.terminal.font_bold_italic,
         config.terminal.font_family
     );
+}
+
+#[test]
+fn ligature_aliases_validate_roundtrip_and_overlay() {
+    assert_eq!(
+        Config::from_kdl("terminal {}", None)
+            .unwrap()
+            .terminal
+            .font_ligatures,
+        None
+    );
+    for name in ["ligatures", "font_ligatures"] {
+        for enabled in [false, true] {
+            let config = Config::from_kdl(
+                &format!("terminal {{ {name} {enabled}; padding 2; }}"),
+                None,
+            )
+            .unwrap();
+            assert_eq!(config.terminal.font_ligatures, Some(enabled));
+            let text = config.to_string(false).unwrap();
+            assert!(!text.contains("font_ligatures"), "{text}");
+            assert_eq!(text.matches("ligatures ").count(), 1, "{text}");
+            let roundtrip = Config::from_kdl(&text, None).unwrap();
+            assert_eq!(roundtrip.terminal, config.terminal);
+            assert_eq!(roundtrip.to_string(false).unwrap(), text);
+            let inherited = Config::from_kdl("terminal { opacity 0.5; }", Some(config)).unwrap();
+            assert_eq!(inherited.terminal.font_ligatures, Some(enabled));
+            for other in ["ligatures", "font_ligatures"] {
+                let overridden = Config::from_kdl(
+                    &format!("terminal {{ {other} {}; }}", !enabled),
+                    Some(inherited.clone()),
+                )
+                .unwrap();
+                assert_eq!(overridden.terminal.font_ligatures, Some(!enabled));
+                assert_eq!(overridden.terminal.padding, Some(2.0));
+                for next in [false, true] {
+                    let input = format!("terminal {{ {name} {enabled}; {other} {next}; }}");
+                    let parsed_error = Config::from_kdl(&input, None).unwrap_err();
+                    if let ConfigError::KdlError(error) = &parsed_error {
+                        assert!(error.offset.is_some());
+                        assert!(error.len.is_some_and(|len| len > 0));
+                    } else {
+                        panic!("expected a source-located KDL error: {parsed_error:?}");
+                    }
+                    let error = format!("{parsed_error:?}");
+                    assert!(error.contains("ligatures/font_ligatures"), "{error}");
+                    assert!(
+                        error.contains(&format!("earlier value {enabled}")),
+                        "{error}"
+                    );
+                    assert!(
+                        error.contains(&format!("conflicting {other} {next}")),
+                        "{error}"
+                    );
+                }
+            }
+        }
+        for value in [
+            "",
+            "\"true\"",
+            "1",
+            "0.5",
+            "null",
+            "true false",
+            "value=true",
+            "(bool)true",
+            "true {}",
+            "{ child true; }",
+        ] {
+            let input = format!("terminal {{ {name} {value}; }}");
+            let error = format!("{:?}", Config::from_kdl(&input, None).unwrap_err());
+            assert!(error.contains(name), "{input}: {error}");
+        }
+    }
+}
+
+#[test]
+fn typed_ligature_nodes_are_not_plain_booleans() {
+    for name in ["ligatures", "font_ligatures"] {
+        let input = format!("terminal {{ (setting){name} true; }}");
+        let error = format!("{:?}", Config::from_kdl(&input, None).unwrap_err());
+        assert!(error.contains(name), "{error}");
+        assert!(error.contains("plain boolean"), "{error}");
+    }
 }

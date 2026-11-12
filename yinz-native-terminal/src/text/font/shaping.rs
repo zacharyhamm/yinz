@@ -34,6 +34,14 @@ pub(super) fn effective_features(requested: &[FontFeature], ligatures: bool) -> 
 }
 
 impl FontStack {
+    pub(crate) fn update_ligatures(&mut self, options: &super::FontOptions) {
+        // Derive from the original requests, never from already-expanded features.
+        self.features = effective_features(&options.features, options.ligatures);
+        self.shapes = options.ligatures || !self.features.is_empty();
+        self.shaped
+            .retain(|(_, shaping), _| *shaping == Shaping::Cluster);
+    }
+
     pub fn shape(&mut self, font: FontId, text: &str) -> Rc<[ShapedGlyph]> {
         self.shape_as(font, text, Shaping::Run)
     }

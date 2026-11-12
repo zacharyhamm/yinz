@@ -346,6 +346,10 @@ impl GlyphCache {
         }
     }
 
+    pub(crate) fn update_ligatures(&mut self, options: &crate::text::font::FontOptions) {
+        self.fonts.update_ligatures(options);
+    }
+
     pub fn generation(&self) -> u64 {
         self.generation
     }

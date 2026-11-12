@@ -882,3 +882,87 @@ fn a_width_three_cell_is_followed_by_two_blank_columns() {
         .iter()
         .any(|quad| quad.entry == z && quad.x >= 3 * cache.metrics().width as i32));
 }
+
+#[test]
+fn live_ligature_updates_draw_joined_and_nominal_glyphs_without_crossing_boundaries() {
+    use crate::render::retained::RetainedScene;
+    use crate::window::{apply_fonts, prepare_fonts};
+    let mut options = FontOptions {
+        system_fonts: false,
+        ..Default::default()
+    };
+    let mut cache = GlyphCache::new(FontStack::build(&options).unwrap());
+    let mut retained = RetainedScene::new();
+    // Include style and fallback boundaries alongside a normal arrow.
+    let state = |cursor| {
+        Painter::state(3, 8, |p| {
+            p.text(0, 0, "a->b");
+            p.cursor(0, cursor, CursorShape::Beam);
+            p.text(1, 0, "-");
+            p.styled(1, 1, ">", |cell| cell.attrs |= ATTR_BOLD);
+            p.cluster(1, 3, "e\u{301}", 1);
+            p.wide(1, 5, '😀');
+            p.text(2, 0, "-");
+            p.wide(2, 1, '中');
+            p.text(2, 3, ">");
+        })
+    };
+    // Keep atlas allocations warmed across both toggles and cursor movements.
+    for enabled in [true, false, true] {
+        let requested = FontOptions {
+            ligatures: enabled,
+            ..options.clone()
+        };
+        let update = prepare_fonts(&options, &requested).unwrap();
+        apply_fonts(&mut options, &mut cache, &mut retained, requested, update);
+        for cursor in [7, 2, 7] {
+            let state = state(cursor);
+            let scene = build(&state, &mut cache);
+            let dash = nominal_in(&mut cache, '-');
+            let nominal_on_first_row = scene
+                .glyphs
+                .iter()
+                .any(|quad| quad.entry == dash && quad.y < cache.metrics().height as i32);
+            assert_eq!(nominal_on_first_row, !enabled || cursor == 2);
+            let mut fresh = cache_with(enabled);
+            let reference = build(&state, &mut fresh);
+            // Atlas positions are allocation-dependent. Compare positions,
+            // cell extents and actual sprite pixels against an independent cache.
+            let ink = |scene: &Scene, cache: &GlyphCache| {
+                let atlas = cache.atlases().mask;
+                scene
+                    .glyphs
+                    .iter()
+                    .map(|quad| {
+                        let entry = quad.entry;
+                        let pixels: Vec<u8> = (entry.y..entry.y + entry.height)
+                            .flat_map(|y| {
+                                let offset = (y * atlas.width() + entry.x) as usize;
+                                atlas.coverage()[offset..offset + entry.width as usize]
+                                    .iter()
+                                    .copied()
+                            })
+                            .collect();
+                        (
+                            quad.x,
+                            quad.y,
+                            entry.width,
+                            entry.height,
+                            quad.color,
+                            pixels,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(ink(&scene, &cache), ink(&reference, &fresh));
+            assert_eq!(scene.rects, reference.rects);
+            assert_eq!(columns(&scene), columns(&reference));
+            assert_eq!(state.screen().cell(0, 1).character(), '-');
+            assert_eq!(state.screen().cell(0, 2).character(), '>');
+            assert!(scene
+                .glyphs
+                .iter()
+                .any(|quad| quad.entry == dash && quad.y >= cache.metrics().height as i32));
+        }
+    }
+}

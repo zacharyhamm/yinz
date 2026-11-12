@@ -20,17 +20,27 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
             || node.entries()[0].name().is_some()
         {
             return Err(kdl_parsing_error!(
-                "terminal settings take one plain value".to_owned(),
+                format!("terminal {} takes one plain value", node.name().value()),
                 node
             ));
         }
         let raw_name = node.name().value();
-        let name = if raw_name == "font_family" {
-            "font"
-        } else {
-            raw_name
+        let name = match raw_name {
+            "font_family" => "font",
+            "font_ligatures" => "ligatures",
+            _ => raw_name,
         };
         let value = node.entries()[0].value();
+        if name == "ligatures"
+            && (value.as_bool().is_none()
+                || node.ty().is_some()
+                || node.entries()[0].ty().is_some())
+        {
+            return Err(kdl_parsing_error!(
+                format!("terminal {raw_name} (ligatures/font_ligatures) must be a plain boolean true or false"),
+                node
+            ));
+        }
         let json = if let Some(value) = value.as_string() {
             serde_json::Value::from(value)
         } else if let Some(value) = value.as_bool() {
@@ -49,6 +59,8 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
             return Err(kdl_parsing_error!(
                 if name == "font" {
                     format!("duplicate terminal font/font_family setting: earlier value {previous}, conflicting {raw_name} {json}; use only one spelling per block")
+                } else if name == "ligatures" {
+                    format!("duplicate terminal ligatures/font_ligatures setting: earlier value {previous}, conflicting {raw_name} {json}; use only one spelling per block")
                 } else {
                     format!("duplicate terminal setting {name}")
                 },

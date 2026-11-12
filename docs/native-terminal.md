@@ -40,7 +40,7 @@ terminal {
     font_bold_italic "Iosevka Term"
     font_size 12.0
     font_weight 400
-    font_ligatures true
+    ligatures true
     system_fonts true
     line_height 1.0
     padding 4.0
@@ -65,10 +65,20 @@ settings are errors.
 Drop-ins in `config.d/*.kdl` load in filename order after the main configuration.
 Later fields override earlier fields, in either alias spelling. A changed regular
 family logs the previous and winning requests and later-layer precedence. Invalid
-drop-ins are logged with their paths and skipped. Omission inherits the earlier
+drop-ins are logged with their paths and skipped as a whole. Invalid main
+configuration prevents startup. Omission inherits the earlier
 request; an empty or whitespace-only string explicitly clears it. A blank `font`
 uses embedded defaults; a blank style family resumes regular-family selection.
 Managed configuration writes replace either regular-family spelling as one setting.
+
+`ligatures` enables programming ligatures by default. `font_ligatures` is a
+compatibility input alias; serialization writes only `ligatures`. Both spellings
+require one plain boolean (`true` or `false`). A block must contain only one
+ligature setting: repeated or mixed spellings are rejected, even when values
+agree. Across layers either spelling overrides the earlier value, including
+explicit `false`; omission inherits. Managed writes replace either spelling as
+one logical setting and preserve sibling settings. Invalid managed writes leave
+the file unchanged.
 
 The default is embedded Iosevka Term at 12 points, weight 400. `font_weight`
 accepts integers 100–900: regular and italic request that weight, while bold and
@@ -83,9 +93,18 @@ from disabled discovery. CJK, emoji and symbols retain the existing fallback sta
 style faces with different metrics are fitted into the regular face's cell.
 
 Font settings reload automatically with the session's configuration updates,
-including drop-ins. Effective font changes replace face, shaping, glyph and atlas
-caches while preserving visible content and the selected Copy text. When a grid
-resize reflows text, the local highlight follows a unique match of the selected
+including drop-ins. Startup applies the effective ligature setting; a live
+ligature-only change clears cached shaped runs and redraws retained text rows.
+Faces, discovery, independent grapheme/emoji shaping, raster glyphs and atlases
+remain cached. Cells, column ownership, cursor coordinates, selection and copied
+source text stay unchanged. Ligature-only changes keep physical cell metrics and
+the grid unchanged, so they emit no resize or pixel-size reports. Combining and
+emoji clusters still shape with programming ligatures disabled; cursor, pane,
+style and fallback boundaries retain their existing behavior.
+
+Other effective font or metric changes (including mixed changes with ligatures)
+replace face, shaping, glyph and atlas caches while preserving visible content
+and the selected Copy text. When a grid resize reflows text, the local highlight follows a unique match of the selected
 display units and surrounding context. If content moves offscreen or its location
 is ambiguous (including pane-layout changes), the highlight disappears and Copy
 retains the original text until a new selection, Escape, typing or session switch.
@@ -100,12 +119,22 @@ explicit size queries always receive current reports. Invalid reloads retain the
 working native settings. Replacing installed font files in place is not a watched
 configuration source; restart to reload those files.
 
-Focused font checks exercise Linux EGL pixels, including warmed live replacements,
-all four styles, weights, CJK and color emoji. A native Wayland smoke check at
-scale 2 exercised live drop-in reload and CSI cell/text-area replies. Its powered-off
-display prevented visual capture and manual selection/zoom checks. X11 and macOS
-desktop execution were not available for this change; zoom and scale transitions
-are covered by deterministic application and GPU checks.
+Focused ligature checks cover both configuration spellings, sorted drop-ins,
+managed writes and warmed enabled/disabled/enabled transitions through the
+production font-update path. Linux headless EGL pixel checks compare live output
+with independent fresh renders, including cursor interruption, selection and
+Copy preservation, four styles, CJK and emoji. Headless EGL does not establish
+Wayland/X11 desktop or macOS GL behavior. A separate Wayland smoke check for
+this ligature change at scale 2 captured joined programming symbols, unjoined
+symbols after a live legacy-alias drop-in, and the restored joined output after
+a canonical drop-in. Desktop selection/clipboard behavior was not established
+by that capture; the deterministic application and GPU checks cover selection
+and Copy. X11 and macOS execution were unavailable.
+
+An earlier font-settings change recorded a native Wayland smoke check at scale 2
+for drop-in reload and CSI cell/text-area replies. Its powered-off display
+prevented visual capture and manual selection/zoom checks; that observation is
+prior evidence, not a ligature-toggle visual check.
 
 Font diagnostics go to the normal log, `$TMPDIR/yinz-<UID>/yinz-log/yinz.log`
 (`/tmp` when `TMPDIR` is unset).

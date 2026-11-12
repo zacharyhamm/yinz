@@ -40,6 +40,7 @@ pub struct TerminalConfig {
     pub font_bold_italic: Option<String>,
     pub font_size: Option<f32>,
     pub font_weight: Option<u16>,
+    #[serde(rename = "ligatures", alias = "font_ligatures")]
     pub font_ligatures: Option<bool>,
     pub system_fonts: Option<bool>,
     pub line_height: Option<f32>,

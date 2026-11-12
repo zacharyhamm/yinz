@@ -292,10 +292,10 @@ pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDoc
         a.name().value() == b.name().value() && arguments(a).eq(arguments(b))
     }
     fn child_identity<'a>(root: &str, child: &'a str) -> &'a str {
-        if root == "terminal" && child == "font_family" {
-            "font"
-        } else {
-            child
+        match (root, child) {
+            ("terminal", "font_family") => "font",
+            ("terminal", "font_ligatures") => "ligatures",
+            _ => child,
         }
     }
     // Validate the incoming terminal section before coalescing blocks or aliases.

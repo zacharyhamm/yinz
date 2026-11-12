@@ -356,3 +356,123 @@ fn each_face_can_be_independently_cleared_by_a_later_drop_in() {
         }
     }
 }
+
+#[test]
+fn ligature_aliases_layer_in_filename_order_and_skip_whole_invalid_fragments() {
+    for (first, second) in [
+        ("ligatures", "font_ligatures"),
+        ("font_ligatures", "ligatures"),
+    ] {
+        for enabled in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let base = Config::from_kdl(
+                &format!("terminal {{ {first} {enabled}; padding 2; }}"),
+                None,
+            )
+            .unwrap();
+            std::fs::write(
+                dir.path().join("20-win.kdl"),
+                format!("terminal {{ {first} {}; }}", !enabled),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.path().join("10-set.kdl"),
+                format!("terminal {{ {second} {enabled}; opacity 0.5; }}"),
+            )
+            .unwrap();
+            for (file, bad) in [
+                ("30-bad.kdl", format!("{first} true; {second} false;")),
+                ("40-bad.kdl", format!("{second} \"false\";")),
+            ] {
+                std::fs::write(
+                    dir.path().join(file),
+                    format!("terminal {{ padding 99; {bad} }}"),
+                )
+                .unwrap();
+            }
+            let config = base.with_overlay_dir(Some(dir.path()));
+            assert_eq!(config.terminal.font_ligatures, Some(!enabled));
+            assert_eq!(config.terminal.padding, Some(2.0));
+            assert_eq!(config.terminal.opacity, Some(0.5));
+        }
+    }
+}
+
+#[test]
+fn managed_ligature_alias_writes_replace_one_setting_and_reject_errors_atomically() {
+    for (first, second) in [
+        ("ligatures", "font_ligatures"),
+        ("font_ligatures", "ligatures"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Config::write_managed_fragment(
+            dir.path(),
+            &format!("terminal {{ {first} true; padding 2; }}"),
+        )
+        .unwrap();
+        for (name, enabled) in [(second, false), (first, true), (second, true)] {
+            Config::write_managed_fragment(
+                dir.path(),
+                &format!("terminal {{ {name} {enabled}; }}"),
+            )
+            .unwrap();
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(text.matches("ligatures ").count(), 1, "{text}");
+            let config = Config::from_kdl(&text, None).unwrap();
+            assert_eq!(config.terminal.font_ligatures, Some(enabled));
+            assert_eq!(config.terminal.padding, Some(2.0));
+        }
+        let before = std::fs::read(&path).unwrap();
+        for fragment in [
+            format!("terminal {{ {first} true; {second} true; }}"),
+            format!("terminal {{ {second} false; {first} true; }}"),
+            format!("terminal {{ {first} false; {first} false; }}"),
+            format!("terminal {{ {second} 1; }}"),
+            format!("terminal {{ {first} true; }}\nterminal {{ {second} false; }}"),
+            format!("terminal {{ {first} true; {second} false; }}\nterminal {{ padding 9; }}"),
+            format!("terminal {{ padding 9; }}\nterminal {{ {first} null; }}"),
+        ] {
+            assert!(
+                Config::write_managed_fragment(dir.path(), &fragment).is_err(),
+                "{fragment}"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+    }
+}
+
+#[test]
+fn raw_ligature_writes_reconcile_root_and_child_configuration_edits() {
+    for (first, second) in [
+        ("ligatures", "font_ligatures"),
+        ("font_ligatures", "ligatures"),
+    ] {
+        for root in [false, true] {
+            let mut managed = if root {
+                doc(&format!("configuration_edits {{ set \"terminal\" {{ terminal {{ {first} true; padding 2; }}; }}; }}"))
+            } else {
+                doc(&format!(
+                    "configuration_edits {{ set \"terminal\" \"{first}\" {{ {first} true; }}; }}"
+                ))
+            };
+            merge_kdl_fragment(
+                &mut managed,
+                &doc(&format!("terminal {{ {second} false; }}")),
+            );
+            let text = managed.to_string();
+            assert!(!text.contains("true"), "{text}");
+            assert!(text.contains(&format!("{second} false")), "{text}");
+            if root {
+                assert!(text.contains("padding 2"), "{text}");
+            } else {
+                assert_eq!(
+                    Config::from_kdl(&text, None)
+                        .unwrap()
+                        .terminal
+                        .font_ligatures,
+                    Some(false)
+                );
+            }
+        }
+    }
+}

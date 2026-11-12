@@ -34,3 +34,47 @@ fn duplicate_aliases_are_rejected_in_either_order_even_when_equal() {
         );
     }
 }
+
+#[test]
+fn ligature_spellings_share_one_optional_boolean_and_canonical_output() {
+    assert_eq!(TerminalConfig::default().font_ligatures, None);
+    for name in ["ligatures", "font_ligatures"] {
+        for enabled in [false, true] {
+            let config: TerminalConfig =
+                serde_json::from_value(serde_json::json!({name: enabled})).unwrap();
+            assert_eq!(config.font_ligatures, Some(enabled));
+            let value = serde_json::to_value(&config).unwrap();
+            assert_eq!(value["ligatures"], enabled);
+            assert!(value.get("font_ligatures").is_none());
+            assert_eq!(
+                serde_json::from_value::<TerminalConfig>(value).unwrap(),
+                config
+            );
+        }
+        // Option accepts null as omission in the shared model; KDL requires a boolean.
+        assert_eq!(
+            serde_json::from_value::<TerminalConfig>(serde_json::json!({name: null}))
+                .unwrap()
+                .font_ligatures,
+            None
+        );
+        for value in [
+            serde_json::json!("true"),
+            serde_json::json!(1),
+            serde_json::json!([]),
+        ] {
+            assert!(
+                serde_json::from_value::<TerminalConfig>(serde_json::json!({name: value})).is_err()
+            );
+        }
+        for other in ["ligatures", "font_ligatures"] {
+            for enabled in [false, true] {
+                let text = format!("{{\"{name}\":true,\"{other}\":{enabled}}}");
+                assert!(
+                    serde_json::from_str::<TerminalConfig>(&text).is_err(),
+                    "{text}"
+                );
+            }
+        }
+    }
+}

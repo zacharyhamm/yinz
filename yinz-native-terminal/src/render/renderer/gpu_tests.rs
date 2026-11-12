@@ -310,7 +310,7 @@ fn font_faces_live_changes_match_fresh_gpu_draws_and_preserve_selection() {
                 &mut cache,
                 &mut retained,
                 requested.clone(),
-                Some(replacement),
+                crate::window::FontUpdate::Replacement(Box::new(replacement)),
             );
             assert_ne!(cache.generation(), generation);
             assert_ne!(cache.atlases().mask.stamp(), old_atlas);
@@ -381,7 +381,7 @@ fn font_faces_resize_repaint_reanchors_copy_and_gpu_highlight() {
             &mut cache,
             &mut retained,
             requested.clone(),
-            Some(replacement),
+            crate::window::FontUpdate::Replacement(Box::new(replacement)),
         );
         selection.resizing(&state, 5, 60);
         let applied = selection.apply_frame(&mut state, &old_frame).unwrap();
@@ -495,7 +495,7 @@ fn font_faces_new_selection_during_resize_reanchors_copy_and_gpu_highlight() {
             &mut cache,
             &mut retained,
             requested.clone(),
-            Some(replacement),
+            crate::window::FontUpdate::Replacement(Box::new(replacement)),
         );
         selection.resizing(&state, 5, 60);
         // This press cancels ABCD while the old grid is still displayed.
@@ -566,4 +566,108 @@ fn font_faces_new_selection_during_resize_reanchors_copy_and_gpu_highlight() {
         assert_eq!(cache.generation(), generation);
         assert_eq!(cache.atlases().mask.stamp().identity, atlas.identity);
     });
+}
+
+#[test]
+fn ligatures_live_toggles_match_fresh_pixels_and_preserve_copy_cursor_and_cells() {
+    use crate::emulation::screen_buffer::CursorShape;
+    use crate::emulation::selection::LocalSelection;
+    use crate::render::atlas::GlyphCache;
+    use crate::testing::painter::Painter;
+    use crate::window::{apply_fonts, effective_font_options, prepare_fonts, FontUpdate};
+    use yinz_types::input::native_terminal::TerminalConfig;
+    // Two cursor positions exercise interruption and reformation of the run.
+    for cursor_col in [4, 10] {
+        let mut state = font_state();
+        Painter::apply(&mut state, |p| p.cursor(0, cursor_col, CursorShape::Beam));
+        let mut selection = LocalSelection::default();
+        selection.start(0, 3);
+        selection.extend(0, 4);
+        let range = selection.range();
+        let cursor = state.cursor_position();
+        let cells: Vec<_> = (0..5)
+            .flat_map(|row| (0..24).map(move |col| (row, col)))
+            .map(|(row, col)| state.screen().cell(row, col))
+            .collect();
+        let mut options = effective_font_options(
+            &TerminalConfig {
+                system_fonts: Some(false),
+                ..Default::default()
+            },
+            1.0,
+            1.0,
+        );
+        let mut cache = GlyphCache::new(options.stack(1.0).unwrap());
+        let mut retained = RetainedScene::new();
+        retained.set_selection(range);
+        with_renderer(|renderer| {
+            let joined = font_pixels(renderer, &mut retained, &state, &mut cache);
+            assert_eq!(
+                font_pixels(renderer, &mut retained, &state, &mut cache),
+                joined
+            );
+            let generation = cache.generation();
+            for (spelling, enabled) in [
+                ("ligatures", false),
+                ("font_ligatures", false),
+                ("font_ligatures", true),
+                ("ligatures", true),
+                ("ligatures", false),
+                ("font_ligatures", true),
+            ] {
+                let config = yinz_config::config::Config::from_kdl(
+                    &format!("terminal {{ system_fonts false; {spelling} {enabled}; }}"),
+                    None,
+                )
+                .unwrap();
+                let requested = effective_font_options(&config.terminal, 1.0, 1.0);
+                let changed = options.ligatures != enabled;
+                let update = prepare_fonts(&options, &requested).unwrap();
+                assert_eq!(matches!(update, FontUpdate::LigaturesOnly), changed);
+                let atlases = (cache.atlases().mask.stamp(), cache.atlases().color.stamp());
+                let entries = cache.entries();
+                let clusters = cache.cluster_entries();
+                apply_fonts(
+                    &mut options,
+                    &mut cache,
+                    &mut retained,
+                    requested.clone(),
+                    update,
+                );
+                assert_eq!(cache.generation(), generation);
+                assert_eq!(
+                    (cache.atlases().mask.stamp(), cache.atlases().color.stamp()),
+                    atlases
+                );
+                assert_eq!(cache.entries(), entries);
+                assert_eq!(cache.cluster_entries(), clusters);
+                if changed {
+                    assert_eq!(cache.shaped_runs(), 0);
+                }
+                let live = font_pixels(renderer, &mut retained, &state, &mut cache);
+                if changed {
+                    assert!(retained.rebuilt_everything());
+                }
+                if enabled {
+                    assert_eq!(live, joined);
+                } else {
+                    assert_ne!(live, joined, "toggle did not change GPU ink");
+                }
+                let mut fresh_cache = GlyphCache::new(requested.stack(1.0).unwrap());
+                let mut fresh = RetainedScene::new();
+                fresh.set_selection(range);
+                assert_eq!(
+                    font_pixels(renderer, &mut fresh, &state, &mut fresh_cache),
+                    live,
+                    "stale live ink for {spelling} {enabled}, cursor {cursor_col}"
+                );
+                assert_eq!(selection.range(), range);
+                assert_eq!(selection.text(state.screen()).as_deref(), Some("->"));
+                assert_eq!(state.cursor_position(), cursor);
+                for (index, cell) in cells.iter().enumerate() {
+                    assert_eq!(state.screen().cell(index / 24, index % 24), *cell);
+                }
+            }
+        });
+    }
 }

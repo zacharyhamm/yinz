@@ -226,15 +226,26 @@ pub(crate) fn effective_font_options(
     options
 }
 
-fn prepare_fonts(active: &FontOptions, requested: &FontOptions) -> Result<Option<GlyphCache>> {
+pub(crate) enum FontUpdate {
+    Unchanged,
+    LigaturesOnly,
+    Replacement(Box<GlyphCache>),
+}
+
+pub(crate) fn prepare_fonts(active: &FontOptions, requested: &FontOptions) -> Result<FontUpdate> {
     if active == requested {
-        return Ok(None);
+        return Ok(FontUpdate::Unchanged);
     }
-    Ok(Some(GlyphCache::new(
+    let mut comparison = active.clone();
+    comparison.ligatures = requested.ligatures;
+    if comparison == *requested {
+        return Ok(FontUpdate::LigaturesOnly);
+    }
+    Ok(FontUpdate::Replacement(Box::new(GlyphCache::new(
         requested
             .stack(1.0)
             .context("prepare replacement native fonts")?,
-    )))
+    ))))
 }
 
 pub(crate) fn apply_fonts(
@@ -242,13 +253,17 @@ pub(crate) fn apply_fonts(
     cache: &mut GlyphCache,
     retained: &mut RetainedScene,
     requested: FontOptions,
-    replacement: Option<GlyphCache>,
+    update: FontUpdate,
 ) {
-    if let Some(replacement) = replacement {
-        *cache = replacement;
-        *active = requested;
-        retained.mark(&crate::emulation::damage::Damage::Everything);
+    match update {
+        FontUpdate::Unchanged => return,
+        FontUpdate::LigaturesOnly => cache.update_ligatures(&requested),
+        FontUpdate::Replacement(replacement) => *cache = *replacement,
     }
+    *active = requested;
+    // The atlas identity stays valid for a ligature toggle, but retained row
+    // vertices still contain the previous run's glyphs.
+    retained.mark(&crate::emulation::damage::Damage::Everything);
 }
 
 fn apply_settings(

@@ -1693,3 +1693,42 @@ fn missing_style_uses_actual_regular_face_with_fallback_diagnostic() {
         .iter()
         .any(|byte| *byte > 0));
 }
+
+#[test]
+fn ligature_updates_preserve_faces_clusters_and_original_feature_requests() {
+    for features in [
+        vec![],
+        vec![FontFeature::parse("zero").unwrap()],
+        vec![FontFeature::parse("+calt").unwrap()],
+    ] {
+        let mut options = FontOptions {
+            system_fonts: false,
+            features,
+            ..Default::default()
+        };
+        let mut fonts = FontStack::build_with(&options, None).unwrap();
+        let font = fonts.primary_of(FaceStyle::Regular);
+        let cluster = fonts.shape_cluster(font, "e\u{301}");
+        let emoji = fonts.shape_cluster(EMOJI_FONT, "😀");
+        fonts.lookup(FaceStyle::Regular, '中');
+        let faces = fonts.faces.len();
+        let resolved = fonts.resolved.clone();
+        let metrics = fonts.metrics();
+        for enabled in [false, true, false, true] {
+            fonts.shape(font, "->");
+            assert!(fonts.shaped_runs() > 0);
+            options.ligatures = enabled;
+            fonts.update_ligatures(&options);
+            assert_eq!(fonts.shaped_runs(), 0);
+            assert!(Rc::ptr_eq(&fonts.shape_cluster(font, "e\u{301}"), &cluster));
+            assert!(Rc::ptr_eq(&fonts.shape_cluster(EMOJI_FONT, "😀"), &emoji));
+            assert_eq!(fonts.faces.len(), faces);
+            assert_eq!(fonts.resolved, resolved);
+            assert_eq!(fonts.metrics(), metrics);
+            let mut fresh = FontStack::build_with(&options, None).unwrap();
+            assert_eq!(fonts.features, fresh.features);
+            assert_eq!(fonts.shapes_runs(), fresh.shapes_runs());
+            assert_eq!(fonts.shape(font, "->"), fresh.shape(font, "->"));
+        }
+    }
+}

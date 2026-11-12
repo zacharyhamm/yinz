@@ -24,6 +24,10 @@ impl GlyphCache {
         self.entries.len() + self.clusters.len()
     }
 
+    pub fn shaped_clusters(&self) -> usize {
+        self.fonts.shaped_clusters()
+    }
+
     pub fn cluster_entries(&self) -> usize {
         self.clusters.len()
     }
