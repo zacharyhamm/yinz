@@ -57,18 +57,31 @@ fn ribbon_foreground(
     base: PaletteColor,
     background: PaletteColor,
 ) -> PaletteColor {
-    let background = palette_luminance(background);
-    let contrast =
-        |foreground: f64| (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05);
     for candidate in [foreground, base] {
-        if contrast(palette_luminance(candidate)) >= 4.5 {
+        if contrast_ratio(candidate, background) >= MIN_RIBBON_CONTRAST {
             return candidate;
         }
     }
-    if contrast(0.0) >= contrast(1.0) {
-        PaletteColor::Rgb((0, 0, 0))
+    readable_extreme(background)
+}
+
+const MIN_RIBBON_CONTRAST: f64 = 4.5;
+
+/// WCAG contrast ratio between two colors, using `palette_luminance`.
+fn contrast_ratio(first: PaletteColor, second: PaletteColor) -> f64 {
+    let (first, second) = (palette_luminance(first), palette_luminance(second));
+    (first.max(second) + 0.05) / (first.min(second) + 0.05)
+}
+
+/// Black or white, whichever contrasts more with `background`. The better one always reaches
+/// at least 4.58:1.
+fn readable_extreme(background: PaletteColor) -> PaletteColor {
+    let black = PaletteColor::Rgb((0, 0, 0));
+    let white = PaletteColor::Rgb((255, 255, 255));
+    if contrast_ratio(black, background) >= contrast_ratio(white, background) {
+        black
     } else {
-        PaletteColor::Rgb((255, 255, 255))
+        white
     }
 }
 
@@ -77,35 +90,25 @@ fn ribbon_foreground(
 /// `ribbon_foreground`, it keeps the color's hue instead of falling back to the ribbon's base,
 /// so the effect stays visible on the title text.
 pub fn readable_ribbon_effect(color: PaletteColor, background: PaletteColor) -> PaletteColor {
-    const MIN_CONTRAST: f64 = 4.5;
-    let background_luminance = palette_luminance(background);
-    let contrast = |color: PaletteColor| {
-        let luminance = palette_luminance(color);
-        (luminance.max(background_luminance) + 0.05) / (luminance.min(background_luminance) + 0.05)
-    };
-    if contrast(color) >= MIN_CONTRAST {
+    let readable = |color: PaletteColor| contrast_ratio(color, background) >= MIN_RIBBON_CONTRAST;
+    if readable(color) {
         return color;
     }
-    let black = PaletteColor::Rgb((0, 0, 0));
-    let white = PaletteColor::Rgb((255, 255, 255));
-    // The better extreme always reaches at least 4.58:1. Each channel moves toward it
-    // monotonically, so once contrast passes the threshold it stays above it: bisect for the
-    // smallest blend that is readable.
-    let toward = if contrast(black) >= contrast(white) {
-        black
-    } else {
-        white
-    };
-    let (mut unreadable, mut readable) = (0.0_f32, 1.0_f32);
+    // Blending toward the better extreme moves luminance monotonically away from the color's
+    // side of the background, possibly crossing it. Contrast only falls until the crossing and
+    // only rises after it, and the start is unreadable, so the readable blends form one range
+    // ending at the extreme (which always reads): bisect for its smallest blend.
+    let toward = readable_extreme(background);
+    let (mut unreadable, mut readable_at) = (0.0_f32, 1.0_f32);
     for _ in 0..16 {
-        let mid = f32::midpoint(unreadable, readable);
-        if contrast(blend(color, toward, mid)) >= MIN_CONTRAST {
-            readable = mid;
+        let mid = f32::midpoint(unreadable, readable_at);
+        if readable(blend(color, toward, mid)) {
+            readable_at = mid;
         } else {
             unreadable = mid;
         }
     }
-    blend(color, toward, readable)
+    blend(color, toward, readable_at)
 }
 
 fn foreground_color(characters: &str, color: Option<PaletteColor>) -> Vec<TerminalCharacter> {
@@ -386,8 +389,18 @@ impl PaneFrame {
                         Some(AnsiCode::ColorIndex(index)) => PaletteColor::EightBit(index),
                         _ => foreground,
                     };
-                    styles.foreground =
-                        Some(ribbon_foreground(candidate, colors.base, colors.background).into());
+                    // Stack decorations drawn in the effect color shade it like the title text
+                    // does, so the effect does not drop to the base on part of the ribbon.
+                    let is_title_effect =
+                        self.use_frame_color_for_title && self.color == Some(candidate);
+                    styles.foreground = Some(
+                        if is_title_effect {
+                            readable_ribbon_effect(candidate, colors.background)
+                        } else {
+                            ribbon_foreground(candidate, colors.base, colors.background)
+                        }
+                        .into(),
+                    );
                     styles.dim = Some(AnsiCode::Reset);
                 }
             });

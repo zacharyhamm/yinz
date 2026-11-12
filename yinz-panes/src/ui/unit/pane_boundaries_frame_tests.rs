@@ -828,10 +828,7 @@ fn assert_ribbon_contrast(character: &TerminalCharacter) {
 
 #[test]
 fn readable_ribbon_effect_keeps_readable_colors_and_adjusts_the_rest_without_losing_them() {
-    let contrast = |a: PaletteColor, b: PaletteColor| {
-        let (a, b) = (palette_luminance(a), palette_luminance(b));
-        (a.max(b) + 0.05) / (a.min(b) + 0.05)
-    };
+    let contrast = contrast_ratio;
     let pulse = PaletteColor::Rgb((127, 142, 157));
     for background in [
         PaletteColor::Rgb((255, 255, 255)),
