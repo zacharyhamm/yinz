@@ -230,6 +230,57 @@ fn committed_text_is_not_pasted_even_when_bracketed_paste_is_enabled() {
 }
 
 #[test]
+fn committed_text_clears_scrollback_after_leaving_scroll_mode() {
+    let client = ClientId::new(1);
+    let terminal = TerminalId::new(1);
+    let size = Size { cols: 80, rows: 20 };
+    for mode in [InputMode::Normal, InputMode::Locked] {
+        let (mut screen, capture) = create_new_screen_with_forward_capture(size);
+        new_tab(&mut screen, 1, TabId::new(0));
+        let tab = screen.get_active_tab_mut(client).unwrap();
+        tab.handle_pty_bytes(terminal, b"line\r\n".repeat(50))
+            .unwrap();
+        tab.handle_pty_bytes(terminal, b"\x1b[?2004h".to_vec())
+            .unwrap();
+        screen.change_mode(InputMode::Scroll, None, client).unwrap();
+        screen
+            .get_active_tab_mut(client)
+            .unwrap()
+            .scroll_active_terminal_up(client);
+        screen.change_mode(mode, None, client).unwrap();
+        assert!(screen.active_pane_is_scrolled(client));
+        capture.drain_pty_writes();
+
+        screen
+            .text_from_client("你好é".into(), client, None)
+            .unwrap();
+
+        assert!(!screen.active_pane_is_scrolled(client));
+        assert_eq!(screen.get_client_input_mode(client), Some(mode));
+        assert_eq!(
+            capture.drain_pty_writes(),
+            vec![("你好é".as_bytes().to_vec(), terminal)]
+        );
+        screen
+            .get_active_tab_mut(client)
+            .unwrap()
+            .handle_pty_bytes(terminal, b"IME response visible".to_vec())
+            .unwrap();
+        screen.render_to_clients().unwrap();
+        let events: Vec<_> = capture
+            .server_rx
+            .try_iter()
+            .map(|(event, _)| event)
+            .collect();
+        let snapshots =
+            take_snapshots_and_cursor_coordinates_from_render_events(events.iter(), size);
+        assert!(snapshots
+            .iter()
+            .any(|(_, frame)| frame.contains("IME response visible")));
+    }
+}
+
+#[test]
 fn committed_text_updates_names_and_search_without_writing_to_the_pane() {
     text_updates_names_and_search_without_writing_to_the_pane(false);
 }

@@ -806,11 +806,12 @@ impl App {
                     && self.modifiers.control_key()
                     && pressed
                     && self.settings.open_links.unwrap_or(true)
-                {
-                    let (row, col) = self.cell();
-                    if let Some(link) = links::run_at(self.state.screen(), row, col) {
-                        open_link(&link.uri);
+                    && let Some(link) = {
+                        let (row, col) = self.cell();
+                        links::run_at(self.state.screen(), row, col)
                     }
+                {
+                    open_link(&link.uri);
                 } else if button == MouseButton::Left
                     && (self.modifiers.shift_key() || !self.mouse_mode)
                 {

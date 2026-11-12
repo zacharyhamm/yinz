@@ -34,6 +34,13 @@ impl Screen {
     ) -> Result<()> {
         match self.get_client_input_mode(client_id) {
             Some(InputMode::Normal | InputMode::Locked) => {
+                let was_scrolled = self.active_pane_is_scrolled(client_id);
+                active_tab_and_connected_client_id!(
+                    self, client_id, |tab: &mut Tab, client_id: ClientId| {
+                        tab.clear_active_terminal_scroll(client_id)
+                    }, ?
+                );
+                self.sync_scroll_mode_if_scroll_changed(client_id, was_scrolled)?;
                 if self.write_character(
                     None,
                     text.into_bytes(),
