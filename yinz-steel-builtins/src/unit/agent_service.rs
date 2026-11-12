@@ -1800,26 +1800,10 @@ fn osc_status_preserves_provider_feeds_and_restores_display_when_cleared() {
                 }),
                 ..Default::default()
             };
-            let list = |view: &serde_json::Value| {
-                let panes: Vec<agent_proto::agents::AgentPane> =
-                    serde_json::from_value(view["panes"].clone()).unwrap();
-                let hooks = serde_json::from_value(view["hooks"].clone()).unwrap();
-                let result = agent_proto::agents::list_json(
-                    &panes,
-                    &BTreeMap::new(),
-                    &BTreeMap::new(),
-                    &BTreeMap::new(),
-                    &BTreeMap::new(),
-                    &BTreeMap::new(),
-                    &hooks,
-                    |_| String::new(),
-                );
-                serde_json::from_str::<serde_json::Value>(&result).unwrap()[0].clone()
-            };
             runtime
                 .invoke("rebuild", vec![json!({"panes":{"0":[pane]}})])
                 .unwrap();
-            let baseline = list(&runtime.invoke("view", vec![]).unwrap());
+            let baseline = runtime.invoke("view", vec![]).unwrap();
             pane.program_status.current = Some(ProgramStatusRecord {
                 state: Some(state),
                 msg: Some("OSC detail".into()),
@@ -1829,7 +1813,10 @@ fn osc_status_preserves_provider_feeds_and_restores_display_when_cleared() {
                 .invoke("rebuild", vec![json!({"panes":{"0":[pane]}})])
                 .unwrap();
             let view = runtime.invoke("view", vec![]).unwrap();
-            assert_eq!(list(&view)["hooks"], true);
+            assert_eq!(
+                view["panes"][0]["provider_agent"],
+                serde_json::to_value(pane.agent.as_ref().unwrap()).unwrap()
+            );
             assert_eq!(view["waiting"], json!({}));
             if source == AgentSource::Reported {
                 assert_eq!(view["hooks"]["7"]["detail"], "provider detail");
@@ -1844,11 +1831,7 @@ fn osc_status_preserves_provider_feeds_and_restores_display_when_cleared() {
                     .invoke("rebuild", vec![json!({"panes":{"0":[pane]}})])
                     .unwrap();
                 let view = runtime.invoke("view", vec![]).unwrap();
-                assert_eq!(
-                    list(&view),
-                    baseline,
-                    "source={source:?}, OSC state={state:?}"
-                );
+                assert_eq!(view, baseline, "source={source:?}, OSC state={state:?}");
                 assert_eq!(view["waiting"], json!({}));
                 if source == AgentSource::Reported {
                     assert_eq!(view["hooks"]["7"]["detail"], "provider detail");
@@ -1868,7 +1851,7 @@ fn osc_status_preserves_provider_feeds_and_restores_display_when_cleared() {
                     .invoke("rebuild", vec![json!({"panes":{"0":[pane]}})])
                     .unwrap();
                 let view = runtime.invoke("view", vec![]).unwrap();
-                assert_eq!(list(&view)["hooks"], true);
+                assert!(!view["hooks"]["7"].is_null());
                 assert_eq!(view["hooks"]["7"]["phase"], "Busy");
             }
         }

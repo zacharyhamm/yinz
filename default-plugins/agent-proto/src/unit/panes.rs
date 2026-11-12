@@ -255,3 +255,53 @@ fn osc_display_keeps_provider_record_unchanged() {
             .is_none());
     }
 }
+
+#[test]
+fn osc_display_preserves_native_list_provider_feeds() {
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+    use yinz_types::program_status::{ProgramState, ProgramStatusRecord};
+    for source in [
+        AgentSource::Spawned,
+        AgentSource::Registered,
+        AgentSource::Reported,
+    ] {
+        let mut pane = PaneInfo {
+            agent: Some(AgentInfo {
+                kind: "claude".into(),
+                state: AgentState::Idle,
+                source,
+                detail: Some("provider detail".into()),
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                session_id: Some("conversation".into()),
+                run_id: None,
+            }),
+            ..Default::default()
+        };
+        let list = |pane: &PaneInfo| {
+            let result = crate::agents::list_json(
+                &[agent_pane(pane, None)],
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+                |_| String::new(),
+            );
+            serde_json::from_str::<serde_json::Value>(&result).unwrap()[0].clone()
+        };
+        let baseline = list(&pane);
+        for state in [ProgramState::Blocked, ProgramState::Working] {
+            pane.program_status.current = Some(ProgramStatusRecord {
+                state: Some(state),
+                msg: Some("OSC detail".into()),
+                ..Default::default()
+            });
+            assert_eq!(list(&pane)["hooks"], true);
+            pane.program_status = Default::default();
+            assert_eq!(list(&pane), baseline);
+        }
+    }
+}
