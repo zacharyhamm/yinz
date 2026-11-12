@@ -217,7 +217,7 @@ fn font_faces_draw_four_styles_weights_cjk_and_color_emoji() {
                 ink.extend_from_slice(&pixels[offset..offset + metrics.width as usize * 8 * 4]);
             }
             assert!(
-                ink.chunks_exact(4).any(|p| p[0] != 0),
+                ink.as_chunks::<4>().0.iter().any(|p| p[0] != 0),
                 "row {row} has no glyph pixels"
             );
             ink
@@ -226,7 +226,9 @@ fn font_faces_draw_four_styles_weights_cjk_and_color_emoji() {
         for y in 4 * metrics.height as usize..5 * metrics.height as usize {
             let offset = (383 - y) * 768 * 4;
             cjk_ink |= pixels[offset..offset + metrics.width as usize * 2 * 4]
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .any(|pixel| pixel[0] != 0);
         }
         assert!(cjk_ink, "CJK fallback has no GPU pixels");
@@ -238,7 +240,9 @@ fn font_faces_draw_four_styles_weights_cjk_and_color_emoji() {
         }
         assert!(
             row_pixels(4)
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .any(|p| p[0] != p[1] || p[1] != p[2]),
             "emoji lost its color"
         );
