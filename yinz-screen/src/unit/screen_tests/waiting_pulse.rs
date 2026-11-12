@@ -1,6 +1,7 @@
 use super::*;
 use crate::panes::terminal_character::AnsiCode;
 use crate::screen::apply_pane_agent_report;
+use crate::ui::pane_boundaries_frame::readable_ribbon_effect;
 use std::time::{Duration, Instant};
 use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
 use yinz_types::animation::FRAME_PERIOD;
@@ -29,6 +30,21 @@ fn waiting() -> AgentInfo {
         session_id: None,
         run_id: None,
     }
+}
+
+/// The colors `color` can take on screen. A titles-style ribbon shades an unreadable effect
+/// color until it reads, and the ribbon differs for the focused and unfocused title.
+fn effect_colors(screen: &Screen, style: PaneFrameStyle, color: PaletteColor) -> Vec<AnsiCode> {
+    if style != PaneFrameStyle::Titles {
+        return vec![color.into()];
+    }
+    let colors = &screen.style.colors;
+    [
+        colors.ribbon_selected.background,
+        colors.ribbon_unselected.background,
+    ]
+    .map(|background| readable_ribbon_effect(color, background).into())
+    .to_vec()
 }
 
 fn waiting_since(screen: &Screen) -> Option<Instant> {
@@ -279,9 +295,14 @@ fn waiting_pulse_overrides_stop_the_clock_and_clearing_resumes_the_episode() {
         let peak = grid.as_character_lines();
         let pane = screen.tabs[&TAB].get_pane_with_id(WAITING).unwrap();
         let (x, y) = (pane.x(), pane.y());
-        let pulse_color = AnsiCode::RgbCode((127, 142, 157));
+        let pulse_colors = effect_colors(&screen, style, PaletteColor::Rgb((127, 142, 157)));
         let col = (x..x + pane.cols())
-            .find(|col| peak[y][*col].styles.foreground == Some(pulse_color))
+            .find(|col| {
+                peak[y][*col]
+                    .styles
+                    .foreground
+                    .is_some_and(|color| pulse_colors.contains(&color))
+            })
             .unwrap_or_else(|| panic!("waiting frame has no pulsing cell: floating={floating}, stacked={stacked}, style={style:?}"));
         assert!(drain_background_jobs(&jobs).contains(&BackgroundJob::StartAnimationClock(PERIOD)));
 
@@ -292,12 +313,15 @@ fn waiting_pulse_overrides_stop_the_clock_and_clearing_resumes_the_episode() {
             .add_highlight_pane_frame_color_override(WAITING, None, None);
         screen.tabs.get_mut(&TAB).unwrap().set_force_render();
         render_frame_into(&mut screen, &server_rx, CLIENT, &mut grid);
-        assert_eq!(
-            grid.as_character_lines()[y][col].styles.foreground,
-            Some(AnsiCode::from(
-                screen.style.colors.frame_highlight.emphasis_0
-            ))
+        let highlight = effect_colors(
+            &screen,
+            style,
+            screen.style.colors.frame_highlight.emphasis_0,
         );
+        assert!(grid.as_character_lines()[y][col]
+            .styles
+            .foreground
+            .is_some_and(|color| highlight.contains(&color)));
         assert_eq!(screen.animation_clock_period(start), None);
         assert_eq!(
             screen.tabs[&TAB]
@@ -450,17 +474,21 @@ fn waiting_pulse_grouped_frames_boundaries_and_list_borders_keep_precedence_over
         let mut grid = grid_for_render_snapshot(SIZE);
         screen.tabs.get_mut(&TAB).unwrap().set_force_render();
         render_frame_into(&mut screen, &server_rx, CLIENT, &mut grid);
-        let expected = AnsiCode::from(yinz_types::animation::blend(
-            screen.style.colors.frame_highlight.emphasis_0,
-            screen.style.colors.text_unselected.base,
-            0.7,
-        ));
+        let expected = effect_colors(
+            &screen,
+            style,
+            yinz_types::animation::blend(
+                screen.style.colors.frame_highlight.emphasis_0,
+                screen.style.colors.text_unselected.base,
+                0.7,
+            ),
+        );
         // Titles-only frames carry the pulse on title text rather than border strokes.
         assert!(grid
             .as_character_lines()
             .iter()
             .flatten()
-            .any(|cell| cell.styles.foreground == Some(expected)),
+            .any(|cell| cell.styles.foreground.is_some_and(|color| expected.contains(&color))),
             "floating={floating}, stacked={stacked}, list={list}, style={style:?}, pane={waiting_pane:?}, expected={expected:?}");
         assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
         assert_eq!(

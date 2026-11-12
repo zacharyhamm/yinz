@@ -10,6 +10,7 @@ use crate::ui::hint_text::{
 };
 use crate::ClientId;
 use yinz_runtime::errors::prelude::*;
+use yinz_types::animation::blend;
 use yinz_types::data::PaletteColor;
 use yinz_types::multiplayer::ColorSlot;
 use yinz_types::pane_size::{Offset, PaneGeom, Viewport};
@@ -69,6 +70,42 @@ fn ribbon_foreground(
     } else {
         PaletteColor::Rgb((255, 255, 255))
     }
+}
+
+/// Darken or lighten a title effect color (a waiting-pulse sample, a group highlight or an
+/// override) just enough to read at 4.5:1 on the ribbon `background`. Unlike
+/// `ribbon_foreground`, it keeps the color's hue instead of falling back to the ribbon's base,
+/// so the effect stays visible on the title text.
+pub fn readable_ribbon_effect(color: PaletteColor, background: PaletteColor) -> PaletteColor {
+    const MIN_CONTRAST: f64 = 4.5;
+    let background_luminance = palette_luminance(background);
+    let contrast = |color: PaletteColor| {
+        let luminance = palette_luminance(color);
+        (luminance.max(background_luminance) + 0.05) / (luminance.min(background_luminance) + 0.05)
+    };
+    if contrast(color) >= MIN_CONTRAST {
+        return color;
+    }
+    let black = PaletteColor::Rgb((0, 0, 0));
+    let white = PaletteColor::Rgb((255, 255, 255));
+    // The better extreme always reaches at least 4.58:1. Each channel moves toward it
+    // monotonically, so once contrast passes the threshold it stays above it: bisect for the
+    // smallest blend that is readable.
+    let toward = if contrast(black) >= contrast(white) {
+        black
+    } else {
+        white
+    };
+    let (mut unreadable, mut readable) = (0.0_f32, 1.0_f32);
+    for _ in 0..16 {
+        let mid = f32::midpoint(unreadable, readable);
+        if contrast(blend(color, toward, mid)) >= MIN_CONTRAST {
+            readable = mid;
+        } else {
+            unreadable = mid;
+        }
+    }
+    blend(color, toward, readable)
 }
 
 fn foreground_color(characters: &str, color: Option<PaletteColor>) -> Vec<TerminalCharacter> {
@@ -317,7 +354,7 @@ impl PaneFrame {
             Some(
                 self.color
                     .filter(|_| self.use_frame_color_for_title)
-                    .map(|color| ribbon_foreground(color, colors.base, colors.background))
+                    .map(|color| readable_ribbon_effect(color, colors.background))
                     .unwrap_or(colors.base),
             )
         } else {

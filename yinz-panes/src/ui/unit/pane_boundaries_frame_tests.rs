@@ -827,6 +827,44 @@ fn assert_ribbon_contrast(character: &TerminalCharacter) {
 }
 
 #[test]
+fn readable_ribbon_effect_keeps_readable_colors_and_adjusts_the_rest_without_losing_them() {
+    let contrast = |a: PaletteColor, b: PaletteColor| {
+        let (a, b) = (palette_luminance(a), palette_luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    };
+    let pulse = PaletteColor::Rgb((127, 142, 157));
+    for background in [
+        PaletteColor::Rgb((255, 255, 255)),
+        PaletteColor::Rgb((0, 0, 0)),
+        PaletteColor::Rgb((118, 118, 118)),
+        PaletteColor::EightBit(2),
+        PaletteColor::EightBit(8),
+    ] {
+        for color in [
+            pulse,
+            PaletteColor::EightBit(196),
+            PaletteColor::Rgb((20, 0, 40)),
+        ] {
+            let adjusted = readable_ribbon_effect(color, background);
+            assert!(
+                contrast(adjusted, background) >= 4.5,
+                "{color:?} on {background:?} -> {adjusted:?}"
+            );
+            if contrast(color, background) >= 4.5 {
+                assert_eq!(adjusted, color);
+            }
+        }
+    }
+    // A mid gray that is unreadable on green is shaded, not replaced: it stays distinct from
+    // the extremes `ribbon_foreground` falls back to, so a pulse still shows on the title.
+    let green = PaletteColor::EightBit(2);
+    let adjusted = readable_ribbon_effect(pulse, green);
+    assert_ne!(adjusted, pulse);
+    assert_ne!(adjusted, PaletteColor::Rgb((0, 0, 0)));
+    assert_ne!(adjusted, PaletteColor::Rgb((255, 255, 255)));
+}
+
+#[test]
 fn titles_style_preserves_readable_state_colors_and_returns_to_ribbon_defaults() {
     for (name, source) in ribbon_theme_sources() {
         let themes = yinz_config::theme::Themes::from_string(source, false).unwrap();
@@ -866,7 +904,7 @@ fn titles_style_preserves_readable_state_colors_and_returns_to_ribbon_defaults()
                             title.styles.foreground,
                             Some(
                                 if active {
-                                    ribbon_foreground(color, ribbon.base, ribbon.background)
+                                    readable_ribbon_effect(color, ribbon.background)
                                 } else {
                                     ribbon.base
                                 }
@@ -933,9 +971,11 @@ fn ribbon_highlights_and_stack_decorations_use_readable_final_colors() {
                         let title = row.iter().find(|c| c.character == 'p').unwrap();
                         assert_eq!(
                             title.styles.foreground,
+                            // A highlight matching the ribbon is shaded until it reads, not
+                            // replaced by the ribbon base.
                             Some(
                                 if highlight == background {
-                                    readable
+                                    readable_ribbon_effect(background, background)
                                 } else {
                                     accent
                                 }
