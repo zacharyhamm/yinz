@@ -14,6 +14,13 @@
 //   remove cached activity overlapping any replacement interval, then merge by
 //   revision and order by timestamp/revision. Navigation requests are followed as
 //   returned, reapplying tz; the client never synthesizes newest+1.
+//
+// One intentional difference from HistoryCache: the `earlier` cursor is taken only
+// from older pages and from the first page of a run, never from a later refresh or
+// delivery. Native delivery replies repeat the newest page's `earlier` row
+// (palette_history::conversation_refresh), which describes a boundary the cache
+// already reaches; adopting it after history is exhausted would offer
+// "Load earlier" again and walk back over pages already loaded.
 
 export const TOOL_KINDS = new Set(['tool_call', 'tool_result']);
 export const TOOLS_PAGE_REVISIONS = 30;
@@ -225,6 +232,7 @@ export class TimelineStore {
     }
     const older = ticket.kind === 'earlier';
     let retargeted = false;
+    let switched = false;
     if (page.retargeted === true || page.run !== this.run) {
       // An older page can never belong to a replacement run.
       if (older) return { applied: false, reason: 'fenced' };
@@ -236,11 +244,12 @@ export class TimelineStore {
       this.received = null;
       this.navigation = {};
       retargeted = previousRun !== null;
+      switched = true;
       this.meta.retargetedAt = previousRun;
     }
     const navigation = page.navigation && typeof page.navigation === 'object' ? page.navigation : {};
-    const empty = this.cache.size === 0;
-    if (older || empty || !this.earlier) this.earlier = navigation.earlier || null;
+    // See the header: later non-older pages carry the newest page's stale boundary.
+    if (older || switched || !this.loaded) this.earlier = navigation.earlier || null;
     if (!older) {
       const recv = navigation.received;
       if (recv && (!this.received || retargeted || !(recv.after_revision < this.received.after_revision))) {

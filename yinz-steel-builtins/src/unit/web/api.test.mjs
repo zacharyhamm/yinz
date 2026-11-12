@@ -433,3 +433,19 @@ test('hash routes round-trip and never accept malformed ids', async () => {
   assert.deepEqual(parseHash('#/a/%E0%A4%A'), { view: 'list' });
   assert.equal(parseHash('#/a/x?tab=evil').tab, null);
 });
+
+test('history entry markers: first load, new entries, traversals and foreign state', async () => {
+  const { entryState } = await import(staticUrl('app-route.js'));
+  const first = entryState(null, null);
+  assert.deepEqual(first, { state: { yinzIndex: 0, yinzBack: false }, lastIndex: 0, changed: true });
+  const pushed = entryState(null, first.lastIndex);
+  assert.deepEqual(pushed, { state: { yinzIndex: 1, yinzBack: true }, lastIndex: 1, changed: true });
+  // Traversal back to a known entry keeps its marker and moves the last index.
+  const back = entryState(first.state, pushed.lastIndex);
+  assert.deepEqual(back, { state: first.state, lastIndex: 0, changed: false });
+  // A reload of a deep-linked entry stays without an app entry behind it.
+  assert.equal(entryState({ yinzIndex: 4, yinzBack: false }, null).state.yinzBack, false);
+  // Foreign keys survive marking; non-object states are replaced.
+  assert.deepEqual(entryState({ other: 1 }, 2).state, { other: 1, yinzIndex: 3, yinzBack: true });
+  assert.deepEqual(entryState('x', null).state, { yinzIndex: 0, yinzBack: false });
+});

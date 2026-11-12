@@ -102,6 +102,7 @@ class Fixture {
     this.retarget = false;
     this.prompt = 'submitted';
     this.revokeOnPrompt = false;
+    this.screenTick = 0;
     this.fail = new Map(); // path -> {mode:'abort'|'hold'|'reply', times, status, headers, body}
     this.held = [];
     this.log = [];
@@ -203,7 +204,8 @@ function history(fx, q) {
     received: bound({ op: 'history', run, worker: null, before: null, after_revision: latest + 1 }),
   };
   if (run === 'run-7') navigation.previous = { op: 'history', run: 'run-6', from: null, query: '' };
-  if (earlier) navigation.earlier = bound({ op: 'history', run, worker: null, before: { created_at_ms: 20 * 60000, revision: 20 }, after_revision: null });
+  // Native delivery replies repeat the newest page's earlier row (conversation_refresh).
+  if (earlier || (run === 'run-7' && after !== null)) navigation.earlier = bound({ op: 'history', run, worker: null, before: { created_at_ms: 20 * 60000, revision: 20 }, after_revision: null });
   for (const e of events) {
     if (e.kind === 'tools') continue;
     e.html = `<p>${esc(e.markdown)}</p>`;
@@ -216,6 +218,14 @@ function history(fx, q) {
     header_html: `<div class="hdr"><strong>${esc(`Fix flaky test ${XSS(3)}`)}</strong> · ${esc(run)}</div>`,
     details_html: `<pre class="details">${esc(`Run: ${run}\nProvider: codex`)}</pre>`,
   };
+}
+
+/** 80 lines like a real pane read: older output, one wide line, then the question at the bottom. */
+const SCREEN_LAST = '  2. No';
+function screenOutput(tick) {
+  const older = Array.from({ length: 76 }, (_, i) => (i === 0 ? `output line 0 (read ${tick})`
+    : i === 40 ? `output line 40 ${'wide-'.repeat(30)}end` : `output line ${i}`));
+  return [...older, '$ cargo test', '? Allow edit', '  1. Yes', SCREEN_LAST].join('\n');
 }
 
 function exactKeys(value, keys) {
@@ -249,10 +259,9 @@ function agentRoute(fx, entry) {
   }
   if (p === '/api/agent/screen') {
     if (!body || !validRef(body.agent) || Object.keys(body).some((k) => !['agent', 'lines'].includes(k))) return invalid('shape');
-    return [200, {
-      response: { outcome: 'ok', output: '$ cargo test\n? Allow edit\n  1. Yes\n  2. No' },
-      html: `<pre class="screen">${esc('$ cargo test\n? Allow edit\n  1. Yes\n  2. No')}</pre>`,
-    }];
+    fx.screenTick += 1;
+    const output = screenOutput(fx.screenTick);
+    return [200, { response: { outcome: 'ok', output }, html: `<pre class="screen">${esc(output)}</pre>` }];
   }
   return [404, { error: { code: 'not_found' } }];
 }
@@ -593,6 +602,45 @@ async function revokeLive(page) {
   check(status === 204, `live logout returned ${status}`);
 }
 
+/** Screen output region, its newest line, the quick keys and the composer dock. */
+function screenGeometry(page) {
+  return page.evaluate((last) => {
+    const region = document.getElementById('screen-scroll');
+    const pre = document.querySelector('#screen pre.screen');
+    const keys = document.querySelector('.screen-keys');
+    const dock = document.querySelector('.composer-dock');
+    if (!region || !pre || !keys) return null;
+    const text = pre.firstChild;
+    const range = document.createRange();
+    const at = text.data.lastIndexOf(last);
+    range.setStart(text, at);
+    range.setEnd(text, at + last.length);
+    const box = (r) => ({ top: r.top, bottom: r.bottom });
+    return {
+      scrollTop: region.scrollTop,
+      atBottom: region.scrollTop + region.clientHeight >= region.scrollHeight - 2,
+      overflow: region.scrollHeight > region.clientHeight + 100,
+      region: box(region.getBoundingClientRect()),
+      last: box(range.getBoundingClientRect()),
+      keys: box(keys.getBoundingClientRect()),
+      dockTop: dock ? dock.getBoundingClientRect().top : innerHeight,
+      height: innerHeight,
+    };
+  }, SCREEN_LAST);
+}
+
+async function assertScreenPinned(page, where) {
+  const g = await until(`${where}: screen pinned to its newest line`, async () => {
+    const v = await screenGeometry(page);
+    return v && v.atBottom ? v : null;
+  });
+  check(g.overflow, `${where}: screen fixture does not overflow its region`);
+  check(g.last.top >= g.region.top - 1 && g.last.bottom <= g.region.bottom + 1,
+    `${where}: the question is outside the output region (${Math.round(g.last.top)}..${Math.round(g.last.bottom)} vs ${Math.round(g.region.top)}..${Math.round(g.region.bottom)})`);
+  check(g.keys.top >= 0 && g.keys.bottom <= g.height && g.keys.bottom <= g.dockTop + 1,
+    `${where}: quick keys are not visible above the composer (${Math.round(g.keys.top)}..${Math.round(g.keys.bottom)}, dock ${Math.round(g.dockTop)})`);
+}
+
 async function waitPolls(page, fx, n = 2) {
   const start = fx.count('/api/history');
   await until(`${n} more tail polls`, () => fx.count('/api/history') >= start + n, 15000);
@@ -740,7 +788,24 @@ async function phoneLayout(open, width) {
   for (const tab of ['timeline', 'screen', 'details']) {
     await domClick(page, `#tab-${tab}`);
     await until(`${tab} panel`, async () => (await page.evaluate((t) => document.getElementById(`tab-${t}`).getAttribute('aria-selected'), tab)) === 'true' && exists(page, `#panel-${tab}`));
-    if (tab === 'screen') await until('screen content', () => exists(page, '#screen pre.screen'));
+    if (tab === 'screen') {
+      await until('screen content', () => exists(page, '#screen pre.screen'));
+      await assertScreenPinned(page, `screen ${width}px`);
+      // A remount starts at the newest line again.
+      await domClick(page, '#tab-timeline');
+      await until('timeline panel', () => exists(page, '#panel-timeline'));
+      await domClick(page, '#tab-screen');
+      await until('screen content again', () => exists(page, '#screen pre.screen'));
+      await assertScreenPinned(page, `screen ${width}px after a tab switch`);
+      // Scrolled up, new reads leave the position alone.
+      await page.evaluate(() => { document.getElementById('screen-scroll').scrollTop = 0; });
+      await nextFrame(page);
+      const reads = fx.count('/api/agent/screen');
+      await until('another screen read', () => fx.count('/api/agent/screen') > reads, 10000);
+      await nextFrame(page);
+      const g = await screenGeometry(page);
+      check(g.scrollTop < 2, `screen ${width}px: a read moved a scrolled-up screen to ${Math.round(g.scrollTop)}`);
+    }
     if (tab === 'details') await until('details content', () => exists(page, '#details'));
     await noHorizontalOverflow(page, `detail ${tab} ${width}px`);
     await touchTargets(page, `detail ${tab} ${width}px`);
@@ -920,6 +985,12 @@ async function readerPrepend(open) {
   check(Math.abs(after.top - anchor.top) <= 2, `prepend moved the anchor from ${Math.round(anchor.top)} to ${Math.round(after.top)}`);
   check(after.scrollTop > 0, 'prepend did not keep the reading position');
   check(!(await exists(page, '#timeline-earlier')), 'Load earlier still offered after the first event');
+  // Delivery replies repeat the newest page's earlier cursor; exhausted history stays exhausted.
+  const olderReads = () => fx.log.filter((e) => e.path === '/api/history' && e.query.has('before')).length;
+  const reads = olderReads();
+  await waitPolls(page, fx);
+  check(!(await exists(page, '#timeline-earlier')), 'Load earlier returned after delivery polls');
+  check(olderReads() === reads, 'an exhausted timeline read older pages again');
 }
 
 async function newMessages(open) {
@@ -941,6 +1012,23 @@ async function newMessages(open) {
     const n = [...el.querySelectorAll('[data-key]')].find((x) => x.getBoundingClientRect().bottom > box.top);
     return { key: n.getAttribute('data-key'), top: n.getBoundingClientRect().top };
   });
+  await page.evaluate(() => {
+    const el = document.getElementById('timeline');
+    const native = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    window.__yinzScrollWrites = 0;
+    Object.defineProperty(el, 'scrollTop', {
+      configurable: true,
+      get() { return native.get.call(this); },
+      set(v) { window.__yinzScrollWrites += 1; native.set.call(this, v); },
+    });
+  });
+  // Two unchanged tail polls span more than two one-second age re-renders.
+  await waitPolls(page, fx);
+  const writes = await page.evaluate(() => {
+    delete document.getElementById('timeline').scrollTop;
+    return window.__yinzScrollWrites;
+  });
+  check(writes === 0, `the timeline wrote scrollTop ${writes} times while nothing changed`);
   fx.latest = 47;
   await until('New messages control', () => exists(page, '#timeline-new'));
   check(await exists(page, '#timeline [data-key="e47"]'), 'message 47 not rendered');
@@ -1174,6 +1262,32 @@ async function goneRetargetStored(open) {
   const reads = fx.log.filter((e) => e.path === '/api/history' && e.query.get('run') === 'run-6');
   check(reads.length && reads.every((e) => !e.query.has('agent')), 'stored-run browsing carried the live agent binding');
   check(!(await exists(page, '#composer-input')), 'composer offered for a stored run');
+  await domClick(page, '#detail-back');
+  await until('back to the details route', async () => hashOf(page) === detailHash('run-7', 'details') && exists(page, '#details-previous'));
+}
+
+async function backThroughHistory(open) {
+  const { page } = await open();
+  await openList(page);
+  await domClick(page, 'li.agent-card[data-agent-id="live:dev:7"] a.agent-open');
+  await until('detail opened from the list', () => exists(page, '#detail-back'));
+  const opened = await page.evaluate(() => history.length);
+  const detail = hashOf(page);
+  await domClick(page, '#detail-back');
+  await until('back to the list', async () => hashOf(page) === '#/' && exists(page, 'li.agent-card'));
+  const after = await page.evaluate(() => history.length);
+  check(after === opened, `back added history entries (${opened} -> ${after})`);
+  await page.evaluate(() => history.forward());
+  await until('forward returns to the detail', async () => hashOf(page) === detail && exists(page, '#detail-back'));
+  // A deep-linked detail has nothing of ours behind it: back replaces it with the list.
+  await page.goto('about:blank');
+  await page.goto(`${ORIGIN}/${detailHash()}`);
+  await until('deep-linked detail', () => exists(page, '#detail-back'));
+  const deep = await page.evaluate(() => history.length);
+  await domClick(page, '#detail-back');
+  await until('list after deep-link back', async () => hashOf(page) === '#/' && exists(page, 'li.agent-card'));
+  const replaced = await page.evaluate(() => history.length);
+  check(replaced === deep, `deep-link back changed history length (${deep} -> ${replaced})`);
 }
 
 async function logoutFlows(open) {
@@ -1225,6 +1339,7 @@ async function main() {
   await scenario('auth failure while sending: uncertain, no auto-resend, same-id retry', sendAuthLoss);
   await scenario('reload recovery of uncertain submissions and same-id retry', reloadRecovery);
   await scenario('agent gone, retarget and stored-run browsing', goneRetargetStored);
+  await scenario('back returns through history', backThroughHistory);
   await scenario('live logout and logout everywhere', logoutFlows);
 }
 

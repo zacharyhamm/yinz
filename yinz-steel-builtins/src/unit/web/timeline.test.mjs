@@ -314,3 +314,38 @@ test('range tools reader advances bounded pages through page.navigation', () => 
   assert.equal(reader.records()[0].revision, 2);
   assert.equal(reader.records().length, 32);
 });
+
+test('earlier is adopted only from older pages and the first page of a run', () => {
+  const agent = 'live:local:7';
+  const before = (revision) => ({ op: 'history', run: 'run', agent, worker: null, before: { created_at_ms: revision, revision }, after_revision: null });
+  const recv = (run, after) => ({ op: 'history', run, agent, worker: null, before: null, after_revision: after });
+  // Exhaustion survives a native delivery reply that repeats the newest page's earlier row.
+  const store = new TimelineStore({ run: 'run', agent });
+  store.apply(store.ticket('latest'), page({ events: [prose(20, 20), prose(21, 21)], navigation: { earlier: before(20), received: recv('run', 22) } }));
+  assert.deepEqual(store.earlierRequest(), before(20));
+  store.apply(store.ticket('earlier'), page({ events: [prose(1, 1), prose(19, 19)], navigation: {} }));
+  assert.equal(store.earlierRequest(), null);
+  store.apply(store.ticket('received'), page({ events: [prose(22, 22)], navigation: { earlier: before(20), received: recv('run', 23) } }));
+  assert.equal(store.earlierRequest(), null, 'exhausted history stays exhausted');
+  assert.equal(store.refreshRequest().after_revision, 23);
+  // A newer earlier cursor from a delivery before any older page does not replace the original.
+  const grown = new TimelineStore({ run: 'run', agent });
+  grown.apply(grown.ticket('latest'), page({ events: [prose(20, 20)], navigation: { earlier: before(20), received: recv('run', 21) } }));
+  grown.apply(grown.ticket('received'), page({ events: [prose(60, 60)], navigation: { earlier: before(40), received: recv('run', 61) } }));
+  assert.deepEqual(grown.earlierRequest(), before(20));
+  // A first page without older history stays without it.
+  const short = new TimelineStore({ run: 'run', agent });
+  short.apply(short.ticket('latest'), page({ events: [prose(1, 1)], navigation: { received: recv('run', 2) } }));
+  short.apply(short.ticket('received'), page({ events: [prose(2, 2)], navigation: { earlier: before(1), received: recv('run', 3) } }));
+  assert.equal(short.earlierRequest(), null);
+  // A retarget page and a reset store adopt their own earlier.
+  const replacementEarlier = { op: 'history', run: 'replacement', agent, worker: null, before: { created_at_ms: 5, revision: 5 }, after_revision: null };
+  store.apply(store.ticket('received'), page({
+    run: 'replacement', retargeted: true, events: [prose(5, 5)],
+    navigation: { earlier: replacementEarlier, received: recv('replacement', 6) },
+  }));
+  assert.deepEqual(store.earlierRequest(), replacementEarlier);
+  short.reset();
+  short.apply(short.ticket('latest'), page({ events: [prose(9, 9)], navigation: { earlier: before(9), received: recv('run', 10) } }));
+  assert.deepEqual(short.earlierRequest(), before(9));
+});

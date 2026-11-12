@@ -4,7 +4,7 @@ import {
   saveReturn, setNotice, takeNotice, logoutNotice, createPoller,
 } from './api.js';
 import { createSubmissions } from './submission.js';
-import { parseHash } from './app-route.js';
+import { parseHash, entryState } from './app-route.js';
 import { html, render, useState, useEffect, cx } from './views/ui.js';
 import { ListView } from './views/list.js';
 import { DetailView } from './views/detail.js';
@@ -54,10 +54,20 @@ window.addEventListener('storage', (event) => {
 });
 
 const submissions = createSubmissions({ storage: session, api });
-let navigations = 0;
-window.addEventListener('hashchange', () => {
-  navigations += 1;
-});
+// Mark each history entry (see entryState) before the router reacts to it.
+let lastEntry = null;
+function markEntry() {
+  const next = entryState(window.history.state, lastEntry);
+  lastEntry = next.lastIndex;
+  if (!next.changed) return;
+  try {
+    window.history.replaceState(next.state, '', window.location.href);
+  } catch {
+    // Without the marker the back button falls back to replacing the entry.
+  }
+}
+markEntry();
+window.addEventListener('hashchange', markEntry);
 
 function App({ initialNotice }) {
   const [route, setRoute] = useState(parseHash(window.location.hash));
@@ -90,7 +100,7 @@ function App({ initialNotice }) {
       window.history.replaceState(window.history.state, '', hash);
       setRoute(parseHash(hash));
     },
-    canGoBack: () => navigations > 0,
+    canGoBack: () => !!window.history.state && window.history.state.yinzBack === true,
     async logout(all) {
       const r = await api.logout({ all });
       toLogin(logoutNotice({ ...r, all }));

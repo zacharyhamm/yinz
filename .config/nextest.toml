@@ -27,7 +27,8 @@ filter = 'binary(nested_fullscreen) + binary(nested_sessions) + binary(nested_ha
 threads-required = 4
 
 # Playwright Firefox phone flows (yinz-steel-builtins/src/unit/web/browser/run.mjs) drive one
-# session through seventeen browser scenarios for over a minute, with fake-clock polling checks.
+# session through the browser scenarios for over a minute, with fake-clock polling checks. The test
+# is #[ignore]d, so this applies only when it is selected with `--run-ignored only`.
 [[profile.default.overrides]]
 filter = 'binary(app) & test(=web::web_builtin_browser_phone_flows)'
 threads-required = 4

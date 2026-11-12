@@ -255,11 +255,25 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
   box-shadow: 0 2px 8px rgb(0 0 0 / 0.25);
 }
 
-.screen-panel, .details-panel {
+.details-panel {
   flex: 1; min-height: 0; overflow-y: auto; display: grid; gap: 10px; align-content: start;
   padding: 8px calc(12px + var(--safe-right)) 16px calc(12px + var(--safe-left));
 }
-.screen-status { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); }
+/* Only the output scrolls; the status row and quick keys stay in view. */
+.screen-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.screen-status {
+  flex: none; display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted);
+  padding: 8px calc(12px + var(--safe-right)) 0 calc(12px + var(--safe-left));
+}
+.screen-panel > .banner { flex: none; }
+.screen-scroll {
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  padding: 8px calc(12px + var(--safe-right)) 8px calc(12px + var(--safe-left));
+}
+.screen-keys {
+  flex: none; border-top: 1px solid var(--border);
+  padding: 8px calc(12px + var(--safe-right)) 8px calc(12px + var(--safe-left));
+}
 .screen-html pre.screen, pre.screen {
   margin: 0; padding: 10px; border-radius: 10px; background: #0b0f17; color: #e5e7eb;
   font-size: 12px; line-height: 1.3; white-space: pre; overflow-x: auto;

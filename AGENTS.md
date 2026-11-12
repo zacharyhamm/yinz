@@ -34,11 +34,13 @@ tests for the changed behavior and affected callers during development. This
 test-selection policy also applies when local instructions recommend full suites.
 
 When requested, `cargo x ci check` runs every phase even after failures and uses
-16 integration-test workers. Docker suites run separately:
+16 integration-test workers. These suites run separately, and `cargo x ci check`
+does not run them:
 
 | Command | Requirement |
 |---|---|
 | `cargo x remote-test` | Docker with a real SSH server |
+| `env PLAYWRIGHT_BROWSERS_PATH=$PWD/target/web-browser cargo x integration-test --run-ignored only -E 'test(web_builtin_browser_phone_flows)' -j 16` | Node 20 or newer, the test-only Playwright package and its Firefox in this worktree; see [PLUGIN_TESTING.md](docs/PLUGIN_TESTING.md#builtin-web-app) |
 
 For the remote suite, run `--build` before `--test`.
 

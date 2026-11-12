@@ -30,3 +30,19 @@ export function detailHash({ id, run, tab, bind = true }) {
   const query = params.toString();
   return `#/a/${encodeURIComponent(id)}${query ? `?${query}` : ''}`;
 }
+
+/**
+ * History-entry marker. The app records on each entry whether the entry behind it is
+ * also this app's, so the in-app back button can pop instead of pushing the list.
+ * An entry without a numeric `yinzIndex` is new: the first one this document sees
+ * (lastIndex null) has nothing of ours behind it; later ones were created by a hash
+ * navigation in this document, so the previous entry is ours. An entry that already
+ * carries one is a traversal or reload and is left unchanged. Other state keys are kept.
+ */
+export function entryState(state, lastIndex) {
+  const current = state && typeof state === 'object' ? state : null;
+  if (current && Number.isInteger(current.yinzIndex)) return { state: current, lastIndex: current.yinzIndex, changed: false };
+  const first = !Number.isInteger(lastIndex);
+  const index = first ? 0 : lastIndex + 1;
+  return { state: { ...(current || {}), yinzIndex: index, yinzBack: !first }, lastIndex: index, changed: true };
+}

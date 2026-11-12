@@ -363,14 +363,17 @@ drives headless Firefox through Playwright against the real frozen pages and
 native login, intercepting the agent-data API with fixed fixtures. Playwright is
 a pinned, test-only package under `yinz-steel-builtins/src/unit/web/browser`;
 its `node_modules/` is ignored, and neither it nor the browser is installed with
-Yinz. Provision both inside this worktree before running the test:
+Yinz. The test is `#[ignore]`d, so the unfiltered integration suite and
+`cargo x ci check` skip it; select it with `--run-ignored only`. Selected without
+its tooling, it fails with the provisioning command instead of skipping.
+Provision both inside this worktree before running it:
 
 ```sh
 npm ci --prefix yinz-steel-builtins/src/unit/web/browser --ignore-scripts --no-audit --no-fund
 env PLAYWRIGHT_BROWSERS_PATH="$PWD/target/web-browser" \
   node yinz-steel-builtins/src/unit/web/browser/node_modules/playwright/cli.js install firefox
 env PLAYWRIGHT_BROWSERS_PATH="$PWD/target/web-browser" \
-  cargo x integration-test -E 'test(web_builtin_browser_phone_flows)' -j 16
+  cargo x integration-test --run-ignored only -E 'test(web_builtin_browser_phone_flows)' -j 16
 cargo x integration-test -E 'test(web_builtin_production_http)' -j 16
 ```
 

@@ -61,10 +61,14 @@ function Timeline({ items, memory, earlier, loadingEarlier, onEarlier, onTools, 
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    if (memory.atBottom) el.scrollTop = el.scrollHeight;
-    else if (memory.anchor) {
+    // Write only when the position must change: assigning scrollTop during a touch
+    // drag or fling can stop momentum scrolling.
+    if (memory.atBottom) {
+      if (el.scrollHeight - el.scrollTop - el.clientHeight > 1) el.scrollTop = el.scrollHeight;
+    } else if (memory.anchor) {
       const node = [...el.querySelectorAll('[data-key]')].find((n) => n.getAttribute('data-key') === memory.anchor.key);
-      if (node) el.scrollTop = node.offsetTop - memory.anchor.offset;
+      const target = node ? node.offsetTop - memory.anchor.offset : null;
+      if (target !== null && Math.abs(el.scrollTop - target) > 1) el.scrollTop = target;
     }
     const last = items.length ? items[items.length - 1].key : null;
     if (!memory.atBottom && lastKey.current !== null && last !== lastKey.current) setFresh(true);
@@ -155,6 +159,8 @@ function ScreenPanel({ env, live, enabled, onTargetGone }) {
   const ref = live && live.ref && validTarget(live.ref) ? targetOf(live.ref) : null;
   const now = useNow(1000);
   const [busy, setBusy] = useState(false);
+  const scroller = useRef(null);
+  const pinned = useRef(true);
   const [state, refresh] = usePoller({
     key: ref ? `screen:${ref.id}|${ref.kind}|${ref.session_id}` : 'screen:none',
     enabled: !!ref && enabled,
@@ -178,8 +184,20 @@ function ScreenPanel({ env, live, enabled, onTargetGone }) {
     } else if (r.status !== 401) env.toast(`Key not confirmed: ${describeError(r)} Check the screen before trying again.`);
     refresh();
   }
-  if (!ref) return html`<p class="empty">No live agent to read.</p>`;
   const data = state && state.data;
+  const markup = data ? data.html : null;
+  // The question a waiting agent asks is at the bottom of its screen, so the output
+  // starts pinned to its newest line and stays there unless the user scrolls up.
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el || !pinned.current) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight > 1) el.scrollTop = el.scrollHeight;
+  }, [markup]);
+  const onScroll = () => {
+    const el = scroller.current;
+    if (el) pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
+  };
+  if (!ref) return html`<p class="empty">No live agent to read.</p>`;
   const response = data && data.response;
   const failed = response && response.outcome && response.outcome !== 'ok' && response.outcome !== 'completed';
   return html`<div class="screen-panel">
@@ -189,8 +207,12 @@ function ScreenPanel({ env, live, enabled, onTargetGone }) {
     </div>
     ${failed ? html`<${Banner} id="banner-screen" tone="warn">${responseText(response)}<//>` : null}
     ${!data && state && state.error ? html`<${Banner} id="banner-screen" tone="warn">${describeError(state.error)}<//>` : null}
-    ${data ? html`<${ServerHtml} html=${data.html} class="screen-html" id="screen" />` : html`<p class="empty">Reading the screen…</p>`}
-    <${QuickKeys} keys=${env.config.quick_keys} disabled=${busy || !enabled} onKey=${key} />
+    <div class="screen-scroll" id="screen-scroll" ref=${scroller} onScroll=${onScroll}>
+      ${data ? html`<${ServerHtml} html=${markup} class="screen-html" id="screen" />` : html`<p class="empty">Reading the screen…</p>`}
+    </div>
+    <div class="screen-keys">
+      <${QuickKeys} keys=${env.config.quick_keys} disabled=${busy || !enabled} onKey=${key} />
+    </div>
   </div>`;
 }
 
@@ -227,7 +249,7 @@ function chooseTab(route, live) {
 export function DetailView({ env, route }) {
   const identity = route.bind ? `a:${route.id}:${route.run ? 'run' : 'none'}` : `r:${route.run}`;
   const store = useMemo(() => (route.run ? new TimelineStore({ run: route.run, agent: route.bind ? route.id : null }) : null), [identity]);
-  const [, setVersion] = useState(0);
+  const [version, setVersion] = useState(0);
   const bump = () => setVersion((v) => v + 1);
   const [tab, setTabState] = useState(route.tab);
   const [sheet, setSheet] = useState(null);
@@ -368,16 +390,20 @@ export function DetailView({ env, route }) {
     } else if (r.status !== 401) env.toast(`Interrupt not confirmed: ${describeError(r)} Check the screen before trying again.`);
   }
 
-  const items = store ? store.items() : [];
+  // A new array only after a store change: the one-second age re-render must not rerun
+  // the timeline's anchoring effect.
+  const items = useMemo(() => (store ? store.items() : []), [store, version]);
   const stale = tail && (tail.status === 'offline' || tail.status === 'retrying' || tail.status === 'error');
   const title = live && live.title ? String(live.title) : store && store.meta.header && store.meta.header.name ? String(store.meta.header.name) : route.id;
   useEffect(() => {
     document.title = `${title} · ${env.config.title}`;
   }, [title]);
 
+  // Return through history when the entry behind this one is the app's; otherwise
+  // replace this entry with the list rather than adding one.
   const back = () => {
-    if (!route.bind && env.canGoBack()) window.history.back();
-    else env.pushHash('#/');
+    if (env.canGoBack()) window.history.back();
+    else env.replaceHash('#/');
   };
 
   return html`<div class="page detail-page">

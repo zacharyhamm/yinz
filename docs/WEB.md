@@ -255,7 +255,8 @@ plugin configuration or secrets.
     in which case a **New messages** button appears. **Load earlier** follows
     the native `earlier` navigation. Tapping a message opens its reader; tool
     groups open the tools reader, which pages through older records.
-  - **Screen** polls the pane's last 80 lines while the tab is visible.
+  - **Screen** polls the pane's last 80 lines while the tab is visible. It keeps
+    the newest line in view unless you scroll up, with the quick keys below it.
   - **Details** shows run details with **Previous run**, **Original run** and
     **Latest**. Previous and original runs open as stored runs, marked by
     `&bind=0` in the hash: they are read without the live agent, show a
@@ -427,14 +428,16 @@ process cannot be verified, so nothing is delivered); a prompt with a wrong
 attached" after detaching.
 
 The browser test needs a pinned, test-only Playwright package and a Firefox
-build in this worktree's `target/`. Neither is shipped or installed with Yinz:
+build in this worktree's `target/`. Neither is shipped or installed with Yinz.
+The test is ignored by default, so `cargo x ci check` does not run it; select it
+with `--run-ignored only`:
 
 ```sh
 npm ci --prefix yinz-steel-builtins/src/unit/web/browser --ignore-scripts --no-audit --no-fund
 env PLAYWRIGHT_BROWSERS_PATH="$PWD/target/web-browser" \
   node yinz-steel-builtins/src/unit/web/browser/node_modules/playwright/cli.js install firefox
 env PLAYWRIGHT_BROWSERS_PATH="$PWD/target/web-browser" \
-  cargo x integration-test -E 'test(web_builtin_browser_phone_flows)' -j 16
+  cargo x integration-test --run-ignored only -E 'test(web_builtin_browser_phone_flows)' -j 16
 ```
 
 None of these tests uses a phone, Tailscale Serve or a real agent. Real phone

@@ -1334,6 +1334,7 @@ fn web_builtin_production_http() {
 }
 
 #[test]
+#[ignore = "needs the test-only Playwright package and Firefox; see docs/PLUGIN_TESTING.md"]
 fn web_builtin_browser_phone_flows() {
     use std::{
         process::{Command, Stdio},
@@ -1343,18 +1344,24 @@ fn web_builtin_browser_phone_flows() {
     // session as web_builtin_production_http: the native listener, password login, bearer
     // sessions, logout, frozen pages and assets stay live. run.mjs intercepts only the agent-data
     // routes with labelled deterministic fixtures, replaying each bearer against the live
-    // /api/session. Missing tooling fails with the provisioning command; it never skips.
+    // /api/session. Ignored by default, so the unfiltered integration suite and `cargo x ci check`
+    // never need the tooling; when selected with `--run-ignored only`, missing tooling fails with
+    // the provisioning command and never skips.
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .to_owned();
+    const RERUN: &str = "env PLAYWRIGHT_BROWSERS_PATH=$PWD/target/web-browser cargo x \
+                         integration-test --run-ignored only -E \
+                         'test(web_builtin_browser_phone_flows)' -j 16";
     let package = root.join("yinz-steel-builtins/src/unit/web/browser");
     assert!(
         package
             .join("node_modules/playwright/package.json")
             .is_file(),
         "the test-only Playwright package is missing; from {} run:\n  npm ci --prefix \
-         yinz-steel-builtins/src/unit/web/browser --ignore-scripts --no-audit --no-fund",
+         yinz-steel-builtins/src/unit/web/browser --ignore-scripts --no-audit --no-fund\nthen \
+         rerun with:\n  {RERUN}",
         root.display()
     );
     let browsers = std::env::var_os("PLAYWRIGHT_BROWSERS_PATH").unwrap_or_else(|| {
@@ -1362,7 +1369,7 @@ fn web_builtin_browser_phone_flows() {
             "PLAYWRIGHT_BROWSERS_PATH must name the provisioned browsers; from {} run:\n  env \
              PLAYWRIGHT_BROWSERS_PATH=$PWD/target/web-browser node \
              yinz-steel-builtins/src/unit/web/browser/node_modules/playwright/cli.js install \
-             firefox\nthen rerun with the same PLAYWRIGHT_BROWSERS_PATH",
+             firefox\nthen rerun with the same PLAYWRIGHT_BROWSERS_PATH:\n  {RERUN}",
             root.display()
         )
     });
