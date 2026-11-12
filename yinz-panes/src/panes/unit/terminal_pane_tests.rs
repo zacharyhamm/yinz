@@ -1534,6 +1534,128 @@ fn press_key(
 }
 
 #[test]
+fn legacy_keyboard_input_preserves_layout_resolved_text_and_binding_modifiers() {
+    use crate::pane::AdjustedInput;
+    use yinz_types::keys::{BareKey, KeyModifier, KeyWithModifier};
+
+    let mut pane = create_guest_modal_pane();
+    for character in ['a', 'A', 'é', 'É', 'ß', '中', '+', ' '] {
+        for shift in [false, true] {
+            let mut key = KeyWithModifier::new(BareKey::Char(character));
+            if shift {
+                key = key.with_shift_modifier();
+            }
+            let key = Some(key);
+            let raw_bytes = yinz_key_codec::keys::serialize_native_key(key.as_ref().unwrap())
+                .unwrap()
+                .into_bytes();
+            assert!(
+                matches!(
+                    pane.adjust_input_to_terminal(&key, raw_bytes, true, Some(ClientId::new(1))),
+                    Some(AdjustedInput::WriteBytesToTerminal(bytes))
+                        if bytes == character.to_string().as_bytes()
+                ),
+                "{key:?}"
+            );
+            assert_eq!(
+                key.as_ref()
+                    .unwrap()
+                    .key_modifiers
+                    .contains(&KeyModifier::Shift),
+                shift,
+            );
+        }
+    }
+}
+
+#[test]
+fn legacy_keyboard_input_still_converts_sequences_modifiers_and_control_characters() {
+    use crate::pane::AdjustedInput;
+    use yinz_types::keys::{BareKey, KeyWithModifier};
+
+    let mut pane = create_guest_modal_pane();
+    let a = KeyWithModifier::new(BareKey::Char('a'));
+    for key in [
+        a.clone().with_ctrl_modifier(),
+        a.clone().with_alt_modifier(),
+        a.clone().with_super_modifier(),
+        a.clone().with_shift_modifier().with_ctrl_modifier(),
+        a.clone().with_shift_modifier().with_alt_modifier(),
+        a.clone().with_shift_modifier().with_super_modifier(),
+        a.with_ctrl_modifier().with_alt_modifier(),
+        KeyWithModifier::new(BareKey::Char('\n')),
+        KeyWithModifier::new(BareKey::Char('\u{7f}')).with_shift_modifier(),
+        KeyWithModifier::new(BareKey::Enter),
+        KeyWithModifier::new(BareKey::Tab).with_shift_modifier(),
+        KeyWithModifier::new(BareKey::Up).with_shift_modifier(),
+    ] {
+        // Even matching character bytes are not resolved text with Ctrl/Alt/Super held.
+        for raw_bytes in [
+            yinz_key_codec::keys::serialize_native_key(&key)
+                .unwrap()
+                .into_bytes(),
+            match key.bare_key {
+                BareKey::Char(character) => character.to_string().into_bytes(),
+                _ => vec![],
+            },
+        ] {
+            let expected = yinz_key_codec::keys::serialize_non_kitty(&key).map(String::into_bytes);
+            let adjusted = pane.adjust_input_to_terminal(
+                &Some(key.clone()),
+                raw_bytes,
+                true,
+                Some(ClientId::new(1)),
+            );
+            match (adjusted, expected) {
+                (Some(AdjustedInput::WriteBytesToTerminal(actual)), Some(expected)) => {
+                    assert_eq!(actual, expected, "{key:?}");
+                },
+                (None, None) => {},
+                other => panic!("unexpected legacy conversion for {key:?}: {other:?}"),
+            }
+        }
+    }
+    let key = Some(KeyWithModifier::new(BareKey::Char('a')).with_shift_modifier());
+    for raw_bytes in [
+        b"\x1b[97;2u".to_vec(),
+        b"ab".to_vec(),
+        b"A".to_vec(),
+        vec![0xff],
+    ] {
+        assert!(matches!(
+            pane.adjust_input_to_terminal(&key, raw_bytes, true, Some(ClientId::new(1))),
+            Some(AdjustedInput::WriteBytesToTerminal(bytes)) if bytes == b"A"
+        ));
+    }
+}
+
+#[test]
+fn kitty_keyboard_input_keeps_native_bytes_unchanged() {
+    use crate::pane::AdjustedInput;
+    use yinz_types::keys::{BareKey, KeyWithModifier};
+
+    let mut pane = create_guest_modal_pane();
+    pane.handle_pty_bytes(b"\x1b[>1u".to_vec());
+    assert!(pane.grid.supports_kitty_keyboard_protocol);
+    for key in [
+        KeyWithModifier::new(BareKey::Char('a')).with_shift_modifier(),
+        KeyWithModifier::new(BareKey::Char('É')),
+        KeyWithModifier::new(BareKey::Char('v'))
+            .with_ctrl_modifier()
+            .with_shift_modifier(),
+        KeyWithModifier::new(BareKey::Up).with_alt_modifier(),
+    ] {
+        let raw_bytes = yinz_key_codec::keys::serialize_native_key(&key)
+            .unwrap()
+            .into_bytes();
+        assert!(matches!(
+            pane.adjust_input_to_terminal(&Some(key), raw_bytes.clone(), true, Some(ClientId::new(1))),
+            Some(AdjustedInput::WriteBytesToTerminal(bytes)) if bytes == raw_bytes
+        ));
+    }
+}
+
+#[test]
 fn an_ordinary_held_command_still_drops_to_a_shell_on_escape() {
     use crate::pane::AdjustedInput;
     use yinz_types::keys::BareKey;

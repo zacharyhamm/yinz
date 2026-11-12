@@ -9,7 +9,10 @@ use yinz_ipc::ipc::{
     ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg,
 };
 use yinz_runtime::errors::prelude::*;
+use yinz_types::data::LayoutInfo;
+use yinz_types::envs::EnvironmentVariables;
 use yinz_types::input::actions::Action;
+use yinz_types::internal_ids::SessionName;
 use yinz_types::pane_size::Size;
 
 pub type Sender = Arc<Mutex<IpcSenderWithContext<ClientToServerMsg>>>;
@@ -45,6 +48,63 @@ pub fn connect_to(
     size: Size,
     target: Option<&yinz_types::data::SessionConnection>,
 ) -> Result<Connection> {
+    let sessions = yinz_session::sessions::get_sessions()
+        .map_err(|error| anyhow!("list local sessions: {error:?}"))?;
+    let PreparedConnection {
+        name,
+        new,
+        env,
+        opening,
+    } = prepare_connection(args, original_opts, size, target, &sessions)?;
+    let path = yinz_runtime::consts::YINZ_SOCK_DIR.join(&name);
+    if new {
+        std::fs::create_dir_all(&*yinz_runtime::consts::YINZ_SOCK_DIR)
+            .context("create session socket directory")?;
+        yinz_client::spawn_server_with_termios(
+            &path,
+            original_opts.debug,
+            &name.clone().into(),
+            &env,
+            Some(&None),
+        )
+        .context("spawn native session server")?;
+    }
+    let stream =
+        yinz_ipc::consts::ipc_connect(&path).context("connect native client to session")?;
+    let mut sender = IpcSenderWithContext::new(stream);
+    let receiver = sender
+        .get_receiver()
+        .context("clone native session receiver")?;
+    sender
+        .send_client_msg(opening)
+        .context("send native session handshake")?;
+    let sender = Arc::new(Mutex::new(sender));
+    send(
+        &sender,
+        ClientToServerMsg::StructuredRenderSupport { supported: true },
+    )?;
+    Ok(Connection {
+        sender,
+        receiver,
+        name,
+    })
+}
+
+struct PreparedConnection {
+    name: String,
+    new: bool,
+    env: EnvironmentVariables,
+    opening: ClientToServerMsg,
+}
+
+// Resolve and validate the handshake before spawning a server for a new or resurrected session.
+fn prepare_connection(
+    args: &TerminalArgs,
+    original_opts: &CliArgs,
+    size: Size,
+    target: Option<&yinz_types::data::SessionConnection>,
+    sessions: &[(SessionName, Duration)],
+) -> Result<PreparedConnection> {
     let mut opts = original_opts.clone();
     if let Some(target) = target {
         opts.layout = None;
@@ -60,46 +120,48 @@ pub fn connect_to(
         }
     }
     let opts = &opts;
+    let name = select_session_name(args, opts, sessions, target)?;
+    let new = !sessions.iter().any(|(session, _)| session.as_str() == name);
+    let named = target.map_or(
+        args.session_name.is_some() || opts.session.is_some(),
+        |target| target.name.is_some(),
+    );
+    let resurrection = if new && named {
+        let session_name = SessionName::new(&name);
+        yinz_session::sessions::resurrection_layout(&session_name)
+            .map_err(anyhow::Error::msg)
+            .context("load native session checkpoint")?
+            .map(|_| {
+                LayoutInfo::File(
+                    yinz_runtime::consts::session_layout_cache_file_name(&session_name)
+                        .display()
+                        .to_string(),
+                    Default::default(),
+                )
+            })
+    } else {
+        None
+    };
+    anyhow::ensure!(
+        !new || resurrection.is_some()
+            || target.is_some()
+            || args.create
+            || args.session_name.is_none(),
+        "session {name:?} does not exist; use --create"
+    );
     let (config, layout, options, _, _) = yinz_cli::setup::Setup::from_cli_args(opts)
         .map_err(|error| anyhow!("{error}"))
         .context("load native client configuration")?;
-    let sessions = yinz_session::sessions::get_sessions()
-        .map_err(|error| anyhow!("list local sessions: {error:?}"))?;
-    let name = select_session_name(args, opts, &sessions, target)?;
-    let new = !sessions.iter().any(|(session, _)| session.as_str() == name);
-    anyhow::ensure!(
-        !new || target.is_some() || args.create || args.session_name.is_none(),
-        "session {name:?} does not exist; use --create"
-    );
-    let path = yinz_runtime::consts::YINZ_SOCK_DIR.join(&name);
     let cwd = args
         .working_directory
         .as_ref()
         .map(|path| std::fs::canonicalize(path).context("resolve native working directory"))
         .transpose()?;
-    if new {
-        std::fs::create_dir_all(&*yinz_runtime::consts::YINZ_SOCK_DIR)
-            .context("create session socket directory")?;
-        yinz_client::spawn_server_with_termios(
-            &path,
-            opts.debug,
-            &name.clone().into(),
-            &config.env,
-            Some(&None),
-        )
-        .context("spawn native session server")?;
-    }
-    let stream =
-        yinz_ipc::consts::ipc_connect(&path).context("connect native client to session")?;
-    let mut sender = IpcSenderWithContext::new(stream);
-    let receiver = sender
-        .get_receiver()
-        .context("clone native session receiver")?;
     let mut opening = yinz_client::native_first_message(
         opts,
         &options,
         &config.env,
-        layout,
+        resurrection.or(layout),
         size,
         new,
         target.and_then(|target| target.cwd.clone()).or(cwd),
@@ -116,18 +178,11 @@ pub fn connect_to(
         *tab_number_to_focus = target.tab_position;
         *pane_to_focus = target.pane_id;
     }
-    sender
-        .send_client_msg(opening)
-        .context("send native session handshake")?;
-    let sender = Arc::new(Mutex::new(sender));
-    send(
-        &sender,
-        ClientToServerMsg::StructuredRenderSupport { supported: true },
-    )?;
-    Ok(Connection {
-        sender,
-        receiver,
+    Ok(PreparedConnection {
         name,
+        new,
+        env: config.env,
+        opening,
     })
 }
 

@@ -31,7 +31,7 @@ use yinz_types::input::command::RunCommand;
 use yinz_types::internal_ids::PluginId;
 use yinz_types::internal_ids::SessionName;
 use yinz_types::internal_ids::TerminalId;
-use yinz_types::keys::{BareKey, KeyWithModifier};
+use yinz_types::keys::{BareKey, KeyModifier, KeyWithModifier};
 use yinz_types::mouse::{MouseEvent, MouseEventType};
 use yinz_types::pane_size::Offset;
 use yinz_types::pane_size::PaneGeom;
@@ -2530,6 +2530,19 @@ impl TerminalPane {
             }
         }
         if raw_input_bytes_are_kitty {
+            if let Some(key) = key
+                && let BareKey::Char(character) = key.bare_key
+                && !character.is_control()
+                && key
+                    .key_modifiers
+                    .iter()
+                    .all(|modifier| *modifier == KeyModifier::Shift)
+                && raw_input_bytes == character.encode_utf8(&mut [0; 4]).as_bytes()
+            {
+                // Native text already has its layout-resolved case. Keep Shift on the
+                // binding key, but do not apply it to the character a second time.
+                return Some(AdjustedInput::WriteBytesToTerminal(raw_input_bytes));
+            }
             // here what happens is that the host terminal is operating in "kitty keys" mode, but
             // this terminal pane is not - so we need to serialize the kitty key to "non kitty" if
             // possible - if not possible (eg. with multiple modifiers), we'll return a None here
