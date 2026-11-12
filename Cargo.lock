@@ -6329,6 +6329,7 @@ dependencies = [
  "yinz-client",
  "yinz-config",
  "yinz-ipc",
+ "yinz-native-terminal",
  "yinz-runtime",
  "yinz-server",
  "yinz-session",

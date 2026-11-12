@@ -52,6 +52,7 @@ fn server_message_name(msg: &ServerToClientMsg) -> String {
         ServerToClientMsg::ForwardQueryToHost { .. } => "ForwardQueryToHost",
         ServerToClientMsg::EmitNestedSessionFrame { .. } => "EmitNestedSessionFrame",
         ServerToClientMsg::SetMouseMode { .. } => "SetMouseMode",
+        ServerToClientMsg::RenderFrame { .. } => "RenderFrame",
     }
     .to_string()
 }

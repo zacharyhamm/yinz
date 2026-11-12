@@ -378,16 +378,29 @@ fn repl_connects_automatically_and_preserves_input_and_output_behavior() {
             "write-chars",
             "--pane-id",
             terminal,
-            "(define answer\n  42)\nmissing-name\n(display \"answer=\") (+ answer 1)\n",
+            "(define answer\n  42)\nmissing-name\n",
         ],
         None,
     );
     assert!(output.status.success());
+    success(session.run(&["action", "pane-wait", pane, "--contains", "Error:"], None));
+    assert!(session
+        .run(
+            &[
+                "action",
+                "write-chars",
+                "--pane-id",
+                terminal,
+                "(display \"answer=\") (+ answer 1)\n"
+            ],
+            None,
+        )
+        .status
+        .success());
     success(session.run(
         &["action", "pane-wait", pane, "--contains", "answer=43"],
         None,
     ));
-    success(session.run(&["action", "pane-wait", pane, "--contains", "Error:"], None));
     assert!(session
         .run(
             &["action", "write-chars", "--pane-id", terminal, ":quit\n"],

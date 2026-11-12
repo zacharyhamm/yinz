@@ -3,6 +3,7 @@ A terminal workspace with batteries included
 Usage: yinz [OPTIONS] [COMMAND]
 
 Commands:
+  terminal             Open a native GPU terminal window
   update               Install the latest stable GitHub release into the current installation
   repl                 Evaluate Steel Scheme in a running session, interactively, from stdin, or
                        with --eval

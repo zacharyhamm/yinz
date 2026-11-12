@@ -1,5 +1,6 @@
 ---
 source: yinz-cli/src/unit/setup_setup_test.rs
+assertion_line: 136
 expression: "format!(\"{:#?}\", config)"
 ---
 Config {
@@ -9061,5 +9062,22 @@ Config {
         tailscale_users: [],
         session_days: None,
         https_port_hint: None,
+    },
+    terminal: TerminalConfig {
+        font_family: None,
+        font_size: None,
+        font_weight: None,
+        font_ligatures: None,
+        system_fonts: None,
+        line_height: None,
+        padding: None,
+        opacity: None,
+        blur: None,
+        startup_mode: None,
+        cursor_style: None,
+        macos_option_as_alt: None,
+        cursor_blink: None,
+        open_links: None,
+        middle_click_paste: None,
     },
 }

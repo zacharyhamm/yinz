@@ -69,6 +69,7 @@ pub enum ScreenContext {
     ContextMenuHandleKeyIfOpen,
     TogglePaneEmbedOrFloating,
     PasteFromClient,
+    TextFromClient,
     WriteCharacter,
     ResizeIncreaseAll,
     ResizeIncreaseLeft,
