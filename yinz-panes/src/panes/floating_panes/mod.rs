@@ -784,6 +784,8 @@ impl FloatingPanes {
                 self.dimmed_clients.clone(),
             );
             // Keep the normal frame below stack entries even when their cached rows do not draw.
+            pane_contents_and_ui
+                .set_titles_style(pane_frame_style.draws_titles() && !should_draw_pane_frames);
             pane_contents_and_ui.set_frame_geom_override(frame_geom_override);
             pane_contents_and_ui.set_blank_title(reserved_rows > 0);
             for client_id in &connected_clients {

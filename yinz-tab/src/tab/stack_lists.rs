@@ -863,6 +863,7 @@ impl Tab {
                     self.mouse_scroll_resize,
                     self.dimmed_clients.clone(),
                 );
+                pane_contents_and_ui.set_titles_style(self.pane_frame_style.draws_titles());
                 pane_contents_and_ui.set_frame_geom_override(Some(header_geom));
                 for (client_id, client_mode) in &client_modes {
                     pane_contents_and_ui.set_same_worktree(

@@ -134,6 +134,7 @@ pub struct FrameParams {
     pub pane_is_stacked_over: bool,
     pub pane_is_stacked: bool,
     pub should_draw_pane_frames: bool,
+    pub titles_style: bool,
     pub pane_is_floating: bool,
     pub show_pinned_indication: bool,
     pub show_scroll_indication: bool,
@@ -178,6 +179,7 @@ pub struct PaneFrame {
     pane_is_stacked_under: bool,
     pane_is_stacked: bool,
     should_draw_pane_frames: bool,
+    titles_style: bool,
     is_pinned: bool,
     is_floating: bool,
     show_pinned_indication: bool,
@@ -227,6 +229,7 @@ impl PaneFrame {
             pane_is_stacked_under: frame_params.pane_is_stacked_under,
             pane_is_stacked: frame_params.pane_is_stacked,
             should_draw_pane_frames: frame_params.should_draw_pane_frames,
+            titles_style: frame_params.titles_style,
             is_pinned: false,
             is_floating: frame_params.pane_is_floating,
             show_pinned_indication: frame_params.show_pinned_indication,
@@ -242,6 +245,54 @@ impl PaneFrame {
             dimmed: frame_params.dimmed,
             guest_choice_indicator: frame_params.guest_choice_indicator,
             opening_ripple: frame_params.opening_ripple,
+        }
+    }
+    fn title_colors(&self) -> yinz_types::style::StyleDeclaration {
+        if self.titles_style {
+            let mut colors = if self.is_main_client {
+                self.style.colors.ribbon_selected
+            } else {
+                self.style.colors.ribbon_unselected
+            };
+            // Some themes reuse the ribbon background as an emphasis color.
+            // Status markers still need to remain visible on a filled titlebar.
+            for emphasis in [
+                &mut colors.emphasis_0,
+                &mut colors.emphasis_1,
+                &mut colors.emphasis_2,
+                &mut colors.emphasis_3,
+            ] {
+                if *emphasis == colors.background {
+                    *emphasis = colors.base;
+                }
+            }
+            colors
+        } else {
+            self.style.colors.text_unselected
+        }
+    }
+    fn title_foreground(&self) -> Option<PaletteColor> {
+        if self.titles_style {
+            Some(self.title_colors().base)
+        } else {
+            self.color
+        }
+    }
+    fn fill_titlebar(&self, characters: &mut [TerminalCharacter]) {
+        if !self.titles_style {
+            return;
+        }
+        let colors = self.title_colors();
+        for character in characters {
+            character.styles.update(|styles| {
+                // Multiplayer cursor swatches carry an explicit background of their own.
+                if styles.background.is_none() || styles.background == Some(AnsiCode::Reset) {
+                    styles.background = Some(colors.background.into());
+                }
+                if styles.foreground.is_none() || styles.foreground == Some(AnsiCode::Reset) {
+                    styles.foreground = Some(colors.base.into());
+                }
+            });
         }
     }
     fn horizontal(&self, column: usize) -> &'static str {
@@ -517,7 +568,7 @@ impl PaneFrame {
             || self.pane_is_stacked_over
             || !self.should_draw_pane_frames;
         if renders_exit_status_in_title && self.exit_status.is_some() {
-            let (first_part, first_part_len) = self.first_exited_held_title_part_full();
+            let (first_part, first_part_len) = self.first_exited_held_title_part_full(true);
             return if first_part_len <= max_length {
                 Some((first_part, first_part_len))
             } else {
@@ -543,10 +594,12 @@ impl PaneFrame {
         }
     }
     fn render_title_left_side(&self, max_length: usize) -> Option<(Vec<TerminalCharacter>, usize)> {
-        // Frames retain their normal background even when focused; selected text
-        // colors require a selected background and can otherwise become invisible.
-        let colors = self.style.colors.text_unselected;
-        let title_color = self.agent_title.title_color(colors).or(self.color);
+        // Status colors must come from the same declaration as the title background.
+        let colors = self.title_colors();
+        let title_color = self
+            .agent_title
+            .title_color(colors)
+            .or(self.title_foreground());
         let Some(marker) = self.agent_title.marker() else {
             return self.render_title_text(max_length, title_color);
         };
@@ -919,10 +972,14 @@ impl PaneFrame {
             EMPTY_TERMINAL_CHARACTER,
             left_budget.saturating_sub(focus_length),
         ));
-        let unfocused_color = self.style.colors.frame_unselected.map(|frame| frame.base);
+        let unfocused_color = if self.titles_style {
+            self.title_foreground()
+        } else {
+            self.style.colors.frame_unselected.map(|frame| frame.base)
+        };
         let style_entry_text = |text: &str| {
             if entry.is_selected || entry.is_emphasized {
-                foreground_color(text, self.color)
+                foreground_color(text, self.title_foreground())
             } else if entry.stack_is_focused {
                 foreground_color(text, unfocused_color)
             } else {
@@ -939,9 +996,8 @@ impl PaneFrame {
             entry.border_color,
         ));
         line.extend(repeat_n(EMPTY_TERMINAL_CHARACTER, corner_padding));
-        // Frames retain their normal background even when focused; selected text
-        // colors require a selected background and can otherwise become invisible.
-        let colors = self.style.colors.text_unselected;
+        // Status colors must come from the same declaration as the title background.
+        let colors = self.title_colors();
         let mut text = style_entry_text(&content);
         for (index, character) in text.iter_mut().enumerate() {
             let color = if index == 0 && self.agent_title.marker().is_some() {
@@ -969,7 +1025,7 @@ impl PaneFrame {
             .bracketed_scroll_indicator(usable_cols.saturating_sub(occupied_columns))
             .unwrap_or((vec![], 0));
         if self.exit_status.is_some() {
-            let (mut exit_part, exit_length) = self.first_exited_held_title_part_full();
+            let (mut exit_part, exit_length) = self.first_exited_held_title_part_full(true);
             if occupied_columns + 1 + exit_length + scroll_length <= usable_cols {
                 line.push(EMPTY_TERMINAL_CHARACTER);
                 line.append(&mut exit_part);
@@ -1005,28 +1061,34 @@ impl PaneFrame {
     }
     fn bracketed_title_part(&self, content: &str) -> (Vec<TerminalCharacter>, usize) {
         let text = format!(" [ {} ] ", content);
-        (foreground_color(&text, self.color), text.width())
+        (
+            foreground_color(&text, self.title_foreground()),
+            text.width(),
+        )
     }
     fn bracketed_title_part_from_characters(
         &self,
         mut content: Vec<TerminalCharacter>,
         content_length: usize,
     ) -> (Vec<TerminalCharacter>, usize) {
-        let mut part = foreground_color(" [ ", self.color);
+        let mut part = foreground_color(" [ ", self.title_foreground());
         part.append(&mut content);
-        part.append(&mut foreground_color(" ] ", self.color));
+        part.append(&mut foreground_color(" ] ", self.title_foreground()));
         (part, content_length + 6)
     }
     fn plain_title_part(&self, content: &str) -> (Vec<TerminalCharacter>, usize) {
         let text = format!(" {} ", content);
-        (foreground_color(&text, self.color), text.width())
+        (
+            foreground_color(&text, self.title_foreground()),
+            text.width(),
+        )
     }
     fn bracketed_pane_title(&self, max_length: usize) -> Option<(Vec<TerminalCharacter>, usize)> {
         if self.agent_title.state.is_some() {
             let exit = self
                 .exit_status
                 .is_some()
-                .then(|| self.first_exited_held_title_part_full())
+                .then(|| self.first_exited_held_title_part_full(true))
                 .filter(|(_, length)| *length < max_length);
             let exit_length = exit.as_ref().map_or(0, |(_, length)| *length);
             let (mut title, mut length) =
@@ -1044,7 +1106,7 @@ impl PaneFrame {
         let exit_part = self
             .exit_status
             .is_some()
-            .then(|| self.first_exited_held_title_part_full());
+            .then(|| self.first_exited_held_title_part_full(true));
         let exit_length = exit_part.as_ref().map(|(_, length)| *length).unwrap_or(0);
         let content_max_length = max_length.saturating_sub(title_padding + exit_length);
         let content = if self.title.width() <= content_max_length {
@@ -1062,9 +1124,8 @@ impl PaneFrame {
             truncated
         };
         let (mut part, mut length) = self.plain_title_part(&content);
-        // Frames retain their normal background even when focused; selected text
-        // colors require a selected background and can otherwise become invisible.
-        let colors = self.style.colors.text_unselected;
+        // Status colors must come from the same declaration as the title background.
+        let colors = self.title_colors();
         if let Some(color) = self.agent_title.title_color(colors) {
             for character in &mut part {
                 character
@@ -1137,7 +1198,7 @@ impl PaneFrame {
         }
     }
     fn focused_users_part(&self, label: &str) -> (Vec<TerminalCharacter>, usize) {
-        let mut content = foreground_color(label, self.color);
+        let mut content = foreground_color(label, self.title_foreground());
         let mut content_length = label.width();
         for slot in &self.other_focused_clients {
             content.push(EMPTY_TERMINAL_CHARACTER);
@@ -1336,7 +1397,7 @@ impl PaneFrame {
 
     fn render_held_undertitle(&self) -> Result<Vec<TerminalCharacter>> {
         let max_undertitle_length = self.geom.cols.saturating_sub(2); // 2 for the left and right corners
-        let (mut first_part, first_part_len) = self.first_exited_held_title_part_full();
+        let (mut first_part, first_part_len) = self.first_exited_held_title_part_full(false);
         let mut left_boundary =
             foreground_color(self.get_corner(boundary_type::BOTTOM_LEFT), self.color);
         let mut right_boundary =
@@ -1521,11 +1582,9 @@ impl PaneFrame {
             return Ok((character_chunks, None));
         }
         if let Some(entry) = &self.stack_list_entry {
-            character_chunks.push(CharacterChunk::new(
-                self.render_stack_list_entry(entry),
-                self.geom.x,
-                self.geom.y,
-            ));
+            let mut characters = self.render_stack_list_entry(entry);
+            self.fill_titlebar(&mut characters);
+            character_chunks.push(CharacterChunk::new(characters, self.geom.x, self.geom.y));
             return Ok((character_chunks, None));
         }
         if self.geom.rows == 1 || !self.should_draw_pane_frames {
@@ -1540,6 +1599,7 @@ impl PaneFrame {
                 // in order to give room to the boundaries between the panes to be drawn
                 one_line_title.pop();
             }
+            self.fill_titlebar(&mut one_line_title);
             let y_coords_of_title = if self.pane_is_stacked_under && !self.should_draw_pane_frames {
                 // we only want to use the bottom offset in this case because panes that are
                 // stacked above the flexible pane should actually appear exactly where they are on
@@ -1681,6 +1741,13 @@ impl PaneFrame {
         Ok((character_chunks, None))
     }
     fn render_hint_segments(&self, segments: &[HintSegment]) -> (Vec<TerminalCharacter>, usize) {
+        self.render_hint_segments_in_context(segments, false)
+    }
+    fn render_hint_segments_in_context(
+        &self,
+        segments: &[HintSegment],
+        inline: bool,
+    ) -> (Vec<TerminalCharacter>, usize) {
         let mut characters = vec![];
         let mut length = 0;
         for segment in segments {
@@ -1691,19 +1758,31 @@ impl PaneFrame {
                 HintLevel::Error => Some(self.style.colors.exit_code_error.base),
                 HintLevel::Success => Some(self.style.colors.exit_code_success.base),
             };
+            let color = if inline && self.titles_style {
+                let colors = self.title_colors();
+                match segment.level {
+                    HintLevel::Plain => Some(colors.base),
+                    _ if color == Some(colors.background) => Some(colors.base),
+                    _ => color,
+                }
+            } else {
+                color
+            };
             characters.append(&mut foreground_color(&segment.text, color));
             length += segment.text.width();
         }
         (characters, length)
     }
-    fn first_exited_held_title_part_full(&self) -> (Vec<TerminalCharacter>, usize) {
+    fn first_exited_held_title_part_full(&self, inline: bool) -> (Vec<TerminalCharacter>, usize) {
         match self.exit_status {
-            Some(ExitStatus::Code(exit_code)) => {
-                self.render_hint_segments(&exit_code_segments(HintExitStatus::Code(exit_code)))
-            },
-            Some(ExitStatus::Exited) => {
-                self.render_hint_segments(&exit_code_segments(HintExitStatus::Exited))
-            },
+            Some(ExitStatus::Code(exit_code)) => self.render_hint_segments_in_context(
+                &exit_code_segments(HintExitStatus::Code(exit_code)),
+                inline,
+            ),
+            Some(ExitStatus::Exited) => self.render_hint_segments_in_context(
+                &exit_code_segments(HintExitStatus::Exited),
+                inline,
+            ),
             None => (foreground_color(boundary_type::HORIZONTAL, self.color), 1),
         }
     }

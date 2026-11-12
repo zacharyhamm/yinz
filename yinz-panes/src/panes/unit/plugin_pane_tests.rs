@@ -20,6 +20,7 @@ pub(super) fn frame_params() -> FrameParams {
         pane_is_stacked_under: false,
         pane_is_stacked: false,
         should_draw_pane_frames: true,
+        titles_style: false,
         pane_is_floating: false,
         show_pinned_indication: false,
         show_scroll_indication: true,

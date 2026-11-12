@@ -42,6 +42,7 @@ pub struct PaneContentsAndUi<'a> {
     pane_is_stacked_under: bool,
     pane_is_stacked_over: bool,
     should_draw_pane_frames: bool,
+    titles_style: bool,
     mouse_is_hovering_over_pane_for_clients: HashSet<ClientId>,
     current_pane_group: HashMap<ClientId, Vec<PaneId>>,
     show_help_text: bool,
@@ -101,6 +102,7 @@ impl<'a> PaneContentsAndUi<'a> {
             pane_is_stacked_under,
             pane_is_stacked_over,
             should_draw_pane_frames,
+            titles_style: false,
             mouse_is_hovering_over_pane_for_clients,
             current_pane_group,
             show_help_text,
@@ -118,6 +120,9 @@ impl<'a> PaneContentsAndUi<'a> {
     }
     fn frame_is_dimmed_for_client(&self, client_id: ClientId) -> bool {
         self.dimmed_for_clients.contains(&client_id) && !self.focused_clients.contains(&client_id)
+    }
+    pub fn set_titles_style(&mut self, titles_style: bool) {
+        self.titles_style = titles_style;
     }
     pub fn set_same_worktree(&mut self, same_worktree: bool) {
         self.same_worktree = same_worktree;
@@ -450,6 +455,7 @@ impl<'a> PaneContentsAndUi<'a> {
                 pane_is_stacked_under: self.pane_is_stacked_under,
                 pane_is_stacked,
                 should_draw_pane_frames: self.should_draw_pane_frames,
+                titles_style: self.titles_style,
                 pane_is_floating,
                 show_pinned_indication,
                 show_scroll_indication,
@@ -482,6 +488,7 @@ impl<'a> PaneContentsAndUi<'a> {
                 pane_is_stacked_under: self.pane_is_stacked_under,
                 pane_is_stacked,
                 should_draw_pane_frames: self.should_draw_pane_frames,
+                titles_style: self.titles_style,
                 pane_is_floating,
                 show_pinned_indication,
                 show_scroll_indication,

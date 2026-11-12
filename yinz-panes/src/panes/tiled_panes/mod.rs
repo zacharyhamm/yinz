@@ -1576,6 +1576,7 @@ impl TiledPanes {
                     mouse_scroll_resize,
                     self.dimmed_clients.clone(),
                 );
+                pane_contents_and_ui.set_titles_style(self.pane_frame_style.draws_titles());
                 pane_contents_and_ui.set_frame_geom_override(visible_member_frame_override);
                 pane_contents_and_ui.set_blank_title(reserved_rows_for_pane > 0);
                 for client_id in &connected_clients {

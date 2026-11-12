@@ -404,14 +404,24 @@ fn assert_header_cells(tab: &Tab, grid: &Grid, shared_divider: bool) {
                 continue;
             }
             assert_eq!(cell.character, character, "character at ({x}, {y})");
+            let ribbon = (tab.pane_frame_style.draws_titles()
+                && rank < list.members.len()
+                && (offset.left..rect.cols.as_usize() - offset.right).contains(&column))
+            .then_some(if selected {
+                tab.style.colors.ribbon_selected
+            } else {
+                tab.style.colors.ribbon_unselected
+            });
             assert_eq!(
                 cell.styles.background,
-                Some(background),
+                Some(ribbon.map_or(background, |colors| colors.background.into())),
                 "background at ({x}, {y})"
             );
             let selected_text = selected && (entry_x + 4..entry_x + 4 + label.len()).contains(&x);
             let focus_marker = selected && (offset.left..offset.left + 4).contains(&column);
-            let expected_foreground = if selected_text || focus_marker {
+            let expected_foreground = if let Some(colors) = ribbon {
+                colors.base.into()
+            } else if selected_text || focus_marker {
                 tab.style.colors.frame_selected.base.into()
             } else {
                 foreground
@@ -605,5 +615,78 @@ fn stack_list_header_padding_stays_below_higher_floating_panes() {
                 assert_eq!(cell.styles.background, Some(AnsiCode::RgbCode((1, 2, 3))));
             }
         }
+    }
+}
+
+#[test]
+fn catppuccin_stack_list_headers_use_ribbons_through_the_tab_caller() {
+    let themes = yinz_config::theme::Themes::from_string(
+        include_str!("../../../../../yinz-config/assets/themes/catppuccin-macchiato.kdl"),
+        false,
+    )
+    .unwrap();
+    let theme = themes.get_theme("catppuccin-macchiato").unwrap();
+    for floating in [false, true] {
+        let size = Size {
+            cols: 100,
+            rows: 30,
+        };
+        let mut tab = stack_tab(size, floating, PaneFrameStyle::Titles);
+        tab.update_theme(theme.palette);
+        tab.update_terminal_theme(theme.terminal);
+        let mut grid = host_grid(size);
+        render_into(&mut tab, &mut grid);
+        assert_header_cells(&tab, &grid, false);
+        assert!(tab.focus_hidden_stack_list_member(PaneId::Terminal(TerminalId::new(1)), CLIENT));
+        render_into(&mut tab, &mut grid);
+        assert_header_cells(&tab, &grid, false);
+    }
+}
+
+#[test]
+fn floating_titles_keep_frame_colors_until_fullscreen() {
+    let themes = yinz_config::theme::Themes::from_string(
+        include_str!("../../../../../yinz-config/assets/themes/catppuccin-macchiato.kdl"),
+        false,
+    )
+    .unwrap();
+    let theme = themes.get_theme("catppuccin-macchiato").unwrap();
+    let size = Size {
+        cols: 100,
+        rows: 30,
+    };
+    let mut tab = setup_tab_with_focused_floating_pane(size, CLIENT, PaneFrameStyle::Titles);
+    tab.update_theme(theme.palette);
+    tab.update_terminal_theme(theme.terminal);
+    tab.handle_pty_bytes(TerminalId::new(2), b"\x1b]2;color-test-pane\x07".to_vec())
+        .unwrap();
+    let mut grid = host_grid(size);
+    for fullscreen in [false, true] {
+        if fullscreen {
+            tab.toggle_active_pane_fullscreen(CLIENT);
+        }
+        render_into(&mut tab, &mut grid);
+        let id = tab.floating_panes.active_pane_id(CLIENT).unwrap();
+        let rect = tab.get_pane_with_id(id).unwrap().render_geom();
+        let row: Vec<_> = (rect.x..rect.x + rect.cols.as_usize())
+            .map(|x| grid.get_character_at(x, rect.y).unwrap())
+            .collect();
+        let text: String = row.iter().map(|cell| cell.character).collect();
+        let title_byte = text.find("color-test-pane").expect("floating pane title");
+        let title_column = text[..title_byte].chars().count();
+        let cell = &row[title_column];
+        let (foreground, background) = if fullscreen {
+            (
+                theme.palette.ribbon_selected.base.into(),
+                theme.palette.ribbon_selected.background.into(),
+            )
+        } else {
+            (
+                theme.palette.frame_selected.base.into(),
+                AnsiCode::RgbCode(theme.terminal.unwrap().background),
+            )
+        };
+        assert_eq!(cell.styles.foreground, Some(foreground));
+        assert_eq!(cell.styles.background, Some(background));
     }
 }

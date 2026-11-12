@@ -23,6 +23,7 @@ fn pane_frame_with(mouse_scroll_resize: bool, is_floating: bool, cols: usize) ->
             pane_is_stacked_under: false,
             pane_is_stacked: false,
             should_draw_pane_frames: true,
+            titles_style: false,
             pane_is_floating: is_floating,
             show_pinned_indication: true,
             show_scroll_indication: true,
@@ -587,6 +588,206 @@ fn focused_idle_agent_title_marker_uses_normal_background_palette() {
                     marker.styles.foreground,
                     Some(frame.style.colors.text_unselected.background.into())
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn titles_style_fills_the_entire_row_with_the_viewing_clients_ribbon_colors() {
+    for (name, source) in [
+        (
+            "catppuccin-latte",
+            include_str!("../../../../yinz-config/assets/themes/catppuccin-latte.kdl"),
+        ),
+        (
+            "catppuccin-macchiato",
+            include_str!("../../../../yinz-config/assets/themes/catppuccin-macchiato.kdl"),
+        ),
+    ] {
+        let themes = yinz_config::theme::Themes::from_string(source, false).unwrap();
+        let theme = themes.get_theme(name).unwrap();
+        for floating in [false, true] {
+            for focused in [false, true] {
+                for width in [0, 1, 2, 8, 40, 80] {
+                    for stacked in [false, true] {
+                        let mut frame = pane_frame_with(false, floating, width);
+                        frame.style.colors = theme.palette;
+                        frame.style.terminal = theme.terminal;
+                        frame.should_draw_pane_frames = false;
+                        frame.is_main_client = focused;
+                        // Another client's focus must not select this client's ribbon.
+                        frame.focused_client = Some(ClientId::new(2));
+                        frame.title = "pane 界 with a long title".into();
+                        if stacked {
+                            frame.stack_list_entry = Some(StackListEntry {
+                                width: 12,
+                                label: "pane 界".into(),
+                                is_selected: focused,
+                                is_emphasized: false,
+                                stack_is_focused: focused,
+                                border_color: None,
+                            });
+                        }
+                        let (before, _) = frame.render().unwrap();
+                        frame.titles_style = true;
+                        let (after, _) = frame.render().unwrap();
+                        let colors = if focused {
+                            theme.palette.ribbon_selected
+                        } else {
+                            theme.palette.ribbon_unselected
+                        };
+                        assert_ne!(colors.base, colors.background);
+                        assert_eq!(before.len(), after.len());
+                        for (before, after) in before.iter().zip(&after) {
+                            assert_eq!(
+                                characters_to_string(&before.terminal_characters),
+                                characters_to_string(&after.terminal_characters)
+                            );
+                            for character in &after.terminal_characters {
+                                assert_eq!(
+                                    character.styles.background,
+                                    Some(colors.background.into())
+                                );
+                                assert_eq!(character.styles.foreground, Some(colors.base.into()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn titles_style_agent_status_uses_ribbon_emphasis_colors() {
+    use yinz_types::agent::AgentState;
+    for focused in [false, true] {
+        for stacked in [false, true] {
+            for state in [
+                AgentState::Busy,
+                AgentState::Waiting,
+                AgentState::Idle,
+                AgentState::Exited,
+            ] {
+                for flash in [false, true] {
+                    let mut frame = pane_frame_with(false, false, 80);
+                    frame.titles_style = true;
+                    frame.should_draw_pane_frames = false;
+                    frame.is_main_client = focused;
+                    frame.agent_title.state = Some(state);
+                    frame.agent_title.hook_flash = flash;
+                    if stacked {
+                        frame.stack_list_entry = Some(StackListEntry {
+                            width: 20,
+                            label: "pane".into(),
+                            is_selected: focused,
+                            is_emphasized: false,
+                            stack_is_focused: focused,
+                            border_color: None,
+                        });
+                    }
+                    let themes = yinz_config::theme::Themes::from_string(
+                        include_str!(
+                            "../../../../yinz-config/assets/themes/catppuccin-macchiato.kdl"
+                        ),
+                        false,
+                    )
+                    .unwrap();
+                    frame.style.colors = themes.get_theme("catppuccin-macchiato").unwrap().palette;
+                    let colors = frame.title_colors();
+                    let (chunks, _) = frame.render().unwrap();
+                    let marker = chunks[0]
+                        .terminal_characters
+                        .iter()
+                        .find(|c| c.character.to_string() == frame.agent_title.marker().unwrap())
+                        .unwrap();
+                    assert_eq!(
+                        marker.styles.foreground,
+                        Some(frame.agent_title.marker_color(colors).into())
+                    );
+                    assert_eq!(marker.styles.background, Some(colors.background.into()));
+                    assert_ne!(marker.styles.foreground, marker.styles.background);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn titles_style_leaves_the_subtitle_unchanged() {
+    let mut frame = pane_frame_with(false, true, 40);
+    frame.should_draw_pane_frames = false;
+    frame.subtitle = Some(("review · running".into(), 1));
+    let (before, _) = frame.render().unwrap();
+    frame.titles_style = true;
+    let (after, _) = frame.render().unwrap();
+    assert_eq!(
+        before.last().unwrap().terminal_characters,
+        after.last().unwrap().terminal_characters
+    );
+}
+
+#[test]
+fn titles_style_preserves_multiplayer_cursor_swatches() {
+    let mut frame = pane_frame_with(false, false, 80);
+    frame.titles_style = true;
+    frame.should_draw_pane_frames = false;
+    frame.other_cursors_exist_in_session = true;
+    frame.other_focused_clients = vec![ColorSlot::new(2)];
+    let cursor_color = PaletteColor::Rgb((90, 130, 200));
+    frame.style.colors.multiplayer_user_colors.player_2 = cursor_color;
+    let (chunks, _) = frame.render().unwrap();
+    assert!(chunks[0]
+        .terminal_characters
+        .iter()
+        .any(|c| c.styles.background == Some(cursor_color.into())));
+    assert!(chunks[0]
+        .terminal_characters
+        .iter()
+        .any(|c| c.styles.background == Some(frame.title_colors().background.into())));
+}
+
+#[test]
+fn inline_exit_status_stays_visible_on_ribbons_without_changing_undertitles() {
+    let themes = yinz_config::theme::Themes::from_string(
+        include_str!("../../../../yinz-config/assets/themes/catppuccin-macchiato.kdl"),
+        false,
+    )
+    .unwrap();
+    let theme = themes.get_theme("catppuccin-macchiato").unwrap();
+    for focused in [false, true] {
+        for status in [Some(0), Some(1), None] {
+            for stacked in [false, true] {
+                let mut frame = pane_frame_with(false, false, 100);
+                frame.style.colors = theme.palette;
+                frame.color = Some(theme.palette.frame_selected.base);
+                frame.is_main_client = focused;
+                frame.add_exit_status(status);
+                let before = frame.render_held_undertitle().unwrap();
+                frame.titles_style = true;
+                assert_eq!(before, frame.render_held_undertitle().unwrap());
+                frame.should_draw_pane_frames = false;
+                if stacked {
+                    frame.stack_list_entry = Some(StackListEntry {
+                        width: 12,
+                        label: "pane".into(),
+                        is_selected: focused,
+                        is_emphasized: false,
+                        stack_is_focused: focused,
+                        border_color: None,
+                    });
+                }
+                let (chunks, _) = frame.render().unwrap();
+                let row = &chunks[0].terminal_characters;
+                let text = characters_to_string(row);
+                assert!(text.contains("EXIT"), "{text}");
+                for character in row.iter().filter(|c| !c.character.is_whitespace()) {
+                    assert_ne!(
+                        character.styles.foreground, character.styles.background,
+                        "{text}"
+                    );
+                }
             }
         }
     }
