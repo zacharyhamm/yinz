@@ -2726,9 +2726,9 @@ fn frames_are_cached_per_client_and_borderless_frames_are_not_cached() {
 fn title_only_frame_effect_changes_invalidate_the_cache() {
     for (color, changes_output) in [
         (PaletteColor::Rgb((127, 142, 157)), true),
-        // An unreadable effect falls back to the ordinary ribbon foreground,
-        // but changing the effect must still invalidate the cached frame.
-        (PaletteColor::Rgb((0, 0, 0)), false),
+        // An effect matching the ordinary ribbon foreground leaves the output
+        // unchanged, but toggling the effect must still invalidate the cached frame.
+        (PaletteColor::Rgb((255, 255, 255)), false),
     ] {
         let mut pane = agent_pane();
         let client = ClientId::new(1);
