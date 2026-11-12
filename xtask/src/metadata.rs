@@ -45,7 +45,12 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ),
     (
         "yinz-config",
-        &["yinz-types", "yinz-runtime", "yinz-project-config"],
+        &[
+            "yinz-types",
+            "yinz-runtime",
+            "yinz-project-config",
+            "yinz-test-support",
+        ],
     ),
     (
         "yinz-steel-builtins",
@@ -272,8 +277,10 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
 /// The tab's tests parse KDL layouts, stand up client IPC channels, and warm clipboard helpers.
 /// Builtin disk lookup uses the runtime name list; only its evaluator and config tests
 /// need the interpreter and configuration crates.
+/// Config watcher tests wait on effective configuration content with test-support.
 const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("yinz-project-config", &["yinz-test-support"]),
+    ("yinz-config", &["yinz-test-support"]),
     ("yinz-plugin-authoring", &["yinz-test-support"]),
     ("yinz-ipc", &["yinz-plugin-api"]),
     ("yinz-cli", &["yinz-plugin-api"]),
