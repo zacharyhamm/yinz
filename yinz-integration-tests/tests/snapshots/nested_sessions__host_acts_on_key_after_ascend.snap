@@ -12,8 +12,8 @@ expression: normalized(&host_after_new_pane)
                                                            │
                                                            │
                                                            │
+                                                           │
  Descend: Ctrl + <o> + <[>                                 │
-───────────────────────────────────────────────────────────┤
                        👇 [2] Pane #3                      │
 $ █                                                        │
                                                            │

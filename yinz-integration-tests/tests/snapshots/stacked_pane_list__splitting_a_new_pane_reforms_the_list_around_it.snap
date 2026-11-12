@@ -8,7 +8,6 @@ expression: normalized(&grid_snapshot)
                                                    > │ [2] Pane #3 │
 $ third-member
 $
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                                                      👇 [3] Pane #4
 $ █
  Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 
