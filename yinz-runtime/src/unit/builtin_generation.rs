@@ -134,3 +134,47 @@ fn static_assets_track_edits_and_survive_exchange() {
         ));
     }
 }
+
+#[test]
+fn nested_static_assets_survive_exchange_without_unserved_records() {
+    let data = tempfile::tempdir().unwrap();
+    let root = data.path().join("plugins/builtins");
+    let shipped = [
+        "web/static/vendor/preact.module.js",
+        "web/static/vendor/LICENSE-preact.txt",
+        "web/static/views/ui.js",
+        "web/static/manifest.webmanifest",
+        "web/static/icon-192.png",
+    ];
+    let install = |contents: &str| {
+        fs::create_dir_all(root.join("web/static/vendor")).unwrap();
+        fs::create_dir_all(root.join("web/static/views")).unwrap();
+        fs::write(root.join("web.scm"), contents).unwrap();
+        fs::write(root.join("web/static/vendor/VENDOR.md"), contents).unwrap();
+        for path in shipped {
+            fs::write(root.join(path), contents).unwrap();
+        }
+    };
+    install("old");
+    let _generation = pin_session_generation(data.path()).unwrap();
+    // Resolve once before the exchange so the old installation is snapshotted.
+    assert_eq!(
+        source_path(&root.join("web.scm")).unwrap(),
+        root.join("web.scm")
+    );
+    fs::rename(&root, data.path().join("backup")).unwrap();
+    install("new");
+    fs::remove_dir_all(data.path().join("backup")).unwrap();
+    let retained = source_path(&root.join("web.scm")).unwrap();
+    assert_ne!(retained, root.join("web.scm"));
+    let retained = retained.parent().unwrap();
+    for path in shipped {
+        assert_eq!(
+            fs::read_to_string(retained.join(path)).unwrap(),
+            "old",
+            "{path}"
+        );
+    }
+    // The provenance record is installed but neither served nor retained.
+    assert!(!retained.join("web/static/vendor/VENDOR.md").exists());
+}

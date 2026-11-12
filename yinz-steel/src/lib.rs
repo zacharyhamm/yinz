@@ -375,12 +375,10 @@ impl Runtime {
         engine
             .run(include_str!("web.scm"))
             .map_err(|error| anyhow!("initializing Steel web SDK: {error}"))?;
-        // Keep future standard-app source dormant. Steel's require is top-level
-        // only, so the public unavailable guard does not fake a callable lazy require.
-        engine.register_steel_module(
-            "%yinz/private-web-app".into(),
-            include_str!("web_app.scm").into(),
-        );
+        // Definitions only: the standard app installs on an explicit yinz-web-agent-app call.
+        engine
+            .run(include_str!("web_app.scm"))
+            .map_err(|error| anyhow!("initializing Steel web app SDK: {error}"))?;
         Ok(Self {
             engine,
             output,

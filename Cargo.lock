@@ -6833,8 +6833,10 @@ name = "yinz-steel-builtins"
 version = "0.1.2-alpha.15"
 dependencies = [
  "anyhow",
+ "regex",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "yinz-config",
  "yinz-runtime",

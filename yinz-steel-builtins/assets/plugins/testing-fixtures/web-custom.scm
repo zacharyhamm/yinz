@@ -1,0 +1,13 @@
+;; web.test.scm fixture: the standard app with short wrappers over its default hooks.
+(define (load configuration)
+  (yinz-web-agent-app configuration)
+  (yinz-web-agent-app (hash "title" "ignored after installation"))
+  (yinz-web-hook-wrap! "agent-list" (lambda (next rows)
+      (next (map (lambda (row) (hash-insert row "badges" (list (hash "text" "<new>" "tone" "info")))) rows))))
+  (yinz-web-hook-wrap! "agent-row" (lambda (next row)
+      (yinz-h "div" (hash "class" "custom-row") (next row))))
+  (yinz-web-hook-wrap! "shell" (lambda (next context)
+      (cons (yinz-h "p" (hash "class" "custom-shell") (hash-ref context "title")) (next context))))
+  (yinz-web-hook-wrap! "screen" (lambda (next context)
+      (if (equal? (hash-ref context "text") "explode") (error "private hook failure") (next context)))))
+(yinz-web-route "GET" "/api/explode" (lambda (_) (error "private sync failure")))

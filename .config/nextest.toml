@@ -26,6 +26,13 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 filter = 'binary(nested_fullscreen) + binary(nested_sessions) + binary(nested_hardening) + binary(nested_guest_modal) + binary(nested_status_hints) + binary(startup_host_query)'
 threads-required = 4
 
+# Playwright Firefox phone flows (yinz-steel-builtins/src/unit/web/browser/run.mjs) drive one
+# session through seventeen browser scenarios for over a minute, with fake-clock polling checks.
+[[profile.default.overrides]]
+filter = 'binary(app) & test(=web::web_builtin_browser_phone_flows)'
+threads-required = 4
+slow-timeout = { period = "60s", terminate-after = 5 }
+
 # `cargo x test` - the unit and plugin suites, not the whole-app integration tests.
 #
 # Kept separate from `default` on purpose: the integration overrides above are keyed on binary

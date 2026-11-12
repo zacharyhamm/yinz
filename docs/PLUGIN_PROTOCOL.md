@@ -1050,8 +1050,12 @@ requests do not require a palette or terminal client. Focus succeeds as
 `{"ok":true}`, not a fabricated `AgentResponse`.
 
 The embedded safe HTML/Markdown and web routing SDK is documented in
-[PLUGIN_SDK.md](PLUGIN_SDK.md#safe-html-and-web-sdk). Standard frontend content,
-archived-agent search/resume and phone/Tailscale verification remain separate work.
+[PLUGIN_SDK.md](PLUGIN_SDK.md#safe-html-and-web-sdk). The builtin `web` plugin
+serves the standard mobile app over these operations through
+[`yinz-web-agent-app`](PLUGIN_SDK.md#standard-agent-app), which maps each route
+to one operation and adds only rendered `*html` fields; see
+[WEB.md](WEB.md#builtin-mobile-app) for its behavior. Archived-agent
+search/resume and phone/Tailscale verification remain separate work.
 
 ### Directory project resolution
 

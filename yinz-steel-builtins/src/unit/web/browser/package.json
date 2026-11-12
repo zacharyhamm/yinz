@@ -1,0 +1,14 @@
+{
+  "name": "yinz-web-browser-checks",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Test-only Playwright Firefox checks for the builtin yinz web app. Never shipped in web/static or installed at runtime.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "playwright": "1.64.1"
+  }
+}

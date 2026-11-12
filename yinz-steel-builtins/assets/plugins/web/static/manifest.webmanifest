@@ -1,0 +1,15 @@
+{
+  "name": "yinz agents",
+  "short_name": "yinz",
+  "description": "Watch and answer your yinz agents",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#111827",
+  "theme_color": "#111827",
+  "icons": [
+    { "src": "/static/icon.svg", "type": "image/svg+xml", "sizes": "any" },
+    { "src": "/static/icon-192.png", "type": "image/png", "sizes": "192x192" },
+    { "src": "/static/icon-512.png", "type": "image/png", "sizes": "512x512" }
+  ]
+}

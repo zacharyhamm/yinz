@@ -466,4 +466,13 @@ for supported rule strings, offset selectors and server-local compatibility.
 For browser-facing plugins, use the embedded [safe HTML and web routing SDK](PLUGIN_SDK.md#safe-html-and-web-sdk).
 It provides opaque markup, sanitized Markdown, authenticated routes, deferred
 agent views, frozen page/asset publication and overridable render hooks over
-the existing native transport. The standard mobile app is delivered separately.
+the existing native transport.
+
+The builtin `web` plugin is the default web plugin. It declares no pane, and only
+the session serving `web { enabled true }` loads it, headless, through the
+default `web` alias (`yinz:web`, `shared true`). It serves the mobile agent app
+described in [WEB.md](WEB.md#builtin-mobile-app). To change its title, redefine
+the `web` alias with a `title` setting. To customize it further, point
+`web { plugin "…" }` at your own plugin, which calls
+[`yinz-web-agent-app`](PLUGIN_SDK.md#standard-agent-app) and wraps its hooks.
+Unlike the builtin, a custom web plugin must request `RunCommands`.

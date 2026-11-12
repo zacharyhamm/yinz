@@ -66,6 +66,7 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "configuration-palette",
     "shared-test",
     "repl",
+    "web",
 ];
 
 /// The per-file source budget of a script plugin: configuration applies it when it reads one,

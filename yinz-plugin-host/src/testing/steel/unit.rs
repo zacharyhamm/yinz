@@ -637,6 +637,7 @@ builtin_scheme_suites! {
     scheme_builtin_plugin_palette_unit => "plugin-palette",
     scheme_builtin_configuration_palette_unit => "configuration-palette",
     scheme_builtin_agent_exit_unit => "agent-exit",
+    scheme_builtin_web_unit => "web",
 }
 builtin_scheme_suites! {
     Integration;

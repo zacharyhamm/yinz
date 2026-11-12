@@ -323,6 +323,61 @@ fixture, `cargo x format --check` and warning-denying Clippy for the five change
 crates and their test targets also passed. Full CI, unfiltered workspace tests,
 rebase and merge are reserved for the controller.
 
+### Builtin web app
+
+The builtin `web` plugin's adjacent suite, `web.test.scm`, loads `web.scm` (or
+the `testing-fixtures/web-custom.scm` wrapper fixture) with `RunCommands` and
+explicit stubs for `HttpRespond`, `AgentView`, `HttpAssets` and `HttpPublish`.
+It drives routes with `test-web` and answers agent views with correlated
+`agent-view-response` messages, so no native agent code runs. It covers
+installation, escaped pages and bootstrap, enrichment, strict query and body
+validation, error mapping, `405` handling, wrappers and sanitized failures:
+
+```sh
+cargo x test -p yinz-plugin-host -E 'test(scheme_builtin_web_)'
+yinz plugins test web
+```
+
+`migrated_builtins_load_through_the_real_host_dispatcher` loads the installed
+builtin through the real host dispatcher and publishes its tree to a site handle.
+`cargo x test -p yinz-steel -E 'test(/web/)'` covers the SDK side: definition-only
+evaluation, once-per-runtime installation with retry after failure, and
+duplicate JSON key detection. `cargo x test -p yinz-steel-builtins -E 'test(/web_tests::/)'`
+checks the shipped static tree: whole-tree installation, the served-file
+allowlist and limits, page and manifest references, the import graph, vendor
+provenance and digests, the single server-HTML sink and CSP-safe templates.
+`nested_static_assets_survive_exchange_without_unserved_records` in yinz-runtime
+checks that nested `web/static` files are retained across installation exchange.
+
+The frontend's DOM-free modules have Node tests with injected fetch, storage,
+clocks and timers. They need no installed packages:
+
+```sh
+node --test yinz-steel-builtins/src/unit/web/{api,timeline,submission}.test.mjs
+```
+
+`web_builtin_production_http` runs the real listener, password and bearer
+authentication, plugin host, worker and default builtin installed from the
+checkout, with TestRunner's fake pane OS. `web_builtin_browser_phone_flows`
+drives headless Firefox through Playwright against the real frozen pages and
+native login, intercepting the agent-data API with fixed fixtures. Playwright is
+a pinned, test-only package under `yinz-steel-builtins/src/unit/web/browser`;
+its `node_modules/` is ignored, and neither it nor the browser is installed with
+Yinz. Provision both inside this worktree before running the test:
+
+```sh
+npm ci --prefix yinz-steel-builtins/src/unit/web/browser --ignore-scripts --no-audit --no-fund
+env PLAYWRIGHT_BROWSERS_PATH="$PWD/target/web-browser" \
+  node yinz-steel-builtins/src/unit/web/browser/node_modules/playwright/cli.js install firefox
+env PLAYWRIGHT_BROWSERS_PATH="$PWD/target/web-browser" \
+  cargo x integration-test -E 'test(web_builtin_browser_phone_flows)' -j 16
+cargo x integration-test -E 'test(web_builtin_production_http)' -j 16
+```
+
+[WEB.md](WEB.md#testing-the-builtin-app) summarizes which parts each layer
+mocks. Results are recorded in the implementation evidence. No layer uses a
+phone, Tailscale Serve or a real agent.
+
 ### Browser interaction smoke
 
 Firefox 159.0.1 ran headlessly with its built-in Marionette protocol and a
@@ -386,14 +441,16 @@ The repeat invocation's process-tree CPU/wall accounting is recorded here:
 `elapsed_s=1.758612 user_s=1.504956 system_s=0.259956`.
 Residual SDK startup cost is material and is disclosed, not waived or hidden.
 
-The private standard-app source is registered with `register_steel_module` and
-never evaluated for ordinary plugins. The callable API currently raises the
-explicit not-installed diagnostic; it emits no app commands and cannot duplicate
-registration. Inspection/testing found that this pinned Steel engine permits
-`require` only at top level: putting require inside a callable macro/let fails.
-Consequently the current unavailable guard does not pretend that a callable
-require installs the future app. Actual app content/installation remains the
-separate milestone; explicit guest imports of the private module stay confined.
+When these measurements were taken, the private standard-app source was
+registered with `register_steel_module`, never evaluated for ordinary plugins,
+and the callable API raised a not-installed diagnostic. This pinned Steel engine
+permits `require` only at top level, so a callable could not lazily require it.
+Issue 82 replaced that seam: every worker now evaluates `web_app.scm` as
+definitions only, which sends no host commands, and `yinz-web-agent-app`
+installs the app on an explicit call. The private module name and relative
+imports of the source stay unresolvable for guests
+(`web_sdk_private_app_source_does_not_expand_the_guest_import_boundary`). The
+startup tables above predate this change and were not re-recorded here.
 
 Raw before and final samples, all in milliseconds:
 

@@ -158,6 +158,58 @@ fn validate(value: SteelVal) -> Result<SteelVal> {
     }
     crate::to_scheme(&json!({"status":status,"headers":normalized,"body":body})).map_err(err)
 }
+/// Whether JSON text has no object with a repeated key. Native operations reject
+/// duplicate fields, but parsing into a Scheme hash keeps only the last value.
+fn unique_keys(text: String) -> bool {
+    use serde::de::{DeserializeSeed, Deserializer, Error, MapAccess, SeqAccess, Visitor};
+    struct Unique;
+    impl<'de> DeserializeSeed<'de> for Unique {
+        type Value = ();
+        fn deserialize<D: Deserializer<'de>>(self, input: D) -> std::result::Result<(), D::Error> {
+            input.deserialize_any(self)
+        }
+    }
+    impl<'de> Visitor<'de> for Unique {
+        type Value = ();
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("JSON")
+        }
+        fn visit_bool<E>(self, _: bool) -> std::result::Result<(), E> {
+            Ok(())
+        }
+        fn visit_i64<E>(self, _: i64) -> std::result::Result<(), E> {
+            Ok(())
+        }
+        fn visit_u64<E>(self, _: u64) -> std::result::Result<(), E> {
+            Ok(())
+        }
+        fn visit_f64<E>(self, _: f64) -> std::result::Result<(), E> {
+            Ok(())
+        }
+        fn visit_str<E>(self, _: &str) -> std::result::Result<(), E> {
+            Ok(())
+        }
+        fn visit_unit<E>(self) -> std::result::Result<(), E> {
+            Ok(())
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut items: A) -> std::result::Result<(), A::Error> {
+            while items.next_element_seed(Unique)?.is_some() {}
+            Ok(())
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<(), A::Error> {
+            let mut keys = std::collections::HashSet::new();
+            while let Some(key) = map.next_key::<String>()? {
+                if !keys.insert(key) {
+                    return Err(A::Error::custom("duplicate key"));
+                }
+                map.next_value_seed(Unique)?;
+            }
+            Ok(())
+        }
+    }
+    let mut input = serde_json::Deserializer::from_str(&text);
+    Unique.deserialize(&mut input).is_ok() && input.end().is_ok()
+}
 pub(crate) fn register(engine: &mut Engine, diagnostics: Arc<Mutex<Diagnostics>>) {
     engine.register_fn("%web-diagnostic", move |value: SteelVal| {
         // Best effort only: diagnostic saturation must never fail a handled request.
@@ -168,12 +220,7 @@ pub(crate) fn register(engine: &mut Engine, diagnostics: Arc<Mutex<Diagnostics>>
             records.dropped = true;
         }
     });
-    engine.register_fn(
-        "yinz-web-agent-app",
-        |_configuration: SteelVal| -> Result<SteelVal> {
-            Err(err("standard web agent app is not installed"))
-        },
-    );
+    engine.register_fn("%web-json-unique-keys?", unique_keys);
     engine.register_fn("%web-validate-response", validate);
     engine.register_fn("%web-raise", |message: String| -> Result<SteelVal> {
         Err(err(message))

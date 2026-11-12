@@ -120,12 +120,93 @@ fn hooks_pass_next_arguments_republish_and_preserve_wrappers_on_default_change()
         h.sent("HttpPublish").last().unwrap()["body"],
         "<div><b>&lt;first&gt;?!</b></div>"
     );
-    let failure = h
+    assert!(h.sent("HttpAssets").is_empty());
+    // The standard app installs only on request; its defaults keep existing wrappers.
+    h.eval(r#"(yinz-web-agent-app (hash "title" "</title><script>x</script>"))"#);
+    assert_eq!(
+        h.sent("HttpAssets"),
+        vec![json!({"prefix":"/static/","directory":"builtin:web/static"})]
+    );
+    let pages = h.sent("HttpPublish");
+    let page = |path: &str| {
+        pages
+            .iter()
+            .rev()
+            .find(|page| page["path"] == path)
+            .unwrap()["body"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let login = page("/login");
+    assert!(login.contains("<title>&lt;/title&gt;&lt;script&gt;x&lt;/script&gt;</title>"));
+    assert!(login.contains(r#"\u003c/title\u003e\u003cscript\u003ex\u003c/script\u003e"#));
+    assert!(!login.contains("<script>x"));
+    assert!(
+        login.contains(r#"<script src="/static/login.js" type="module"></script>"#),
+        "{login}"
+    );
+    assert!(page("/").contains(r#"<div id="app"></div>"#));
+    h.eval(r#"(yinz-web-hook-wrap! "shell" (lambda (next context) (cons (yinz-h "p" (hash "class" "wrapped") "w") (next context))))"#);
+    let republished = h.sent("HttpPublish");
+    let shell = republished
+        .iter()
+        .rev()
+        .find(|page| page["path"] == "/")
+        .unwrap();
+    assert!(shell["body"]
+        .as_str()
+        .unwrap()
+        .contains(r#"<p class="wrapped">w</p><div id="app">"#));
+    h.eval("(define routes (length %web-routes)) (define hooks (yinz-web-hook-names))");
+    let commands = h.commands.lock().unwrap().len();
+    h.eval(r#"(yinz-web-agent-app (hash "title" "replacement"))"#);
+    h.eval("(define routes-again (length %web-routes)) (define hooks-again (yinz-web-hook-names))");
+    assert_eq!(h.commands.lock().unwrap().len(), commands);
+    assert_eq!(h.value("routes"), h.value("routes-again"));
+    assert_eq!(h.value("routes"), 22);
+    assert_eq!(h.value("hooks"), h.value("hooks-again"));
+}
+
+#[test]
+fn standard_app_failed_installation_raises_and_retry_reinstalls_once() {
+    let mut h = Harness::new("");
+    *h.failure.lock().unwrap() = Some("HttpPublish".into());
+    assert!(h
         .runtime
         .eval("(yinz-web-agent-app (hash))")
         .unwrap_err()
-        .to_string();
-    assert!(failure.contains("not installed"), "{failure}");
+        .to_string()
+        .contains("HttpPublish"));
+    assert_eq!(h.value("%web-app-installed"), false);
+    *h.failure.lock().unwrap() = None;
+    h.eval("(define routes (length %web-routes))");
+    h.eval("(yinz-web-agent-app (hash))");
+    h.eval("(define routes-after (length %web-routes))");
+    assert_eq!(h.value("routes"), h.value("routes-after"));
+    assert_eq!(h.value("%web-app-installed"), true);
+    assert_eq!(h.sent("HttpAssets").len(), 2);
+    let published: Vec<_> = h
+        .sent("HttpPublish")
+        .iter()
+        .map(|page| page["path"].clone())
+        .collect();
+    // The failed attempt's "/" was dispatched before the injected failure.
+    assert_eq!(published, vec![json!("/"), json!("/"), json!("/login")]);
+    h.eval("(yinz-web-agent-app (hash))");
+    assert_eq!(h.sent("HttpPublish").len(), 3);
+}
+
+#[test]
+fn duplicate_json_keys_are_detected_at_every_depth() {
+    let mut h = Harness::new("");
+    h.eval(
+        r#"(define checks (map %web-json-unique-keys? (list "{\"a\":1,\"b\":[{\"a\":1}]}" "{\"a\":1,\"a\":2}" "[{\"x\":{\"y\":1,\"y\":1}}]" "null" "{" "{} {}")))"#,
+    );
+    assert_eq!(
+        h.value("checks"),
+        json!([true, false, false, true, false, false])
+    );
 }
 
 #[test]

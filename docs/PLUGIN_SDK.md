@@ -950,8 +950,8 @@ commands. See [the protocol](PLUGIN_PROTOCOL.md#authenticated-http-transport)
 for request hashes, permission gates, limits and generation ownership. Assets
 are frozen at publication; edits require republication or reload. Allowlisted
 static files below a relative `static` component are retained with builtin
-Scheme generations across installation exchange. The safe HTML/routing SDK and deferred agent-view helper are documented below;
-the standard mobile frontend remains separate.
+Scheme generations across installation exchange. The safe HTML/routing SDK,
+the deferred agent-view helper and the standard agent app are documented below.
 
 ## Safe HTML and web SDK
 
@@ -1154,6 +1154,163 @@ or publication fails. Publication is per page, so a later host failure can
 leave generations mixed; that page keeps its previous native snapshot and the
 failure remains observable. There is no multi-page transaction guarantee.
 
-`yinz-web-agent-app configuration` is the future once-per-worker standard-app
-installation seam. It currently raises an explicit not-installed diagnostic.
-No standard routes, app content or frontend assets load automatically.
+### Standard agent app
+
+`(yinz-web-agent-app configuration)` installs the mobile agent app that the
+builtin `web` plugin serves (see [WEB.md](WEB.md#builtin-mobile-app)). It
+registers the routes below and the default hooks, freezes
+`builtin:web/static` under `/static/`, and publishes `/` and `/login` through
+the `document` hook. It returns `json-null`.
+
+Evaluating the SDK only defines the app; no host commands are sent until the
+call. The call sends `HttpAssets` and `HttpPublish`, so make it from `load`
+once `RunCommands` is granted. It installs once per runtime: after a
+successful call, later calls do nothing and ignore their configuration. A
+failed call raises; each step replaces its own registration, so calling again
+reinstalls everything. Only `title` is read from the configuration (1–64
+characters, not blank, no control characters; otherwise `yinz`). The page
+bootstrap is a fixed public object of title, poll intervals, quick keys and
+request timeouts.
+
+#### Routes
+
+Every route is authenticated by the native listener before dispatch. GET
+routes take query parameters; POST routes take a JSON object. Each forwards one
+native agent-view operation (see
+[the protocol](PLUGIN_PROTOCOL.md#native-agent-views)) and returns its payload
+as JSON, with only the listed `*html` fields added.
+
+| Route | Parameters | Native op | Added fields |
+| --- | --- | --- | --- |
+| `GET /api/agents` | none | `list` | each row's `html` (rows pass through `agent-list` first) |
+| `GET /api/history` | `run` (required), `agent`, `query`, `from`, `worker`, `before`, `after_revision`, `tz` | `history` | `header_html`, `details_html`, each event's `html` |
+| `GET /api/hit` | `run`, `revision` (both required), `tz` | `hit` | as history |
+| `GET /api/event` | `run`, `revision` (both required), `tz` | `event` | `html` |
+| `GET /api/tools` | `run` (required), exactly one of `revisions` or `range`, `before` (range only), `tz` | `tools` | `html`; range mode keeps `page` unchanged |
+| `GET /api/usage` | `agent` (required) | `usage` | none |
+| `GET /api/prompts` | none | `prompts` | none |
+| `POST /api/agent/prompt` | `agent`, `submission_id`, `text` | `prompt` | none |
+| `POST /api/agent/focus` | `agent` | `focus` | none; replies `{"ok":true}` |
+| `POST /api/agent/screen` | `agent`, optional `lines` (1–200, default 80) | `screen` | `html` from the response's `output` |
+| `POST /api/agent/keys` | `agent`, `keys` (1–8 native key names) | `keys` | none |
+
+Prompt, keys and screen return the native `{response:AgentResponse}` with
+HTTP `200` for every outcome, including `timed_out`, `target_changed` and
+`status_unavailable`; clients must inspect `response.outcome`.
+
+Query encoding:
+
+- Each parameter appears at most once. Unknown or repeated names are rejected.
+- `run`, `agent` and `worker` are nonblank, at most 512 UTF-8 bytes and contain
+  no control characters. `query` allows 1024 bytes and may be empty; `tz` 64.
+- `from`, `after_revision` and `revision` are 1–19 ASCII digits below
+  `9223372036854775807`. `revision` must be positive; the others may be 0.
+- `revisions` is a comma-separated list of 1–30 positive revisions, for
+  example `revisions=4,5,7`.
+- `before` and `range` are JSON text, at most 4096 bytes, as produced by
+  `JSON.stringify` on the native objects: `before` is exactly
+  `{"created_at_ms":integer|null,"revision":integer}` and `range` is exactly
+  `{"start":cursor|null,"end":cursor|null,"worker":string|null}`.
+- The native exclusions apply before dispatch: `before` with `after_revision`;
+  `from` with `before`, `after_revision` or `worker`; a nonempty `query` with
+  `before`, `after_revision` or `worker`.
+
+A native `navigation` request maps to a URL by dropping `op`, null fields and
+an empty `query`, writing numbers in decimal, joining arrays with commas,
+JSON-encoding objects and adding `tz`. For example,
+`{"op":"history","run":"R","agent":"live:main:7","after_revision":42}` becomes
+`/api/history?run=R&agent=live%3Amain%3A7&after_revision=42&tz=Europe%2FBerlin`.
+
+POST bodies accept only the listed keys, and all except `lines` are required.
+`agent` is exactly
+`{"id","kind","session_id"}`, each an identity string as above.
+`submission_id` is 1–64 ASCII letters, digits, `.`, `_` or `-`. `text` is not
+blank, at most 32 KiB UTF-8, with no control characters except newline and tab.
+`keys` uses `esc`, `enter`, `tab`, `up`, `down`, `left`, `right`, `backspace`,
+`y`, `n` and `1`–`9`. A body with a repeated key at any depth is rejected,
+because a Scheme hash would keep only the last value.
+
+#### Errors
+
+| Case | Response |
+| --- | --- |
+| Failed validation | `400 {"error":{"code":"invalid","message":…}}`; the message is fixed and never echoes input |
+| Wrong media type or malformed JSON | `400 bad_json` (from `yinz-web-body-json`) |
+| Native `invalid`, `not_found`, `target_changed` | `400`, `404`, `409` with the native message |
+| Native `paused` or `unavailable` | `503` with `Retry-After: 5` |
+| Native `failed` or unknown codes | `502` |
+| Focus with no attached terminal (native `unavailable`) | `409` with the native message |
+| SDK agent-view timeout or cancellation (`unavailable`) | `503` with `Retry-After: 5`, for focus too, and a fixed message |
+| Other SDK agent-view failures, such as a malformed reply (`failed`) | `502` with a fixed message |
+| Other method on a known path | `405 method_not_allowed`, without `Allow` (the SDK header allowlist excludes it) |
+| Unknown `/api` path | `404 not_found` |
+| Any other failure, including a raising hook | sanitized `500 internal` |
+
+HEAD on a GET route uses the GET handler.
+
+#### Hooks
+
+Hook results pass through `yinz-html`, so return safe HTML values: native
+nodes, strings or lists. Wrap a default with `yinz-web-hook-wrap!`; the wrapper
+receives `(next . args)`.
+
+| Hook | Argument | Default |
+| --- | --- | --- |
+| `document` | `ctx`: `{title, page:"app"\|"login", config, styles:[href], scripts:[src]}` | `yinz-html-document` of the `head` hook and the `shell` or `login` hook |
+| `head` | `ctx` | charset, viewport with `viewport-fit=cover`, theme-color, color-scheme, title, manifest, icon and a stylesheet link per `styles` entry |
+| `shell` | `ctx` | `<div id="app">`, a `noscript` notice, the `yinz-config` JSON script and a module script per `scripts` entry |
+| `login` | `ctx` | `<main class="login">` with `form#login-form` (`#password`, `#label`, `#remember`, `#login-submit`, `#login-status`), a `noscript` notice and the scripts |
+| `agent-list` | list of rows | the rows unchanged; may filter, reorder or add `badges: [{text,tone}]` |
+| `agent-row` | row | `div.agent-row` with glyph, title, status, provider/project/branch, badges and last reply |
+| `agent-header` | `{live, header}` | `header.agent-header` with name, status, task and metadata |
+| `event-body` | event | sanitized Markdown (escaped `<pre>` above 1 MiB); escaped `pre.event-tool` for `tool_call`/`tool_result` kinds and ranged activity |
+| `reader` | `{header, markdown, tool}` | `article.reader` with Markdown and the tool text in an escaped `<pre>` |
+| `details` | `{details}` | `pre.details` |
+| `screen` | `{text}` | `pre.screen` |
+
+The frontend's `login.js` and `app.js` rely on the IDs above and on the
+`yinz-config` script; a replacement `login` or `shell` hook must keep them.
+
+#### Customizing with a wrapper plugin
+
+User plugins cannot import the builtin source, so a custom app calls
+`yinz-web-agent-app` and wraps hooks:
+
+```scheme
+;; /home/me/.config/yinz/plugins/my-web.scm
+(define (load configuration)
+  (yinz-then (yinz-wait-for-permissions '("RunCommands")) (lambda (_)
+    (yinz-web-agent-app configuration)
+    (yinz-web-hook-wrap! "agent-list" (lambda (next rows)
+      (next (filter (lambda (row) (equal? (hash-ref row "project") "yinz")) rows))))
+    (yinz-web-hook-wrap! "agent-row" (lambda (next row)
+      (yinz-h "div" (hash "class" "my-row") (next row)))))))
+```
+
+```kdl
+plugins {
+    my-web location="file:/home/me/.config/yinz/plugins/my-web.scm" {
+        shared true
+        title "Agents"
+    }
+}
+web {
+    enabled true
+    plugin "my-web"
+}
+```
+
+The alias carries `shared true`, so the handler outlives terminal detach, and
+the configuration passed to `load`. A bare `plugin "file:…"` also works but
+has neither. A custom plugin must request `RunCommands` and is approved in the
+host permission modal; until then `/` shows the starting page. Builtins
+already hold `RunCommands`. Only the configured web plugin and builtins may
+send `HttpAssets`, `HttpPublish` and `AgentView`.
+
+Each define or wrap republishes both pages. Wrappers apply to later requests;
+wrapping `agent-list` or `agent-row` changes `/api/agents` replies, not cached
+data in open browsers. Additional files need their own prefix through
+`yinz-web-assets` (`/static/` belongs to the app); add stylesheets by wrapping
+`document` and appending to `ctx`'s `styles`. The native CSP still applies:
+same-origin external scripts only, no inline scripts or styles, and
+`form-action 'none'`, so forms submit through `fetch`.

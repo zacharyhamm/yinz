@@ -434,19 +434,44 @@ fn plugin_copy_keeps_original_sources_and_a_confined_deduplicated_graph() {
 
 #[test]
 fn web_sdk_private_app_source_does_not_expand_the_guest_import_boundary() {
-    let mut runtime = Runtime::new(|_| panic!("app seam must not issue host commands")).unwrap();
-    for _ in 0..2 {
-        assert!(runtime
-            .eval("(yinz-web-agent-app (hash))")
-            .unwrap_err()
-            .to_string()
-            .contains("not installed"));
-    }
+    let commands = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sent = commands.clone();
+    let mut runtime = Runtime::new(move |command| {
+        sent.lock().unwrap().push(command);
+        Ok(serde_json::Value::Null)
+    })
+    .unwrap();
+    // SDK initialization and ordinary evaluation define the app without host commands.
+    runtime
+        .eval("(define (load configuration) json-null) (procedure? yinz-web-agent-app)")
+        .unwrap();
+    assert!(commands.lock().unwrap().is_empty());
     let mut root = SourceRoot::embedded("main.scm", BTreeMap::new()).unwrap();
-    assert!(runtime
-        .eval_with_source_root("(require \"%yinz/private-web-app\")", &mut root)
-        .is_err());
-    assert!(runtime
-        .eval_with_source_root("(require \"/etc/passwd\")", &mut root)
-        .is_err());
+    for source in [
+        "(require \"%yinz/private-web-app\")",
+        "(require \"./web_app.scm\")",
+        "(require \"../web_app.scm\")",
+        "(require \"/etc/passwd\")",
+    ] {
+        assert!(
+            runtime.eval_with_source_root(source, &mut root).is_err(),
+            "{source}"
+        );
+    }
+    assert!(commands.lock().unwrap().is_empty());
+    for _ in 0..2 {
+        runtime.eval("(yinz-web-agent-app (hash))").unwrap();
+    }
+    let names: Vec<_> = commands
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|envelope| {
+            let command = envelope
+                .pointer("/__yinz_runtime/command")
+                .unwrap_or(envelope);
+            command.as_object().unwrap().keys().next().unwrap().clone()
+        })
+        .collect();
+    assert_eq!(names, ["HttpAssets", "HttpPublish", "HttpPublish"]);
 }

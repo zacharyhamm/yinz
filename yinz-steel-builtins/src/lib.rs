@@ -133,3 +133,7 @@ mod project_store_tests;
 #[cfg(test)]
 #[path = "unit/install.rs"]
 mod install_tests;
+
+#[cfg(test)]
+#[path = "unit/web.rs"]
+mod web_tests;

@@ -917,6 +917,46 @@ It is evaluated in `Runtime::new` after `palette.scm` (`lib.rs:362-364`) and kep
 
 Also add `(yinz-web-agent-error->status err)` for the mapping in §4.2.
 
+### Issue 82 delivery update
+
+Issue 82 shipped the standard app and frontend. The delivered contract is
+documented in [PLUGIN_SDK.md](../PLUGIN_SDK.md#standard-agent-app) and
+[WEB.md](../WEB.md#builtin-mobile-app); it supersedes §5.3–§6 where they differ:
+
+- **Vendoring:** htm's `preact/standalone.module.js` embeds a Preact build with
+  no identifiable version, so the §6.1 fallback was used: Preact 10.29.8, its
+  hooks module (bare `preact` import rewritten to `./preact.module.js`) and htm
+  3.1.1 as separate modules. Preact is MIT and htm Apache-2.0; provenance and
+  digests are in `web/static/vendor/VENDOR.md`.
+- **Navigation:** the client follows the native `navigation` requests
+  (`latest`, `received`, `earlier`, `previous`, `origin`) as returned, reapplying
+  `tz`. The `from = newest + 1` tail and `next_from` paging of §6.3 are not used.
+  History routes accept `query`, `worker`, `before` (JSON), `after_revision`
+  and `tools` `range` in addition to the sketched parameters.
+- **Tools:** `collapse_tools` is not ported. Native pages return grouped ranged
+  activity and `activity_ranges`; the client removes overlapping cached activity
+  before merging. Raw `tool_call`/`tool_result` events from `revisions[]`
+  compatibility are grouped client-side, at most 30 revisions per group.
+- **Submission IDs:** routes accept 1–64 ASCII letters, digits, `.`, `_`, `-`,
+  matching native validation, rather than a UUID shape. The frontend still
+  generates `crypto.randomUUID()`. Records are keyed by the full
+  `{id,kind,session_id}`. A `409` or target change disables the record instead
+  of only refreshing; the user adopts or discards it.
+- **Routes:** other methods on known paths return `405 method_not_allowed`
+  without `Allow`, which the SDK header allowlist excludes. Decoded agent-view
+  errors map to typed statuses, with `Retry-After: 5` for `paused`/`unavailable`.
+  Duplicate JSON keys are rejected.
+- **Hooks and bootstrap:** the `document` context is
+  `{title,page,config,styles,scripts}`. The bootstrap adds request timeouts, and
+  `title` is the only configuration key read. Installation runs once per
+  runtime; a failed attempt raises and can be retried.
+- **Routes in the hash:** `&bind=0` marks stored-run browsing (previous or
+  original run), read without the live agent.
+
+Not delivered: a search UI, archived-agent search/resume (phase 2), real
+phone/Tailscale validation and the cross-milestone takeover/revocation suite,
+which belong to separate issues. Browser checks use desktop emulation only.
+
 ### 5.3 Standard app in the SDK: `yinz-steel/src/web_app.scm` (new; WS-E adds the include, WS-F writes the content)
 
 `(yinz-web-agent-app configuration)` registers the standard routes, the default hooks, the assets (`"/static/" "builtin:web/static"`) and the two pages. It lives in the SDK because user plugins cannot `require` builtin modules (`yinz-steel/src/modules.rs:271-300` confines imports to the plugin root). A user override is short:

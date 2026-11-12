@@ -54,9 +54,32 @@ Yinz works best with agents if you install the skills and hooks:
 
 `yinz skills install`
 
-The optional native web listener and local `yinz set-password` setup are
-documented in [WEB.md](docs/WEB.md). Native bearer sessions and `yinz web status`
-are available; the mobile application and plugin bridge remain deferred.
+### Mobile web app
+
+Yinz can serve a phone-sized web page for watching and answering your agents.
+It is off by default. Set a password, then enable the listener in `config.kdl`
+and start a new session:
+
+```sh
+yinz set-password
+```
+
+```kdl
+web {
+    enabled true
+}
+```
+
+Open `http://127.0.0.1:7419/` and sign in with the password. "Remember this
+device" keeps the sign-in after the browser closes. The page lists the agents in
+every local session under **Needs you**, **Working** and **Idle**. Opening an
+agent shows its timeline, its current screen and run details. From there you can
+send a prompt, send keys such as `1`, `Enter` or `Esc`, or focus the agent on the
+desktop. The menu offers **Log out** and **Log out everywhere**.
+
+The listener binds to loopback. For access from a phone, expose it to your
+tailnet with Tailscale Serve, never Funnel. Setup, security policy, the builtin
+app's behavior and `yinz web status` are documented in [WEB.md](docs/WEB.md).
 
 ## Install
 

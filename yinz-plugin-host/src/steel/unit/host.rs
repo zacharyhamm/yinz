@@ -360,7 +360,8 @@ fn expected_builtin_pane(name: &str) -> PaneDeclaration {
         | "layout-palette"
         | "plugin-palette"
         | "configuration-palette"
-        | "repl" => PaneDeclaration::None,
+        | "repl"
+        | "web" => PaneDeclaration::None,
         other => panic!("{other} has no expected pane declaration; add it to this table"),
     }
 }
@@ -369,6 +370,10 @@ fn expected_builtin_pane(name: &str) -> PaneDeclaration {
 fn migrated_builtins_load_through_the_real_host_dispatcher() {
     let plain = BTreeMap::new();
     let duplicate = BTreeMap::from([("duplicate_focused".to_owned(), "true".to_owned())]);
+    // The web builtin publishes from the installed tree to the session's site.
+    let data = tempfile::tempdir().unwrap();
+    yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), data.path()).unwrap();
+    let site = yinz_types::web::SiteHandle::default();
     for &name in yinz_runtime::consts::BUILTIN_PLUGIN_NAMES {
         let source = yinz_steel_builtins::fixture_source(name).unwrap();
         let declaration = pane_declaration(&source)
@@ -383,6 +388,12 @@ fn migrated_builtins_load_through_the_real_host_dispatcher() {
         )
         .unwrap();
         env.data_owner = url::Url::from(&env.plugin_config.location);
+        if name == "web" {
+            env.web = crate::web_host::WebHost::new(Some(site.clone()));
+            env.web.set_target(Some(env.plugin_id));
+            env.yinz_data_dir = data.path().to_owned();
+            env.resolved_source_path = Some(data.path().join("plugins/builtins/web.scm"));
+        }
         let mut plugin = SteelPlugin::new(
             &source,
             &yinz_steel_builtins::asset_dir().join(format!("{name}.scm")),
@@ -390,6 +401,16 @@ fn migrated_builtins_load_through_the_real_host_dispatcher() {
             Arc::default(),
         )
         .unwrap_or_else(|error| panic!("{name} initialization: {error:#}"));
+        if name == "web" {
+            // Named workers own this registration in production; a direct instance has none.
+            let env = plugin.env();
+            env.web.register(
+                env.plugin_id,
+                plugin.generation(),
+                env.web_pending.clone(),
+                env.unavailable.clone(),
+            );
+        }
         for configuration in [&plain, &duplicate] {
             assert_eq!(
                 plugin
@@ -405,6 +426,14 @@ fn migrated_builtins_load_through_the_real_host_dispatcher() {
         plugin
             .render(20, 80)
             .unwrap_or_else(|error| panic!("{name} render: {error:#}"));
+        if name == "web" {
+            let published = site.current().expect("web builtin published its site");
+            assert_eq!(published.pages.keys().collect::<Vec<_>>(), ["/", "/login"]);
+            let assets = &published.assets["/static/"];
+            for file in ["app.js", "login.js", "app.css", "manifest.webmanifest"] {
+                assert!(assets.contains_key(file), "missing static {file}");
+            }
+        }
         plugin.dispose_with_cleanup(true);
     }
 }
@@ -444,7 +473,8 @@ fn plugin_fixtures_and_examples_declare_their_panes_at_the_top_level() {
                 | "agent-provider.scm"
                 | "notification-policy.scm"
                 | "palette-table.scm"
-                | "marker-project.scm" => PaneDeclaration::None,
+                | "marker-project.scm"
+                | "web-custom.scm" => PaneDeclaration::None,
                 other => panic!("{folder}/{other} has no expected pane declaration"),
             };
             let source = std::fs::read_to_string(&path).unwrap();
@@ -455,7 +485,7 @@ fn plugin_fixtures_and_examples_declare_their_panes_at_the_top_level() {
         }
     }
     assert_eq!(
-        checked, 15,
+        checked, 16,
         "every fixture and example entry file was classified"
     );
 }
