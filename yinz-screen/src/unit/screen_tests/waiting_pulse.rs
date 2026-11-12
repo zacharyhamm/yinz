@@ -38,6 +38,17 @@ fn waiting_since(screen: &Screen) -> Option<Instant> {
         .waiting_pulse_started_at()
 }
 
+fn set_readable_ribbon_colors(screen: &mut Screen) {
+    // Keep pulse and override colors readable so these tests can observe their precedence.
+    for ribbon in [
+        &mut screen.style.colors.ribbon_selected,
+        &mut screen.style.colors.ribbon_unselected,
+    ] {
+        ribbon.background = PaletteColor::Rgb((0, 0, 0));
+        ribbon.base = PaletteColor::Rgb((255, 255, 255));
+    }
+}
+
 fn pair(
     floating: bool,
     stacked: bool,
@@ -45,6 +56,7 @@ fn pair(
     style: PaneFrameStyle,
 ) -> (Screen, Receiver<(BackgroundJob, ErrorContext)>) {
     let (mut screen, jobs) = screen_with_background_jobs(SIZE);
+    set_readable_ribbon_colors(&mut screen);
     new_tab(&mut screen, if floating { 0 } else { 1 }, TAB);
     *screen.stacked_pane_list.borrow_mut() = list;
     screen.terminal_emulator_colors.borrow_mut().fg = PaletteColor::Rgb((100, 150, 200));
@@ -161,6 +173,9 @@ fn waiting_pulse_shared_boundary_loses_to_focus_and_stops_after_removing_frames(
                 PaneFrameStyle::Titles,
             ] {
                 let (mut screen, jobs) = screen_with_background_jobs(SIZE);
+                set_readable_ribbon_colors(&mut screen);
+                screen.terminal_emulator_colors.borrow_mut().fg =
+                    PaletteColor::Rgb((100, 150, 200));
                 new_tab(&mut screen, 1, TAB);
                 let tab = screen.tabs.get_mut(&TAB).unwrap();
                 tab.set_pane_frames(initial_style);
@@ -214,7 +229,8 @@ fn waiting_pulse_shared_boundary_loses_to_focus_and_stops_after_removing_frames(
                         .zip(&base[pane.y()])
                         .skip(pane.x())
                         .take(pane.cols())
-                        .any(|(peak, base)| peak.styles.foreground != base.styles.foreground));
+                        .any(|(peak, base)| peak.styles.foreground != base.styles.foreground),
+                        "direction={direction:?}, waiting_pane={waiting_pane:?}, style={initial_style:?}");
                     assert!(screen.tabs[&TAB]
                         .get_pane_with_id(waiting_pane)
                         .unwrap()
@@ -266,7 +282,7 @@ fn waiting_pulse_overrides_stop_the_clock_and_clearing_resumes_the_episode() {
         let pulse_color = AnsiCode::RgbCode((127, 142, 157));
         let col = (x..x + pane.cols())
             .find(|col| peak[y][*col].styles.foreground == Some(pulse_color))
-            .expect("waiting frame has a pulsing cell");
+            .unwrap_or_else(|| panic!("waiting frame has no pulsing cell: floating={floating}, stacked={stacked}, style={style:?}"));
         assert!(drain_background_jobs(&jobs).contains(&BackgroundJob::StartAnimationClock(PERIOD)));
 
         screen
