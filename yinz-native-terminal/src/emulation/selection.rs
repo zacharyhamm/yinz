@@ -248,10 +248,30 @@ impl LocalSelection {
     ) -> Result<crate::emulation::terminal::FrameApplied, crate::emulation::terminal::FrameError>
     {
         let old_size = state.size();
-        let applied = state.apply_frame(frame)?;
+        let mut candidate = None;
+        let applied = state.apply_frame_with(frame, |old, view| {
+            let header = view.header();
+            if (header.rows as usize, header.cols as usize) != (old_size.rows, old_size.cols)
+                && self.captured.is_none()
+                && let Some(range) = self.range.filter(|range| !range.is_empty())
+            {
+                // A new drag may have canceled the request-time capture while
+                // the resize repaint was in flight. Read its latest old-frame
+                // units here, but do not commit ownership before apply succeeds.
+                candidate = Some(CapturedSelection::new(old, range));
+            }
+        })?;
         // Failed frames never change selection ownership. Old-grid frames can
         // arrive before the resize repaint; keep the original capture intact.
         let size = (state.size().rows, state.size().cols);
+        if size != (old_size.rows, old_size.cols) && self.captured.is_none() {
+            self.captured = candidate;
+            if self.captured.is_none() {
+                // An empty click has no text to preserve, and its old anchor
+                // must not be extended by motion on the replacement grid.
+                self.range = None;
+            }
+        }
         if let Some(capture) = &mut self.captured {
             if size != (old_size.rows, old_size.cols) || self.pending == Some(size) {
                 let located = capture.locate(state);

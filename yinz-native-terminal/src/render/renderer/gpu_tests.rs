@@ -442,3 +442,124 @@ fn font_faces_resize_repaint_reanchors_copy_and_gpu_highlight() {
         assert_eq!(cache.atlases().mask.stamp().identity, atlas.identity);
     });
 }
+
+#[test]
+fn font_faces_new_selection_during_resize_reanchors_copy_and_gpu_highlight() {
+    use crate::emulation::selection::{LocalSelection, Selection};
+    use crate::testing::painter::Painter;
+    use yinz_types::input::native_terminal::TerminalConfig;
+    let initial = crate::window::effective_font_options(&TerminalConfig::default(), 1.0, 1.0);
+    let requested = crate::window::effective_font_options(&TerminalConfig::default(), 1.2, 1.0);
+    let text = format!(
+        "{}ABCD{}WXYZ{}",
+        "x".repeat(70),
+        "y".repeat(16),
+        "z".repeat(46)
+    );
+    let frame = |cols| {
+        Painter::frame(5, cols, |p| {
+            p.full_repaint();
+            for (row, chunk) in text.as_bytes().chunks(cols).enumerate() {
+                p.text(row, 0, std::str::from_utf8(chunk).unwrap());
+            }
+            p.wide(3, 0, '中');
+            p.wide(4, 0, '😀');
+        })
+    };
+    let old_frame = frame(80);
+    let resized_frame = frame(60);
+    let mut state = crate::emulation::terminal::TerminalState::new(5, 80);
+    let mut selection = LocalSelection::default();
+    selection.apply_frame(&mut state, &old_frame).unwrap();
+    selection.start(0, 70);
+    selection.extend(0, 73);
+    let old_range = Selection::at(1, 10).extended_to(1, 13);
+    let expected = Selection::at(1, 30).extended_to(1, 33);
+    with_renderer(|renderer| {
+        let mut active = initial.clone();
+        let mut cache = fixture_cache(&active);
+        let mut retained = RetainedScene::new();
+        retained.set_selection(selection.range());
+        let warmed = font_pixels(renderer, &mut retained, &state, &mut cache);
+        assert_eq!(
+            font_pixels(renderer, &mut retained, &state, &mut cache),
+            warmed
+        );
+        let replacement = fixture_cache(&requested);
+        crate::window::apply_fonts(
+            &mut active,
+            &mut cache,
+            &mut retained,
+            requested.clone(),
+            Some(replacement),
+        );
+        selection.resizing(&state, 5, 60);
+        // This press cancels ABCD while the old grid is still displayed.
+        selection.start(1, 10);
+        selection.extend(1, 13);
+        assert_eq!(selection.text(state.screen()).as_deref(), Some("WXYZ"));
+        let applied = selection.apply_frame(&mut state, &old_frame).unwrap();
+        retained.mark(&applied.damage);
+        retained.set_selection(selection.range());
+        font_pixels(renderer, &mut retained, &state, &mut cache);
+        assert_eq!(selection.range(), Some(old_range));
+        assert_eq!(selection.text(state.screen()).as_deref(), Some("WXYZ"));
+        let applied = selection.apply_frame(&mut state, &resized_frame).unwrap();
+        retained.mark(&applied.damage);
+        assert_eq!(old_range.text(state.screen()), "ABCD");
+        assert_eq!(expected.text(state.screen()), "WXYZ");
+        assert_eq!(selection.range(), Some(expected));
+        assert_eq!(selection.text(state.screen()).as_deref(), Some("WXYZ"));
+        retained.set_selection(selection.range());
+        let live = font_pixels(renderer, &mut retained, &state, &mut cache);
+        let mut fresh_cache = fixture_cache(&requested);
+        let mut fresh = RetainedScene::new();
+        fresh.set_selection(Some(expected));
+        assert_eq!(
+            live,
+            font_pixels(renderer, &mut fresh, &state, &mut fresh_cache)
+        );
+        fresh.set_selection(None);
+        let unselected = font_pixels(renderer, &mut fresh, &state, &mut fresh_cache);
+        let metrics = cache.metrics();
+        assert!(34 * metrics.width <= 768 && 2 * metrics.height <= 384);
+        let mut highlighted = 0;
+        for y in 0..384 {
+            for x in 0..768 {
+                let offset = ((383 - y) * 768 + x) * 4;
+                if live[offset..offset + 4] != unselected[offset..offset + 4] {
+                    assert!((metrics.height as usize..2 * metrics.height as usize).contains(&y));
+                    assert!((30 * metrics.width as usize..34 * metrics.width as usize).contains(&x));
+                    highlighted += 1;
+                }
+            }
+        }
+        assert!(
+            highlighted > 0,
+            "new selection must have visible relocated pixels"
+        );
+        let generation = cache.generation();
+        let atlas = cache.atlases().mask.stamp();
+        let overwrite = Painter::frame(5, 60, |p| p.text(1, 30, "gone"));
+        let applied = selection.apply_frame(&mut state, &overwrite).unwrap();
+        retained.mark(&applied.damage);
+        assert_eq!(expected.text(state.screen()), "gone");
+        assert_eq!(selection.range(), None);
+        assert_eq!(selection.text(state.screen()).as_deref(), Some("WXYZ"));
+        retained.set_selection(selection.range());
+        let updated = font_pixels(renderer, &mut retained, &state, &mut cache);
+        let mut unselected_cache = fixture_cache(&requested);
+        let mut unselected_scene = RetainedScene::new();
+        assert_eq!(
+            updated,
+            font_pixels(
+                renderer,
+                &mut unselected_scene,
+                &state,
+                &mut unselected_cache
+            )
+        );
+        assert_eq!(cache.generation(), generation);
+        assert_eq!(cache.atlases().mask.stamp().identity, atlas.identity);
+    });
+}

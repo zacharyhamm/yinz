@@ -319,29 +319,17 @@ fn coalesced_resize_keeps_capture_and_rejected_frame_does_not_commit_mapping() {
 }
 
 #[test]
-fn cancellation_and_new_selection_cannot_be_resurrected_by_a_pending_repaint() {
-    for new_selection in [false, true] {
-        let mut state = Painter::state(3, 80, |p| p.text(0, 70, "ABCD"));
-        let mut local = selected(&state, Selection::at(0, 70).extended_to(0, 73));
-        local.resizing(&state, 3, 60);
-        // The production clear is shared by Escape, typing and session switch.
-        local.clear();
-        if new_selection {
-            local.start(0, 0);
-            local.extend(0, 3);
-        }
-        local
-            .apply_frame(&mut state, &wrapped_frame(3, 60, "new! other content"))
-            .unwrap();
-        assert_eq!(
-            local.text(state.screen()).as_deref(),
-            new_selection.then_some("new!")
-        );
-        assert_eq!(
-            local.range(),
-            new_selection.then_some(Selection::at(0, 0).extended_to(0, 3))
-        );
-    }
+fn cancellation_cannot_be_resurrected_by_a_pending_repaint() {
+    let mut state = Painter::state(3, 80, |p| p.text(0, 70, "ABCD"));
+    let mut local = selected(&state, Selection::at(0, 70).extended_to(0, 73));
+    local.resizing(&state, 3, 60);
+    // The production clear is shared by Escape, typing and session switch.
+    local.clear();
+    local
+        .apply_frame(&mut state, &wrapped_frame(3, 60, "new! other content"))
+        .unwrap();
+    assert_eq!(local.text(state.screen()), None);
+    assert_eq!(local.range(), None);
 }
 
 #[test]
@@ -781,5 +769,346 @@ fn captured_unicode_support_requires_exact_text_and_display_unit_boundaries() {
         local.apply_frame(&mut state, &frame).unwrap();
         assert_eq!(local.range(), None, "{update}");
         assert_eq!(local.text(state.screen()), expected);
+    }
+}
+
+fn pending_selection_text() -> String {
+    let text = format!(
+        "{}ABCD{}WXYZ{}",
+        "x".repeat(70),
+        "y".repeat(16),
+        "z".repeat(46)
+    );
+    assert_eq!(text.len(), 140);
+    assert_eq!(&text[70..74], "ABCD");
+    assert_eq!(&text[90..94], "WXYZ");
+    text
+}
+
+#[test]
+fn new_selection_during_pending_resize_preserves_latest_phrase_and_direction() {
+    let text = pending_selection_text();
+    for previous in ["captured", "none", "cleared", "replaced"] {
+        for reverse in [false, true] {
+            let mut state = crate::emulation::terminal::TerminalState::new(3, 80);
+            state.apply_frame(&wrapped_frame(3, 80, &text)).unwrap();
+            let mut local = LocalSelection::default();
+            if previous != "none" {
+                local.start(0, 70);
+                local.extend(0, 73);
+            }
+            local.resizing(&state, 3, 60);
+            if previous == "cleared" {
+                local.clear();
+            }
+            if previous == "replaced" {
+                local.start(0, 20);
+                local.extend(0, 23);
+            }
+            let old = if reverse {
+                Selection::at(1, 13).extended_to(1, 10)
+            } else {
+                Selection::at(1, 10).extended_to(1, 13)
+            };
+            local.start(old.anchor.0, old.anchor.1);
+            local.extend(old.head.0, old.head.1);
+            assert_eq!(local.text(state.screen()).as_deref(), Some("WXYZ"));
+            local
+                .apply_frame(&mut state, &wrapped_frame(3, 80, &text))
+                .unwrap();
+            assert_eq!(local.range(), Some(old));
+            assert!(local.captured.is_none());
+            local
+                .apply_frame(&mut state, &wrapped_frame(3, 60, &text))
+                .unwrap();
+            let mapped = if reverse {
+                Selection::at(1, 33).extended_to(1, 30)
+            } else {
+                Selection::at(1, 30).extended_to(1, 33)
+            };
+            assert_eq!(old.text(state.screen()), "ABCD");
+            assert_eq!(mapped.text(state.screen()), "WXYZ");
+            assert_eq!(local.text(state.screen()).as_deref(), Some("WXYZ"));
+            assert_eq!(local.range(), Some(mapped));
+            // An in-progress drag cannot extend the pre-reshape anchor.
+            local.extend(2, 0);
+            assert_eq!(local.range(), Some(mapped));
+            local
+                .apply_frame(&mut state, &Painter::frame(3, 60, |p| p.text(2, 10, "!")))
+                .unwrap();
+            assert_eq!(local.range(), Some(mapped));
+            local
+                .apply_frame(
+                    &mut state,
+                    &Painter::frame(3, 60, |p| p.text(1, 30, "gone")),
+                )
+                .unwrap();
+            assert_eq!(local.range(), None);
+            assert_eq!(local.text(state.screen()).as_deref(), Some("WXYZ"));
+            // A real resize can restore WXYZ; canceled ABCD never returns.
+            local
+                .apply_frame(&mut state, &wrapped_frame(4, 80, &text))
+                .unwrap();
+            assert_eq!(local.text(state.screen()).as_deref(), Some("WXYZ"));
+            assert_eq!(local.range().unwrap().text(state.screen()), "WXYZ");
+            local.start(0, 70);
+            local.extend(0, 73);
+            assert_eq!(local.text(state.screen()).as_deref(), Some("ABCD"));
+        }
+    }
+}
+
+#[test]
+fn new_selection_between_coalesced_resize_frames_replaces_intermediate_capture() {
+    let text = pending_selection_text();
+    let mut state = crate::emulation::terminal::TerminalState::new(3, 80);
+    state.apply_frame(&wrapped_frame(3, 80, &text)).unwrap();
+    let mut local = selected(&state, Selection::at(0, 70).extended_to(0, 73));
+    local.resizing(&state, 3, 70);
+    local.resizing(&state, 4, 60);
+    local
+        .apply_frame(&mut state, &wrapped_frame(3, 70, &text))
+        .unwrap();
+    assert_eq!(local.text(state.screen()).as_deref(), Some("ABCD"));
+    local.start(1, 20);
+    local.extend(1, 23);
+    assert_eq!(local.text(state.screen()).as_deref(), Some("WXYZ"));
+    local
+        .apply_frame(&mut state, &wrapped_frame(4, 60, &text))
+        .unwrap();
+    assert_eq!(local.range(), Some(Selection::at(1, 30).extended_to(1, 33)));
+    assert_eq!(local.text(state.screen()).as_deref(), Some("WXYZ"));
+}
+
+#[test]
+fn rejected_reshape_does_not_commit_new_capture_or_cancel_an_empty_anchor() {
+    use yinz_types::structured_render::FrameBuilder;
+    for empty in [false, true] {
+        let text = pending_selection_text();
+        let mut state = crate::emulation::terminal::TerminalState::new(3, 80);
+        state.apply_frame(&wrapped_frame(3, 80, &text)).unwrap();
+        let mut local = LocalSelection::default();
+        local.resizing(&state, 3, 60);
+        local.start(1, 10);
+        if !empty {
+            local.extend(1, 13);
+        }
+        let old_range = local.range();
+        let old_copy = local.text(state.screen());
+        for frame in [
+            b"invalid".to_vec(),
+            Painter::frame(4, 60, |p| p.text(1, 30, "wrong")),
+            FrameBuilder::new(0, 4, 1).finish(),
+        ] {
+            assert!(local.apply_frame(&mut state, &frame).is_err());
+            assert_eq!(local.range(), old_range);
+            assert_eq!(local.text(state.screen()), old_copy);
+            assert!(local.captured.is_none());
+            assert!(local.pending.is_none());
+            assert_eq!((state.size().rows, state.size().cols), (3, 80));
+        }
+        // A rejected candidate must not freeze the old text on ordinary output.
+        local
+            .apply_frame(
+                &mut state,
+                &Painter::frame(3, 80, |p| p.text(1, 10, "LIVE")),
+            )
+            .unwrap();
+        assert_eq!(
+            local.text(state.screen()).as_deref(),
+            Some(if empty { "" } else { "LIVE" })
+        );
+        assert!(local.captured.is_none());
+        let replacement = text.replace("WXYZ", "LIVE");
+        local
+            .apply_frame(&mut state, &wrapped_frame(4, 60, &replacement))
+            .unwrap();
+        if empty {
+            assert_eq!(local.range(), None);
+            assert_eq!(local.text(state.screen()), None);
+            local.extend(2, 5);
+            assert_eq!(local.range(), None);
+        } else {
+            assert_eq!(local.range(), Some(Selection::at(1, 30).extended_to(1, 33)));
+            assert_eq!(local.text(state.screen()).as_deref(), Some("LIVE"));
+        }
+    }
+}
+
+#[test]
+fn lazy_capture_keeps_spaces_and_original_newlines_through_shrink_and_expansion() {
+    for reverse in [false, true] {
+        let text = format!("{}AB  CD end", "x".repeat(78));
+        let mut state = crate::emulation::terminal::TerminalState::new(3, 80);
+        state.apply_frame(&wrapped_frame(3, 80, &text)).unwrap();
+        let mut local = LocalSelection::default();
+        local.resizing(&state, 4, 60);
+        let range = if reverse {
+            Selection::at(1, 3).extended_to(0, 78)
+        } else {
+            Selection::at(0, 78).extended_to(1, 3)
+        };
+        local.start(range.anchor.0, range.anchor.1);
+        local.extend(range.head.0, range.head.1);
+        assert_eq!(local.text(state.screen()).as_deref(), Some("AB\n  CD"));
+        local
+            .apply_frame(&mut state, &wrapped_frame(4, 60, &text))
+            .unwrap();
+        let mapped = if reverse {
+            Selection::at(1, 23).extended_to(1, 18)
+        } else {
+            Selection::at(1, 18).extended_to(1, 23)
+        };
+        assert_eq!(local.range(), Some(mapped));
+        assert_eq!(local.text(state.screen()).as_deref(), Some("AB\n  CD"));
+        local
+            .apply_frame(&mut state, &wrapped_frame(2, 100, &text))
+            .unwrap();
+        assert_eq!(local.text(state.screen()).as_deref(), Some("AB\n  CD"));
+        assert_eq!(local.range().unwrap().text(state.screen()), "AB  CD");
+    }
+}
+
+#[test]
+fn lazy_capture_maps_complete_unicode_units_before_replacing_the_buffer() {
+    let mut state = Painter::state(3, 40, |p| {
+        p.text(0, 18, "prefix ");
+        p.wide(0, 25, '漢');
+        p.cluster(0, 27, "e\u{301}", 1);
+        p.group(0, 28, &FAMILY);
+        p.text(0, 34, " end");
+    });
+    let mut local = LocalSelection::default();
+    local.resizing(&state, 4, 25);
+    local.start(0, 26);
+    local.extend(0, 31);
+    let expected = format!("漢e\u{301}{FAMILY_TEXT}");
+    assert_eq!(local.text(state.screen()), Some(expected.clone()));
+    let frame = Painter::frame(4, 25, |p| {
+        p.full_repaint();
+        p.text(0, 18, "prefix ");
+        p.wide(1, 0, '漢');
+        p.cluster(1, 2, "e\u{301}", 1);
+        p.group(1, 3, &FAMILY);
+        p.text(1, 9, " end");
+    });
+    local.apply_frame(&mut state, &frame).unwrap();
+    assert_eq!(local.range(), Some(Selection::at(1, 0).extended_to(1, 8)));
+    assert_eq!(local.text(state.screen()), Some(expected));
+}
+
+#[test]
+fn lazy_capture_uses_the_approved_ambiguous_offscreen_and_layout_fallback() {
+    use yinz_types::structured_render::{GeometryRecord, PaneRect, PANE_SELECTABLE};
+    for reason in ["ambiguous", "offscreen", "layout"] {
+        let text = if reason == "ambiguous" {
+            "x".repeat(140)
+        } else {
+            pending_selection_text()
+        };
+        let mut state = crate::emulation::terminal::TerminalState::new(3, 80);
+        state.apply_frame(&wrapped_frame(3, 80, &text)).unwrap();
+        let mut local = LocalSelection::default();
+        local.resizing(&state, 3, 60);
+        local.start(1, 10);
+        local.extend(1, 13);
+        let expected = local.text(state.screen());
+        let frame = match reason {
+            "offscreen" => wrapped_frame(1, 60, "remaining content"),
+            "layout" => Painter::frame(3, 60, |p| {
+                p.full_repaint();
+                for (row, chunk) in text.as_bytes().chunks(60).enumerate() {
+                    p.text(row, 0, std::str::from_utf8(chunk).unwrap());
+                }
+                p.geometry(&GeometryRecord {
+                    panes: vec![PaneRect {
+                        cols: 60,
+                        rows: 3,
+                        flags: PANE_SELECTABLE,
+                        ..Default::default()
+                    }],
+                });
+            }),
+            _ => wrapped_frame(3, 60, &text),
+        };
+        local.apply_frame(&mut state, &frame).unwrap();
+        assert_eq!(local.range(), None, "{reason}");
+        assert_eq!(local.text(state.screen()), expected, "{reason}");
+    }
+}
+
+#[test]
+fn new_capture_is_invalidated_by_later_context_or_layout_changes_and_session_reset() {
+    use yinz_types::structured_render::{GeometryRecord, PaneRect, PANE_SELECTABLE};
+    let text = pending_selection_text();
+    for layout in [false, true] {
+        let mut state = crate::emulation::terminal::TerminalState::new(3, 80);
+        state.apply_frame(&wrapped_frame(3, 80, &text)).unwrap();
+        let mut local = LocalSelection::default();
+        local.resizing(&state, 3, 60);
+        local.start(1, 10);
+        local.extend(1, 13);
+        local
+            .apply_frame(&mut state, &wrapped_frame(3, 60, &text))
+            .unwrap();
+        local
+            .apply_frame(
+                &mut state,
+                &Painter::frame(3, 60, |p| {
+                    if layout {
+                        p.geometry(&GeometryRecord {
+                            panes: vec![PaneRect {
+                                cols: 60,
+                                rows: 3,
+                                flags: PANE_SELECTABLE,
+                                ..Default::default()
+                            }],
+                        });
+                    } else {
+                        p.text(1, 29, "!");
+                    }
+                }),
+            )
+            .unwrap();
+        assert_eq!(local.range(), None);
+        assert_eq!(local.text(state.screen()).as_deref(), Some("WXYZ"));
+        // App clears selection and creates a fresh buffer when switching sessions.
+        local.clear();
+        state = crate::emulation::terminal::TerminalState::new(3, 60);
+        local
+            .apply_frame(&mut state, &wrapped_frame(3, 80, &text))
+            .unwrap();
+        assert_eq!(local.range(), None);
+        assert_eq!(local.text(state.screen()), None);
+    }
+}
+
+#[test]
+fn uncaptured_selection_survives_expansion_and_a_new_wrap_boundary() {
+    for (old_rows, old_cols, rows, cols, offset, phrase) in
+        [(3, 60, 2, 80, 90, "WXYZ"), (3, 80, 4, 60, 118, "AB  CD")]
+    {
+        let text = format!("{}{}{}", "x".repeat(offset), phrase, "z".repeat(10));
+        let mut state = crate::emulation::terminal::TerminalState::new(old_rows, old_cols);
+        state
+            .apply_frame(&wrapped_frame(old_rows, old_cols, &text))
+            .unwrap();
+        let end = offset + phrase.len() - 1;
+        let old = Selection::at(offset / old_cols, offset % old_cols)
+            .extended_to(end / old_cols, end % old_cols);
+        // Even without a request marker, the actual reshape must protect the
+        // current range before replacing its cells.
+        let mut local = selected(&state, old);
+        assert!(local.pending.is_none());
+        assert!(local.captured.is_none());
+        assert_eq!(local.text(state.screen()).as_deref(), Some(phrase));
+        local
+            .apply_frame(&mut state, &wrapped_frame(rows, cols, &text))
+            .unwrap();
+        let expected =
+            Selection::at(offset / cols, offset % cols).extended_to(end / cols, end % cols);
+        assert_ne!(old, expected);
+        assert_eq!(local.range(), Some(expected));
+        assert_eq!(local.text(state.screen()).as_deref(), Some(phrase));
     }
 }

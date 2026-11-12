@@ -552,6 +552,57 @@ fn font_reload_zoom_and_scale_geometry_share_selection_frame_and_copy_transition
         selection.apply_frame(&mut state, &update).unwrap();
         assert_eq!(selection.range(), None);
         assert_eq!(selection.text(state.screen()).as_deref(), Some("ABCD"));
+
+        // Start a different selection after the same production resize hook.
+        // Its row/column must change for each actual font-derived grid.
+        let text = format!(
+            "{}ABCD{}WXYZ{}",
+            "x".repeat(70),
+            "y".repeat(16),
+            "z".repeat(46)
+        );
+        let old_frame = Painter::frame(first.grid.rows, first.grid.cols, |p| {
+            p.full_repaint();
+            for (row, chunk) in text.as_bytes().chunks(first.grid.cols).enumerate() {
+                p.text(row, 0, std::str::from_utf8(chunk).unwrap());
+            }
+        });
+        let mut state = TerminalState::new(first.grid.rows, first.grid.cols);
+        state.apply_frame(&old_frame).unwrap();
+        let mut selection = LocalSelection::default();
+        selection.start(0, 70);
+        selection.extend(0, 73);
+        for message in geometry.messages(Some(first)) {
+            if let ClientToServerMsg::TerminalResize { new_size } = message {
+                selection.resizing(&state, new_size.rows, new_size.cols);
+            }
+        }
+        let old_range = Selection::at(90 / first.grid.cols, 90 % first.grid.cols)
+            .extended_to(93 / first.grid.cols, 93 % first.grid.cols);
+        selection.start(old_range.anchor.0, old_range.anchor.1);
+        selection.extend(old_range.head.0, old_range.head.1);
+        assert_eq!(selection.text(state.screen()).as_deref(), Some("WXYZ"));
+        selection.apply_frame(&mut state, &old_frame).unwrap();
+        let frame = Painter::frame(geometry.grid.rows, geometry.grid.cols, |p| {
+            p.full_repaint();
+            for (row, chunk) in text.as_bytes().chunks(geometry.grid.cols).enumerate() {
+                p.text(row, 0, std::str::from_utf8(chunk).unwrap());
+            }
+        });
+        selection.apply_frame(&mut state, &frame).unwrap();
+        let expected = Selection::at(90 / geometry.grid.cols, 90 % geometry.grid.cols)
+            .extended_to(93 / geometry.grid.cols, 93 % geometry.grid.cols);
+        assert_ne!(expected, old_range);
+        assert_ne!(old_range.text(state.screen()), "WXYZ");
+        assert_eq!(expected.text(state.screen()), "WXYZ");
+        assert_eq!(selection.range(), Some(expected));
+        assert_eq!(selection.text(state.screen()).as_deref(), Some("WXYZ"));
+        // Mirror App's session-switch clear/state reset before the next frame.
+        selection.clear();
+        state = TerminalState::new(geometry.grid.rows, geometry.grid.cols);
+        selection.apply_frame(&mut state, &old_frame).unwrap();
+        assert_eq!(selection.range(), None);
+        assert_eq!(selection.text(state.screen()), None);
     }
     // Failed font preparation never reaches the geometry/capture hook.
     let invalid = FontOptions {
