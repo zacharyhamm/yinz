@@ -76,14 +76,15 @@ fn contrast_ratio(first: PaletteColor, second: PaletteColor) -> f64 {
 /// Black or white, whichever contrasts more with `background`. The better one always reaches
 /// at least 4.58:1.
 fn readable_extreme(background: PaletteColor) -> PaletteColor {
-    let black = PaletteColor::Rgb((0, 0, 0));
-    let white = PaletteColor::Rgb((255, 255, 255));
-    if contrast_ratio(black, background) >= contrast_ratio(white, background) {
-        black
+    if contrast_ratio(BLACK, background) >= contrast_ratio(WHITE, background) {
+        BLACK
     } else {
-        white
+        WHITE
     }
 }
+
+const BLACK: PaletteColor = PaletteColor::Rgb((0, 0, 0));
+const WHITE: PaletteColor = PaletteColor::Rgb((255, 255, 255));
 
 /// Darken or lighten a title effect color (a waiting-pulse sample, a group highlight or an
 /// override) just enough to read at 4.5:1 on the ribbon `background`. Unlike
@@ -94,11 +95,22 @@ pub fn readable_ribbon_effect(color: PaletteColor, background: PaletteColor) -> 
     if readable(color) {
         return color;
     }
-    // Blending toward the better extreme moves luminance monotonically away from the color's
-    // side of the background, possibly crossing it. Contrast only falls until the crossing and
-    // only rises after it, and the start is unreadable, so the readable blends form one range
-    // ending at the extreme (which always reads): bisect for its smallest blend.
-    let toward = readable_extreme(background);
+    // Prefer the extreme on the color's own side of the background, so the shade does not cross
+    // the background and wash out when that extreme also reads. Otherwise blending toward the
+    // better extreme moves luminance monotonically away from the color's side, possibly
+    // crossing it. Contrast only falls until the crossing and only rises after it, and the
+    // start is unreadable, so the readable blends form one range ending at the extreme (which
+    // reads): bisect for its smallest blend.
+    let same_side = if palette_luminance(color) <= palette_luminance(background) {
+        BLACK
+    } else {
+        WHITE
+    };
+    let toward = if readable(same_side) {
+        same_side
+    } else {
+        readable_extreme(background)
+    };
     let (mut unreadable, mut readable_at) = (0.0_f32, 1.0_f32);
     for _ in 0..16 {
         let mid = f32::midpoint(unreadable, readable_at);
@@ -391,11 +403,12 @@ impl PaneFrame {
                     };
                     // Stack decorations drawn in the effect color shade it like the title text
                     // does, so the effect does not drop to the base on part of the ribbon.
+                    // `foreground` already holds that shade.
                     let is_title_effect =
                         self.use_frame_color_for_title && self.color == Some(candidate);
                     styles.foreground = Some(
                         if is_title_effect {
-                            readable_ribbon_effect(candidate, colors.background)
+                            foreground
                         } else {
                             ribbon_foreground(candidate, colors.base, colors.background)
                         }

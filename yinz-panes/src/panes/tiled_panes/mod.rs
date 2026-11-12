@@ -3457,9 +3457,10 @@ struct FrameContext {
 impl FrameContext {
     /// `(columns, rows)` a frameless pane reserves for the separators it shares with the panes
     /// to its right and below. With titles, the title bar of the pane below separates the two,
-    /// so no row is reserved for a horizontal line. A borderless pane below (such as the
-    /// status bar in the default layout) has no title bar, so it sits directly against the
-    /// pane above with no separator. That is intentional.
+    /// so no row is reserved for a horizontal line. A borderless tiled pane below has no title
+    /// bar, so it sits directly against the pane above with no separator. That is intentional.
+    /// (UI panes such as the status bar sit outside the viewport, so the pane above them
+    /// reserves no row in any style.)
     fn separator_offsets(&self, geom: &PaneGeom) -> (usize, usize) {
         let (columns, rows) = pane_content_offset(geom, &self.viewport);
         (columns, if self.draws_titles { 0 } else { rows })
