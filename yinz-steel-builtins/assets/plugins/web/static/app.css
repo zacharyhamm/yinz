@@ -290,10 +290,10 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
   padding: 8px calc(8px + var(--safe-right)) calc(8px + var(--safe-bottom)) calc(8px + var(--safe-left));
   display: grid; gap: 8px; max-height: 60dvh; overflow-y: auto;
 }
-.composer { display: grid; gap: 8px; }
-.composer-row { display: flex; align-items: flex-end; gap: 6px; }
+.composer { display: grid; gap: 8px; min-width: 0; }
+.composer-row { display: flex; align-items: flex-end; gap: 6px; min-width: 0; }
 .composer-input {
-  flex: 1; min-height: var(--tap); resize: none; padding: 10px 12px;
+  flex: 1; min-width: 0; min-height: var(--tap); resize: none; padding: 10px 12px;
   font: inherit; font-size: 16px; color: var(--text);
   background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px;
 }

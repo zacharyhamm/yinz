@@ -555,6 +555,45 @@ async function touchTargets(page, where) {
   check(!bad.length, `${where}: touch targets too small: ${bad.join(', ')}`);
 }
 
+/**
+ * Controls clipped horizontally by a scrolling or clipping ancestor, or pushed past the
+ * viewport. Vertical scroll regions clip legitimately, so only the horizontal extent is
+ * checked. A composer dock wider than its box would scroll its controls sideways.
+ */
+async function noClippedControls(page, where) {
+  const bad = await page.evaluate(() => {
+    const out = [];
+    const name = (el) => el.id ? `#${el.id}` : `${el.tagName.toLowerCase()}.${[...el.classList].join('.')}${el.dataset.key ? `[${el.dataset.key}]` : ''}`;
+    for (const el of document.querySelectorAll('button, a.button, [role=tab], input[type=checkbox], textarea')) {
+      const cs = getComputedStyle(el);
+      const r = el.getBoundingClientRect();
+      if (cs.display === 'none' || cs.visibility === 'hidden' || r.width <= 1 || r.height <= 1) continue;
+      if (r.left < -1 || r.right > innerWidth + 1) out.push(`${name(el)} ${Math.round(r.left)}..${Math.round(r.right)} outside the ${innerWidth}px viewport`);
+      for (let a = el.parentElement; a && a !== document.documentElement; a = a.parentElement) {
+        const s = getComputedStyle(a);
+        if (s.overflowX === 'visible' && s.overflowY === 'visible') continue;
+        const box = a.getBoundingClientRect();
+        const left = box.left + a.clientLeft;
+        const right = left + a.clientWidth;
+        if (r.left < left - 1 || r.right > right + 1) {
+          out.push(`${name(el)} ${Math.round(r.left)}..${Math.round(r.right)} clipped by ${name(a)} ${Math.round(left)}..${Math.round(right)}`);
+          break;
+        }
+      }
+    }
+    for (const dock of document.querySelectorAll('.composer-dock')) {
+      if (dock.scrollWidth > dock.clientWidth) out.push(`composer dock scrollWidth ${dock.scrollWidth} > clientWidth ${dock.clientWidth}`);
+    }
+    return out;
+  });
+  check(!bad.length, `${where}: clipped controls: ${bad.join(', ')}`);
+}
+
+/** Wait until a sheet exists and holds focus, so its Escape/Tab handler is attached. */
+async function sheetReady(page, id, what) {
+  await until(what, () => page.evaluate((s) => { const n = document.getElementById(s); return !!n && n.contains(document.activeElement); }, id));
+}
+
 async function tabUntil(page, id, { max = 40, shift = false } = {}) {
   for (let i = 0; i < max; i += 1) {
     if ((await activeId(page)) === id) return;
@@ -762,11 +801,13 @@ async function phoneLayout(open, width) {
   await waitLogin(page);
   await noHorizontalOverflow(page, `login ${width}px`);
   await touchTargets(page, `login ${width}px`);
+  await noClippedControls(page, `login ${width}px`);
   await signIn(page);
   await until('agent cards', () => exists(page, 'li.agent-card'));
   await until('three sections', async () => (await exists(page, '#section-waiting')) && (await exists(page, '#section-busy')) && (await exists(page, '#section-idle')));
   await noHorizontalOverflow(page, `list ${width}px`);
   await touchTargets(page, `list ${width}px`);
+  await noClippedControls(page, `list ${width}px`);
   check((await textOf(page, 'li.agent-card[data-agent-id="live:peer:9"]')).includes('session peer'), 'peer session chip missing');
   // Agent titles arrive as server-escaped row html; the title also reaches toasts as text.
   check((await textOf(page, '#section-waiting')).includes('<img src=x'), 'escaped title text not shown');
@@ -777,9 +818,17 @@ async function phoneLayout(open, width) {
   await until('quick key toast', async () => (await textOf(page, '#toast')).includes('keys delivered <img'));
   await noInjection(page);
   await domClick(page, '#menu-button');
-  await until('menu sheet', () => exists(page, '#sheet-menu'));
+  // The sheet takes focus in the same commit that creates it, so it can already hold
+  // focus the first time it is seen.
+  const opened = await until('menu sheet', () => page.evaluate(() => {
+    const n = document.getElementById('sheet-menu');
+    return n ? { inside: n.contains(document.activeElement) } : null;
+  }));
+  check(opened.inside, 'focus was outside the menu sheet when it appeared');
   await noHorizontalOverflow(page, `menu sheet ${width}px`);
   await touchTargets(page, `menu sheet ${width}px`);
+  await noClippedControls(page, `menu sheet ${width}px`);
+  await sheetReady(page, 'sheet-menu', 'focus inside the menu sheet');
   await page.keyboard.press('Escape');
   await until('menu closed', async () => !(await exists(page, '#sheet-menu')));
   await page.evaluate((h) => { location.hash = h; }, detailHash());
@@ -809,6 +858,7 @@ async function phoneLayout(open, width) {
     if (tab === 'details') await until('details content', () => exists(page, '#details'));
     await noHorizontalOverflow(page, `detail ${tab} ${width}px`);
     await touchTargets(page, `detail ${tab} ${width}px`);
+    await noClippedControls(page, `detail ${tab} ${width}px`);
   }
   check((await textOf(page, '#detail-header-html')).includes('<img src=x'), 'escaped header text not shown');
   await noInjection(page);
@@ -899,6 +949,10 @@ async function sheetsKeyboard(open) {
   await until('keys result', async () => ((await textOf(page, '#keys-result')) || '').includes('keys delivered <img'));
   check(JSON.stringify(fx.bodies('/api/agent/keys').at(-1)) === JSON.stringify({ agent: REF7, keys: ['1', 'enter'] }), 'send keys body mismatch');
   await noInjection(page);
+  // The sheet held focus when it opened (above), so its Escape handler is attached. Send
+  // is disabled while sending and again once the sequence clears, so focus may have
+  // dropped to the body by now; the document-level handler still sees the key.
+  check(await exists(page, '#sheet-keys'), 'keys sheet closed before Escape');
   await page.keyboard.press('Escape');
   await until('keys sheet closed', async () => !(await exists(page, '#sheet-keys')));
   check((await activeId(page)) === 'overflow-button', 'focus not restored to the actions button');
@@ -958,11 +1012,13 @@ async function readerPrepend(open) {
   await until('older tool records', async () => ((await textOf(page, '#sheet-reader')) || '').includes('older tool record'));
   check(!(await exists(page, '#reader-more')), 'reader offers more after the last page');
   check(fx.log.some((e) => e.path === '/api/tools' && e.query.has('before') && e.query.has('range')), 'older tools read lacked range+before');
+  await sheetReady(page, 'sheet-reader', 'focus inside the tools reader');
   await page.keyboard.press('Escape');
   await until('reader closed', async () => !(await exists(page, '#sheet-reader')));
   check(await page.evaluate(() => document.activeElement && document.activeElement.classList.contains('tools-group')), 'focus not restored to the tools group');
   await domClick(page, '.event-read');
   await until('event reader', async () => ((await textOf(page, '#sheet-reader')) || '').includes('complete message text'));
+  await sheetReady(page, 'sheet-reader', 'focus inside the event reader');
   await page.keyboard.press('Escape');
   await until('reader closed', async () => !(await exists(page, '#sheet-reader')));
 

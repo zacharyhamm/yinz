@@ -1,7 +1,12 @@
 // Modal bottom sheets: role=dialog, aria-modal, labelled; focus trap; Escape and
 // backdrop dismiss; focus returns to the opener; background scroll is locked
 // with a body class (never inline styles) and released on close.
-import { html, useEffect, useRef, cx } from './ui.js';
+//
+// The open work runs in a layout effect, synchronously in Preact's commit: the
+// vendored hooks defer plain effects until after paint, and in that window the
+// dialog exists while focus is still outside it and Escape/Tab are unhandled, so a
+// key pressed as the sheet appears would be lost.
+import { html, useLayoutEffect, useRef, cx } from './ui.js';
 
 const FOCUSABLE = 'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 let openCount = 0;
@@ -30,7 +35,7 @@ export function Sheet({ id, title, onClose, children, footer, wide = false }) {
   const titleId = `${id}-title`;
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
-  useEffect(() => {
+  useLayoutEffect(() => {
     const active = document.activeElement;
     const opener = active && active !== document.body ? active : lastActivated;
     lockScroll();
