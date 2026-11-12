@@ -1891,3 +1891,72 @@ fn restored_claude_observer_discovers_only_the_adopted_process_tree() {
         panic!("an unrelated process must not be observed")
     });
 }
+
+#[test]
+fn restored_claude_registry_uses_the_observed_process_environment() {
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("claude");
+    std::fs::copy("/bin/sleep", &executable).unwrap();
+    struct ChildGuard(std::process::Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    for source in ["config", "home", "empty-config", "missing"] {
+        let home = directory.path().join(source);
+        let config = home.join("custom-config");
+        let mut command = Command::new(&executable);
+        command.arg("60").env_clear();
+        if source != "missing" {
+            command.env("HOME", &home);
+        }
+        match source {
+            "config" => {
+                command.env("CLAUDE_CONFIG_DIR", &config);
+            },
+            "empty-config" => {
+                command.env("CLAUDE_CONFIG_DIR", "");
+            },
+            _ => {},
+        }
+        let child = ChildGuard(command.spawn().unwrap());
+        let root = if source == "config" {
+            config
+        } else {
+            home.join(".claude")
+        };
+        std::fs::create_dir_all(root.join("sessions")).unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        std::fs::write(
+            root.join("sessions").join(format!("{}.json", child.0.id())),
+            json!({"pid":child.0.id(),"sessionId":"conversation","kind":"interactive",
+                "statusUpdatedAt":now,"status":"idle"})
+            .to_string(),
+        )
+        .unwrap();
+        if source == "config" {
+            // A conflicting HOME registry must not override CLAUDE_CONFIG_DIR.
+            let fallback = home.join(".claude/sessions");
+            std::fs::create_dir_all(&fallback).unwrap();
+            std::fs::write(fallback.join(format!("{}.json", child.0.id())), "invalid").unwrap();
+        }
+        let called = std::cell::Cell::new(false);
+        let pid = child.0.id();
+        let child = std::cell::RefCell::new(child);
+        observe_restored(pid, "conversation", |state| {
+            assert_eq!(state, Some(yinz_types::agent::AgentState::Idle), "{source}");
+            called.set(true);
+            // The next sample must stop on process death, despite the retained record.
+            let mut child = child.borrow_mut();
+            child.0.kill().unwrap();
+            child.0.wait().unwrap();
+            true
+        });
+        assert_eq!(called.get(), source != "missing", "{source}");
+    }
+}

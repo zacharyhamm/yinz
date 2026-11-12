@@ -303,8 +303,9 @@ impl Screen {
                         && agent.session_id == expected.session_id
                         && agent.run_id == expected.run_id
                         && agent.source == expected.source
+                        // The OS observer validates the foreground group and Claude's
+                        // process instance; invoked_with may still name the shell.
                         && agent.state != AgentState::Exited
-                        && self.agent_process_matches(pane, "claude")
                 });
         let Some(mut current) = current else {
             self.restored_claude_observers.remove(&pane);

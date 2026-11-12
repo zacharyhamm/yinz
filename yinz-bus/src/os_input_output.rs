@@ -415,6 +415,8 @@ pub trait ClientTransport: Send + Sync {
 /// Process metadata, palette, and file access used by the server.
 pub trait ServerEnvironment: Send + Sync {
     /// Observe an adopted local Claude without requiring a new provider hook.
+    /// Only publish while the terminal retains its foreground process group and the
+    /// observed Claude process instance is alive. The launch command may name a shell.
     /// The callback returns false when the destination no longer accepts this observation.
     fn observe_restored_claude(
         &self,

@@ -627,6 +627,23 @@ fn tcgetpgrp_returns_foreground_group() {
         "the spawned command leads its own foreground group, tcgetpgrp gave {fpgid:?}"
     );
 
+    // Restored-state publication follows the live terminal group, rather than
+    // the pane's launch command. A different group must retire the observer.
+    let publish = restored_claude_publisher(
+        server.pty_backend.clone(),
+        terminal_id,
+        child_pid.get(),
+        Box::new(|_| true),
+    );
+    assert!(publish(None));
+    let stale = restored_claude_publisher(
+        server.pty_backend.clone(),
+        terminal_id,
+        child_pid.get().wrapping_add(1),
+        Box::new(|_| panic!("a replaced foreground group must not publish")),
+    );
+    assert!(!stale(None));
+
     // An unknown terminal id has no fd and must not panic.
     assert_eq!(
         server
@@ -635,6 +652,11 @@ fn tcgetpgrp_returns_foreground_group() {
         None
     );
 
+    server.clear_terminal_id(terminal_id).unwrap();
+    assert!(
+        !publish(None),
+        "a removed terminal must retire its observer"
+    );
     let _ = server.force_kill(child_pid);
 }
 

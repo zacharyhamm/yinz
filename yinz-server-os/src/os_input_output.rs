@@ -1616,6 +1616,23 @@ impl ClientTransport for ServerOsInputOutput {
     }
 }
 
+// Keep the foreground check next to publication so every sample revalidates
+// the adopted terminal, including samples whose registry data is unavailable.
+fn restored_claude_publisher(
+    backend: PtyBackendImpl,
+    terminal: TerminalId,
+    root: u32,
+    publish: Box<dyn Fn(Option<yinz_types::agent::AgentState>) -> bool + Send>,
+) -> impl Fn(Option<yinz_types::agent::AgentState>) -> bool + Send {
+    move |state| {
+        backend
+            .tcgetpgrp(terminal)
+            .and_then(|pid| u32::try_from(pid).ok())
+            == Some(root)
+            && publish(state)
+    }
+}
+
 impl ServerEnvironment for ServerOsInputOutput {
     fn observe_restored_claude(
         &self,
@@ -1631,6 +1648,7 @@ impl ServerEnvironment for ServerOsInputOutput {
         else {
             return Ok(());
         };
+        let publish = restored_claude_publisher(self.pty_backend.clone(), terminal, root, publish);
         std::thread::Builder::new()
             .name("restored-claude".into())
             .spawn(move || {

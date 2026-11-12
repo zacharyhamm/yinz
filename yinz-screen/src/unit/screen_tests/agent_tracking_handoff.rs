@@ -1466,10 +1466,21 @@ fn claude_permission_registry_handoff_retains_overlay_watermark_and_parent() {
 
 #[test]
 fn restored_claude_registry_reconciles_orphan_without_completing_a_turn() {
-    for state in [AgentState::Idle, AgentState::Busy, AgentState::Waiting] {
-        let (mut screen, _, _) = setup("claude");
+    for (command, state) in ["claude", "bash"].into_iter().flat_map(|command| {
+        [AgentState::Idle, AgentState::Busy, AgentState::Waiting].map(|state| (command, state))
+    }) {
+        let (mut screen, _, _) = setup(command);
         report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
         screen.agent_lifecycle.remove(&PANE);
+        assert_eq!(
+            screen
+                .tab_containing_pane(PANE)
+                .unwrap()
+                .pane_run_command(PANE)
+                .unwrap()
+                .command,
+            std::path::PathBuf::from(command)
+        );
         let info = screen.get_pane_info(PANE).unwrap();
         let expected = info.agent.unwrap();
         let revision = screen.tabs[&TabId::new(0)].agent_input_revision(PANE);

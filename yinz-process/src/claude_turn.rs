@@ -40,15 +40,25 @@ pub fn observe_restored(
             let Some(parent) = ancestor else { break };
             if parent.as_u32() == root {
                 let identity = (pid.as_u32(), process.start_time());
-                if let Some(reader) = ClaudeStatusObservation::new(identity.0) {
-                    candidates.push((identity, reader));
-                }
+                candidates.push(identity);
                 break;
             }
             ancestor = system.process(parent).and_then(|p| p.parent());
         }
     }
-    let [(identity, reader)] = candidates.as_slice() else {
+    let [identity] = candidates.as_slice() else {
+        return;
+    };
+    let pid = sysinfo::Pid::from_u32(identity.0);
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing().with_environ(UpdateKind::Always),
+    );
+    let Some(process) = system.process(pid).filter(|p| p.start_time() == identity.1) else {
+        return;
+    };
+    let Some(reader) = ClaudeStatusObservation::for_process(process) else {
         return;
     };
     let deadline = Instant::now() + Duration::from_secs(24 * 60 * 60);
@@ -157,10 +167,34 @@ struct ClaudeStatusObservation {
 
 impl ClaudeStatusObservation {
     fn new(pid: u32) -> Option<Self> {
-        let root = std::env::var_os("CLAUDE_CONFIG_DIR")
+        Self::from_environment(pid, |key| std::env::var_os(key))
+    }
+
+    fn for_process(process: &sysinfo::Process) -> Option<Self> {
+        use std::os::unix::ffi::OsStrExt;
+        Self::from_environment(process.pid().as_u32(), |key| {
+            let prefix = format!("{key}=");
+            process.environ().iter().find_map(|entry| {
+                entry
+                    .as_bytes()
+                    .strip_prefix(prefix.as_bytes())
+                    .map(|value| std::ffi::OsStr::from_bytes(value).to_owned())
+            })
+        })
+    }
+
+    fn from_environment(
+        pid: u32,
+        get: impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> Option<Self> {
+        let root = get("CLAUDE_CONFIG_DIR")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")))?;
+            .or_else(|| {
+                get("HOME")
+                    .filter(|value| !value.is_empty())
+                    .map(|home| PathBuf::from(home).join(".claude"))
+            })?;
         Some(Self {
             path: root.join("sessions").join(format!("{pid}.json")),
             after_ms: SystemTime::now()
