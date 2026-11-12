@@ -1,5 +1,5 @@
 mod kdl_layout_parser;
-mod native_terminal;
+pub(crate) mod native_terminal;
 mod overlay_tab_plugins;
 mod web;
 use kdl_layout_parser::KdlLayoutParser;

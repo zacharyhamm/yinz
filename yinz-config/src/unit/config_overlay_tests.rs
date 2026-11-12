@@ -222,3 +222,137 @@ fn drop_ins_layer_in_name_order_and_a_broken_one_is_skipped() {
         untouched
     );
 }
+
+#[test]
+fn font_aliases_merge_through_sorted_drop_ins_and_blank_resets() {
+    for (first, second) in [("font", "font_family"), ("font_family", "font")] {
+        let dir = tempfile::tempdir().unwrap();
+        let base = Config::from_kdl(
+            &format!("terminal {{ {first} \"first\"; font_bold \"bold\"; }}"),
+            None,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("20-reset.kdl"),
+            format!("terminal {{ {second} \"  \"; font_italic \"italic\"; }}"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("10-set.kdl"),
+            format!("terminal {{ {second} \"second\"; }}"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("30-invalid.kdl"),
+            "terminal { font \"bad\"; font_family \"bad\"; }",
+        )
+        .unwrap();
+        let config = base.with_overlay_dir(Some(dir.path()));
+        assert_eq!(config.terminal.font_family.as_deref(), Some("  "));
+        assert_eq!(config.terminal.font_bold.as_deref(), Some("bold"));
+        assert_eq!(config.terminal.font_italic.as_deref(), Some("italic"));
+        assert_eq!(config.terminal.font_bold_italic, None);
+    }
+}
+
+#[test]
+fn managed_font_alias_updates_replace_logical_key_and_reject_bad_fragments() {
+    for (first, second) in [("font", "font_family"), ("font_family", "font")] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Config::write_managed_fragment(
+            dir.path(),
+            &format!("terminal {{ {first} \"old\"; font_bold \"bold\"; padding 2; }}"),
+        )
+        .unwrap();
+        Config::write_managed_fragment(dir.path(), &format!("terminal {{ {second} \"\"; }}"))
+            .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let config = Config::from_kdl(&text, None).unwrap();
+        assert_eq!(config.terminal.font_family.as_deref(), Some(""));
+        assert_eq!(config.terminal.font_bold.as_deref(), Some("bold"));
+        assert_eq!(config.terminal.padding, Some(2.0));
+        for bad in [
+            "font \"x\"; font_family \"x\";",
+            "font_family \"x\"; font \"y\";",
+            "font \"x\"; font \"y\";",
+        ] {
+            assert!(
+                Config::write_managed_fragment(dir.path(), &format!("terminal {{ {bad} }}"))
+                    .is_err()
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        }
+    }
+}
+
+#[test]
+fn raw_font_writes_supersede_alternate_spelling_in_managed_edits() {
+    for (first, second) in [("font", "font_family"), ("font_family", "font")] {
+        for root in [false, true] {
+            let mut managed = if root {
+                doc(&format!("configuration_edits {{ set \"terminal\" {{ terminal {{ {first} \"old\"; font_size 14; }}; }}; }}"))
+            } else {
+                doc(&format!("configuration_edits {{ set \"terminal\" \"{first}\" {{ {first} \"old\"; }}; }}"))
+            };
+            merge_kdl_fragment(
+                &mut managed,
+                &doc(&format!("terminal {{ {second} \"new\"; }}")),
+            );
+            // The generic editor does not offer terminal settings. Exercise raw
+            // reconciliation without expanding its catalog.
+            let text = managed.to_string();
+            assert!(!text.contains("old"), "{text}");
+            assert!(text.contains(&format!("{second} \"new\"")), "{text}");
+            if root {
+                assert!(text.contains("font_size 14"), "{text}");
+            } else {
+                assert_eq!(
+                    Config::from_kdl(&text, None)
+                        .unwrap()
+                        .terminal
+                        .font_family
+                        .as_deref(),
+                    Some("new")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn managed_terminal_fragments_cannot_hide_errors_by_coalescing_blocks() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = Config::write_managed_fragment(dir.path(), "terminal { font \"old\"; }").unwrap();
+    let before = std::fs::read(&path).unwrap();
+    for fragment in [
+        "terminal { font \"a\"; }\nterminal { font_family \"b\"; }",
+        "terminal { font \"a\"; font_family \"b\"; }\nterminal { font \"c\"; }",
+        "terminal { font \"a\"; }\nterminal { font \"b\"; font_family \"c\"; }",
+    ] {
+        assert!(Config::write_managed_fragment(dir.path(), fragment).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+}
+
+#[test]
+fn each_face_can_be_independently_cleared_by_a_later_drop_in() {
+    for name in ["font", "font_bold", "font_italic", "font_bold_italic"] {
+        let dir = tempfile::tempdir().unwrap();
+        let base = Config::from_kdl("terminal { font \"regular\"; font_bold \"bold\"; font_italic \"italic\"; font_bold_italic \"both\"; }", None).unwrap();
+        std::fs::write(
+            dir.path().join("10-reset.kdl"),
+            format!("terminal {{ {name} \"  \"; }}"),
+        )
+        .unwrap();
+        let config = base.with_overlay_dir(Some(dir.path()));
+        let value = serde_json::to_value(&config.terminal).unwrap();
+        for (key, expected) in [
+            ("font", "regular"),
+            ("font_bold", "bold"),
+            ("font_italic", "italic"),
+            ("font_bold_italic", "both"),
+        ] {
+            assert_eq!(value[key], if key == name { "  " } else { expected });
+        }
+    }
+}

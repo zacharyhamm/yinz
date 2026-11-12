@@ -176,3 +176,306 @@ fn failed_link_opening_allows_subsequent_opening() {
     assert_eq!(opened.len(), 1);
     assert_eq!(opened[0].1, "https://example.com/works");
 }
+
+fn embedded_settings() -> TerminalConfig {
+    TerminalConfig {
+        system_fonts: Some(false),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn four_faces_weight_defaults_and_blank_resets_reach_production_options() {
+    let settings = TerminalConfig {
+        font_family: Some("main".into()),
+        font_bold: Some("bold".into()),
+        font_italic: Some("italic".into()),
+        font_bold_italic: Some("both".into()),
+        font_weight: Some(600),
+        ..Default::default()
+    };
+    let options = font_options(&settings, 1.0);
+    assert_eq!(options.family.as_deref(), Some("main"));
+    assert_eq!(options.bold_family.as_deref(), Some("bold"));
+    assert_eq!(options.italic_family.as_deref(), Some("italic"));
+    assert_eq!(options.bold_italic_family.as_deref(), Some("both"));
+    assert_eq!(options.weight, 600);
+    let blank = TerminalConfig {
+        font_family: Some(" ".into()),
+        font_bold: Some("".into()),
+        font_italic: Some("\t".into()),
+        font_bold_italic: Some("  ".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        font_options(&blank, 1.0),
+        font_options(&TerminalConfig::default(), 1.0)
+    );
+}
+
+#[test]
+fn effective_font_options_bound_only_final_physical_size() {
+    for (points, zoom, scale, expected) in [(3.0, 0.25, 1.0, 4.0), (384.0, 4.0, 4.0, 512.0)] {
+        let settings = TerminalConfig {
+            font_size: Some(points),
+            ..embedded_settings()
+        };
+        let options = effective_font_options(&settings, zoom, scale);
+        assert_eq!(options.size, expected);
+        assert!(options.stack(1.0).is_ok());
+        assert_eq!(settings.font_size, Some(points));
+    }
+    let settings = TerminalConfig {
+        font_size: Some(384.0),
+        ..embedded_settings()
+    };
+    assert_eq!(
+        effective_font_options(&settings, 4.0, 2.0),
+        effective_font_options(&settings, 4.0, 3.0)
+    );
+}
+
+#[test]
+fn font_application_preserves_warmed_cache_for_equivalent_and_paint_only_settings() {
+    let settings = embedded_settings();
+    let mut active = effective_font_options(&settings, 1.0, 1.0);
+    let mut cache = GlyphCache::new(active.stack(1.0).unwrap());
+    let mut retained = RetainedScene::new();
+    let state = crate::testing::painter::Painter::state(2, 16, |painter| {
+        painter.text(0, 0, "Ag -> fi");
+        painter.cluster(1, 0, "e\u{301}", 1);
+    });
+    let selection = Selection::at(0, 0).extended_to(0, 1);
+    retained.set_selection(Some(selection));
+    retained.refresh(
+        SceneInputs {
+            state: &state,
+            phase: BlinkPhase::On,
+            paints: &Paints::default(),
+            cursor: CursorOptions::default(),
+            hovered_link: None,
+            preedit: None,
+        },
+        &mut cache,
+    );
+    assert!(cache.entries() > 0);
+    assert!(cache.shaped_runs() > 0);
+    assert!(cache.cluster_entries() > 0);
+    let atlas = cache.atlases().mask.stamp();
+    let generation = cache.generation();
+    for settings in [
+        settings.clone(),
+        TerminalConfig {
+            font_size: Some(12.0),
+            font_weight: Some(400),
+            padding: Some(10.0),
+            opacity: Some(0.5),
+            font_family: Some(" ".into()),
+            ..settings
+        },
+    ] {
+        let requested = effective_font_options(&settings, 1.0, 1.0);
+        let replacement = prepare_fonts(&active, &requested).unwrap();
+        assert!(replacement.is_none());
+        apply_fonts(
+            &mut active,
+            &mut cache,
+            &mut retained,
+            requested,
+            replacement,
+        );
+        assert_eq!(cache.generation(), generation);
+        assert_eq!(cache.atlases().mask.stamp(), atlas);
+        assert_eq!(selection.text(state.screen()), "Ag");
+    }
+}
+
+#[test]
+fn font_application_changes_each_font_input_and_failure_keeps_working_cache() {
+    let settings = embedded_settings();
+    let base = effective_font_options(&settings, 1.0, 1.0);
+    let mut variants = Vec::new();
+    for field in [
+        "regular",
+        "bold",
+        "italic",
+        "both",
+        "weight",
+        "ligatures",
+        "system",
+        "line",
+        "size",
+    ] {
+        let mut changed = settings.clone();
+        match field {
+            "regular" => changed.font_family = Some("Iosevka Term".into()),
+            "bold" => changed.font_bold = Some("Iosevka Term".into()),
+            "italic" => changed.font_italic = Some("Iosevka Term".into()),
+            "both" => changed.font_bold_italic = Some("Iosevka Term".into()),
+            "weight" => changed.font_weight = Some(700),
+            "ligatures" => changed.font_ligatures = Some(false),
+            "system" => changed.system_fonts = Some(true),
+            "line" => changed.line_height = Some(1.5),
+            _ => changed.font_size = Some(18.0),
+        }
+        variants.push(effective_font_options(&changed, 1.0, 1.0));
+    }
+    variants.push(effective_font_options(&settings, 1.2, 1.0));
+    variants.push(effective_font_options(&settings, 1.0, 2.0));
+    for requested in variants {
+        let mut active = base.clone();
+        let mut cache = GlyphCache::new(active.stack(1.0).unwrap());
+        let generation = cache.generation();
+        let mut retained = RetainedScene::new();
+        let replacement = prepare_fonts(&active, &requested).unwrap();
+        assert!(replacement.is_some());
+        apply_fonts(
+            &mut active,
+            &mut cache,
+            &mut retained,
+            requested.clone(),
+            replacement,
+        );
+        assert_ne!(cache.generation(), generation);
+        assert_eq!(active, requested);
+        let invalid = FontOptions {
+            size: f32::NAN,
+            ..requested.clone()
+        };
+        let generation = cache.generation();
+        assert!(prepare_fonts(&active, &invalid).is_err());
+        assert_eq!(cache.generation(), generation);
+        assert_eq!(active, requested);
+    }
+}
+
+#[test]
+fn geometry_reports_cell_changes_even_with_same_grid_and_forces_new_connections() {
+    let metrics = effective_font_options(&embedded_settings(), 1.0, 1.0)
+        .stack(1.0)
+        .unwrap()
+        .metrics();
+    let first = Geometry::calculate(80, 40, 0, metrics).unwrap();
+    assert_eq!(
+        first.messages(None).len(),
+        2,
+        "initial, reconnect and explicit queries have no snapshot"
+    );
+    assert!(first.messages(Some(first)).is_empty());
+    let changed_cell = Geometry {
+        cell: SizeInPixels {
+            width: first.cell.width + 1,
+            ..first.cell
+        },
+        ..first
+    };
+    assert!(matches!(
+        &changed_cell.messages(Some(first))[..],
+        [ClientToServerMsg::TerminalPixelDimensions { .. }]
+    ));
+    let padded = Geometry::calculate(80, 40, 10, metrics).unwrap();
+    assert_eq!(padded.messages(Some(first)).len(), 2);
+    assert!(Geometry::calculate(0, 40, 0, metrics).is_none());
+    assert!(Geometry::calculate(80, 0, 0, metrics).is_none());
+    assert_eq!(
+        Geometry::calculate(1, 1, 256, metrics).unwrap().grid,
+        Size { rows: 1, cols: 1 }
+    );
+}
+
+#[test]
+fn paint_only_reload_refreshes_retained_ink_without_replacing_fonts() {
+    let mut settings = embedded_settings();
+    let mut paints = Paints::default();
+    let active = effective_font_options(&settings, 1.0, 1.0);
+    let mut cache = GlyphCache::new(active.stack(1.0).unwrap());
+    let mut retained = RetainedScene::new();
+    let state = crate::testing::painter::Painter::state(1, 8, |painter| painter.text(0, 0, "Ag"));
+    let refresh = |retained: &mut RetainedScene, cache: &mut GlyphCache, paints: &Paints| {
+        retained.refresh(
+            SceneInputs {
+                state: &state,
+                phase: BlinkPhase::On,
+                paints,
+                cursor: CursorOptions::default(),
+                hovered_link: None,
+                preedit: None,
+            },
+            cache,
+        );
+    };
+    refresh(&mut retained, &mut cache, &paints);
+    let generation = cache.generation();
+    let before = retained.flatten();
+    let current = settings.clone();
+    let next_paints = Paints {
+        foreground: [12, 34, 56],
+        ..paints
+    };
+    apply_settings(
+        &mut settings,
+        &mut paints,
+        &mut retained,
+        current.clone(),
+        next_paints,
+    );
+    refresh(&mut retained, &mut cache, &paints);
+    assert!(retained.rebuilt_everything());
+    assert_ne!(retained.flatten(), before);
+    assert_eq!(cache.generation(), generation);
+    assert!(
+        prepare_fonts(&active, &effective_font_options(&settings, 1.0, 1.0))
+            .unwrap()
+            .is_none()
+    );
+    apply_settings(
+        &mut settings,
+        &mut paints,
+        &mut retained,
+        current,
+        next_paints,
+    );
+    refresh(&mut retained, &mut cache, &paints);
+    assert!(
+        !retained.rebuilt_everything(),
+        "identical reload invalidated retained ink"
+    );
+}
+
+#[test]
+fn host_pixel_reply_uses_current_window_grid_while_rendered_content_catches_up() {
+    let metrics = crate::text::font::CellMetrics {
+        width: 21,
+        height: 62,
+        baseline: 45,
+        underline_top: 48,
+        strikeout_top: 32,
+        stroke: 1,
+    };
+    let current = Geometry {
+        cell: SizeInPixels {
+            width: 21,
+            height: 62,
+        },
+        grid: Size {
+            rows: 43,
+            cols: 119,
+        },
+    };
+    let old_frame_grid = Size {
+        rows: 57,
+        cols: 132,
+    };
+    let geometry = host_query_geometry(Some(current), old_frame_grid, metrics);
+    assert_eq!(
+        crate::host_reply::answer(b"\x1b[14t", geometry, &Paints::default(), None),
+        b"\x1b[4;2666;2499t"
+    );
+    assert_eq!(
+        crate::host_reply::answer(b"\x1b[16t", geometry, &Paints::default(), None),
+        b"\x1b[6;62;21t"
+    );
+    let initial = host_query_geometry(None, old_frame_grid, metrics);
+    assert_eq!(initial.rows, 57);
+    assert_eq!(initial.cols, 132);
+}

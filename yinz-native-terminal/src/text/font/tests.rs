@@ -67,13 +67,10 @@ fn the_cell_scales_with_the_font_size() {
     assert_eq!(doubled.height, 40);
 }
 
-fn synthetic_discovery() -> Option<Discovery> {
+fn synthetic_discovery() -> Discovery {
     let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
-    let discovery = Discovery::synthetic(&directory);
-    if discovery.is_none() {
-        eprintln!("fontconfig is unavailable here; family selection is untested");
-    }
-    discovery
+    Discovery::synthetic(&directory)
+        .expect("required bundled-family discovery needs working libfontconfig on Linux")
 }
 
 fn requested(family: &str) -> FontOptions {
@@ -365,9 +362,7 @@ fn a_listed_feature_changes_what_the_shaper_draws() {
 
 #[test]
 fn a_requested_weight_picks_the_matching_installed_face() {
-    let Some(discovery) = synthetic_discovery() else {
-        return;
-    };
+    let discovery = synthetic_discovery();
     let weight_of = |stack: &FontStack, style: FaceStyle| {
         stack.faces[stack.primary_of(style).0]
             .attributes()
@@ -417,9 +412,7 @@ const EMBEDDED_PRIMARY: [FontId; 4] = [FontId(0), FontId(1), FontId(2), FontId(3
 
 #[test]
 fn a_resolved_family_replaces_the_primary_and_measures_the_cell() {
-    let Some(discovery) = synthetic_discovery() else {
-        return;
-    };
+    let discovery = synthetic_discovery();
     let mut stack = FontStack::build_with(&requested("Iosevka Term"), Some(discovery)).unwrap();
     assert!(
         stack.primary.iter().all(|font| font.0 >= 6),
@@ -437,9 +430,7 @@ fn a_resolved_family_replaces_the_primary_and_measures_the_cell() {
 
 #[test]
 fn a_family_that_does_not_resolve_keeps_the_embedded_primary() {
-    let Some(discovery) = synthetic_discovery() else {
-        return;
-    };
+    let discovery = synthetic_discovery();
     let stack =
         FontStack::build_with(&requested("No Such Family At All"), Some(discovery)).unwrap();
     assert_eq!(stack.primary, EMBEDDED_PRIMARY);
@@ -486,9 +477,7 @@ fn iosevka_with(styles: FontOptions) -> FontOptions {
 
 #[test]
 fn a_style_family_draws_its_style_and_leaves_the_others_alone() {
-    let Some(discovery) = synthetic_discovery() else {
-        return;
-    };
+    let discovery = synthetic_discovery();
     let mut stack = FontStack::build_with(
         &iosevka_with(FontOptions {
             italic_family: Some(SECOND_FAMILY.to_owned()),
@@ -518,9 +507,7 @@ fn a_style_family_draws_its_style_and_leaves_the_others_alone() {
 
 #[test]
 fn every_style_family_is_honoured() {
-    let Some(discovery) = synthetic_discovery() else {
-        return;
-    };
+    let discovery = synthetic_discovery();
     let mut stack = FontStack::build_with(
         &iosevka_with(FontOptions {
             bold_family: Some(SECOND_FAMILY.to_owned()),
@@ -547,9 +534,7 @@ fn every_style_family_is_honoured() {
 
 #[test]
 fn a_character_the_style_family_lacks_comes_from_the_main_familys_face() {
-    let Some(discovery) = synthetic_discovery() else {
-        return;
-    };
+    let discovery = synthetic_discovery();
     let mut stack = FontStack::build_with(
         &iosevka_with(FontOptions {
             italic_family: Some(SECOND_FAMILY.to_owned()),
@@ -571,9 +556,7 @@ fn a_character_the_style_family_lacks_comes_from_the_main_familys_face() {
 
 #[test]
 fn a_style_family_with_another_cell_is_fitted_like_a_fallback() {
-    let Some(discovery) = synthetic_discovery() else {
-        return;
-    };
+    let discovery = synthetic_discovery();
     let mut stack = FontStack::build_with(
         &iosevka_with(FontOptions {
             italic_family: Some(SECOND_FAMILY.to_owned()),
@@ -596,9 +579,7 @@ fn a_style_family_with_another_cell_is_fitted_like_a_fallback() {
 
 #[test]
 fn a_style_family_sharing_the_cell_is_drawn_as_is() {
-    let Some(discovery) = synthetic_discovery() else {
-        return;
-    };
+    let discovery = synthetic_discovery();
     let mut stack = FontStack::build_with(
         &FontOptions {
             italic_family: Some("Iosevka Term".to_owned()),
@@ -619,9 +600,7 @@ fn a_style_family_sharing_the_cell_is_drawn_as_is() {
 
 #[test]
 fn a_style_family_that_does_not_resolve_keeps_the_main_familys_face() {
-    let Some(discovery) = synthetic_discovery() else {
-        return;
-    };
+    let discovery = synthetic_discovery();
     let stack = FontStack::build_with(
         &iosevka_with(FontOptions {
             italic_family: Some("No Such Family At All".to_owned()),
@@ -638,9 +617,7 @@ fn a_style_family_that_does_not_resolve_keeps_the_main_familys_face() {
 
 #[test]
 fn a_resolved_family_still_falls_back_for_what_it_does_not_carry() {
-    let Some(discovery) = synthetic_discovery() else {
-        return;
-    };
+    let discovery = synthetic_discovery();
     let mut stack = FontStack::build_with(&requested("Iosevka Term"), Some(discovery)).unwrap();
     let glyph = glyph_of(&mut stack, FaceStyle::Regular, '\u{1f600}');
     assert!(!stack.is_primary(glyph.font));
@@ -1424,9 +1401,7 @@ fn a_text_presentation_selector_prefers_a_monochrome_system_font() {
 
 #[test]
 fn a_text_presentation_selector_draws_a_silhouette_when_only_colour_faces_have_it() {
-    let Some(discovery) = synthetic_discovery() else {
-        return;
-    };
+    let discovery = synthetic_discovery();
     let mut fonts = FontStack::build_with(
         &FontOptions {
             system_fonts: true,
@@ -1530,9 +1505,7 @@ fn a_font_file_is_loaded_once_per_process() {
 
 #[test]
 fn an_installed_colour_emoji_font_is_preferred_over_the_bundled_one() {
-    let Some(discovery) = synthetic_discovery() else {
-        return;
-    };
+    let discovery = synthetic_discovery();
     let mut fonts = FontStack::build_with(
         &FontOptions {
             system_fonts: true,
@@ -1648,9 +1621,7 @@ fn without_any_emoji_font_an_emoji_is_left_undrawn_rather_than_failing() {
 
 #[test]
 fn without_the_bundled_emoji_an_installed_emoji_font_is_used_before_the_symbols() {
-    let Some(discovery) = synthetic_discovery() else {
-        return;
-    };
+    let discovery = synthetic_discovery();
     let mut fonts =
         FontStack::without_bundled_emoji(&FontOptions::default(), Some(discovery)).unwrap();
     let fallbacks = fonts.fallback_faces().to_vec();
@@ -1678,4 +1649,47 @@ fn without_the_bundled_emoji_an_installed_emoji_font_is_used_before_the_symbols(
             text
         );
     }
+}
+
+#[test]
+fn adopted_face_diagnostics_describe_static_weight_and_slant_fallbacks() {
+    let regular = face(REGULAR, "regular").unwrap();
+    assert!(files::face_mismatch(&regular, FaceRequest::from(FaceStyle::Regular)).is_none());
+    let mismatch = files::face_mismatch(
+        &regular,
+        FaceRequest {
+            weight: 600,
+            italic: true,
+        },
+    )
+    .unwrap();
+    assert!(mismatch.contains("400 (static face)"), "{mismatch}");
+    assert!(mismatch.contains("Normal"), "{mismatch}");
+    let bold_italic = face(BOLD_ITALIC, "bold italic").unwrap();
+    assert!(files::face_mismatch(&bold_italic, FaceRequest::from(FaceStyle::BoldItalic)).is_none());
+}
+
+#[test]
+fn missing_style_uses_actual_regular_face_with_fallback_diagnostic() {
+    // CJK's bundled family supplies only an upright 400 face.
+    let discovery = synthetic_discovery();
+    let mut stack =
+        FontStack::build_with(&requested("Noto Sans Mono CJK SC"), Some(discovery)).unwrap();
+    assert!(
+        stack.primary[0].0 > SYMBOLS_FONT.0,
+        "the requested CJK family must actually resolve"
+    );
+    let glyph = glyph_of(&mut stack, FaceStyle::BoldItalic, '中');
+    let mismatch = files::face_mismatch(
+        &stack.faces[glyph.font.0],
+        FaceRequest::from(FaceStyle::BoldItalic),
+    )
+    .unwrap();
+    assert!(mismatch.contains("400"), "{mismatch}");
+    assert!(stack
+        .rasterize(glyph, 2)
+        .unwrap()
+        .coverage
+        .iter()
+        .any(|byte| *byte > 0));
 }

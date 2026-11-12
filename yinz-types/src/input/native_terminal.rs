@@ -33,7 +33,11 @@ pub enum StartupMode {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TerminalConfig {
+    #[serde(rename = "font", alias = "font_family")]
     pub font_family: Option<String>,
+    pub font_bold: Option<String>,
+    pub font_italic: Option<String>,
+    pub font_bold_italic: Option<String>,
     pub font_size: Option<f32>,
     pub font_weight: Option<u16>,
     pub font_ligatures: Option<bool>,
@@ -57,3 +61,7 @@ pub enum CursorStyle {
     Bar,
     Underline,
 }
+
+#[cfg(test)]
+#[path = "../unit/native_terminal.rs"]
+mod tests;

@@ -22,7 +22,7 @@ fn with_renderer(test: impl FnOnce(&mut Renderer)) {
     let context = unsafe { display.create_context(&config, &attributes).unwrap() };
     let attributes =
         glutin::surface::SurfaceAttributesBuilder::<glutin::surface::PbufferSurface>::new()
-            .build(NonZeroU32::new(2).unwrap(), NonZeroU32::new(1).unwrap());
+            .build(NonZeroU32::new(768).unwrap(), NonZeroU32::new(384).unwrap());
     let surface = unsafe {
         display
             .create_pbuffer_surface(&config, &attributes)
@@ -130,4 +130,204 @@ fn reconnect_uploads_new_pixels_for_reused_image_identity_and_revision() {
         let new = scene(0, [0, 0, 255, 255]);
         assert_eq!(&pixels(renderer, &new)[4..], &[0, 0, 255, 255]);
     });
+}
+
+fn font_state() -> crate::emulation::terminal::TerminalState {
+    use crate::testing::painter::Painter;
+    use yinz_types::structured_render::{ATTR_BOLD, ATTR_ITALIC};
+    Painter::state(5, 24, |painter| {
+        for (row, attrs) in [0, ATTR_BOLD, ATTR_ITALIC, ATTR_BOLD | ATTR_ITALIC]
+            .into_iter()
+            .enumerate()
+        {
+            painter.styled(row, 0, "Ag -> fi", |cell| cell.attrs |= attrs);
+            painter.wide_styled(row, 10, '☀', |cell| cell.attrs |= attrs);
+            painter.cluster_styled(row, 14, "e\u{301}", 1, |cell| cell.attrs |= attrs);
+        }
+        painter.wide(4, 0, '中');
+        painter.wide(4, 3, '😀');
+    })
+}
+
+fn fixture_cache(options: &crate::text::font::FontOptions) -> crate::render::atlas::GlyphCache {
+    use crate::text::{discovery::Discovery, font::FontStack};
+    let fonts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+    let discovery = Discovery::synthetic(&fonts)
+        .expect("required font GPU tests need fixture discovery/libfontconfig");
+    crate::render::atlas::GlyphCache::new(FontStack::build_with(options, Some(discovery)).unwrap())
+}
+
+fn font_pixels(
+    renderer: &mut Renderer,
+    retained: &mut RetainedScene,
+    state: &crate::emulation::terminal::TerminalState,
+    cache: &mut crate::render::atlas::GlyphCache,
+) -> Vec<u8> {
+    use crate::emulation::color::Paints;
+    use crate::render::scene::{BlinkPhase, CursorOptions, SceneInputs};
+    retained.refresh(
+        SceneInputs {
+            state,
+            phase: BlinkPhase::On,
+            paints: &Paints::default(),
+            cursor: CursorOptions::default(),
+            hovered_link: None,
+            preedit: None,
+        },
+        cache,
+    );
+    renderer.draw_retained(retained, cache.atlases(), (768, 384), Frame::default());
+    let mut pixels = vec![0; 768 * 384 * 4];
+    unsafe {
+        renderer.gl.read_pixels(
+            0,
+            0,
+            768,
+            384,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            glow::PixelPackData::Slice(Some(&mut pixels)),
+        );
+    }
+    pixels
+}
+
+#[test]
+fn font_faces_draw_four_styles_weights_cjk_and_color_emoji() {
+    use yinz_types::input::native_terminal::TerminalConfig;
+    let settings = TerminalConfig {
+        font_family: Some("Iosevka Term".into()),
+        font_bold: Some("Iosevka Term".into()),
+        font_italic: Some("Iosevka Term".into()),
+        font_bold_italic: Some("Iosevka Term".into()),
+        ..Default::default()
+    };
+    let options = crate::window::effective_font_options(&settings, 1.0, 1.0);
+    let mut cache = fixture_cache(&options);
+    let mut retained = RetainedScene::new();
+    let state = font_state();
+    with_renderer(|renderer| {
+        let pixels = font_pixels(renderer, &mut retained, &state, &mut cache);
+        let metrics = cache.metrics();
+        let row_pixels = |row: usize| -> Vec<u8> {
+            // GL readback is bottom-up. Compare the same glyphs in each style.
+            let mut ink = Vec::new();
+            for y in row * metrics.height as usize..(row + 1) * metrics.height as usize {
+                let offset = ((383 - y) * 768) * 4;
+                ink.extend_from_slice(&pixels[offset..offset + metrics.width as usize * 8 * 4]);
+            }
+            assert!(
+                ink.chunks_exact(4).any(|p| p[0] != 0),
+                "row {row} has no glyph pixels"
+            );
+            ink
+        };
+        let mut cjk_ink = false;
+        for y in 4 * metrics.height as usize..5 * metrics.height as usize {
+            let offset = (383 - y) * 768 * 4;
+            cjk_ink |= pixels[offset..offset + metrics.width as usize * 2 * 4]
+                .chunks_exact(4)
+                .any(|pixel| pixel[0] != 0);
+        }
+        assert!(cjk_ink, "CJK fallback has no GPU pixels");
+        let rows: Vec<_> = (0..4).map(row_pixels).collect();
+        for a in 0..4 {
+            for b in a + 1..4 {
+                assert_ne!(rows[a], rows[b], "styles {a}/{b}");
+            }
+        }
+        assert!(
+            row_pixels(4)
+                .chunks_exact(4)
+                .any(|p| p[0] != p[1] || p[1] != p[2]),
+            "emoji lost its color"
+        );
+    });
+}
+
+#[test]
+fn font_faces_live_changes_match_fresh_gpu_draws_and_preserve_selection() {
+    use crate::emulation::selection::Selection;
+    use yinz_types::input::native_terminal::TerminalConfig;
+    let initial = TerminalConfig {
+        font_family: Some("Iosevka Term".into()),
+        ..Default::default()
+    };
+    let mut variants = Vec::new();
+    for style in 0..4 {
+        let mut settings = initial.clone();
+        let family = Some(
+            if style == 0 {
+                "Noto Sans Mono CJK SC"
+            } else {
+                "Noto Color Emoji"
+            }
+            .into(),
+        );
+        match style {
+            0 => settings.font_family = family,
+            1 => settings.font_bold = family,
+            2 => settings.font_italic = family,
+            _ => settings.font_bold_italic = family,
+        }
+        variants.push(crate::window::effective_font_options(&settings, 1.0, 1.0));
+    }
+    variants.push(crate::window::effective_font_options(
+        &TerminalConfig {
+            font_weight: Some(700),
+            ..initial.clone()
+        },
+        1.0,
+        1.0,
+    ));
+    variants.push(crate::window::effective_font_options(&initial, 1.5, 1.0));
+    variants.push(crate::window::effective_font_options(&initial, 1.0, 2.0));
+    let state = font_state();
+    let selection = Selection::at(0, 0).extended_to(0, 1);
+    assert_eq!(selection.text(state.screen()), "Ag");
+    let mut outputs = Vec::new();
+    with_renderer(|renderer| {
+        let mut active = crate::window::effective_font_options(&initial, 1.0, 1.0);
+        let mut cache = fixture_cache(&active);
+        let mut retained = RetainedScene::new();
+        retained.set_selection(Some(selection));
+        let initial_pixels = font_pixels(renderer, &mut retained, &state, &mut cache);
+        // A second draw consumes the warmed shaping/glyph/atlas/retained state.
+        assert_eq!(
+            font_pixels(renderer, &mut retained, &state, &mut cache),
+            initial_pixels
+        );
+        for requested in &variants {
+            let generation = cache.generation();
+            let old_atlas = cache.atlases().mask.stamp();
+            let replacement = fixture_cache(requested);
+            crate::window::apply_fonts(
+                &mut active,
+                &mut cache,
+                &mut retained,
+                requested.clone(),
+                Some(replacement),
+            );
+            assert_ne!(cache.generation(), generation);
+            assert_ne!(cache.atlases().mask.stamp(), old_atlas);
+            let pixels = font_pixels(renderer, &mut retained, &state, &mut cache);
+            assert!(
+                pixels != initial_pixels,
+                "change did not affect GPU ink: {requested:?}"
+            );
+            assert_eq!(selection.text(state.screen()), "Ag");
+            outputs.push(pixels);
+        }
+    });
+    for (options, expected) in variants.iter().zip(outputs) {
+        with_renderer(|renderer| {
+            let mut cache = fixture_cache(options);
+            let mut retained = RetainedScene::new();
+            retained.set_selection(Some(selection));
+            assert!(
+                font_pixels(renderer, &mut retained, &state, &mut cache) == expected,
+                "live font replacement left stale GPU pixels for {options:?}"
+            );
+        });
+    }
 }

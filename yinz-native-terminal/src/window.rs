@@ -86,6 +86,8 @@ struct App {
     settings: TerminalConfig,
     paints: Paints,
     cache: GlyphCache,
+    active_fonts: FontOptions,
+    reported_geometry: Option<Geometry>,
     retained: RetainedScene,
     state: TerminalState,
     sender: Option<Sender>,
@@ -119,7 +121,8 @@ pub fn run(args: TerminalArgs, opts: CliArgs) -> Result<()> {
         .map_err(|error| anyhow!("{error}"))
         .context("load native settings")?;
     let recorder = Recorder::new(args.record.as_deref())?;
-    let fonts = font_options(&config.terminal, 1.0)
+    let active_fonts = effective_font_options(&config.terminal, 1.0, 1.0);
+    let fonts = active_fonts
         .stack(1.0)
         .context("load native terminal fonts")?;
     let now = Instant::now();
@@ -133,6 +136,8 @@ pub fn run(args: TerminalArgs, opts: CliArgs) -> Result<()> {
         settings: config.terminal,
         paints,
         cache: GlyphCache::new(fonts),
+        active_fonts,
+        reported_geometry: None,
         retained: RetainedScene::new(),
         sender: None,
         messages: None,
@@ -179,9 +184,15 @@ pub fn run(args: TerminalArgs, opts: CliArgs) -> Result<()> {
     }
 }
 
-fn font_options(settings: &TerminalConfig, zoom: f32) -> FontOptions {
+pub(crate) fn font_options(settings: &TerminalConfig, zoom: f32) -> FontOptions {
+    fn named(family: &Option<String>) -> Option<String> {
+        family.clone().filter(|value| !value.trim().is_empty())
+    }
     FontOptions {
-        family: settings.font_family.clone(),
+        family: named(&settings.font_family),
+        bold_family: named(&settings.font_bold),
+        italic_family: named(&settings.font_italic),
+        bold_italic_family: named(&settings.font_bold_italic),
         size: points_to_pixels(settings.font_size.unwrap_or(12.0)) * zoom,
         weight: settings.font_weight.unwrap_or(400),
         ligatures: settings.font_ligatures.unwrap_or(true),
@@ -191,6 +202,135 @@ fn font_options(settings: &TerminalConfig, zoom: f32) -> FontOptions {
             ..Default::default()
         },
         ..Default::default()
+    }
+}
+
+// Store the physical options actually used by the cache, after all scaling.
+pub(crate) fn effective_font_options(
+    settings: &TerminalConfig,
+    zoom: f32,
+    scale: f64,
+) -> FontOptions {
+    let mut options = font_options(settings, zoom).scaled(scale);
+    let bounded = options.size.clamp(
+        crate::text::font::MIN_FONT_SIZE,
+        crate::text::font::MAX_FONT_SIZE,
+    );
+    if bounded != options.size {
+        log::warn!(
+            "native font raster size {} adjusted to {bounded} pixels (zoom/monitor scale bounds)",
+            options.size
+        );
+        options.size = bounded;
+    }
+    options
+}
+
+fn prepare_fonts(active: &FontOptions, requested: &FontOptions) -> Result<Option<GlyphCache>> {
+    if active == requested {
+        return Ok(None);
+    }
+    Ok(Some(GlyphCache::new(
+        requested
+            .stack(1.0)
+            .context("prepare replacement native fonts")?,
+    )))
+}
+
+pub(crate) fn apply_fonts(
+    active: &mut FontOptions,
+    cache: &mut GlyphCache,
+    retained: &mut RetainedScene,
+    requested: FontOptions,
+    replacement: Option<GlyphCache>,
+) {
+    if let Some(replacement) = replacement {
+        *cache = replacement;
+        *active = requested;
+        retained.mark(&crate::emulation::damage::Damage::Everything);
+    }
+}
+
+fn apply_settings(
+    settings: &mut TerminalConfig,
+    paints: &mut Paints,
+    retained: &mut RetainedScene,
+    next_settings: TerminalConfig,
+    next_paints: Paints,
+) {
+    if *settings != next_settings || *paints != next_paints {
+        retained.mark_everything();
+    }
+    *settings = next_settings;
+    *paints = next_paints;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Geometry {
+    cell: SizeInPixels,
+    grid: Size,
+}
+
+impl Geometry {
+    fn calculate(
+        width: u32,
+        height: u32,
+        padding: u32,
+        metrics: crate::text::font::CellMetrics,
+    ) -> Option<Self> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        Some(Self {
+            cell: SizeInPixels {
+                width: metrics.width as usize,
+                height: metrics.height as usize,
+            },
+            grid: Size {
+                cols: (width.saturating_sub(2 * padding) / metrics.width.max(1)).clamp(1, 4096)
+                    as usize,
+                rows: (height.saturating_sub(2 * padding) / metrics.height.max(1)).clamp(1, 4096)
+                    as usize,
+            },
+        })
+    }
+
+    fn messages(self, previous: Option<Self>) -> Vec<ClientToServerMsg> {
+        let mut messages = Vec::new();
+        if previous != Some(self) {
+            messages.push(ClientToServerMsg::TerminalPixelDimensions {
+                pixel_dimensions: PixelDimensions {
+                    character_cell_size: Some(self.cell),
+                    text_area_size: Some(SizeInPixels {
+                        width: self.grid.cols * self.cell.width,
+                        height: self.grid.rows * self.cell.height,
+                    }),
+                    text_area_grid_size: Some(self.grid),
+                },
+            });
+        }
+        if previous.is_none_or(|old| old.grid != self.grid) {
+            messages.push(ClientToServerMsg::TerminalResize {
+                new_size: self.grid,
+            });
+        }
+        messages
+    }
+}
+
+fn host_query_geometry(
+    reported: Option<Geometry>,
+    fallback: Size,
+    metrics: crate::text::font::CellMetrics,
+) -> session::Geometry {
+    // A render frame can still carry the old grid while the server processes a
+    // font/zoom/scale resize. Host replies must use the geometry just reported.
+    let grid = reported.map_or(fallback, |geometry| geometry.grid);
+    session::Geometry {
+        rows: grid.rows,
+        cols: grid.cols,
+        cell_width: metrics.width as usize,
+        cell_height: metrics.height as usize,
     }
 }
 
@@ -379,48 +519,54 @@ impl App {
         Ok(())
     }
     fn rebuild_fonts(&mut self) -> Result<()> {
-        self.cache = GlyphCache::new(
-            font_options(&self.settings, self.zoom)
-                .stack(self.scale)
-                .context("load scaled native fonts")?,
+        self.change_scale(self.zoom, self.scale)
+    }
+    fn change_scale(&mut self, zoom: f32, scale: f64) -> Result<()> {
+        let requested = effective_font_options(&self.settings, zoom, scale);
+        let replacement = match prepare_fonts(&self.active_fonts, &requested) {
+            Ok(replacement) => replacement,
+            Err(error) => {
+                log::error!("retaining working native fonts: {error:#}");
+                return Ok(());
+            },
+        };
+        apply_fonts(
+            &mut self.active_fonts,
+            &mut self.cache,
+            &mut self.retained,
+            requested,
+            replacement,
         );
-        self.retained = RetainedScene::new();
-        self.resize()
+        self.zoom = zoom;
+        self.scale = scale;
+        self.refresh_geometry()
     }
     fn resize(&mut self) -> Result<()> {
+        if let Some(surfaces) = &self.surfaces {
+            let size = surfaces.window.inner_size();
+            if size.width > 0 && size.height > 0 {
+                surfaces
+                    .window
+                    .resize_surface(&surfaces.surface, &surfaces.context);
+            }
+        }
+        self.refresh_geometry()
+    }
+    fn refresh_geometry(&mut self) -> Result<()> {
         let Some(surfaces) = &self.surfaces else {
             return Ok(());
         };
         let size = surfaces.window.inner_size();
-        if size.width == 0 || size.height == 0 {
-            return Ok(());
-        }
-        surfaces
-            .window
-            .resize_surface(&surfaces.surface, &surfaces.context);
         let metrics = self.cache.metrics();
-        let padding = self.padding();
-        let grid = Size {
-            cols: (size.width.saturating_sub(2 * padding) / metrics.width.max(1)).clamp(1, 4096)
-                as usize,
-            rows: (size.height.saturating_sub(2 * padding) / metrics.height.max(1)).clamp(1, 4096)
-                as usize,
+        let Some(geometry) = Geometry::calculate(size.width, size.height, self.padding(), metrics)
+        else {
+            return Ok(());
         };
         self.state.set_cell_size(metrics.width, metrics.height);
-        self.send(ClientToServerMsg::TerminalPixelDimensions {
-            pixel_dimensions: PixelDimensions {
-                character_cell_size: Some(SizeInPixels {
-                    width: metrics.width as usize,
-                    height: metrics.height as usize,
-                }),
-                text_area_size: Some(SizeInPixels {
-                    width: grid.cols * metrics.width as usize,
-                    height: grid.rows * metrics.height as usize,
-                }),
-                text_area_grid_size: Some(grid),
-            },
-        })?;
-        self.send(ClientToServerMsg::TerminalResize { new_size: grid })?;
+        for message in geometry.messages(self.reported_geometry) {
+            self.send(message)?;
+        }
+        self.reported_geometry = Some(geometry);
         self.pacer.schedule();
         Ok(())
     }
@@ -458,11 +604,39 @@ impl App {
         })
     }
     fn reload(&mut self) -> Result<()> {
-        let (config, options) = yinz_cli::setup::Setup::config_without_layout(&self.opts)
+        let loaded = yinz_cli::setup::Setup::config_without_layout(&self.opts)
             .map_err(|error| anyhow!("{error}"))
-            .context("reload native terminal configuration")?;
-        self.paints = paints_for(&config, &options);
-        self.settings = config.terminal;
+            .context("reload native terminal configuration");
+        let (config, options) = match loaded {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                log::error!("retaining working native configuration: {error:#}");
+                return Ok(());
+            },
+        };
+        let requested = effective_font_options(&config.terminal, self.zoom, self.scale);
+        let replacement = match prepare_fonts(&self.active_fonts, &requested) {
+            Ok(replacement) => replacement,
+            Err(error) => {
+                log::error!("retaining working native configuration: {error:#}");
+                return Ok(());
+            },
+        };
+        let paints = paints_for(&config, &options);
+        apply_fonts(
+            &mut self.active_fonts,
+            &mut self.cache,
+            &mut self.retained,
+            requested,
+            replacement,
+        );
+        apply_settings(
+            &mut self.settings,
+            &mut self.paints,
+            &mut self.retained,
+            config.terminal,
+            paints,
+        );
         if let Some(surfaces) = &self.surfaces {
             surfaces
                 .window
@@ -475,7 +649,7 @@ impl App {
                 ));
             }
         }
-        self.rebuild_fonts()
+        self.refresh_geometry()
     }
     fn handle_message(
         &mut self,
@@ -557,7 +731,8 @@ impl App {
                 if let Some(surfaces) = &mut self.surfaces {
                     surfaces.renderer.clear_images();
                 }
-                self.resize()?;
+                self.reported_geometry = None;
+                self.refresh_geometry()?;
             },
             ServerToClientMsg::ClipboardUpdate { content } => {
                 if let Some(text) = crate::emulation::kitty::clipboard_update(&content) {
@@ -570,15 +745,16 @@ impl App {
                 token, query_bytes, ..
             } => {
                 let metrics = self.cache.metrics();
-                let size = self.state.size();
                 let reply = crate::host_reply::answer(
                     &query_bytes,
-                    session::Geometry {
-                        rows: size.rows,
-                        cols: size.cols,
-                        cell_width: metrics.width as usize,
-                        cell_height: metrics.height as usize,
-                    },
+                    host_query_geometry(
+                        self.reported_geometry,
+                        Size {
+                            rows: self.state.size().rows,
+                            cols: self.state.size().cols,
+                        },
+                        metrics,
+                    ),
                     &self.paints,
                     None,
                 );
@@ -588,7 +764,10 @@ impl App {
                     reply_bytes: reply,
                 })?;
             },
-            ServerToClientMsg::QueryTerminalSize => self.resize()?,
+            ServerToClientMsg::QueryTerminalSize => {
+                self.reported_geometry = None;
+                self.refresh_geometry()?;
+            },
             // An initial ANSI repaint may already be queued before capability negotiation.
             ServerToClientMsg::Render { .. } => {},
             _ => {},
@@ -681,8 +860,7 @@ impl App {
             },
             WindowEvent::Resized(_) => self.resize()?,
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                self.scale = scale_factor;
-                self.rebuild_fonts()?;
+                self.change_scale(self.zoom, scale_factor)?;
             },
             WindowEvent::RedrawRequested => self.draw()?,
             WindowEvent::Focused(focused) => {
@@ -758,18 +936,15 @@ impl App {
                             return Ok(());
                         },
                         "+" | "=" => {
-                            self.zoom = (self.zoom * 1.1).min(4.0);
-                            self.rebuild_fonts()?;
+                            self.change_scale((self.zoom * 1.1).min(4.0), self.scale)?;
                             return Ok(());
                         },
                         "-" | "_" => {
-                            self.zoom = (self.zoom / 1.1).max(0.25);
-                            self.rebuild_fonts()?;
+                            self.change_scale((self.zoom / 1.1).max(0.25), self.scale)?;
                             return Ok(());
                         },
                         "0" | ")" => {
-                            self.zoom = 1.0;
-                            self.rebuild_fonts()?;
+                            self.change_scale(1.0, self.scale)?;
                             return Ok(());
                         },
                         _ => {},

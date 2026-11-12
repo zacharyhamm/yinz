@@ -291,8 +291,37 @@ pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDoc
         }
         a.name().value() == b.name().value() && arguments(a).eq(arguments(b))
     }
+    fn child_identity<'a>(root: &str, child: &'a str) -> &'a str {
+        if root == "terminal" && child == "font_family" {
+            "font"
+        } else {
+            child
+        }
+    }
+    // Validate the incoming terminal section before coalescing blocks or aliases.
+    // Keep invalid input intact so the final loader rejects it atomically.
+    let terminal_nodes: Vec<_> = fragment
+        .nodes()
+        .iter()
+        .filter(|node| node.name().value() == "terminal")
+        .collect();
+    let invalid_terminal = terminal_nodes.len() > 1
+        || terminal_nodes
+            .iter()
+            .any(|node| crate::kdl::native_terminal::from_kdl(node).is_err());
+    if invalid_terminal {
+        managed
+            .nodes_mut()
+            .retain(|node| node.name().value() != "terminal");
+        managed
+            .nodes_mut()
+            .extend(terminal_nodes.into_iter().cloned());
+    }
     for node in fragment.nodes() {
         let name = node.name().value();
+        if name == "terminal" && invalid_terminal {
+            continue;
+        }
         if name == crate::editor::EDITS_BLOCK {
             let normalized = crate::editor::patches_from_kdl(node)
                 .ok()
@@ -363,7 +392,7 @@ pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDoc
                     .children()
                     .into_iter()
                     .flat_map(|d| d.nodes())
-                    .map(|n| n.name().value())
+                    .map(|n| child_identity(name, n.name().value()))
                     .collect();
                 let edits = block.ensure_children().nodes_mut();
                 for old in edits.iter_mut() {
@@ -387,7 +416,7 @@ pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDoc
                     }
                     old.get(1)
                         .and_then(|e| e.value().as_string())
-                        .is_none_or(|child| !entries.contains(&child))
+                        .is_none_or(|child| !entries.contains(&child_identity(name, child)))
                 });
             }
         }
@@ -409,7 +438,8 @@ pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDoc
                         if arguments_are_identity {
                             !same_keybind_identity(candidate, child)
                         } else {
-                            candidate.name().value() != child.name().value()
+                            child_identity(name, candidate.name().value())
+                                != child_identity(name, child.name().value())
                         }
                     });
                     target_children.push(child.clone());

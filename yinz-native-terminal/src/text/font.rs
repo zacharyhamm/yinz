@@ -39,8 +39,8 @@ const EMBEDDED_BOLD_THRESHOLD: u16 = 500;
 const WEIGHT_AXIS: &[u8; 4] = b"wght";
 const LIGATURE_FEATURES: [&[u8; 4]; 3] = [b"liga", b"calt", b"dlig"];
 
-const MIN_FONT_SIZE: f32 = 4.0;
-const MAX_FONT_SIZE: f32 = 512.0;
+pub const MIN_FONT_SIZE: f32 = 4.0;
+pub const MAX_FONT_SIZE: f32 = 512.0;
 const MAX_SHAPED_RUNS: usize = 4096;
 const MAX_CLUSTER_FONTS: usize = 4096;
 const FALLBACK_OVERHANG: f32 = 1.25;
@@ -476,16 +476,27 @@ impl FontStack {
         };
 
         if let Some(family) = &options.family {
-            match stack.requested_family(family) {
-                Some(primary) => stack.primary = primary,
-                None => report!(
-                    "no font family named {:?} resolved; \
+            if stack.discovery.is_none() {
+                report!(
+                    "font family {:?} is not looked up: {}; using embedded fonts",
+                    family,
+                    if options.system_fonts {
+                        "system font discovery unavailable"
+                    } else {
+                        "system_fonts is off"
+                    }
+                );
+            } else {
+                match stack.requested_family(family) {
+                    Some(primary) => stack.primary = primary,
+                    None => report!(
+                        "no font family named {:?} resolved; \
                      rendering with the embedded font instead",
-                    family
-                ),
+                        family
+                    ),
+                }
             }
         }
-
         stack.adopt_system_emoji();
 
         let regular = stack.primary[0].0;

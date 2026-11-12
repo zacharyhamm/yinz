@@ -90,3 +90,27 @@ pub(super) fn is_color_capable(font: &FontRef<'static>) -> bool {
 pub(super) fn face(data: &'static [u8], name: &str) -> Result<FontRef<'static>> {
     FontRef::from_index(data, 0).ok_or_else(|| anyhow!("embedded face {} failed to parse", name))
 }
+
+/// Compare the face actually adopted (including variable ranges), not the discovery request.
+pub(super) fn face_mismatch(font: &FontRef<'_>, request: super::FaceRequest) -> Option<String> {
+    let attributes = font.attributes();
+    let actual_italic = !matches!(attributes.style(), swash::Style::Normal);
+    let axis = font.variations().find_by_tag(tag_from_bytes(WEIGHT_AXIS));
+    let actual_weight = match axis {
+        Some(axis) => (request.weight as f32).clamp(axis.min_value(), axis.max_value()),
+        None => attributes.weight().0 as f32,
+    };
+    if actual_italic == request.italic && actual_weight == request.weight as f32 {
+        return None;
+    }
+    Some(format!(
+        "closest available face has slant {:?}, weight {}{}",
+        attributes.style(),
+        actual_weight,
+        if axis.is_some() {
+            " (variable range)"
+        } else {
+            " (static face)"
+        }
+    ))
+}

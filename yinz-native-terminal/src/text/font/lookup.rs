@@ -108,15 +108,19 @@ impl FontStack {
 
     pub(super) fn requested_family(&mut self, family: &str) -> Option<[FontId; 4]> {
         let regular = self.requested_style(family, FaceStyle::Regular)?;
-        Some([
-            regular,
-            self.requested_style(family, FaceStyle::Bold)
-                .unwrap_or(regular),
-            self.requested_style(family, FaceStyle::Italic)
-                .unwrap_or(regular),
-            self.requested_style(family, FaceStyle::BoldItalic)
-                .unwrap_or(regular),
-        ])
+        let mut faces = [regular; 4];
+        for style in [FaceStyle::Bold, FaceStyle::Italic, FaceStyle::BoldItalic] {
+            faces[style.index()] = self.requested_style(family, style).unwrap_or_else(|| {
+                report!(
+                    "font family {:?} could not load {:?} weight {}; using its regular face",
+                    family,
+                    style,
+                    self.request(style).weight
+                );
+                regular
+            });
+        }
+        Some(faces)
     }
 
     /// The faces of the families `options` set for one style each.
@@ -128,10 +132,14 @@ impl FontStack {
             };
             if self.discovery.is_none() {
                 report!(
-                    "system_fonts is off, so the family {:?} set for {:?} text \
-                     is not looked up",
+                    "family {:?} set for {:?} text is not looked up: {}",
                     family,
-                    style
+                    style,
+                    if options.system_fonts {
+                        "system font discovery unavailable"
+                    } else {
+                        "system_fonts is off"
+                    }
                 );
                 continue;
             }
@@ -171,7 +179,19 @@ impl FontStack {
         let discovery = self.discovery?;
         let request = self.request(style);
         let (path, index) = discovery.match_family(family, request)?;
-        self.adopt(path, index, request.weight)
+        let font = self.adopt(path.clone(), index, request.weight)?;
+        if let Some(diagnostic) = super::files::face_mismatch(&self.faces[font.0], request) {
+            report!(
+                "font family {:?}, {:?}, requested weight {}: {}; using {:?} face {}",
+                family,
+                style,
+                request.weight,
+                diagnostic,
+                path,
+                index
+            );
+        }
+        Some(font)
     }
 
     pub(super) fn adopt(&mut self, path: PathBuf, index: u32, weight: u16) -> Option<FontId> {

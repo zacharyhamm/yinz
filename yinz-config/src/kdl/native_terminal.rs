@@ -24,7 +24,12 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
                 node
             ));
         }
-        let name = node.name().value();
+        let raw_name = node.name().value();
+        let name = if raw_name == "font_family" {
+            "font"
+        } else {
+            raw_name
+        };
         let value = node.entries()[0].value();
         let json = if let Some(value) = value.as_string() {
             serde_json::Value::from(value)
@@ -40,9 +45,13 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
                 node
             ));
         };
-        if object.insert(name.to_owned(), json).is_some() {
+        if let Some(previous) = object.insert(name.to_owned(), json.clone()) {
             return Err(kdl_parsing_error!(
-                format!("duplicate terminal setting {name}"),
+                if name == "font" {
+                    format!("duplicate terminal font/font_family setting: earlier value {previous}, conflicting {raw_name} {json}; use only one spelling per block")
+                } else {
+                    format!("duplicate terminal setting {name}")
+                },
                 node
             ));
         }
@@ -77,6 +86,12 @@ pub(crate) fn merge(
     base: &TerminalConfig,
     overlay: TerminalConfig,
 ) -> Result<TerminalConfig, ConfigError> {
+    if let (Some(previous), Some(winning)) = (&base.font_family, &overlay.font_family)
+        && previous != winning
+        && !(previous.trim().is_empty() && winning.trim().is_empty())
+    {
+        log::warn!("terminal font/font_family override: {previous:?} -> {winning:?}; later configuration layer wins");
+    }
     let mut base = serde_json::to_value(base)
         .map_err(|error| ConfigError::new_kdl_error(error.to_string(), 0, 0))?;
     let overlay = serde_json::to_value(overlay)
