@@ -1344,6 +1344,7 @@ async fn watch_config_file_changes_inner<F, Fut>(
                     e,
                 );
             }
+            let mut overlay_watch_failed = false;
             if let Some(overlay_dir) = &watched_overlay_dir
                 && let Err(e) = watcher.watch(overlay_dir, RecursiveMode::NonRecursive)
             {
@@ -1353,6 +1354,7 @@ async fn watch_config_file_changes_inner<F, Fut>(
                     e
                 );
                 watched_overlay_dir = None;
+                overlay_watch_failed = true;
             }
             if let Some(on_ready) = on_ready.take() {
                 on_ready();
@@ -1367,7 +1369,8 @@ async fn watch_config_file_changes_inner<F, Fut>(
                     },
                     _ = presence_probe.tick() => {
                         let overlay_dir = existing_overlay_dir(config_dir);
-                        if overlay_dir != watched_overlay_dir {
+                        if overlay_dir != watched_overlay_dir || overlay_watch_failed {
+                            overlay_watch_failed = false;
                             if let Some(previous) = watched_overlay_dir.take() {
                                 watcher.unwatch(&previous).context("unwatch removed config drop-in directory").non_fatal();
                             }
@@ -1398,6 +1401,16 @@ async fn watch_config_file_changes_inner<F, Fut>(
                     Ok(event) => event,
                     Err(e) => {
                         log::error!("Config watcher event error: {}", e);
+                        if watched_overlay_dir.as_ref().is_some_and(|directory| {
+                            !directory.is_dir()
+                                || e.paths.iter().any(|path| path.starts_with(directory))
+                        }) {
+                            // PollWatcher may report a removed directory as an IO error
+                            // before the presence probe sees it. Reconcile that layer before
+                            // discarding its registered state, including rapid recreation.
+                            overlay_watch_failed = true;
+                            continue;
+                        }
                         break;
                     },
                 };
