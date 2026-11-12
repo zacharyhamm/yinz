@@ -331,3 +331,90 @@ fn font_faces_live_changes_match_fresh_gpu_draws_and_preserve_selection() {
         });
     }
 }
+
+#[test]
+fn font_faces_resize_repaint_reanchors_copy_and_gpu_highlight() {
+    use crate::emulation::selection::{LocalSelection, Selection};
+    use crate::testing::painter::Painter;
+    use yinz_types::input::native_terminal::TerminalConfig;
+    let settings = TerminalConfig::default();
+    let initial = crate::window::effective_font_options(&settings, 1.0, 1.0);
+    let requested = crate::window::effective_font_options(&settings, 1.2, 1.0);
+    let text = format!("{}distinctive ABCD suffix", "x".repeat(58));
+    let old_frame = Painter::frame(5, 80, |p| {
+        p.full_repaint();
+        p.text(0, 0, &text[..80]);
+        p.text(1, 0, &text[80..]);
+        p.wide(3, 0, '中');
+        p.wide(4, 0, '😀');
+    });
+    let resized_frame = Painter::frame(5, 60, |p| {
+        p.full_repaint();
+        p.text(0, 0, &text[..60]);
+        p.text(1, 0, &text[60..]);
+        p.wide(3, 0, '中');
+        p.wide(4, 0, '😀');
+    });
+    let mut state = crate::emulation::terminal::TerminalState::new(5, 80);
+    let mut selection = LocalSelection::default();
+    selection.apply_frame(&mut state, &old_frame).unwrap();
+    selection.start(0, 70);
+    selection.extend(0, 73);
+    let expected_range = Selection::at(1, 10).extended_to(1, 13);
+    with_renderer(|renderer| {
+        let mut active = initial.clone();
+        let mut cache = fixture_cache(&active);
+        let mut retained = RetainedScene::new();
+        retained.set_selection(selection.range());
+        let warmed = font_pixels(renderer, &mut retained, &state, &mut cache);
+        assert_eq!(
+            font_pixels(renderer, &mut retained, &state, &mut cache),
+            warmed
+        );
+        let replacement = fixture_cache(&requested);
+        crate::window::apply_fonts(
+            &mut active,
+            &mut cache,
+            &mut retained,
+            requested.clone(),
+            Some(replacement),
+        );
+        selection.resizing(&state, 5, 60);
+        let applied = selection.apply_frame(&mut state, &old_frame).unwrap();
+        retained.mark(&applied.damage);
+        assert_eq!(selection.text(state.screen()).as_deref(), Some("ABCD"));
+        let applied = selection.apply_frame(&mut state, &resized_frame).unwrap();
+        retained.mark(&applied.damage);
+        assert_eq!(selection.range(), Some(expected_range));
+        assert_eq!(selection.text(state.screen()).as_deref(), Some("ABCD"));
+        retained.set_selection(selection.range());
+        let live = font_pixels(renderer, &mut retained, &state, &mut cache);
+        let mut fresh_cache = fixture_cache(&requested);
+        let mut fresh = RetainedScene::new();
+        fresh.set_selection(Some(expected_range));
+        assert_eq!(
+            font_pixels(renderer, &mut fresh, &state, &mut fresh_cache),
+            live
+        );
+        fresh.set_selection(None);
+        let unselected = font_pixels(renderer, &mut fresh, &state, &mut fresh_cache);
+        let metrics = cache.metrics();
+        let mut highlighted_pixels = 0;
+        for y in 0..384 {
+            for x in 0..768 {
+                let offset = ((383 - y) * 768 + x) * 4;
+                if live[offset..offset + 4] != unselected[offset..offset + 4] {
+                    // Only the independently asserted relocated range may change.
+                    // In particular the old row-0/right-edge highlight is gone.
+                    assert!((metrics.height as usize..2 * metrics.height as usize).contains(&y));
+                    assert!((10 * metrics.width as usize..14 * metrics.width as usize).contains(&x));
+                    highlighted_pixels += 1;
+                }
+            }
+        }
+        assert!(
+            highlighted_pixels > 0,
+            "relocated highlight has no GPU pixels"
+        );
+    });
+}

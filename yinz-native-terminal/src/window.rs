@@ -1,5 +1,5 @@
 use crate::emulation::color::Paints;
-use crate::emulation::selection::Selection;
+use crate::emulation::selection::LocalSelection;
 use crate::emulation::terminal::TerminalState;
 use crate::input::clipboard::{Clipboard, ClipboardHandle};
 use crate::input::composition::{Composition, Reaction};
@@ -100,7 +100,7 @@ struct App {
     pointer: (f64, f64),
     scroll: ScrollAccumulator,
     buttons: (bool, bool, bool),
-    selection: Option<Selection>,
+    selection: LocalSelection,
     mouse_mode: bool,
     focused: bool,
     pacer: Pacer,
@@ -149,7 +149,7 @@ pub fn run(args: TerminalArgs, opts: CliArgs) -> Result<()> {
         pointer: (0.0, 0.0),
         scroll: ScrollAccumulator::default(),
         buttons: (false, false, false),
-        selection: None,
+        selection: LocalSelection::default(),
         mouse_mode: true,
         focused: true,
         pacer: Pacer::new(None),
@@ -564,6 +564,10 @@ impl App {
         };
         self.state.set_cell_size(metrics.width, metrics.height);
         for message in geometry.messages(self.reported_geometry) {
+            if let ClientToServerMsg::TerminalResize { new_size } = &message {
+                self.selection
+                    .resizing(&self.state, new_size.rows, new_size.cols);
+            }
             self.send(message)?;
         }
         self.reported_geometry = Some(geometry);
@@ -659,8 +663,8 @@ impl App {
         match message {
             ServerToClientMsg::RenderFrame { frame } => {
                 let applied = self
-                    .state
-                    .apply_frame(&frame)
+                    .selection
+                    .apply_frame(&mut self.state, &frame)
                     .context("apply native render frame")?;
                 self.recorder.frame(&frame)?;
                 self.received_frame = true;
@@ -726,6 +730,7 @@ impl App {
                     .context("spawn switched native reader")?;
                 self.args.session_name = Some(connection.name);
                 self.messages = Some(rx);
+                self.selection.clear();
                 self.state = TerminalState::new(self.state.size().rows, self.state.size().cols);
                 self.retained = RetainedScene::new();
                 if let Some(surfaces) = &mut self.surfaces {
@@ -776,7 +781,7 @@ impl App {
     }
     fn draw(&mut self) -> Result<()> {
         let preedit = self.composition.shown();
-        self.retained.set_selection(self.selection);
+        self.retained.set_selection(self.selection.range());
         self.retained
             .set_transparency(crate::render::scene::Transparency {
                 opacity: self.settings.opacity.unwrap_or(1.0),
@@ -912,6 +917,8 @@ impl App {
                 );
                 if event.logical_key == Key::Named(NamedKey::Insert) && self.modifiers.shift_key() {
                     if let Some(chars) = self.get_clipboard() {
+                        self.selection.clear();
+                        self.pacer.schedule();
                         self.send(ClientToServerMsg::Paste(chars))?;
                     }
                     return Ok(());
@@ -924,13 +931,15 @@ impl App {
                 if shortcut && let Key::Character(key) = &event.logical_key {
                     match key.to_lowercase().as_str() {
                         "c" => {
-                            if let Some(selection) = self.selection {
-                                self.set_clipboard(selection.text(self.state.screen()));
+                            if let Some(text) = self.selection.text(self.state.screen()) {
+                                self.set_clipboard(text);
                                 return Ok(());
                             }
                         },
                         "v" => {
                             if let Some(chars) = self.get_clipboard() {
+                                self.selection.clear();
+                                self.pacer.schedule();
                                 self.send(ClientToServerMsg::Paste(chars))?;
                             }
                             return Ok(());
@@ -951,9 +960,11 @@ impl App {
                     }
                 }
                 if event.logical_key == Key::Named(NamedKey::Escape) {
-                    self.selection = None;
+                    self.selection.clear();
                 }
                 if let Some(message) = keyboard::key_message(&press) {
+                    self.selection.clear();
+                    self.pacer.schedule();
                     self.send(message)?;
                 }
             },
@@ -961,9 +972,7 @@ impl App {
                 self.pointer = (position.x, position.y);
                 if self.buttons.0 && (self.modifiers.shift_key() || !self.mouse_mode) {
                     let (row, col) = self.cell();
-                    self.selection = self
-                        .selection
-                        .map(|selection| selection.extended_to(row, col));
+                    self.selection.extend(row, col);
                     self.pacer.schedule();
                 } else if self.mouse_mode {
                     self.mouse(MouseEventType::Motion, (false, false, false, false))?;
@@ -992,7 +1001,7 @@ impl App {
                 {
                     if pressed {
                         let (row, col) = self.cell();
-                        self.selection = Some(Selection::at(row, col));
+                        self.selection.start(row, col);
                     }
                     self.pacer.schedule();
                 } else if button == MouseButton::Middle
@@ -1000,6 +1009,8 @@ impl App {
                     && self.settings.middle_click_paste.unwrap_or(true)
                 {
                     if let Some(chars) = self.get_clipboard() {
+                        self.selection.clear();
+                        self.pacer.schedule();
                         self.send(ClientToServerMsg::Paste(chars))?;
                     }
                 } else if self.mouse_mode {
@@ -1045,7 +1056,8 @@ impl App {
     }
     fn type_text(&mut self, text: String) -> Result<()> {
         if let Some(message) = keyboard::typed_text_message(text) {
-            self.selection = None;
+            self.selection.clear();
+            self.pacer.schedule();
             self.send(message)?;
         }
         Ok(())
@@ -1080,6 +1092,7 @@ impl App {
             match keyboard::resolve_pending_accent(press) {
                 keyboard::Resolution::Key => {
                     if let Some(message) = keyboard::key_message(press) {
+                        self.selection.clear();
                         self.send(message)?;
                     }
                 },
@@ -1087,6 +1100,7 @@ impl App {
                 keyboard::Resolution::TypeThenKey(text) => {
                     self.type_text(text)?;
                     if let Some(message) = keyboard::key_message(press) {
+                        self.selection.clear();
                         self.send(message)?;
                     }
                 },

@@ -1,4 +1,5 @@
 use super::*;
+use crate::emulation::selection::Selection;
 use yinz_ipc::ipc::ExitReason;
 
 #[test]
@@ -478,4 +479,79 @@ fn host_pixel_reply_uses_current_window_grid_while_rendered_content_catches_up()
     let initial = host_query_geometry(None, old_frame_grid, metrics);
     assert_eq!(initial.rows, 57);
     assert_eq!(initial.cols, 132);
+}
+
+#[test]
+fn font_reload_zoom_and_scale_geometry_share_selection_frame_and_copy_transition() {
+    use crate::testing::painter::Painter;
+    let original_settings = embedded_settings();
+    let initial = effective_font_options(&original_settings, 1.0, 1.0);
+    let initial_metrics = initial.stack(1.0).unwrap().metrics();
+    let width = initial_metrics.width * 80;
+    let height = initial_metrics.height * 8;
+    let first = Geometry::calculate(width, height, 0, initial_metrics).unwrap();
+    let changed = TerminalConfig {
+        font_family: Some("Noto Sans Mono CJK SC".into()),
+        system_fonts: Some(true),
+        ..original_settings.clone()
+    };
+    for requested in [
+        effective_font_options(&changed, 1.0, 1.0),
+        effective_font_options(&original_settings, 1.5, 1.0),
+        effective_font_options(&original_settings, 1.0, 1.5),
+    ] {
+        let replacement = if requested.family.is_some() {
+            // A regular-family reload uses deterministic bundled discovery.
+            let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+            let discovery = crate::text::discovery::Discovery::synthetic(&directory).unwrap();
+            GlyphCache::new(
+                crate::text::font::FontStack::build_with(&requested, Some(discovery)).unwrap(),
+            )
+        } else {
+            prepare_fonts(&initial, &requested).unwrap().unwrap()
+        };
+        let geometry = Geometry::calculate(width, height, 0, replacement.metrics()).unwrap();
+        assert!(geometry.grid.cols < 70);
+        let text = format!("{}ABCD end", "x".repeat(70));
+        let mut state = Painter::state(first.grid.rows, first.grid.cols, |p| p.text(0, 0, &text));
+        let mut selection = LocalSelection::default();
+        selection.start(0, 70);
+        selection.extend(0, 73);
+        // This is the same geometry message/capture hook used by App after
+        // successful preparation for reload, keyboard zoom and monitor scale.
+        for message in geometry.messages(Some(first)) {
+            if let ClientToServerMsg::TerminalResize { new_size } = message {
+                selection.resizing(&state, new_size.rows, new_size.cols);
+            }
+        }
+        let frame = Painter::frame(geometry.grid.rows, geometry.grid.cols, |p| {
+            p.full_repaint();
+            for (row, chunk) in text.as_bytes().chunks(geometry.grid.cols).enumerate() {
+                p.text(row, 0, std::str::from_utf8(chunk).unwrap());
+            }
+        });
+        selection.apply_frame(&mut state, &frame).unwrap();
+        assert_eq!(selection.text(state.screen()).as_deref(), Some("ABCD"));
+        assert_eq!(
+            selection.range(),
+            Some(
+                Selection::at(70 / geometry.grid.cols, 70 % geometry.grid.cols)
+                    .extended_to(73 / geometry.grid.cols, 73 % geometry.grid.cols)
+            )
+        );
+    }
+    // Failed font preparation never reaches the geometry/capture hook.
+    let invalid = FontOptions {
+        size: f32::NAN,
+        ..initial.clone()
+    };
+    assert!(prepare_fonts(&initial, &invalid).is_err());
+    let mut state = Painter::state(3, 80, |p| p.text(0, 0, "old!"));
+    let mut selection = LocalSelection::default();
+    selection.start(0, 0);
+    selection.extend(0, 3);
+    selection
+        .apply_frame(&mut state, &Painter::frame(3, 80, |p| p.text(0, 0, "new!")))
+        .unwrap();
+    assert_eq!(selection.text(state.screen()).as_deref(), Some("new!"));
 }

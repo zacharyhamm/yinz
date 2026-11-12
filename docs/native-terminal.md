@@ -84,7 +84,13 @@ style faces with different metrics are fitted into the regular face's cell.
 
 Font settings reload automatically with the session's configuration updates,
 including drop-ins. Effective font changes replace face, shaping, glyph and atlas
-caches while preserving visible content and local selection. Equivalent settings
+caches while preserving visible content and the selected Copy text. When a grid
+resize reflows text, the local highlight follows a unique match of the selected
+display units and surrounding context. If content moves offscreen or its location
+is ambiguous (including pane-layout changes), the highlight disappears and Copy
+retains the original text until a new selection, Escape, typing or session switch.
+The structured frames do not identify hard versus soft wraps, so Copy preserves
+the original selection’s newline semantics. Equivalent settings
 and paint-only changes retain font caches. Padding changes update geometry without
 reloading fonts. Zoom and monitor-scale changes use the same path; final raster
 sizes are bounded to 4–512 physical pixels with a diagnostic when adjusted, without
