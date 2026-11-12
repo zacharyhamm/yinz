@@ -1069,6 +1069,15 @@ pub enum ScreenInstruction {
     RestoreWarpedAgentInput(PaneId, yinz_types::data::WarpedAgentInput),
     SetPaneAgent(PaneId, Option<AgentInfo>, Option<NotificationEnd>),
     SetPaneAgentActivity(PaneId, AgentInfo, yinz_types::agent::AgentState),
+    ReconcileRestoredClaude {
+        pane: PaneId,
+        generation: Instant,
+        expected: AgentInfo,
+        input_revision: u64,
+        last_hook: Option<i64>,
+        state: Option<yinz_types::agent::AgentState>,
+        reply: std::sync::mpsc::Sender<bool>,
+    },
     AgentWorktreeResolved {
         cwd: PathBuf,
         generation: u64,

@@ -778,6 +778,7 @@ impl Screen {
 
     fn remove_agent_lifecycle(&mut self, pane: PaneId, reason: &str) {
         self.warped_agent_inputs.remove(&pane);
+        self.restored_claude_observers.remove(&pane);
         let previous = self.agent_lifecycle.remove(&pane);
         log::debug!(
             "agent lifecycle removed session={:?} pane={pane:?} reason={reason} previous={:?}",

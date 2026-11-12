@@ -76,6 +76,14 @@ impl Screen {
     /// Called immediately after placement, before queued reports or terminal bytes are drained.
     /// Returns whether a staged identity was applied, even without a tracking payload.
     pub(in crate::screen) fn restore_staged_transfer_state(&mut self, pane: PaneId) -> bool {
+        let restored = self.restore_transfer_state(pane);
+        if restored {
+            self.observe_restored_claude(pane);
+        }
+        restored
+    }
+
+    fn restore_transfer_state(&mut self, pane: PaneId) -> bool {
         let restored = self
             .pending_agent_tracking
             .remove(&pane)
@@ -200,5 +208,123 @@ impl Screen {
             tracking.agent.session_id
         );
         true
+    }
+
+    fn observe_restored_claude(&mut self, pane: PaneId) {
+        let PaneId::Terminal(terminal) = pane else {
+            return;
+        };
+        let Some(info) = self.get_pane_info(pane) else {
+            return;
+        };
+        let Some(expected) = info
+            .agent
+            .filter(|agent| agent.kind == "claude" && agent.source == AgentSource::Reported)
+        else {
+            return;
+        };
+        let Some(conversation) = expected.session_id.clone().filter(|id| !id.is_empty()) else {
+            return;
+        };
+        if info.host.is_some()
+            || info.is_held
+            || info.exited
+            || self.agent_lifecycle.contains_key(&pane)
+        {
+            return;
+        }
+        let Some(os) = &self.bus.os_input else { return };
+        let Some(sender) = self.bus.senders.to_screen.clone() else {
+            return;
+        };
+        let input_revision = self.agent_input_revision(pane);
+        let generation = Instant::now();
+        self.restored_claude_observers.insert(pane, generation);
+        os.observe_restored_claude(
+            terminal,
+            conversation,
+            Box::new(move |state| {
+                let (reply, response) = std::sync::mpsc::channel();
+                if sender
+                    .send(
+                        yinz_bus::screen::ScreenInstruction::ReconcileRestoredClaude {
+                            pane,
+                            generation,
+                            expected: expected.clone(),
+                            input_revision,
+                            last_hook: info.last_hook_at_ms,
+                            state,
+                            reply,
+                        },
+                    )
+                    .is_err()
+                {
+                    return false;
+                }
+                response
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap_or(false)
+            }),
+        )
+        .context("observe adopted Claude state")
+        .non_fatal();
+    }
+
+    pub(in crate::screen) fn reconcile_restored_claude(
+        &mut self,
+        pane: PaneId,
+        generation: Instant,
+        expected: &AgentInfo,
+        input_revision: u64,
+        last_hook: Option<i64>,
+        state: Option<AgentState>,
+    ) -> Result<bool> {
+        if self.restored_claude_observers.get(&pane) != Some(&generation) {
+            return Ok(false);
+        }
+        let current =
+            self.get_pane_info(pane)
+                .filter(|info| {
+                    !info.is_held
+                        && !info.exited
+                        && info.host.is_none()
+                        && info.last_hook_at_ms == last_hook
+                        && self.agent_input_revision(pane) == input_revision
+                        && !self.agent_lifecycle.contains_key(&pane)
+                        && !self.agent_worker_waits.contains_key(&pane)
+                        && !self.claude_permission_waits.contains_key(&pane)
+                        && self.agent_submissions.get(&pane).is_none_or(|submissions| {
+                            submissions.iter().all(|s| s.result.is_some())
+                        })
+                })
+                .and_then(|info| info.agent)
+                .filter(|agent| {
+                    agent.kind == expected.kind
+                        && agent.session_id == expected.session_id
+                        && agent.run_id == expected.run_id
+                        && agent.source == expected.source
+                        && agent.state != AgentState::Exited
+                        && self.agent_process_matches(pane, "claude")
+                });
+        let Some(mut current) = current else {
+            self.restored_claude_observers.remove(&pane);
+            return Ok(false);
+        };
+        if let Some(state) = state.filter(|state| {
+            matches!(
+                state,
+                AgentState::Idle | AgentState::Busy | AgentState::Waiting
+            )
+        }) && current.state != state
+        {
+            current.state = state;
+            current.detail = None;
+            current.waiting_on =
+                (state == AgentState::Waiting).then(|| "approve Claude permission request".into());
+            current.wait_needs_a_person = state == AgentState::Waiting;
+            super::super::agent_reports::publish_pane_agent_activity(self, pane, current)
+                .context("publish restored Claude state")?;
+        }
+        Ok(true)
     }
 }

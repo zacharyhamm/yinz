@@ -21,6 +21,83 @@ mod recovery;
 
 pub const OBSERVER_FLAG: &str = "--claude-turn-observer";
 
+/// Resume presentation observation for a local pane whose provider has gone quiet.
+/// The foreground group anchors discovery; registry files alone never establish ownership.
+pub fn observe_restored(
+    root: u32,
+    conversation: &str,
+    publish: impl Fn(Option<yinz_types::agent::AgentState>) -> bool,
+) {
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    let mut candidates = Vec::new();
+    for (pid, process) in system.processes() {
+        if process.name() != "claude" {
+            continue;
+        }
+        let mut ancestor = Some(*pid);
+        for _ in 0..32 {
+            let Some(parent) = ancestor else { break };
+            if parent.as_u32() == root {
+                let identity = (pid.as_u32(), process.start_time());
+                if let Some(reader) = ClaudeStatusObservation::new(identity.0) {
+                    candidates.push((identity, reader));
+                }
+                break;
+            }
+            ancestor = system.process(parent).and_then(|p| p.parent());
+        }
+    }
+    let [(identity, reader)] = candidates.as_slice() else {
+        return;
+    };
+    let deadline = Instant::now() + Duration::from_secs(24 * 60 * 60);
+    while Instant::now() < deadline {
+        let pid = sysinfo::Pid::from_u32(identity.0);
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
+        if !system.process(pid).is_some_and(|p| {
+            p.start_time() == identity.1 && p.status() != sysinfo::ProcessStatus::Zombie
+        }) {
+            return;
+        }
+        if reader
+            .process_record(
+                identity.0,
+                identity.1.saturating_sub(1).saturating_mul(1000),
+            )
+            .is_some_and(|record| record["sessionId"].as_str() != Some(conversation))
+        {
+            return;
+        }
+        let permission = reader.permission(*identity, conversation);
+        let state = if permission.is_some_and(|sample| {
+            sample.status == yinz_types::agent::claude_permissions::Status::Active
+        }) {
+            Some(yinz_types::agent::AgentState::Waiting)
+        } else {
+            restored_state(reader.current(*identity, conversation).as_deref())
+        };
+        if !publish(state) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn restored_state(status: Option<&str>) -> Option<yinz_types::agent::AgentState> {
+    use yinz_types::agent::AgentState;
+    match status {
+        Some("idle") => Some(AgentState::Idle),
+        Some("busy" | "shell") => Some(AgentState::Busy),
+        // Waiting needs the permission observer's positive human-input evidence.
+        _ => None,
+    }
+}
+
 fn observer_executable() -> Result<PathBuf> {
     // An observer can outlive an install. On Linux current_exe() then ends in
     // " (deleted)", which cannot be spawned. Re-exec the running image instead.
@@ -98,6 +175,11 @@ impl ClaudeStatusObservation {
     /// The status of Claude's session registry record (`busy`, `shell`, `idle` or `waiting`),
     /// when it names this process and conversation and changed after `since_ms`.
     fn record(&self, pid: u32, session: &str, since_ms: u64) -> Option<Value> {
+        self.process_record(pid, since_ms)
+            .filter(|record| record["sessionId"].as_str() == Some(session))
+    }
+
+    fn process_record(&self, pid: u32, since_ms: u64) -> Option<Value> {
         // Claude 2.1.312+ rewrites the record whenever its status changes, including after an
         // early Esc that writes no transcript boundary. Missing/older registries leave hooks and
         // transcript observation in charge. Bound reads and reject special files; this optional
@@ -118,7 +200,6 @@ impl ClaudeStatusObservation {
         }
         let record: Value = serde_json::from_slice(&bytes).ok()?;
         (record["pid"].as_u64() == Some(u64::from(pid))
-            && record["sessionId"].as_str() == Some(session)
             && record["kind"] == "interactive"
             && record["statusUpdatedAt"]
                 .as_u64()

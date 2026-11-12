@@ -414,6 +414,16 @@ pub trait ClientTransport: Send + Sync {
 
 /// Process metadata, palette, and file access used by the server.
 pub trait ServerEnvironment: Send + Sync {
+    /// Observe an adopted local Claude without requiring a new provider hook.
+    /// The callback returns false when the destination no longer accepts this observation.
+    fn observe_restored_claude(
+        &self,
+        _terminal: TerminalId,
+        _conversation: String,
+        _publish: Box<dyn Fn(Option<yinz_types::agent::AgentState>) -> bool + Send>,
+    ) -> Result<()> {
+        Ok(())
+    }
     fn load_palette(&self) -> Palette;
     /// Returns the current working directory for a given pid
     fn get_cwd(&self, pid: ProcessId) -> Option<PathBuf>;

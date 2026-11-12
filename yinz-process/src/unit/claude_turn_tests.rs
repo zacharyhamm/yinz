@@ -1831,3 +1831,63 @@ fn issue85_linked_interruption_has_terminal_provenance_without_an_answer() {
     assert!(turn.interrupted);
     assert!(!turn.answer_boundary);
 }
+
+#[test]
+fn restored_claude_status_requires_matching_process_conversation_and_known_state() {
+    use yinz_types::agent::AgentState;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+    let reader = ClaudeStatusObservation {
+        path: path.clone(),
+        after_ms: 0,
+    };
+    assert_eq!(reader.current((7, 100), "conversation"), None);
+    for (pid, session, timestamp, accepted) in [
+        (7, "conversation", 101000, true),
+        (8, "conversation", 101000, false),
+        (7, "replacement", 101000, false),
+        (7, "conversation", 98000, false),
+    ] {
+        std::fs::write(&path, json!({"pid":pid,"sessionId":session,"kind":"interactive","statusUpdatedAt":timestamp,"status":"idle"}).to_string()).unwrap();
+        assert_eq!(reader.current((7, 100), "conversation").is_some(), accepted);
+    }
+    std::fs::write(&path, "partial rewrite").unwrap();
+    assert_eq!(reader.current((7, 100), "conversation"), None);
+    for (status, state) in [
+        ("idle", Some(AgentState::Idle)),
+        ("busy", Some(AgentState::Busy)),
+        ("shell", Some(AgentState::Busy)),
+        ("waiting", None),
+        ("unknown", None),
+    ] {
+        assert_eq!(restored_state(Some(status)), state);
+    }
+    assert_eq!(restored_state(None), None);
+}
+
+#[test]
+fn restored_claude_observer_discovers_only_the_adopted_process_tree() {
+    // A renamed system utility gives the real process backend a Claude-shaped
+    // process without invoking Claude or changing its configuration directory.
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("claude");
+    std::fs::copy("/bin/sleep", &executable).unwrap();
+    struct ChildGuard(std::process::Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let child = ChildGuard(Command::new(executable).arg("60").spawn().unwrap());
+    let called = std::cell::Cell::new(false);
+    observe_restored(child.0.id(), "missing-conversation", |state| {
+        assert_eq!(state, None);
+        called.set(true);
+        false
+    });
+    assert!(called.get());
+    observe_restored(u32::MAX, "missing-conversation", |_| {
+        panic!("an unrelated process must not be observed")
+    });
+}

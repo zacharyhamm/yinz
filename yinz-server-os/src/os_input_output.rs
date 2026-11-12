@@ -1617,6 +1617,28 @@ impl ClientTransport for ServerOsInputOutput {
 }
 
 impl ServerEnvironment for ServerOsInputOutput {
+    fn observe_restored_claude(
+        &self,
+        terminal: TerminalId,
+        conversation: String,
+        publish: Box<dyn Fn(Option<yinz_types::agent::AgentState>) -> bool + Send>,
+    ) -> Result<()> {
+        let Some(root) = self
+            .pty_backend
+            .tcgetpgrp(terminal)
+            .and_then(|pid| u32::try_from(pid).ok())
+            .filter(|pid| *pid > 0)
+        else {
+            return Ok(());
+        };
+        std::thread::Builder::new()
+            .name("restored-claude".into())
+            .spawn(move || {
+                yinz_process::claude_turn::observe_restored(root, &conversation, publish)
+            })
+            .context("start restored Claude observer")?;
+        Ok(())
+    }
     fn load_palette(&self) -> Palette {
         default_palette()
     }

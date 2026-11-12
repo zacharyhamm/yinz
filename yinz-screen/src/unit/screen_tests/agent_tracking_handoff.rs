@@ -37,9 +37,9 @@ fn adopt_tracking(
     let (to_plugin, plugins) = channels::unbounded();
     destination.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
     let mut pending = crate::screen::thread_main::PendingEvents::default();
+    let (to_screen, instructions) = channels::unbounded();
+    destination.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
     if path == "pane" {
-        let (to_screen, instructions) = channels::unbounded();
-        destination.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
         destination
             .place_adopted_pane(
                 TerminalId::new(7),
@@ -1461,5 +1461,139 @@ fn claude_permission_registry_handoff_retains_overlay_watermark_and_parent() {
             permission_sample(Status::Active, 500_000),
         );
         assert_eq!(next.agent_status_for_test().agent.state, AgentState::Busy);
+    }
+}
+
+#[test]
+fn restored_claude_registry_reconciles_orphan_without_completing_a_turn() {
+    for state in [AgentState::Idle, AgentState::Busy, AgentState::Waiting] {
+        let (mut screen, _, _) = setup("claude");
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        screen.agent_lifecycle.remove(&PANE);
+        let info = screen.get_pane_info(PANE).unwrap();
+        let expected = info.agent.unwrap();
+        let revision = screen.tabs[&TabId::new(0)].agent_input_revision(PANE);
+        let generation = Instant::now();
+        screen.restored_claude_observers.insert(PANE, generation);
+        screen
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .get_pane_with_id_mut(PANE)
+            .unwrap()
+            .handle_pty_bytes(b"\x1b]7501;state=blocked:app=claude\x07".to_vec());
+        assert!(screen
+            .reconcile_restored_claude(
+                PANE,
+                generation,
+                &expected,
+                revision,
+                info.last_hook_at_ms,
+                None
+            )
+            .unwrap());
+        assert_eq!(
+            screen.get_pane_info(PANE).unwrap().agent.unwrap().state,
+            AgentState::Busy
+        );
+        assert!(screen
+            .reconcile_restored_claude(
+                PANE,
+                generation,
+                &expected,
+                revision,
+                info.last_hook_at_ms,
+                Some(state)
+            )
+            .unwrap());
+        let current = screen.get_pane_info(PANE).unwrap();
+        assert_eq!(current.agent.unwrap().state, state);
+        assert_eq!(
+            current.program_status.current.unwrap().state(),
+            yinz_types::program_status::ProgramState::Blocked
+        );
+        assert!(!screen.agent_lifecycle.contains_key(&PANE));
+    }
+}
+
+#[test]
+fn restored_claude_registry_rejects_superseded_observations() {
+    for supersede in [
+        "generation",
+        "input",
+        "hook",
+        "conversation",
+        "lifecycle",
+        "closed",
+    ] {
+        let (mut screen, _, _) = setup("claude");
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        let lifecycle = screen.agent_lifecycle.remove(&PANE).unwrap();
+        let info = screen.get_pane_info(PANE).unwrap();
+        let expected = info.agent.unwrap();
+        let revision = screen.tabs[&TabId::new(0)].agent_input_revision(PANE);
+        let generation = Instant::now();
+        screen.restored_claude_observers.insert(PANE, generation);
+        let mut sent_revision = revision;
+        match supersede {
+            "generation" => {
+                screen
+                    .restored_claude_observers
+                    .insert(PANE, generation + Duration::from_secs(1));
+            },
+            "input" => sent_revision = revision.wrapping_sub(1),
+            "hook" => {
+                screen
+                    .tab_containing_pane_mut(PANE)
+                    .unwrap()
+                    .get_pane_with_id_mut(PANE)
+                    .unwrap()
+                    .set_last_hook_at_ms(info.last_hook_at_ms.unwrap() + 1);
+            },
+            "conversation" => {
+                let mut replacement = expected.clone();
+                replacement.session_id = Some("replacement".into());
+                screen
+                    .tab_containing_pane_mut(PANE)
+                    .unwrap()
+                    .set_pane_agent(PANE, Some(replacement));
+            },
+            "lifecycle" => {
+                screen.agent_lifecycle.insert(PANE, lifecycle);
+            },
+            "closed" => {
+                screen.close_pane_explicitly(PANE, None);
+            },
+            _ => unreachable!(),
+        }
+        assert!(
+            !screen
+                .reconcile_restored_claude(
+                    PANE,
+                    generation,
+                    &expected,
+                    sent_revision,
+                    info.last_hook_at_ms,
+                    Some(AgentState::Idle)
+                )
+                .unwrap(),
+            "{supersede}"
+        );
+        if let Some(agent) = screen.get_pane_info(PANE).and_then(|p| p.agent) {
+            assert_eq!(agent.state, AgentState::Busy, "{supersede}");
+        }
+    }
+}
+
+#[test]
+fn restored_claude_observation_starts_for_pane_and_tab_adoption_without_tracking() {
+    for path in ["pane", "tab"] {
+        let (mut source, _, _) = setup("claude");
+        report_kind(&mut source, "claude", hook("UserPromptSubmit"));
+        source.agent_lifecycle.remove(&PANE);
+        let (destination, _) = adopt_tracking(&mut source, path, false, false);
+        assert!(
+            destination.restored_claude_observers.contains_key(&PANE),
+            "{path}"
+        );
     }
 }
