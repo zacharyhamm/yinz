@@ -737,6 +737,17 @@ fn titles_style_preserves_multiplayer_cursor_swatches() {
         .terminal_characters
         .iter()
         .any(|c| c.styles.background == Some(frame.title_colors().background.into())));
+
+    // An explicitly styled swatch still owns its colors when its background
+    // happens to match the ribbon's background.
+    let mut swatch = styled_characters(" ", |styles| {
+        styles.background = Some(frame.title_colors().background.into());
+        styles.foreground = styles.background;
+        styles.dim = Some(AnsiCode::On);
+    });
+    let before = swatch.clone();
+    frame.fill_titlebar(&mut swatch);
+    assert_eq!(swatch, before);
 }
 
 #[test]
@@ -816,7 +827,7 @@ fn assert_ribbon_contrast(character: &TerminalCharacter) {
 }
 
 #[test]
-fn titles_style_preserves_state_colors_and_returns_to_ribbon_defaults() {
+fn titles_style_preserves_readable_state_colors_and_returns_to_ribbon_defaults() {
     for (name, source) in ribbon_theme_sources() {
         let themes = yinz_config::theme::Themes::from_string(source, false).unwrap();
         let theme = themes.get_theme(name).unwrap();
@@ -838,8 +849,8 @@ fn titles_style_preserves_state_colors_and_returns_to_ribbon_defaults() {
                     });
                 }
                 let ribbon = frame.title_colors();
-                // A pulse sample, group highlight, and explicit override must survive
-                // even when they differ from the ribbon's normal foreground.
+                // Pulse samples, group highlights, and explicit overrides must
+                // remain readable against this client's ribbon background.
                 for color in [
                     PaletteColor::Rgb((127, 142, 157)),
                     theme.palette.frame_highlight.emphasis_0,
@@ -853,9 +864,88 @@ fn titles_style_preserves_state_colors_and_returns_to_ribbon_defaults() {
                         let title = text.iter().find(|c| c.character == 'p').unwrap();
                         assert_eq!(
                             title.styles.foreground,
-                            Some(if active { color } else { ribbon.base }.into())
+                            Some(
+                                if active {
+                                    ribbon_foreground(color, ribbon.base, ribbon.background)
+                                } else {
+                                    ribbon.base
+                                }
+                                .into()
+                            )
                         );
                         assert_eq!(title.styles.background, Some(ribbon.background.into()));
+                        for character in text {
+                            assert_ribbon_contrast(character);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn ribbon_highlights_and_stack_decorations_use_readable_final_colors() {
+    for floating in [false, true] {
+        for focused in [false, true] {
+            for stacked in [false, true] {
+                for background in [
+                    PaletteColor::Rgb((255, 255, 255)),
+                    PaletteColor::EightBit(16),
+                ] {
+                    let readable = if background == PaletteColor::EightBit(16) {
+                        PaletteColor::Rgb((255, 255, 255))
+                    } else {
+                        PaletteColor::Rgb((0, 0, 0))
+                    };
+                    let accent = if background == PaletteColor::EightBit(16) {
+                        PaletteColor::Rgb((220, 220, 220))
+                    } else {
+                        PaletteColor::Rgb((30, 30, 30))
+                    };
+                    for highlight in [background, accent] {
+                        let mut frame = pane_frame_with(false, floating, 80);
+                        frame.titles_style = true;
+                        frame.should_draw_pane_frames = false;
+                        frame.is_main_client = focused;
+                        for colors in [
+                            &mut frame.style.colors.ribbon_selected,
+                            &mut frame.style.colors.ribbon_unselected,
+                        ] {
+                            colors.background = background;
+                            colors.base = readable;
+                        }
+                        frame.color = Some(highlight);
+                        frame.use_frame_color_for_title = true;
+                        if stacked {
+                            frame.stack_list_entry = Some(StackListEntry {
+                                width: 20,
+                                label: "pane".into(),
+                                is_selected: focused,
+                                is_emphasized: false,
+                                stack_is_focused: focused,
+                                border_color: Some(background),
+                            });
+                        }
+                        let (chunks, _) = frame.render().unwrap();
+                        let row = &chunks[0].terminal_characters;
+                        assert!(characters_to_string(row).contains("pane"));
+                        let title = row.iter().find(|c| c.character == 'p').unwrap();
+                        assert_eq!(
+                            title.styles.foreground,
+                            Some(
+                                if highlight == background {
+                                    readable
+                                } else {
+                                    accent
+                                }
+                                .into()
+                            )
+                        );
+                        for character in row {
+                            assert_ne!(character.styles.dim, Some(AnsiCode::On));
+                            assert_ribbon_contrast(character);
+                        }
                     }
                 }
             }

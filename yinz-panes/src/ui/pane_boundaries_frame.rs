@@ -313,9 +313,13 @@ impl PaneFrame {
     }
     fn title_foreground(&self) -> Option<PaletteColor> {
         if self.titles_style {
-            self.color
-                .filter(|_| self.use_frame_color_for_title)
-                .or_else(|| Some(self.title_colors().base))
+            let colors = self.title_colors();
+            Some(
+                self.color
+                    .filter(|_| self.use_frame_color_for_title)
+                    .map(|color| ribbon_foreground(color, colors.base, colors.background))
+                    .unwrap_or(colors.base),
+            )
         } else {
             self.color
         }
@@ -325,18 +329,29 @@ impl PaneFrame {
             return;
         }
         let colors = self.title_colors();
-        let foreground = self
-            .color
-            .filter(|_| self.use_frame_color_for_title)
-            .unwrap_or(colors.base);
+        let foreground = self.title_foreground().unwrap_or(colors.base);
         for character in characters {
             character.styles.update(|styles| {
                 // Multiplayer cursor swatches carry an explicit background of their own.
-                if styles.background.is_none() || styles.background == Some(AnsiCode::Reset) {
+                let uses_ribbon_background =
+                    styles.background.is_none() || styles.background == Some(AnsiCode::Reset);
+                if uses_ribbon_background {
                     styles.background = Some(colors.background.into());
                 }
                 if styles.foreground.is_none() || styles.foreground == Some(AnsiCode::Reset) {
                     styles.foreground = Some(foreground.into());
+                }
+                if uses_ribbon_background {
+                    // Indicators and stack decorations can set their own foreground.
+                    // Check the final pair, including transient frame highlights.
+                    let candidate = match styles.foreground {
+                        Some(AnsiCode::RgbCode(rgb)) => PaletteColor::Rgb(rgb),
+                        Some(AnsiCode::ColorIndex(index)) => PaletteColor::EightBit(index),
+                        _ => foreground,
+                    };
+                    styles.foreground =
+                        Some(ribbon_foreground(candidate, colors.base, colors.background).into());
+                    styles.dim = Some(AnsiCode::Reset);
                 }
             });
         }
