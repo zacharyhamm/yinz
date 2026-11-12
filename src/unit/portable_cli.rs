@@ -383,7 +383,25 @@ fn repl_connects_automatically_and_preserves_input_and_output_behavior() {
         None,
     );
     assert!(output.status.success());
-    success(session.run(&["action", "pane-wait", pane, "--contains", "Error:"], None));
+    // The error prefix can scroll out of a short pane before the full diagnostic arrives.
+    let error_wait = session.run(
+        &[
+            "action",
+            "pane-wait",
+            pane,
+            "--contains",
+            "Cannot reference an identifier",
+        ],
+        None,
+    );
+    if !error_wait.status.success() {
+        let dump = session.run(&["action", "dump-screen", "--pane-id", pane], None);
+        eprintln!(
+            "REPL viewport at timeout: {}",
+            String::from_utf8_lossy(&dump.stdout)
+        );
+    }
+    success(error_wait);
     assert!(session
         .run(
             &[
