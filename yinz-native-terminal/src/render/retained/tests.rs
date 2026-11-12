@@ -477,3 +477,46 @@ fn a_cell_size_that_changes_re_emits_the_placements() {
         "an image is placed in pixels, so a new cell size moves it"
     );
 }
+
+#[test]
+fn captured_context_damage_erases_highlight_on_an_undamaged_selected_row() {
+    use crate::emulation::selection::LocalSelection;
+    let mut state = Painter::state(3, 10, |p| {
+        p.text(0, 0, "0123456789");
+        p.text(1, 0, "ABCDsuffix");
+    });
+    let mut selection = LocalSelection::default();
+    selection.start(1, 0);
+    selection.extend(1, 3);
+    selection.resizing(&state, 4, 10);
+    let repaint = Painter::frame(4, 10, |p| {
+        p.full_repaint();
+        p.text(0, 0, "0123456789");
+        p.text(1, 0, "ABCDsuffix");
+    });
+    selection.apply_frame(&mut state, &repaint).unwrap();
+    assert_eq!(
+        selection.range(),
+        Some(Selection::at(1, 0).extended_to(1, 3))
+    );
+    let mut cache = cache();
+    let generation = cache.generation();
+    let mut retained = RetainedScene::new();
+    retained.set_selection(selection.range());
+    refreshed(&mut retained, &state, &mut cache);
+    let selected_scene = retained.flatten();
+    // Only context on row 0 changes. App's draw order must also dirty row 1
+    // when set_selection removes its previously verified highlight.
+    let frame = Painter::frame(4, 10, |p| p.text(0, 2, "!"));
+    let applied = selection.apply_frame(&mut state, &frame).unwrap();
+    assert_eq!(applied.damage, Damage::Rows(vec![0]));
+    retained.mark(&applied.damage);
+    assert_eq!(selection.range(), None);
+    assert_eq!(selection.text(state.screen()).as_deref(), Some("ABCD"));
+    retained.set_selection(selection.range());
+    refreshed(&mut retained, &state, &mut cache);
+    assert_eq!(retained.rebuilt_rows(), [0, 1]);
+    assert_ne!(retained.flatten(), selected_scene);
+    assert_eq!(retained.flatten(), rebuilt(&state, &mut cache));
+    assert_eq!(cache.generation(), generation);
+}

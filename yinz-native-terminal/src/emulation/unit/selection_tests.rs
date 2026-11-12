@@ -481,6 +481,23 @@ fn surviving_unique_terminal_pane_reanchors_beside_plugin_chrome() {
     local.apply_frame(&mut state, &frame).unwrap();
     assert_eq!(local.range(), Some(Selection::at(2, 10).extended_to(2, 13)));
     assert_eq!(local.text(state.screen()).as_deref(), Some("ABCD"));
+    // Location proof uses the resized pane geometry rather than the original
+    // 80-column geometry, and harmless output must retain it.
+    local.apply_frame(&mut state, &frame).unwrap();
+    assert_eq!(local.range(), Some(Selection::at(2, 10).extended_to(2, 13)));
+    let changed_layout = Painter::frame(4, 60, |p| {
+        p.geometry(&GeometryRecord {
+            panes: vec![PaneRect {
+                cols: 60,
+                ..terminal
+            }],
+        })
+    });
+    local.apply_frame(&mut state, &changed_layout).unwrap();
+    assert_eq!(local.range(), None);
+    local.apply_frame(&mut state, &frame).unwrap();
+    assert_eq!(local.range(), None);
+    assert_eq!(local.text(state.screen()).as_deref(), Some("ABCD"));
 }
 
 #[test]
@@ -493,4 +510,276 @@ fn selection_scrolled_out_of_a_shorter_viewport_keeps_copy_without_highlight() {
         .unwrap();
     assert_eq!(local.range(), None);
     assert_eq!(local.text(state.screen()).as_deref(), Some("ABCD"));
+}
+
+fn reanchored() -> (
+    crate::emulation::terminal::TerminalState,
+    LocalSelection,
+    String,
+) {
+    let text = format!("{}distinctive ABCD suffix", "x".repeat(58));
+    let mut state = crate::emulation::terminal::TerminalState::new(3, 80);
+    state.apply_frame(&wrapped_frame(3, 80, &text)).unwrap();
+    let mut local = selected(&state, Selection::at(0, 70).extended_to(0, 73));
+    local.resizing(&state, 3, 60);
+    local
+        .apply_frame(&mut state, &wrapped_frame(3, 80, &text))
+        .unwrap();
+    local
+        .apply_frame(&mut state, &wrapped_frame(3, 60, &text))
+        .unwrap();
+    assert_eq!(local.range(), Some(Selection::at(1, 10).extended_to(1, 13)));
+    assert_eq!(local.text(state.screen()).as_deref(), Some("ABCD"));
+    (state, local, text)
+}
+
+#[test]
+fn captured_highlight_disappears_after_delta_full_clear_or_scroll_output() {
+    use yinz_types::structured_render::{FrameBuilder, ShiftEntry, ShiftRecord};
+    for update in ["delta", "full", "clear", "scroll"] {
+        let (mut state, mut local, text) = reanchored();
+        let frame = match update {
+            "delta" => Painter::frame(3, 60, |p| p.text(1, 10, "WXYZ")),
+            "full" => wrapped_frame(3, 60, &text.replace("ABCD", "WXYZ")),
+            "clear" => {
+                let mut builder = FrameBuilder::new(60, 3, 1);
+                builder.set_clear(true);
+                builder.finish()
+            },
+            _ => {
+                let mut builder = FrameBuilder::new(60, 3, 1);
+                builder.push_shifts(&ShiftRecord {
+                    entries: vec![ShiftEntry {
+                        x: 0,
+                        y: 0,
+                        cols: 60,
+                        rows: 3,
+                        lines: 1,
+                    }],
+                });
+                builder.finish()
+            },
+        };
+        local.apply_frame(&mut state, &frame).unwrap();
+        let current = Selection::at(1, 10).extended_to(1, 13).text(state.screen());
+        if matches!(update, "delta" | "full") {
+            assert_eq!(current, "WXYZ");
+        } else {
+            assert!(current.is_empty());
+        }
+        assert_eq!(local.range(), None, "{update}");
+        assert_eq!(local.text(state.screen()).as_deref(), Some("ABCD"));
+        // Same-grid output cannot resurrect the highlight, even if the entire
+        // original pattern returns. A real resize can uniquely locate it again.
+        local
+            .apply_frame(&mut state, &wrapped_frame(3, 60, &text))
+            .unwrap();
+        assert_eq!(local.range(), None);
+        local.resizing(&state, 3, 80);
+        local
+            .apply_frame(&mut state, &wrapped_frame(3, 80, &text))
+            .unwrap();
+        assert_eq!(local.range(), Some(Selection::at(0, 70).extended_to(0, 73)));
+        local.clear();
+        assert_eq!(local.text(state.screen()), None);
+        local.start(0, 70);
+        local.extend(0, 73);
+        local
+            .apply_frame(
+                &mut state,
+                &Painter::frame(3, 80, |p| p.text(0, 70, "WXYZ")),
+            )
+            .unwrap();
+        assert_eq!(local.text(state.screen()).as_deref(), Some("WXYZ"));
+    }
+}
+
+#[test]
+fn harmless_output_preserves_captured_highlight_and_copy() {
+    use crate::emulation::screen_buffer::CursorShape;
+    use yinz_types::structured_render::ATTR_BOLD;
+    for update in [
+        "other-row",
+        "other-cell",
+        "cursor",
+        "style",
+        "identical-full",
+    ] {
+        let (mut state, mut local, text) = reanchored();
+        let expected = local.range();
+        let frame = match update {
+            "other-row" => Painter::frame(3, 60, |p| p.text(2, 0, "unrelated")),
+            "other-cell" => Painter::frame(3, 60, |p| p.text(1, 50, "unrelated")),
+            "cursor" => Painter::frame(3, 60, |p| p.cursor(1, 12, CursorShape::Beam)),
+            "style" => Painter::frame(3, 60, |p| {
+                p.styled(1, 10, "ABCD", |c| {
+                    c.attrs |= ATTR_BOLD;
+                    c.fg = yinz_types::structured_render::WireColor::Rgb(12, 34, 56).pack();
+                })
+            }),
+            _ => wrapped_frame(3, 60, &text),
+        };
+        local.apply_frame(&mut state, &frame).unwrap();
+        assert_eq!(local.range(), expected, "{update}");
+        assert_eq!(local.text(state.screen()).as_deref(), Some("ABCD"));
+    }
+}
+
+#[test]
+fn context_and_geometry_changes_hide_highlights_without_same_grid_resurrection() {
+    use yinz_types::structured_render::{GeometryRecord, PaneRect, PANE_SELECTABLE};
+    for geometry in [false, true] {
+        let (mut state, mut local, text) = reanchored();
+        let frame = Painter::frame(3, 60, |p| {
+            if geometry {
+                p.geometry(&GeometryRecord {
+                    panes: vec![PaneRect {
+                        cols: 60,
+                        rows: 3,
+                        flags: PANE_SELECTABLE,
+                        ..Default::default()
+                    }],
+                });
+            } else {
+                p.text(1, 9, "!");
+            }
+        });
+        local.apply_frame(&mut state, &frame).unwrap();
+        assert_eq!(
+            Selection::at(1, 10).extended_to(1, 13).text(state.screen()),
+            "ABCD"
+        );
+        assert_eq!(local.range(), None);
+        assert_eq!(local.text(state.screen()).as_deref(), Some("ABCD"));
+        let restored = Painter::frame(3, 60, |p| {
+            p.geometry(&GeometryRecord::default());
+            p.text(1, 0, &text[60..]);
+        });
+        local.apply_frame(&mut state, &restored).unwrap();
+        assert_eq!(local.range(), None);
+    }
+}
+
+#[test]
+fn pending_and_coalesced_resize_output_validates_the_current_location() {
+    let text = format!("{}distinctive ABCD suffix", "x".repeat(58));
+    let mut state = crate::emulation::terminal::TerminalState::new(3, 80);
+    state.apply_frame(&wrapped_frame(3, 80, &text)).unwrap();
+    let mut local = selected(&state, Selection::at(0, 70).extended_to(0, 73));
+    local.resizing(&state, 3, 70);
+    local.resizing(&state, 3, 60);
+    local
+        .apply_frame(
+            &mut state,
+            &Painter::frame(3, 80, |p| p.text(0, 70, "WXYZ")),
+        )
+        .unwrap();
+    assert_eq!(local.range(), None);
+    assert_eq!(local.pending, Some((3, 60)));
+    local
+        .apply_frame(&mut state, &wrapped_frame(3, 70, &text))
+        .unwrap();
+    assert_eq!(local.range(), Some(Selection::at(1, 0).extended_to(1, 3)));
+    local
+        .apply_frame(&mut state, &Painter::frame(3, 70, |p| p.text(1, 0, "WXYZ")))
+        .unwrap();
+    assert_eq!(local.range(), None);
+    assert_eq!(local.pending, Some((3, 60)));
+    local
+        .apply_frame(&mut state, &wrapped_frame(3, 60, &text))
+        .unwrap();
+    let expected = local.range();
+    assert_eq!(expected, Some(Selection::at(1, 10).extended_to(1, 13)));
+    for frame in [
+        b"invalid".to_vec(),
+        Painter::frame(4, 50, |p| p.text(0, 0, "invalid reshape")),
+    ] {
+        assert!(local.apply_frame(&mut state, &frame).is_err());
+        assert_eq!(local.range(), expected);
+        assert_eq!(local.text(state.screen()).as_deref(), Some("ABCD"));
+    }
+    local
+        .apply_frame(
+            &mut state,
+            &Painter::frame(3, 60, |p| p.text(1, 10, "WXYZ")),
+        )
+        .unwrap();
+    assert_eq!(local.range(), None);
+}
+
+#[test]
+fn wrapped_reverse_capture_keeps_original_newlines_on_identical_output() {
+    for reverse in [false, true] {
+        let mut state = Painter::state(3, 10, |p| {
+            p.text(0, 0, "0123456789");
+            p.text(1, 0, "abcdefghij");
+        });
+        let range = if reverse {
+            Selection::at(1, 2).extended_to(0, 8)
+        } else {
+            Selection::at(0, 8).extended_to(1, 2)
+        };
+        let mut local = selected(&state, range);
+        local.resizing(&state, 5, 5);
+        let frame = wrapped_frame(5, 5, "0123456789abcdefghij");
+        local.apply_frame(&mut state, &frame).unwrap();
+        let mapped = local.range();
+        assert!(mapped.is_some());
+        local.apply_frame(&mut state, &frame).unwrap();
+        assert_eq!(local.range(), mapped);
+        assert_eq!(local.text(state.screen()).as_deref(), Some("89\nabc"));
+        local
+            .apply_frame(&mut state, &Painter::frame(5, 5, |p| p.text(2, 0, "XYZ")))
+            .unwrap();
+        assert_eq!(local.range(), None);
+        assert_eq!(local.text(state.screen()).as_deref(), Some("89\nabc"));
+    }
+}
+
+#[test]
+fn captured_unicode_support_requires_exact_text_and_display_unit_boundaries() {
+    for update in ["combining", "width", "group"] {
+        let paint = |p: &mut Painter| {
+            p.wide(0, 5, '漢');
+            p.cluster(0, 7, "e\u{301}", 1);
+            p.group(0, 8, &FAMILY);
+        };
+        let mut state = Painter::state(3, 30, paint);
+        let mut local = selected(&state, Selection::at(0, 6).extended_to(0, 11));
+        let expected = local.text(state.screen());
+        local.resizing(&state, 4, 30);
+        local
+            .apply_frame(
+                &mut state,
+                &Painter::frame(4, 30, |p| {
+                    p.full_repaint();
+                    paint(p);
+                }),
+            )
+            .unwrap();
+        let range = local.range();
+        assert!(range.is_some());
+        local
+            .apply_frame(&mut state, &Painter::frame(4, 30, paint))
+            .unwrap();
+        assert_eq!(local.range(), range);
+        let frame = Painter::frame(4, 30, |p| match update {
+            "combining" => p.cluster(0, 7, "e\u{300}", 1),
+            // Same text and total occupied cells, different display-unit span.
+            "width" => {
+                p.cluster(0, 5, "漢", 1);
+                p.text(0, 6, " ");
+            },
+            _ => {
+                let mut col = 8;
+                for (text, width) in FAMILY {
+                    p.cluster(0, col, text, width);
+                    col += width;
+                }
+            },
+        });
+        local.apply_frame(&mut state, &frame).unwrap();
+        assert_eq!(local.range(), None, "{update}");
+        assert_eq!(local.text(state.screen()), expected);
+    }
 }

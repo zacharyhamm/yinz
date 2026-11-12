@@ -96,6 +96,14 @@ struct CapturedSelection {
     panes: Vec<yinz_types::structured_render::PaneRect>,
     pane_index: Option<usize>,
     mappable: bool,
+    location: Option<VerifiedLocation>,
+}
+
+// Coordinates only: the immutable capture owns the corresponding unit strings.
+// Ordinary output validates this bounded support instead of searching the viewport.
+struct VerifiedLocation {
+    units: Vec<Selection>,
+    panes: Vec<yinz_types::structured_render::PaneRect>,
 }
 
 #[derive(Clone, Copy)]
@@ -244,15 +252,17 @@ impl LocalSelection {
         // Failed frames never change selection ownership. Old-grid frames can
         // arrive before the resize repaint; keep the original capture intact.
         let size = (state.size().rows, state.size().cols);
-        if self.captured.is_some()
-            && (size != (old_size.rows, old_size.cols) || self.pending == Some(size))
-        {
-            self.range = self
-                .captured
-                .as_ref()
-                .and_then(|capture| capture.locate(state));
-            if self.pending == Some(size) {
-                self.pending = None;
+        if let Some(capture) = &mut self.captured {
+            if size != (old_size.rows, old_size.cols) || self.pending == Some(size) {
+                let located = capture.locate(state);
+                self.range = located.as_ref().map(|(range, _)| *range);
+                capture.location = located.map(|(_, location)| location);
+                if self.pending == Some(size) {
+                    self.pending = None;
+                }
+            } else if self.range.is_some() && !capture.valid_location(state, &applied.damage) {
+                self.range = None;
+                capture.location = None;
             }
         }
         Ok(applied)
@@ -274,6 +284,7 @@ impl CapturedSelection {
                     && pane.content_contains(range.head.1 as u16, range.head.0 as u16)
             }),
             mappable: false,
+            location: None,
         };
         let Some(region) = Region::of(state, capture.pane_index) else {
             return capture;
@@ -288,22 +299,28 @@ impl CapturedSelection {
         let mut before = std::collections::VecDeque::new();
         let mut after = 0;
         let mut reached_end = false;
+        let mut units = Vec::new();
         for (text, unit) in region.units(state.screen()) {
             if unit.head < start {
-                before.push_back(text);
+                before.push_back((text, unit));
                 if before.len() > CONTEXT {
                     before.pop_front();
                 }
             } else if unit.anchor <= end {
                 if capture.selected == 0 {
                     capture.before = before.len();
-                    capture.pattern.extend(before.drain(..));
+                    for (text, unit) in before.drain(..) {
+                        capture.pattern.push(text);
+                        units.push(unit);
+                    }
                 }
                 reached_end |= unit.head >= end;
                 capture.selected += 1;
                 capture.pattern.push(text);
+                units.push(unit);
             } else {
                 capture.pattern.push(text);
+                units.push(unit);
                 after += 1;
                 if after == CONTEXT {
                     break;
@@ -311,10 +328,53 @@ impl CapturedSelection {
             }
         }
         capture.mappable = capture.selected > 0 && reached_end;
+        if capture.mappable {
+            capture.location = Some(VerifiedLocation {
+                units,
+                panes: capture.panes.clone(),
+            });
+        }
         capture
     }
 
-    fn locate(&self, state: &crate::emulation::terminal::TerminalState) -> Option<Selection> {
+    fn valid_location(
+        &self,
+        state: &crate::emulation::terminal::TerminalState,
+        damage: &crate::emulation::damage::Damage,
+    ) -> bool {
+        let Some(location) = &self.location else {
+            return false;
+        };
+        if location.panes != state.geometry().panes {
+            return false;
+        }
+        let affected = |row| match damage {
+            crate::emulation::damage::Damage::Everything => true,
+            crate::emulation::damage::Damage::Rows(rows) => rows.contains(&row),
+        };
+        location
+            .units
+            .iter()
+            .zip(&self.pattern)
+            .all(|(unit, text)| {
+                if !affected(unit.anchor.0) {
+                    return true;
+                }
+                let (row, col) = unit.anchor;
+                if row >= state.size().rows || unit.head.1 >= state.size().cols {
+                    return false;
+                }
+                let span = state.screen().unit_span(row, col);
+                span.start == col
+                    && span.end == unit.head.1 + 1
+                    && state.screen().unit_text(row, span) == *text
+            })
+    }
+
+    fn locate(
+        &self,
+        state: &crate::emulation::terminal::TerminalState,
+    ) -> Option<(Selection, VerifiedLocation)> {
         if !self.mappable {
             return None;
         }
@@ -392,7 +452,7 @@ impl CapturedSelection {
                 if start.0 != end.0 && region.cols != state.size().cols {
                     return None;
                 }
-                found = Some(if self.reverse {
+                let range = if self.reverse {
                     Selection {
                         anchor: end,
                         head: start,
@@ -402,7 +462,14 @@ impl CapturedSelection {
                         anchor: start,
                         head: end,
                     }
-                });
+                };
+                found = Some((
+                    range,
+                    VerifiedLocation {
+                        units: positions.iter().copied().collect(),
+                        panes: panes.clone(),
+                    },
+                ));
                 matched = prefix[matched - 1];
             }
         }

@@ -539,6 +539,19 @@ fn font_reload_zoom_and_scale_geometry_share_selection_frame_and_copy_transition
                     .extended_to(73 / geometry.grid.cols, 73 % geometry.grid.cols)
             )
         );
+        let update = Painter::frame(geometry.grid.rows, geometry.grid.cols, |p| {
+            for (offset, ch) in "WXYZ".char_indices() {
+                let index = 70 + offset;
+                p.text(
+                    index / geometry.grid.cols,
+                    index % geometry.grid.cols,
+                    &ch.to_string(),
+                );
+            }
+        });
+        selection.apply_frame(&mut state, &update).unwrap();
+        assert_eq!(selection.range(), None);
+        assert_eq!(selection.text(state.screen()).as_deref(), Some("ABCD"));
     }
     // Failed font preparation never reaches the geometry/capture hook.
     let invalid = FontOptions {

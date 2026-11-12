@@ -416,5 +416,29 @@ fn font_faces_resize_repaint_reanchors_copy_and_gpu_highlight() {
             highlighted_pixels > 0,
             "relocated highlight has no GPU pixels"
         );
+        let generation = cache.generation();
+        let atlas = cache.atlases().mask.stamp();
+        let overwrite = Painter::frame(5, 60, |p| p.text(1, 10, "WXYZ"));
+        let applied = selection.apply_frame(&mut state, &overwrite).unwrap();
+        retained.mark(&applied.damage);
+        assert_eq!(expected_range.text(state.screen()), "WXYZ");
+        assert_eq!(selection.range(), None);
+        assert_eq!(selection.text(state.screen()).as_deref(), Some("ABCD"));
+        retained.set_selection(selection.range());
+        let updated = font_pixels(renderer, &mut retained, &state, &mut cache);
+        let mut unselected_cache = fixture_cache(&requested);
+        let mut unselected_scene = RetainedScene::new();
+        assert_eq!(
+            updated,
+            font_pixels(
+                renderer,
+                &mut unselected_scene,
+                &state,
+                &mut unselected_cache
+            )
+        );
+        assert_eq!(cache.generation(), generation);
+        // New letters append glyphs (and advance revision) in the same atlas.
+        assert_eq!(cache.atlases().mask.stamp().identity, atlas.identity);
     });
 }
