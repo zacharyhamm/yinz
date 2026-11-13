@@ -52,9 +52,10 @@ pub fn observe_restored(
             true,
             ProcessRefreshKind::nothing().without_tasks(),
         );
-        if !system.process(pid).is_some_and(|p| {
-            p.start_time() == identity.1 && p.status() != sysinfo::ProcessStatus::Zombie
-        }) {
+        if !system
+            .process(pid)
+            .is_some_and(|p| same_incarnation(p, identity.1))
+        {
             return;
         }
         if reader
@@ -132,7 +133,7 @@ fn restored_claude_process(root: u32) -> Option<u32> {
         }
     }
     match candidates.as_slice() {
-        [identity] => Some(*identity),
+        [pid] => Some(*pid),
         _ => None,
     }
 }
@@ -520,6 +521,14 @@ fn is_claude_process(process: &sysinfo::Process) -> bool {
                 .file_name()
                 .is_some_and(|name| name == "claude")
         })
+}
+
+/// Whether `process` is the incarnation recorded as `started`. On Linux, sysinfo adds a
+/// per-System btime, which the kernel truncates to whole seconds and moves when the clock
+/// steps, so a start time captured by another System can differ by one second.
+fn same_incarnation(process: &sysinfo::Process, started: u64) -> bool {
+    process.start_time().abs_diff(started) <= 1
+        && process.status() != sysinfo::ProcessStatus::Zombie
 }
 
 fn agent_ancestor(kind: &str) -> Option<(u32, u64)> {
@@ -1038,9 +1047,10 @@ fn alive(system: &mut System, observation: &Observation) -> Result<()> {
         true,
         ProcessRefreshKind::nothing(),
     );
-    if !system.process(pid).is_some_and(|process| {
-        process.start_time() == start_time && process.status() != sysinfo::ProcessStatus::Zombie
-    }) {
+    if !system
+        .process(pid)
+        .is_some_and(|process| same_incarnation(process, start_time))
+    {
         return Err(anyhow!("{kind} process exited"));
     }
     if let Some(marker) = &observation.conversation_file

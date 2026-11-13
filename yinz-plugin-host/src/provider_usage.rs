@@ -195,7 +195,7 @@ fn bounded_read(reader: impl Read) -> Result<Vec<u8>> {
     reader
         .take(DATA_LIMIT + 1)
         .read_to_end(&mut data)
-        .map_err(|_| anyhow!("could not read provider data"))?;
+        .context("could not read provider data")?;
     if data.len() as u64 > DATA_LIMIT {
         bail!("provider data exceeded its size limit");
     }

@@ -237,7 +237,7 @@ fn missing_transcripts_and_exited_processes_are_unavailable() {
             transcript_path: Some(path.to_string_lossy().into_owned()),
             ..hook()
         },
-        process: Some((std::process::id(), started + 1)),
+        process: Some((std::process::id(), started + 2)),
         ..observation
     };
     assert!(follow_with_limits(
@@ -270,6 +270,27 @@ fn a_partial_transcript_record_is_not_completion() {
     assert!(turn
         .record(&serde_json::from_slice(&line).unwrap())
         .unwrap());
+}
+
+#[test]
+fn alive_tolerates_one_second_of_boot_time_rounding() {
+    // Another System's btime can differ by a truncated second; a wider gap is another process.
+    let base = observation(Path::new("/nonexistent/yinz-claude.jsonl"), None);
+    let (pid, started) = base.process.unwrap();
+    let with_start = |start: u64| Observation {
+        process: Some((pid, start)),
+        ..base.clone()
+    };
+    for start in [started - 1, started, started + 1] {
+        alive(&mut System::new(), &with_start(start))
+            .unwrap_or_else(|error| panic!("start {start} vs {started}: {error:#}"));
+    }
+    for start in [started - 2, started + 2] {
+        assert!(
+            alive(&mut System::new(), &with_start(start)).is_err(),
+            "start {start} vs {started} names another process"
+        );
+    }
 }
 
 fn observation(path: &std::path::Path, marker: Option<PathBuf>) -> Observation {
@@ -400,7 +421,7 @@ fn claude_early_interruption_uses_the_registry_without_a_transcript_boundary() {
 
     // A reused PID cannot be confirmed by a registry left by its previous process.
     std::fs::write(&transcript, format!("{prompt}\n")).unwrap();
-    observation.process.as_mut().unwrap().1 += 1;
+    observation.process.as_mut().unwrap().1 += 2;
     assert_eq!(
         follow(&observation).err().unwrap().to_string(),
         "claude process exited"
@@ -1111,7 +1132,7 @@ fn agy_missing_identity_process_exit_replacement_and_session_end_are_unavailable
     observation.conversation_file = None;
     assert!(follow_with_api(&observation, None).is_err());
     observation.hook = original;
-    observation.process.as_mut().unwrap().1 += 1;
+    observation.process.as_mut().unwrap().1 += 2;
     assert!(follow_with_api(&observation, None).is_err());
 }
 
@@ -2065,14 +2086,19 @@ fn restored_claude_poll_loads_only_the_observed_process() {
     // observer polls for up to a day, so its System must load only that pid.
     // This inspects the System itself, which concurrent tests cannot disturb.
     let pid = sysinfo::Pid::from_u32(std::process::id());
-    let (system, _reader, started) = restored_observation(pid.as_u32())
+    let (mut system, _reader, started) = restored_observation(pid.as_u32())
         .expect("the test process has HOME, so its registry resolves");
     assert_eq!(
         system.processes().keys().copied().collect::<Vec<_>>(),
         [pid]
     );
     // The poll compares later refreshes of this same System with this start
-    // time, so both sides share one boot time.
+    // time, so both sides share one boot time. Refresh as the poll does.
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[pid]),
+        true,
+        sysinfo::ProcessRefreshKind::nothing().without_tasks(),
+    );
     assert_eq!(system.process(pid).unwrap().start_time(), started);
     assert!(restored_observation(u32::MAX).is_none());
 }
