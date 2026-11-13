@@ -13,6 +13,7 @@ mutants.out.*/
 .claude/settings.local.json
 __pycache__/
 plugin-data.db
+.yinz-agent-prompts/
 
 # Per-task pane definitions created by Swamp's nested runModel API.
 models/@yinz/agent/issue-agent-*.yaml

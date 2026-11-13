@@ -460,6 +460,43 @@ controls for those original assignments. Unknown and legacy launching tasks
 remain blocked. Launch receipts do not replace task/prompt/approval,
 conversation, submission, or evidence-import guards.
 
+Prompts of at most 1 MiB in UTF-8 bytes are delivered directly. Larger prompts
+are published in full under the canonical worker worktree's ignored
+`.yinz-agent-prompts/` directory before a submission intent is saved or sent.
+The directory is private (`0700`); artifacts are read-only (`0400`), named by
+the SHA-256 of the submission ID and of the actual prompt bytes. Publication
+uses a synced temporary file and an atomic, non-overwriting hard link. Existing
+files must match the exact bytes and permissions; symlinks, unsafe directories
+and collisions fail closed. `state.promptArtifact` records the path, submission
+ID and actual prompt digest. The short guarded instruction tells the worker to
+read the whole artifact and verify its SHA-256 before following it. Saved full
+prompts, original task digests, evidence correlation and turn history remain
+unchanged; continuation artifacts use their own turn's digest.
+
+This transport supports local Unix workers with access to the same worktree
+filesystem and hard-link support. It does not transfer artifacts to remote hosts
+or grant access through worker sandboxes. Custom remote runners must reject this
+delivery or inject a publisher with actual worker access. Files are immutable by
+publisher convention and read-only permissions, not protected against an owner
+or administrator deliberately changing permissions or replacing files. Worker
+digest verification is required. Artifacts are retained without automatic
+garbage collection, including artifacts left by a crash before saving intent;
+keep them with the submission history. The behavior needs read/write access to
+the worker worktree, even when Swamp's canonical store is elsewhere.
+
+Resuming a saved submission always observes its original ID, including legacy
+oversized submissions without artifacts and lost delivery acknowledgements. It
+never changes the saved prompt, republishes an artifact or resends uncertain
+work. An unavailable original submission therefore still needs deliberate
+supported lifecycle recovery before a replacement assignment.
+
+To load a tested feature branch's sources without relocating the canonical
+store, set `SWAMP_BEHAVIORS_DIR` to that worktree's absolute
+`extensions/behaviors` directory on the controller's subsequent Swamp invocations
+and keep `--repo-dir` pointing at the canonical store. Retain that worktree and
+its private artifacts while submissions may need them. This source selection
+does not itself resume, replace or submit any task.
+
 The workflow input shape is:
 
 ```json

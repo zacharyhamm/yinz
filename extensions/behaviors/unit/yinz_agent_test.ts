@@ -11,6 +11,8 @@ import {
   EmptySchema,
   hooksReady,
   isTerminalFailure,
+  promptDigest,
+  publishPromptArtifact,
   recoverAgent,
   resumeAgent,
   runAgent,
@@ -104,6 +106,9 @@ function harness(replies: Reply[], overrides: Record<string, unknown> = {}) {
     },
   };
   const dependencies: Dependencies = {
+    publishPromptArtifact: () => {
+      throw new Error("Unexpected artifact publication for a short prompt");
+    },
     now: () => "2026-11-03T12:00:00.000Z",
     id: () => "submission-1",
     realPath: (path) => Promise.resolve(path),
@@ -144,6 +149,291 @@ function harness(replies: Reply[], overrides: Record<string, unknown> = {}) {
   };
   return { context, dependencies, records, writes, calls, replies };
 }
+
+async function withArtifacts(
+  test: (directory: string) => Promise<void>,
+) {
+  const directory = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    await test(directory);
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+}
+
+function artifactHarness(directory: string, replies: Reply[]) {
+  const h = harness(replies, { cwd: directory });
+  h.dependencies.realPath = (path) =>
+    Promise.resolve(path === "/work/issue" ? directory : path);
+  h.dependencies.publishPromptArtifact = publishPromptArtifact;
+  return h;
+}
+
+Deno.test("delivery threshold uses UTF-8 bytes, including the exact 1 MiB boundary", async () => {
+  await withArtifacts(async (directory) => {
+    for (
+      const [prompt, indirect] of [
+        ["a".repeat(1048576), false],
+        ["é".repeat(524288), false],
+        ["é".repeat(524288) + "\n", true],
+        ["😀".repeat(262144) + "x", true],
+      ] as const
+    ) {
+      const h = artifactHarness(directory, [spawned, ready(), completed()]);
+      await runAgent({ prompt }, h.context, h.dependencies);
+      const delivered = h.calls.find((call) => call.args.includes("prompt"))!;
+      const saved = AgentStateSchema.parse(delivered.state);
+      equal(saved.prompt, prompt);
+      equal(saved.promptDigest, await promptDigest(prompt));
+      equal(h.records.get("result")?.promptDigest, saved.promptDigest);
+      if (indirect) {
+        assert(saved.promptArtifact);
+        equal(saved.promptArtifact.submissionId, saved.submissionId);
+        equal(saved.promptArtifact.promptDigest, saved.promptDigest);
+        equal(await Deno.readTextFile(saved.promptArtifact.path), prompt);
+        assert(delivered.stdin!.includes(saved.promptArtifact.path));
+        assert(delivered.stdin!.includes(saved.promptDigest));
+        assert(delivered.stdin!.includes("verify the SHA-256"));
+        assert(new TextEncoder().encode(delivered.stdin).length < 4096);
+      } else {
+        equal(delivered.stdin, prompt);
+        equal(saved.promptArtifact, undefined);
+      }
+    }
+  });
+});
+
+Deno.test("artifact publication precedes saved submission intent and preserves exact assignment bytes", async () => {
+  await withArtifacts(async (directory) => {
+    const prompt = "  Original submission / evidence correlation\r\n" +
+      "Requirements, approvals, failure receipts 🦀\n".repeat(30000) + "\n  ";
+    const h = artifactHarness(directory, [spawned, ready(), completed()]);
+    const write = h.context.writeResource;
+    let observed = false;
+    h.context.writeResource = async (spec, name, value) => {
+      if (name === "state" && value.submissionId) {
+        const saved = AgentStateSchema.parse(value);
+        assert(saved.promptArtifact);
+        equal(await Deno.readTextFile(saved.promptArtifact.path), prompt);
+        equal(await promptDigest(prompt), saved.promptArtifact.promptDigest);
+        observed = true;
+      }
+      return write(spec, name, value);
+    };
+    await runAgent({ prompt }, h.context, h.dependencies);
+    assert(observed);
+    equal(h.records.get("state")?.prompt, prompt);
+  });
+});
+
+Deno.test("artifact publication is private, read-only, idempotent and bound to both digest and submission", async () => {
+  await withArtifacts(async (directory) => {
+    const prompt = "exact\r\n🦀\n  ";
+    const digest = await promptDigest(prompt);
+    const [first, retry] = await Promise.all([
+      publishPromptArtifact(directory, "submission-a", prompt, digest),
+      publishPromptArtifact(directory, "submission-a", prompt, digest),
+    ]);
+    equal(first, retry);
+    equal(await Deno.readTextFile(first), prompt);
+    equal((await Deno.stat(first)).mode! & 0o777, 0o400);
+    equal(
+      (await Deno.stat(directory + "/.yinz-agent-prompts")).mode! & 0o777,
+      0o700,
+    );
+    assert(
+      first !==
+        await publishPromptArtifact(directory, "submission-b", prompt, digest),
+    );
+    const other = "another assignment";
+    assert(
+      first !== await publishPromptArtifact(
+        directory,
+        "submission-a",
+        other,
+        await promptDigest(other),
+      ),
+    );
+    await rejects(
+      () => publishPromptArtifact(directory, "submission-a", other, digest),
+      "digest does not match",
+    );
+    await Deno.chmod(first, 0o600);
+    await Deno.writeTextFile(first, "tampered");
+    await Deno.chmod(first, 0o400);
+    await rejects(
+      () => publishPromptArtifact(directory, "submission-a", prompt, digest),
+      "collision or tampering",
+    );
+    equal(await Deno.readTextFile(first), "tampered");
+    const entries = Array.fromAsync(
+      Deno.readDir(directory + "/.yinz-agent-prompts"),
+    );
+    assert(
+      !(await entries).some((entry) => entry.name.startsWith(".publishing-")),
+    );
+  });
+});
+
+Deno.test("artifact publication refuses symlinks and unsafe permissions without repairing existing paths", async () => {
+  await withArtifacts(async (directory) => {
+    const prompt = "assignment";
+    const digest = await promptDigest(prompt);
+    const path = await publishPromptArtifact(
+      directory,
+      "submission-a",
+      prompt,
+      digest,
+    );
+    await Deno.chmod(path, 0o600);
+    await rejects(
+      () => publishPromptArtifact(directory, "submission-a", prompt, digest),
+      "private read-only regular file",
+    );
+    await Deno.remove(path);
+    const outside = directory + "/outside";
+    await Deno.writeTextFile(outside, prompt, { mode: 0o400 });
+    await Deno.symlink(outside, path);
+    await rejects(
+      () => publishPromptArtifact(directory, "submission-a", prompt, digest),
+      "private read-only regular file",
+    );
+    const root = directory + "/.yinz-agent-prompts";
+    await Deno.remove(root, { recursive: true });
+    await Deno.mkdir(root, { mode: 0o755 });
+    await rejects(
+      () => publishPromptArtifact(directory, "submission-a", prompt, digest),
+      "directory must be private",
+    );
+    await Deno.remove(root);
+    const other = directory + "/other";
+    await Deno.mkdir(other, { mode: 0o700 });
+    await Deno.symlink(other, root);
+    await rejects(
+      () => publishPromptArtifact(directory, "submission-a", prompt, digest),
+      "directory must be private",
+    );
+  });
+});
+
+Deno.test("publication failure cannot expose a submission intent or deliver a prompt", async () => {
+  await withArtifacts(async (directory) => {
+    const h = artifactHarness(directory, [spawned, ready()]);
+    const prompt = "x".repeat(1048577);
+    const path = await publishPromptArtifact(
+      directory,
+      "submission-1",
+      prompt,
+      await promptDigest(prompt),
+    );
+    await Deno.chmod(path, 0o600);
+    await Deno.writeTextFile(path, "collision");
+    await Deno.chmod(path, 0o400);
+    await rejects(
+      () => runAgent({ prompt }, h.context, h.dependencies),
+      "collision or tampering",
+    );
+    assert(h.writes.every((write) => !write.value.submissionId));
+    equal(h.records.get("state")?.phase, "spawned");
+    assert(!h.calls.some((call) => call.args.includes("prompt")));
+    equal(await Deno.readTextFile(path), "collision");
+  });
+});
+
+Deno.test("lost oversized delivery acknowledgement resumes only the original submission even if the artifact is removed", async () => {
+  await withArtifacts(async (directory) => {
+    const prompt = "x".repeat(1048577);
+    const h = artifactHarness(directory, [
+      spawned,
+      ready(),
+      new Error("lost acknowledgement"),
+    ]);
+    await rejects(
+      () => runAgent({ prompt }, h.context, h.dependencies),
+      "lost acknowledgement",
+    );
+    const saved = AgentStateSchema.parse(h.records.get("state"));
+    await Deno.remove(saved.promptArtifact!.path);
+    h.dependencies.publishPromptArtifact = () => {
+      throw new Error("must not republish");
+    };
+    h.replies.push({ outcome: "unknown", submission_id: saved.submissionId });
+    await rejects(() => resumeAgent(h.context, h.dependencies), "unknown");
+    h.replies.push(completed());
+    await resumeAgent(h.context, h.dependencies);
+    equal(h.calls.filter((call) => call.args.includes("prompt")).length, 1);
+    equal(
+      h.calls.at(-1)!.args[h.calls.at(-1)!.args.indexOf("--submission") + 1],
+      saved.submissionId,
+    );
+    equal(h.records.get("state")?.promptDigest, saved.promptDigest);
+    equal(h.records.get("state")?.prompt, prompt);
+  });
+});
+
+Deno.test("oversized continuation artifacts use the actual turn digest and retain the original contract and history", async () => {
+  await withArtifacts(async (directory) => {
+    const h = artifactHarness(directory, [spawned, ready(), completed()]);
+    await runAgent(
+      { prompt: "Original assignment" },
+      h.context,
+      h.dependencies,
+    );
+    const original = structuredClone(h.records.get("state"));
+    const args = {
+      id: "a6da10b0-c980-4b82-b920-000000000001",
+      prompt: "é".repeat(524289),
+    };
+    h.dependencies.id = () => "submission-2";
+    h.replies.push(ready(), new Error("lost continuation acknowledgement"));
+    await rejects(
+      () => continueAgent(args, h.context, h.dependencies),
+      "lost continuation acknowledgement",
+    );
+    const saved = AgentStateSchema.parse(h.records.get("state"));
+    equal(saved.prompt, original!.prompt);
+    equal(saved.promptDigest, original!.promptDigest);
+    equal(saved.continuation?.prompt, args.prompt);
+    equal(h.records.get(`turn-${args.id}`), original);
+    equal(saved.promptArtifact?.submissionId, "submission-2");
+    equal(saved.promptArtifact?.promptDigest, await promptDigest(args.prompt));
+    equal(await Deno.readTextFile(saved.promptArtifact!.path), args.prompt);
+    assert(h.calls.at(-1)!.stdin!.includes(saved.promptArtifact!.promptDigest));
+    h.replies.push(completed({ submission_id: "submission-2" }));
+    await continueAgent(args, h.context, h.dependencies);
+    equal(h.calls.filter((call) => call.args.includes("prompt")).length, 2);
+    equal(h.records.get("result")?.promptDigest, original!.promptDigest);
+  });
+});
+
+Deno.test("legacy oversized in-flight submissions retain their saved contract and are never retrofitted or resent", async () => {
+  const h = harness([{
+    outcome: "unknown",
+    submission_id: "original-submission",
+  }]);
+  const prompt = "Original history\n".repeat(70000);
+  const saved = AgentStateSchema.parse({
+    config: h.context.globalArgs,
+    prompt,
+    promptDigest: await promptDigest(prompt),
+    phase: "submitting",
+    paneId: "terminal_7",
+    conversationId: "conversation-1",
+    submissionId: "original-submission",
+    createdAt: h.dependencies.now(),
+    updatedAt: h.dependencies.now(),
+  });
+  h.records.set("state", structuredClone(saved));
+  await rejects(() => resumeAgent(h.context, h.dependencies), "unknown");
+  const observed = AgentStateSchema.parse(h.records.get("state"));
+  equal(observed.prompt, saved.prompt);
+  equal(observed.promptDigest, saved.promptDigest);
+  equal(observed.submissionId, saved.submissionId);
+  equal(observed.promptArtifact, undefined);
+  equal(h.calls.length, 1);
+  assert(h.calls[0].args.includes("wait"));
+  assert(h.calls[0].args.includes("original-submission"));
+});
 
 Deno.test("public method schemas accept Swamp's merged global arguments without passing them to the operation", () => {
   equal(

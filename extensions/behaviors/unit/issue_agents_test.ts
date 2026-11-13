@@ -337,6 +337,11 @@ function harness(
           },
         };
         const dependencies = {
+          publishPromptArtifact: () => {
+            throw new Error(
+              "Unexpected artifact publication in lifecycle fixture",
+            );
+          },
           run: async (args: string[], stdin?: string, signal?: AbortSignal) => {
             if (args[3] === "launch-support") {
               return {

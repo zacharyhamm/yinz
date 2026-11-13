@@ -1,5 +1,5 @@
 import { z } from "npm:zod@4.6.7";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { AgentKindSchema } from "./worker_selection.ts";
 
 const Text = z.string().trim().min(1);
@@ -148,6 +148,11 @@ export const AgentStateSchema = z.object({
   tabId: z.number().int().optional(),
   conversationId: Text.optional(),
   submissionId: Text.optional(),
+  promptArtifact: z.object({
+    submissionId: Text,
+    promptDigest: z.string().regex(/^[a-f0-9]{64}$/),
+    path: Text.refine(isAbsolute),
+  }).strict().optional(),
   outcome: Text.optional(),
   message: z.string().optional(),
   turnId: Text.optional(),
@@ -271,6 +276,9 @@ export type YinzRunner = (
 ) => Promise<CommandResult>;
 export interface Dependencies {
   run: YinzRunner;
+  // The default runner spawns local workers. Remote runners must reject artifact
+  // delivery or provide a publisher whose returned path those workers can read.
+  publishPromptArtifact: typeof publishPromptArtifact;
   realPath: (path: string) => Promise<string>;
   id: () => string;
   now: () => string;
@@ -341,6 +349,7 @@ export async function yinzCommand(
 }
 export const defaultDependencies: Dependencies = {
   run: yinzCommand,
+  publishPromptArtifact,
   realPath: (path) => Deno.realPath(path),
   id: () => crypto.randomUUID(),
   now: () => new Date().toISOString(),
@@ -355,6 +364,128 @@ export async function promptDigest(prompt: string): Promise<string> {
     new Uint8Array(hash),
     (byte) => byte.toString(16).padStart(2, "0"),
   ).join("");
+}
+
+const MAX_PROMPT_BYTES = 1024 * 1024;
+
+/** Publish exact bytes without ever exposing a partial file or replacing history. */
+export async function publishPromptArtifact(
+  cwd: string,
+  submissionId: string,
+  prompt: string,
+  digest: string,
+): Promise<string> {
+  if (await promptDigest(prompt) !== digest) {
+    throw new Error("Prompt artifact digest does not match the saved prompt");
+  }
+  // cwd is the canonical worker worktree, never a shared target or Swamp store.
+  const directory = join(cwd, ".yinz-agent-prompts");
+  try {
+    await Deno.mkdir(directory, { mode: 0o700 });
+  } catch (error) {
+    if (!(error instanceof Deno.errors.AlreadyExists)) throw error;
+  }
+  const privateDirectory = await Deno.lstat(directory);
+  if (
+    !privateDirectory.isDirectory || privateDirectory.uid === null ||
+    privateDirectory.mode === null ||
+    (privateDirectory.mode & 0o777) !== 0o700
+  ) {
+    throw new Error(
+      "Prompt artifact directory must be private and owned locally",
+    );
+  }
+  const path = join(
+    directory,
+    `${await promptDigest(submissionId)}-${digest}.txt`,
+  );
+  const bytes = new TextEncoder().encode(prompt);
+  async function verify() {
+    const info = await Deno.lstat(path);
+    if (
+      !info.isFile || info.uid !== privateDirectory.uid || info.mode === null ||
+      (info.mode & 0o777) !== 0o400
+    ) {
+      throw new Error(
+        "Prompt artifact must be a private read-only regular file",
+      );
+    }
+    const existing = await Deno.readFile(path);
+    if (
+      existing.length !== bytes.length ||
+      !existing.every((byte, index) => byte === bytes[index])
+    ) {
+      throw new Error(
+        "Prompt artifact collision or tampering; refusing delivery",
+      );
+    }
+  }
+  const temporary = join(directory, `.publishing-${crypto.randomUUID()}`);
+  const file = await Deno.open(temporary, {
+    write: true,
+    createNew: true,
+    mode: 0o600,
+  });
+  try {
+    try {
+      // A newly created file is owned by this process's effective user. Compare
+      // that owner before writing any prompt bytes (no extra sys permission).
+      if ((await file.stat()).uid !== privateDirectory.uid) {
+        throw new Error("Prompt artifact directory must be owned locally");
+      }
+      let offset = 0;
+      while (offset < bytes.length) {
+        offset += await file.write(bytes.subarray(offset));
+      }
+      await Deno.chmod(temporary, 0o400);
+      await file.sync();
+    } finally {
+      file.close();
+    }
+    try {
+      // Hard-link publication is atomic and fails if the final name exists.
+      await Deno.link(temporary, path);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.AlreadyExists)) throw error;
+    }
+    const publishedDirectory = await Deno.open(directory, { read: true });
+    try {
+      await publishedDirectory.sync();
+    } finally {
+      publishedDirectory.close();
+    }
+    await verify();
+    return path;
+  } finally {
+    await Deno.remove(temporary);
+  }
+}
+
+async function deliveryPrompt(
+  state: AgentState,
+  submissionId: string,
+  dependencies: Dependencies,
+): Promise<string> {
+  const prompt = state.continuation?.prompt ?? state.prompt;
+  if (new TextEncoder().encode(prompt).length <= MAX_PROMPT_BYTES) {
+    return prompt;
+  }
+  const digest = await promptDigest(prompt);
+  if (!state.continuation && digest !== state.promptDigest) {
+    throw new Error("Saved prompt does not match its original digest");
+  }
+  const path = await dependencies.publishPromptArtifact(
+    state.config.cwd,
+    submissionId,
+    prompt,
+    digest,
+  );
+  state.promptArtifact = { submissionId, promptDigest: digest, path };
+  return `Read the complete assignment from the local UTF-8 file ${
+    JSON.stringify(path)
+  }. Before following it, verify the SHA-256 of its exact bytes is ${digest}. If the file is unavailable or the digest differs, stop and report the failure. Read all bytes without truncation, then follow the complete assignment, preserving all requirements and evidence correlation. This is submission ${
+    JSON.stringify(submissionId)
+  }; the file is its exact saved prompt. Do not edit the artifact.`;
 }
 
 export function hooksReady(output: string): boolean {
@@ -678,7 +809,11 @@ async function submit(
     agent.cwd && await dependencies.realPath(agent.cwd) !== state.config.cwd
   ) throw new Error("Agent is reporting a different working directory");
   state.conversationId = conversation;
-  state.submissionId = dependencies.id();
+  const submissionId = dependencies.id();
+  // Publication must finish before the new submission intent is observable. A
+  // failure leaves this task spawned and safe to retry; no prompt has been sent.
+  const prompt = await deliveryPrompt(state, submissionId, dependencies);
+  state.submissionId = submissionId;
   state.phase = "submitting";
   // The saved ID survives a lost CLI response; retries retrieve it instead of sending again.
   await save(context, state, dependencies);
@@ -698,7 +833,7 @@ async function submit(
       ...(conversation ? ["--conversation", conversation] : []),
     ]),
     dependencies,
-    state.continuation?.prompt ?? state.prompt,
+    prompt,
   );
   state.phase = "waiting";
   await save(context, state, dependencies);
@@ -1169,6 +1304,7 @@ export async function continueAgent(
     state.continuation = { ...args, previousSubmissionId: state.submissionId! };
     state.phase = "spawned";
     delete state.submissionId;
+    delete state.promptArtifact;
     delete state.message;
     delete state.turnId;
     delete state.retainedSubmission;
