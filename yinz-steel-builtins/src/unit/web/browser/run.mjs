@@ -1395,9 +1395,14 @@ async function detailSafety(open, width, scheme) {
   fx.fail.set('/api/agent/prompt', { mode: 'abort', times: 1 });
   await page.click('#composer-send');
   await textUntil(page, '#submission-unknown', 'Outcome unknown', 'saved submission feedback');
-  fx.fail.set('/api/history', { mode: 'abort', times: 1 });
+  // An in-flight poll can consume a one-shot failure before fixturePoll refreshes.
+  // Keep the outage active through inspection, then explicitly recover below.
+  fx.fail.set('/api/history', { mode: 'abort', times: Infinity });
   await fixturePoll(page, fx);
   await textUntil(page, '#banner-offline', 'Offline', 'disclosed offline feedback');
+  await fixturePoll(page, fx);
+  await textUntil(page, '#banner-offline', 'Offline', 'disclosed offline feedback survives another poll');
+  await textUntil(page, '#submission-unknown', 'Outcome unknown', 'saved submission survives offline polls');
   const reachable = async (selectors) => {
     check((await detailGeometry(page)).timeline > 0, 'safety feedback removed the timeline');
     for (const sel of selectors) {
@@ -1419,7 +1424,14 @@ async function detailSafety(open, width, scheme) {
   await touchTargets(page, 'safety feedback');
   await noClippedControls(page, 'safety feedback');
   await fixturePoll(page, fx);
+  await textUntil(page, '#banner-offline', 'Offline', 'offline feedback remains after safety inspection');
+  await textUntil(page, '#submission-unknown', 'Outcome unknown', 'saved submission remains after safety inspection');
   check(fx.count('/api/agent/prompt') === 1, 'disclosure/safety layout replayed a prompt');
+  fx.fail.delete('/api/history');
+  await fixturePoll(page, fx);
+  await until('disclosed offline recovery', async () => !(await exists(page, '#banner-offline')));
+  await textUntil(page, '#submission-unknown', 'Outcome unknown', 'saved submission survives history recovery');
+  check(fx.count('/api/agent/prompt') === 1, 'history recovery replayed a prompt');
   await page.locator('#submission-retry').scrollIntoViewIfNeeded();
   await page.click('#submission-retry');
   await until('same-id retry resolved', async () => !(await exists(page, '#submission-unknown')));
