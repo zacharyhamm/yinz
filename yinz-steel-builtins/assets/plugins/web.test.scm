@@ -136,8 +136,8 @@
       (define html (hash-ref enriched "html"))
       (assert-equal (hash-remove enriched "html") input "native fields must remain intact")
       (if expected
-          (assert (w-contains? html (string-append "<p class=\"agent-reply\">" expected "</p>")) html)
-          (assert (not (w-contains? html "agent-reply")) html)))
+        (assert (w-contains? html (string-append "<p class=\"agent-reply\">" expected "</p>")) html)
+        (assert (not (w-contains? html "agent-reply")) html)))
     (for-each (lambda (n)
         (define text (make-string n #\a))
         (check-preview (hash-insert row "last_reply" (hash "text" text "truncated" #f))
