@@ -755,27 +755,42 @@ async function reachableTarget(page, selector, scroller) {
     const r = el.getBoundingClientRect(), b = region.getBoundingClientRect();
     region.scrollTop += (r.top + r.bottom - b.top - b.bottom) / 2;
   }, { selector, scroller });
-  await nextFrame(page);
-  const g = await page.locator(selector).evaluate((el) => {
-    const r = el.getBoundingClientRect();
-    let top = 0, bottom = innerHeight, left = 0, right = innerWidth;
-    for (let p = el.parentElement; p; p = p.parentElement) {
-      const cs = getComputedStyle(p), b = p.getBoundingClientRect();
-      if (['auto', 'scroll', 'hidden', 'clip'].includes(cs.overflowY)) {
-        top = Math.max(top, b.top + p.clientTop); bottom = Math.min(bottom, b.top + p.clientTop + p.clientHeight);
+  let g;
+  await until(`${selector} fully contained and hittable`, async () => {
+    g = await page.locator(selector).evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      let top = 0, bottom = innerHeight, left = 0, right = innerWidth;
+      for (let p = el.parentElement; p; p = p.parentElement) {
+        const cs = getComputedStyle(p), b = p.getBoundingClientRect();
+        if (['auto', 'scroll', 'hidden', 'clip'].includes(cs.overflowY)) {
+          top = Math.max(top, b.top + p.clientTop); bottom = Math.min(bottom, b.top + p.clientTop + p.clientHeight);
+        }
+        if (['auto', 'scroll', 'hidden', 'clip'].includes(cs.overflowX)) {
+          left = Math.max(left, b.left + p.clientLeft); right = Math.min(right, b.left + p.clientLeft + p.clientWidth);
+        }
       }
-      if (['auto', 'scroll', 'hidden', 'clip'].includes(cs.overflowX)) {
-        left = Math.max(left, b.left + p.clientLeft); right = Math.min(right, b.left + p.clientLeft + p.clientWidth);
-      }
-    }
-    const hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
-    return { top: r.top, bottom: r.bottom, width: r.width, height: r.height, clipTop: top, clipBottom: bottom,
-      contained: r.top >= top - 1 && r.bottom <= bottom + 1 && r.left >= left - 1 && r.right <= right + 1,
-      hit: el === hit || el.contains(hit), pageTop: scrollY, documentHeight: document.documentElement.scrollHeight, viewport: innerHeight };
+      const hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+      return { top: r.top, bottom: r.bottom, width: r.width, height: r.height, clipTop: top, clipBottom: bottom,
+        contained: r.top >= top - 1 && r.bottom <= bottom + 1 && r.left >= left - 1 && r.right <= right + 1,
+        hit: el === hit || el.contains(hit), pageTop: scrollY, documentHeight: document.documentElement.scrollHeight, viewport: innerHeight };
+    });
+    check(g.width >= 44 && g.height >= 44 && g.contained && g.hit && g.pageTop === 0 && g.documentHeight <= g.viewport + 1,
+      `${selector}: target clipped or covered: ${JSON.stringify(g)}`);
+    return true;
   });
-  check(g.width >= 44 && g.height >= 44 && g.contained && g.hit && g.pageTop === 0 && g.documentHeight <= g.viewport + 1,
-    `${selector}: target clipped or covered: ${JSON.stringify(g)}`);
   return g;
+}
+
+// Firefox can continue native keyboard scrolling after two animation frames,
+// even with reduced motion. A scrollTop assignment during that animation can
+// be overwritten by its next step. Finish the user's scroll before positioning
+// another control or moving focus into a different scroll region.
+async function keyboardScrollRegion(page, selector, key) {
+  await page.focus(selector);
+  await page.keyboard.press(key);
+  await until(`${selector} ${key} scroll complete`, () => page.locator(selector).evaluate((el, key) => (
+    key === 'Home' ? el.scrollTop <= 1 : el.scrollHeight - el.clientHeight - el.scrollTop <= 1
+  ), key));
 }
 
 async function waitPolls(page, fx, n = 2) {
@@ -1269,12 +1284,10 @@ async function reducedScreen(page, fx, width, fullHeight, scheme) {
   for (const selector of ['#composer-input', '#composer-send', '#composer-prompts']) {
     await reachableTarget(page, selector, '.composer-dock');
   }
-  await page.focus('.screen-keys');
   check(await page.getAttribute('.screen-keys', 'aria-label') === 'Screen quick keys', 'Screen keys lack a labelled keyboard scroll region');
-  await page.keyboard.press('End');
-  await page.focus('.screen-feedback');
+  await keyboardScrollRegion(page, '.screen-keys', 'End');
   check(await page.getAttribute('.screen-feedback', 'aria-label') === 'Screen status and feedback', 'Screen feedback lacks a labelled keyboard scroll region');
-  await page.keyboard.press('Home');
+  await keyboardScrollRegion(page, '.screen-feedback', 'Home');
   await fixturePoll(page, fx, '/api/agent/screen');
   check(await page.evaluate(() => document.activeElement.matches('.screen-feedback')), 'Screen poll lost keyboard focus');
   await assertScreenPinned(page, 'reduced pinned Screen poll');
@@ -1312,14 +1325,18 @@ async function reducedScreen(page, fx, width, fullHeight, scheme) {
   await until('key-delivery toast dismissed before inspecting Screen', () => page.evaluate(() => !document.getElementById('toast').classList.contains('toast-visible')));
   // Keep the newest question visible even when Screen feedback and recovery compete.
   await page.evaluate(() => { const el = document.getElementById('screen-scroll'); el.scrollTop = el.scrollHeight; });
-  fx.fail.set('/api/agent/screen', { mode: 'reply', times: 1, status: 200,
+  // A scheduled poll can consume a one-shot failure while fixturePoll is waiting
+  // for idle; its foreground refresh would then replace the warning with success.
+  // Model a warning that persists through polls until explicit recovery below.
+  fx.fail.set('/api/agent/screen', { mode: 'reply', times: Infinity, status: 200,
     body: { response: { outcome: 'error', message: 'Screen fixture warning. Refresh to recover.' }, html: `<pre class="screen">${esc(screenOutput(fx.screenTick))}</pre>` } });
   await fixturePoll(page, fx, '/api/agent/screen');
   await textUntil(page, '#banner-screen', 'Screen fixture warning', 'Screen warning');
+  await fixturePoll(page, fx, '/api/agent/screen');
+  await textUntil(page, '#banner-screen', 'Screen fixture warning', 'Screen warning survives another poll');
   await assertScreenPinned(page, 'reduced Screen warning');
   await reachableTarget(page, '#screen-refresh', '.screen-feedback');
-  await page.focus('.screen-feedback');
-  await page.keyboard.press('End');
+  await keyboardScrollRegion(page, '.screen-feedback', 'End');
   await until('Screen warning readable after keyboard scroll', () => page.locator('#banner-screen').evaluate((el) => {
     const text = el.querySelector('.banner-text'), range = document.createRange(); range.selectNodeContents(text);
     const last = [...range.getClientRects()].at(-1), p = el.closest('.screen-feedback').getBoundingClientRect();
@@ -1327,6 +1344,7 @@ async function reducedScreen(page, fx, width, fullHeight, scheme) {
   }));
   await detailContrast(page, 'reduced Screen warning');
   await reachableTarget(page, '#screen-refresh', '.screen-feedback');
+  fx.fail.delete('/api/agent/screen');
   await page.click('#screen-refresh');
   await until('Screen warning recovered', async () => !(await exists(page, '#banner-screen')));
   fx.header = 'custom';
@@ -1336,7 +1354,9 @@ async function reducedScreen(page, fx, width, fullHeight, scheme) {
   await reachableTarget(page, '#composer-send', '.composer-dock');
   await page.click('#composer-send');
   await textUntil(page, '#submission-unknown', 'Outcome unknown', 'Screen saved submission');
-  fx.fail.set('/api/history', { mode: 'abort', times: 1 });
+  // Keep recovery controls present while their regions are inspected, regardless
+  // of automatic backoff retries or foreground refreshes.
+  fx.fail.set('/api/history', { mode: 'abort', times: Infinity });
   await fixturePoll(page, fx);
   await textUntil(page, '#banner-offline', 'Offline', 'Screen offline feedback');
   await assertScreenPinned(page, 'reduced Screen offline and unknown submission');
@@ -1348,6 +1368,7 @@ async function reducedScreen(page, fx, width, fullHeight, scheme) {
   await detailContrast(page, 'reduced Screen recovery');
   fs.writeFileSync(path.join(RESULTS_DIR, `screen-recovery-${width}-${scheme}.json`), JSON.stringify(await screenGeometry(page), null, 2));
   await page.screenshot({ path: path.join(RESULTS_DIR, `screen-recovery-${width}-${scheme}.png`), mask: [page.locator('.composer-dock')] });
+  fx.fail.delete('/api/history');
   await page.click('#banner-offline .link-button');
   await until('Screen offline recovery', async () => !(await exists(page, '#banner-offline')));
   await reachableTarget(page, '#submission-retry', '.composer-dock');

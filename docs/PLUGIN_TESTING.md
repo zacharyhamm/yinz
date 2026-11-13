@@ -398,7 +398,10 @@ output scrollport; Screen regions must stay above the composer. Every quick key,
 Refresh and recovery control must fit inside its visible ancestor bounds and
 pass a center hit test after scrolling only its intended region. Pointer and
 keyboard key delivery, Screen warnings, offline/unknown-submission recovery,
-same-id retry, reading positions and draft preservation are checked. Masked
+same-id retry, reading positions and draft preservation are checked. Warning and
+offline fixtures persist through polling until explicit recovery; native Home/End
+scrolling must reach its boundary before another control is positioned. Target
+checks wait for full containment and hit testing, rather than a frame count. Masked
 reduced-height Screen screenshots and geometry/hit-test JSON are saved with the
 other browser results. These are Firefox emulation checks, not
 physical touch, virtual-keyboard opening, Tailscale, iOS Safari or safe-area
