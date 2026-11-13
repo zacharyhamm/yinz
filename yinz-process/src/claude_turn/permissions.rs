@@ -143,14 +143,15 @@ pub(super) fn run(observation: &Observation) -> Result<()> {
         return Ok(());
     };
     let process = observation.process.context("permission provider missing")?;
+    // Computed once: each derivation rereads the boot time from `/proc/stat`.
+    let since = since_ms(process.1).context("permission provider start time unavailable")?;
     let mut system = System::new();
     let start = Instant::now();
     let mut watch = Watch::default();
     while alive(&mut system, observation).is_ok() {
-        let sample = observation
-            .claude_status
-            .as_ref()
-            .and_then(|reader| reader.permission(process, &observation.hook.session_id));
+        let sample = observation.claude_status.as_ref().and_then(|reader| {
+            reader.permission_since(process, since, &observation.hook.session_id)
+        });
         if let Some(sample) = watch.next(sample, start.elapsed()) {
             let mut hook = observation.hook.clone();
             hook.claude_permission = Some(sample.clone());

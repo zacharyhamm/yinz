@@ -56,15 +56,20 @@ impl Detector {
                 ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
             );
         }
-        let process = pid.and_then(|pid| system.process(sysinfo::Pid::from_u32(pid)));
         // sysinfo's start time moves with each System's boot time; the token is exact.
-        let identity = process.and_then(|p| {
-            Some(Identity {
-                pid: p.pid().as_u32(),
-                started: start_token(p)?,
-                argv: p.cmd().to_vec(),
+        // A process whose token cannot be read is treated as absent, so it neither consumes
+        // the retained palette nor starts a discovery that can never match its identity.
+        let (process, identity) = pid
+            .and_then(|pid| system.process(sysinfo::Pid::from_u32(pid)))
+            .and_then(|p| {
+                let identity = Identity {
+                    pid: p.pid().as_u32(),
+                    started: start_token(p)?,
+                    argv: p.cmd().to_vec(),
+                };
+                Some((p, identity))
             })
-        });
+            .unzip();
         if self.identity != identity {
             self.identity = identity;
             self.state = None;

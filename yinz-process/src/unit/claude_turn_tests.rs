@@ -2085,13 +2085,16 @@ fn restored_claude_poll_loads_only_the_observed_process() {
     // observer polls for up to a day, so its System must load only that pid.
     // This inspects the System itself, which concurrent tests cannot disturb.
     let pid = sysinfo::Pid::from_u32(std::process::id());
-    let (mut system, _reader, started) = restored_observation(pid.as_u32())
+    let (mut system, _reader) = restored_observation(pid.as_u32())
         .expect("the test process has HOME, so its registry resolves");
     assert_eq!(
         system.processes().keys().copied().collect::<Vec<_>>(),
         [pid]
     );
-    // The poll compares later refreshes of this System with this start token.
+    // The poll compares later refreshes of this System with the discovery scan's token.
+    let mut discovery = System::new();
+    discovery.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+    let started = start_token(discovery.process(pid).unwrap()).unwrap();
     system.refresh_processes_specifics(
         sysinfo::ProcessesToUpdate::Some(&[pid]),
         true,

@@ -32,7 +32,7 @@ pub fn observe_restored(
     let Some((pid, discovered)) = restored_claude_process(root) else {
         return;
     };
-    let Some((mut system, reader, started)) = restored_observation(pid) else {
+    let Some((mut system, reader)) = restored_observation(pid) else {
         return;
     };
     // The pid could have been reused between the two loads, possibly by another Claude.
@@ -42,7 +42,12 @@ pub fn observe_restored(
     {
         return;
     }
-    let identity = (pid, started);
+    let identity = (pid, discovered);
+    // Without a wall-clock start no registry record can be attributed to this incarnation,
+    // including one that shows another conversation. Compute it once rather than per poll.
+    let Some(since) = since_ms(discovered) else {
+        return;
+    };
     let deadline = Instant::now() + Duration::from_secs(24 * 60 * 60);
     while Instant::now() < deadline {
         let pid = sysinfo::Pid::from_u32(identity.0);
@@ -57,19 +62,19 @@ pub fn observe_restored(
         {
             return;
         }
-        if since_ms(identity.1)
-            .and_then(|since| reader.process_record(identity.0, since))
+        if reader
+            .process_record(identity.0, since)
             .is_some_and(|record| record["sessionId"].as_str() != Some(conversation))
         {
             return;
         }
-        let permission = reader.permission(identity, conversation);
+        let permission = reader.permission_since(identity, since, conversation);
         let state = if permission.is_some_and(|sample| {
             sample.status == yinz_types::agent::claude_permissions::Status::Active
         }) {
             Some(yinz_types::agent::AgentState::Waiting)
         } else {
-            restored_state(reader.current(identity, conversation).as_deref())
+            restored_state(reader.current(identity.0, since, conversation).as_deref())
         };
         if !publish(state) {
             return;
@@ -78,11 +83,11 @@ pub fn observe_restored(
     }
 }
 
-/// Load only the observed process for the restored poll, with its start token.
+/// Load only the observed process for the restored poll.
 ///
 /// sysinfo keeps `/proc/<pid>/stat` open for every process it has loaded, so
 /// the day-long poll must never keep the host-wide discovery scan.
-fn restored_observation(pid: u32) -> Option<(System, ClaudeStatusObservation, u64)> {
+fn restored_observation(pid: u32) -> Option<(System, ClaudeStatusObservation)> {
     let mut system = System::new();
     let pid = sysinfo::Pid::from_u32(pid);
     system.refresh_processes_specifics(
@@ -93,10 +98,8 @@ fn restored_observation(pid: u32) -> Option<(System, ClaudeStatusObservation, u6
             .with_cmd(UpdateKind::Always)
             .with_environ(UpdateKind::Always),
     );
-    let process = system.process(pid)?;
-    let started = start_token(process)?;
-    let reader = ClaudeStatusObservation::for_process(process)?;
-    Some((system, reader, started))
+    let reader = ClaudeStatusObservation::for_process(system.process(pid)?)?;
+    Some((system, reader))
 }
 
 /// Find the single Claude process under `root`, with its start token.
@@ -334,11 +337,12 @@ impl ClaudeStatusObservation {
             .is_some_and(|status| matches!(status.as_str(), "idle" | "shell"))
     }
 
-    /// The current status, from any record this process instance wrote. The record is
-    /// rewritten only when its status changes, so background agents that outlive a turn keep
-    /// the `busy` written when it started, before that turn's prompt.
-    fn current(&self, (pid, started): (u32, u64), session: &str) -> Option<String> {
-        self.status(pid, session, since_ms(started)?)
+    /// The current status, from any record this process instance wrote since `since_ms`
+    /// (see [`since_ms`]). The record is rewritten only when its status changes, so background
+    /// agents that outlive a turn keep the `busy` written when it started, before that turn's
+    /// prompt. Pollers compute `since_ms` once instead of rereading the boot time each tick.
+    fn current(&self, pid: u32, since_ms: u64, session: &str) -> Option<String> {
+        self.status(pid, session, since_ms)
     }
 }
 
@@ -976,12 +980,13 @@ const BACKGROUND_SETTLE: Duration = Duration::from_secs(1);
 
 /// Whether work outlives a turn the transcript or registry has already ended.
 fn settle_background(observation: &Observation) -> Option<bool> {
-    let process = observation.process?;
+    let (pid, started) = observation.process?;
     let status = observation.claude_status.as_ref()?;
+    let since = since_ms(started)?;
     let deadline = Instant::now() + BACKGROUND_SETTLE;
     loop {
         let settled = Instant::now() >= deadline;
-        match status.current(process, &observation.hook.session_id) {
+        match status.current(pid, since, &observation.hook.session_id) {
             Some(current) if current != "busy" || settled => return working(&current),
             Some(_) => {},
             // A missing registry is no signal, but an existing record can be read mid-rewrite;
@@ -1004,14 +1009,16 @@ fn watch_background(
     mut report: impl FnMut(&HookEvent) -> Result<()>,
 ) -> Result<()> {
     let mut idle = false;
-    if let (Some(process), Some(status)) = (observation.process, &observation.claude_status) {
+    if let (Some((pid, started)), Some(status)) = (observation.process, &observation.claude_status)
+        && let Some(since) = since_ms(started)
+    {
         let mut system = System::new();
         let deadline =
             Instant::now() + Duration::from_millis(yinz_types::agent::control::MAX_TIMEOUT_MS);
         let mut unknown_since = None;
         while Instant::now() < deadline && alive(&mut system, observation).is_ok() {
             match status
-                .current(process, &observation.hook.session_id)
+                .current(pid, since, &observation.hook.session_id)
                 .as_deref()
                 .and_then(working)
             {

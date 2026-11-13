@@ -376,13 +376,6 @@ fn retry_after(value: &str, now: SystemTime) -> Option<Duration> {
 }
 
 fn fetch_claude(token: &str) -> Result<(u16, Vec<u8>, Option<Duration>)> {
-    // Plugins only see a generic failure; keep the transport cause diagnosable.
-    // These errors never contain the token, headers or a response body.
-    // Every step's context names the Claude usage check, so the chain needs no prefix.
-    send_claude(token).inspect_err(|error| log::warn!("{error:#}"))
-}
-
-fn send_claude(token: &str) -> Result<(u16, Vec<u8>, Option<Duration>)> {
     let client = HttpClient::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
@@ -437,12 +430,16 @@ fn claude_with(
     }
     let (status, body) = match fetch(&credentials.access_token) {
         Ok(response) => response,
-        Err(_) => {
+        Err(error) => {
+            // Plugins only see a generic failure; keep the transport cause diagnosable.
+            // These errors never contain the token, headers or a response body.
+            // Every step's context names the Claude usage check, so the chain needs no prefix.
+            log::warn!("{error:#}");
             return failure(
                 "claude",
                 ProviderUsageStatus::Error,
                 "Could not fetch Claude account limits.",
-            )
+            );
         },
     };
     // Plugins see one message for several statuses; the code alone stays
