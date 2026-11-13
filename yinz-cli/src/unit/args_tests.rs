@@ -536,16 +536,21 @@ fn set_password_modes_and_no_secret_arguments() {
 }
 
 #[test]
-fn reconfigure_help_explains_saved_ligatures_and_atomic_refusal() {
+fn reconfigure_help_explains_saved_native_settings_and_atomic_refusal() {
     let error = try_parse_cli(["yinz", "action", "reconfigure", "--help"]).unwrap_err();
     assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
     let help = error.to_string();
     let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
     for guidance in [
+        "cell_width",
+        "line_height",
         "ligatures/font_ligatures",
         "requires --write",
-        "saved config edit",
+        "saved configuration/drop-in",
         "entire fragment",
+        "including sibling settings",
+        "Omissions and equivalent values remain valid runtime requests",
+        "native windows apply it through file reload",
         "write failures are errors",
     ] {
         assert!(help.contains(guidance), "missing {guidance}: {help}");

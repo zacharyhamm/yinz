@@ -683,7 +683,7 @@ fn cell_metrics_cluster_ink_differs_from_plain_heads_after_warm_updates() {
             };
             let plain = rendered(cache.glyph(FaceStyle::Regular, head, budget));
             let full_ink = ink(&cache, full, budget);
-            assert!(full_ink.chunks_exact(4).any(|p| p[3] != 0));
+            assert!(full_ink.as_chunks::<4>().0.iter().any(|p| p[3] != 0));
             assert_ne!(
                 full_ink,
                 ink(&cache, plain, budget),

@@ -9073,6 +9073,7 @@ Config {
         font_ligatures: None,
         system_fonts: None,
         line_height: None,
+        cell_width: None,
         padding: None,
         opacity: None,
         blur: None,
