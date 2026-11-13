@@ -28,33 +28,12 @@ pub fn observe_restored(
     conversation: &str,
     publish: impl Fn(Option<yinz_types::agent::AgentState>) -> bool,
 ) {
-    let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing()
-            .without_tasks()
-            .with_cmd(UpdateKind::Always),
-    );
-    let mut candidates = Vec::new();
-    for (pid, process) in system.processes() {
-        if !is_claude_process(process) {
-            continue;
-        }
-        let mut ancestor = Some(*pid);
-        for _ in 0..32 {
-            let Some(parent) = ancestor else { break };
-            if parent.as_u32() == root {
-                let identity = (pid.as_u32(), process.start_time());
-                candidates.push(identity);
-                break;
-            }
-            ancestor = system.process(parent).and_then(|p| p.parent());
-        }
-    }
-    let [identity] = candidates.as_slice() else {
+    let Some(identity) = restored_claude_process(root) else {
         return;
     };
+    // sysinfo keeps `/proc/<pid>/stat` open for every process it has loaded, so
+    // this day-long poll must never reuse the host-wide discovery scan.
+    let mut system = System::new();
     let pid = sysinfo::Pid::from_u32(identity.0);
     system.refresh_processes_specifics(
         ProcessesToUpdate::Some(&[pid]),
@@ -91,18 +70,52 @@ pub fn observe_restored(
         {
             return;
         }
-        let permission = reader.permission(*identity, conversation);
+        let permission = reader.permission(identity, conversation);
         let state = if permission.is_some_and(|sample| {
             sample.status == yinz_types::agent::claude_permissions::Status::Active
         }) {
             Some(yinz_types::agent::AgentState::Waiting)
         } else {
-            restored_state(reader.current(*identity, conversation).as_deref())
+            restored_state(reader.current(identity, conversation).as_deref())
         };
         if !publish(state) {
             return;
         }
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Find the single Claude process under `root` as `(pid, start time)`.
+///
+/// The host-wide scan holds an open file per process until it is dropped, so it
+/// stays local to discovery.
+fn restored_claude_process(root: u32) -> Option<(u32, u64)> {
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .without_tasks()
+            .with_cmd(UpdateKind::Always),
+    );
+    let mut candidates = Vec::new();
+    for (pid, process) in system.processes() {
+        if !is_claude_process(process) {
+            continue;
+        }
+        let mut ancestor = Some(*pid);
+        for _ in 0..32 {
+            let Some(parent) = ancestor else { break };
+            if parent.as_u32() == root {
+                candidates.push((pid.as_u32(), process.start_time()));
+                break;
+            }
+            ancestor = system.process(parent).and_then(|p| p.parent());
+        }
+    }
+    match candidates.as_slice() {
+        [identity] => Some(*identity),
+        _ => None,
     }
 }
 

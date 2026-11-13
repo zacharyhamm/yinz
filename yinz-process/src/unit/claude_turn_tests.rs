@@ -2058,3 +2058,20 @@ fn restored_claude_registry_uses_the_observed_process_environment() {
         assert_eq!(called.get(), source != "missing", "{source}");
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn restored_claude_discovery_releases_host_wide_process_files() {
+    // sysinfo holds `/proc/<pid>/stat` open for each loaded process. A restored
+    // observer polls for up to a day, so discovery must not keep these files.
+    let stat_files = || {
+        std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
+            .filter(|target| target.starts_with("/proc") && target.ends_with("stat"))
+            .count()
+    };
+    let before = stat_files();
+    assert_eq!(restored_claude_process(std::process::id()), None);
+    assert_eq!(stat_files(), before);
+}

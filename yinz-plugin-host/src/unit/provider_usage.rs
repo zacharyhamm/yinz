@@ -345,3 +345,11 @@ fn collector_panic_releases_pending_state_and_caches_sanitized_failure() {
         ProviderUsageStatus::Error
     );
 }
+
+#[test]
+fn transport_errors_keep_the_failure_cause_for_logs() {
+    let error = transport_error(isahc::error::ErrorKind::ConnectionFailed.into());
+    let message = format!("{error:#}");
+    assert!(message.starts_with("Claude usage request failed: "));
+    assert!(message.len() > "Claude usage request failed: ".len());
+}

@@ -376,6 +376,16 @@ fn retry_after(value: &str, now: SystemTime) -> Option<Duration> {
 }
 
 fn fetch_claude(token: &str) -> Result<(u16, Vec<u8>, Option<Duration>)> {
+    let result = send_claude(token);
+    // Plugins only see a generic failure; keep the transport cause diagnosable.
+    // These errors never contain the token, headers or a response body.
+    if let Err(error) = &result {
+        log::warn!("Claude usage fetch failed: {error:#}");
+    }
+    result
+}
+
+fn send_claude(token: &str) -> Result<(u16, Vec<u8>, Option<Duration>)> {
     let client = HttpClient::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
@@ -385,7 +395,7 @@ fn fetch_claude(token: &str) -> Result<(u16, Vec<u8>, Option<Duration>)> {
         .context("create Claude usage client")?;
     let mut response = client
         .send(claude_request(token)?)
-        .map_err(|_| anyhow!("Claude usage request failed"))?;
+        .map_err(transport_error)?;
     let status = response.status().as_u16();
     let retry = response
         .headers()
@@ -399,6 +409,15 @@ fn fetch_claude(token: &str) -> Result<(u16, Vec<u8>, Option<Duration>)> {
         vec![]
     };
     Ok((status, body, retry))
+}
+
+/// Describe a transport failure from isahc's kind, curl's error text and the peer.
+fn transport_error(error: isahc::Error) -> anyhow::Error {
+    let peer = error
+        .remote_addr()
+        .map(|addr| format!(" (remote {addr})"))
+        .unwrap_or_default();
+    anyhow!("Claude usage request failed: {error}{peer}")
 }
 
 fn claude_with(
