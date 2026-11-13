@@ -2394,41 +2394,94 @@ impl Screen {
                 submission_id,
                 ..
             } => {
-                if expected_session_id.as_ref().is_none_or(|id| id.is_empty())
-                    || !status.status_available
-                    || status.agent.state != AgentState::Idle
-                    || !self
-                        .agent_submissions
-                        .get(&pane)
-                        .and_then(|s| s.back())
-                        .is_some_and(|s| {
-                            s.id == submission_id
-                                && s.conversation == expected_session_id
-                                && s.acknowledged
-                                && s.result
+                // The caller has durably accepted this submission's result. Composer
+                // drafts and unconsumed terminal input are discarded with the pane;
+                // only identity, correlation and real outstanding work block closing.
+                let latest = self.agent_submissions.get(&pane).and_then(|s| s.back());
+                let refusal = if expected_session_id.as_ref().is_none_or(|id| id.is_empty()) {
+                    Some((
+                        AgentOutcome::Rejected,
+                        "close-completed requires the worker's conversation".to_owned(),
+                    ))
+                } else if !status.status_available {
+                    Some((
+                        AgentOutcome::StatusUnavailable,
+                        "worker status is unavailable".to_owned(),
+                    ))
+                } else if status.agent.state != AgentState::Idle {
+                    Some((
+                        AgentOutcome::Rejected,
+                        format!("worker is {}, not idle", status.agent.state),
+                    ))
+                } else if !latest.is_some_and(|s| {
+                    s.id == submission_id
+                        && s.conversation == expected_session_id
+                        && s.acknowledged
+                        && s.result
+                            .as_ref()
+                            .is_some_and(|r| r.outcome == AgentOutcome::Completed)
+                }) {
+                    Some((
+                        AgentOutcome::Rejected,
+                        match latest {
+                            None => format!(
+                                "submission {submission_id} is not retained for this worker"
+                            ),
+                            Some(s) if s.id != submission_id => format!(
+                                "submission {submission_id} is not the worker's latest submission ({})",
+                                s.id
+                            ),
+                            Some(s) => format!(
+                                "submission {submission_id} has no acknowledged completed result in this conversation (outcome {})",
+                                s.result
                                     .as_ref()
-                                    .is_some_and(|r| r.outcome == AgentOutcome::Completed)
-                        })
-                    || !self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
-                        lifecycle.input_revision == Some(self.agent_input_revision(pane))
-                    })
-                    || self
-                        .draft_composer(pane, &status.agent.kind)
-                        .is_some_and(|c| !c.empty)
-                    || status.background
-                    || !status.ready
+                                    .and_then(|r| serde_json::to_value(r.outcome).ok())
+                                    .and_then(|v| v.as_str().map(str::to_owned))
+                                    .unwrap_or_else(|| "unresolved".to_owned())
+                            ),
+                        },
+                    ))
+                } else if status.background || self.claude_background_pending(pane) {
+                    Some((
+                        AgentOutcome::Rejected,
+                        "worker background work is still running".to_owned(),
+                    ))
+                } else if let Some(reason) = self
+                    .agent_controls
+                    .iter()
+                    .filter(|pending| pending.pane == pane)
+                    .find_map(Pending::not_ready_reason)
+                {
+                    Some((
+                        AgentOutcome::Rejected,
+                        if reason == NotReadyReason::UnresolvedTurn {
+                            "worker has an unresolved accepted turn".to_owned()
+                        } else {
+                            "a Yinz prompt write to the worker is still in flight".to_owned()
+                        },
+                    ))
+                } else if self.agent_draft_clears.contains_key(&pane)
                     || self
                         .agent_controls
                         .iter()
                         .any(|pending| pending.pane == pane)
                 {
-                    reject(
-                        self,
+                    Some((
                         AgentOutcome::Rejected,
-                        "worker must be idle with no pending work",
-                    );
+                        "a Yinz control operation on the worker is still in flight".to_owned(),
+                    ))
+                } else {
+                    None
+                };
+                if let Some((outcome, message)) = refusal {
+                    reject(self, outcome, &message);
                     return;
                 }
+                let discarded_input = status.not_ready_reason
+                    == Some(NotReadyReason::UnconsumedInput)
+                    || self
+                        .draft_composer(pane, &status.agent.kind)
+                        .is_some_and(|c| !c.empty);
                 if !self
                     .tab_containing_pane(pane)
                     .is_some_and(|tab| tab.explicit_close_is_single_pane(pane))
@@ -2451,7 +2504,11 @@ impl Screen {
                 }
                 self.log_and_report_session_state().non_fatal();
                 self.render().non_fatal();
-                self.agent_reply(&client, AgentResponse::new(AgentOutcome::Ok));
+                let mut response = AgentResponse::new(AgentOutcome::Ok);
+                if discarded_input {
+                    response.message = Some("closed; discarded unconsumed terminal input".into());
+                }
+                self.agent_reply(&client, response);
             },
             Status { .. } => {
                 let outcome = if status.agent.state == AgentState::Exited
@@ -2645,10 +2702,7 @@ impl Screen {
                     return;
                 }
                 // Muse's bootstrap precedes workspace trust; only its composer proves startup finished.
-                if status.agent.kind == "muse"
-                    && status.agent.session_id.is_none()
-                    && !self.muse_composer(pane, false)
-                {
+                if !self.prompt_replaces_input(pane, &status) {
                     reject(
                         self,
                         AgentOutcome::Rejected,
@@ -3043,6 +3097,14 @@ impl Screen {
         }
     }
 
+    /// Whether a prompt would replace this idle agent's unconsumed input. Muse's
+    /// bootstrap precedes its setup dialogs; only a visible composer admits a prompt.
+    fn prompt_replaces_input(&self, pane: PaneId, status: &AgentStatus) -> bool {
+        !(status.agent.kind == "muse"
+            && status.agent.session_id.is_none()
+            && !self.muse_composer(pane, false))
+    }
+
     fn claude_steering(&self, pane: PaneId, agent: &AgentInfo) -> bool {
         agent.kind == "claude"
             && (agent.state == AgentState::Busy
@@ -3229,6 +3291,32 @@ impl Screen {
                         message.push(' ');
                     }
                     message.push_str(explanation);
+                    let conversation = pending.conversation.as_deref().unwrap_or_default();
+                    let conversation = if !conversation.is_empty()
+                        && conversation.bytes().all(|byte| {
+                            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+                        }) {
+                        conversation.to_owned()
+                    } else {
+                        format!("'{}'", conversation.replace('\'', "'\\''"))
+                    };
+                    // Pane input ends a prompt's own observation, but the accepted turn
+                    // can keep running. A submission wait ignores input and reports the
+                    // provider's actual outcome, so it precedes any recovery.
+                    let retrievable = prompt.acknowledged()
+                        && !pending.resolved
+                        && matches!(
+                            outcome,
+                            AgentOutcome::Interrupted
+                                | AgentOutcome::TimedOut
+                                | AgentOutcome::StatusUnavailable
+                        );
+                    if let Some(submission) =
+                        pending.submission_id.as_deref().filter(|_| retrievable)
+                    {
+                        message.push_str(&format!(" The turn may still be running; retrieve its outcome with agent wait {} --submission {submission} --conversation {conversation}. Pane input does not end that wait.",
+                            pending.pane));
+                    }
                     let unresolved = response.agents.first().is_some_and(|status| {
                         status.prompt_supported
                             && status.agent.kind == pending.kind
@@ -3237,17 +3325,13 @@ impl Screen {
                                 || status.not_ready_reason == Some(NotReadyReason::UnconsumedInput))
                     });
                     if unresolved {
-                        let conversation = pending.conversation.as_deref().unwrap_or_default();
-                        let conversation = if !conversation.is_empty()
-                            && conversation.bytes().all(|byte| {
-                                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
-                            }) {
-                            conversation.to_owned()
+                        let condition = if retrievable {
+                            "Only if that wait cannot resolve the turn and the same live conversation has stopped"
                         } else {
-                            format!("'{}'", conversation.replace('\'', "'\\''"))
+                            "Only if the same live conversation has stopped and unresolved input remains"
                         };
-                        message.push_str(&format!(" Inspect with agent read {}. Only if the same live conversation has stopped and unresolved input remains, clear its draft and use agent recover {} --conversation {} --confirm-empty. Add --interrupted if it stopped without reporting idle.",
-                            pending.pane, pending.pane, conversation));
+                        message.push_str(&format!(" Inspect with agent read {}. {condition}, clear its draft and use agent recover {} --conversation {conversation} --confirm-empty. Add --interrupted if it stopped without reporting idle.",
+                            pending.pane, pending.pane));
                     }
                     response.message = Some(message);
                 }
@@ -3388,7 +3472,13 @@ impl Screen {
                         && status.agent.state == pending.until
                         && (pending.until != AgentState::Idle
                             || !supports_prompt(&status.agent.kind)
-                            || (status.ready && !self.claude_background_pending(pending.pane))) =>
+                            // A prompt replaces unconsumed input, so it must not hold
+                            // an idle wait that precedes automatic submission.
+                            || ((status.ready
+                                || (status.not_ready_reason
+                                    == Some(NotReadyReason::UnconsumedInput)
+                                    && self.prompt_replaces_input(pending.pane, status)))
+                                && !self.claude_background_pending(pending.pane))) =>
                 {
                     // The reply's message is the final text of the turn that made it idle.
                     if pending.until == AgentState::Idle {

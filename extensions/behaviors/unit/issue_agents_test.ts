@@ -311,7 +311,13 @@ function harness(
         equal(task.cleanup, "pending");
         controls.cleanupCalls++;
         return controls.cleanupError
-          ? { ok: false, error: { message: "cleanup unavailable" } }
+          ? {
+            ok: false,
+            error: {
+              message:
+                "Worker cleanup blocked: rejected: worker background work is still running",
+            },
+          }
           : { ok: true };
       }
       calls.push(request);
@@ -3622,11 +3628,21 @@ Deno.test("legacy unlaunched workers cannot recover through automatic placement"
 Deno.test("accepted evidence survives failed cleanup and resume closes without rerunning", async () => {
   const h = harness();
   h.controls.cleanupError = true;
-  await rejects(() =>
-    h.methods.run_agent.execute(
-      h.methods.run_agent.arguments.parse({ ...options, role: "triage" }),
-      h.context,
-    ), "cleanup blocked");
+  // The child's message already names the blocked cleanup and Yinz's reason.
+  await rejects(
+    () =>
+      h.methods.run_agent.execute(
+        h.methods.run_agent.arguments.parse({ ...options, role: "triage" }),
+        h.context,
+      ).catch((error) => {
+        equal(
+          error.message,
+          "Worker cleanup blocked: rejected: worker background work is still running",
+        );
+        throw error;
+      }),
+    "cleanup blocked",
+  );
   const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
   equal(task.status, "completed");
   equal(task.cleanup, "pending");

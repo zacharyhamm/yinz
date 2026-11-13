@@ -837,7 +837,55 @@ async function submit(
   );
   state.phase = "waiting";
   await save(context, state, dependencies);
+  if (inputInterruptedObservation(state, completed)) {
+    // Pane input ends only the prompt's own observation; the accepted turn can
+    // continue. The submission wait ignores input and returns the provider's
+    // actual outcome, including a real interruption, without resending.
+    return await acceptSubmission(
+      context,
+      state,
+      await waitForSubmission(context, state, dependencies),
+      dependencies,
+    );
+  }
   return await acceptSubmission(context, state, completed, dependencies);
+}
+
+/** An acknowledged prompt whose observation, not necessarily its turn, ended. */
+function inputInterruptedObservation(
+  state: AgentState,
+  value: AgentResponse,
+): boolean {
+  return value.outcome === "interrupted" && value.acknowledged &&
+    value.prompt_delivery === "started" &&
+    value.submission_id === state.submissionId &&
+    (state.turnId === undefined || value.turn_id === state.turnId);
+}
+
+async function waitForSubmission(
+  context: AgentContext,
+  state: AgentState,
+  dependencies: Dependencies,
+): Promise<AgentResponse> {
+  if (!state.paneId || !state.submissionId) {
+    throw new Error(
+      "Submission wait requires the recorded pane and submission",
+    );
+  }
+  return await response(
+    context,
+    state,
+    commandArgs(state, [
+      "wait",
+      state.paneId,
+      "--submission",
+      state.submissionId,
+      "--timeout",
+      `${state.config.timeoutSeconds}s`,
+      ...(state.conversationId ? ["--conversation", state.conversationId] : []),
+    ]),
+    dependencies,
+  );
 }
 
 async function launch(
@@ -1192,22 +1240,7 @@ export async function resumeAgent(
       return await observeBackground(context, state, dependencies);
     }
     if (state.submissionId && state.paneId) {
-      const value = await response(
-        context,
-        state,
-        commandArgs(state, [
-          "wait",
-          state.paneId,
-          "--submission",
-          state.submissionId,
-          "--timeout",
-          `${state.config.timeoutSeconds}s`,
-          ...(state.conversationId
-            ? ["--conversation", state.conversationId]
-            : []),
-        ]),
-        dependencies,
-      );
+      const value = await waitForSubmission(context, state, dependencies);
       return await acceptSubmission(context, state, value, dependencies);
     }
     if (state.phase === "preflight") {
@@ -1395,9 +1428,22 @@ export async function cleanupAgent(
       undefined,
       context.signal,
     );
-    const value = AgentResponseSchema.parse(JSON.parse(result.stdout));
+    let value: AgentResponse;
+    try {
+      value = AgentResponseSchema.parse(JSON.parse(result.stdout));
+    } catch {
+      throw new Error(
+        `Worker cleanup returned no valid agent response (exit ${result.code}): ${
+          result.stderr || result.stdout
+        }`,
+      );
+    }
     if (result.code !== 0 || value.outcome !== "ok") {
-      throw new Error(`Worker cleanup blocked: ${value.outcome}`);
+      throw new Error(
+        `Worker cleanup blocked: ${value.outcome}${
+          value.message ? `: ${value.message}` : ""
+        }`,
+      );
     }
   }
   state.cleanedUp = true;

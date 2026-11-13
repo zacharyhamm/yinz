@@ -420,7 +420,12 @@ async function cleanupTask(context: IssueAgentContext, task: Task) {
     method: "cleanup",
   });
   if (!result.ok) {
-    throw new Error(`Worker cleanup blocked: ${result.error.message}`);
+    // The child already names the blocked cleanup and Yinz's reason.
+    throw new Error(
+      result.error.message.startsWith("Worker cleanup")
+        ? result.error.message
+        : `Worker cleanup blocked: ${result.error.message}`,
+    );
   }
   return {
     dataHandles: [await saveTask(context, { ...task, cleanup: "done" })],

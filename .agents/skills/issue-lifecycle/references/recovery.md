@@ -29,6 +29,9 @@ An unresolved pane task blocks ordinary mutations and replacement workers.
 results; `resume-agent` provides lower-level observation. Ordinary correlated,
 acknowledged wait timeouts keep observing that submission. A timeout does not
 authorize a restart or a new prompt. Do not rerun `agent` as an automatic retry.
+Pane input during an accepted turn ends only the prompt's own observation as
+`interrupted`; the child then keeps observing the same submission, which input
+cannot end. Only that submission's own `interrupted` result is terminal.
 
 `needs_input`, interruptions, target replacement and timeouts are not successful
 evidence. Unknown or expired submissions without a validated saved terminal proof
@@ -125,6 +128,10 @@ evidence write.
 Accepted evidence and task completion are durable before the worker is closed
 with a conversation- and submission-guarded command. Cleanup is independently
 retryable through `drive` or `resume-agent` without replaying accepted evidence.
+Cleanup discards a worker's draft or unconsumed input; `unconsumed_input` never
+blocks it and needs no recovery or terminal verification. A rejection names the
+failed guard (changed conversation, not idle, another latest submission,
+background work or an in-flight control operation); resolve that cause.
 Failed, blocked, superseded and unusable-result panes stay available for
 inspection. Closing the last worker releases the region. Existing saved tasks
 retain legacy placement and cleanup behavior.

@@ -45,6 +45,7 @@ If spawn fails, inspect `spawned` and `launch_resources`: a pane, tab, branch, o
 The idle wait returns status in `agents`. Use its `agent.session_id` as the conversation guard and check `status_available` and `prompt_supported`.
 For Claude, `busy` and `ready` can both be true: send an ordinary prompt to steer active work without interrupting it. Wait for acknowledgement before another submission, and retain each submission ID for its own result. Busy steering requires a visible empty composer; inspect and resolve drafts or dialogs instead of discarding them while work runs.
 If the agent is idle and `ready` is false only because of `unconsumed_input`, send the requested prompt directly. Do not wait for draft removal or request recovery.
+`unconsumed_input` alone never requires recovery or terminal verification: `prompt` replaces the draft, and `close-completed` closes a completed worker and discards it.
 Other readiness failures still require attention. Muse’s first prompt also requires its visible composer after setup.
 Completed prompt responses include the answer in `message` when the provider reports it. Use `status` for a fresh observation and `read` to diagnose missing readiness, dialogs, or missing output; neither is an automatic extra step.
 If startup remains `Spawned` or reports `status_unavailable`, read the pane and check hooks. Answer a visible startup dialog deliberately with `send-keys`, within the user's authorization, then wait again. A Codex worktree trust prompt accepts `y Enter`; do not approve trust without authorization.
@@ -73,8 +74,9 @@ yinz agent wait terminal_3 --submission SUBMISSION_ID --conversation CONVERSATIO
 ```
 
 This returns the original turn's outcome, including failure; `acknowledged` and `turn_id` describe that submission. It can return `needs_input` again while a dialog remains.
+Any pane input during an accepted turn, including a stray key, ends the prompt's own `--wait` observation as `interrupted`. The turn may still be running. Retrieve it with the submission wait above, which pane input does not end; its result distinguishes a real interruption. Do not recover while that wait can still resolve the turn.
 For parallel workers, submit without `--wait`, save each pane/conversation/submission triple, and wait on those submissions later.
-Do not combine `--submission` with `--until`. A plain `wait --until idle` observes inactivity and readiness and returns the last completed turn's text, which does not establish the outcome of your task.
+Do not combine `--submission` with `--until`. A plain `wait --until idle` observes inactivity and readiness (`unconsumed_input` does not hold it, except Muse before its visible composer) and returns the last completed turn's text, which does not establish the outcome of your task.
 A recent window of 32 submissions per pane/conversation is retained in memory, along with all unresolved submissions; target replacement, exit, closure, and server restart discard them. Unknown or expired IDs return `rejected`. A retained ID cannot be submitted again. An unavailable result does not prove the work never ran: inspect before any retry rather than treating the ID as durable deduplication.
 When Claude leaves a command or subagent running in the background, `completed` carries only its interim text and sets `background: true`.
 Claude remains busy while its parent turn or notification processing is active, or while Claude reports background work still running. Use `ready` to decide whether to send steering, or a separate `wait --until idle --conversation ID` for that background work's final text. A long-running background server keeps the state wait pending until its timeout.
@@ -86,6 +88,7 @@ The reply is `target_changed`; wait for idle, then use the new conversation ID. 
 Trailing blank rows do not count toward the limit. Blank rows at both ends are removed.
 Whitespace-only rows count as blank. Text and JSON retain the same content, including ghost suggestions.
 Plain terminal text cannot establish whether the composer contains a draft. Do not infer a draft from suggestion text or strip suggestions heuristically.
+This matters only for `recover`, which is needed for stale Busy/Waiting state or a turn that a submission wait cannot resolve; prompts and `close-completed` never need it.
 If recovery is necessary, inspect the composer in the terminal UI and clear any actual draft deliberately.
 Only then use `agent recover PANE --conversation ID --confirm-empty --json`, after confirming the conversation is unchanged.
 If your tools expose only `agent read` text, ask the user to verify the stopped agent and empty composer in the terminal before recovering. Esc alone is not verification and can restore an interrupted prompt into the composer.
@@ -102,6 +105,7 @@ dismissed. It needs input, such as Esc, after the agent's last hook and 3 second
 hook since.
 
 When a worker is done, close its pane: `yinz action close-pane --pane-id terminal_3`.
+Supervisors that saved the worker's result can instead use `yinz agent close-completed terminal_3 --conversation ID --submission SUBMISSION_ID --json`. It requires that the conversation is unchanged, the agent is idle, that submission is the latest and completed, no background work remains, and no Yinz control operation is in flight. It discards unconsumed composer input and says so in `message`; a rejection names the failed guard.
 Closing the pane leaves its branch and worktree in place. Remove them only when the work is merged or
 deliberately discarded and no pane still runs there: `git worktree remove PATH`, then `git branch -d BRANCH`.
 

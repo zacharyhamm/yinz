@@ -1381,6 +1381,116 @@ Deno.test("cleanup reconciles an already absent worker without closing another p
   assert(!h.calls.some((c) => c.args.includes("close-completed")));
 });
 
+Deno.test("cleanup rejection reports Yinz's reason and malformed replies honestly", async () => {
+  const h = harness([spawned, ready(), completed()]);
+  await runAgent({ prompt: "Fix it" }, h.context, h.dependencies);
+  h.replies.push([{ id: 7, is_plugin: false }], {
+    code: 1,
+    stdout: JSON.stringify({
+      outcome: "rejected",
+      message: "worker background work is still running",
+    }),
+    stderr: "",
+  });
+  await rejects(
+    () => cleanupAgent(h.context, h.dependencies),
+    "Worker cleanup blocked: rejected: worker background work is still running",
+  );
+  h.replies.push([{ id: 7, is_plugin: false }], {
+    code: 1,
+    stdout: "",
+    stderr: "connection refused",
+  });
+  await rejects(
+    () => cleanupAgent(h.context, h.dependencies),
+    "no valid agent response (exit 1): connection refused",
+  );
+  assert(!h.records.get("state")!.cleanedUp);
+});
+
+function inputInterrupted(overrides: Record<string, unknown> = {}) {
+  return {
+    outcome: "interrupted",
+    submission_id: "submission-1",
+    acknowledged: true,
+    prompt_delivery: "started",
+    turn_id: "turn-1",
+    message:
+      "Observation of the accepted turn was interrupted. The turn may still be running.",
+    agents: [{
+      ...agent(),
+      agent: { ...agent().agent, state: "busy" },
+      ready: false,
+      not_ready_reason: "not_idle",
+    }],
+    ...overrides,
+  };
+}
+
+Deno.test("input-interrupted prompt observation keeps observing the original submission", async () => {
+  const h = harness([
+    spawned,
+    ready(),
+    inputInterrupted(),
+    completed({
+      acknowledged: true,
+      prompt_delivery: "started",
+      turn_id: "turn-1",
+      agents: [{
+        ...agent(),
+        ready: false,
+        not_ready_reason: "unconsumed_input",
+      }],
+    }),
+  ]);
+  await runAgent({ prompt: "Fix it" }, h.context, h.dependencies);
+  equal(h.records.get("state")?.phase, "completed");
+  equal(h.records.get("result")?.turnId, "turn-1");
+  equal(h.calls.map((call) => call.args[3]), [
+    "spawn",
+    "wait",
+    "prompt",
+    "wait",
+  ]);
+  const args = h.calls.at(-1)!.args;
+  equal(args[args.indexOf("--submission") + 1], "submission-1");
+  equal(args[args.indexOf("--conversation") + 1], "conversation-1");
+  assert(!args.includes("--until"));
+});
+
+Deno.test("a provider-reported interruption still fails after the submission wait", async () => {
+  const interrupted = inputInterrupted({
+    message: "The turn was interrupted.",
+    agents: ready().agents,
+  });
+  const h = harness([spawned, ready(), inputInterrupted(), interrupted]);
+  await rejects(
+    () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+    "interrupted",
+  );
+  assert(!h.records.has("result"));
+  equal(h.records.get("state")?.outcome, "interrupted");
+  equal(h.calls.filter((c) => c.args.includes("prompt")).length, 1);
+});
+
+Deno.test("an unacknowledged or uncorrelated interruption is not re-observed", async () => {
+  for (
+    const patch of [
+      { acknowledged: false, turn_id: null },
+      { submission_id: "another-submission" },
+      { prompt_delivery: "not_sent", acknowledged: false, turn_id: null },
+    ]
+  ) {
+    const h = harness([spawned, ready(), inputInterrupted(patch)]);
+    await rejects(
+      () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+      "",
+    );
+    assert(!h.records.has("result"));
+    equal(h.calls.map((call) => call.args[3]), ["spawn", "wait", "prompt"]);
+  }
+});
+
 Deno.test("stack placement never silently falls back without a controller", async () => {
   const h = harness([], { stackWorkers: true });
   await rejects(

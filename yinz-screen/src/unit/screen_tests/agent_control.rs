@@ -1355,13 +1355,15 @@ fn agy_native_turn_with_draft_leaves_agent_not_ready() {
     let prompt_res = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(prompt_res.outcome, AgentOutcome::Ok);
 
+    // The idle wait reports the draft without blocking the replacing prompt.
     screen.agent_control(wait(AgentState::Idle), CLIENT);
-    assert!(replies(&messages, CLIENT).is_empty());
-    screen.agent_controls[0].deadline = Some(Instant::now());
-    screen.refresh_agent_controls();
     let wait_res = replies(&messages, CLIENT).pop().unwrap();
-    assert_eq!(wait_res.outcome, AgentOutcome::TimedOut);
+    assert_eq!(wait_res.outcome, AgentOutcome::Ok);
     assert!(!wait_res.agents[0].ready);
+    assert_eq!(
+        wait_res.agents[0].not_ready_reason,
+        Some(NotReadyReason::UnconsumedInput)
+    );
 
     screen.agent_control(recover(), CLIENT);
     let recovered = replies(&messages, CLIENT).pop().unwrap();
@@ -2320,8 +2322,8 @@ fn waiting_state_succeeds_while_other_state_waits_need_human_input() {
 }
 
 #[test]
-fn idle_wait_does_not_succeed_with_a_manual_draft() {
-    let (mut screen, messages, _writes) = setup("codex");
+fn idle_wait_reports_a_manual_draft_without_blocking_submission() {
+    let (mut screen, messages, writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     screen
         .tab_containing_pane_mut(PANE)
@@ -2329,13 +2331,19 @@ fn idle_wait_does_not_succeed_with_a_manual_draft() {
         .write_to_active_terminal(&None, b"manual draft".to_vec(), false, CLIENT, None)
         .unwrap();
     screen.agent_control(wait(AgentState::Idle), CLIENT);
-    assert!(replies(&messages, CLIENT).is_empty());
-    screen.agent_controls[0].deadline = Some(Instant::now());
-    screen.refresh_agent_controls();
+    let reply = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(reply.outcome, AgentOutcome::Ok);
+    assert!(!reply.agents[0].ready);
     assert_eq!(
-        replies(&messages, CLIENT)[0].outcome,
-        AgentOutcome::TimedOut
+        reply.agents[0].not_ready_reason,
+        Some(NotReadyReason::UnconsumedInput)
     );
+    assert!(screen.agent_controls.is_empty());
+    // The automatic prompt that follows replaces the draft.
+    assert_eq!(finish_paste(&writes), b"manual draft");
+    screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+    assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+    assert!(replies(&messages, CLIENT).is_empty());
 }
 
 #[test]
@@ -5215,9 +5223,19 @@ fn timeout_and_input_interruption_explain_acceptance_and_conditional_recovery() 
                 assert!(message.contains("completion was not observed"));
                 assert!(message.contains("may still be running"));
             }
-            assert!(message.contains(
-                "Only if the same live conversation has stopped and unresolved input remains"
-            ));
+            let submission = response.submission_id.clone().unwrap();
+            let retrieval = format!(
+                "agent wait terminal_7 --submission {submission} --conversation conversation"
+            );
+            assert_eq!(message.contains(&retrieval), acknowledged, "{message}");
+            assert!(
+                message.contains(if acknowledged {
+                    "Only if that wait cannot resolve the turn and the same live conversation has stopped"
+                } else {
+                    "Only if the same live conversation has stopped and unresolved input remains"
+                }),
+                "{message}"
+            );
             assert!(message
                 .contains("agent recover terminal_7 --conversation conversation --confirm-empty"));
         }
@@ -5604,10 +5622,13 @@ fn a_notification_never_consumes_a_typed_draft() {
         status.not_ready_reason,
         Some(NotReadyReason::UnconsumedInput)
     );
+    // The draft is reported, but it does not hold the wait before a replacing prompt.
     screen.agent_control(wait(AgentState::Idle), CLIENT);
-    assert!(
-        replies(&messages, CLIENT).is_empty(),
-        "the draft still blocks readiness"
+    let waited = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(waited.outcome, AgentOutcome::Ok);
+    assert_eq!(
+        waited.agents[0].not_ready_reason,
+        Some(NotReadyReason::UnconsumedInput)
     );
 }
 
@@ -12678,8 +12699,19 @@ fn completed_worker_close_requires_latest_accepted_submission() {
     assert!(screen.tab_containing_pane(PANE).is_none());
 }
 
+fn close_completed(screen: &mut Screen, submission_id: &str) {
+    screen.agent_control(
+        AgentRequest::CloseCompleted {
+            pane_id: PANE,
+            expected_session_id: Some("conversation".into()),
+            submission_id: submission_id.into(),
+        },
+        CLIENT,
+    );
+}
+
 #[test]
-fn completed_worker_close_preserves_subsequent_draft() {
+fn completed_worker_close_discards_subsequent_input() {
     let (mut screen, messages, writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
@@ -12691,45 +12723,107 @@ fn completed_worker_close_preserves_subsequent_draft() {
     screen
         .tab_containing_pane_mut(PANE)
         .unwrap()
-        .write_to_active_terminal(&None, b"keep this draft".to_vec(), false, CLIENT, None)
+        .write_to_active_terminal(&None, b"draft".to_vec(), false, CLIENT, None)
         .unwrap();
-    let revision = screen
-        .tab_containing_pane(PANE)
-        .unwrap()
-        .agent_input_revision(PANE);
     screen.agent_control(
-        AgentRequest::CloseCompleted {
+        AgentRequest::Status {
             pane_id: PANE,
-            expected_session_id: Some("conversation".into()),
-            submission_id: "wrong".into(),
+            expected_session_id: None,
         },
         CLIENT,
     );
     assert_eq!(
-        replies(&messages, CLIENT).pop().unwrap().outcome,
-        AgentOutcome::Rejected
+        replies(&messages, CLIENT).pop().unwrap().agents[0].not_ready_reason,
+        Some(NotReadyReason::UnconsumedInput)
+    );
+    // Identity guards still apply to a pane with unconsumed input.
+    close_completed(&mut screen, "wrong");
+    let rejected = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(rejected.outcome, AgentOutcome::Rejected);
+    assert!(
+        rejected
+            .message
+            .as_deref()
+            .is_some_and(|m| m.contains("submission wrong is not the worker's latest submission")),
+        "{rejected:?}"
     );
     assert!(screen.tab_containing_pane(PANE).is_some());
+    close_completed(&mut screen, &submission);
+    let closed = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(closed.outcome, AgentOutcome::Ok);
+    assert_eq!(
+        closed.message.as_deref(),
+        Some("closed; discarded unconsumed terminal input")
+    );
+    assert!(screen.tab_containing_pane(PANE).is_none());
+}
+
+/// Issue 106: input during an accepted turn ends only the prompt's observation. The
+/// submission still completes, and its leftover input must not block cleanup.
+#[test]
+fn input_during_accepted_turn_is_retrievable_and_does_not_block_cleanup() {
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+    finish_paste(&writes);
+    screen.refresh_agent_controls();
+    report(&mut screen, hook("UserPromptSubmit"));
+    screen.agent_write_for_test();
+    screen.refresh_agent_controls();
+    let interrupted = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(interrupted.outcome, AgentOutcome::Interrupted);
+    assert!(interrupted.acknowledged);
+    let submission = interrupted.submission_id.clone().unwrap();
+    assert!(interrupted
+        .message
+        .as_deref()
+        .is_some_and(|m| m.contains(&format!(
+            "agent wait terminal_7 --submission {submission} --conversation conversation"
+        ))));
+    screen.agent_write_for_test();
+    report(&mut screen, hook("Stop"));
     screen.agent_control(
-        AgentRequest::CloseCompleted {
+        AgentRequest::WaitTurn {
             pane_id: PANE,
             expected_session_id: Some("conversation".into()),
-            submission_id: submission,
+            submission_id: submission.clone(),
+            timeout_ms: 1000,
         },
         CLIENT,
     );
+    screen.refresh_agent_controls();
+    let waited = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(waited.outcome, AgentOutcome::Completed, "{waited:?}");
     assert_eq!(
-        replies(&messages, CLIENT).pop().unwrap().outcome,
-        AgentOutcome::Rejected
+        waited.agents[0].not_ready_reason,
+        Some(NotReadyReason::UnconsumedInput)
+    );
+    close_completed(&mut screen, &submission);
+    let closed = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(closed.outcome, AgentOutcome::Ok, "{closed:?}");
+    assert!(screen.tab_containing_pane(PANE).is_none());
+}
+
+#[test]
+fn completed_worker_close_names_in_flight_control() {
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+    finish_paste(&writes);
+    report(&mut screen, hook("UserPromptSubmit"));
+    report(&mut screen, hook("Stop"));
+    let submission = screen.agent_submissions[&PANE].back().unwrap().id.clone();
+    replies(&messages, CLIENT);
+    // Another client's observation still owns a control slot on this pane.
+    screen.agent_control_with_clear(wait(AgentState::Busy), ClientId::new(2), &writes);
+    close_completed(&mut screen, &submission);
+    let rejected = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(rejected.outcome, AgentOutcome::Rejected);
+    assert_eq!(
+        rejected.message.as_deref(),
+        Some("a Yinz control operation on the worker is still in flight")
     );
     assert!(screen.tab_containing_pane(PANE).is_some());
-    assert_eq!(
-        screen
-            .tab_containing_pane(PANE)
-            .unwrap()
-            .agent_input_revision(PANE),
-        revision
-    );
 }
 
 #[test]

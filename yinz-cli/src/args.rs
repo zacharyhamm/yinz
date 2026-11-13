@@ -780,7 +780,8 @@ pub enum Agent {
         #[clap(long)]
         json: bool,
     },
-    /// Close an idle worker after its result has been saved.
+    /// Close an idle worker after its result has been saved. Unconsumed composer
+    /// input is discarded; identity, correlation and outstanding work still block.
     CloseCompleted {
         #[clap(long)]
         submission: String,

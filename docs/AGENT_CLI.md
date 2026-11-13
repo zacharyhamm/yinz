@@ -497,7 +497,7 @@ When several conditions block readiness, the first matching reason applies:
 | `pending_submission` | An earlier submission still owns the input and has not been acknowledged |
 | `clearing_draft` | Draft clearing owns the composer until verification or queued writes finish |
 | `unresolved_turn` | An accepted turn still owns the input after an interruption or an unconfirmed outcome; inspect the pane and recover only after it has stopped and its draft is empty |
-| `unconsumed_input` | Input consumption is unknown. An explicit prompt clears it before delivery |
+| `unconsumed_input` | Input consumption is unknown. An explicit prompt clears it before delivery, and `close-completed` discards it; neither needs recovery |
 
 A ready agent has no reason (`null` in JSON). Older responses without the field
 decode with no reason. An exited agent normally reports `prompt_unsupported`
@@ -631,7 +631,10 @@ the pending operation. An unrelated conversation cannot complete the wait.
 
 Agent state and operation outcome are separate. An idle agent can have finished,
 failed or been interrupted. For Claude Code, Codex, Muse, Pi, and Antigravity (agy), `agent wait --until idle`
-requires reported idle state and prompt readiness. For other agents, including
+requires reported idle state and prompt readiness. `unconsumed_input` alone does
+not hold the wait, because the prompt that follows replaces that input; the reply
+still reports the reason. An unpinned Muse pane without its visible composer
+remains pending. For other agents, including
 OpenCode, matching lifecycle reports of idle state can satisfy the wait even
 though `ready` and `prompt_supported` remain false. Other state waits observe the
 requested state. A state wait does not prove that a particular task completed
@@ -778,7 +781,10 @@ An acknowledged Claude turn whose completion waiter timed out can still accept
 steering when `ready` is true. Manual
 input ends the caller's wait as `interrupted`, but it cannot recall a submission
 already in transit. Its claim can remain until the original turn is resolved.
-A retry cannot take ownership of that turn's completion. An unacknowledged
+A retry cannot take ownership of that turn's completion. For an acknowledged turn
+the reply names `agent wait TARGET --submission ID --conversation ID`; pane input
+does not end that wait, which returns the turn's actual outcome. The issue
+lifecycle's agent child issues that wait automatically. An unacknowledged
 `Stop` cannot resolve the claim or restore readiness. Valid late acknowledgement
 and completion can still resolve the original submission.
 
@@ -1273,6 +1279,17 @@ run ID, provider or conversation changes are rejected. Missing status returns
 `status_unavailable` and stops preparation without automatic retry.
 `ready` can remain false when Yinz cannot verify the composer. An explicit prompt still clears that input before delivery.
 Status and idle waits remain read-only.
+
+## Closing completed workers
+
+`agent close-completed TARGET --conversation ID --submission ID` closes a worker
+after its supervisor saved the result. It requires that the conversation is
+unchanged, the agent is idle, the submission is the pane's latest and acknowledged
+as `completed`, no background work remains, and no Yinz prompt, wait or
+draft-clear operation is in flight. It discards draft or unconsumed composer input
+and reports `closed; discarded unconsumed terminal input` in `message`. Each
+rejection names the guard that failed. The close also refuses when it would
+affect other panes.
 
 ## Explicit draft clearing
 
