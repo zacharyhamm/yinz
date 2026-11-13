@@ -2,7 +2,7 @@
 // Phone-flow browser checks for the builtin yinz web app (test-only; never shipped).
 //
 //   node run.mjs <base-url> [filter]   password from YINZ_WEB_PASSWORD or one stdin line;
-//                                      the optional filter runs scenarios whose name contains it
+//                                      filter (or YINZ_WEB_BROWSER_FILTER) selects scenario names
 //   PLAYWRIGHT_BROWSERS_PATH=<dir>     required: the provisioned Playwright Firefox
 //
 // LIVE (real server): /login and / pages, /static/** assets and module graph,
@@ -105,6 +105,9 @@ class Fixture {
     this.screenTick = 0;
     this.rows = null; // optional successful list payload, including [] for the empty state
     this.fullReply = null;
+    this.header = 'short'; // short | long | absent | wrapped | custom
+    this.live = {};
+    this.usage = null;
     this.fail = new Map(); // path -> {mode:'abort'|'hold'|'reply', times, status, headers, body}
     this.held = [];
     this.log = [];
@@ -189,10 +192,31 @@ function runEvent(run, rev) {
   return ev(run, rev, kind, `Message ${rev}. ${kind === 'prompt' ? 'Please continue.' : FILLER}`, rev === 44 ? { truncated: true } : {});
 }
 
+function headerFields(fx, run) {
+  const long = fx.header === 'long';
+  return {
+    name: long ? `修正 🧭 ${'longIdentity'.repeat(12)}` : `Fix flaky test ${XSS(3)}`,
+    status: 'waiting', location: long ? `/workspace/${'location/'.repeat(12)}` : 'dev', started: '12:00',
+    task: long ? `Review the complete mobile conversation and preserve all metadata. ${FILLER}` : 'fix',
+    project: long ? 'Mobile conversation project with a long descriptive name' : 'yinz',
+    branch: long ? `feature/${'unbroken-branch'.repeat(12)}` : 'main', session_id: 'conv-1', details: `Run: ${run}`,
+  };
+}
+
+// Mirror %web-app-header in yinz-steel/src/web_app.scm; its real Scheme assertions
+// and web_builtin_production_http cover the production hook, not this imitation.
+function headerHtml(fx, header) {
+  if (fx.header === 'absent') return '';
+  const markup = `<header class="agent-header"><h2>${esc(header.name)}</h2><p class="agent-header-status">${esc(header.status)}</p>${header.task ? `<p class="agent-header-task">${esc(header.task)}</p>` : ''}<p class="agent-header-meta">${['project', 'branch', 'location', 'started'].map((k) => header[k]).filter((s) => s && s.trim()).map(esc).join(' · ')}</p></header>`;
+  if (fx.header === 'wrapped') return `<section class="custom-header">${markup}<a href="#custom-information" id="custom-information">Custom information link</a></section>`;
+  if (fx.header === 'custom') return `<section class="custom-header"><h2>Custom hook output</h2><p>${esc(FILLER.repeat(12))}</p><button type="button" class="button" id="custom-information">Custom information action</button></section>`;
+  return markup;
+}
+
 function history(fx, q) {
   const requested = q.get('run');
   const agent = q.get('agent');
-  const live = agent && !fx.gone ? row(fx, agent, 'waiting', { title: `Fix flaky test ${XSS(1)}` }) : null;
+  const live = agent && !fx.gone ? row(fx, agent, 'waiting', { title: fx.header === 'long' ? headerFields(fx, requested).name : `Fix flaky test ${XSS(1)}`, ...fx.live }) : null;
   const retargeted = !!agent && fx.retarget && requested === 'run-7';
   const run = retargeted ? 'run-7b' : requested;
   const before = q.get('before') ? JSON.parse(q.get('before')) : null;
@@ -226,13 +250,14 @@ function history(fx, q) {
     if (e.kind === 'tools') continue;
     if (fx.fullReply && e.revision === 44) e.markdown = fx.fullReply;
     e.html = `<p>${esc(e.markdown)}</p>`;
+    if (fx.code && e.revision === fx.latest) e.html += `<pre><code>${esc('const complete = '+ 'long_code_token'.repeat(30) + ';\nreturn complete;')}</code></pre>`;
   }
   return {
     run, retargeted, agent_gone: !!agent && fx.gone, live,
-    header: { name: 'Fix flaky test', status: 'waiting', location: 'dev', started: '12:00', task: 'fix', project: 'yinz', branch: 'main', session_id: 'conv-1', details: `Run: ${run}` },
+    header: headerFields(fx, run),
     events, earlier, next_from: null, previous_run: run === 'run-7' ? 'run-6' : null, origin_run: null, resumable: false,
     activity_ranges: [], navigation, status: '',
-    header_html: `<div class="hdr"><strong>${esc(`Fix flaky test ${XSS(3)}`)}</strong> · ${esc(run)}</div>`,
+    header_html: headerHtml(fx, headerFields(fx, run)),
     details_html: `<pre class="details">${esc(`Run: ${run}\nProvider: codex`)}</pre>`,
   };
 }
@@ -297,6 +322,7 @@ function fixtureReply(fx, entry) {
         page: { events: [], navigation: { earlier: { op: 'tools', run: q.get('run'), range: JSON.parse(q.get('range')), before: { created_at_ms: 1, revision: 2 } } } },
       }];
     case '/api/usage':
+      if (fx.usage) return [200, { usage: fx.usage }];
       return [200, { usage: { provider: 'codex', status: 'ok', observed_at_ms: 1, plan: null, windows: [{ label: '5h', used_percent: 42, resets_at_ms: null }, { label: 'week', used_percent: 91, resets_at_ms: null }], message: null } }];
     case '/api/prompts':
       return [200, { prompts: [{ text: 'Run the tests', description: 'tests' }, { text: 'Commit the change', description: '' }] }];
@@ -708,7 +734,7 @@ async function waitPolls(page, fx, n = 2) {
 const results = [];
 const RESULTS_DIR = path.join(REPO, 'target', 'web-browser-results');
 
-const FILTER = process.argv[3] || '';
+const FILTER = process.argv[3] || process.env.YINZ_WEB_BROWSER_FILTER || '';
 
 async function scenario(name, fn) {
   if (FILTER && !name.includes(FILTER)) return;
@@ -879,6 +905,421 @@ async function phoneLayout(open, width) {
   }
   check((await textOf(page, '#detail-header-html')).includes('<img src=x'), 'escaped header text not shown');
   await noInjection(page);
+}
+
+async function detailGeometry(page) {
+  return page.evaluate(() => {
+    const height = (s) => document.querySelector(s)?.getBoundingClientRect().height || 0;
+    return { width: innerWidth, height: innerHeight, dark: matchMedia('(prefers-color-scheme: dark)').matches,
+      header: height('#detail-header'), timeline: height('#timeline'), composer: height('.composer-dock'),
+      safeTop: parseFloat(getComputedStyle(document.getElementById('detail-header')).paddingTop) - 6,
+      safeBottom: parseFloat(getComputedStyle(document.querySelector('.composer-dock')).paddingBottom) - 6 };
+  });
+}
+
+async function headerCharacterization(open, width, scheme) {
+  const height = width === 320 ? 640 : 844;
+  const { page, fx } = await open({ viewport: { width, height }, colorScheme: scheme });
+  await openDetail(page);
+  await page.emulateMedia({ colorScheme: scheme });
+  for (const variant of ['short', 'long']) {
+    fx.header = variant;
+    await fixturePoll(page, fx);
+    await until('default header and idle composer', () => exists(page, '#detail-header-html .agent-header-meta'));
+    await until('usage windows', () => exists(page, '#quota .quota-window'));
+    await page.emulateMedia({ colorScheme: scheme });
+    await nextFrame(page);
+    const metrics = await detailGeometry(page);
+    check(metrics.width === width && metrics.height === height && metrics.dark === (scheme === 'dark'), 'incorrect characterization viewport/theme');
+    console.log(`CHARACTERIZATION ${variant} ${scheme} ${JSON.stringify(metrics)}`);
+    fs.mkdirSync(RESULTS_DIR, { recursive: true });
+    fs.writeFileSync(path.join(RESULTS_DIR, `baseline-${width}-${scheme}-${variant}.json`), JSON.stringify(metrics, null, 2));
+  }
+}
+
+// Reuse the app's foreground refresh path, then wait for completed fixture data.
+async function fixturePoll(page, fx, pathname = '/api/history') {
+  await idle(page);
+  const before = fx.count(pathname);
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await until(`completed ${pathname} fixture refresh`, async () => fx.count(pathname) > before && await page.evaluate(() => window.__yinzOpen === 0));
+  await nextFrame(page);
+}
+
+async function disclosure(page, open, activation = 'click') {
+  if (activation === 'click') await page.click('#detail-information-toggle');
+  else {
+    await page.focus('#detail-information-toggle');
+    await page.keyboard.press(activation);
+  }
+  await until(`agent information ${open ? 'shown' : 'hidden'}`, () => page.evaluate((expected) => {
+    const button = document.getElementById('detail-information-toggle');
+    const region = document.getElementById(button.getAttribute('aria-controls'));
+    return button.getAttribute('aria-expanded') === String(expected) && region.hidden === !expected
+      && button.getAttribute('aria-label') === `${expected ? 'Hide' : 'Show'} agent information`;
+  }, open));
+  await nextFrame(page);
+  check(await activeId(page) === 'detail-information-toggle', 'disclosure activation lost focus');
+}
+
+async function timelineAnchor(page) {
+  return page.evaluate(() => {
+    const el = document.getElementById('timeline');
+    const box = el.getBoundingClientRect();
+    const item = [...el.querySelectorAll('[data-key]')].find((n) => n.getBoundingClientRect().bottom > box.top);
+    return { key: item.dataset.key, offset: item.getBoundingClientRect().top - box.top };
+  });
+}
+
+async function sameAnchor(page, anchor, where) {
+  await until(`${where}: timeline anchor restored`, () => page.evaluate(({ key, offset }) => {
+    const el = document.getElementById('timeline');
+    const item = [...el.querySelectorAll('[data-key]')].find((n) => n.dataset.key === key);
+    return item && Math.abs(item.getBoundingClientRect().top - el.getBoundingClientRect().top - offset) <= 2;
+  }, anchor));
+}
+
+/** Resolve text/background through transparent layers and ancestor opacity. */
+async function detailContrast(page, where) {
+  const bad = await page.evaluate(() => {
+    const rgba = (s) => {
+      const n = s.match(/[\d.]+/g).map(Number);
+      return [n[0], n[1], n[2], n[3] ?? 1];
+    };
+    const over = (a, b) => {
+      const alpha = a[3] + b[3] * (1 - a[3]);
+      return alpha ? [0, 1, 2].map((i) => (a[i] * a[3] + b[i] * b[3] * (1 - a[3])) / alpha).concat(alpha) : [0, 0, 0, 0];
+    };
+    const paint = (el, ink) => {
+      for (let n = el; n; n = n.parentElement) {
+        const cs = getComputedStyle(n);
+        ink = over(ink, rgba(cs.backgroundColor));
+        ink[3] *= Number(cs.opacity);
+      }
+      return over(ink, [255, 255, 255, 1]);
+    };
+    const luminance = (rgb) => rgb.slice(0, 3).map((v) => v / 255).map((v) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
+      .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+    const contrast = (a, b) => (Math.max(luminance(a), luminance(b)) + 0.05) / (Math.min(luminance(a), luminance(b)) + 0.05);
+    const failures = [];
+    const root = document.querySelector('.detail-page');
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+      const el = t.parentElement;
+      if (!t.textContent.trim() || el.closest('.visually-hidden, .screen-html, :disabled') || !el.checkVisibility()) continue;
+      const cs = getComputedStyle(el);
+      const ratio = contrast(paint(el, rgba(cs.color)), paint(el, [0, 0, 0, 0]));
+      if (ratio < 4.5) failures.push(`${el.id || el.className || el.tagName} text ${ratio.toFixed(2)} (${cs.color})`);
+    }
+    const input = document.getElementById('composer-input');
+    if (input && !input.disabled) {
+      const cs = getComputedStyle(input);
+      if (contrast(paint(input, rgba(cs.color)), paint(input, [0, 0, 0, 0])) < 4.5) failures.push('composer input text');
+    }
+    const focused = document.activeElement;
+    if (root.contains(focused) && focused.matches(':focus-visible')) {
+      const cs = getComputedStyle(focused);
+      const ratio = contrast(rgba(cs.outlineColor), paint(focused.parentElement, [0, 0, 0, 0]));
+      if (parseFloat(cs.outlineWidth) < 3 || ratio < 3) failures.push(`focus outline ${ratio.toFixed(2)}`);
+    }
+    return failures;
+  });
+  check(!bad.length, `${where}: contrast failures: ${bad.join(', ')}`);
+}
+
+async function compactDetail(open, width, scheme) {
+  const height = width === 320 ? 640 : width === 390 ? 844 : 768;
+  const { page, fx } = await open({ viewport: { width, height }, colorScheme: scheme });
+  await openDetail(page);
+  await page.emulateMedia({ colorScheme: scheme });
+  for (const variant of ['short', 'long']) {
+    fx.header = variant;
+    await fixturePoll(page, fx);
+    await until('healthy quota and composer', () => exists(page, '#quota .quota-window'));
+    const g = await detailGeometry(page);
+    check(g.width === width && g.height === height && g.dark === (scheme === 'dark'), 'wrong detail viewport/theme');
+    check(g.safeTop === 0 && g.safeBottom === 0, 'budget fixture requires zero emulated safe-area insets');
+    check(g.header <= 120 && g.composer <= 64, `detail chrome too tall: ${JSON.stringify(g)}`);
+    if (width !== 1024) check(g.timeline >= (width === 320 ? 450 : 650), `timeline budget failed: ${JSON.stringify(g)}`);
+    fs.mkdirSync(RESULTS_DIR, { recursive: true });
+    fs.writeFileSync(path.join(RESULTS_DIR, `final-${width}-${scheme}-${variant}.json`), JSON.stringify(g, null, 2));
+    const baselineFile = path.join(RESULTS_DIR, `baseline-${width}-${scheme}-${variant}.json`);
+    console.log(`GEOMETRY ${variant} ${scheme}: final ${JSON.stringify(g)}; baseline ${fs.existsSync(baselineFile) ? fs.readFileSync(baselineFile, 'utf8').replace(/\s+/g, ' ') : 'not recorded in this checkout'}`);
+    check(await page.evaluate(() => document.getElementById('detail-information').hidden), 'fresh view was not collapsed');
+    await page.focus('#detail-information-toggle');
+    await page.keyboard.press('Tab');
+    check(await activeId(page) === 'overflow-button', 'collapsed information entered the tab order');
+    await disclosure(page, true, 'Enter');
+    check(await page.evaluate(() => document.activeElement.matches(':focus-visible') && parseFloat(getComputedStyle(document.activeElement).outlineWidth) >= 3), 'keyboard disclosure focus is invisible');
+    const info = await page.evaluate(() => {
+      const el = document.getElementById('detail-information');
+      return { height: el.clientHeight, text: el.textContent, labelled: el.getAttribute('aria-label'), tab: el.tabIndex };
+    });
+    for (const k of ['name', 'task', 'project', 'branch', 'location']) check(info.text.includes(headerFields(fx, 'run-7')[k]), `expanded information lost ${k}`);
+    check(info.labelled === 'Agent information' && info.tab === 0 && info.height <= Math.min(height * 0.3, 240), 'information region not labelled, keyboard scrollable or bounded');
+    await page.focus('#detail-information');
+    await page.keyboard.press('End');
+    await until('information scrolled to its end', () => page.evaluate(() => {
+      const el = document.getElementById('detail-information');
+      return el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+    }));
+    await page.focus('#detail-information-toggle');
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Shift+Tab');
+    // Focus the persistent disclosure before a confirmed header refresh.
+    await page.focus('#detail-information-toggle');
+    await fixturePoll(page, fx);
+    check(await activeId(page) === 'detail-information-toggle', 'poll replaced the disclosure/focus');
+    for (const tab of ['details', 'screen', 'timeline']) {
+      await page.click(`#tab-${tab}`);
+      await until(`${tab} ready`, () => exists(page, tab === 'screen' ? '#screen pre.screen' : `#panel-${tab}`));
+      check(await page.getAttribute('#detail-information-toggle', 'aria-expanded') === 'true', 'tab change reset disclosure');
+    }
+    await page.focus('#detail-information-toggle');
+    await detailContrast(page, `${width} ${scheme} expanded ${variant}`);
+    await disclosure(page, false, 'Space');
+    await until('timeline remains pinned after collapse', async () => (await scrollState(page)).atBottom);
+    await noHorizontalOverflow(page, `detail ${width} ${scheme} ${variant}`);
+    await noClippedControls(page, `detail ${width} ${scheme} ${variant}`);
+    await touchTargets(page, `detail ${width} ${scheme} ${variant}`);
+    check(await page.evaluate(() => getComputedStyle(document.getElementById('composer-input')).fontSize === '16px'), 'composer input font changed');
+    if (width === 1024) check(await page.evaluate(() => getComputedStyle(document.querySelector('.event')).maxWidth === '80%'), 'desktop message width changed');
+    fs.mkdirSync(RESULTS_DIR, { recursive: true });
+    await page.screenshot({ path: path.join(RESULTS_DIR, `compact-detail-${width}-${scheme}-${variant}.png`), mask: [page.locator('#composer-input')] });
+    await detailContrast(page, `${width} ${scheme} collapsed ${variant}`);
+  }
+  await noInjection(page);
+  // Reflow keeps a reader's item/offset rather than interpreting geometry as arrivals.
+  await page.evaluate(() => { const el = document.getElementById('timeline'); el.scrollTop = 500; });
+  await nextFrame(page);
+  let anchor = await timelineAnchor(page);
+  await disclosure(page, true);
+  await sameAnchor(page, anchor, 'expand');
+  await disclosure(page, false);
+  await sameAnchor(page, anchor, 'collapse');
+  check(!(await exists(page, '#timeline-new')), 'geometry alone announced new messages');
+  await page.setViewportSize({ width: width - 20, height });
+  await nextFrame(page);
+  await sameAnchor(page, anchor, 'width reflow');
+  await page.setViewportSize({ width, height });
+  await nextFrame(page);
+  await sameAnchor(page, anchor, 'width restored');
+  await page.fill('#composer-input', 'draft line one\nline two\nline three\nline four');
+  await nextFrame(page);
+  await sameAnchor(page, anchor, 'multiline draft');
+  await page.evaluate(() => document.getElementById('composer-input').setSelectionRange(3, 9));
+  await disclosure(page, true);
+  check(await page.evaluate(() => { const el = document.getElementById('composer-input'); return el.selectionStart === 3 && el.selectionEnd === 9; }), 'disclosure changed draft selection');
+  fx.code = true;
+  fx.latest += 1;
+  // Trigger data delivery and geometry in the same browser task; neither can
+  // overwrite the pre-change reading anchor.
+  await page.evaluate(() => { document.dispatchEvent(new Event('visibilitychange')); document.getElementById('detail-information-toggle').click(); });
+  await until('simultaneous appended event', () => exists(page, `#timeline [data-key="e${fx.latest}"] code`));
+  await nextFrame(page);
+  await sameAnchor(page, anchor, 'simultaneous append/collapse');
+  await disclosure(page, true);
+  await sameAnchor(page, anchor, 'append while disclosed');
+  check((await textOf(page, '#timeline code')).includes('long_code_token'.repeat(30)), 'event code was clipped or lost');
+  await detailContrast(page, 'event code');
+  await page.locator('#timeline-earlier').scrollIntoViewIfNeeded();
+  await nextFrame(page);
+  anchor = await timelineAnchor(page);
+  await page.click('#timeline-earlier');
+  await until('earlier messages', () => exists(page, '[data-key="e1"]'));
+  await sameAnchor(page, anchor, 'prepend while disclosed');
+  await page.locator('.event-read').scrollIntoViewIfNeeded();
+  await nextFrame(page);
+  anchor = await timelineAnchor(page);
+  await page.click('.event-read');
+  await sheetReady(page, 'sheet-reader', 'expanded reader focus');
+  await detailContrast(page, 'message reader');
+  await page.keyboard.press('Escape');
+  await sameAnchor(page, anchor, 'reader close');
+  await page.locator('.tools-group').scrollIntoViewIfNeeded();
+  await nextFrame(page);
+  anchor = await timelineAnchor(page);
+  await page.click('.tools-group');
+  await textUntil(page, '#sheet-reader', 'cargo test', 'tool reader content');
+  await detailContrast(page, 'code reader');
+  await page.keyboard.press('Escape');
+  await sameAnchor(page, anchor, 'tools close');
+  if (width !== 1024) {
+    await page.setViewportSize({ width, height: 480 });
+    await nextFrame(page);
+    await sameAnchor(page, anchor, 'reduced height');
+    check((await detailGeometry(page)).timeline > 0, 'reduced-height timeline disappeared');
+    for (const sel of ['#composer-input', '#composer-send', '#composer-prompts']) {
+      await page.locator(sel).scrollIntoViewIfNeeded();
+      check(await page.locator(sel).evaluate((el) => { const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; }), `${sel} unreachable at reduced height`);
+    }
+    await noClippedControls(page, 'reduced height');
+    await page.setViewportSize({ width, height });
+    await nextFrame(page);
+    await sameAnchor(page, anchor, 'restore height');
+  }
+  check(await valueOf(page, '#composer-input') === 'draft line one\nline two\nline three\nline four', 'resize/disclosure changed draft');
+  check(fx.count('/api/agent/prompt') === 0, 'layout changes submitted a prompt');
+  await page.click('#tab-screen');
+  await assertScreenPinned(page, 'expanded screen');
+  await disclosure(page, false);
+  await assertScreenPinned(page, 'collapsed screen');
+  await disclosure(page, true);
+  await assertScreenPinned(page, 'screen expand');
+  await page.evaluate(() => { document.getElementById('screen-scroll').scrollTop = 100; });
+  await nextFrame(page);
+  await disclosure(page, false);
+  check(Math.abs((await screenGeometry(page)).scrollTop - 100) <= 2, 'collapse moved scrolled-up screen');
+  await disclosure(page, true);
+  await fixturePoll(page, fx, '/api/agent/screen');
+  check(Math.abs((await screenGeometry(page)).scrollTop - 100) <= 2, 'expand/poll moved scrolled-up screen');
+}
+
+async function detailSafety(open, width, scheme) {
+  const { page, fx } = await open({ viewport: { width, height: 480 }, colorScheme: scheme });
+  fx.header = 'long';
+  await openDetail(page);
+  await page.emulateMedia({ colorScheme: scheme });
+  await disclosure(page, true);
+  await page.fill('#composer-input', 'Saved draft\nsecond line\nthird line\nfourth line');
+  fx.fail.set('/api/agent/prompt', { mode: 'abort', times: 1 });
+  await page.click('#composer-send');
+  await textUntil(page, '#submission-unknown', 'Outcome unknown', 'saved submission feedback');
+  fx.fail.set('/api/history', { mode: 'abort', times: 1 });
+  await fixturePoll(page, fx);
+  await textUntil(page, '#banner-offline', 'Offline', 'disclosed offline feedback');
+  const reachable = async (selectors) => {
+    check((await detailGeometry(page)).timeline > 0, 'safety feedback removed the timeline');
+    for (const sel of selectors) {
+      await page.locator(sel).scrollIntoViewIfNeeded();
+      check(await page.locator(sel).evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        let top = 0, bottom = innerHeight;
+        for (let p = el.parentElement; p; p = p.parentElement) {
+          if (['auto', 'scroll', 'hidden'].includes(getComputedStyle(p).overflowY)) {
+            const b = p.getBoundingClientRect(); top = Math.max(top, b.top); bottom = Math.min(bottom, b.bottom);
+          }
+        }
+        return r.top >= top - 1 && r.bottom <= bottom + 1;
+      }), `${sel} clipped by the reduced-height layout`);
+    }
+  };
+  await reachable(['#banner-offline .link-button', '#submission-retry', '#submission-discard', '#composer-input', '#composer-send', '#composer-prompts']);
+  await detailContrast(page, `unknown/offline ${width} ${scheme}`);
+  await touchTargets(page, 'safety feedback');
+  await noClippedControls(page, 'safety feedback');
+  await fixturePoll(page, fx);
+  check(fx.count('/api/agent/prompt') === 1, 'disclosure/safety layout replayed a prompt');
+  await page.locator('#submission-retry').scrollIntoViewIfNeeded();
+  await page.click('#submission-retry');
+  await until('same-id retry resolved', async () => !(await exists(page, '#submission-unknown')));
+  const [first, retry] = fx.bodies('/api/agent/prompt');
+  check(first.submission_id === retry.submission_id && first.text === retry.text, 'safety retry changed identity');
+  fx.prompt = 'rejected';
+  await page.fill('#composer-input', 'Rejected prompt');
+  await page.click('#composer-send');
+  await textUntil(page, '#submission-failed', 'Refused', 'definite error feedback');
+  await reachable(['#submission-failed .link-button']);
+  await detailContrast(page, `failed ${scheme}`);
+  await page.click('#submission-failed .link-button');
+  await page.click('#composer-prompts');
+  await textUntil(page, '#sheet-prompts', 'Run the tests', 'past prompts sheet');
+  await detailContrast(page, `past prompts ${scheme}`);
+  await page.keyboard.press('Escape');
+  await page.click('#overflow-button');
+  await sheetReady(page, 'sheet-overflow', 'actions sheet focus');
+  await detailContrast(page, `actions ${scheme}`);
+  await page.click('#action-interrupt');
+  await sheetReady(page, 'sheet-interrupt-confirm', 'interrupt confirmation');
+  await detailContrast(page, `danger confirmation ${scheme}`);
+  await page.keyboard.press('Escape');
+  // Exercise the actual persistence warning with a denied browser storage write.
+  await page.evaluate(() => {
+    window.__yinzOriginalSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (key.includes('submission')) throw new DOMException('Fixture quota exceeded', 'QuotaExceededError');
+      return window.__yinzOriginalSetItem.call(this, key, value);
+    };
+  });
+  await page.fill('#composer-input', 'Persistence warning draft');
+  await textUntil(page, '#submission-persistence', 'not saving drafts', 'persistence feedback');
+  await detailContrast(page, `persistence ${scheme}`);
+  await reachable(['#composer-input', '#composer-prompts']);
+  await page.evaluate(() => { Storage.prototype.setItem = window.__yinzOriginalSetItem; });
+  await page.fill('#composer-input', 'Recovered persistent draft');
+  fx.retarget = true;
+  await fixturePoll(page, fx);
+  await textUntil(page, '#banner-retargeted', 'new run', 'retarget feedback');
+  await textUntil(page, '.stale-submissions', /new run|earlier conversation|identity changed/, 'stale draft feedback');
+  await reachable(['.submission-adopt', '.submission-discard-stale', '#composer-input']);
+  await detailContrast(page, `stale submissions ${scheme}`);
+}
+
+async function detailFallbacks(open) {
+  const { page, fx } = await open({ viewport: { width: 320, height: 480 } });
+  await openDetail(page);
+  await disclosure(page, true);
+  for (const variant of ['wrapped', 'custom', 'absent']) {
+    fx.header = variant;
+    await fixturePoll(page, fx);
+    check(await page.getAttribute('#detail-information-toggle', 'aria-expanded') === 'true', 'header variant reset disclosure');
+    if (variant === 'absent') check((await textOf(page, '#detail-information h2')).includes('Fix flaky test'), 'missing header lost full title fallback');
+    else {
+      await page.focus('#detail-information');
+      await page.keyboard.press('End');
+      await page.locator('#custom-information').scrollIntoViewIfNeeded();
+      check(await page.locator('#custom-information').isVisible(), 'custom hook control unreachable');
+      await disclosure(page, false);
+      await page.focus('#detail-information-toggle');
+      await page.keyboard.press('Tab');
+      check(await activeId(page) === 'overflow-button', 'collapsed custom link/action focusable');
+      await disclosure(page, true);
+    }
+    await noHorizontalOverflow(page, variant);
+  }
+  for (const state of ['busy', 'idle', 'waiting']) {
+    fx.live = { state, wait_needs_a_person: state === 'waiting' };
+    await fixturePoll(page, fx);
+    await until('live labelled state', () => exists(page, `.detail-summary .state-${state}`));
+    await detailContrast(page, `state ${state}`);
+  }
+  fx.live = { title: '', state: 'paused', host: 'remote host', current_session: false, session: 'peer', focused: true };
+  await fixturePoll(page, fx);
+  check((await textOf(page, '.detail-summary .state-text')) === 'paused', 'unknown state lost label');
+  check((await textOf(page, '.detail-summary .header-title')) === headerFields(fx, 'run-7').name, 'header name fallback lost');
+  for (const sel of ['.badge-host', '.badge-peer', '.badge-focused']) check(await page.locator(`#detail-information ${sel}`).isVisible(), `secondary badge missing: ${sel}`);
+  for (const status of ['unavailable', 'unsupported', 'expired', 'error', 'ok']) {
+    fx.usage = { status, windows: [], message: 'Fixture usage explanation' };
+    await fixturePoll(page, fx, '/api/usage');
+    check((await textOf(page, '#quota')).includes(status === 'ok' ? 'No usage windows' : status === 'unsupported' ? 'not supported' : status === 'expired' ? 'expired' : status === 'error' ? 'could not be read' : 'unavailable'), `usage ${status} feedback missing`);
+  }
+  // Usage transport errors are also discoverable inside the disclosure.
+  fx.fail.set('/api/usage', { mode: 'reply', times: 1, status: 503, body: { error: { message: 'Usage transport error' } } });
+  await page.reload();
+  await until('reloaded summary', () => exists(page, '#detail-information-toggle'));
+  check(await page.getAttribute('#detail-information-toggle', 'aria-expanded') === 'false', 'reload retained disclosure');
+  await disclosure(page, true);
+  await textUntil(page, '#quota', 'Usage transport error', 'usage HTTP error');
+  fx.gone = true;
+  await fixturePoll(page, fx);
+  await textUntil(page, '#banner-agent-gone', 'gone', 'gone agent banner');
+  check(!(await exists(page, '#overflow-button')), 'gone agent retained actions');
+  await page.click('#tab-details');
+  await page.click('#details-previous');
+  await textUntil(page, '#banner-stored', 'stored', 'stored run');
+  check(await page.getAttribute('#detail-information-toggle', 'aria-expanded') === 'false', 'new stored view retained disclosure');
+  await disclosure(page, true);
+  check(!(await exists(page, '#composer-input')), 'stored run offered composer');
+  await page.evaluate(() => { location.hash = '#/'; });
+  await until('list after stored view', () => exists(page, '.list-main'));
+  fx.gone = false;
+  fx.rows = [row(fx, AGENT_ID, 'waiting', { run: '', title: 'No recorded run' })];
+  await page.evaluate((h) => { location.hash = h; }, `#/a/${encodeURIComponent(AGENT_ID)}`);
+  await until('waiting no-run screen', () => exists(page, '#screen pre.screen'));
+  check(await page.getAttribute('#detail-information-toggle', 'aria-expanded') === 'false', 'no-run view not collapsed');
+  await disclosure(page, true);
+  check(await textOf(page, '#detail-information h2') === 'No recorded run', 'no-run full title missing');
+  check(await exists(page, '#composer-input'), 'no-run live composer missing');
 }
 
 async function compactAgentList(open, width, scheme) {
@@ -1338,6 +1779,7 @@ async function offlineRetryAfter(open) {
 async function draftAuthLoss(open) {
   const { page, fx } = await open();
   await openDetail(page);
+  await disclosure(page, true);
   await until('enabled composer', () => page.evaluate(() => { const e = document.getElementById('composer-input'); return e && !e.disabled; }));
   // Network failure while drafting: stale banner, draft kept, no redirect.
   await page.focus('#composer-input');
@@ -1362,6 +1804,7 @@ async function draftAuthLoss(open) {
 async function sendAuthLoss(open) {
   const { page, fx } = await open();
   await openDetail(page);
+  await disclosure(page, true);
   await until('enabled composer', () => page.evaluate(() => { const e = document.getElementById('composer-input'); return e && !e.disabled; }));
   await page.focus('#composer-input');
   const draft = 'Prompt sent as auth ends';
@@ -1388,6 +1831,7 @@ async function sendAuthLoss(open) {
 async function reloadRecovery(open) {
   const { page, fx } = await open();
   await openDetail(page);
+  await disclosure(page, true);
   await until('enabled composer', () => page.evaluate(() => { const e = document.getElementById('composer-input'); return e && !e.disabled; }));
   await page.focus('#composer-input');
   await page.keyboard.type('Network drops this reply');
@@ -1431,6 +1875,7 @@ async function reloadRecovery(open) {
 async function goneRetargetStored(open) {
   const { page, fx } = await open();
   await openDetail(page);
+  await disclosure(page, true);
   fx.gone = true;
   await until('agent gone banner', () => exists(page, '#banner-agent-gone'));
   check(!(await exists(page, '#overflow-button')) && !(await exists(page, '#composer-input')), 'actions still offered for a gone agent');
@@ -1438,6 +1883,7 @@ async function goneRetargetStored(open) {
   fx.gone = false;
   fx.retarget = true;
   await until('retarget banner', () => exists(page, '#banner-retargeted'), 15000);
+  check(await page.getAttribute('#detail-information-toggle', 'aria-expanded') === 'true', 'retarget reset disclosure');
   await until('route follows the new run', () => hashOf(page).includes('run=run-7b'));
   await textUntil(page, '#timeline', 'Retargeted run message', 'new run content');
   check(!((await textOf(page, '#timeline')) || '').includes('Message 45'), 'old run events survived the retarget');
@@ -1515,6 +1961,12 @@ async function main() {
   browser = await firefox.launch({ headless: true });
   console.log(`yinz web browser checks: Firefox ${browser.version()} via Playwright (PLAYWRIGHT_BROWSERS_PATH set), server ${ORIGIN}`);
   console.log('LIVE: pages, /static assets, /api/login, /api/session, /api/logout(-all). INTERCEPTED fixtures: /api/agents, /api/history, /api/hit, /api/event, /api/tools, /api/usage, /api/prompts, /api/agent/* (bearer re-checked live).');
+  if (process.env.YINZ_WEB_HEADER_BASELINE === '1') {
+    for (const width of [320, 390]) for (const scheme of ['light', 'dark']) {
+      await scenario(`header characterization ${width}px ${scheme}`, (open) => headerCharacterization(open, width, scheme));
+    }
+    return;
+  }
   await scenario('keyboard-only login, session-only token, repeated entry', keyboardLogin);
   await scenario('remembered login across tabs and contexts', rememberedLogin);
   await scenario('phone layout 320px: overflow, touch targets, text-only server strings', (open) => phoneLayout(open, 320));
@@ -1523,6 +1975,13 @@ async function main() {
     for (const scheme of ['light', 'dark']) await scenario(`compact agent list ${width}px ${scheme}`, (open) => compactAgentList(open, width, scheme));
   }
   await scenario('compact agent list 1024px desktop', (open) => compactAgentList(open, 1024, 'light'));
+  for (const width of [320, 390, 1024]) for (const scheme of ['light', 'dark']) {
+    await scenario(`compact detail ${width}px ${scheme}`, (open) => compactDetail(open, width, scheme));
+  }
+  await scenario('detail disclosure fallbacks and quota discovery', detailFallbacks);
+  for (const width of [320, 390]) for (const scheme of ['light', 'dark']) {
+    await scenario(`detail safety ${width}px ${scheme}`, (open) => detailSafety(open, width, scheme));
+  }
   await scenario('dark mode changes computed backgrounds', darkMode);
   await scenario('safe-area CSS and manifest', safeAreaManifest);
   await scenario('sheet focus trap, Escape and focus restore; keys and interrupt', sheetsKeyboard);

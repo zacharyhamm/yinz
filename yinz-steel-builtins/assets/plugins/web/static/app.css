@@ -222,10 +222,57 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 @keyframes sheet-in { from { transform: translateY(24px); opacity: 0; } }
 
 /* Detail */
-.detail-page { height: 100vh; height: 100dvh; display: flex; flex-direction: column; }
-.detail-header { position: relative; flex: none; }
+.detail-page {
+  --bg: #f1f5f9;
+  --surface: #ffffff;
+  --surface-2: #e8eef5;
+  --text: #0f172a;
+  --muted: #475569;
+  --border: #cbd5e1;
+  --accent: #1d4ed8;
+  --accent-text: #ffffff;
+  --prompt-bg: #dbeafe;
+  height: 100vh; height: 100dvh; display: flex; flex-direction: column;
+  background: var(--bg); color: var(--text);
+}
+@media (prefers-color-scheme: dark) {
+  .detail-page {
+    --bg: #0b1220;
+    --surface: #131f31;
+    --surface-2: #1e2c40;
+    --text: #e2e8f0;
+    --muted: #a8b6ca;
+    --border: #34455e;
+    --accent: #93c5fd;
+    --accent-text: #0b1220;
+    --prompt-bg: #17365a;
+  }
+}
+.detail-header {
+  position: relative; flex: 0 1 auto; min-height: calc(111px + var(--safe-top));
+  display: flex; flex-direction: column;
+}
+.detail-summary { flex: none; }
+.detail-summary .header-title { font-size: 18px; line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.detail-summary .state-badge { justify-self: start; max-width: 100%; padding: 2px 6px; overflow-wrap: anywhere; }
+#detail-information-toggle { flex: none; }
+#detail-information-toggle[aria-expanded="true"] { background: var(--surface-2); }
+.detail-information {
+  flex: 0 1 auto; min-height: 0; max-height: min(30dvh, 240px); overflow: auto;
+  overscroll-behavior: contain; overflow-wrap: anywhere;
+  margin: 4px 4px 0; padding: 6px 4px; border-top: 1px solid var(--border);
+}
+.detail-information[hidden] { display: none; }
+.detail-information h2 { font-size: 18px; }
+.detail-information .badges { margin-top: 6px; }
+.detail-information .quota { padding: 6px 0 0; }
+.detail-header .segmented { flex: none; margin-top: 4px; }
+.detail-page > .banners { flex: 0 2 auto; min-height: 0; max-height: 30dvh; overflow-y: auto; }
+/* One complete 44px banner action plus padding/margins must remain reachable. */
+.detail-page > .banners:not(:empty) { min-height: 86px; }
 .detail-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.detail-body.is-stale .timeline-scroll, .detail-body.is-stale .screen-html { opacity: 0.7; }
+/* The labelled stale banner carries freshness without fading readable text. */
+.detail-page .detail-body { min-height: 48px; }
 .panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .segmented { display: flex; gap: 4px; margin-top: 6px; padding: 3px; background: var(--surface-2); border-radius: 12px; }
 .segment { flex: 1; border: 0; background: transparent; font-weight: 600; color: var(--muted); }
@@ -245,6 +292,12 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
   padding: 8px calc(12px + var(--safe-right)) 16px calc(12px + var(--safe-left));
   display: flex; flex-direction: column; gap: 8px;
 }
+.detail-page .timeline-scroll {
+  padding-left: calc(8px + var(--safe-left)); padding-right: calc(8px + var(--safe-right)); gap: 6px;
+  overflow-anchor: none;
+}
+.detail-page .event { max-width: 96%; padding: 6px 10px; flex: none; }
+.detail-page .screen-scroll { overflow-anchor: none; }
 .timeline-earlier { display: flex; justify-content: center; padding: 4px 0; }
 .event {
   max-width: 92%; padding: 8px 12px; border-radius: var(--radius);
@@ -306,6 +359,12 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
   padding: 8px calc(8px + var(--safe-right)) calc(8px + var(--safe-bottom)) calc(8px + var(--safe-left));
   display: grid; gap: 8px; max-height: 60dvh; overflow-y: auto;
 }
+.detail-page .composer-dock {
+  flex: 0 1 auto; min-height: calc(57px + var(--safe-bottom));
+  padding: 6px calc(6px + var(--safe-right)) calc(6px + var(--safe-bottom)) calc(6px + var(--safe-left));
+}
+.detail-page .composer-input { padding: 9px 10px; }
+.detail-page .composer-input::placeholder { color: var(--muted); opacity: 1; }
 .composer { display: grid; gap: 8px; min-width: 0; }
 .composer-row { display: flex; align-items: flex-end; gap: 6px; min-width: 0; }
 .composer-input {
@@ -363,6 +422,7 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
   .sheet { border-radius: 16px; margin-bottom: 5vh; }
   .sheet-layer { align-items: center; }
   .event { max-width: 80%; }
+  .detail-page .event { max-width: 80%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

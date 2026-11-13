@@ -5,7 +5,7 @@ import { sameTarget, targetOf, validTarget } from '../submission.js';
 import { detailHash } from '../app-route.js';
 import {
   html, useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, usePoller, useNow,
-  ServerHtml, RowBadges, QuickKeys, QuotaBar, Banner, responseText, keyName, cx,
+  ServerHtml, StateBadge, RowBadges, QuickKeys, QuotaBar, Banner, responseText, keyName, cx,
 } from './ui.js';
 import { Sheet, ConfirmSheet } from './sheets.js';
 import { Composer, StaleSubmissions } from './composer.js';
@@ -15,6 +15,39 @@ const KIND_LABELS = { prompt: 'You', message: 'Agent', result: 'Result', plan: '
 
 function kindLabel(kind) {
   return KIND_LABELS[kind] || (typeof kind === 'string' ? kind : 'Event');
+}
+
+// A resize can clamp scrollTop and dispatch scroll before ResizeObserver runs.
+// Keep the last reading position until correction, rather than treating that
+// browser-generated scroll as a user leaving the bottom. The explicit disclosure
+// captures before reflow; other geometry changes use the same scroll memory.
+function useScrollLayout(ref, capture, restore, content, layoutKey, beforeResize, present = true) {
+  const size = useRef(null);
+  const measure = useCallback(() => {
+    const el = ref.current;
+    if (!el || !size.current || el.clientWidth !== size.current.width || el.clientHeight !== size.current.height) return;
+    capture(el);
+  }, [capture]);
+  const correct = useCallback(() => {
+    const el = ref.current;
+    if (!el || !el.clientWidth || !el.clientHeight) return;
+    restore(el);
+    size.current = { width: el.clientWidth, height: el.clientHeight };
+    capture(el);
+  }, [capture, restore]);
+  useLayoutEffect(correct, [content, layoutKey]);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    beforeResize.current = measure;
+    const observer = new ResizeObserver(correct);
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      if (beforeResize.current === measure) beforeResize.current = null;
+    };
+  }, [correct, measure, present]);
+  return measure;
 }
 
 function TimelineItem({ item, onTools, onEvent }) {
@@ -40,13 +73,11 @@ function TimelineItem({ item, onTools, onEvent }) {
  * the first visible item is kept in place (prepends, group splits, reader close)
  * and a "New messages" control appears.
  */
-function Timeline({ items, memory, earlier, loadingEarlier, onEarlier, onTools, onEvent, loaded }) {
+function Timeline({ items, memory, earlier, loadingEarlier, onEarlier, onTools, onEvent, loaded, layoutKey, beforeResize }) {
   const ref = useRef(null);
   const [fresh, setFresh] = useState(false);
   const lastKey = useRef(memory.lastKey);
-  const measure = useCallback(() => {
-    const el = ref.current;
-    if (!el) return;
+  const capture = useCallback((el) => {
     memory.atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
     if (memory.atBottom) setFresh(false);
     const top = el.scrollTop;
@@ -58,23 +89,24 @@ function Timeline({ items, memory, earlier, loadingEarlier, onEarlier, onTools, 
       }
     }
   }, [memory]);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
+  const restore = useCallback((el) => {
     // Write only when the position must change: assigning scrollTop during a touch
     // drag or fling can stop momentum scrolling.
     if (memory.atBottom) {
       if (el.scrollHeight - el.scrollTop - el.clientHeight > 1) el.scrollTop = el.scrollHeight;
     } else if (memory.anchor) {
       const node = [...el.querySelectorAll('[data-key]')].find((n) => n.getAttribute('data-key') === memory.anchor.key);
-      const target = node ? node.offsetTop - memory.anchor.offset : null;
+      const target = node ? Math.max(0, Math.min(el.scrollHeight - el.clientHeight, node.offsetTop - memory.anchor.offset)) : null;
       if (target !== null && Math.abs(el.scrollTop - target) > 1) el.scrollTop = target;
     }
+  }, [memory]);
+  useLayoutEffect(() => {
     const last = items.length ? items[items.length - 1].key : null;
     if (!memory.atBottom && lastKey.current !== null && last !== lastKey.current) setFresh(true);
     lastKey.current = last;
     memory.lastKey = last;
   }, [items]);
+  const measure = useScrollLayout(ref, capture, restore, items, layoutKey, beforeResize);
   const toBottom = () => {
     const el = ref.current;
     if (!el) return;
@@ -155,12 +187,12 @@ function ToolsReaderSheet({ env, item, onClose }) {
   <//>`;
 }
 
-function ScreenPanel({ env, live, enabled, onTargetGone }) {
+function ScreenPanel({ env, live, enabled, onTargetGone, layoutKey, beforeResize }) {
   const ref = live && live.ref && validTarget(live.ref) ? targetOf(live.ref) : null;
   const now = useNow(1000);
   const [busy, setBusy] = useState(false);
   const scroller = useRef(null);
-  const pinned = useRef(true);
+  const position = useRef({ pinned: true, top: 0 });
   const [state, refresh] = usePoller({
     key: ref ? `screen:${ref.id}|${ref.kind}|${ref.session_id}` : 'screen:none',
     enabled: !!ref && enabled,
@@ -188,15 +220,16 @@ function ScreenPanel({ env, live, enabled, onTargetGone }) {
   const markup = data ? data.html : null;
   // The question a waiting agent asks is at the bottom of its screen, so the output
   // starts pinned to its newest line and stays there unless the user scrolls up.
-  useLayoutEffect(() => {
-    const el = scroller.current;
-    if (!el || !pinned.current) return;
-    if (el.scrollHeight - el.scrollTop - el.clientHeight > 1) el.scrollTop = el.scrollHeight;
-  }, [markup]);
-  const onScroll = () => {
-    const el = scroller.current;
-    if (el) pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
-  };
+  const capture = useCallback((el) => {
+    position.current.pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
+    position.current.top = el.scrollTop;
+  }, []);
+  const restore = useCallback((el) => {
+    const target = position.current.pinned ? el.scrollHeight - el.clientHeight
+      : Math.max(0, Math.min(el.scrollHeight - el.clientHeight, position.current.top));
+    if (Math.abs(el.scrollTop - target) > 1) el.scrollTop = target;
+  }, []);
+  const onScroll = useScrollLayout(scroller, capture, restore, markup, layoutKey, beforeResize, !!ref);
   if (!ref) return html`<p class="empty">No live agent to read.</p>`;
   const response = data && data.response;
   const failed = response && response.outcome && response.outcome !== 'ok' && response.outcome !== 'completed';
@@ -253,6 +286,8 @@ export function DetailView({ env, route }) {
   const bump = () => setVersion((v) => v + 1);
   const [tab, setTabState] = useState(route.tab);
   const [sheet, setSheet] = useState(null);
+  const [informationOpen, setInformationOpen] = useState(false);
+  const beforeResize = useRef(null);
   const [retargetNotice, setRetargetNotice] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const earlierController = useRef(null);
@@ -408,17 +443,27 @@ export function DetailView({ env, route }) {
 
   return html`<div class="page detail-page">
     <header class="app-header detail-header" id="detail-header">
-      <div class="header-row">
+      <div class="header-row detail-summary">
         <button type="button" class="icon-button" id="detail-back" aria-label="Back" onClick=${back}>‹</button>
         <div class="header-main">
-          ${store && store.meta.header_html ? html`<${ServerHtml} html=${store.meta.header_html} class="header-html" id="detail-header-html" />`
-            : html`<h1 class="header-title">${title}</h1>`}
-          ${live ? html`<${RowBadges} row=${live} />` : null}
+          <h1 class="header-title" title=${title}>${title}</h1>
+          ${live ? html`<${StateBadge} row=${live} />` : null}
         </div>
+        <button type="button" class="icon-button" id="detail-information-toggle"
+          aria-label=${`${informationOpen ? 'Hide' : 'Show'} agent information`} aria-expanded=${String(informationOpen)} aria-controls="detail-information"
+          onClick=${() => { if (beforeResize.current) beforeResize.current(); setInformationOpen((open) => !open); }}>
+          <span aria-hidden="true">ⓘ</span>
+        </button>
         ${actions && currentRef ? html`<button type="button" class="icon-button" id="overflow-button" aria-label="More actions" aria-haspopup="dialog"
           onClick=${() => setSheet({ type: 'overflow' })}>⋯</button>` : null}
       </div>
-      ${live ? html`<${QuotaBar} usage=${usage && usage.data && usage.data.usage} error=${usage && !usage.data && usage.error ? describeError(usage.error) : null} />` : null}
+      <section id="detail-information" class="detail-information" aria-label="Agent information" tabindex="0" hidden=${!informationOpen}>
+        <h2 class="information-title">${title}</h2>
+        ${store && store.meta.header_html ? html`<${ServerHtml} html=${store.meta.header_html} class="header-html" id="detail-header-html" />`
+          : null}
+        ${live ? html`<${RowBadges} row=${live} showState=${false} />` : null}
+        ${live ? html`<${QuotaBar} usage=${usage && usage.data && usage.data.usage} error=${usage && !usage.data && usage.error ? describeError(usage.error) : null} />` : null}
+      </section>
       <div class="segmented" role="tablist" aria-label="Agent views">
         ${['timeline', 'screen', 'details'].map((t) => html`<button type="button" role="tab" id=${`tab-${t}`} aria-controls=${`panel-${t}`}
           aria-selected=${activeTab === t ? 'true' : 'false'} class=${cx('segment', activeTab === t && 'segment-active')}
@@ -437,10 +482,10 @@ export function DetailView({ env, route }) {
     </div>
     <main class=${cx('detail-body', stale && 'is-stale')} id="main">
       <div id=${`panel-${activeTab}`} role="tabpanel" aria-labelledby=${`tab-${activeTab}`} class="panel">
-        ${activeTab === 'timeline' ? html`<${Timeline} items=${items} memory=${memory} loaded=${!store || store.loaded}
+        ${activeTab === 'timeline' ? html`<${Timeline} items=${items} memory=${memory} loaded=${!store || store.loaded} layoutKey=${informationOpen} beforeResize=${beforeResize}
           earlier=${store && !!store.earlierRequest()} loadingEarlier=${loadingEarlier} onEarlier=${loadEarlier}
           onTools=${(item) => setSheet({ type: 'tools', item })} onEvent=${(item) => setSheet({ type: 'event', item })} />` : null}
-        ${activeTab === 'screen' ? html`<${ScreenPanel} env=${env} live=${live} enabled=${actions} onTargetGone=${() => refreshTail()} />` : null}
+        ${activeTab === 'screen' ? html`<${ScreenPanel} env=${env} live=${live} enabled=${actions} layoutKey=${informationOpen} beforeResize=${beforeResize} onTargetGone=${() => refreshTail()} />` : null}
         ${activeTab === 'details' ? html`<div class="details-panel">
           ${store && store.meta.details_html ? html`<${ServerHtml} html=${store.meta.details_html} class="details-html" id="details" />` : html`<p class="empty">No details yet.</p>`}
           <div class="details-nav">

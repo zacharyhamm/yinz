@@ -367,15 +367,39 @@ Yinz. The test is `#[ignore]`d, so the unfiltered integration suite and
 `cargo x ci check` skip it; select it with `--run-ignored only`. Selected without
 its tooling, it fails with the provisioning command instead of skipping.
 
-The browser fixture mirrors the default agent-row structure and is paired with
-the real Scheme route tests for preview boundaries, Unicode, escaping and raw
+The browser fixture mirrors the default agent-row and agent-header structures
+and is paired with the real Scheme route tests for preview boundaries, Unicode, escaping and raw
 field preservation. List checks cover compact previews, contrast, density,
 wrapping, badges, actions and focus at 320px and 390px in both color schemes,
-plus a desktop smoke and successful empty-list recovery. Detail and reader checks
-preserve state labels and longer content; existing freshness, offline/retry,
-retarget and authentication scenarios also run. Screenshots are saved under
-`target/web-browser-results/`. These are Firefox emulation checks, not physical
-phone or iOS Safari coverage.
+plus a desktop smoke and successful empty-list recovery. Detail checks use the
+same header object to generate short/long escaped default markup, with additional
+missing, wrapped and custom hook variants. At exact 320×640 and 390×844 CSS
+viewports in both themes, the collapsed header (including tabs) must be ≤120px,
+the idle empty-draft composer ≤64px, and the healthy timeline ≥450px/650px.
+These budgets exclude actual safe-area insets and warning/submission panels.
+The runner verifies media emulation again after native login/navigation.
+
+Disclosure checks use click, Enter and Space, verify labels/ARIA, collapsed tab
+order, scroll access, focus across confirmed polls and open state across tabs,
+reload, retarget and fallback views. Timeline/Screen checks cover pinned and
+scrolled reading positions across expansion, draft reflow and resizing; readers,
+prepends and unchanged-poll scroll writes remain covered. Resolved/composited
+text colors must reach 4.5:1 and focus outlines 3:1, including readers, sheets and
+safety feedback. A 1024×768 detail smoke covers both themes and desktop widths.
+Existing freshness, offline/retry, retarget, authentication, prompt persistence
+and same-submission retry scenarios also run.
+
+320×480 and 390×480 checks approximate reduced keyboard space: the timeline
+retains positive height and composer controls and safety feedback remain
+reachable in their scrolling regions. These are Firefox emulation checks, not
+physical touch, virtual-keyboard opening, Tailscale, iOS Safari or safe-area
+hardware coverage. Masked detail screenshots and geometry comparisons are saved
+under `target/web-browser-results/`. For pre-change characterization only, set
+`YINZ_WEB_HEADER_BASELINE=1` on the same browser command; it records geometry for
+the short/long fixtures without asserting the final budgets. Characterization
+is not acceptance verification, and baseline JSON is optional context for final
+logs, never a substitute for deterministic assertions. For a diagnostic subset,
+`YINZ_WEB_BROWSER_FILTER` selects scenario names; leave it unset for acceptance.
 
 Provision both inside this worktree before running it:
 

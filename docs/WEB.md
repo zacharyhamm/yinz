@@ -253,9 +253,15 @@ plugin configuration or secrets.
   **Open** button. The header shows how long ago the list was updated and the
   serving session. The menu has **Log out** and **Log out everywhere**, which
   asks for confirmation.
-- **Agent detail** (`#/a/<id>?run=<run>&tab=timeline|screen|details`): the live
-  header, a provider quota bar and three tabs. A waiting agent opens on
-  **Screen**; others open on **Timeline**.
+- **Agent detail** (`#/a/<id>?run=<run>&tab=timeline|screen|details`): a compact
+  title and labelled live state, Back, **Agent information** (ⓘ), available
+  actions and three tabs. Agent information starts collapsed on phones and
+  desktop. Open it for the full title, complete server header (including custom
+  hook output), host/session/focus badges and provider quota or usage errors.
+  This labelled region scrolls when its content is long. Its open/closed choice
+  survives polling, tab changes and a live agent moving to a new run; leaving
+  or reloading the detail view resets it. Expanding it preserves the draft and
+  reading position. A waiting agent opens on **Screen**; others open on **Timeline**.
   - **Timeline** keeps the newest message at the bottom unless you scroll up,
     in which case a **New messages** button appears. **Load earlier** follows
     the native `earlier` navigation. Tapping a message opens its reader; tool
