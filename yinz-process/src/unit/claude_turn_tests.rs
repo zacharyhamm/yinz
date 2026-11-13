@@ -203,7 +203,7 @@ fn missing_transcripts_and_exited_processes_are_unavailable() {
     let process = sysinfo::Pid::from_u32(std::process::id());
     let mut system = System::new();
     system.refresh_processes(ProcessesToUpdate::Some(&[process]), true);
-    let started = system.process(process).unwrap().start_time();
+    let started = start_token(system.process(process).unwrap()).unwrap();
     let observation = Observation {
         kind: "claude".into(),
         hook: HookEvent {
@@ -237,7 +237,7 @@ fn missing_transcripts_and_exited_processes_are_unavailable() {
             transcript_path: Some(path.to_string_lossy().into_owned()),
             ..hook()
         },
-        process: Some((std::process::id(), started + 2)),
+        process: Some((std::process::id(), started + 10)),
         ..observation
     };
     assert!(follow_with_limits(
@@ -273,19 +273,17 @@ fn a_partial_transcript_record_is_not_completion() {
 }
 
 #[test]
-fn alive_tolerates_one_second_of_boot_time_rounding() {
-    // Another System's btime can differ by a truncated second; a wider gap is another process.
+fn alive_requires_the_exact_start_token_across_systems() {
+    // `observation` and `alive` load the process in separate Systems; the token is exact.
     let base = observation(Path::new("/nonexistent/yinz-claude.jsonl"), None);
     let (pid, started) = base.process.unwrap();
     let with_start = |start: u64| Observation {
         process: Some((pid, start)),
         ..base.clone()
     };
-    for start in [started - 1, started, started + 1] {
-        alive(&mut System::new(), &with_start(start))
-            .unwrap_or_else(|error| panic!("start {start} vs {started}: {error:#}"));
-    }
-    for start in [started - 2, started + 2] {
+    alive(&mut System::new(), &with_start(started))
+        .unwrap_or_else(|error| panic!("start {started}: {error:#}"));
+    for start in [started - 1, started + 1] {
         assert!(
             alive(&mut System::new(), &with_start(start)).is_err(),
             "start {start} vs {started} names another process"
@@ -309,7 +307,7 @@ fn observation(path: &std::path::Path, marker: Option<PathBuf>) -> Observation {
         },
         process: Some((
             std::process::id(),
-            system.process(pid).unwrap().start_time(),
+            start_token(system.process(pid).unwrap()).unwrap(),
         )),
         conversation_file: marker,
         claude_status: None,
@@ -421,7 +419,7 @@ fn claude_early_interruption_uses_the_registry_without_a_transcript_boundary() {
 
     // A reused PID cannot be confirmed by a registry left by its previous process.
     std::fs::write(&transcript, format!("{prompt}\n")).unwrap();
-    observation.process.as_mut().unwrap().1 += 2;
+    observation.process.as_mut().unwrap().1 += 10;
     assert_eq!(
         follow(&observation).err().unwrap().to_string(),
         "claude process exited"
@@ -434,7 +432,7 @@ fn a_transcript_ended_turn_reports_registry_background_work() {
     let transcript = dir.path().join("turn.jsonl");
     let status_path = dir.path().join("status.json");
     let mut observation = observation(&transcript, None);
-    let started = observation.process.unwrap().1 * 1000;
+    let started = started_unix_ms(observation.process.unwrap().1).unwrap();
     observation.claude_status = Some(ClaudeStatusObservation {
         path: status_path.clone(),
         after_ms: now_ms(),
@@ -462,6 +460,7 @@ fn a_transcript_ended_turn_reports_registry_background_work() {
     };
     // Background agents keep the busy record written before this prompt; it outlasts the
     // settle period. Records from before this process started, or of other kinds, are unknown.
+    // `since_ms` rereads a boot time that can move by a second, so stay outside that.
     std::fs::write(&status_path, registry("busy", started + 1)).unwrap();
     let settling = Instant::now();
     assert_eq!(background(&observation), Some(true));
@@ -475,7 +474,7 @@ fn a_transcript_ended_turn_reports_registry_background_work() {
         std::fs::write(&status_path, registry(status, started + 1)).unwrap();
         assert_eq!(background(&observation), expected, "{status}");
     }
-    std::fs::write(&status_path, registry("busy", started.saturating_sub(1001))).unwrap();
+    std::fs::write(&status_path, registry("busy", started.saturating_sub(3000))).unwrap();
     assert_eq!(background(&observation), None);
     std::fs::remove_file(&status_path).unwrap();
     assert_eq!(background(&observation), None);
@@ -1132,7 +1131,7 @@ fn agy_missing_identity_process_exit_replacement_and_session_end_are_unavailable
     observation.conversation_file = None;
     assert!(follow_with_api(&observation, None).is_err());
     observation.hook = original;
-    observation.process.as_mut().unwrap().1 += 2;
+    observation.process.as_mut().unwrap().1 += 10;
     assert!(follow_with_api(&observation, None).is_err());
 }
 
@@ -1691,7 +1690,7 @@ fn claude_permission_registry_requires_positive_reason_and_guarded_identity() {
         std::fs::write(&reader.path, record.to_string()).unwrap();
         assert_eq!(
             reader
-                .permission((123, 456), "conversation")
+                .permission_since((123, 456), 455_000, "conversation")
                 .map(|s| s.status),
             expected,
             "{change}"
@@ -1862,7 +1861,7 @@ fn restored_claude_status_requires_matching_process_conversation_and_known_state
         path: path.clone(),
         after_ms: 0,
     };
-    assert_eq!(reader.current((7, 100), "conversation"), None);
+    assert_eq!(reader.status(7, "conversation", 99_000), None);
     for (pid, session, timestamp, accepted) in [
         (7, "conversation", 101000, true),
         (8, "conversation", 101000, false),
@@ -1870,10 +1869,10 @@ fn restored_claude_status_requires_matching_process_conversation_and_known_state
         (7, "conversation", 98000, false),
     ] {
         std::fs::write(&path, json!({"pid":pid,"sessionId":session,"kind":"interactive","statusUpdatedAt":timestamp,"status":"idle"}).to_string()).unwrap();
-        assert_eq!(reader.current((7, 100), "conversation").is_some(), accepted);
+        assert_eq!(reader.status(7, "conversation", 99_000).is_some(), accepted);
     }
     std::fs::write(&path, "partial rewrite").unwrap();
-    assert_eq!(reader.current((7, 100), "conversation"), None);
+    assert_eq!(reader.status(7, "conversation", 99_000), None);
     for (status, state) in [
         ("idle", Some(AgentState::Idle)),
         ("busy", Some(AgentState::Busy)),
@@ -2092,13 +2091,12 @@ fn restored_claude_poll_loads_only_the_observed_process() {
         system.processes().keys().copied().collect::<Vec<_>>(),
         [pid]
     );
-    // The poll compares later refreshes of this same System with this start
-    // time, so both sides share one boot time. Refresh as the poll does.
+    // The poll compares later refreshes of this System with this start token.
     system.refresh_processes_specifics(
         sysinfo::ProcessesToUpdate::Some(&[pid]),
         true,
         sysinfo::ProcessRefreshKind::nothing().without_tasks(),
     );
-    assert_eq!(system.process(pid).unwrap().start_time(), started);
+    assert_eq!(start_token(system.process(pid).unwrap()), Some(started));
     assert!(restored_observation(u32::MAX).is_none());
 }

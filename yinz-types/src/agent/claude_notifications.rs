@@ -15,6 +15,9 @@ pub fn valid_id(id: &str) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Source {
     pub pid: u32,
+    /// An exact per-boot start token from `yinz_process::process_start::start_token`, not a
+    /// timestamp. It is equal for one incarnation in every process and increases across
+    /// incarnations, so it can key markers and order replacements.
     pub started: u64,
 }
 

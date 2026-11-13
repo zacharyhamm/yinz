@@ -1,4 +1,5 @@
 //! Detached, host-local observation of Claude and AGY turn boundaries.
+use crate::process_start::{start_token, started_unix_ms};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -28,18 +29,16 @@ pub fn observe_restored(
     conversation: &str,
     publish: impl Fn(Option<yinz_types::agent::AgentState>) -> bool,
 ) {
-    let Some(pid) = restored_claude_process(root) else {
+    let Some((pid, discovered)) = restored_claude_process(root) else {
         return;
     };
     let Some((mut system, reader, started)) = restored_observation(pid) else {
         return;
     };
-    // sysinfo fixes boot time per System, so a start time from the discovery
-    // scan is not comparable here. The pid could only have been reused between
-    // the two loads, so confirm it still names Claude instead.
+    // The pid could have been reused between the two loads, possibly by another Claude.
     if !system
         .process(sysinfo::Pid::from_u32(pid))
-        .is_some_and(is_claude_process)
+        .is_some_and(|process| is_claude_process(process) && same_incarnation(process, discovered))
     {
         return;
     }
@@ -58,11 +57,8 @@ pub fn observe_restored(
         {
             return;
         }
-        if reader
-            .process_record(
-                identity.0,
-                identity.1.saturating_sub(1).saturating_mul(1000),
-            )
+        if since_ms(identity.1)
+            .and_then(|since| reader.process_record(identity.0, since))
             .is_some_and(|record| record["sessionId"].as_str() != Some(conversation))
         {
             return;
@@ -82,11 +78,10 @@ pub fn observe_restored(
     }
 }
 
-/// Load only the observed process for the restored poll, with its start time.
+/// Load only the observed process for the restored poll, with its start token.
 ///
 /// sysinfo keeps `/proc/<pid>/stat` open for every process it has loaded, so
-/// the day-long poll must never keep the host-wide discovery scan. The start
-/// time comes from this System because each System computes its own boot time.
+/// the day-long poll must never keep the host-wide discovery scan.
 fn restored_observation(pid: u32) -> Option<(System, ClaudeStatusObservation, u64)> {
     let mut system = System::new();
     let pid = sysinfo::Pid::from_u32(pid);
@@ -99,16 +94,16 @@ fn restored_observation(pid: u32) -> Option<(System, ClaudeStatusObservation, u6
             .with_environ(UpdateKind::Always),
     );
     let process = system.process(pid)?;
-    let started = process.start_time();
+    let started = start_token(process)?;
     let reader = ClaudeStatusObservation::for_process(process)?;
     Some((system, reader, started))
 }
 
-/// Find the single Claude process under `root`.
+/// Find the single Claude process under `root`, with its start token.
 ///
 /// The host-wide scan holds an open file per process until it is dropped, so it
 /// stays local to discovery.
-fn restored_claude_process(root: u32) -> Option<u32> {
+fn restored_claude_process(root: u32) -> Option<(u32, u64)> {
     let mut system = System::new();
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
@@ -126,14 +121,16 @@ fn restored_claude_process(root: u32) -> Option<u32> {
         for _ in 0..32 {
             let Some(parent) = ancestor else { break };
             if parent.as_u32() == root {
-                candidates.push(pid.as_u32());
+                if let Some(started) = start_token(process) {
+                    candidates.push((pid.as_u32(), started));
+                }
                 break;
             }
             ancestor = system.process(parent).and_then(|p| p.parent());
         }
     }
     match candidates.as_slice() {
-        [pid] => Some(*pid),
+        [identity] => Some(*identity),
         _ => None,
     }
 }
@@ -292,11 +289,20 @@ impl ClaudeStatusObservation {
         (pid, started): (u32, u64),
         session: &str,
     ) -> Option<yinz_types::agent::claude_permissions::Sample> {
+        self.permission_since((pid, started), since_ms(started)?, session)
+    }
+
+    fn permission_since(
+        &self,
+        (pid, started): (u32, u64),
+        since_ms: u64,
+        session: &str,
+    ) -> Option<yinz_types::agent::claude_permissions::Sample> {
         use yinz_types::agent::{
             claude_notifications::Source,
             claude_permissions::{Sample, Status},
         };
-        let record = self.record(pid, session, started.saturating_sub(1).saturating_mul(1000))?;
+        let record = self.record(pid, session, since_ms)?;
         let status = match record["status"].as_str()? {
             "busy" | "shell" | "idle" => Status::Inactive,
             "waiting" => match record["waitingFor"].as_str()? {
@@ -332,7 +338,7 @@ impl ClaudeStatusObservation {
     /// rewritten only when its status changes, so background agents that outlive a turn keep
     /// the `busy` written when it started, before that turn's prompt.
     fn current(&self, (pid, started): (u32, u64), session: &str) -> Option<String> {
-        self.status(pid, session, started.saturating_sub(1).saturating_mul(1000))
+        self.status(pid, session, since_ms(started)?)
     }
 }
 
@@ -523,12 +529,15 @@ fn is_claude_process(process: &sysinfo::Process) -> bool {
         })
 }
 
-/// Whether `process` is the incarnation recorded as `started`. On Linux, sysinfo adds a
-/// per-System btime, which the kernel truncates to whole seconds and moves when the clock
-/// steps, so a start time captured by another System can differ by one second.
+/// Whether `process` is the incarnation whose start token is `started`.
 fn same_incarnation(process: &sysinfo::Process, started: u64) -> bool {
-    process.start_time().abs_diff(started) <= 1
-        && process.status() != sysinfo::ProcessStatus::Zombie
+    start_token(process) == Some(started) && process.status() != sysinfo::ProcessStatus::Zombie
+}
+
+/// The earliest registry update this incarnation could have written. The wall-clock start
+/// derives from a boot time that can be off by a second, so allow one second before it.
+fn since_ms(started: u64) -> Option<u64> {
+    started_unix_ms(started).map(|ms| ms.saturating_sub(1000))
 }
 
 fn agent_ancestor(kind: &str) -> Option<(u32, u64)> {
@@ -561,7 +570,7 @@ fn agent_ancestor(kind: &str) -> Option<(u32, u64)> {
             _ => false,
         };
         if matches {
-            return Some((pid.as_u32(), process.start_time()));
+            return start_token(process).map(|started| (pid.as_u32(), started));
         }
         pid = process.parent()?;
     }

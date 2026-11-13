@@ -1634,7 +1634,7 @@ fn issue85_observer_ack_loss(interrupted: bool) {
     let pid = sysinfo::Pid::from_u32(std::process::id());
     let mut system = sysinfo::System::new();
     system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
-    let started = system.process(pid).unwrap().start_time();
+    let started = yinz_process::process_start::start_token(system.process(pid).unwrap()).unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_yinz"))
         .arg("--claude-turn-observer")
         .env("YINZ_SOCKET_DIR", dir.path())

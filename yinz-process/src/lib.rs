@@ -6,6 +6,7 @@ pub mod claude_turn;
 pub mod command;
 pub mod liveness;
 pub mod pane_context;
+pub mod process_start;
 pub mod pty_host;
 pub mod ssh;
 

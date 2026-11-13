@@ -1,5 +1,6 @@
 //! Non-blocking, execution-host palette discovery for foreground agents.
 use super::{ExecutionTarget, LaunchContext};
+use crate::process_start::start_token;
 use std::{
     collections::BTreeMap,
     ffi::OsString,
@@ -56,10 +57,13 @@ impl Detector {
             );
         }
         let process = pid.and_then(|pid| system.process(sysinfo::Pid::from_u32(pid)));
-        let identity = process.map(|p| Identity {
-            pid: p.pid().as_u32(),
-            started: p.start_time(),
-            argv: p.cmd().to_vec(),
+        // sysinfo's start time moves with each System's boot time; the token is exact.
+        let identity = process.and_then(|p| {
+            Some(Identity {
+                pid: p.pid().as_u32(),
+                started: start_token(p)?,
+                argv: p.cmd().to_vec(),
+            })
         });
         if self.identity != identity {
             self.identity = identity;
@@ -188,7 +192,7 @@ impl Detector {
                     if identity.as_ref()
                         != Some(&Identity {
                             pid: pid.as_u32(),
-                            started: p.start_time(),
+                            started: start_token(p).context("agent process disappeared")?,
                             argv: p.cmd().to_vec(),
                         })
                     {
