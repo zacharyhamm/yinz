@@ -1240,3 +1240,78 @@ fn collapsed_stack_placement_has_usable_startup_geometry_without_changing_conten
             > 0
     );
 }
+
+#[test]
+fn cell_pixel_geometry_adjusted_metrics_update_without_grid_changes_for_each_client() {
+    for report_first in [true, false] {
+        let (mut screen, capture) =
+            create_new_screen_with_theme_capture(Size { cols: 80, rows: 20 });
+        new_tab(&mut screen, 1, TabId::new(0));
+        let second = ClientId::new(2);
+        screen.add_client(second).unwrap();
+        screen
+            .set_client_size(second, Size { cols: 80, rows: 20 })
+            .unwrap();
+        for (client, cell) in [
+            (
+                CLIENT_1,
+                SizeInPixels {
+                    width: 12,
+                    height: 25,
+                },
+            ),
+            (
+                second,
+                SizeInPixels {
+                    width: 16,
+                    height: 30,
+                },
+            ),
+        ] {
+            for cell in [
+                SizeInPixels {
+                    width: 8,
+                    height: 20,
+                },
+                cell,
+            ] {
+                let size = Size { cols: 80, rows: 20 };
+                let report = PixelDimensions {
+                    character_cell_size: Some(cell),
+                    text_area_size: Some(SizeInPixels {
+                        width: 80 * cell.width,
+                        height: 20 * cell.height,
+                    }),
+                    text_area_grid_size: Some(size),
+                };
+                if report_first {
+                    screen.update_pixel_dimensions(client, report);
+                    screen.set_client_size(client, size).unwrap();
+                } else {
+                    screen.set_client_size(client, size).unwrap();
+                    screen.update_pixel_dimensions(client, report);
+                }
+                assert_eq!(screen.cell_pixel_size(client), Some(cell));
+                assert!(capture.drain_plugin_updates().contains(&(
+                    None,
+                    Some(client),
+                    Event::CellPixelSizeChanged(Some(cell))
+                )));
+            }
+        }
+        assert_eq!(
+            screen.cell_pixel_size(CLIENT_1),
+            Some(SizeInPixels {
+                width: 12,
+                height: 25
+            })
+        );
+        assert_eq!(
+            screen.cell_pixel_size(second),
+            Some(SizeInPixels {
+                width: 16,
+                height: 30
+            })
+        );
+    }
+}

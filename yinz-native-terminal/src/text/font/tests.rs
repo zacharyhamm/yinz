@@ -1732,3 +1732,144 @@ fn ligature_updates_preserve_faces_clusters_and_original_feature_requests() {
         }
     }
 }
+
+#[test]
+fn cell_metrics_updates_preserve_faces_discovery_coverage_and_cluster_shapes() {
+    let options = FontOptions {
+        family: Some("Iosevka Term".into()),
+        bold_family: Some("Noto Sans Mono CJK SC".into()),
+        ..Default::default()
+    };
+    let mut stack = FontStack::build_with(&options, Some(synthetic_discovery())).unwrap();
+    for style in [
+        FaceStyle::Regular,
+        FaceStyle::Bold,
+        FaceStyle::Italic,
+        FaceStyle::BoldItalic,
+    ] {
+        for character in ['M', '中', '\u{1f600}', '\u{10ffff}'] {
+            stack.lookup(style, character);
+        }
+        stack.cluster_font(style, "e\u{301}");
+    }
+    let regular = stack.primary_of(FaceStyle::Regular);
+    let cluster = stack.shape_cluster(regular, "e\u{301}");
+    let run = stack.shape(regular, "-> fi");
+    let identities: Vec<_> = stack
+        .faces
+        .iter()
+        .map(|face| (face.key, face.data.as_ptr()))
+        .collect();
+    let loaded = stack.loaded.clone();
+    let files = stack.files.clone();
+    let resolved = stack.resolved.clone();
+    let coverage = stack.cluster_fonts.clone();
+    let queries = stack.discovery_queries;
+    let original = stack.metrics();
+    for (width, height) in [(1.5, 1.25), (0.5, 0.5), (3.0, 3.0), (1.0, 1.0)] {
+        let cell = CellAdjust {
+            cell_width: width,
+            line_height: height,
+            ..Default::default()
+        };
+        assert!(stack.update_cell(&cell));
+        assert_eq!(stack.shaped_runs(), 0);
+        assert!(Rc::ptr_eq(
+            &cluster,
+            &stack.shape_cluster(regular, "e\u{301}")
+        ));
+        assert!(!Rc::ptr_eq(&run, &stack.shape(regular, "-> fi")));
+        assert_eq!(stack.discovery_queries, queries);
+        assert_eq!(stack.loaded, loaded);
+        assert_eq!(stack.files, files);
+        assert_eq!(stack.resolved, resolved);
+        assert_eq!(stack.cluster_fonts, coverage);
+        assert_eq!(
+            stack
+                .faces
+                .iter()
+                .map(|face| (face.key, face.data.as_ptr()))
+                .collect::<Vec<_>>(),
+            identities
+        );
+        let fresh = FontStack::build_with(
+            &FontOptions {
+                cell,
+                ..options.clone()
+            },
+            Some(synthetic_discovery()),
+        )
+        .unwrap();
+        assert_eq!(stack.metrics(), fresh.metrics());
+        assert_eq!(stack.placement(), fresh.placement());
+        assert_eq!(stack.styled, fresh.styled);
+        for styled in stack.styled.iter().flatten() {
+            assert_eq!(styled.in_cell, stack.shares_cell(styled.font, &cell));
+        }
+    }
+    assert_eq!(stack.metrics(), original);
+    let run = stack.shape(regular, "-> fi");
+    assert!(!stack.update_cell(&CellAdjust {
+        cell_width: 1.001,
+        line_height: 1.001,
+        ..Default::default()
+    }));
+    assert!(Rc::ptr_eq(&run, &stack.shape(regular, "-> fi")));
+}
+
+#[test]
+fn cell_metrics_reclassify_style_fitting_when_fractional_rounding_changes_cell_match() {
+    // A synthetic style with the regular advance and one extra physical pixel
+    // of ascent at size 4. Its natural cell differs, but half-height rounding
+    // clamps both baselines into the same three-pixel cell.
+    let mut data = REGULAR.to_vec();
+    let tables = u16::from_be_bytes(data[4..6].try_into().unwrap()) as usize;
+    for index in 0..tables {
+        let record = 12 + index * 16;
+        let offset = u32::from_be_bytes(data[record + 8..record + 12].try_into().unwrap()) as usize;
+        let fields: &[usize] = match &data[record..record + 4] {
+            b"hhea" => &[4],
+            b"OS/2" => &[68, 74],
+            _ => &[],
+        };
+        for field in fields {
+            let at = offset + field;
+            let value = u16::from_be_bytes(data[at..at + 2].try_into().unwrap());
+            data[at..at + 2].copy_from_slice(&(value + 250).to_be_bytes());
+        }
+    }
+    let style_face = face(Box::leak(data.into_boxed_slice()), "synthetic-taller-style").unwrap();
+    let mut stack = FontStack::embedded(4.0).unwrap();
+    let style_font = FontId(stack.faces.len());
+    stack.faces.push(style_face);
+    stack.coords.push(Vec::new());
+    stack.color_capable.push(false);
+    let cell = CellAdjust::default();
+    assert!(!stack.shares_cell(style_font, &cell));
+    stack.styled[FaceStyle::Bold.index()] = Some(StyleFace {
+        font: style_font,
+        in_cell: false,
+    });
+    let main = stack.primary_of(FaceStyle::Bold);
+    stack.shape(main, "->");
+    let cluster = stack.shape_cluster(style_font, "e\u{301}");
+    let adjusted = CellAdjust {
+        line_height: 0.5,
+        ..cell
+    };
+    assert!(stack.update_cell(&adjusted));
+    assert!(
+        stack.is_primary(style_font),
+        "{:?} {:?}",
+        stack.metrics(),
+        derive_metrics(&style_face, &[], 4.0, &adjusted)
+    );
+    assert_eq!(stack.primary_of(FaceStyle::Bold), style_font);
+    assert_eq!(stack.shaped_runs(), 0);
+    assert!(Rc::ptr_eq(
+        &cluster,
+        &stack.shape_cluster(style_font, "e\u{301}")
+    ));
+    assert!(stack.update_cell(&cell));
+    assert_eq!(stack.primary_of(FaceStyle::Bold), main);
+}

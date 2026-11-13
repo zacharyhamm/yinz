@@ -41,6 +41,24 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
                 node
             ));
         }
+        if matches!(name, "cell_width" | "line_height") {
+            let numeric = value
+                .as_i64()
+                .map(|value| value as f64)
+                .or_else(|| value.as_f64());
+            if node.ty().is_some() || node.entries()[0].ty().is_some() || numeric.is_none() {
+                return Err(kdl_parsing_error!(
+                    format!("terminal {name} must be a plain numeric multiplier between 0.5 and 3"),
+                    node
+                ));
+            }
+            if numeric.is_some_and(|value| !value.is_finite() || !(0.5..=3.0).contains(&value)) {
+                return Err(kdl_parsing_error!(
+                    format!("terminal {name} must be a finite multiplier between 0.5 and 3"),
+                    node
+                ));
+            }
+        }
         let json = if let Some(value) = value.as_string() {
             serde_json::Value::from(value)
         } else if let Some(value) = value.as_bool() {
@@ -72,7 +90,6 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
         .map_err(|error| kdl_parsing_error!(error.to_string(), block))?;
     for (name, value, min, max) in [
         ("font_size", config.font_size, 3.0, 384.0),
-        ("line_height", config.line_height, 0.5, 3.0),
         ("padding", config.padding, 0.0, 256.0),
         ("opacity", config.opacity, 0.0, 1.0),
     ] {

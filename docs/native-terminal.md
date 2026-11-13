@@ -43,6 +43,7 @@ terminal {
     ligatures true
     system_fonts true
     line_height 1.0
+    cell_width 1.0
     padding 4.0
     opacity 1.0
     blur false
@@ -92,15 +93,41 @@ and keeps embedded fonts and fallback. Unavailable discovery is diagnosed separa
 from disabled discovery. CJK, emoji and symbols retain the existing fallback stack;
 style faces with different metrics are fitted into the regular face's cell.
 
+`cell_width` and `line_height` independently multiply the font's natural cell width
+and height. Both default to `1.0` and accept one plain finite number from `0.5`
+through `3.0` inclusive (integers are accepted). Strings, type annotations, repeated
+settings and out-of-range values are errors. Omission inherits a previous layer;
+explicit `1.0` resets that dimension to natural spacing. For example,
+`terminal { cell_width 1.25; }` widens spacing without changing line height,
+`terminal { line_height 1.5; }` increases vertical spacing, and
+`terminal { cell_width 1.25; line_height 1.5; }` combines them. These are spacing
+multipliers, not font points: change `font_size` to change the glyph size itself.
+CJK and emoji retain their logical column widths.
+
+Font points convert to pixels using the platform convention (96 pixels/inch on
+Linux, 72 on macOS). Zoom and monitor scale apply once to that font size; spacing
+multipliers remain dimensionless. Natural physical cell dimensions round first,
+then the multipliers apply and round again, with a minimum of one physical pixel.
+Glyphs center horizontally in the adjusted cell and the baseline moves by half
+the height change, bounded inside the cell along with decorations. This retains
+the pinned source's rounding, including at fractional scales. Physical padding is
+subtracted before floor-dividing the window by physical cell dimensions; the grid
+is at least one row/column (at most 4096). A minimized zero-size window defers
+geometry updates. Cursor/selection rectangles, hit testing, graphics and reported
+cell/text-area pixels all use these same cells. Text-area pixels exclude padding
+and unused edge pixels: they equal rows/columns times cell height/width.
+
 Font settings reload automatically with the session's configuration updates,
 including drop-ins. A `config.d` directory first created while the session is
 running is discovered during the normal polling/debounce cycle.
 
-Changing `ligatures` or `font_ligatures` with `action reconfigure` requires
+Changing `cell_width`, `line_height`, `ligatures` or `font_ligatures` with
+`action reconfigure` requires
 `--write`, or an edit to the session's saved configuration/drop-in. An unsaved
-change to the effective ligature value refuses the entire fragment, including
-sibling settings, with save guidance. Equivalent values and omitted ligatures
-remain valid runtime requests. For example, disable and then restore ligatures:
+change to any effective value refuses the entire fragment, including sibling
+settings, for all requested clients, with save guidance. Equivalent values and
+omissions remain valid runtime requests; explicit metric `1.0` equals omission
+when the effective value is already the default. For example, disable and then restore ligatures:
 
 ```sh
 yinz --session work action reconfigure --write --kdl 'terminal { ligatures false; }'
@@ -120,9 +147,16 @@ the grid unchanged, so they emit no resize or pixel-size reports. Combining and
 emoji clusters still shape with programming ligatures disabled; cursor, pane,
 style and fallback boundaries retain their existing behavior.
 
-Other effective font or metric changes (including mixed changes with ligatures)
-replace face, shaping, glyph and atlas caches while preserving visible content
-and the selected Copy text. When a grid resize reflows text, the local highlight follows a unique match of the selected
+Metric-only changes retain loaded faces, discovery, character/cluster coverage
+choices and independent grapheme shaping. They recompute physical metrics and
+style-face fitting, discard cell-dependent rasters, cluster/procedural sprites
+and atlases, and redraw retained rows when effective metrics or fitting change.
+Width/fitting changes also clear cell-relative run shaping. Multipliers that round
+to identical effective output retain those resources and send no geometry reports.
+A simultaneous ligature toggle still clears run shaping. Other effective font
+changes (family, weight, font size, zoom or monitor scale) replace affected face,
+shaping, glyph and atlas caches. Both paths preserve visible content and selected
+Copy text. When a grid resize reflows text, the local highlight follows a unique match of the selected
 display units and surrounding context. If content moves offscreen or its location
 is ambiguous (including pane-layout changes), the highlight disappears and Copy
 retains the original text until a new selection, Escape, typing or session switch.
@@ -153,6 +187,37 @@ An earlier font-settings change recorded a native Wayland smoke check at scale 2
 for drop-in reload and CSI cell/text-area replies. Its powered-off display
 prevented visual capture and manual selection/zoom checks; that observation is
 prior evidence, not a ligature-toggle visual check.
+
+Fresh issue #106 smoke evidence (2026-11-13): this worktree's debug `yinz`
+ran on Linux/Sway Wayland, output DP-6 at 5120×2880 and scale 2, with embedded
+Iosevka Term (`system_fonts false`, 12 points, padding 4). Saved drop-in reloads
+produced the following measured physical geometry. CSI 16t cell replies, CSI 14t
+text-area replies and the pane's TIOCGWINSZ pixel/grid values agreed:
+
+| Width × height multiplier | Cell pixels | Grid columns × rows | Text-area pixels |
+|---|---|---|---|
+| 1 × 1 | 16 × 40 | 157 × 67 | 2512 × 2680 |
+| 1.5 × 1 | 24 × 40 | 104 × 67 | 2496 × 2680 |
+| 1 × 1.25 | 16 × 50 | 157 × 54 | 2512 × 2700 |
+| 1.5 × 1.25 | 24 × 50 | 104 × 54 | 2496 × 2700 |
+| Reset to 1 × 1 | 16 × 40 | 157 × 67 | 2512 × 2680 |
+| Reset, resized window | 16 × 40 | 88 × 19 | 1408 × 760 |
+
+Cropped desktop captures showed the changed horizontal/vertical spacing in four
+styles, CJK, emoji and box drawing, followed by reset and window resize. The
+fixture repainted after grid changes. Earlier one-shot raw-output captures became
+blank when server reflow moved that output into scrollback; full server dumps
+retained the text. Those captures do not establish viewport preservation, and
+this change does not alter server scrolling policy. Structured application and
+headless EGL tests separately exercise combining/ZWJ units, retained rendering,
+selection/Copy and resize reanchoring, including zoom and simulated scale changes.
+
+Desktop keyboard zoom/reset and drag/clipboard interaction were not exercised in
+this run. Only one physical output was available, so no real mixed-DPI monitor
+transition was verified. X11 (`DISPLAY` unset) and macOS were unavailable. These
+remain desktop acceptance limitations; headless EGL and simulated scale matrices
+do not substitute for those checks. Historical smoke observations above retain
+their original scope and are not current issue #106 verification.
 
 Font diagnostics go to the normal log, `$TMPDIR/yinz-<UID>/yinz-log/yinz.log`
 (`/tmp` when `TMPDIR` is unset).

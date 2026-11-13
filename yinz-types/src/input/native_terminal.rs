@@ -44,6 +44,7 @@ pub struct TerminalConfig {
     pub font_ligatures: Option<bool>,
     pub system_fonts: Option<bool>,
     pub line_height: Option<f32>,
+    pub cell_width: Option<f32>,
     pub padding: Option<f32>,
     pub opacity: Option<f32>,
     pub blur: Option<bool>,

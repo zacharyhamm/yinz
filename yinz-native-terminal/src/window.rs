@@ -199,6 +199,7 @@ pub(crate) fn font_options(settings: &TerminalConfig, zoom: f32) -> FontOptions 
         system_fonts: settings.system_fonts.unwrap_or(true),
         cell: crate::text::font::CellAdjust {
             line_height: settings.line_height.unwrap_or(1.0),
+            cell_width: settings.cell_width.unwrap_or(1.0),
             ..Default::default()
         },
         ..Default::default()
@@ -229,6 +230,7 @@ pub(crate) fn effective_font_options(
 pub(crate) enum FontUpdate {
     Unchanged,
     LigaturesOnly,
+    CellOnly,
     Replacement(Box<GlyphCache>),
 }
 
@@ -240,6 +242,10 @@ pub(crate) fn prepare_fonts(active: &FontOptions, requested: &FontOptions) -> Re
     comparison.ligatures = requested.ligatures;
     if comparison == *requested {
         return Ok(FontUpdate::LigaturesOnly);
+    }
+    comparison.cell = requested.cell;
+    if comparison == *requested {
+        return Ok(FontUpdate::CellOnly);
     }
     Ok(FontUpdate::Replacement(Box::new(GlyphCache::new(
         requested
@@ -258,6 +264,17 @@ pub(crate) fn apply_fonts(
     match update {
         FontUpdate::Unchanged => return,
         FontUpdate::LigaturesOnly => cache.update_ligatures(&requested),
+        FontUpdate::CellOnly => {
+            let changed = cache.update_cell(&requested);
+            let ligatures_changed = active.ligatures != requested.ligatures;
+            if ligatures_changed {
+                cache.update_ligatures(&requested);
+            }
+            if !changed && !ligatures_changed {
+                *active = requested;
+                return;
+            }
+        },
         FontUpdate::Replacement(replacement) => *cache = *replacement,
     }
     *active = requested;
@@ -331,6 +348,20 @@ impl Geometry {
         }
         messages
     }
+}
+
+fn pointer_cell(
+    pointer: (f64, f64),
+    padding: u32,
+    metrics: crate::text::font::CellMetrics,
+    size: crate::emulation::screen_buffer::TermSize,
+) -> (usize, usize) {
+    let row = ((pointer.1 - padding as f64).max(0.0) / metrics.height.max(1) as f64) as usize;
+    let col = ((pointer.0 - padding as f64).max(0.0) / metrics.width.max(1) as f64) as usize;
+    (
+        row.min(size.rows.saturating_sub(1)),
+        col.min(size.cols.saturating_sub(1)),
+    )
 }
 
 fn host_query_geometry(
@@ -593,16 +624,14 @@ impl App {
         (self.settings.padding.unwrap_or(0.0) as f64 * self.scale).round() as u32
     }
     fn cell(&self) -> (usize, usize) {
-        let metrics = self.cache.metrics();
-        let row = ((self.pointer.1 - self.padding() as f64).max(0.0) / metrics.height.max(1) as f64)
-            as usize;
-        let col = ((self.pointer.0 - self.padding() as f64).max(0.0) / metrics.width.max(1) as f64)
-            as usize;
-        (
-            row.min(self.state.size().rows.saturating_sub(1)),
-            col.min(self.state.size().cols.saturating_sub(1)),
+        pointer_cell(
+            self.pointer,
+            self.padding(),
+            self.cache.metrics(),
+            self.state.size(),
         )
     }
+
     fn mouse(&self, kind: MouseEventType, wheel: (bool, bool, bool, bool)) -> Result<()> {
         let (row, col) = self.cell();
         self.action(Action::MouseEvent {

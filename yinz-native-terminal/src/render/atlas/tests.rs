@@ -552,3 +552,69 @@ fn text_keys_count_against_the_entry_ceiling() {
     cache.flush();
     assert_eq!(cache.entries(), 0);
 }
+
+#[test]
+fn cell_metrics_invalidate_rasters_clusters_sprites_and_both_atlas_identities() {
+    use crate::text::font::{CellAdjust, FontOptions};
+    let options = FontOptions {
+        system_fonts: false,
+        ..Default::default()
+    };
+    let mut cache = GlyphCache::new(options.stack(1.0).unwrap());
+    for (width, height) in [(1.5, 1.25), (0.5, 0.5), (3.0, 3.0), (1.0, 1.0)] {
+        for character in ['A', '中', '\u{1f600}', '─'] {
+            cache.glyph(FaceStyle::Regular, character, 2);
+        }
+        cache.cluster_glyph(FaceStyle::Regular, &GlyphKey::of("e\u{301}"), 1);
+        let shaped_clusters = cache.shaped_clusters();
+        assert!(cache.entries() > 0);
+        let stamps = (cache.mask.stamp(), cache.color.stamp());
+        let generation = cache.generation();
+        let options = FontOptions {
+            cell: CellAdjust {
+                cell_width: width,
+                line_height: height,
+                ..Default::default()
+            },
+            ..options.clone()
+        };
+        assert!(cache.update_cell(&options));
+        assert_ne!(cache.generation(), generation);
+        assert_ne!(cache.mask.stamp().identity, stamps.0.identity);
+        assert_ne!(cache.color.stamp().identity, stamps.1.identity);
+        assert_eq!(cache.entries(), 0);
+        assert_eq!(cache.shaped_clusters(), shaped_clusters);
+        let mut fresh = GlyphCache::new(options.stack(1.0).unwrap());
+        assert_eq!(cache.metrics(), fresh.metrics());
+        for character in ['A', '中', '\u{1f600}', '─'] {
+            let actual = cache.glyph(FaceStyle::Regular, character, 2);
+            let expected = fresh.glyph(FaceStyle::Regular, character, 2);
+            assert_eq!(actual, expected);
+            if let Lookup::Rendered(glyph) = actual {
+                let atlas = if glyph.content == GlyphContent::Mask {
+                    &cache.mask
+                } else {
+                    &cache.color
+                };
+                let other = if glyph.content == GlyphContent::Mask {
+                    &fresh.mask
+                } else {
+                    &fresh.color
+                };
+                assert_eq!(read(atlas, glyph.entry), read(other, glyph.entry));
+            }
+        }
+    }
+    let generation = cache.generation();
+    let stamps = (cache.mask.stamp(), cache.color.stamp());
+    assert!(!cache.update_cell(&FontOptions {
+        cell: CellAdjust {
+            cell_width: 1.001,
+            line_height: 1.001,
+            ..Default::default()
+        },
+        ..options
+    }));
+    assert_eq!(cache.generation(), generation);
+    assert_eq!((cache.mask.stamp(), cache.color.stamp()), stamps);
+}

@@ -297,7 +297,7 @@ fn font_application_changes_each_font_input_and_failure_keeps_working_cache() {
     let base = effective_font_options(&settings, 1.0, 1.0);
     let mut variants = Vec::new();
     for field in [
-        "regular", "bold", "italic", "both", "weight", "system", "line", "size",
+        "regular", "bold", "italic", "both", "weight", "system", "size",
     ] {
         let mut changed = settings.clone();
         match field {
@@ -307,7 +307,6 @@ fn font_application_changes_each_font_input_and_failure_keeps_working_cache() {
             "both" => changed.font_bold_italic = Some("Iosevka Term".into()),
             "weight" => changed.font_weight = Some(700),
             "system" => changed.system_fonts = Some(true),
-            "line" => changed.line_height = Some(1.5),
             _ => changed.font_size = Some(18.0),
         }
         variants.push(effective_font_options(&changed, 1.0, 1.0));
@@ -779,4 +778,311 @@ fn ligature_reload_from_files_preserves_warmed_caches_cells_selection_and_geomet
         prepare_fonts(&active, &features).unwrap(),
         FontUpdate::Replacement(_)
     ));
+}
+
+#[test]
+fn cell_metrics_fractional_dpi_zoom_rounding_grid_edges_and_hit_testing() {
+    for (points, zoom) in [(12.0, 1.0), (11.3, 1.15), (13.25, 0.85)] {
+        for scale in [1.0, 1.25, 1.5, 2.0, 1.0] {
+            let settings = TerminalConfig {
+                font_size: Some(points),
+                ..embedded_settings()
+            };
+            let natural = effective_font_options(&settings, zoom, scale)
+                .stack(1.0)
+                .unwrap()
+                .metrics();
+            for width in [0.5, 1.0, 1.375, 3.0] {
+                for height in [0.5, 1.0, 1.275, 3.0] {
+                    let settings = TerminalConfig {
+                        cell_width: Some(width),
+                        line_height: Some(height),
+                        ..settings.clone()
+                    };
+                    let options = effective_font_options(&settings, zoom, scale);
+                    assert_eq!(options.cell.cell_width, width);
+                    assert_eq!(options.cell.line_height, height);
+                    let metrics = options.stack(1.0).unwrap().metrics();
+                    let w = (natural.width as f32 * width).round().max(1.0) as u32;
+                    let h = (natural.height as f32 * height).round().max(1.0) as u32;
+                    assert_eq!((metrics.width, metrics.height), (w, h));
+                    let padding = (3.0 * scale).round() as u32;
+                    let exact = Geometry::calculate(
+                        17 * w + 2 * padding,
+                        7 * h + 2 * padding,
+                        padding,
+                        metrics,
+                    )
+                    .unwrap();
+                    assert_eq!(exact.grid, Size { cols: 17, rows: 7 });
+                    let below = Geometry::calculate(
+                        17 * w + 2 * padding - 1,
+                        7 * h + 2 * padding - 1,
+                        padding,
+                        metrics,
+                    )
+                    .unwrap();
+                    assert_eq!(below.grid, Size { cols: 16, rows: 6 });
+                    assert_eq!(
+                        Geometry::calculate(1, 1, padding, metrics).unwrap().grid,
+                        Size { cols: 1, rows: 1 }
+                    );
+                    assert!(Geometry::calculate(0, 20, padding, metrics).is_none());
+                    assert!(Geometry::calculate(20, 0, padding, metrics).is_none());
+                    let size = crate::emulation::screen_buffer::TermSize { cols: 17, rows: 7 };
+                    let edge = (
+                        padding as f64 + 3.0 * w as f64,
+                        padding as f64 + 2.0 * h as f64,
+                    );
+                    assert_eq!(pointer_cell(edge, padding, metrics, size), (2, 3));
+                    assert_eq!(
+                        pointer_cell((edge.0 - 0.01, edge.1 - 0.01), padding, metrics, size),
+                        (1, 2)
+                    );
+                    assert_eq!(pointer_cell((-10.0, -10.0), padding, metrics, size), (0, 0));
+                    assert_eq!(pointer_cell((1e6, 1e6), padding, metrics, size), (6, 16));
+                    let tiny = Geometry::calculate(1, 1, padding, metrics).unwrap();
+                    let old_tiny = Geometry::calculate(1, 1, padding, natural).unwrap();
+                    if tiny.cell != old_tiny.cell {
+                        assert!(matches!(
+                            &tiny.messages(Some(old_tiny))[..],
+                            [ClientToServerMsg::TerminalPixelDimensions { .. }]
+                        ));
+                    }
+                    let messages = exact.messages(None);
+                    let ClientToServerMsg::TerminalPixelDimensions { pixel_dimensions } =
+                        messages[0]
+                    else {
+                        panic!("pixel report first")
+                    };
+                    assert_eq!(
+                        pixel_dimensions.character_cell_size,
+                        Some(SizeInPixels {
+                            width: w as usize,
+                            height: h as usize
+                        })
+                    );
+                    assert_eq!(
+                        pixel_dimensions.text_area_size,
+                        Some(SizeInPixels {
+                            width: 17 * w as usize,
+                            height: 7 * h as usize
+                        })
+                    );
+                    assert_eq!(pixel_dimensions.text_area_grid_size, Some(exact.grid));
+                    assert!(
+                        matches!(messages[1], ClientToServerMsg::TerminalResize { new_size } if new_size == exact.grid)
+                    );
+                    assert!(exact.messages(Some(exact)).is_empty());
+                    // Render frames may still contain the old grid; replies use reported geometry.
+                    let geometry =
+                        host_query_geometry(Some(exact), Size { cols: 80, rows: 24 }, metrics);
+                    assert_eq!(
+                        crate::host_reply::answer(b"\x1b[16t", geometry, &Paints::default(), None),
+                        format!("\x1b[6;{h};{w}t").as_bytes()
+                    );
+                    assert_eq!(
+                        crate::host_reply::answer(b"\x1b[14t", geometry, &Paints::default(), None),
+                        format!("\x1b[4;{};{}t", 7 * h, 17 * w).as_bytes()
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn cell_metrics_file_reload_uses_metric_path_and_preserves_content_copy_and_rounding_noops() {
+    use crate::emulation::selection::LocalSelection;
+    use crate::testing::painter::Painter;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.kdl");
+    std::fs::write(&path, "terminal { system_fonts false; }").unwrap();
+    let opts = CliArgs {
+        config: Some(path.clone()),
+        config_dir: Some(dir.path().to_path_buf()),
+        ..Default::default()
+    };
+    let load = || {
+        yinz_cli::setup::Setup::config_without_layout(&opts)
+            .unwrap()
+            .0
+            .terminal
+    };
+    let mut active = effective_font_options(&load(), 1.0, 1.0);
+    let mut cache = GlyphCache::new(active.stack(1.0).unwrap());
+    let mut retained = RetainedScene::new();
+    let mut state = Painter::state(2, 16, |p| {
+        p.text(0, 0, "Ag -> fi");
+        p.wide(1, 0, '中');
+        p.wide(1, 2, '😀');
+        p.cluster(1, 4, "👩‍💻", 2);
+        p.cluster(1, 6, "e\u{301}", 1);
+    });
+    let mut selection = LocalSelection::default();
+    selection.start(1, 0);
+    selection.extend(1, 6);
+    let expected = selection.text(state.screen());
+    let range = selection.range();
+    let cells: Vec<_> = (0..32)
+        .map(|i| state.screen().cell(i / 16, i % 16))
+        .collect();
+    let refresh = |retained: &mut RetainedScene, cache: &mut GlyphCache| {
+        retained.refresh(
+            SceneInputs {
+                state: &state,
+                phase: BlinkPhase::On,
+                paints: &Paints::default(),
+                cursor: CursorOptions::default(),
+                hovered_link: None,
+                preedit: None,
+            },
+            cache,
+        )
+    };
+    retained.set_selection(range);
+    refresh(&mut retained, &mut cache);
+    for (width, height, ligatures) in [
+        (1.5, 1.0, true),
+        (1.5, 1.25, true),
+        (0.5, 0.5, false),
+        (3.0, 3.0, true),
+        (1.0, 1.0, true),
+        (1.001, 1.001, true),
+        (1.002, 1.002, false),
+    ] {
+        std::fs::write(&path, format!("terminal {{ system_fonts false; cell_width {width}; line_height {height}; ligatures {ligatures}; }}")).unwrap();
+        let requested = effective_font_options(&load(), 1.0, 1.0);
+        let update = prepare_fonts(&active, &requested).unwrap();
+        assert!(matches!(update, FontUpdate::CellOnly));
+        let generation = cache.generation();
+        let atlas = cache.atlases().mask.stamp();
+        let clusters = cache.shaped_clusters();
+        let old = Geometry::calculate(400, 200, 0, cache.metrics()).unwrap();
+        apply_fonts(
+            &mut active,
+            &mut cache,
+            &mut retained,
+            requested.clone(),
+            update,
+        );
+        assert_eq!(cache.shaped_clusters(), clusters);
+        let new = Geometry::calculate(400, 200, 0, cache.metrics()).unwrap();
+        if width > 1.0 && width < 1.01 {
+            assert_eq!(cache.generation(), generation);
+            assert_eq!(cache.atlases().mask.stamp(), atlas);
+            assert!(new.messages(Some(old)).is_empty());
+        } else {
+            assert_ne!(cache.generation(), generation);
+            assert_ne!(cache.atlases().mask.stamp().identity, atlas.identity);
+        }
+        refresh(&mut retained, &mut cache);
+        let mut fresh = GlyphCache::new(requested.stack(1.0).unwrap());
+        let mut fresh_scene = RetainedScene::new();
+        fresh_scene.set_selection(range);
+        refresh(&mut fresh_scene, &mut fresh);
+        // Preserved atlas entries can have different packing after a ligature
+        // toggle. Compare concrete placed geometry; GPU tests compare actual ink.
+        let normalize = |mut scene: crate::render::scene::test_helpers::Scene| {
+            for glyph in scene.glyphs.iter_mut().chain(scene.color_glyphs.iter_mut()) {
+                glyph.entry.x = 0;
+                glyph.entry.y = 0;
+            }
+            scene
+        };
+        assert_eq!(
+            normalize(retained.flatten()),
+            normalize(fresh_scene.flatten())
+        );
+        assert_eq!(selection.range(), range);
+        assert_eq!(selection.text(state.screen()), expected);
+        for (i, cell) in cells.iter().enumerate() {
+            assert_eq!(state.screen().cell(i / 16, i % 16), *cell);
+        }
+    }
+    // A font/zoom/monitor-scale change still replaces affected font resources.
+    for (zoom, scale) in [(1.2, 1.0), (1.2, 1.25), (1.2, 1.5), (1.2, 2.0), (1.0, 1.0)] {
+        let requested = effective_font_options(&load(), zoom, scale);
+        let update = prepare_fonts(&active, &requested).unwrap();
+        assert!(matches!(update, FontUpdate::Replacement(_)));
+        apply_fonts(&mut active, &mut cache, &mut retained, requested, update);
+        assert_eq!(selection.text(state.screen()), expected);
+    }
+    state.set_cell_size(cache.metrics().width, cache.metrics().height);
+    let generation = cache.generation();
+    std::fs::write(&path, "terminal { cell_width 4; }").unwrap();
+    assert!(yinz_cli::setup::Setup::config_without_layout(&opts).is_err());
+    assert_eq!(cache.generation(), generation);
+}
+
+#[test]
+fn cell_metrics_emulation_graphics_and_wide_hit_cells_use_the_measured_cache() {
+    use crate::testing::painter::{residency, Painter, Place};
+    let mut state = TerminalState::new(4, 12);
+    for (width, height) in [(1.0, 1.0), (1.5, 1.25), (0.5, 0.5), (1.0, 1.0)] {
+        let settings = TerminalConfig {
+            cell_width: Some(width),
+            line_height: Some(height),
+            ..embedded_settings()
+        };
+        let cache = GlyphCache::new(
+            effective_font_options(&settings, 1.0, 1.0)
+                .stack(1.0)
+                .unwrap(),
+        );
+        let metrics = cache.metrics();
+        state.set_cell_size(metrics.width, metrics.height);
+        Painter::apply(&mut state, |p| {
+            p.wide(1, 2, '中');
+            p.graphics(&[
+                residency(7, 2, 2, [1, 2, 3, 255]),
+                Place::of(7, 2, 2).at(2, 3).record(),
+            ]);
+        });
+        let images = crate::render::scene::images_of(&state, metrics);
+        assert_eq!(images.len(), 1);
+        assert_eq!(
+            (images[0].x, images[0].y),
+            ((3 * metrics.width) as i32, (2 * metrics.height) as i32)
+        );
+        let pad = 5;
+        let first = pointer_cell(
+            (
+                (pad + 2 * metrics.width) as f64,
+                (pad + metrics.height) as f64,
+            ),
+            pad,
+            metrics,
+            state.size(),
+        );
+        let spacer = pointer_cell(
+            (
+                (pad + 4 * metrics.width) as f64 - 0.01,
+                (pad + 2 * metrics.height) as f64 - 0.01,
+            ),
+            pad,
+            metrics,
+            state.size(),
+        );
+        assert_eq!(first, (1, 2));
+        assert_eq!(spacer, (1, 3));
+        let selection = Selection::at(first.0, first.1).extended_to(spacer.0, spacer.1);
+        assert_eq!(selection.text(state.screen()), "中");
+        // Sixel cell changes clear old chunks; identical metrics preserve them.
+        let frame = Painter::frame(4, 12, |p| {
+            p.graphics(&[crate::testing::painter::sixel_chunk(
+                2,
+                3,
+                2,
+                6,
+                "\x1bPq#1;2;100;0;0!2~\x1b\\",
+            )])
+        });
+        state.apply_frame(&frame).unwrap();
+        assert!(!state.sixels().is_empty());
+        state.set_cell_size(metrics.width, metrics.height);
+        assert!(!state.sixels().is_empty());
+        state.set_cell_size(metrics.width + 1, metrics.height);
+        assert!(state.sixels().is_empty());
+    }
 }

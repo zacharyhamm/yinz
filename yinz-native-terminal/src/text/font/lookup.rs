@@ -163,7 +163,7 @@ impl FontStack {
     /// Whether `font` measures the same cell as the regular face, so that its
     /// glyphs can be drawn as-is. Only the cell's size and baseline matter
     /// here; underline and strikeout placement stay the regular face's.
-    fn shares_cell(&self, font: FontId, cell: &CellAdjust) -> bool {
+    pub(super) fn shares_cell(&self, font: FontId, cell: &CellAdjust) -> bool {
         let (metrics, _) =
             derive_metrics(&self.faces[font.0], &self.coords[font.0], self.size, cell);
         (metrics.width, metrics.height, metrics.baseline)

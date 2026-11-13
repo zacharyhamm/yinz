@@ -520,3 +520,61 @@ fn captured_context_damage_erases_highlight_on_an_undamaged_selected_row() {
     assert_eq!(retained.flatten(), rebuilt(&state, &mut cache));
     assert_eq!(cache.generation(), generation);
 }
+
+#[test]
+fn cell_metrics_generation_refreshes_retained_rows_and_selection_rectangles() {
+    use crate::emulation::selection::Selection;
+    use crate::text::font::{CellAdjust, FontOptions};
+    let options = FontOptions {
+        system_fonts: false,
+        ..Default::default()
+    };
+    let mut cache = GlyphCache::new(options.stack(1.0).unwrap());
+    let state = Painter::state(2, 12, |p| {
+        p.wide(1, 1, '中');
+        p.wide(1, 3, '😀');
+        p.cluster(1, 5, "👩‍💻", 2);
+        p.cluster(1, 7, "e\u{301}", 1);
+    });
+    let selection = Selection::at(1, 1).extended_to(1, 7);
+    let copied = selection.text(state.screen());
+    let mut retained = RetainedScene::new();
+    retained.set_selection(Some(selection));
+    refreshed(&mut retained, &state, &mut cache);
+    refreshed(&mut retained, &state, &mut cache);
+    assert!(retained.rebuilt_rows().is_empty());
+    for (width, height, w, h) in [
+        (1.5, 1.25, 12, 25),
+        (0.5, 0.5, 4, 10),
+        (3.0, 3.0, 24, 60),
+        (1.0, 1.0, 8, 20),
+    ] {
+        let options = FontOptions {
+            cell: CellAdjust {
+                cell_width: width,
+                line_height: height,
+                ..Default::default()
+            },
+            ..options.clone()
+        };
+        assert!(cache.update_cell(&options));
+        // No explicit damage: the renewed cache generation must invalidate retained rows.
+        refreshed(&mut retained, &state, &mut cache);
+        assert!(retained.rebuilt_everything());
+        let live = retained.flatten();
+        assert_eq!((live.width, live.height), (12 * w, 2 * h));
+        for col in 1..8 {
+            assert!(live.rects.iter().any(|r| r.x == (col * w) as i32
+                && r.y == h as i32
+                && r.width == w
+                && r.height == h
+                && r.color == Paints::default().foreground));
+        }
+        let mut fresh_cache = GlyphCache::new(options.stack(1.0).unwrap());
+        let mut fresh = RetainedScene::new();
+        fresh.set_selection(Some(selection));
+        refreshed(&mut fresh, &state, &mut fresh_cache);
+        assert_eq!(live, fresh.flatten());
+        assert_eq!(selection.text(state.screen()), copied);
+    }
+}

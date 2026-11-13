@@ -338,12 +338,33 @@ fn font_faces_live_changes_match_fresh_gpu_draws_and_preserve_selection() {
 
 #[test]
 fn font_faces_resize_repaint_reanchors_copy_and_gpu_highlight() {
+    resize_repaint_reanchors_copy_and_gpu_highlight(false);
+}
+
+#[test]
+fn cell_metrics_resize_repaint_reanchors_copy_and_gpu_highlight() {
+    resize_repaint_reanchors_copy_and_gpu_highlight(true);
+}
+
+fn resize_repaint_reanchors_copy_and_gpu_highlight(cell_metrics: bool) {
     use crate::emulation::selection::{LocalSelection, Selection};
     use crate::testing::painter::Painter;
     use yinz_types::input::native_terminal::TerminalConfig;
     let settings = TerminalConfig::default();
     let initial = crate::window::effective_font_options(&settings, 1.0, 1.0);
-    let requested = crate::window::effective_font_options(&settings, 1.2, 1.0);
+    let requested = if cell_metrics {
+        crate::window::effective_font_options(
+            &TerminalConfig {
+                cell_width: Some(4.0 / 3.0),
+                line_height: Some(1.25),
+                ..settings
+            },
+            1.0,
+            1.0,
+        )
+    } else {
+        crate::window::effective_font_options(&settings, 1.2, 1.0)
+    };
     let text = format!("{}distinctive ABCD suffix", "x".repeat(58));
     let old_frame = Painter::frame(5, 80, |p| {
         p.full_repaint();
@@ -375,13 +396,17 @@ fn font_faces_resize_repaint_reanchors_copy_and_gpu_highlight() {
             font_pixels(renderer, &mut retained, &state, &mut cache),
             warmed
         );
-        let replacement = fixture_cache(&requested);
+        let update = if cell_metrics {
+            crate::window::prepare_fonts(&active, &requested).unwrap()
+        } else {
+            crate::window::FontUpdate::Replacement(Box::new(fixture_cache(&requested)))
+        };
         crate::window::apply_fonts(
             &mut active,
             &mut cache,
             &mut retained,
             requested.clone(),
-            crate::window::FontUpdate::Replacement(Box::new(replacement)),
+            update,
         );
         selection.resizing(&state, 5, 60);
         let applied = selection.apply_frame(&mut state, &old_frame).unwrap();
@@ -670,4 +695,92 @@ fn ligatures_live_toggles_match_fresh_pixels_and_preserve_copy_cursor_and_cells(
             }
         });
     }
+}
+
+#[test]
+fn cell_metrics_warmed_spacing_zoom_scale_and_reset_match_fresh_gpu_output() {
+    use crate::emulation::selection::Selection;
+    use crate::text::font::FaceStyle;
+    use yinz_types::input::native_terminal::TerminalConfig;
+    let settings = TerminalConfig {
+        system_fonts: Some(false),
+        ..Default::default()
+    };
+    let mut active = crate::window::effective_font_options(&settings, 1.0, 1.0);
+    let mut cache = crate::render::atlas::GlyphCache::new(active.stack(1.0).unwrap());
+    let mut retained = RetainedScene::new();
+    let mut state = font_state();
+    crate::testing::painter::Painter::apply(&mut state, |p| {
+        p.cluster(4, 6, "👩‍💻", 2);
+        p.text(4, 10, "─┌┐");
+    });
+    let selection = Selection::at(4, 0).extended_to(4, 7);
+    let copied = selection.text(state.screen());
+    retained.set_selection(Some(selection));
+    with_renderer(|renderer| {
+        let original = font_pixels(renderer, &mut retained, &state, &mut cache);
+        assert_eq!(
+            font_pixels(renderer, &mut retained, &state, &mut cache),
+            original
+        );
+        for (width, height, zoom, scale, ligatures) in [
+            (1.5, 1.0, 1.0, 1.0, true),
+            (1.0, 1.25, 1.0, 1.0, true),
+            (0.5, 0.5, 1.0, 1.0, false),
+            (3.0, 3.0, 1.0, 1.0, true),
+            (1.375, 1.275, 1.15, 1.25, true),
+            (1.375, 1.275, 1.15, 1.5, true),
+            (1.375, 1.275, 1.15, 2.0, true),
+            (1.0, 1.0, 1.0, 1.0, true),
+            (1.001, 1.001, 1.0, 1.0, false),
+        ] {
+            let settings = TerminalConfig {
+                cell_width: Some(width),
+                line_height: Some(height),
+                font_ligatures: Some(ligatures),
+                ..settings.clone()
+            };
+            let requested = crate::window::effective_font_options(&settings, zoom, scale);
+            let face = cache.primary_of(FaceStyle::Regular);
+            let update = crate::window::prepare_fonts(&active, &requested).unwrap();
+            crate::window::apply_fonts(
+                &mut active,
+                &mut cache,
+                &mut retained,
+                requested.clone(),
+                update,
+            );
+            assert_eq!(cache.primary_of(FaceStyle::Regular), face);
+            let live = font_pixels(renderer, &mut retained, &state, &mut cache);
+            let metrics = cache.metrics();
+            let scene = retained.flatten();
+            assert_eq!(
+                (scene.width, scene.height),
+                (24 * metrics.width, 5 * metrics.height)
+            );
+            // Highlight rectangles retain logical ownership in the new physical cells.
+            for col in 0..8 {
+                assert!(scene
+                    .rects
+                    .iter()
+                    .any(|r| r.x == (col * metrics.width) as i32
+                        && r.y == (4 * metrics.height) as i32
+                        && r.width == metrics.width
+                        && r.height == metrics.height));
+            }
+            assert_eq!(selection.text(state.screen()), copied);
+            let mut fresh = crate::render::atlas::GlyphCache::new(requested.stack(1.0).unwrap());
+            let mut fresh_retained = RetainedScene::new();
+            fresh_retained.set_selection(Some(selection));
+            assert_eq!(
+                font_pixels(renderer, &mut fresh_retained, &state, &mut fresh),
+                live
+            );
+            if width == 1.0 && height == 1.0 {
+                assert_eq!(live, original);
+            } else {
+                assert_ne!(live, original);
+            }
+        }
+    });
 }

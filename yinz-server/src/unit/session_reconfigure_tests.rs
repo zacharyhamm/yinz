@@ -1574,17 +1574,17 @@ mod rebind_saves {
 mod ligature_reconfigure {
     use super::*;
 
-    struct Fixture {
-        dir: tempfile::TempDir,
-        data: Arc<RwLock<Option<SessionMetaData>>>,
-        state: Arc<RwLock<SessionState>>,
+    pub(super) struct Fixture {
+        pub(super) dir: tempfile::TempDir,
+        pub(super) data: Arc<RwLock<Option<SessionMetaData>>>,
+        pub(super) state: Arc<RwLock<SessionState>>,
         screen: channels::Receiver<(ScreenInstruction, yinz_types::diagnostics::ErrorContext)>,
         plugin: channels::Receiver<(PluginInstruction, yinz_types::diagnostics::ErrorContext)>,
         pty: channels::Receiver<(PtyInstruction, yinz_types::diagnostics::ErrorContext)>,
     }
 
     impl Fixture {
-        fn new(clients: &[ClientId], enabled: Option<bool>) -> Self {
+        pub(super) fn new(clients: &[ClientId], enabled: Option<bool>) -> Self {
             let dir = tempfile::tempdir().unwrap();
             let main = dir.path().join("config.kdl");
             std::fs::write(&main, "// unchanged main\n").unwrap();
@@ -1625,11 +1625,11 @@ mod ligature_reconfigure {
             }
         }
 
-        fn with<R>(&self, f: impl FnOnce(&mut SessionMetaData) -> R) -> R {
+        pub(super) fn with<R>(&self, f: impl FnOnce(&mut SessionMetaData) -> R) -> R {
             with_session_mut(&self.data, f).unwrap().unwrap()
         }
 
-        fn snapshot(&self) -> String {
+        pub(super) fn snapshot(&self) -> String {
             self.with(|session| {
                 format!(
                     "{:?} {:?}",
@@ -1638,7 +1638,11 @@ mod ligature_reconfigure {
             })
         }
 
-        fn all(&self, fragment: &str, write: bool) -> yinz_bus::route::ActionCompletionResult {
+        pub(super) fn all(
+            &self,
+            fragment: &str,
+            write: bool,
+        ) -> yinz_bus::route::ActionCompletionResult {
             let (tx, mut rx) = tokio::sync::oneshot::channel();
             reconfigure_all_clients(
                 fragment.into(),
@@ -1650,7 +1654,7 @@ mod ligature_reconfigure {
             rx.try_recv().unwrap()
         }
 
-        fn assert_no_propagation(&self) {
+        pub(super) fn assert_no_propagation(&self) {
             assert!(self.screen.is_empty());
             assert!(self.plugin.is_empty());
             assert!(self.pty.is_empty());
@@ -1848,5 +1852,215 @@ mod ligature_reconfigure {
         .unwrap();
         assert_eq!(fixture.snapshot(), before);
         fixture.assert_no_propagation();
+    }
+}
+
+mod cell_metrics_reconfigure {
+    use super::ligature_reconfigure::Fixture;
+    use super::*;
+
+    fn guidance(error: &str, settings: &[&str]) {
+        for word in
+            settings
+                .iter()
+                .copied()
+                .chain(["--write", "configuration/drop-in", "entire fragment"])
+        {
+            assert!(error.contains(word), "{error}");
+        }
+    }
+
+    #[test]
+    fn unsaved_metrics_and_combined_ligatures_refuse_whole_fragment_at_both_entry_points() {
+        for clients in [vec![CLIENT], vec![]] {
+            for (settings, names) in [
+                ("cell_width 1.5;", vec!["cell_width"]),
+                ("line_height 1.5;", vec!["line_height"]),
+                (
+                    "cell_width 1.5; line_height 0.75; ligatures false;",
+                    vec!["cell_width", "line_height", "ligatures/font_ligatures"],
+                ),
+            ] {
+                let fixture = Fixture::new(&clients, None);
+                let before = fixture.snapshot();
+                let fragment = format!("terminal {{ {settings} }}\nmouse_mode false\nkeybinds {{ normal {{ bind \"Ctrl y\" {{ NewPane; }}; }}; }}\nplugins {{ background location=\"file:/background.scm\"; }}\nload_plugins {{ background; }}");
+                let result = fixture.all(&fragment, false);
+                assert_eq!(result.exit_status, Some(1));
+                guidance(result.error_message.as_deref().unwrap(), &names);
+                assert_eq!(fixture.snapshot(), before);
+                fixture.assert_no_propagation();
+                let error =
+                    reconfigure_client(CLIENT, fragment, false, &fixture.state, &fixture.data)
+                        .unwrap_err();
+                guidance(&format!("{error:#}"), &names);
+                assert_eq!(fixture.snapshot(), before);
+                fixture.assert_no_propagation();
+            }
+        }
+    }
+
+    #[test]
+    fn all_clients_use_each_current_override_and_reject_without_partial_mutation() {
+        for metric in ["cell_width", "line_height"] {
+            let fixture = Fixture::new(&[CLIENT, ClientId::new(2)], None);
+            let order = fixture.state.read().unwrap().interactive_client_ids();
+            fixture.with(|session| {
+                let config = session
+                    .session_configuration
+                    .get_client_configuration(&order[0]);
+                let config =
+                    Config::from_kdl(&format!("terminal {{ {metric} 1.5; }}"), Some(config))
+                        .unwrap();
+                session
+                    .session_configuration
+                    .set_client_runtime_configuration(order[0], config);
+            });
+            let before = fixture.snapshot();
+            let result = fixture.all(
+                &format!("terminal {{ {metric} 1.5; }}\nmouse_mode false"),
+                false,
+            );
+            assert_eq!(result.exit_status, Some(1));
+            guidance(result.error_message.as_deref().unwrap(), &[metric]);
+            assert_eq!(fixture.snapshot(), before);
+            fixture.assert_no_propagation();
+        }
+    }
+
+    #[test]
+    fn omitted_equivalent_and_explicit_default_metrics_allow_unrelated_runtime_changes() {
+        for clients in [vec![CLIENT], vec![]] {
+            for current in ["", "cell_width 1.5; line_height 0.75;"] {
+                for all in [false, true] {
+                    for requested in [
+                        "",
+                        current,
+                        if current.is_empty() {
+                            "cell_width 1; line_height 1;"
+                        } else {
+                            current
+                        },
+                    ] {
+                        let fixture = Fixture::new(&clients, None);
+                        fixture.with(|session| {
+                            let config =
+                                Config::from_kdl(&format!("terminal {{ {current} }}"), None)
+                                    .unwrap();
+                            session
+                                .session_configuration
+                                .set_saved_configuration(config.clone());
+                            if !clients.is_empty() {
+                                session
+                                    .session_configuration
+                                    .set_client_runtime_configuration(CLIENT, config);
+                            }
+                        });
+                        let fragment = format!("terminal {{ {requested} }}\nmouse_mode false");
+                        if all {
+                            let result = fixture.all(&fragment, false);
+                            assert_eq!(result.exit_status, None, "{result:?}");
+                        } else {
+                            reconfigure_client(
+                                CLIENT,
+                                fragment,
+                                false,
+                                &fixture.state,
+                                &fixture.data,
+                            )
+                            .unwrap();
+                        }
+                        fixture.with(|session| {
+                            let config =
+                                session
+                                    .session_configuration
+                                    .get_client_configuration(&if clients.is_empty() {
+                                        ClientId::NONE
+                                    } else {
+                                        CLIENT
+                                    });
+                            assert_eq!(config.options.mouse_mode, Some(false));
+                            assert_eq!(
+                                config.terminal.cell_width.unwrap_or(1.0),
+                                if current.is_empty() { 1.0 } else { 1.5 }
+                            );
+                            assert_eq!(
+                                config.terminal.line_height.unwrap_or(1.0),
+                                if current.is_empty() { 1.0 } else { 0.75 }
+                            );
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn saved_metrics_persist_reload_and_surface_parse_and_write_failures() {
+        for all in [false, true] {
+            for metric in ["cell_width", "line_height"] {
+                let fixture = Fixture::new(&[CLIENT], None);
+                let before = fixture.snapshot();
+                let invalid = format!("terminal {{ {metric} 4; }}\nmouse_mode false");
+                assert_eq!(fixture.all(&invalid, false).exit_status, Some(1));
+                assert_eq!(fixture.snapshot(), before);
+                fixture.assert_no_propagation();
+                let fragment = format!("terminal {{ {metric} 1.5; }}");
+                if all {
+                    assert_eq!(fixture.all(&fragment, true).exit_status, None);
+                } else {
+                    reconfigure_client(
+                        CLIENT,
+                        fragment.clone(),
+                        true,
+                        &fixture.state,
+                        &fixture.data,
+                    )
+                    .unwrap();
+                }
+                let path = fixture.dir.path().join("config.d/yinz-managed.kdl");
+                let saved =
+                    Config::from_kdl(&std::fs::read_to_string(path).unwrap(), None).unwrap();
+                let loaded =
+                    Config::default().with_overlay_dir(Some(&fixture.dir.path().join("config.d")));
+                assert_eq!(loaded.terminal, saved.terminal);
+                assert_eq!(serde_json::to_value(&loaded.terminal).unwrap()[metric], 1.5);
+                assert_eq!(
+                    std::fs::read_to_string(fixture.dir.path().join("config.kdl")).unwrap(),
+                    "// unchanged main\n"
+                );
+                fixture.with(|session| {
+                    session
+                        .session_configuration
+                        .change_saved_config(loaded.clone());
+                    assert_eq!(
+                        session
+                            .session_configuration
+                            .get_client_configuration(&CLIENT)
+                            .terminal,
+                        loaded.terminal
+                    );
+                });
+                let failed = Fixture::new(&[CLIENT], None);
+                std::fs::write(failed.dir.path().join("config.d"), "not a directory").unwrap();
+                if all {
+                    let result = failed.all(&fragment, true);
+                    assert_eq!(result.exit_status, Some(1));
+                    assert!(result.error_message.is_some());
+                } else {
+                    assert!(reconfigure_client(
+                        CLIENT,
+                        fragment,
+                        true,
+                        &failed.state,
+                        &failed.data
+                    )
+                    .is_err());
+                }
+                assert_eq!(
+                    std::fs::read_to_string(failed.dir.path().join("config.d")).unwrap(),
+                    "not a directory"
+                );
+            }
+        }
     }
 }

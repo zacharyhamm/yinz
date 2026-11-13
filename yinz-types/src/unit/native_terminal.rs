@@ -78,3 +78,32 @@ fn ligature_spellings_share_one_optional_boolean_and_canonical_output() {
         }
     }
 }
+
+#[test]
+fn cell_metrics_preserve_omission_and_explicit_defaults_in_roundtrips() {
+    let default = TerminalConfig::default();
+    assert_eq!((default.cell_width, default.line_height), (None, None));
+    for name in ["cell_width", "line_height"] {
+        for multiplier in [0.5, 1.0, 1.25, 3.0] {
+            let config: TerminalConfig =
+                serde_json::from_value(serde_json::json!({name: multiplier})).unwrap();
+            let value = serde_json::to_value(&config).unwrap();
+            assert_eq!(value[name], multiplier);
+            assert_eq!(
+                serde_json::from_value::<TerminalConfig>(value).unwrap(),
+                config
+            );
+        }
+        for value in ["true", "\"1.25\"", "[]", "{}"] {
+            assert!(
+                serde_json::from_str::<TerminalConfig>(&format!("{{{name:?}:{value}}}")).is_err()
+            );
+        }
+        for next in [1.0, 1.5] {
+            assert!(serde_json::from_str::<TerminalConfig>(&format!(
+                "{{{name:?}:1.0,{name:?}:{next}}}"
+            ))
+            .is_err());
+        }
+    }
+}

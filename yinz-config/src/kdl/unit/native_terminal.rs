@@ -78,6 +78,8 @@ fn documented_native_terminal_example_loads() {
         .unwrap();
     let config = Config::from_kdl(example, None).unwrap();
     assert_eq!(config.terminal.font_ligatures, Some(true));
+    assert_eq!(config.terminal.cell_width, Some(1.0));
+    assert_eq!(config.terminal.line_height, Some(1.0));
     assert_eq!(config.terminal.font_family.as_deref(), Some("Iosevka Term"));
     assert_eq!(config.terminal.font_bold, config.terminal.font_family);
     assert_eq!(config.terminal.font_italic, config.terminal.font_family);
@@ -168,5 +170,77 @@ fn typed_ligature_nodes_are_not_plain_booleans() {
         let error = format!("{:?}", Config::from_kdl(&input, None).unwrap_err());
         assert!(error.contains(name), "{error}");
         assert!(error.contains("plain boolean"), "{error}");
+    }
+}
+
+#[test]
+fn cell_metrics_validate_plain_finite_multipliers_and_roundtrip() {
+    assert_eq!(
+        Config::from_kdl("terminal {}", None)
+            .unwrap()
+            .terminal
+            .cell_width,
+        None
+    );
+    for name in ["cell_width", "line_height"] {
+        for value in ["0.5", "1", "1.25", "3"] {
+            let config =
+                Config::from_kdl(&format!("terminal {{ {name} {value}; }}"), None).unwrap();
+            let serialized = config.to_string(false).unwrap();
+            assert_eq!(
+                Config::from_kdl(&serialized, None).unwrap().terminal,
+                config.terminal
+            );
+        }
+        for value in [
+            "",
+            "0.499",
+            "3.001",
+            "-1",
+            "1e999",
+            "\"1.5\"",
+            "true",
+            "null",
+            "1 2",
+            "value=1",
+            "(float)1.5",
+            "1 {}",
+        ] {
+            let input = format!("terminal {{ {name} {value}; }}");
+            let error = format!("{:?}", Config::from_kdl(&input, None).unwrap_err());
+            assert!(error.contains(name), "{input}: {error}");
+        }
+        let error = format!(
+            "{:?}",
+            Config::from_kdl(&format!("terminal {{ (metric){name} 1.5; }}"), None).unwrap_err()
+        );
+        assert!(error.contains("plain numeric"), "{error}");
+        for next in [1, 2] {
+            let error = format!(
+                "{:?}",
+                Config::from_kdl(&format!("terminal {{ {name} 1; {name} {next}; }}"), None)
+                    .unwrap_err()
+            );
+            assert!(
+                error.contains(&format!("duplicate terminal setting {name}")),
+                "{error}"
+            );
+        }
+    }
+    // Exercise nonfinite values directly: KDL text versions differ in their spelling.
+    for name in ["cell_width", "line_height"] {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut block = KdlNode::new("terminal");
+            let mut children = KdlDocument::new();
+            let mut metric = KdlNode::new(name);
+            metric.push(KdlValue::Base10Float(value));
+            children.nodes_mut().push(metric);
+            block.set_children(children);
+            let error = format!("{:?}", native_terminal::from_kdl(&block).unwrap_err());
+            assert!(
+                error.contains(name) && error.contains("finite multiplier"),
+                "{error}"
+            );
+        }
     }
 }

@@ -6,14 +6,26 @@ use yinz_types::keys::KeyWithModifier;
 #[path = "configuration_editor.rs"]
 mod configuration_editor;
 
-fn validate_unsaved_ligatures(current: &Config, requested: &Config) -> Result<()> {
+fn validate_unsaved_native_settings(current: &Config, requested: &Config) -> Result<()> {
+    let mut changed = vec![];
     if current.terminal.font_ligatures.unwrap_or(true)
         != requested.terminal.font_ligatures.unwrap_or(true)
     {
+        changed.push("ligatures/font_ligatures");
+    }
+    if current.terminal.cell_width.unwrap_or(1.0) != requested.terminal.cell_width.unwrap_or(1.0) {
+        changed.push("cell_width");
+    }
+    if current.terminal.line_height.unwrap_or(1.0) != requested.terminal.line_height.unwrap_or(1.0)
+    {
+        changed.push("line_height");
+    }
+    if !changed.is_empty() {
         return Err(anyhow!(
-            "changing terminal ligatures/font_ligatures requires a saved configuration: \
+            "changing terminal {} requires a saved configuration: \
              repeat action reconfigure with --write, or edit the session's configuration/drop-in \
-             for automatic file reload; the entire fragment was refused"
+             for automatic file reload; the entire fragment was refused",
+            changed.join(", ")
         ));
     }
     Ok(())
@@ -491,7 +503,7 @@ pub(super) fn reconfigure_client(
             session.config_dir.as_deref(),
         )?;
         if !write_config_to_disk {
-            validate_unsaved_ligatures(
+            validate_unsaved_native_settings(
                 &session
                     .session_configuration
                     .get_client_configuration(&target.client_id),
@@ -569,7 +581,7 @@ pub(super) fn reconfigure_all_clients(
                         session.config_file_path.as_deref(),
                         session.config_dir.as_deref(),
                     )?;
-                    validate_unsaved_ligatures(
+                    validate_unsaved_native_settings(
                         &session
                             .session_configuration
                             .get_client_configuration(&client_id),

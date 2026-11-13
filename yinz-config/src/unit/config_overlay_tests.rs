@@ -476,3 +476,69 @@ fn raw_ligature_writes_reconcile_root_and_child_configuration_edits() {
         }
     }
 }
+
+#[test]
+fn cell_metrics_sorted_layers_inherit_override_and_explicitly_reset() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = Config::from_kdl(
+        "terminal { cell_width 1.5; line_height 1.25; padding 2; }",
+        None,
+    )
+    .unwrap();
+    for (file, text) in [
+        ("20-reset.kdl", "terminal { cell_width 1; }"),
+        ("10-set.kdl", "terminal { cell_width 2; line_height 1.5; }"),
+        ("30-invalid.kdl", "terminal { cell_width 4; padding 99; }"),
+        (
+            "40-duplicate.kdl",
+            "terminal { line_height 1; line_height 1; padding 98; }",
+        ),
+    ] {
+        std::fs::write(dir.path().join(file), text).unwrap();
+    }
+    let config = base.with_overlay_dir(Some(dir.path()));
+    assert_eq!(config.terminal.cell_width, Some(1.0));
+    assert_eq!(config.terminal.line_height, Some(1.5));
+    assert_eq!(config.terminal.padding, Some(2.0));
+    let inherited = Config::from_kdl("terminal { opacity 0.5; }", Some(config.clone())).unwrap();
+    assert_eq!(inherited.terminal.cell_width, Some(1.0));
+    assert_eq!(inherited.terminal.line_height, Some(1.5));
+    let reset = Config::from_kdl("terminal { line_height 1; }", Some(inherited)).unwrap();
+    assert_eq!(reset.terminal.cell_width, Some(1.0));
+    assert_eq!(reset.terminal.line_height, Some(1.0));
+    assert_eq!(
+        Config::from_kdl(&reset.to_string(false).unwrap(), None)
+            .unwrap()
+            .terminal,
+        reset.terminal
+    );
+}
+
+#[test]
+fn managed_cell_metrics_preserve_siblings_and_reject_whole_invalid_fragments() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = Config::write_managed_fragment(
+        dir.path(),
+        "terminal { cell_width 1.5; line_height 2; padding 3; }",
+    )
+    .unwrap();
+    Config::write_managed_fragment(dir.path(), "terminal { cell_width 1; }").unwrap();
+    let before = std::fs::read_to_string(&path).unwrap();
+    let config = Config::from_kdl(&before, None).unwrap();
+    assert_eq!(config.terminal.cell_width, Some(1.0));
+    assert_eq!(config.terminal.line_height, Some(2.0));
+    assert_eq!(config.terminal.padding, Some(3.0));
+    for bad in [
+        "line_height 0.49;",
+        "cell_width true;",
+        "cell_width 1; cell_width 1;",
+        "line_height (float)1.5;",
+    ] {
+        assert!(Config::write_managed_fragment(
+            dir.path(),
+            &format!("terminal {{ padding 99; {bad} }}")
+        )
+        .is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+}

@@ -512,6 +512,32 @@ impl FontStack {
         Ok(stack)
     }
 
+    /// Spacing changes keep face/coverage discovery and independent cluster shaping.
+    /// This is infallible: it uses only faces and normalized coordinates already loaded.
+    pub(crate) fn update_cell(&mut self, cell: &CellAdjust) -> bool {
+        let regular = self.primary[0].0;
+        let (metrics, placement) =
+            derive_metrics(&self.faces[regular], &self.coords[regular], self.size, cell);
+        let old_metrics = self.metrics;
+        let old_placement = self.placement;
+        let old_styled = self.styled;
+        self.metrics = metrics;
+        self.placement = placement;
+        self.styled = self.styled.map(|styled| {
+            styled.map(|face| StyleFace {
+                in_cell: self.shares_cell(face.font, cell),
+                ..face
+            })
+        });
+        let style_changed = old_styled != self.styled;
+        if old_metrics.width != metrics.width || style_changed {
+            // Runs include cell-relative offsets; clusters are shaped at natural size.
+            self.shaped
+                .retain(|(_, shaping), _| *shaping == Shaping::Cluster);
+        }
+        old_metrics != metrics || old_placement != placement || style_changed
+    }
+
     pub fn metrics(&self) -> CellMetrics {
         self.metrics
     }

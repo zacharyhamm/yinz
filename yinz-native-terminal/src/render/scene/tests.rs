@@ -1773,3 +1773,97 @@ fn an_overlay_image_crosses_the_underlying_tiled_split() {
         "the overlay owns the full image above the tiled split and the narrower float"
     );
 }
+
+#[test]
+fn cell_metrics_share_physical_origins_for_background_glyphs_cursor_and_decorations() {
+    use crate::text::font::CellAdjust;
+    for (width, height, w, h) in [(0.5, 0.5, 4, 10), (1.5, 1.25, 12, 25), (3.0, 3.0, 24, 60)] {
+        for shape in [
+            CursorShape::Block,
+            CursorShape::Beam,
+            CursorShape::Underline,
+        ] {
+            let mut cache = GlyphCache::new(
+                FontOptions {
+                    system_fonts: false,
+                    ligatures: false,
+                    cell: CellAdjust {
+                        cell_width: width,
+                        line_height: height,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+                .stack(1.0)
+                .unwrap(),
+            );
+            let state = Painter::state(3, 12, |p| {
+                p.styled(1, 1, "M", |cell| {
+                    cell.bg = WireColor::Rgb(10, 20, 30).pack();
+                    cell.attrs |= ATTR_STRIKE | (UNDERLINE_STRAIGHT << UNDERLINE_SHIFT);
+                });
+                p.wide(0, 2, '中');
+                p.wide(0, 5, '😀');
+                p.cluster(0, 8, "👩‍💻", 2);
+                p.cluster(2, 0, "e\u{301}", 1);
+                p.text(2, 2, "─");
+                p.cursor(1, 10, shape);
+            });
+            let metrics = cache.metrics();
+            assert_eq!((metrics.width, metrics.height), (w, h));
+            let scene = build(&state, &mut cache);
+            assert_eq!((scene.width, scene.height), (12 * w, 3 * h));
+            assert!(scene.rects.contains(&Rect {
+                x: w as i32,
+                y: h as i32,
+                width: w,
+                height: h,
+                color: [10, 20, 30]
+            }));
+            for top in [metrics.underline_top, metrics.strikeout_top] {
+                assert!(scene.rects.iter().any(|r| r.x == w as i32
+                    && r.y == (h + top) as i32
+                    && r.width == w
+                    && r.height == 1));
+            }
+            let glyph = match cache.glyph(FaceStyle::Regular, 'M', 1) {
+                Lookup::Rendered(glyph) => glyph,
+                _ => panic!("M raster"),
+            };
+            assert!(scene
+                .glyphs
+                .iter()
+                .any(|q| q.x == w as i32 + glyph.entry.left
+                    && q.y == (h + metrics.baseline) as i32 - glyph.entry.top
+                    && q.entry == glyph.entry));
+            let (x, y, cw, ch) = match shape {
+                CursorShape::Beam => (10 * w, h, 1, h),
+                CursorShape::Underline => (10 * w, 2 * h - 1, w, 1),
+                _ => (10 * w, h, w, h),
+            };
+            assert!(scene
+                .rects
+                .iter()
+                .any(|r| (r.x, r.y, r.width, r.height) == (x as i32, y as i32, cw, ch)));
+            // CJK owns two logical columns. Pinned fallback fitting allows 25%
+            // ink overhang for masks; its origin still uses those physical cells.
+            let cjk = match cache.glyph(FaceStyle::Regular, '中', 2) {
+                Lookup::Rendered(glyph) => glyph,
+                _ => panic!("CJK raster"),
+            };
+            let quads: Vec<_> = scene
+                .glyphs
+                .iter()
+                .filter(|q| {
+                    q.entry == cjk.entry
+                        && q.x == (2 * w) as i32 + cjk.entry.left
+                        && q.y == metrics.baseline as i32 - cjk.entry.top
+                })
+                .collect();
+            assert_eq!(quads.len(), 1);
+            assert!(cjk.entry.width <= (2 * w) + w / 2);
+            assert!(!scene.color_glyphs.is_empty());
+            assert_eq!(state.screen().text_at(0, 2), "中");
+        }
+    }
+}
