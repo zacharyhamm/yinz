@@ -15,13 +15,13 @@ function cardKeys(config) {
   return preferred.length ? preferred : config.quick_keys.slice(0, 3);
 }
 
-function AgentCard({ row, env, onKeys, busy }) {
+function AgentCard({ row, env, onKeys, busy, showState }) {
   const waiting = row.state === 'waiting';
   const href = row.run ? detailHash({ id: row.id, run: row.run, tab: waiting ? 'screen' : 'timeline' }) : detailHash({ id: row.id, run: '', tab: 'screen' });
   return html`<li class=${cx('agent-card', `card-${row.state || 'unknown'}`, row.wait_needs_a_person && 'card-needs-person')} data-agent-id=${row.id}>
     <a class="card-main agent-open-area" href=${href} aria-label=${`Open ${row.title || row.id}`}>
       <${ServerHtml} html=${row.html} class="card-html" />
-      <${RowBadges} row=${row} />
+      <${RowBadges} row=${row} showState=${showState} />
     </a>
     ${waiting ? html`<div class="card-actions">
       <${QuickKeys} keys=${cardKeys(env.config)} disabled=${busy || !row.ref} label=${`Quick keys for ${row.title || 'agent'}`}
@@ -89,7 +89,7 @@ export function ListView({ env }) {
       ${groups.filter(([, , rows]) => rows.length).map(([key, label, rows]) => html`<section class="agent-section" id=${`section-${key}`} data-state=${key} aria-labelledby=${`section-${key}-title`}>
         <h2 class="section-title" id=${`section-${key}-title`}>${label} <span class="section-count">${rows.length}</span></h2>
         <ul class="agent-cards">
-          ${rows.map((row) => html`<${AgentCard} key=${row.id} row=${row} env=${env} onKeys=${sendKey} busy=${!!busyKeys[row.id]} />`)}
+          ${rows.map((row) => html`<${AgentCard} key=${row.id} row=${row} env=${env} onKeys=${sendKey} busy=${!!busyKeys[row.id]} showState=${key === 'other'} />`)}
         </ul>
       </section>`)}
     </main>

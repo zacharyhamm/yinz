@@ -366,6 +366,17 @@ its `node_modules/` is ignored, and neither it nor the browser is installed with
 Yinz. The test is `#[ignore]`d, so the unfiltered integration suite and
 `cargo x ci check` skip it; select it with `--run-ignored only`. Selected without
 its tooling, it fails with the provisioning command instead of skipping.
+
+The browser fixture mirrors the default agent-row structure and is paired with
+the real Scheme route tests for preview boundaries, Unicode, escaping and raw
+field preservation. List checks cover compact previews, contrast, density,
+wrapping, badges, actions and focus at 320px and 390px in both color schemes,
+plus a desktop smoke and successful empty-list recovery. Detail and reader checks
+preserve state labels and longer content; existing freshness, offline/retry,
+retarget and authentication scenarios also run. Screenshots are saved under
+`target/web-browser-results/`. These are Firefox emulation checks, not physical
+phone or iOS Safari coverage.
+
 Provision both inside this worktree before running it:
 
 ```sh

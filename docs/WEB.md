@@ -243,7 +243,12 @@ plugin configuration or secrets.
 
 - **Agents** (`#/`): agents from every local session, in the terminal palette's
   order, under **Needs you**, **Working** and **Idle**. Each section has a text
-  label, so color is not the only signal. Badges mark peer sessions, the
+  label that supplies the state without repeating it on each default row; unknown
+  states keep their row label. Task titles use the theme's accent color and
+  replies use the main text color. Default reply previews retain up to 160 Unicode
+  characters, with an ellipsis for locally or upstream truncated text, and display
+  at most three lines. Blank replies take no space. Open the agent's timeline and
+  message reader for longer content. Badges mark peer sessions, the
   desktop-focused agent and remote hosts. Waiting cards have quick keys and an
   **Open** button. The header shows how long ago the list was updated and the
   serving session. The menu has **Log out** and **Log out everywhere**, which

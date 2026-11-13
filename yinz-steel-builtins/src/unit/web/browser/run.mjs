@@ -103,6 +103,8 @@ class Fixture {
     this.prompt = 'submitted';
     this.revokeOnPrompt = false;
     this.screenTick = 0;
+    this.rows = null; // optional successful list payload, including [] for the empty state
+    this.fullReply = null;
     this.fail = new Map(); // path -> {mode:'abort'|'hold'|'reply', times, status, headers, body}
     this.held = [];
     this.log = [];
@@ -124,17 +126,31 @@ function row(fx, id, state, extra = {}) {
   const r = {
     id, ref: retargeted ? { ...REF7B } : { id, kind: 'codex', session_id: 'conv-1' },
     session: 'browser-check', current_session: true, pane_id: id.split(':').pop(), provider: 'codex', state,
-    glyph: '', status: state, host: null, title: `Agent ${id.split(':').pop()}`, activity: 'editing', project: 'yinz',
+    glyph: { waiting: '?', busy: '●', idle: '○' }[state] || '?',
+    status: { waiting: 'needs input', busy: 'working', idle: 'idle' }[state] || state,
+    host: null, title: `Agent ${id.split(':').pop()}`, activity: 'editing', project: 'yinz',
     branch: 'main', last_reply: { text: 'Done with step 1', truncated: false }, last_hook_at_ms: 1, focused: false,
     selectable: true, suppressed: false, directory: '/w', run: retargeted ? 'run-7b' : `run-${id.split(':').pop()}`,
     wait_needs_a_person: state === 'waiting', source: 'hook', can_prompt: true, prompt_unavailable: null,
     usage_unavailable: null, ...extra,
   };
-  r.html = `<div class="agent-row"><strong>${esc(r.title)}</strong> <span>${esc(r.activity)}</span></div>`;
+  // Mirror the default Scheme hook's structure, paired with real /api/agents Scheme
+  // assertions in web.test.scm; this fixture is not evidence of Scheme execution.
+  const source = r.last_reply?.text || '';
+  const chars = Array.from(source);
+  const preview = chars.slice(0, 160).join('') + (chars.length > 160 || r.last_reply?.truncated ? '…' : '');
+  const badges = (r.badges || []).map((b) => `<span class="badge" data-tone="${esc(b.tone || '')}">${esc(b.text)}</span>`).join('');
+  r.html = `<div class="agent-row" data-state="${esc(r.state)}"><div class="agent-row-heading"><span class="agent-glyph" aria-hidden="true">${esc(r.glyph)}</span><strong class="agent-title">${esc(r.title.trim() ? r.title : r.provider)}</strong><span class="agent-status">${esc(r.status)}</span></div><div class="agent-meta">${[r.provider, r.project, r.branch].filter((s) => s && s.trim()).map(esc).join(' · ')}</div>${badges ? `<div class="badges">${badges}</div>` : ''}${source.trim() ? `<p class="agent-reply">${esc(preview)}</p>` : ''}</div>`;
+  if (r.wrapper) r.html = `<div class="custom-row">${r.html}</div>`;
   return r;
 }
 
 function agents(fx) {
+  if (fx.rows) return {
+    session: 'browser-check', now_ms: Date.now(),
+    counts: Object.fromEntries(['waiting', 'busy', 'idle'].map((s) => [s, fx.rows.filter((r) => r.state === s).length])),
+    agents: fx.rows,
+  };
   return {
     session: 'browser-check', now_ms: Date.now(), counts: { waiting: 1, busy: 1, idle: 1 },
     agents: [
@@ -208,6 +224,7 @@ function history(fx, q) {
   if (earlier || (run === 'run-7' && after !== null)) navigation.earlier = bound({ op: 'history', run, worker: null, before: { created_at_ms: 20 * 60000, revision: 20 }, after_revision: null });
   for (const e of events) {
     if (e.kind === 'tools') continue;
+    if (fx.fullReply && e.revision === 44) e.markdown = fx.fullReply;
     e.html = `<p>${esc(e.markdown)}</p>`;
   }
   return {
@@ -272,7 +289,7 @@ function fixtureReply(fx, entry) {
     case '/api/agents': return [200, agents(fx)];
     case '/api/history': return [200, history(fx, q)];
     case '/api/event':
-      return [200, { header: 'Agent · 12:44', markdown: 'full', tool: '', html: '<p>The complete message text for revision 44.</p>' }];
+      return [200, { header: 'Agent · 12:44', markdown: fx.fullReply || 'full', tool: '', html: `<p>${esc(fx.fullReply || 'The complete message text for revision 44.')}</p>` }];
     case '/api/tools':
       if (q.has('before')) return [200, { header: 'Tools (older)', markdown: '', tool: '', html: '<pre>older tool record</pre>', page: { events: [], navigation: {} } }];
       return [200, {
@@ -864,6 +881,125 @@ async function phoneLayout(open, width) {
   await noInjection(page);
 }
 
+async function compactAgentList(open, width, scheme) {
+  const { page, fx } = await open({ viewport: { width, height: 844 }, colorScheme: scheme });
+  const longReply = FILLER.repeat(6).slice(0, 512);
+  fx.fullReply = `${longReply} The reader retains the rest of this response. ${FILLER.repeat(3)}`;
+  fx.rows = [
+    row(fx, AGENT_ID, 'waiting', { title: 'Review the change', last_reply: { text: 'Ready for your review.', truncated: false } }),
+    row(fx, 'live:dev:8', 'busy', { title: 'Refactor parser', last_reply: { text: longReply, truncated: false } }),
+    row(fx, 'live:peer:9', 'idle', { title: 'Peer agent', wrapper: true, focused: true, current_session: false,
+      session: 'peer', host: 'box', badges: [{ text: '<custom context>', tone: 'info' }], last_reply: { text: 'Upstream preview', truncated: true } }),
+  ];
+  await openList(page);
+  // COOP navigation can drop Firefox media emulation; verify the actual content viewport
+  // and theme after login, before measuring any typography or colours.
+  await page.emulateMedia({ colorScheme: scheme });
+  check(await page.evaluate(({ width, scheme }) => innerWidth === width && matchMedia('(prefers-color-scheme: dark)').matches === (scheme === 'dark'), { width, scheme }), 'wrong viewport or colour scheme');
+  const reference = '#section-busy .agent-card';
+  const metrics = await page.evaluate((sel) => {
+    const card = document.querySelector(sel);
+    const title = card.querySelector('.agent-title');
+    const reply = card.querySelector('.agent-reply');
+    const ts = getComputedStyle(title), rs = getComputedStyle(reply), cs = getComputedStyle(card);
+    const luminance = (colour) => {
+      const rgb = colour.match(/[\d.]+/g).slice(0, 3).map((v) => Number(v) / 255).map((v) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+      return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+    };
+    const contrast = (a, b) => (Math.max(luminance(a), luminance(b)) + 0.05) / (Math.min(luminance(a), luminance(b)) + 0.05);
+    return {
+      height: card.getBoundingClientRect().height, replyHeight: reply.getBoundingClientRect().height,
+      lineHeight: parseFloat(rs.lineHeight), titleSize: ts.fontSize, replySize: rs.fontSize,
+      titleColour: ts.color, replyColour: rs.color, titleContrast: contrast(ts.color, cs.backgroundColor),
+      replyContrast: contrast(rs.color, cs.backgroundColor), text: reply.textContent,
+      clamp: rs.webkitLineClamp,
+    };
+  }, reference);
+  check(metrics.titleColour !== metrics.replyColour, 'task and response colours are identical');
+  check(metrics.titleContrast >= 4.5 && metrics.replyContrast >= 4.5, `low text contrast: ${JSON.stringify(metrics)}`);
+  check(metrics.titleSize === '16px' && metrics.replySize === '14px', 'unexpected title/reply typography');
+  check(metrics.clamp === '3' && metrics.replyHeight <= metrics.lineHeight * 3 + 1, `reply exceeds three lines: ${JSON.stringify(metrics)}`);
+  check(metrics.text === `${longReply.slice(0, 160)}…`, 'long preview lost its character cap or ellipsis cue');
+  check(metrics.height < (width === 320 ? 240 : 220), `reference card too tall: ${metrics.height}px at ${width}px`);
+  check(await textOf(page, '#section-waiting .agent-reply') === 'Ready for your review.', 'short reply changed');
+  check(await textOf(page, '#section-idle .agent-reply') === 'Upstream preview…', 'upstream truncation cue missing');
+  check(!(await exists(page, '.list-main .state-badge')), 'duplicate known-state badge');
+  check(!(await exists(page, '#section-busy .badges')), 'empty badge row retained');
+  check(await page.evaluate(() => [...document.querySelectorAll('.list-main .agent-status')].every((el) => getComputedStyle(el).display === 'none')), 'duplicate heading state visible through a wrapper');
+  for (const sel of ['.custom-row .badge', '.badge-focused', '.badge-peer', '.badge-host', '.agent-glyph']) check(await exists(page, sel), `missing context ${sel}`);
+  check((await textOf(page, '.custom-row .badges')).includes('<custom context>'), 'custom badge was not preserved as text');
+  check(await page.evaluate(() => getComputedStyle(document.querySelector('.card-needs-person')).borderLeftColor !== getComputedStyle(document.querySelector('.card-busy')).borderLeftColor), 'needs-person emphasis lost');
+  await noHorizontalOverflow(page, `compact list ${width}px ${scheme}`);
+  await noClippedControls(page, `compact list ${width}px ${scheme}`);
+  await touchTargets(page, `compact list ${width}px ${scheme}`);
+  fs.mkdirSync(RESULTS_DIR, { recursive: true });
+  await page.screenshot({ path: path.join(RESULTS_DIR, `compact-list-${width}-${scheme}.png`), fullPage: true });
+  console.log(`compact list ${width}px ${scheme}: card ${metrics.height}px; reply ${metrics.replyHeight}px; title/reply contrast ${metrics.titleContrast.toFixed(2)}/${metrics.replyContrast.toFixed(2)}`);
+
+  // Keyboard focus must remain visible and Enter must activate the card itself.
+  await page.focus('#list-refresh');
+  await page.keyboard.press('Tab');
+  check(await page.evaluate(() => document.activeElement.matches('.agent-open-area') && parseFloat(getComputedStyle(document.activeElement).outlineWidth) >= 2), 'card keyboard focus indication missing');
+  await page.keyboard.press('Enter');
+  await until('card opens waiting screen', async () => hashOf(page) === detailHash('run-7', 'screen') && exists(page, '#screen pre.screen'));
+  check((await textOf(page, '#detail-header .state-badge')).includes('Needs you'), 'detail state badge missing');
+  await domClick(page, '#tab-timeline');
+  await until('full response in timeline', async () => (await textOf(page, '#timeline')).includes(fx.fullReply));
+  check(await page.evaluate(() => [...document.querySelectorAll('#timeline .event-body')].every((el) => getComputedStyle(el).webkitLineClamp !== '3')), 'list clamp leaked to timeline');
+  await domClick(page, '.event-read');
+  await until('full response in reader', async () => (await textOf(page, '#sheet-reader')).includes(fx.fullReply));
+  check(await page.evaluate(() => [...document.querySelectorAll('#sheet-reader p')].some((el) => getComputedStyle(el).webkitLineClamp !== '3' && el.getBoundingClientRect().height > parseFloat(getComputedStyle(el).lineHeight) * 3)), 'reader response was visually capped');
+  await sheetReady(page, 'sheet-reader', 'focus inside full response reader');
+  await page.keyboard.press('Escape');
+  await until('reader closes', async () => !(await exists(page, '#sheet-reader')));
+  await domClick(page, '#detail-back');
+  await until('return to list', () => exists(page, '#section-waiting'));
+
+  // Edge cases retain useful text, including long unbroken metadata, without empty rows.
+  fx.rows = [
+    row(fx, AGENT_ID, 'waiting', { title: 'Long task 界🙂 '.repeat(18), project: 'project'.repeat(30), branch: 'branch'.repeat(30), last_reply: null }),
+    row(fx, 'live:dev:10', 'busy', { title: '界🙂'.repeat(100), provider: '', project: '', branch: '', last_reply: { text: '界🙂'.repeat(256), truncated: false } }),
+    row(fx, 'live:dev:11', 'idle', { last_reply: { text: '', truncated: false } }),
+    row(fx, 'live:dev:12', 'idle', { last_reply: undefined }),
+    row(fx, 'live:dev:13', 'idle', { last_reply: { text: ' \n\t', truncated: true } }),
+    row(fx, 'live:dev:14', 'paused', { title: 'Unknown state', status: 'paused', last_reply: null }),
+  ];
+  await domClick(page, '#list-refresh');
+  await until('edge-case rows', () => exists(page, '#section-other'));
+  const edge = await page.evaluate(() => {
+    const card = document.querySelector('.agent-card[data-agent-id="live:dev:10"]');
+    const title = card.querySelector('.agent-title');
+    const meta = card.querySelector('.agent-meta');
+    return {
+      title: title.textContent, titleWrapped: title.getBoundingClientRect().height > parseFloat(getComputedStyle(title).lineHeight) * 2,
+      titleUnclipped: title.scrollHeight <= title.clientHeight + 1,
+      metaHidden: getComputedStyle(meta).display === 'none', reply: card.querySelector('.agent-reply').textContent,
+      replies: document.querySelectorAll('.list-main .agent-reply').length,
+      unknownVisible: getComputedStyle(document.querySelector('#section-other .agent-status')).display !== 'none',
+      longMeta: document.querySelector('#section-waiting .agent-meta').textContent,
+    };
+  });
+  check(edge.title === '界🙂'.repeat(100) && edge.titleWrapped && edge.titleUnclipped, 'long Unicode title lost or clipped');
+  check(edge.metaHidden && edge.replies === 1, 'empty metadata/reply occupied a row');
+  check(edge.reply === `${'界🙂'.repeat(80)}…`, 'Unicode reply preview damaged');
+  check(edge.longMeta.includes('project'.repeat(30)) && edge.longMeta.includes('branch'.repeat(30)), 'long metadata lost');
+  check(edge.unknownVisible && (await textOf(page, '#section-other .state-badge')).includes('paused'), 'unknown state label missing');
+  await noHorizontalOverflow(page, `long content ${width}px ${scheme}`);
+  await noClippedControls(page, `long content ${width}px ${scheme}`);
+  await touchTargets(page, `long content ${width}px ${scheme}`);
+  await noInjection(page);
+
+  // A successful zero-agent response is distinct from network errors and empty replies.
+  fx.rows = [];
+  await domClick(page, '#list-refresh');
+  await until('successful empty list', () => exists(page, '#list-empty'));
+  check(await textOf(page, '#list-empty') === 'No agents are running.', 'empty-list explanation missing');
+  check(!(await exists(page, '.agent-section')) && !(await exists(page, '#banner-offline')), 'empty list retained cards or an error');
+  fx.rows = null;
+  await domClick(page, '#list-refresh');
+  await until('populated list recovers', () => exists(page, '#section-waiting'));
+}
+
 async function darkMode(open) {
   const bg = {};
   // Playwright Firefox drops the context colorScheme when these COOP pages swap browsing
@@ -1383,6 +1519,10 @@ async function main() {
   await scenario('remembered login across tabs and contexts', rememberedLogin);
   await scenario('phone layout 320px: overflow, touch targets, text-only server strings', (open) => phoneLayout(open, 320));
   await scenario('phone layout 390px: overflow, touch targets, text-only server strings', (open) => phoneLayout(open, 390));
+  for (const width of [320, 390]) {
+    for (const scheme of ['light', 'dark']) await scenario(`compact agent list ${width}px ${scheme}`, (open) => compactAgentList(open, width, scheme));
+  }
+  await scenario('compact agent list 1024px desktop', (open) => compactAgentList(open, 1024, 'light'));
   await scenario('dark mode changes computed backgrounds', darkMode);
   await scenario('safe-area CSS and manifest', safeAreaManifest);
   await scenario('sheet focus trap, Escape and focus restore; keys and interrupt', sheetsKeyboard);

@@ -91,10 +91,10 @@ export function StateBadge({ row }) {
 
 /** Labelled indicators; colour is never the only signal. Hook-supplied
  * `row.badges` are rendered server-side by the `agent-row` hook into row.html. */
-export function RowBadges({ row }) {
-  if (!row) return null;
+export function RowBadges({ row, showState = true }) {
+  if (!row || (!showState && !row.focused && row.current_session !== false && !row.host)) return null;
   return html`<span class="badges">
-    <${StateBadge} row=${row} />
+    ${showState ? html`<${StateBadge} row=${row} />` : null}
     ${row.focused ? html`<span class="badge badge-focused" title="Focused on the desktop"><span aria-hidden="true">⌖</span> focused</span>` : null}
     ${row.current_session === false ? html`<span class="badge badge-peer">session ${String(row.session || '')}</span>` : null}
     ${row.host ? html`<span class="badge badge-host">@${String(row.host)}</span>` : null}

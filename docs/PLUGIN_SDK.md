@@ -1261,7 +1261,7 @@ receives `(next . args)`.
 | `shell` | `ctx` | `<div id="app">`, a `noscript` notice, the `yinz-config` JSON script and a module script per `scripts` entry |
 | `login` | `ctx` | `<main class="login">` with `form#login-form` (`#password`, `#label`, `#remember`, `#login-submit`, `#login-status`), a `noscript` notice and the scripts |
 | `agent-list` | list of rows | the rows unchanged; may filter, reorder or add `badges: [{text,tone}]` |
-| `agent-row` | row | `div.agent-row` with glyph, title, status, provider/project/branch, badges and last reply |
+| `agent-row` | row | `div.agent-row` with glyph, title, status, provider/project/branch, badges and a nonblank reply preview (up to 160 Unicode characters plus a truncation ellipsis, displayed in at most three list lines). Named list sections supply the state; unknown states retain a row label. Raw reply fields and full timeline/message readers remain unchanged. |
 | `agent-header` | `{live, header}` | `header.agent-header` with name, status, task and metadata |
 | `event-body` | event | sanitized Markdown (escaped `<pre>` above 1 MiB); escaped `pre.event-tool` for `tool_call`/`tool_result` kinds and ranged activity |
 | `reader` | `{header, markdown, tool}` | `article.reader` with Markdown and the tool text in an escaped `<pre>` |
