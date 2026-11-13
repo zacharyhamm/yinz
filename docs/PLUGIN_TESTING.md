@@ -391,7 +391,16 @@ and same-submission retry scenarios also run.
 
 320×480 and 390×480 checks approximate reduced keyboard space: the timeline
 retains positive height and composer controls and safety feedback remain
-reachable in their scrolling regions. These are Firefox emulation checks, not
+reachable in their scrolling regions. In both themes, Screen also combines
+expanded long/custom information, the 80-line terminal, all seven default quick
+keys and a four-line draft. Newest-line text ranges must fit inside the visible
+output scrollport; Screen regions must stay above the composer. Every quick key,
+Refresh and recovery control must fit inside its visible ancestor bounds and
+pass a center hit test after scrolling only its intended region. Pointer and
+keyboard key delivery, Screen warnings, offline/unknown-submission recovery,
+same-id retry, reading positions and draft preservation are checked. Masked
+reduced-height Screen screenshots and geometry/hit-test JSON are saved with the
+other browser results. These are Firefox emulation checks, not
 physical touch, virtual-keyboard opening, Tailscale, iOS Safari or safe-area
 hardware coverage. Masked detail screenshots and geometry comparisons are saved
 under `target/web-browser-results/`. For pre-change characterization only, set

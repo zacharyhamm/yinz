@@ -698,15 +698,32 @@ function screenGeometry(page) {
     range.setStart(text, at);
     range.setEnd(text, at + last.length);
     const box = (r) => ({ top: r.top, bottom: r.bottom });
+    const visible = (el) => {
+      let top = 0, bottom = innerHeight;
+      for (let n = el; n; n = n.parentElement) {
+        if (['auto', 'scroll', 'hidden', 'clip'].includes(getComputedStyle(n).overflowY)) {
+          const r = n.getBoundingClientRect();
+          top = Math.max(top, r.top + n.clientTop);
+          bottom = Math.min(bottom, r.top + n.clientTop + n.clientHeight);
+        }
+      }
+      return { top, bottom };
+    };
     return {
       scrollTop: region.scrollTop,
       atBottom: region.scrollTop + region.clientHeight >= region.scrollHeight - 2,
       overflow: region.scrollHeight > region.clientHeight + 100,
       region: box(region.getBoundingClientRect()),
+      visible: visible(region),
+      body: box(document.getElementById('main').getBoundingClientRect()),
+      panel: box(document.querySelector('.screen-panel').getBoundingClientRect()),
+      feedback: box(document.querySelector('.screen-feedback, .screen-status').getBoundingClientRect()),
       last: box(range.getBoundingClientRect()),
       keys: box(keys.getBoundingClientRect()),
       dockTop: dock ? dock.getBoundingClientRect().top : innerHeight,
       height: innerHeight,
+      documentHeight: document.documentElement.scrollHeight,
+      pageTop: scrollY,
     };
   }, SCREEN_LAST);
 }
@@ -717,10 +734,48 @@ async function assertScreenPinned(page, where) {
     return v && v.atBottom ? v : null;
   });
   check(g.overflow, `${where}: screen fixture does not overflow its region`);
-  check(g.last.top >= g.region.top - 1 && g.last.bottom <= g.region.bottom + 1,
+  check(g.last.bottom > g.last.top && g.last.top >= Math.max(g.region.top, g.visible.top) - 1
+    && g.last.bottom <= Math.min(g.region.bottom, g.visible.bottom) + 1,
     `${where}: the question is outside the output region (${Math.round(g.last.top)}..${Math.round(g.last.bottom)} vs ${Math.round(g.region.top)}..${Math.round(g.region.bottom)})`);
   check(g.keys.top >= 0 && g.keys.bottom <= g.height && g.keys.bottom <= g.dockTop + 1,
     `${where}: quick keys are not visible above the composer (${Math.round(g.keys.top)}..${Math.round(g.keys.bottom)}, dock ${Math.round(g.dockTop)})`);
+  check(g.feedback.top >= g.body.top - 1 && g.region.top >= g.body.top - 1
+    && g.region.top >= g.feedback.bottom - 1 && g.keys.top >= g.region.bottom - 1
+    && g.keys.bottom <= g.body.bottom + 1 && g.panel.top >= g.body.top - 1 && g.panel.bottom <= g.dockTop + 1,
+  `${where}: Screen regions overflow the main panel: ${JSON.stringify(g)}`);
+  check(g.pageTop === 0 && g.documentHeight <= g.height + 1, `${where}: the document scrolled outside its viewport`);
+}
+
+// Scroll only the designated region. Browser auto-scrolling the document or a
+// different ancestor must not turn a covered control into a passing assertion.
+async function reachableTarget(page, selector, scroller) {
+  await until(`${selector} enabled`, () => page.locator(selector).isEnabled());
+  await page.evaluate(({ selector, scroller }) => {
+    const el = document.querySelector(selector), region = document.querySelector(scroller);
+    const r = el.getBoundingClientRect(), b = region.getBoundingClientRect();
+    region.scrollTop += (r.top + r.bottom - b.top - b.bottom) / 2;
+  }, { selector, scroller });
+  await nextFrame(page);
+  const g = await page.locator(selector).evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    let top = 0, bottom = innerHeight, left = 0, right = innerWidth;
+    for (let p = el.parentElement; p; p = p.parentElement) {
+      const cs = getComputedStyle(p), b = p.getBoundingClientRect();
+      if (['auto', 'scroll', 'hidden', 'clip'].includes(cs.overflowY)) {
+        top = Math.max(top, b.top + p.clientTop); bottom = Math.min(bottom, b.top + p.clientTop + p.clientHeight);
+      }
+      if (['auto', 'scroll', 'hidden', 'clip'].includes(cs.overflowX)) {
+        left = Math.max(left, b.left + p.clientLeft); right = Math.min(right, b.left + p.clientLeft + p.clientWidth);
+      }
+    }
+    const hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+    return { top: r.top, bottom: r.bottom, width: r.width, height: r.height, clipTop: top, clipBottom: bottom,
+      contained: r.top >= top - 1 && r.bottom <= bottom + 1 && r.left >= left - 1 && r.right <= right + 1,
+      hit: el === hit || el.contains(hit), pageTop: scrollY, documentHeight: document.documentElement.scrollHeight, viewport: innerHeight };
+  });
+  check(g.width >= 44 && g.height >= 44 && g.contained && g.hit && g.pageTop === 0 && g.documentHeight <= g.viewport + 1,
+    `${selector}: target clipped or covered: ${JSON.stringify(g)}`);
+  return g;
 }
 
 async function waitPolls(page, fx, n = 2) {
@@ -1173,6 +1228,140 @@ async function compactDetail(open, width, scheme) {
   await disclosure(page, true);
   await fixturePoll(page, fx, '/api/agent/screen');
   check(Math.abs((await screenGeometry(page)).scrollTop - 100) <= 2, 'expand/poll moved scrolled-up screen');
+  if (width !== 1024) await reducedScreen(page, fx, width, height, scheme);
+}
+
+async function reducedScreen(page, fx, width, fullHeight, scheme) {
+  const draft = 'draft line one\nline two\nline three\nline four';
+  const requests = () => [fx.count('/api/agent/prompt'), fx.count('/api/agent/keys')];
+  const before = requests();
+  const assertReading = async (where) => {
+    await nextFrame(page);
+    check(Math.abs((await screenGeometry(page)).scrollTop - 100) <= 2, `${where}: moved scrolled-up Screen`);
+  };
+  await page.setViewportSize({ width, height: 480 });
+  await page.emulateMedia({ colorScheme: scheme });
+  await assertReading('reduced Screen height');
+  await page.evaluate(() => { const el = document.getElementById('screen-scroll'); el.scrollTop = el.scrollHeight; });
+  await nextFrame(page);
+  // Both orders matter: disclosure before draft growth, and draft before disclosure.
+  await page.fill('#composer-input', '');
+  await disclosure(page, false);
+  await disclosure(page, true);
+  await page.fill('#composer-input', draft);
+  await page.evaluate(() => document.getElementById('composer-input').setSelectionRange(3, 9));
+  await nextFrame(page);
+  const geometry = await screenGeometry(page);
+  fs.writeFileSync(path.join(RESULTS_DIR, `screen-${width}-${scheme}.json`), JSON.stringify(geometry, null, 2));
+  console.log(`REDUCED SCREEN ${width} ${scheme}: ${JSON.stringify(geometry)}`);
+  await assertScreenPinned(page, 'reduced Screen with information and four-line draft');
+  await page.screenshot({ path: path.join(RESULTS_DIR, `screen-long-${width}-${scheme}.png`), mask: [page.locator('#composer-input')] });
+  for (const open of [false, true]) {
+    await disclosure(page, open);
+    await assertScreenPinned(page, `reduced Screen disclosure ${open}`);
+    check(await page.evaluate(() => { const el = document.getElementById('composer-input'); return el.selectionStart === 3 && el.selectionEnd === 9; }), 'Screen disclosure lost draft selection');
+  }
+  const keys = await page.locator('.screen-keys .quick-key').evaluateAll((els) => els.map((el) => el.dataset.key));
+  check(keys.length === 7, 'default Screen fixture must exercise all seven configured quick keys');
+  const targets = {};
+  for (const key of keys) targets[key] = await reachableTarget(page, `.screen-keys [data-key="${key}"]`, '.screen-keys');
+  targets.refresh = await reachableTarget(page, '#screen-refresh', '.screen-feedback');
+  for (const selector of ['#composer-input', '#composer-send', '#composer-prompts']) {
+    await reachableTarget(page, selector, '.composer-dock');
+  }
+  await page.focus('.screen-keys');
+  check(await page.getAttribute('.screen-keys', 'aria-label') === 'Screen quick keys', 'Screen keys lack a labelled keyboard scroll region');
+  await page.keyboard.press('End');
+  await page.focus('.screen-feedback');
+  check(await page.getAttribute('.screen-feedback', 'aria-label') === 'Screen status and feedback', 'Screen feedback lacks a labelled keyboard scroll region');
+  await page.keyboard.press('Home');
+  await fixturePoll(page, fx, '/api/agent/screen');
+  check(await page.evaluate(() => document.activeElement.matches('.screen-feedback')), 'Screen poll lost keyboard focus');
+  await assertScreenPinned(page, 'reduced pinned Screen poll');
+  await page.evaluate(() => { document.getElementById('screen-scroll').scrollTop = 100; });
+  await nextFrame(page);
+  for (const open of [false, true]) {
+    await disclosure(page, open);
+    await assertReading('reduced Screen disclosure');
+  }
+  await page.fill('#composer-input', 'two\nlines');
+  await assertReading('Screen draft shrink');
+  await page.fill('#composer-input', draft);
+  await assertReading('Screen draft growth');
+  await page.evaluate(() => document.getElementById('composer-input').setSelectionRange(3, 9));
+  await fixturePoll(page, fx, '/api/agent/screen');
+  await assertReading('reduced Screen poll');
+  await page.setViewportSize({ width, height: fullHeight });
+  await assertReading('Screen restored height');
+  await page.setViewportSize({ width, height: 480 });
+  await assertReading('Screen reduced again');
+  check(await valueOf(page, '#composer-input') === draft, 'Screen layout changed draft text');
+  check(await page.evaluate(() => { const el = document.getElementById('composer-input'); return el.selectionStart === 3 && el.selectionEnd === 9; }), 'Screen poll/resize changed draft selection');
+  check(await page.getAttribute('#detail-information-toggle', 'aria-expanded') === 'true', 'Screen reflow reset disclosure');
+  check(JSON.stringify(requests()) === JSON.stringify(before), 'Screen layout/scroll sent a prompt or key');
+  for (const [index, activation] of [[0, 'click'], [keys.length - 1, 'Enter']]) {
+    const key = keys[index], selector = `.screen-keys [data-key="${key}"]`;
+    await reachableTarget(page, selector, '.screen-keys');
+    const n = fx.count('/api/agent/keys');
+    if (activation === 'click') await page.click(selector);
+    else { await page.focus(selector); await page.keyboard.press(activation); }
+    await until('reduced Screen key delivered', () => fx.count('/api/agent/keys') === n + 1);
+    check(JSON.stringify(fx.bodies('/api/agent/keys').at(-1)) === JSON.stringify({ agent: REF7, keys: [key] }), 'reduced Screen key/agent changed');
+    await idle(page);
+  }
+  await until('key-delivery toast dismissed before inspecting Screen', () => page.evaluate(() => !document.getElementById('toast').classList.contains('toast-visible')));
+  // Keep the newest question visible even when Screen feedback and recovery compete.
+  await page.evaluate(() => { const el = document.getElementById('screen-scroll'); el.scrollTop = el.scrollHeight; });
+  fx.fail.set('/api/agent/screen', { mode: 'reply', times: 1, status: 200,
+    body: { response: { outcome: 'error', message: 'Screen fixture warning. Refresh to recover.' }, html: `<pre class="screen">${esc(screenOutput(fx.screenTick))}</pre>` } });
+  await fixturePoll(page, fx, '/api/agent/screen');
+  await textUntil(page, '#banner-screen', 'Screen fixture warning', 'Screen warning');
+  await assertScreenPinned(page, 'reduced Screen warning');
+  await reachableTarget(page, '#screen-refresh', '.screen-feedback');
+  await page.focus('.screen-feedback');
+  await page.keyboard.press('End');
+  await until('Screen warning readable after keyboard scroll', () => page.locator('#banner-screen').evaluate((el) => {
+    const text = el.querySelector('.banner-text'), range = document.createRange(); range.selectNodeContents(text);
+    const last = [...range.getClientRects()].at(-1), p = el.closest('.screen-feedback').getBoundingClientRect();
+    return last.top >= p.top - 1 && last.bottom <= p.bottom + 1;
+  }));
+  await detailContrast(page, 'reduced Screen warning');
+  await reachableTarget(page, '#screen-refresh', '.screen-feedback');
+  await page.click('#screen-refresh');
+  await until('Screen warning recovered', async () => !(await exists(page, '#banner-screen')));
+  fx.header = 'custom';
+  await fixturePoll(page, fx);
+  await reachableTarget(page, '#custom-information', '#detail-information');
+  fx.fail.set('/api/agent/prompt', { mode: 'abort', times: 1 });
+  await reachableTarget(page, '#composer-send', '.composer-dock');
+  await page.click('#composer-send');
+  await textUntil(page, '#submission-unknown', 'Outcome unknown', 'Screen saved submission');
+  fx.fail.set('/api/history', { mode: 'abort', times: 1 });
+  await fixturePoll(page, fx);
+  await textUntil(page, '#banner-offline', 'Offline', 'Screen offline feedback');
+  await assertScreenPinned(page, 'reduced Screen offline and unknown submission');
+  await reachableTarget(page, '#custom-information', '#detail-information');
+  for (const selector of ['#submission-retry', '#submission-discard', '#composer-input', '#composer-prompts']) {
+    await reachableTarget(page, selector, '.composer-dock');
+  }
+  await reachableTarget(page, '#banner-offline .link-button', '.detail-page > .banners');
+  await detailContrast(page, 'reduced Screen recovery');
+  fs.writeFileSync(path.join(RESULTS_DIR, `screen-recovery-${width}-${scheme}.json`), JSON.stringify(await screenGeometry(page), null, 2));
+  await page.screenshot({ path: path.join(RESULTS_DIR, `screen-recovery-${width}-${scheme}.png`), mask: [page.locator('.composer-dock')] });
+  await page.click('#banner-offline .link-button');
+  await until('Screen offline recovery', async () => !(await exists(page, '#banner-offline')));
+  await reachableTarget(page, '#submission-retry', '.composer-dock');
+  await page.click('#submission-retry');
+  await until('Screen same-id retry resolved', async () => !(await exists(page, '#submission-unknown')));
+  const [first, retry] = fx.bodies('/api/agent/prompt').slice(-2);
+  check(first.submission_id === retry.submission_id && first.text === retry.text, 'Screen retry changed submission identity');
+  check(fx.count('/api/agent/prompt') === before[0] + 2 && fx.count('/api/agent/keys') === before[1] + 2, 'Screen recovery sent unexpected requests');
+  await page.fill('#composer-input', draft);
+  await assertScreenPinned(page, 'reduced Screen after recovery');
+  fs.writeFileSync(path.join(RESULTS_DIR, `screen-targets-${width}-${scheme}.json`), JSON.stringify(targets, null, 2));
+  await page.screenshot({ path: path.join(RESULTS_DIR, `screen-${width}-${scheme}.png`), mask: [page.locator('#composer-input')] });
+  await page.setViewportSize({ width, height: fullHeight });
+  await assertScreenPinned(page, 'Screen full height after recovery');
 }
 
 async function detailSafety(open, width, scheme) {

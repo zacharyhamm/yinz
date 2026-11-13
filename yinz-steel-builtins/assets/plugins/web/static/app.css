@@ -328,19 +328,36 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
   flex: 1; min-height: 0; overflow-y: auto; display: grid; gap: 10px; align-content: start;
   padding: 8px calc(12px + var(--safe-right)) 16px calc(12px + var(--safe-left));
 }
-/* Only the output scrolls; the status row and quick keys stay in view. */
+/* Reserve one output line (including both layers of padding) and one complete
+   action row per control region. Metadata and the composer can then shrink
+   without letting Screen children overflow beneath the composer. */
+.detail-screen {
+  --screen-output-min: calc(16px + 20px + 12px * 1.3);
+  --screen-feedback-min: calc(var(--tap) + 8px);
+  --screen-keys-min: calc(var(--tap) + 16px + 1px);
+}
+.detail-screen .detail-information { min-height: calc(var(--tap) + 12px + 1px); }
+.detail-screen .detail-header:has(.detail-information:not([hidden])) {
+  min-height: calc(111px + var(--safe-top) + 4px + var(--tap) + 12px + 1px);
+}
+.detail-screen .detail-body, .detail-screen #panel-screen {
+  min-height: calc(var(--screen-output-min) + var(--screen-feedback-min) + var(--screen-keys-min));
+}
 .screen-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.screen-feedback {
+  flex: 0 1 auto; min-height: var(--screen-feedback-min); overflow-y: auto; overscroll-behavior: contain;
+}
 .screen-status {
   flex: none; display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted);
   padding: 8px calc(12px + var(--safe-right)) 0 calc(12px + var(--safe-left));
 }
-.screen-panel > .banner { flex: none; }
 .screen-scroll {
-  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  flex: 1; min-height: var(--screen-output-min); overflow-y: auto; overscroll-behavior: contain;
   padding: 8px calc(12px + var(--safe-right)) 8px calc(12px + var(--safe-left));
 }
 .screen-keys {
-  flex: none; border-top: 1px solid var(--border);
+  flex: 0 1 auto; min-height: var(--screen-keys-min); overflow-y: auto; overscroll-behavior: contain;
+  border-top: 1px solid var(--border);
   padding: 8px calc(12px + var(--safe-right)) 8px calc(12px + var(--safe-left));
 }
 .screen-html pre.screen, pre.screen {
@@ -365,6 +382,11 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .detail-page .composer-input { padding: 9px 10px; }
 .detail-page .composer-input::placeholder { color: var(--muted); opacity: 1; }
+/* In reduced Screen space the complete draft scrolls inside a one-line input;
+   the dock remains scrollable for submission feedback and recovery actions. */
+@media (max-height: 600px) {
+  .detail-screen .composer-input { max-height: var(--tap); }
+}
 .composer { display: grid; gap: 8px; min-width: 0; }
 .composer-row { display: flex; align-items: flex-end; gap: 6px; min-width: 0; }
 .composer-input {

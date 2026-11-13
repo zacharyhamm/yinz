@@ -234,16 +234,18 @@ function ScreenPanel({ env, live, enabled, onTargetGone, layoutKey, beforeResize
   const response = data && data.response;
   const failed = response && response.outcome && response.outcome !== 'ok' && response.outcome !== 'completed';
   return html`<div class="screen-panel">
-    <div class="screen-status">
-      ${state ? html`<span class=${cx('freshness', state.status !== 'ok' && 'freshness-stale')}>${freshnessText(state, now)}</span>` : null}
-      <button type="button" class="link-button" id="screen-refresh" onClick=${() => refresh()}>Refresh</button>
+    <div class="screen-feedback" role="region" aria-label="Screen status and feedback" tabindex="0">
+      <div class="screen-status">
+        ${state ? html`<span class=${cx('freshness', state.status !== 'ok' && 'freshness-stale')}>${freshnessText(state, now)}</span>` : null}
+        <button type="button" class="link-button" id="screen-refresh" onClick=${() => refresh()}>Refresh</button>
+      </div>
+      ${failed ? html`<${Banner} id="banner-screen" tone="warn">${responseText(response)}<//>` : null}
+      ${!data && state && state.error ? html`<${Banner} id="banner-screen" tone="warn">${describeError(state.error)}<//>` : null}
     </div>
-    ${failed ? html`<${Banner} id="banner-screen" tone="warn">${responseText(response)}<//>` : null}
-    ${!data && state && state.error ? html`<${Banner} id="banner-screen" tone="warn">${describeError(state.error)}<//>` : null}
     <div class="screen-scroll" id="screen-scroll" ref=${scroller} onScroll=${onScroll}>
       ${data ? html`<${ServerHtml} html=${markup} class="screen-html" id="screen" />` : html`<p class="empty">Reading the screen…</p>`}
     </div>
-    <div class="screen-keys">
+    <div class="screen-keys" role="region" aria-label="Screen quick keys" tabindex="0">
       <${QuickKeys} keys=${env.config.quick_keys} disabled=${busy || !enabled} onKey=${key} />
     </div>
   </div>`;
@@ -441,7 +443,7 @@ export function DetailView({ env, route }) {
     else env.replaceHash('#/');
   };
 
-  return html`<div class="page detail-page">
+  return html`<div class=${cx('page', 'detail-page', activeTab === 'screen' && 'detail-screen')}>
     <header class="app-header detail-header" id="detail-header">
       <div class="header-row detail-summary">
         <button type="button" class="icon-button" id="detail-back" aria-label="Back" onClick=${back}>‹</button>

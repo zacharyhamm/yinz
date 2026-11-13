@@ -268,6 +268,9 @@ plugin configuration or secrets.
     groups open the tools reader, which pages through older records.
   - **Screen** polls the pane's last 80 lines while the tab is visible. It keeps
     the newest line in view unless you scroll up, with the quick keys below it.
+    In reduced space, scroll the labelled status/feedback and quick-key regions
+    to reach every message and action. Agent information and the draft can also
+    scroll, keeping terminal output and a complete control row available.
   - **Details** shows run details with **Previous run**, **Original run** and
     **Latest**. Previous and original runs open as stored runs, marked by
     `&bind=0` in the hash: they are read without the live agent, show a
