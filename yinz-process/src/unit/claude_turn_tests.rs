@@ -2065,14 +2065,14 @@ fn restored_claude_poll_loads_only_the_observed_process() {
     // observer polls for up to a day, so its System must load only that pid.
     // This inspects the System itself, which concurrent tests cannot disturb.
     let pid = sysinfo::Pid::from_u32(std::process::id());
-    let mut system = System::new();
-    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-    let started = system.process(pid).unwrap().start_time();
-    let (system, _reader) = restored_observation((pid.as_u32(), started))
+    let (system, _reader, started) = restored_observation(pid.as_u32())
         .expect("the test process has HOME, so its registry resolves");
     assert_eq!(
         system.processes().keys().copied().collect::<Vec<_>>(),
         [pid]
     );
-    assert!(restored_observation((pid.as_u32(), started + 1)).is_none());
+    // The poll compares later refreshes of this same System with this start
+    // time, so both sides share one boot time.
+    assert_eq!(system.process(pid).unwrap().start_time(), started);
+    assert!(restored_observation(u32::MAX).is_none());
 }

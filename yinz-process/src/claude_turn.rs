@@ -28,12 +28,22 @@ pub fn observe_restored(
     conversation: &str,
     publish: impl Fn(Option<yinz_types::agent::AgentState>) -> bool,
 ) {
-    let Some(identity) = restored_claude_process(root) else {
+    let Some(pid) = restored_claude_process(root) else {
         return;
     };
-    let Some((mut system, reader)) = restored_observation(identity) else {
+    let Some((mut system, reader, started)) = restored_observation(pid) else {
         return;
     };
+    // sysinfo fixes boot time per System, so a start time from the discovery
+    // scan is not comparable here. The pid could only have been reused between
+    // the two loads, so confirm it still names Claude instead.
+    if !system
+        .process(sysinfo::Pid::from_u32(pid))
+        .is_some_and(is_claude_process)
+    {
+        return;
+    }
+    let identity = (pid, started);
     let deadline = Instant::now() + Duration::from_secs(24 * 60 * 60);
     while Instant::now() < deadline {
         let pid = sysinfo::Pid::from_u32(identity.0);
@@ -71,32 +81,33 @@ pub fn observe_restored(
     }
 }
 
-/// Load only the observed process for the restored poll.
+/// Load only the observed process for the restored poll, with its start time.
 ///
 /// sysinfo keeps `/proc/<pid>/stat` open for every process it has loaded, so
-/// the day-long poll must never keep the host-wide discovery scan.
-fn restored_observation(identity: (u32, u64)) -> Option<(System, ClaudeStatusObservation)> {
+/// the day-long poll must never keep the host-wide discovery scan. The start
+/// time comes from this System because each System computes its own boot time.
+fn restored_observation(pid: u32) -> Option<(System, ClaudeStatusObservation, u64)> {
     let mut system = System::new();
-    let pid = sysinfo::Pid::from_u32(identity.0);
+    let pid = sysinfo::Pid::from_u32(pid);
     system.refresh_processes_specifics(
         ProcessesToUpdate::Some(&[pid]),
         true,
         ProcessRefreshKind::nothing()
             .without_tasks()
+            .with_cmd(UpdateKind::Always)
             .with_environ(UpdateKind::Always),
     );
-    let process = system
-        .process(pid)
-        .filter(|p| p.start_time() == identity.1)?;
+    let process = system.process(pid)?;
+    let started = process.start_time();
     let reader = ClaudeStatusObservation::for_process(process)?;
-    Some((system, reader))
+    Some((system, reader, started))
 }
 
-/// Find the single Claude process under `root` as `(pid, start time)`.
+/// Find the single Claude process under `root`.
 ///
 /// The host-wide scan holds an open file per process until it is dropped, so it
 /// stays local to discovery.
-fn restored_claude_process(root: u32) -> Option<(u32, u64)> {
+fn restored_claude_process(root: u32) -> Option<u32> {
     let mut system = System::new();
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
@@ -114,7 +125,7 @@ fn restored_claude_process(root: u32) -> Option<(u32, u64)> {
         for _ in 0..32 {
             let Some(parent) = ancestor else { break };
             if parent.as_u32() == root {
-                candidates.push((pid.as_u32(), process.start_time()));
+                candidates.push(pid.as_u32());
                 break;
             }
             ancestor = system.process(parent).and_then(|p| p.parent());

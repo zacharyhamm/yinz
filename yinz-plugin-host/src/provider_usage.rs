@@ -378,7 +378,8 @@ fn retry_after(value: &str, now: SystemTime) -> Option<Duration> {
 fn fetch_claude(token: &str) -> Result<(u16, Vec<u8>, Option<Duration>)> {
     // Plugins only see a generic failure; keep the transport cause diagnosable.
     // These errors never contain the token, headers or a response body.
-    send_claude(token).inspect_err(|error| log::warn!("Claude usage fetch failed: {error:#}"))
+    // Every step's context names the Claude usage check, so the chain needs no prefix.
+    send_claude(token).inspect_err(|error| log::warn!("{error:#}"))
 }
 
 fn send_claude(token: &str) -> Result<(u16, Vec<u8>, Option<Duration>)> {
@@ -390,7 +391,7 @@ fn send_claude(token: &str) -> Result<(u16, Vec<u8>, Option<Duration>)> {
         .build()
         .context("create Claude usage client")?;
     let mut response = client
-        .send(claude_request(token)?)
+        .send(claude_request(token).context("build Claude usage request")?)
         .map_err(transport_error)?;
     let status = response.status().as_u16();
     let retry = response
@@ -400,7 +401,7 @@ fn send_claude(token: &str) -> Result<(u16, Vec<u8>, Option<Duration>)> {
         .and_then(|value| retry_after(value, SystemTime::now()));
     // Error bodies can contain credentials or account details; do not read or return them.
     let body = if response.status().is_success() {
-        bounded_read(response.body_mut())?
+        bounded_read(response.body_mut()).context("read Claude usage response")?
     } else {
         vec![]
     };
@@ -444,6 +445,11 @@ fn claude_with(
             )
         },
     };
+    // Plugins see one message for several statuses; the code alone stays
+    // diagnosable without logging the response body.
+    if !(200..=299).contains(&status) {
+        log::warn!("Claude usage check returned HTTP {status}");
+    }
     match status {
         401 => {
             return failure(
