@@ -5,6 +5,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use yinz_cli::args::{CliArgs, TerminalArgs};
+use yinz_client::os_input_output::{
+    connect_with_deadline, CONNECT_TO_SERVER_RETRY_INTERVAL, CONNECT_TO_SERVER_TIMEOUT,
+};
 use yinz_ipc::ipc::{
     ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg,
 };
@@ -57,7 +60,7 @@ pub fn connect_to(
         opening,
     } = prepare_connection(args, original_opts, size, target, &sessions)?;
     let path = yinz_runtime::consts::YINZ_SOCK_DIR.join(&name);
-    if new {
+    let stream = if new {
         std::fs::create_dir_all(&*yinz_runtime::consts::YINZ_SOCK_DIR)
             .context("create session socket directory")?;
         yinz_client::spawn_server_with_termios(
@@ -68,9 +71,16 @@ pub fn connect_to(
             Some(&None),
         )
         .context("spawn native session server")?;
-    }
-    let stream =
-        yinz_ipc::consts::ipc_connect(&path).context("connect native client to session")?;
+        // The double-fork launcher can exit before the daemon binds its socket.
+        connect_with_deadline(
+            &path,
+            CONNECT_TO_SERVER_TIMEOUT,
+            CONNECT_TO_SERVER_RETRY_INTERVAL,
+        )
+        .context("connect native client to session")?
+    } else {
+        yinz_ipc::consts::ipc_connect(&path).context("connect native client to session")?
+    };
     let mut sender = IpcSenderWithContext::new(stream);
     let receiver = sender
         .get_receiver()

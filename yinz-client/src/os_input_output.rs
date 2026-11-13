@@ -244,8 +244,9 @@ pub trait StdioAccess {
 /// spawned by this same client and only has to bind. The margin is for a loaded
 /// machine starting a debug build, not for a server that is in trouble: one that
 /// has not bound in this long is not going to.
-const CONNECT_TO_SERVER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const CONNECT_TO_SERVER_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+pub const CONNECT_TO_SERVER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+pub const CONNECT_TO_SERVER_RETRY_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(50);
 
 /// The server socket never became connectable.
 #[derive(Debug)]

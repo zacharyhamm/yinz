@@ -604,6 +604,38 @@ fn server_command_sets_child_configuration_and_identity_without_mutating_parent(
     }
 }
 
+#[test]
+fn connect_with_deadline_waits_for_a_late_listener() {
+    use std::sync::mpsc;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("late.sock");
+    let (finished, result) = mpsc::channel();
+    let connecting_path = path.clone();
+    let connector = thread::spawn(move || {
+        let connected = connect_with_deadline(
+            &connecting_path,
+            time::Duration::from_secs(10),
+            time::Duration::from_millis(5),
+        );
+        finished.send(()).unwrap();
+        connected
+    });
+    // Timing is the behavior under test: while no listener exists, connection
+    // must remain pending rather than return the first NotFound error.
+    let pending = result.recv_timeout(time::Duration::from_millis(50));
+    let listener = yinz_ipc::consts::ipc_bind(&path).unwrap();
+    let connected = connector.join().unwrap();
+    assert!(matches!(pending, Err(mpsc::RecvTimeoutError::Timeout)));
+    let mut client = connected.unwrap();
+    use interprocess::local_socket::traits::Listener;
+    let mut server = listener.accept().unwrap();
+    client.write_all(b"ready").unwrap();
+    let mut received = [0; 5];
+    server.read_exact(&mut received).unwrap();
+    assert_eq!(&received, b"ready");
+}
+
 /// The branch nothing else exercises: a socket that never appears. The
 /// error must name the socket and carry the connect failure, and the wait
 /// must be bounded by the timeout, not by the retry loop's patience.
