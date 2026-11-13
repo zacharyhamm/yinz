@@ -264,6 +264,19 @@ pub fn write_script(path: &Path, contents: &str) {
     );
 }
 
+/// Copy an executable for a test to run, from a child process rather than with `fs::copy`.
+///
+/// A copy written in the test process fails a concurrent test's exec with `Text file busy`, for
+/// the reason [`write_script`] gives.
+pub fn copy_executable(source: &Path, destination: &Path) {
+    let status = Command::new("cp")
+        .arg(source)
+        .arg(destination)
+        .status()
+        .expect("failed to start the executable copy");
+    assert!(status.success(), "the executable copy failed");
+}
+
 /// Write a `/bin/sh` stub and pay its first-launch cost before the test needs it.
 ///
 /// macOS evaluates a newly written executable the first time it runs, and under the suite's own

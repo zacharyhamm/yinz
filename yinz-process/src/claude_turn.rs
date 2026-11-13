@@ -31,21 +31,7 @@ pub fn observe_restored(
     let Some(identity) = restored_claude_process(root) else {
         return;
     };
-    // sysinfo keeps `/proc/<pid>/stat` open for every process it has loaded, so
-    // this day-long poll must never reuse the host-wide discovery scan.
-    let mut system = System::new();
-    let pid = sysinfo::Pid::from_u32(identity.0);
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[pid]),
-        true,
-        ProcessRefreshKind::nothing()
-            .without_tasks()
-            .with_environ(UpdateKind::Always),
-    );
-    let Some(process) = system.process(pid).filter(|p| p.start_time() == identity.1) else {
-        return;
-    };
-    let Some(reader) = ClaudeStatusObservation::for_process(process) else {
+    let Some((mut system, reader)) = restored_observation(identity) else {
         return;
     };
     let deadline = Instant::now() + Duration::from_secs(24 * 60 * 60);
@@ -83,6 +69,27 @@ pub fn observe_restored(
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Load only the observed process for the restored poll.
+///
+/// sysinfo keeps `/proc/<pid>/stat` open for every process it has loaded, so
+/// the day-long poll must never keep the host-wide discovery scan.
+fn restored_observation(identity: (u32, u64)) -> Option<(System, ClaudeStatusObservation)> {
+    let mut system = System::new();
+    let pid = sysinfo::Pid::from_u32(identity.0);
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing()
+            .without_tasks()
+            .with_environ(UpdateKind::Always),
+    );
+    let process = system
+        .process(pid)
+        .filter(|p| p.start_time() == identity.1)?;
+    let reader = ClaudeStatusObservation::for_process(process)?;
+    Some((system, reader))
 }
 
 /// Find the single Claude process under `root` as `(pid, start time)`.

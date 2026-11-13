@@ -1871,7 +1871,7 @@ fn restored_claude_observer_discovers_only_the_adopted_process_tree() {
     // process without invoking Claude or changing its configuration directory.
     let directory = tempfile::tempdir().unwrap();
     let executable = directory.path().join("claude");
-    std::fs::copy("/bin/sleep", &executable).unwrap();
+    yinz_test_support::copy_executable(std::path::Path::new("/bin/sleep"), &executable);
     let child = RestoredClaudeChild(Command::new(executable).arg("60").spawn().unwrap());
     let called = std::cell::Cell::new(false);
     observe_restored(child.0.id(), "missing-conversation", |state| {
@@ -1889,7 +1889,7 @@ fn restored_claude_observer_discovers_only_the_adopted_process_tree() {
 fn restored_claude_observer_recognizes_argv_zero() {
     let directory = tempfile::tempdir().unwrap();
     let executable = directory.path().join("different-name");
-    std::fs::copy("/bin/sleep", &executable).unwrap();
+    yinz_test_support::copy_executable(std::path::Path::new("/bin/sleep"), &executable);
     let child = RestoredClaudeChild(
         Command::new(executable)
             .arg0("/opt/claude")
@@ -1911,7 +1911,7 @@ fn restored_claude_observer_recognizes_argv_zero() {
 fn restored_claude_observer_rejects_two_actual_processes() {
     let directory = tempfile::tempdir().unwrap();
     let executable = directory.path().join("claude");
-    std::fs::copy("/bin/sleep", &executable).unwrap();
+    yinz_test_support::copy_executable(std::path::Path::new("/bin/sleep"), &executable);
     let _first = RestoredClaudeChild(Command::new(&executable).arg("60").spawn().unwrap());
     let _second = RestoredClaudeChild(Command::new(&executable).arg("60").spawn().unwrap());
     observe_restored(std::process::id(), "missing-conversation", |_| {
@@ -2001,7 +2001,7 @@ fn restored_claude_observer_ignores_inherited_thread_names() {
 fn restored_claude_registry_uses_the_observed_process_environment() {
     let directory = tempfile::tempdir().unwrap();
     let executable = directory.path().join("claude");
-    std::fs::copy("/bin/sleep", &executable).unwrap();
+    yinz_test_support::copy_executable(std::path::Path::new("/bin/sleep"), &executable);
     for source in ["config", "home", "empty-config", "missing"] {
         let home = directory.path().join(source);
         let config = home.join("custom-config");
@@ -2059,19 +2059,20 @@ fn restored_claude_registry_uses_the_observed_process_environment() {
     }
 }
 
-#[cfg(target_os = "linux")]
 #[test]
-fn restored_claude_discovery_releases_host_wide_process_files() {
+fn restored_claude_poll_loads_only_the_observed_process() {
     // sysinfo holds `/proc/<pid>/stat` open for each loaded process. A restored
-    // observer polls for up to a day, so discovery must not keep these files.
-    let stat_files = || {
-        std::fs::read_dir("/proc/self/fd")
-            .unwrap()
-            .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
-            .filter(|target| target.starts_with("/proc") && target.ends_with("stat"))
-            .count()
-    };
-    let before = stat_files();
-    assert_eq!(restored_claude_process(std::process::id()), None);
-    assert_eq!(stat_files(), before);
+    // observer polls for up to a day, so its System must load only that pid.
+    // This inspects the System itself, which concurrent tests cannot disturb.
+    let pid = sysinfo::Pid::from_u32(std::process::id());
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+    let started = system.process(pid).unwrap().start_time();
+    let (system, _reader) = restored_observation((pid.as_u32(), started))
+        .expect("the test process has HOME, so its registry resolves");
+    assert_eq!(
+        system.processes().keys().copied().collect::<Vec<_>>(),
+        [pid]
+    );
+    assert!(restored_observation((pid.as_u32(), started + 1)).is_none());
 }

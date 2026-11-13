@@ -348,8 +348,13 @@ fn collector_panic_releases_pending_state_and_caches_sanitized_failure() {
 
 #[test]
 fn transport_errors_keep_the_failure_cause_for_logs() {
-    let error = transport_error(isahc::error::ErrorKind::ConnectionFailed.into());
+    // isahc's own `Display` drops this source; the log line must keep it.
+    let cause = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "peer refused us");
+    let error = transport_error(isahc::Error::from(cause));
     let message = format!("{error:#}");
-    assert!(message.starts_with("Claude usage request failed: "));
-    assert!(message.len() > "Claude usage request failed: ".len());
+    assert!(
+        message.starts_with("Claude usage request failed: "),
+        "{message}"
+    );
+    assert!(message.contains("peer refused us"), "{message}");
 }
