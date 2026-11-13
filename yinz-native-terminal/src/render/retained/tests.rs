@@ -578,3 +578,72 @@ fn cell_metrics_generation_refreshes_retained_rows_and_selection_rectangles() {
         assert_eq!(selection.text(state.screen()), copied);
     }
 }
+
+#[test]
+fn cell_metrics_retained_clusters_refresh_sprites_and_keep_copy() {
+    use crate::emulation::selection::Selection;
+    use crate::render::atlas::{ClusterLookup, GlyphKey};
+    use crate::text::font::{CellAdjust, FaceStyle, FontOptions};
+    let options = FontOptions {
+        system_fonts: false,
+        ..Default::default()
+    };
+    let state = Painter::state(3, 12, |p| {
+        p.cluster(1, 1, "e\u{301}", 1);
+        p.cluster(1, 3, "👩‍💻", 2);
+        p.cluster(1, 6, "👍🏽", 2);
+    });
+    let selection = Selection::at(1, 1).extended_to(1, 7);
+    let copied = selection.text(state.screen());
+    let mut cache = GlyphCache::new(options.stack(1.0).unwrap());
+    let mut retained = RetainedScene::new();
+    retained.set_selection(Some(selection));
+    refreshed(&mut retained, &state, &mut cache);
+    for (width, height) in [
+        (0.75, 1.0),
+        (0.5, 1.0),
+        (0.5, 1.25),
+        (1.5, 1.25),
+        (1.0, 1.0),
+        (1.001, 1.001),
+    ] {
+        refreshed(&mut retained, &state, &mut cache);
+        assert!(retained.rebuilt_rows().is_empty());
+        let requested = FontOptions {
+            cell: CellAdjust {
+                cell_width: width,
+                line_height: height,
+                ..Default::default()
+            },
+            ..options.clone()
+        };
+        let changed = cache.update_cell(&requested);
+        refreshed(&mut retained, &state, &mut cache);
+        assert_eq!(retained.rebuilt_everything(), changed);
+        let live = retained.flatten();
+        for (text, budget) in [("e\u{301}", 1), ("👩‍💻", 2), ("👍🏽", 2)] {
+            let ClusterLookup::Sprite(sprite) =
+                cache.cluster_glyph(FaceStyle::Regular, &GlyphKey::of(text), budget)
+            else {
+                panic!("stale cluster fallback: {text} at {width}");
+            };
+            let quads = if sprite.content == crate::text::font::GlyphContent::Mask {
+                &live.glyphs
+            } else {
+                &live.color_glyphs
+            };
+            // Cell clipping can narrow a sprite's atlas subrectangle; it must
+            // still refer to the complete cluster's newly generated pixels.
+            assert!(quads.iter().any(|q| q.entry.y == sprite.entry.y
+                && q.entry.height == sprite.entry.height
+                && q.entry.x >= sprite.entry.x
+                && q.entry.x + q.entry.width <= sprite.entry.x + sprite.entry.width));
+        }
+        let mut fresh_cache = GlyphCache::new(requested.stack(1.0).unwrap());
+        let mut fresh = RetainedScene::new();
+        fresh.set_selection(Some(selection));
+        refreshed(&mut fresh, &state, &mut fresh_cache);
+        assert_eq!(live, fresh.flatten());
+        assert_eq!(selection.text(state.screen()), copied);
+    }
+}

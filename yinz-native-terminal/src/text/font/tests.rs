@@ -1873,3 +1873,121 @@ fn cell_metrics_reclassify_style_fitting_when_fractional_rounding_changes_cell_m
     assert!(stack.update_cell(&cell));
     assert_eq!(stack.primary_of(FaceStyle::Bold), main);
 }
+
+#[test]
+fn cell_metrics_compressed_clusters_keep_shapes_and_reject_invalid_sequences() {
+    let mut fonts = fonts();
+    let fixtures = [("e\u{301}", "e", 1), ("👩‍💻", "👩", 2), ("👍🏽", "👍", 2)];
+    let shapes: Vec<_> = fixtures
+        .iter()
+        .map(|(text, head, _)| {
+            let font = fonts.cluster_font(FaceStyle::Regular, text).unwrap();
+            let shape = fonts.shape_cluster(font, text);
+            let plain = fonts.shape_cluster(font, head);
+            assert_ne!(
+                shape, plain,
+                "complete cluster must shape differently: {text}"
+            );
+            assert!(shape.iter().all(|g| g.glyph != 0));
+            (font, shape)
+        })
+        .collect();
+    for width in [0.5, 0.75, 1.0, 1.5, 3.0] {
+        for height in [0.5, 1.0, 1.25] {
+            fonts.update_cell(&CellAdjust {
+                cell_width: width,
+                line_height: height,
+                ..Default::default()
+            });
+            for ((text, _, budget), (font, shape)) in fixtures.iter().zip(&shapes) {
+                assert!(Rc::ptr_eq(shape, &fonts.shape_cluster(*font, text)));
+                let ClusterRaster::Sprite(bitmap) =
+                    fonts.rasterize_cluster(FaceStyle::Regular, text, *budget)
+                else {
+                    panic!("complete cluster rejected: {text}, width={width}, height={height}");
+                };
+                assert!(bitmap.coverage.iter().any(|v| *v != 0), "blank {text}");
+                assert!(bitmap.height <= fonts.metrics.height);
+            }
+            for invalid in [
+                "\u{10fffd}\u{301}",
+                "😀😀😀😀😀",
+                "\u{200d}",
+                "\u{fe0f}",
+                "\u{301}",
+            ] {
+                assert!(
+                    matches!(
+                        fonts.rasterize_cluster(FaceStyle::Regular, invalid, 1),
+                        ClusterRaster::Uncovered
+                    ),
+                    "invalid {invalid:?}, width={width}"
+                );
+            }
+            assert!(
+                matches!(
+                    fonts.rasterize_cluster(FaceStyle::Regular, "☔\u{fe0e}", 1),
+                    ClusterRaster::Sprite(GlyphBitmap {
+                        content: GlyphContent::Mask,
+                        ..
+                    })
+                ),
+                "text silhouette at {width}"
+            );
+            assert!(
+                matches!(
+                    fonts.rasterize_cluster(FaceStyle::Regular, "☔\u{fe0f}", 2),
+                    ClusterRaster::Sprite(GlyphBitmap {
+                        content: GlyphContent::Color,
+                        ..
+                    })
+                ),
+                "color selector at {width}"
+            );
+        }
+    }
+}
+
+#[test]
+fn cell_metrics_cluster_acceptance_uses_the_resolved_primary_natural_advance() {
+    // Change all advances in the resolved regular face, including M and e.
+    // Natural width is now 16 rather than the embedded default 8; compression
+    // must still admit its eight-pixel fitted accented letter.
+    let mut data = REGULAR.to_vec();
+    let tables = u16::from_be_bytes(data[4..6].try_into().unwrap()) as usize;
+    let table = |tag: &[u8]| {
+        (0..tables)
+            .map(|i| 12 + 16 * i)
+            .find_map(|r| {
+                (&data[r..r + 4] == tag)
+                    .then(|| u32::from_be_bytes(data[r + 8..r + 12].try_into().unwrap()) as usize)
+            })
+            .unwrap()
+    };
+    let hhea = table(b"hhea");
+    let hmtx = table(b"hmtx");
+    let count = u16::from_be_bytes(data[hhea + 34..hhea + 36].try_into().unwrap()) as usize;
+    for i in 0..count {
+        let at = hmtx + 4 * i;
+        let advance = u16::from_be_bytes(data[at..at + 2].try_into().unwrap());
+        data[at..at + 2].copy_from_slice(&(advance * 2).to_be_bytes());
+    }
+    let resolved = face(
+        Box::leak(data.into_boxed_slice()),
+        "synthetic-double-advance",
+    )
+    .unwrap();
+    let mut fonts = fonts();
+    let regular = fonts.primary_of(FaceStyle::Regular);
+    fonts.faces[regular.0] = resolved;
+    fonts.update_cell(&CellAdjust {
+        cell_width: 0.5,
+        ..Default::default()
+    });
+    assert_eq!(fonts.placement.natural_width, 16);
+    assert_eq!(fonts.metrics.width, 8);
+    assert!(matches!(
+        fonts.rasterize_cluster(FaceStyle::Regular, "e\u{301}", 1),
+        ClusterRaster::Sprite(_)
+    ));
+}

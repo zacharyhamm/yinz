@@ -618,3 +618,81 @@ fn cell_metrics_invalidate_rasters_clusters_sprites_and_both_atlas_identities() 
     assert_eq!(cache.generation(), generation);
     assert_eq!((cache.mask.stamp(), cache.color.stamp()), stamps);
 }
+
+#[test]
+fn cell_metrics_cluster_ink_differs_from_plain_heads_after_warm_updates() {
+    use crate::text::font::{CellAdjust, FontOptions};
+    let options = FontOptions {
+        system_fonts: false,
+        ..Default::default()
+    };
+    let mut cache = GlyphCache::new(options.stack(1.0).unwrap());
+    // Compare coverage in the same physical box, independent of atlas packing,
+    // sprite bounds and bearings. Mask coverage is expanded to RGBA.
+    let ink = |cache: &GlyphCache, glyph: RenderedGlyph, budget: u32| {
+        let m = cache.metrics();
+        let atlas = if glyph.content == GlyphContent::Mask {
+            &cache.mask
+        } else {
+            &cache.color
+        };
+        let channels = atlas.channels() as usize;
+        let pixels = read(atlas, glyph.entry);
+        let mut placed = vec![0; (m.width * budget * m.height * 4) as usize];
+        for y in 0..glyph.entry.height {
+            for x in 0..glyph.entry.width {
+                let px = glyph.entry.left + x as i32;
+                let py = m.baseline as i32 - glyph.entry.top + y as i32;
+                if px < 0 || px >= (m.width * budget) as i32 || py < 0 || py >= m.height as i32 {
+                    continue;
+                }
+                let from = ((y * glyph.entry.width + x) as usize) * channels;
+                let to = ((py as u32 * m.width * budget + px as u32) * 4) as usize;
+                if channels == 1 {
+                    placed[to..to + 4].fill(pixels[from]);
+                } else {
+                    placed[to..to + 4].copy_from_slice(&pixels[from..from + 4]);
+                }
+            }
+        }
+        placed
+    };
+    for (width, height) in [
+        (1.0, 1.0),
+        (0.75, 1.0),
+        (0.5, 1.0),
+        (0.5, 1.25),
+        (1.5, 1.0),
+        (3.0, 1.25),
+        (1.0, 1.0),
+    ] {
+        cache.update_cell(&FontOptions {
+            cell: CellAdjust {
+                cell_width: width,
+                line_height: height,
+                ..Default::default()
+            },
+            ..options.clone()
+        });
+        for (text, head, budget) in [("e\u{301}", 'e', 1), ("👩‍💻", '👩', 2), ("👍🏽", '👍', 2)]
+        {
+            let key = GlyphKey::of(text);
+            let ClusterLookup::Sprite(full) = cache.cluster_glyph(FaceStyle::Regular, &key, budget)
+            else {
+                panic!("lost cluster {text} at {width}");
+            };
+            let plain = rendered(cache.glyph(FaceStyle::Regular, head, budget));
+            let full_ink = ink(&cache, full, budget);
+            assert!(full_ink.chunks_exact(4).any(|p| p[3] != 0));
+            assert_ne!(
+                full_ink,
+                ink(&cache, plain, budget),
+                "lost components: {text}, width={width}, height={height}"
+            );
+            assert_eq!(
+                cache.cluster_glyph(FaceStyle::Regular, &key, budget),
+                ClusterLookup::Sprite(full)
+            );
+        }
+    }
+}

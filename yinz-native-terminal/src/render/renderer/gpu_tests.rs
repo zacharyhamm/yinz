@@ -784,3 +784,88 @@ fn cell_metrics_warmed_spacing_zoom_scale_and_reset_match_fresh_gpu_output() {
         }
     });
 }
+
+#[test]
+fn cell_metrics_complete_clusters_keep_distinct_gpu_ink_across_updates() {
+    use crate::emulation::selection::Selection;
+    use crate::testing::painter::Painter;
+    use yinz_types::input::native_terminal::TerminalConfig;
+    let settings = TerminalConfig {
+        system_fonts: Some(false),
+        font_size: Some(crate::text::font::test_helpers::pixels_to_points(16.0)),
+        ..Default::default()
+    };
+    with_renderer(|renderer| {
+        for (text, head, budget) in [("e\u{301}", "e", 1), ("👩‍💻", "👩", 2), ("👍🏽", "👍", 2)]
+        {
+            let state = Painter::state(3, 8, |p| p.cluster(1, 2, text, budget));
+            let plain = Painter::state(3, 8, |p| p.cluster(1, 2, head, budget));
+            let blank = Painter::state(3, 8, |_| {});
+            let selection = Selection::at(1, 2).extended_to(1, 2 + budget);
+            assert_eq!(selection.text(state.screen()), text);
+            let mut active = crate::window::effective_font_options(&settings, 1.0, 1.0);
+            let mut cache = crate::render::atlas::GlyphCache::new(active.stack(1.0).unwrap());
+            let mut retained = RetainedScene::new();
+            // Keep selection/cursor/background identical in all three fixtures.
+            retained.set_selection(Some(selection));
+            for (width, height, ligatures, zoom, scale) in [
+                (1.0, 1.0, true, 1.0, 1.0),
+                (0.75, 1.0, false, 1.0, 1.0),
+                (0.5, 1.0, true, 1.0, 1.0),
+                (0.5, 1.25, false, 1.0, 1.0),
+                (1.5, 1.25, true, 1.0, 1.0),
+                (0.75, 1.25, false, 1.15, 1.25),
+                (1.0, 1.0, true, 1.0, 1.0),
+            ] {
+                let configured = TerminalConfig {
+                    cell_width: Some(width),
+                    line_height: Some(height),
+                    font_ligatures: Some(ligatures),
+                    ..settings.clone()
+                };
+                let requested = crate::window::effective_font_options(&configured, zoom, scale);
+                let update = crate::window::prepare_fonts(&active, &requested).unwrap();
+                crate::window::apply_fonts(
+                    &mut active,
+                    &mut cache,
+                    &mut retained,
+                    requested.clone(),
+                    update,
+                );
+                let full = font_pixels(renderer, &mut retained, &state, &mut cache);
+                let m = cache.metrics();
+                let crop = |pixels: &[u8]| {
+                    let mut ink = Vec::new();
+                    for y in m.height..2 * m.height {
+                        let start = (((383 - y) * 768 + 2 * m.width) * 4) as usize;
+                        ink.extend_from_slice(
+                            &pixels[start..start + (budget as u32 * m.width * 4) as usize],
+                        );
+                    }
+                    ink
+                };
+                let mut other = RetainedScene::new();
+                other.set_selection(Some(selection));
+                let plain_pixels = font_pixels(renderer, &mut other, &plain, &mut cache);
+                let mut empty = RetainedScene::new();
+                empty.set_selection(Some(selection));
+                let blank_pixels = font_pixels(renderer, &mut empty, &blank, &mut cache);
+                assert_ne!(crop(&full), crop(&blank_pixels), "blank {text} at {width}");
+                assert_ne!(
+                    crop(&full),
+                    crop(&plain_pixels),
+                    "lost components: {text}, width={width}, height={height}"
+                );
+                let mut fresh =
+                    crate::render::atlas::GlyphCache::new(requested.stack(1.0).unwrap());
+                let mut fresh_scene = RetainedScene::new();
+                fresh_scene.set_selection(Some(selection));
+                assert_eq!(
+                    full,
+                    font_pixels(renderer, &mut fresh_scene, &state, &mut fresh)
+                );
+                assert_eq!(selection.text(state.screen()), text);
+            }
+        }
+    });
+}

@@ -1867,3 +1867,43 @@ fn cell_metrics_share_physical_origins_for_background_glyphs_cursor_and_decorati
         }
     }
 }
+
+#[test]
+fn cell_metrics_structured_clusters_keep_logical_ownership_and_copy() {
+    use crate::emulation::selection::Selection;
+    for (text, budget) in [("e\u{301}", 1), ("👩‍💻", 2), ("👍🏽", 2)] {
+        let state = Painter::state(3, 8, |p| p.cluster(1, 2, text, budget));
+        assert_eq!(state.screen().text_at(1, 2), text);
+        assert_eq!(state.screen().cell(1, 2).width as usize, budget);
+        let selection = Selection::at(1, 2).extended_to(1, 2 + budget);
+        assert_eq!(selection.text(state.screen()), text);
+        for width in [0.5, 0.75, 1.0] {
+            let options = FontOptions {
+                system_fonts: false,
+                cell: crate::text::font::CellAdjust {
+                    cell_width: width,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut cache = GlyphCache::new(options.stack(1.0).unwrap());
+            let scene = build(&state, &mut cache);
+            let crate::render::atlas::ClusterLookup::Sprite(sprite) = cache.cluster_glyph(
+                crate::text::font::FaceStyle::Regular,
+                &crate::render::atlas::GlyphKey::of(text),
+                budget as u32,
+            ) else {
+                panic!("lost {text} at {width}");
+            };
+            let left = (2 * cache.metrics().width) as i32;
+            let right = left + budget as i32 * cache.metrics().width as i32;
+            let (_, clipped) = runs::clipped(sprite.entry, left + sprite.entry.left, left, right)
+                .expect("the cluster must have ink inside its logical columns");
+            assert!(scene
+                .glyphs
+                .iter()
+                .chain(&scene.color_glyphs)
+                .any(|q| q.entry == clipped));
+        }
+    }
+}

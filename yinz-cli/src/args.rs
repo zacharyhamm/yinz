@@ -2377,10 +2377,12 @@ pub enum CliAction {
         name: String,
     },
     /// Apply a KDL config fragment to the running session (options, keybinds, hooks, plugins).
-    /// Give it as --kdl, --file, or on stdin. Changing native terminal ligatures/font_ligatures
-    /// requires --write or a saved config edit for automatic file reload. An unsupported
-    /// unsaved ligature change refuses the entire fragment. Invalid fragments and write
-    /// failures are errors. With --write the fragment is also persisted.
+    /// Give it as --kdl, --file, or on stdin. Changing effective native terminal cell_width,
+    /// line_height or ligatures/font_ligatures requires --write or editing the saved
+    /// configuration/drop-in for automatic file reload. An unsupported unsaved change
+    /// refuses the entire fragment, including sibling settings. Omissions and equivalent
+    /// values remain valid runtime requests. Invalid fragments and write failures are errors.
+    /// With --write the fragment is also persisted; native windows apply it through file reload.
     Reconfigure {
         /// The fragment itself, eg. 'keybinds { normal { bind "Ctrl y" { NewPane; } } }'
         #[clap(long, value_parser, conflicts_with = "file")]
@@ -2388,7 +2390,8 @@ pub enum CliAction {
         /// A file holding the fragment
         #[clap(long, value_parser)]
         file: Option<PathBuf>,
-        /// Persist the change as well as applying it
+        /// Persist the change; required for effective native cell_width, line_height or
+        /// ligatures/font_ligatures changes. Native windows apply saved changes through file reload.
         #[clap(long)]
         write: bool,
     },

@@ -189,8 +189,14 @@ impl FontStack {
         }
         let advance = glyphs.iter().map(|glyph| glyph.advance).sum::<i32>() as f32;
         let box_width = (self.metrics.width * budget) as f32;
+        // Spacing can shrink the box without changing the shaped font advance.
+        // Reject overlong sequences against at least the resolved natural cell,
+        // then fit covered graphemes into the actual adjusted box below.
+        let acceptance_width =
+            (self.placement.natural_width.max(self.metrics.width) * budget) as f32;
         let squeezable = silhouette && glyphs.len() == 1;
-        if advance <= 0.0 || (advance > box_width * CLUSTER_ADVANCE_TOLERANCE && !squeezable) {
+        if advance <= 0.0 || (advance > acceptance_width * CLUSTER_ADVANCE_TOLERANCE && !squeezable)
+        {
             return ClusterRaster::Uncovered;
         }
         let primary = self.is_primary(font);

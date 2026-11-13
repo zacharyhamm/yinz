@@ -130,11 +130,14 @@ Commands:
   rename-session
   reconfigure                       Apply a KDL config fragment to the running session (options,
                                     keybinds, hooks, plugins). Give it as --kdl, --file, or on
-                                    stdin. Changing native terminal ligatures/font_ligatures
-                                    requires --write or a saved config edit for automatic file
-                                    reload. An unsupported unsaved ligature change refuses the
-                                    entire fragment. Invalid fragments and write failures are
-                                    errors. With --write the fragment is also persisted
+                                    stdin. Changing effective native terminal cell_width,
+                                    line_height or ligatures/font_ligatures requires --write or
+                                    editing the saved configuration/drop-in for automatic file
+                                    reload. An unsupported unsaved change refuses the entire
+                                    fragment, including sibling settings. Omissions and equivalent
+                                    values remain valid runtime requests. Invalid fragments and
+                                    write failures are errors. With --write the fragment is also
+                                    persisted; native windows apply it through file reload
   set-hook                          Bind a hook point (agent_exit, agent_start, agent_waiting,
                                     pane_exit, session_start, context_menu) to a plugin, or unbind
                                     it with an empty url. The plugin is a url as the config spells
