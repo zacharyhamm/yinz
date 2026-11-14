@@ -40,6 +40,7 @@ impl FontStack {
         self.shapes = options.ligatures || !self.features.is_empty();
         self.shaped
             .retain(|(_, shaping), _| *shaping == Shaping::Cluster);
+        self.report_unprovided_features(&options.features);
     }
 
     pub fn shape(&mut self, font: FontId, text: &str) -> Rc<[ShapedGlyph]> {

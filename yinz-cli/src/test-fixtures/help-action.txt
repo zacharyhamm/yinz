@@ -131,9 +131,9 @@ Commands:
   reconfigure                       Apply a KDL config fragment to the running session (options,
                                     keybinds, hooks, plugins). Give it as --kdl, --file, or on
                                     stdin. Changing effective native terminal cell_width,
-                                    line_height or ligatures/font_ligatures requires --write or
-                                    editing the saved configuration/drop-in for automatic file
-                                    reload. An unsupported unsaved change refuses the entire
+                                    line_height, ligatures/font_ligatures or font_features requires
+                                    --write or editing the saved configuration/drop-in for automatic
+                                    file reload. An unsupported unsaved change refuses the entire
                                     fragment, including sibling settings. Omissions and equivalent
                                     values remain valid runtime requests. Invalid fragments and
                                     write failures are errors. With --write the fragment is also

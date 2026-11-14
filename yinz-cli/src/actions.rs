@@ -923,8 +923,13 @@ fn reconfigure_action(
     config: Option<Config>,
 ) -> Result<Action, String> {
     let base = config.unwrap_or_default();
-    Config::from_kdl(&fragment, Some(base))
-        .map_err(|e| format!("the config fragment does not parse: {e}"))?;
+    Config::from_kdl(&fragment, Some(base)).map_err(|e| {
+        // KdlError's Display is a fixed headline; its message names the entry.
+        format!(
+            "the config fragment does not parse: {}",
+            yinz_config::editor::validation_error(e)
+        )
+    })?;
     Ok(Action::Reconfigure {
         config: fragment,
         write_to_disk,

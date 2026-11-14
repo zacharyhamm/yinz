@@ -503,7 +503,43 @@ impl FontStack {
         stack.metrics = metrics;
         stack.placement = placement;
         stack.styled = stack.requested_styles(options);
+        stack.report_unprovided_features(&options.features);
         Ok(stack)
+    }
+
+    /// Requested feature tags, in first-seen order without duplicates, that the
+    /// regular primary face does not list in its GSUB/GPOS (or AAT) tables. Such a
+    /// tag is accepted but cannot change what that face draws.
+    pub(crate) fn unprovided_features(&self, requested: &[FontFeature]) -> Vec<[u8; 4]> {
+        let face = &self.faces[self.primary_of(FaceStyle::Regular).0];
+        let provided: Vec<swash::Tag> = face.features().map(|feature| feature.tag()).collect();
+        let mut missing: Vec<[u8; 4]> = Vec::new();
+        for feature in requested {
+            if !provided.contains(&swash::tag_from_bytes(&feature.tag))
+                && !missing.contains(&feature.tag)
+            {
+                missing.push(feature.tag);
+            }
+        }
+        missing
+    }
+
+    /// Explains a feature setting with no visible effect instead of leaving it silent.
+    /// Uses the original requests, never the features forced off by `ligatures false`.
+    pub(super) fn report_unprovided_features(&self, requested: &[FontFeature]) {
+        let missing = self.unprovided_features(requested);
+        if missing.is_empty() {
+            return;
+        }
+        let names: Vec<String> = missing
+            .iter()
+            .map(|tag| format!("{:?}", String::from_utf8_lossy(tag)))
+            .collect();
+        log::info!(
+            "native terminal font_features: the primary font does not provide {}; \
+             those entries have no effect with this font",
+            names.join(", ")
+        );
     }
 
     /// Spacing changes keep face/coverage discovery and independent cluster shaping.

@@ -1399,6 +1399,17 @@ fn reconfigure_takes_a_fragment_and_refuses_one_that_does_not_parse() {
     );
     let refused = reconfigure("options { nonsense", false).unwrap_err();
     assert!(refused.contains("does not parse"), "{refused}");
+    // The entry-level diagnostic reaches the user, not only a fixed headline.
+    for write in [false, true] {
+        let refused = reconfigure("terminal { font_features \"ss1\"; }", write).unwrap_err();
+        for expected in [
+            "does not parse",
+            "\"ss1\" is not a font feature",
+            "four-character",
+        ] {
+            assert!(refused.contains(expected), "{refused}");
+        }
+    }
 }
 
 /// `set-hook` is the one-block fragment spelled for you; an empty url unbinds, and a point

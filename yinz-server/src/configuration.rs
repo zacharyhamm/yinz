@@ -237,7 +237,7 @@ impl SessionConfiguration {
         let base = self.base_client_configuration(client_id);
         let new_config = Config::from_kdl(&stringified_config, Some(base))
             .and_then(|config| config.resolve_plugin_repositories(config_file_path, config_dir))
-            .map_err(|error| anyhow!("{error}"))?;
+            .map_err(|error| anyhow!(yinz_config::editor::validation_error(error)))?;
         validate_background_plugins(&new_config)?;
         self.background_plugins = Some(BackgroundPluginConfiguration::from_config(&new_config));
         self.runtime_config.insert(*client_id, new_config.clone());

@@ -9071,6 +9071,7 @@ Config {
         font_size: None,
         font_weight: None,
         font_ligatures: None,
+        font_features: None,
         system_fonts: None,
         line_height: None,
         cell_width: None,

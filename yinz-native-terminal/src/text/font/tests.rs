@@ -1734,6 +1734,37 @@ fn ligature_updates_preserve_faces_clusters_and_original_feature_requests() {
 }
 
 #[test]
+fn unprovided_features_name_tags_the_embedded_primary_lacks() {
+    let parse = |list: &[&str]| -> Vec<FontFeature> {
+        list.iter()
+            .map(|feature| FontFeature::parse(feature).unwrap())
+            .collect()
+    };
+    let mut options = FontOptions {
+        system_fonts: false,
+        features: parse(&["ss01", "zero", "-calt", "+dlig", "zero"]),
+        ..Default::default()
+    };
+    let mut fonts = FontStack::build_with(&options, None).unwrap();
+    // Embedded Iosevka Term provides calt; ss01, zero and dlig are absent, and a
+    // repeated tag is named once. A font update that changes this fails here.
+    assert_eq!(
+        fonts.unprovided_features(&options.features),
+        vec![*b"ss01", *b"zero", *b"dlig"]
+    );
+    assert!(fonts.unprovided_features(&[]).is_empty());
+    assert!(fonts.unprovided_features(&parse(&["calt"])).is_empty());
+    assert_eq!(fonts.unprovided_features(&parse(&["liga"])), vec![*b"liga"]);
+    // Shaping updates report against the new list; the answer follows it.
+    options.features = parse(&["-calt"]);
+    fonts.update_shaping(&options);
+    assert!(fonts.unprovided_features(&options.features).is_empty());
+    options.features = parse(&["ss02"]);
+    fonts.update_shaping(&options);
+    assert_eq!(fonts.unprovided_features(&options.features), vec![*b"ss02"]);
+}
+
+#[test]
 fn feature_only_updates_reshape_runs_and_preserve_faces_and_clusters() {
     let mut options = FontOptions {
         system_fonts: false,

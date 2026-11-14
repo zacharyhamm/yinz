@@ -112,6 +112,16 @@ such as `"zero"` does not re-enable ligatures. Features shape runs only: combini
 and emoji clusters shape without them, and every glyph keeps its cell, so column
 ownership, cursor coordinates and selection are unchanged.
 
+Validation checks only the entry syntax. A tag changes rendering only when the
+face shaping that text provides it; a tag the font lacks is accepted and has no
+effect. The embedded Iosevka Term faces provide only `calt` (the contextual arrow
+joins, such as `->`) and `ccmp`, so with the default font the example above changes
+only `-calt`, and `ligatures` toggles `calt`. `ss01`, `zero`, `dlig` and `liga`
+need a font that provides them, chosen with `font` (with `system_fonts` on). When
+the primary font lacks listed tags, an info line naming them is written to the
+normal log described under font diagnostics below, at startup and whenever the
+font or the list changes.
+
 Across layers a later list, including a bare node, replaces the earlier list
 whole; tags are not merged. Invalid drop-ins are skipped as a whole. Serialization
 writes one node with each entry as an argument (a bare node for an empty list) and
@@ -166,7 +176,10 @@ settings, for all requested clients, with save guidance. Equivalent values and
 omissions remain valid runtime requests; explicit metric `1.0` equals omission
 when the effective value is already the default. For `font_features`, omission and
 a bare node are both no features and `"calt"` equals `"+calt"`; a reordered list
-counts as a change. For example, disable and then restore ligatures:
+counts as a change. An invalid fragment, with or without `--write`, is refused with
+the same per-entry message as file validation, such as the `"ss1"` error above; it
+names the entry rather than drawing the source pointer that `yinz setup --check`
+shows. For example, disable and then restore ligatures:
 
 ```sh
 yinz --session work action reconfigure --write --kdl 'terminal { ligatures false; }'
@@ -237,7 +250,8 @@ and Copy. X11 and macOS execution were unavailable.
 Focused `font_features` checks cover entry validation and spans, omission versus
 an empty list, round trips, wholesale layering through sorted drop-ins, managed
 writes, unsaved `action reconfigure` refusal, production font options and
-precedence with the ligature setting. Warmed reload checks with embedded Iosevka
+precedence with the ligature setting. The unprovided-tag log is unit-tested
+against the embedded faces. Warmed reload checks with embedded Iosevka
 Term toggle its `calt` arrow join through feature-only, feature-and-ligature,
 feature-and-metric and replacement updates, comparing live scenes with fresh
 caches. Linux headless EGL pixel checks compare live output with fresh renders at

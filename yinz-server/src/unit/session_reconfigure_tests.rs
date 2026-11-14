@@ -2206,15 +2206,18 @@ mod font_features_reconfigure {
             let fixture = Fixture::new(&[CLIENT], None);
             let before = fixture.snapshot();
             let invalid = "terminal { font_features \"ss1\"; }\nmouse_mode false";
-            assert_eq!(fixture.all(invalid, false).exit_status, Some(1));
-            assert!(reconfigure_client(
-                CLIENT,
-                invalid.into(),
-                true,
-                &fixture.state,
-                &fixture.data
-            )
-            .is_err());
+            let result = fixture.all(invalid, false);
+            assert_eq!(result.exit_status, Some(1));
+            let message = result.error_message.unwrap();
+            assert!(
+                message.contains("\"ss1\" is not a font feature"),
+                "{message}"
+            );
+            let error =
+                reconfigure_client(CLIENT, invalid.into(), true, &fixture.state, &fixture.data)
+                    .unwrap_err();
+            let error = format!("{error:#}");
+            assert!(error.contains("\"ss1\" is not a font feature"), "{error}");
             assert_eq!(fixture.snapshot(), before);
             fixture.assert_no_propagation();
             let path = fixture.dir.path().join("config.d/yinz-managed.kdl");
