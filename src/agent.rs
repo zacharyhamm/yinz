@@ -1090,6 +1090,14 @@ fn write_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
         if status.background {
             writeln!(out, "  background: true").context("cannot write background work")?;
         }
+        if !status.background_tasks.is_empty() {
+            writeln!(
+                out,
+                "  background_tasks: {}",
+                status.background_tasks.join(", ")
+            )
+            .context("cannot write background task identities")?;
+        }
     }
     if response.retained_submission.is_some() {
         writeln!(out, "Retained completion: the qualified past turn ended; no live agent availability is implied.")

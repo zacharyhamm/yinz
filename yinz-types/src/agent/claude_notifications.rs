@@ -42,6 +42,11 @@ pub struct Notice {
     pub run: String,
     pub prompt: String,
     pub row: String,
+    /// Claude folded this notification into an already running turn as a queued
+    /// attachment instead of starting a notification turn. `prompt` is then the observed
+    /// turn that consumed it, and that turn's own confirmed answer settles the task.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub queued: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +75,10 @@ pub struct Evidence {
     pub cancellation: Option<Cancellation>,
     #[serde(default)]
     pub tasks: Vec<TaskSnapshot>,
+    /// A native root `Stop` carried a well-formed `background_tasks` array, so `tasks`
+    /// is Claude's complete in-flight list at that boundary, even when it is empty.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub snapshot: bool,
     /// Scoped by the containing hook's prompt, or source-wide if it has no prompt.
     #[serde(default)]
     pub unavailable: bool,
@@ -125,6 +134,14 @@ pub struct Pending {
     pub cancellations: Vec<Cancellation>,
     pub answers: Vec<Answer>,
     pub disabled: bool,
+    /// The newest turn whose confirmation or background watch saw Claude's session
+    /// registry idle after the turn ended. A drained obligation settles only with it.
+    #[serde(default)]
+    pub idle_prompt: Option<String>,
+    /// Milliseconds that `idle_prompt` must remain the newest turn before a drained
+    /// obligation settles. One idle reading can precede a queued notification's turn.
+    #[serde(default)]
+    pub idle_grace_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,6 +151,10 @@ pub struct Obligation {
     pub remaining_ms: u64,
     pub settled: bool,
     pub unavailable: bool,
+    /// The newest turn whose native `Stop` snapshot no longer listed this task as in
+    /// flight. A later snapshot that lists it again, or a newer turn, supersedes it.
+    #[serde(default)]
+    pub drained: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,7 +172,22 @@ impl Pending {
     pub fn active(&self) -> bool {
         self.launches.iter().any(|l| !l.settled && !l.unavailable)
     }
+    /// Task IDs of identified launches still awaiting settlement, in launch order.
+    pub fn unresolved_tasks(&self) -> Vec<String> {
+        let mut tasks: Vec<String> = Vec::new();
+        for launch in self
+            .launches
+            .iter()
+            .filter(|l| !l.settled && !l.unavailable)
+        {
+            if !tasks.contains(&launch.launch.task) {
+                tasks.push(launch.launch.task.clone());
+            }
+        }
+        tasks
+    }
     pub fn elapse(&mut self, ms: u64) {
+        self.idle_grace_ms = self.idle_grace_ms.saturating_sub(ms);
         for launch in &mut self.launches {
             launch.remaining_ms = launch.remaining_ms.saturating_sub(ms);
             if launch.remaining_ms == 0 && !launch.settled {

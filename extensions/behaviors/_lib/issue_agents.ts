@@ -35,6 +35,7 @@ import {
   AssignmentSchema,
   canonical,
   evidenceDigest,
+  type EvidenceReceipt,
   EvidenceReceiptSchema,
   EvidenceTargetSchema,
   hasContinuityContract,
@@ -73,7 +74,9 @@ import {
   ControlIdentitySchema,
   promptDigest,
   rejectedLaunchProblems,
+  reportedBackground,
   terminalFailureProblems,
+  unidentifiedBackground,
   WORKER_NOT_STOPPED,
 } from "./yinz_agent.ts";
 
@@ -155,6 +158,15 @@ export const AgentTaskSchema = z.object({
     basis: DiscardBasisSchema.optional(),
     stopEvidence: StopEvidenceSchema.optional(),
   }).strict().optional(),
+  // Operator-authorized import of accepted evidence whose pane observation never
+  // completed. It supersedes that observation; the pane is neither prompted nor closed.
+  acceptance: z.object({
+    request: UserRequestSchema,
+    reason: z.string().min(1),
+    acceptedAt: z.iso.datetime(),
+    childPhase: z.string().min(1),
+    backgroundTasks: z.array(z.string()),
+  }).strict().optional(),
   message: z.string().optional(),
   lastError: z.string().optional(),
   cleanup: z.enum(["pending", "done"]).optional(),
@@ -168,6 +180,10 @@ export const AgentTaskSchema = z.object({
 }).strict();
 type Task = z.infer<typeof AgentTaskSchema>;
 const RestartInput = Input.extend({
+  taskId: z.uuid(),
+  request: UserRequestSchema,
+});
+export const AcceptSubmissionInputSchema = z.object({
   taskId: z.uuid(),
   request: UserRequestSchema,
 });
@@ -389,7 +405,7 @@ export function taskPrompt(
     implementing
       ? "Only this task may edit the issue worktree."
       : "This is investigation or review: do not edit source files, Git refs, or configuration.",
-    "Finish this task in the foreground. Do not leave background subagents or jobs running when returning your answer.",
+    "Run every command and check in the foreground. Do not use run_in_background, Monitor, background subagents or any other background job. If a check exceeds the tool timeout, split it into smaller checks rather than backgrounding it.",
     continuity && role === "review_code"
       ? instructions.replace(
         "against local main",
@@ -587,7 +603,11 @@ async function completeTask(context: IssueAgentContext, task: Task) {
   const completed: Task = {
     ...task,
     status: "completed",
-    cleanup: task.config.stackWorkers ? "pending" : undefined,
+    // An operator-accepted submission never proved its pane quiescent; leave the
+    // pane for the operator rather than closing it through guarded cleanup.
+    cleanup: task.config.stackWorkers && !task.acceptance
+      ? "pending"
+      : undefined,
   };
   const saved = await saveTask(context, completed);
   const cleaned = await cleanupTask(context, completed);
@@ -642,7 +662,8 @@ async function evidenceOperation(
   }
 }
 
-async function acceptedEvidence(context: IssueAgentContext, task: Task) {
+/** The validated accepted receipt for this exact assignment, or an error naming why not. */
+export async function acceptedEvidence(context: IssueAgentContext, task: Task) {
   const assignment = taskAssignment(context, task);
   const bytes = await context.dataRepository.getContent(
     "@yinz/issue-evidence",
@@ -666,6 +687,17 @@ async function acceptedEvidence(context: IssueAgentContext, task: Task) {
     );
   }
   return validateReceipt(assignment, saved.receipt);
+}
+
+/** The commit an accepted receipt binds for freshness checks, by role. */
+function evidenceCommit(task: Task, receipt: EvidenceReceipt) {
+  const payload = receipt.payload;
+  if (payload.role === "plan_review_fixes") return task.reviewCommit;
+  return payload.role === "implement_review_fixes" ||
+      payload.role === "implement" || payload.role === "review_code" ||
+      payload.role === "review_ux"
+    ? payload.evidence.commit
+    : undefined;
 }
 
 /** Typed implementation evidence, including in cached driver handoffs. */
@@ -786,7 +818,11 @@ async function applyResult(
     return completeTask(context, task);
   }
   const receipt = await acceptedEvidence(context, task);
-  const result = await completedResult(context, task);
+  // Operator acceptance replaces only the pane-completion proof. Every receipt,
+  // requirement and Git freshness check below still applies.
+  const message = task.acceptance
+    ? undefined
+    : (await completedResult(context, task)).message;
   // An applying task carries its exact accepted receipt. State equality alone
   // cannot prove import for implementation reports, whose next equals before.
   const eventName = `event-agent-${task.id}`;
@@ -808,21 +844,14 @@ async function applyResult(
     task,
     current,
     dependencies,
-    receipt.payload.role === "plan_review_fixes"
-      ? task.reviewCommit
-      : receipt.payload.role === "implement_review_fixes" ||
-          receipt.payload.role === "implement" ||
-          (receipt.payload.role === "review_code" ||
-            receipt.payload.role === "review_ux")
-      ? receipt.payload.evidence.commit
-      : undefined,
+    evidenceCommit(task, receipt),
   );
   const applying: Task = {
     ...task,
     status: "applying",
     next: receipt.next,
     evidence: receipt,
-    message: result.message,
+    ...(message === undefined ? {} : { message }),
   };
   await saveTask(context, applying);
   const handles = await saveState(
@@ -1283,6 +1312,8 @@ export async function runTask(
   recover = false,
 ) {
   if (task.discard) return finishDiscard(context, task);
+  // Recorded operator acceptance never observes or prompts the pane again.
+  if (task.acceptance) return applyResult(context, task, dependencies);
   await saveTask(context, task);
   try {
     if (task.submission) {
@@ -1994,6 +2025,110 @@ export function createAgentMethods(
           };
           await saveTask(context, pending);
           return finishDiscard(context, pending);
+        }),
+    },
+    accept_submission: {
+      kind: "action",
+      description:
+        "Explicitly import a pane task's accepted Swamp evidence when its pane observation never completes, without waiting on, prompting or closing the pane",
+      arguments: AcceptSubmissionInputSchema.strip(),
+      execute: (
+        input: z.infer<typeof AcceptSubmissionInputSchema>,
+        context: IssueAgentContext,
+      ) =>
+        dependencies.withIssue(context, async () => {
+          await assertNoPendingRecovery(context);
+          const args = AcceptSubmissionInputSchema.parse(input);
+          const raw = await context.readResource("agent-task");
+          const task = raw == null ? undefined : AgentTaskSchema.parse(raw);
+          if (!task || task.id !== args.taskId) {
+            throw new Error(
+              "accept-submission must name the current pane task's taskId; inspect status before accepting",
+            );
+          }
+          if (task.acceptance) {
+            if (task.acceptance.request !== args.request) {
+              throw new Error(
+                "This task's accepted submission was already recorded under a different request",
+              );
+            }
+            // Finish an interrupted import of the recorded acceptance.
+            return applyResult(context, task, dependencies);
+          }
+          if (task.discard || task.status !== "running") {
+            throw new Error(
+              `accept-submission requires an unresolved running pane task; task ${task.id} is ${
+                task.discard ? "being discarded" : task.status
+              }. Use resume-agent to reconcile an applying task`,
+            );
+          }
+          // Validates the receipt's task ID and assignment digest for this task.
+          const receipt = await acceptedEvidence(context, task);
+          const child = await childState(context, task);
+          const { backgroundTasks } = reportedBackground(child);
+          if (child.phase === "completed" && !backgroundTasks.length) {
+            throw new Error(
+              "The pane task completed normally; use resume-agent or drive to import it",
+            );
+          }
+          // Yinz cannot tell a running foreground turn from one that ended with
+          // background work left. Accept only after drive recorded its bounded
+          // stall for this task, the child observed the turn's answer with
+          // background work, or the pane closed. As in drive, any later child
+          // observation (such as resume-agent's) supersedes the stall.
+          const driver = await context.readResource("driver") as
+            | {
+              backgroundStall?: {
+                taskId?: string;
+                child?: {
+                  phase?: string;
+                  outcome?: string;
+                  updatedAt?: string;
+                };
+              };
+            }
+            | null
+            | undefined;
+          const stall = driver?.backgroundStall;
+          const stalled = stall?.taskId === task.id &&
+            stall.child?.phase === child.phase &&
+            stall.child.outcome === child.outcome &&
+            stall.child.updatedAt === child.updatedAt;
+          if (
+            !stalled && child.phase !== "background" &&
+            child.outcome !== "target_closed"
+          ) {
+            throw new Error(
+              `accept-submission requires drive's background stall handoff for task ${task.id}, a background phase or a closed pane; the pane is in phase ${child.phase}. Use drive or resume-agent to keep observing it`,
+            );
+          }
+          // Check requirements, lifecycle snapshot and the clean worktree at the
+          // evidence commit before recording intent, exactly as import will.
+          await validateResultFreshness(
+            context,
+            task,
+            await loadState(context),
+            dependencies,
+            evidenceCommit(task, receipt),
+          );
+          const background = !backgroundTasks.length
+            ? "none reported"
+            : unidentifiedBackground(backgroundTasks)
+            ? "reported without task IDs"
+            : backgroundTasks.join(", ");
+          const accepted: Task = {
+            ...task,
+            acceptance: {
+              request: args.request,
+              reason:
+                `Operator accepted the Swamp evidence submission while pane observation was unresolved (phase ${child.phase}; background work: ${background}). The pane observation is superseded without waiting, input or closure.`,
+              acceptedAt: dependencies.now(),
+              childPhase: child.phase,
+              backgroundTasks,
+            },
+          };
+          await saveTask(context, accepted);
+          return applyResult(context, accepted, dependencies);
         }),
     },
   };

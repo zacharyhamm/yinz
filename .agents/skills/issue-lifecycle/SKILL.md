@@ -239,6 +239,10 @@ Then read the matching section of `references/recovery.md`:
 | Failed close-out after landing, unmet outcome | [Close-out failures](references/recovery.md#close-out-failures) |
 | Other free-text reason, requirements/configuration change | [Inspect the blocker](references/recovery.md#inspect-the-blocker) |
 
+If `drive` keeps waiting on a pane task or the user says a worker is done, follow
+[Stuck drive or reported completion](references/recovery.md#stuck-drive-or-reported-completion)
+before answering.
+
 ## Explicit rollback or restart
 
 The actual user request authorizes superseding any prior outcome: no successful
@@ -265,6 +269,15 @@ from the evidence template in their assignment directory and submit through
 [review](references/review.md)). Final prose is never evidence. Workers may invoke
 only their own submission and receipt query; approvals, rollback, merge and
 Agenda mutations remain controller operations.
+
+If evidence is accepted but the pane keeps reporting background work, `drive`
+returns a `blocked` handoff after bounded timeouts and repeats it on later calls
+until `resume-agent` observes the pane again.
+Only the user's explicit authorization permits `accept-submission` with
+`{taskId, request}`. It imports the accepted receipt through the ordinary import
+after current requirement and worktree checks, records the request on the task
+and never prompts or closes the pane. Otherwise inspect the pane and use
+`resume-agent`.
 
 If a provider ends without accepted evidence, keep the task unresolved. Use
 `continue-agent --request '<request>' --input-file <{taskId}>` to ask that same

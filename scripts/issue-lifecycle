@@ -22,7 +22,7 @@ from issue_lifecycle.observations import diagnose, task_recovery
 METHODS = (
     "start", "status", "triage", "plan", "review-plan", "adjudicate-plan", "approve", "implement",
     "decide-review", "plan-review-fixes", "approve-review-fixes", "review-code", "review-ux", "ready", "merge", "repair", "refresh", "summarize", "agent", "resume-agent", "discard-agent",
-    "closeout", "resume-closeout", "rollback", "resume-rollback", "restart-agent", "continue-agent", "drive", "verify",
+    "accept-submission", "closeout", "resume-closeout", "rollback", "resume-rollback", "restart-agent", "continue-agent", "drive", "verify",
 )
 
 EPILOG = """\

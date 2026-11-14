@@ -38,6 +38,9 @@ pub(super) fn normalize(event: &HookEvent, raw: &Value) -> Option<Evidence> {
                     evidence.unavailable = true;
                 }
             }
+            // Only a complete, well-formed list says which identified tasks are no longer
+            // in flight; an empty one is the positive "nothing in flight" answer.
+            evidence.snapshot = !evidence.unavailable;
         }
     }
     if event.hook_event_name == "PostToolUse"
@@ -106,7 +109,7 @@ pub(super) fn normalize(event: &HookEvent, raw: &Value) -> Option<Evidence> {
     }
     (!evidence.launches.is_empty()
         || evidence.cancellation.is_some()
-        || !evidence.tasks.is_empty()
+        || evidence.snapshot
         || !evidence.unsupported_tasks.is_empty()
         || evidence.unavailable)
         .then(|| evidence.bounded())

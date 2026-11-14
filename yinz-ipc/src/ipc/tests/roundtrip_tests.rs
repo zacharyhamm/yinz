@@ -4986,6 +4986,7 @@ fn test_server_messages() {
         is_suppressed: true,
         clear_draft_supported: false,
         background: true,
+        background_tasks: vec!["bsi01ktyo".into()],
     };
     for outcome in [
         AgentOutcome::Ok,
@@ -5036,6 +5037,7 @@ fn test_server_messages() {
             submission_id: Some("submission-7".into()),
             prompt_delivery: Some(yinz_types::agent::control::PromptDelivery::Started),
             background: true,
+            background_tasks: vec!["bsi01ktyo".into()],
         }));
     }
     for reason in [

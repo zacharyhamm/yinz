@@ -851,8 +851,16 @@ fn follow_with_limits(
             let record: Value = serde_json::from_slice(&line)
                 .with_context(|| format!("parse {kind} transcript record"))?;
             line.clear();
+            // A notification Claude queues into this running turn belongs to this turn,
+            // so its answer is this turn's answer. It must descend from the turn before
+            // the turn's own boundary; later rows are another turn's.
             if kind == "claude"
                 && let Some(notice) = notifications::accepted(&record, &turn.session, &turn.prompt)
+                    .or_else(|| {
+                        (!completed && turn.descends(&record))
+                            .then(|| notifications::queued(&record, &turn.session, &turn.prompt))
+                            .flatten()
+                    })
             {
                 let mut hook = observation.hook.clone();
                 hook.hook_event_name = "NotificationAccepted".into();
@@ -861,7 +869,11 @@ fn follow_with_limits(
                     .get_or_insert_with(Default::default)
                     .notice = Some(notice.clone());
                 report_with_retry(observation, &hook, deadline, &mut report)?;
-                turn.notice = Some(notice);
+                // A notification turn's own accepted notice still requires that turn's
+                // answer boundary at confirmation; a notice queued into it must not hide it.
+                if turn.notice.as_ref().is_none_or(|current| current.queued) {
+                    turn.notice = Some(notice);
+                }
             }
             if !completed && turn.record(&record)? {
                 completed = true;
@@ -929,7 +941,9 @@ fn confirm(
     hook.claude_turn_complete = Some(!turn.interrupted);
     hook.last_assistant_message = turn.last_text.clone();
     if let Some(notice) = &turn.notice {
-        if !turn.answer_boundary {
+        // A separate notification turn's answer needs its own boundary. A queued notice
+        // belongs to the observed turn, which completes exactly as it would without it.
+        if !turn.answer_boundary && !notice.queued {
             hook.claude_turn_complete = Some(false);
             hook.claude_notifications
                 .get_or_insert_with(Default::default)
@@ -1114,6 +1128,14 @@ impl Turn {
             background: false,
             step_idx,
         }
+    }
+
+    /// Whether a row without its own prompt identity continues this turn's ancestry.
+    fn descends(&self, record: &Value) -> bool {
+        self.found
+            && record["parentUuid"]
+                .as_str()
+                .is_some_and(|parent| self.ancestors.contains(parent))
     }
 
     fn record(&mut self, record: &Value) -> Result<bool> {

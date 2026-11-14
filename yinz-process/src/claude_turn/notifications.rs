@@ -22,6 +22,43 @@ pub(super) fn accepted(row: &Value, session: &str, prompt: &str) -> Option<Notic
         }
         parts[0]["text"].as_str()?
     };
+    let (task, tool) = envelope(text)?;
+    notice(
+        task,
+        tool,
+        row["origin"]["runId"].as_str()?,
+        prompt,
+        row,
+        false,
+    )
+}
+
+/// A root task notification Claude delivered while `prompt`'s turn was running. Claude
+/// 2.1.325 folds it into that turn as a `queued_command` attachment row, without a prompt
+/// ID of its own, instead of starting a notification turn. The caller must establish that
+/// the row descends from the observed turn; this checks only the row's own structure.
+pub(super) fn queued(row: &Value, session: &str, prompt: &str) -> Option<Notice> {
+    let attachment = &row["attachment"];
+    if row["type"] != "attachment"
+        || row["isSidechain"] != false
+        || row["sessionId"].as_str().is_some_and(|s| s != session)
+        || row
+            .get("promptId")
+            .is_some_and(|id| id.as_str() != Some(prompt))
+        || attachment["type"] != "queued_command"
+        || attachment["commandMode"] != "task-notification"
+        || attachment["origin"]["kind"] != "task-notification"
+        || attachment["origin"]["producer"] != "session-task"
+    {
+        return None;
+    }
+    let (task, tool) = envelope(attachment["prompt"].as_str()?)?;
+    notice(task, tool, attachment["runId"].as_str()?, prompt, row, true)
+}
+
+/// The task and tool IDs of exactly one `<task-notification>` envelope spanning `text`.
+/// Monitor events carry no tool-use ID and are therefore never matched.
+fn envelope(text: &str) -> Option<(String, String)> {
     let body = text
         .trim()
         .strip_prefix("<task-notification>")?
@@ -40,12 +77,24 @@ pub(super) fn accepted(row: &Value, session: &str, prompt: &str) -> Option<Notic
         }
         Some(value.into())
     };
+    Some((field("task-id")?, field("tool-use-id")?))
+}
+
+fn notice(
+    task: String,
+    tool: String,
+    run: &str,
+    prompt: &str,
+    row: &Value,
+    queued: bool,
+) -> Option<Notice> {
     let notice = Notice {
-        task: field("task-id")?,
-        tool: field("tool-use-id")?,
-        run: row["origin"]["runId"].as_str()?.into(),
+        task,
+        tool,
+        run: run.into(),
         prompt: prompt.into(),
         row: row["uuid"].as_str()?.into(),
+        queued,
     };
     let valid = [&notice.run, &notice.prompt, &notice.row]
         .into_iter()

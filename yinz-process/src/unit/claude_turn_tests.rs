@@ -1620,6 +1620,256 @@ fn notification_follow_reports_acceptance_and_only_ancestral_answer_completion()
     );
 }
 
+/// Claude 2.1.325's shape for a background task that finished while a turn was running.
+fn queued_notification(task: &str, tool: Option<&str>) -> Value {
+    let tool = tool.map_or(String::new(), |tool| {
+        format!("\n<tool-use-id>{tool}</tool-use-id>")
+    });
+    json!({"parentUuid":"tool-result","isSidechain":false,"sessionId":"conversation",
+        "attachment":{"type":"queued_command",
+            "prompt":format!("<task-notification>\n<task-id>{task}</task-id>{tool}\n<output-file>/tmp/tasks/{task}.output</output-file>\n<status>completed</status>\n<summary>Background command \"sleep 8\" completed (exit code 0)</summary>\n</task-notification>"),
+            "source_uuid":"source","delivery_id":"delivery","commandMode":"task-notification",
+            "origin":{"kind":"task-notification","producer":"session-task"},
+            "runId":"0mwgkinw9-7de56f80","timestamp":"2026-11-14T15:49:20Z"},
+        "type":"attachment","uuid":"92aaee8c-queued","timestamp":"2026-11-14T15:49:20Z"})
+}
+
+#[test]
+fn queued_notification_mapping_requires_structural_origin_and_one_envelope() {
+    let row = queued_notification("bsi01ktyo", Some("toolu_01Jx9ciai1vWWaWKKUMRgD6t"));
+    let notice = notifications::queued(&row, "conversation", "prompt").unwrap();
+    assert_eq!(notice.task, "bsi01ktyo");
+    assert_eq!(notice.tool, "toolu_01Jx9ciai1vWWaWKKUMRgD6t");
+    assert_eq!(notice.run, "0mwgkinw9-7de56f80");
+    assert_eq!(notice.prompt, "prompt", "the observed turn consumed it");
+    assert_eq!(notice.row, "92aaee8c-queued");
+    assert!(notice.queued);
+    // A queued row is never a separate accepted notification turn.
+    assert!(notifications::accepted(&row, "conversation", "prompt").is_none());
+    // Monitor events arrive the same way without a tool-use ID; they are not launches.
+    assert!(notifications::queued(
+        &queued_notification("monitor", None),
+        "conversation",
+        "prompt"
+    )
+    .is_none());
+    let envelope = row["attachment"]["prompt"].as_str().unwrap().to_owned();
+    for (top, attachment) in [
+        (json!({"isSidechain":true}), json!({})),
+        (json!({"isSidechain":null}), json!({})),
+        (json!({"sessionId":"foreign"}), json!({})),
+        (json!({"promptId":"other"}), json!({})),
+        (json!({"type":"user"}), json!({})),
+        (json!({}), json!({"type":"queued_prompt"})),
+        (json!({}), json!({"commandMode":"prompt"})),
+        (
+            json!({}),
+            json!({"origin":{"kind":"user","producer":"session-task"}}),
+        ),
+        (
+            json!({}),
+            json!({"origin":{"kind":"task-notification","producer":"other"}}),
+        ),
+        (json!({}), json!({"origin":null})),
+        (json!({}), json!({"runId":null})),
+        (json!({}), json!({"runId":"bad run"})),
+        (json!({"uuid":null}), json!({})),
+        (
+            json!({}),
+            json!({"prompt":format!("Please read this: {envelope}")}),
+        ),
+        (
+            json!({}),
+            json!({"prompt":format!("<task-notification>{envelope}</task-notification>")}),
+        ),
+        (json!({}), json!({"prompt":format!("{envelope}{envelope}")})),
+        (
+            json!({}),
+            json!({"prompt":"<task-notification><task-id>a</task-id><task-id>b</task-id><tool-use-id>t</tool-use-id></task-notification>"}),
+        ),
+        (
+            json!({}),
+            json!({"prompt":"<task-notification><task-id>bad id</task-id><tool-use-id>t</tool-use-id></task-notification>"}),
+        ),
+        (
+            json!({}),
+            json!({"prompt":[{"type":"text","text":envelope}]}),
+        ),
+    ] {
+        let mut invalid = row.clone();
+        invalid
+            .as_object_mut()
+            .unwrap()
+            .extend(top.as_object().unwrap().clone());
+        invalid["attachment"]
+            .as_object_mut()
+            .unwrap()
+            .extend(attachment.as_object().unwrap().clone());
+        assert!(
+            notifications::queued(&invalid, "conversation", "prompt").is_none(),
+            "{top} {attachment}"
+        );
+    }
+    let mut same_prompt = row.clone();
+    same_prompt["promptId"] = "prompt".into();
+    assert!(notifications::queued(&same_prompt, "conversation", "prompt").is_some());
+}
+
+#[test]
+fn queued_notification_is_reported_once_and_answered_by_the_observed_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("root.jsonl");
+    let mut foreign = queued_notification("foreign", Some("foreign-tool"));
+    foreign["parentUuid"] = "elsewhere".into();
+    let mut late = queued_notification("late", Some("late-tool"));
+    late["parentUuid"] = "answer".into();
+    late["uuid"] = "late-row".into();
+    let rows = [
+        // Before this turn's prompt, an ancestral row cannot exist yet.
+        queued_notification("early", Some("early-tool")),
+        json!({"type":"user","isSidechain":false,"sessionId":"conversation","promptId":"prompt","uuid":"submitted",
+            "message":{"content":"Run the build in the background."}}),
+        json!({"type":"assistant","uuid":"launch","parentUuid":"submitted","message":{"content":[{"type":"tool_use","id":"toolu_01Jx9ciai1vWWaWKKUMRgD6t","name":"Bash"}]}}),
+        json!({"type":"user","isSidechain":false,"sessionId":"conversation","promptId":"prompt","uuid":"tool-result","parentUuid":"launch",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"toolu_01Jx9ciai1vWWaWKKUMRgD6t"}]}}),
+        foreign,
+        queued_notification("bsi01ktyo", Some("toolu_01Jx9ciai1vWWaWKKUMRgD6t")),
+        json!({"type":"assistant","uuid":"answer","parentUuid":"92aaee8c-queued","message":{"content":[{"type":"text","text":"SUBMITTED"}]}}),
+        json!({"type":"system","subtype":"turn_duration","uuid":"duration","parentUuid":"answer"}),
+        // After the boundary, Claude would start another turn for it.
+        late,
+    ];
+    std::fs::write(
+        &path,
+        rows.iter().map(|r| format!("{r}\n")).collect::<String>(),
+    )
+    .unwrap();
+    let observation = observation(&path, None);
+    let mut reports = Vec::new();
+    let turn = follow_with_api_reporting(&observation, None, |h| {
+        reports.push(h.clone());
+        Ok(())
+    })
+    .unwrap();
+    assert!(turn.answer_boundary);
+    assert_eq!(reports.len(), 2, "{reports:#?}");
+    assert_eq!(reports[0].hook_event_name, "NotificationAccepted");
+    assert_eq!(reports[0].prompt_id.as_deref(), Some("prompt"));
+    let notice = reports[0]
+        .claude_notifications
+        .as_ref()
+        .unwrap()
+        .notice
+        .clone()
+        .unwrap();
+    assert_eq!(notice.task, "bsi01ktyo");
+    assert_eq!(notice.prompt, "prompt");
+    assert!(notice.queued);
+    assert_eq!(reports[1].hook_event_name, "Stop");
+    assert_eq!(reports[1].claude_turn_complete, Some(true));
+    assert_eq!(
+        reports[1].last_assistant_message.as_deref(),
+        Some("SUBMITTED")
+    );
+    let confirmed = reports[1].claude_notifications.as_ref().unwrap();
+    assert_eq!(confirmed.notice.as_ref(), Some(&notice));
+    assert!(!confirmed.unavailable);
+}
+
+#[test]
+fn a_queued_notice_keeps_a_registry_ended_turn_complete() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("root.jsonl");
+    // The registry ends the turn before any turn_duration row is written.
+    let rows = [
+        json!({"type":"user","isSidechain":false,"sessionId":"conversation","promptId":"prompt","uuid":"submitted",
+            "message":{"content":"Run the builds in the background."}}),
+        json!({"type":"assistant","uuid":"launch","parentUuid":"submitted","message":{"content":[{"type":"tool_use","id":"toolu_01Jx9ciai1vWWaWKKUMRgD6t","name":"Bash"}]}}),
+        json!({"type":"user","isSidechain":false,"sessionId":"conversation","promptId":"prompt","uuid":"tool-result","parentUuid":"launch",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"toolu_01Jx9ciai1vWWaWKKUMRgD6t"}]}}),
+        queued_notification("bsi01ktyo", Some("toolu_01Jx9ciai1vWWaWKKUMRgD6t")),
+        json!({"type":"assistant","uuid":"answer","parentUuid":"92aaee8c-queued","message":{"content":[{"type":"text","text":"SUBMITTED"}]}}),
+    ];
+    std::fs::write(
+        &path,
+        rows.iter().map(|r| format!("{r}\n")).collect::<String>(),
+    )
+    .unwrap();
+    for registry_status in ["idle", "shell"] {
+        let mut observation = observation(&path, None);
+        let status = dir.path().join("status.json");
+        observation.claude_status = Some(ClaudeStatusObservation {
+            path: status.clone(),
+            after_ms: now_ms(),
+        });
+        std::fs::write(status, registry(registry_status, now_ms() + 1)).unwrap();
+        let mut reports = Vec::new();
+        let turn = follow_with_api_reporting(&observation, None, |h| {
+            reports.push(h.clone());
+            Ok(())
+        })
+        .unwrap();
+        assert!(!turn.answer_boundary);
+        assert_eq!(reports.len(), 2, "{reports:#?}");
+        assert_eq!(reports[0].hook_event_name, "NotificationAccepted");
+        assert_eq!(reports[1].hook_event_name, "Stop");
+        assert_eq!(
+            reports[1].claude_turn_complete,
+            Some(true),
+            "{registry_status}"
+        );
+        assert_eq!(
+            reports[1].last_assistant_message.as_deref(),
+            Some("SUBMITTED")
+        );
+        let confirmed = reports[1].claude_notifications.as_ref().unwrap();
+        assert!(confirmed.notice.as_ref().is_some_and(|n| n.queued));
+        // Loss would mark every launch from this prompt unavailable, including work
+        // that is still running.
+        assert!(!confirmed.unavailable, "{registry_status}");
+    }
+}
+
+#[test]
+fn a_notice_queued_into_a_notification_turn_keeps_its_answer_boundary_requirement() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("root.jsonl");
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/claude-notification-settlement.json")).unwrap();
+    let mut queued = queued_notification("bsi01ktyo", Some("toolu_01Jx9ciai1vWWaWKKUMRgD6t"));
+    queued["parentUuid"] = "row".into();
+    std::fs::write(&path, format!("{}\n{queued}\n", fixture["accepted"])).unwrap();
+    let mut observation = observation(&path, None);
+    let status = dir.path().join("status.json");
+    observation.claude_status = Some(ClaudeStatusObservation {
+        path: status.clone(),
+        after_ms: now_ms(),
+    });
+    std::fs::write(status, registry("idle", now_ms() + 1)).unwrap();
+    let mut reports = Vec::new();
+    follow_with_api_reporting(&observation, None, |h| {
+        reports.push(h.clone());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(reports.len(), 3, "{reports:#?}");
+    let notice = |i: usize| {
+        reports[i]
+            .claude_notifications
+            .as_ref()
+            .unwrap()
+            .notice
+            .clone()
+            .unwrap()
+    };
+    assert!(!notice(0).queued && notice(1).queued);
+    // The registry-ended notification turn still lacks its own answer boundary.
+    assert_eq!(reports[2].claude_turn_complete, Some(false));
+    let confirmed = reports[2].claude_notifications.as_ref().unwrap();
+    assert!(confirmed.unavailable);
+    assert_eq!(confirmed.notice.as_ref(), Some(&notice(0)));
+}
+
 #[test]
 fn a_registry_only_notice_end_is_unavailable_answer_evidence() {
     let dir = tempfile::tempdir().unwrap();

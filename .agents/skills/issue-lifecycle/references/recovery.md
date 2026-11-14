@@ -1,6 +1,6 @@
 # Lifecycle recovery
 
-Read this reference only when `drive` reports `blocked`; use the matching section
+Read this reference only when `drive` reports `blocked` or keeps waiting on a pane task; use the matching section
 below. Ordinary operation and explicit restart/rollback routing are in the
 [skill](../SKILL.md). Persistence and protocol facts are in the
 [design reference](../../../../docs/ISSUE_LIFECYCLE.md); states that predate
@@ -69,6 +69,19 @@ neither `continue-agent` (it needs a completed worker) nor `discard-agent` (it
 needs `failed` or `not_sent`) applies: only `restart-agent` or `rollback` with the
 user's request does.
 
+A blocker saying the task has an accepted Swamp evidence submission but its pane
+still reports background work means `drive` stopped after bounded timeouts.
+Repeated `drive` calls present it unchanged until `resume-agent` saves a newer
+observation. Present the task, commit and reported background task IDs, and
+inspect the pane. When the handoff says Yinz has not confirmed that the foreground
+turn ended, confirm that the pane is idle at its prompt. Run `resume-agent` to
+observe it again. If the user explicitly authorizes importing the accepted
+evidence instead, run `accept-submission` with `{taskId, request}` and their
+actual request, then `drive`. It never prompts or closes the pane. It requires
+this stall, a child observing background work after its turn's answer, or a
+closed pane. A dirty worktree or moved HEAD blocks it. Rollback would discard the accepted evidence;
+use it only when the user wants that.
+
 `needs_input`, interruptions, target replacement and timeouts are not successful
 evidence. Unknown or expired submissions without a validated saved terminal proof
 remain unresolved; inspect the retained pane and state before any explicitly
@@ -84,6 +97,50 @@ If dispatch stopped before the child saved initial state, `resume-agent`
 initializes that original task under the child execution lock using its saved
 configuration and prompt. Existing child state is validated and resumed. Pending
 tasks keep their original directory, placement and provider settings.
+
+## Stuck drive or reported completion
+
+When `drive` keeps waiting on a pane task, or the user says its worker is done,
+check these before answering. Never tell the user a submission is unrecorded from
+the lifecycle phase alone; the phase changes only at import.
+
+1. Run `status`. Its `results` include the task's submission record when one
+   exists. `status: accepted` with the task's `id` as `assignment.taskId` and its
+   `submission.assignmentDigest` as `assignment.digest` means the evidence is
+   recorded. A `background_work` diagnostic, which also reads background work
+   from the worker's agent row in the latest response, names `accept-submission`
+   when the receipt is accepted. The evidence behavior is the agent-task record's
+   `submission.behaviorName` (`issue-evidence-<task id>`); every other
+   `behaviorName` in `status` names the `issue-agent-...` worker behavior, whose
+   UUID differs. To query the submission directly, use that name and
+   `submission.controlDir` with the remote Swamp variables unset, as `status`
+   does:
+   ```sh
+   env -u SWAMP_SERVE_URL -u SWAMP_SERVER_URL -u SWAMP_REPO_DIR -u SWAMP_WORKFLOWS_DIR \
+     swamp data query 'behavior("<submission.behaviorName>") && name == "submission"' \
+     --repo-dir "<submission.controlDir>" --select content --single --json
+   ```
+2. Run `yinz agent status <worker pane> --conversation <conversationId> --json`
+   with `paneId` and `conversationId` from `status` `workerObservation`. Read
+   `agents[0].agent.state`, `agents[0].ready`, `agents[0].background` and
+   `agents[0].background_tasks`. `background: true` with no task IDs rests on
+   Claude's session registry or an older Yinz build.
+3. Read the `drive` stderr lines `Continuing original pane task ...` or `Stopped
+   observing pane task ...` for `phase`, `agentState`, `backgroundTasks` and
+   `submissionAccepted`.
+
+Accepted evidence with a pane that reports only background work is the stall in
+[Unresolved tasks](#unresolved-tasks): `drive` blocks, and the user may authorize
+`accept-submission`. Prefer it to rollback, which discards the accepted summary,
+commit and deviations.
+
+While the task is unresolved, never close the worker pane, run `agent
+close-completed`, or send it prompts or steering text to make it finish. Answer
+startup dialogs and permission prompts deliberately, as described in [Dialogs hooks
+and sessions](#dialogs-hooks-and-sessions). Closing a pane without a retained
+completion proof leaves its result `target_closed`; only accepted evidence
+(`accept-submission`) or an explicitly requested rollback or `restart-agent` can
+then resolve it.
 
 ## Dialogs hooks and sessions
 
@@ -393,7 +450,8 @@ An accepted receipt with `completion_unreconciled` means the child reports
 completion: `drive` (or `resume-agent`) validates and imports the original result
 without invoking the worker again. `evidence_waiting_for_completion` and
 `background_work` retain the completion fence; continue observing the original
-submission. Neither transcript EOF nor pane closure proves termination. A
+submission. With accepted evidence, `background_work` also names
+`accept-submission`, which requires explicit user authorization. Neither transcript EOF nor pane closure proves termination. A
 qualified retained submission can supply the proof after closure; an expired or
 unavailable record cannot.
 

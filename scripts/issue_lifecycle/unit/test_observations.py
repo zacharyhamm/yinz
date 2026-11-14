@@ -37,6 +37,22 @@ class ObservationTests(unittest.TestCase):
                 self.assertEqual(result[0]["code"], expected)
                 self.assertEqual(result[0]["identity"]["submissionId"], "submission")
             self.assertEqual((task, child, receipt), before)
+        self.assertIn("accept-submission with taskId task", diagnose("issue", {}, task, child, receipt, [])[0]["action"])
+        self.assertNotIn("accept-submission", diagnose("issue", {}, task, child, None, [])[0]["action"])
+        # A timed-out wait reports background work only on the agent row.
+        response = {"outcome": "timed_out", "agents": [
+            {"pane_id": "terminal_1", "background": True},
+            {"pane_id": "terminal_2", "background_tasks": ["other"]}]}
+        waiting = dict(child, phase="waiting", outcome="timed_out", backgroundTasks=[],
+                       paneId="terminal_1", rawResponse=json.dumps(response))
+        self.assertEqual(diagnose("issue", {}, task, waiting, receipt, [])[0]["code"], "background_work")
+        self.assertIn("accept-submission", diagnose("issue", {}, task, waiting, receipt, [])[0]["action"])
+        waiting["paneId"] = "terminal_3"
+        self.assertEqual(diagnose("issue", {}, task, waiting, receipt, [])[0]["code"],
+                         "evidence_waiting_for_completion")
+        waiting["rawResponse"] = "not json"
+        self.assertEqual(diagnose("issue", {}, task, waiting, receipt, [])[0]["code"],
+                         "evidence_waiting_for_completion")
         receipt["assignment"]["digest"] = "stale"
         self.assertEqual(diagnose("issue", {}, task, child, receipt, [])[0]["code"], "evidence_identity_mismatch")
         child["promptDigest"] = "replacement"

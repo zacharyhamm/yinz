@@ -227,6 +227,7 @@ fn successful_read_prints_only_terminal_text_and_json_keeps_metadata() {
         is_suppressed: false,
         clear_draft_supported: false,
         background: false,
+        background_tasks: Vec::new(),
     });
     for (text, expected) in [
         ("result\n> ", "result\n> \n"),
@@ -291,18 +292,24 @@ fn background_work_is_shown_with_how_to_get_its_answer() {
     }))
     .unwrap();
     assert!(!status.background, "older servers omit the field");
+    assert!(
+        status.background_tasks.is_empty(),
+        "older servers omit task IDs"
+    );
     response
         .agents
         .push(yinz_types::agent::control::AgentStatus {
             background: true,
+            background_tasks: vec!["bsi01ktyo".into(), "agent-2".into()],
             is_suppressed: true,
             ..status
         });
     response.background = true;
+    response.background_tasks = vec!["bsi01ktyo".into(), "agent-2".into()];
     let mut output = Vec::new();
     print_response(&response, false, &mut output).unwrap();
     let text = String::from_utf8(output).unwrap();
-    assert!(text.contains("  background: true\n"));
+    assert!(text.contains("  background: true\n  background_tasks: bsi01ktyo, agent-2\n"));
     assert!(text.contains("is_suppressed: true"));
     assert!(text.ends_with(
         "Started.\nBackground work is still running. `yinz agent wait terminal_7 --until idle` returns its final answer.\n"
@@ -311,6 +318,12 @@ fn background_work_is_shown_with_how_to_get_its_answer() {
     print_response(&response, true, &mut json).unwrap();
     let decoded: AgentResponse = serde_json::from_slice(&json).unwrap();
     assert_eq!(decoded, response);
+    let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
+    assert_eq!(value["background_tasks"], json!(["bsi01ktyo", "agent-2"]));
+    assert_eq!(
+        value["agents"][0]["background_tasks"],
+        json!(["bsi01ktyo", "agent-2"])
+    );
 }
 
 #[test]

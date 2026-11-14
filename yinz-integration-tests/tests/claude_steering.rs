@@ -222,6 +222,7 @@ fn claude_steering_delivers_without_interrupting_and_publishes_background_activi
                 run: "run".into(),
                 prompt: "notification".into(),
                 row: "row".into(),
+                queued: false,
             }),
             ..Default::default()
         }),
@@ -462,6 +463,7 @@ impl NotificationIpc {
                     prompt: prompt.into(),
                     run: format!("run-{prompt}"),
                     row: format!("row-{prompt}"),
+                    queued: false,
                 }),
                 ..Default::default()
             }),
@@ -737,6 +739,56 @@ fn claude_steering_exact_cancellation_waits_for_its_answer_in_both_registry_orde
 #[test]
 fn claude_steering_supported_answers_preserve_other_work_in_both_registry_orders() {
     notification_disposition_over_ipc("answer");
+}
+
+/// A task that finishes mid-turn arrives as a queued notice for that turn, and a newest
+/// turn's empty `Stop` snapshot with an idle registry drains an unanswered launch. The
+/// notice is injected here; yinz-process's unit tests cover detecting the transcript row.
+#[test]
+fn claude_steering_queued_notice_and_drained_snapshot_settle_over_ipc() {
+    for path in ["queued", "drained"] {
+        let fixture = NotificationIpc::new();
+        fixture.submit("launch", None);
+        fixture.launch("bsi01ktyo", "tool");
+        let status = fixture.status();
+        assert!(status.agents[0].background);
+        assert_eq!(status.agents[0].background_tasks, ["bsi01ktyo"]);
+        if path == "queued" {
+            let mut notice = fixture.notice("launch", "bsi01ktyo", "tool");
+            if let Some(notice) = notice
+                .claude_notifications
+                .as_mut()
+                .and_then(|e| e.notice.as_mut())
+            {
+                notice.queued = true;
+            }
+            assert!(fixture.report(notice).agents[0].background);
+        } else {
+            let snapshot = fixture.native(serde_json::json!({"hook_event_name":"Stop",
+                "session_id":"conversation","prompt_id":"launch","background_tasks":[]}));
+            assert!(fixture.report(snapshot).agents[0].background);
+        }
+        let mut status = fixture.report(fixture.stop("launch", "DONE")).agents[0].clone();
+        if path == "drained" {
+            // The idle reading settles the drained launch only after its grace, so the
+            // screen must wake for it without another report. Otherwise only the wait's
+            // own deadline wakes the screen, and the reply arrives at that deadline.
+            let started = std::time::Instant::now();
+            let done = fixture.request(AgentRequest::Wait {
+                pane_id: fixture.pane,
+                expected_session_id: None,
+                until: AgentState::Idle,
+                timeout_ms: 30_000,
+            });
+            assert!(started.elapsed() < Duration::from_secs(25), "{path}");
+            assert_eq!(done.outcome, AgentOutcome::Ok);
+            assert_eq!(done.message.as_deref(), Some("DONE"));
+            status = done.agents[0].clone();
+        }
+        assert!(!status.background, "{path}");
+        assert!(status.background_tasks.is_empty(), "{path}");
+        assert_eq!(status.agent.state, AgentState::Idle, "{path}");
+    }
 }
 
 #[test]

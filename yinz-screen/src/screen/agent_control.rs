@@ -1,5 +1,7 @@
 mod handoff;
 mod notifications;
+#[cfg(test)]
+pub(in crate::screen) use notifications::DRAIN_GRACE_MS;
 mod permissions;
 // Agent control is serialized with state reports and terminal input on the screen thread.
 use super::Screen;
@@ -1529,6 +1531,10 @@ impl Screen {
                 || self.claude_steering(pane_id, &agent)
                 || self.claude_background_pending(pane_id)
         });
+        let lifecycle = self.agent_lifecycle.get(&pane_id).filter(|lifecycle| {
+            lifecycle.kind == agent.kind
+                && agent.session_id.as_ref() == Some(&lifecycle.conversation)
+        });
         Some(AgentStatus {
             pane_id,
             session: self.session_name.to_string(),
@@ -1550,11 +1556,10 @@ impl Screen {
             input_revision: Some(self.agent_input_revision(pane_id)),
             clear_draft_supported: prompt_supported
                 && self.draft_composer(pane_id, &agent.kind).is_some(),
-            background: self.agent_lifecycle.get(&pane_id).is_some_and(|lifecycle| {
-                lifecycle.kind == agent.kind
-                    && agent.session_id.as_ref() == Some(&lifecycle.conversation)
-                    && lifecycle.event_background()
-            }),
+            background: lifecycle.is_some_and(Lifecycle::event_background),
+            background_tasks: lifecycle
+                .map(|lifecycle| lifecycle.claude.obligations.unresolved_tasks())
+                .unwrap_or_default(),
             agent,
         })
     }
@@ -1645,6 +1650,7 @@ impl Screen {
             input_revision: Some(self.agent_input_revision(pane_id)),
             clear_draft_supported: false,
             background: false,
+            background_tasks: Vec::new(),
             readiness: self.agent_readiness(pane_id, &agent, info.is_held, info.exited),
             agent,
         })
@@ -3264,6 +3270,15 @@ impl Screen {
                     response.background = result.background;
                 }
             }
+            if response.background {
+                // Current identities, even for a retained result: they say what is still
+                // pending now, not what was pending when that turn ended.
+                response.background_tasks = response
+                    .agents
+                    .first()
+                    .map(|status| status.background_tasks.clone())
+                    .unwrap_or_default();
+            }
             if let Some(prompt) = &pending.prompt {
                 response.acknowledged = prompt.acknowledged();
                 response.turn_id = prompt.turn_id().map(str::to_owned);
@@ -4490,6 +4505,7 @@ impl Screen {
                     .map(|_| Duration::from_millis(10)),
             )
             .chain(self.agent_events.deadline())
+            .chain(self.claude_drain_deadline())
             .min()
     }
 

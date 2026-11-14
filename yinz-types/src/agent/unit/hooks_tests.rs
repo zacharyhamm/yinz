@@ -1508,14 +1508,24 @@ fn notification_identity_is_never_truncated_and_transfer_retains_remaining_budge
             remaining_ms: 900,
             settled: false,
             unavailable: false,
+            drained: Some("prompt".into()),
         }],
+        idle_prompt: Some("prompt".into()),
+        idle_grace_ms: 400,
         ..Default::default()
     };
+    assert_eq!(pending.unresolved_tasks(), ["task"]);
     pending.elapse(300);
+    assert_eq!(pending.idle_grace_ms, 100);
     let mut transferred: Pending =
         serde_json::from_str(&serde_json::to_string(&pending).unwrap()).unwrap();
     assert_eq!(transferred.launches[0].remaining_ms, 600);
+    assert_eq!(transferred.launches[0].drained.as_deref(), Some("prompt"));
+    assert_eq!(transferred.idle_prompt.as_deref(), Some("prompt"));
+    assert_eq!(transferred.idle_grace_ms, 100);
     transferred.elapse(600);
+    assert_eq!(transferred.idle_grace_ms, 0);
+    assert!(transferred.unresolved_tasks().is_empty());
     assert!(!transferred.active());
     assert!(!transferred.launches[0].settled);
     assert!(transferred.launches[0].unavailable);
@@ -1523,6 +1533,23 @@ fn notification_identity_is_never_truncated_and_transfer_retains_remaining_budge
         "parent":null, "turns":{}, "sequence":0, "message_sequence":0}))
     .unwrap();
     assert!(!old.obligations.active());
+    // Screens and reporters from before drained settlement and queued notices interoperate.
+    let old: Pending = serde_json::from_value(serde_json::json!({
+        "source":null, "notices":[{"task":"t","tool":"u","run":"r","prompt":"p","row":"w"}],
+        "answers":[], "disabled":false,
+        "launches":[{"launch":{"task":"t","tool":"u","prompt":"p","kind":"Bash"},
+            "answer_prompt":null,"remaining_ms":1,"settled":false,"unavailable":false}]}))
+    .unwrap();
+    assert!(old.launches[0].drained.is_none() && old.idle_prompt.is_none());
+    assert_eq!(old.idle_grace_ms, 0);
+    assert!(!old.notices[0].queued);
+    let notice = serde_json::to_value(&old.notices[0]).unwrap();
+    assert!(
+        notice.get("queued").is_none(),
+        "an ordinary notice keeps its old shape"
+    );
+    let old: Evidence = serde_json::from_value(serde_json::json!({"tasks":[]})).unwrap();
+    assert!(!old.snapshot);
 }
 
 #[test]

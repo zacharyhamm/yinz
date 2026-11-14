@@ -1,6 +1,24 @@
 """Read-only consistency diagnostics. These observations never authorize import."""
-
 import json
+
+
+def _pane_background(child):
+    """Whether the child or its latest response reports background work for its pane.
+
+    A timed-out wait carries Yinz's background flag only on the agent row, not in
+    the top-level fields the child copies into backgroundTasks.
+    """
+    if child.get("backgroundTasks") or child.get("phase") == "background":
+        return True
+    try:
+        response = json.loads(child.get("rawResponse") or "null")
+    except ValueError:
+        return False
+    if not isinstance(response, dict):
+        return False
+    rows = [response] + [agent for agent in response.get("agents") or []
+                         if isinstance(agent, dict) and agent.get("pane_id") == child.get("paneId")]
+    return any(row.get("background") or row.get("background_tasks") for row in rows)
 
 
 def diagnose(name, state, task, child, submission, runs):
@@ -28,9 +46,12 @@ def diagnose(name, state, task, child, submission, runs):
         ):
             report("evidence_identity_mismatch", "Accepted evidence belongs to a different assignment.",
                    "Inspect the original evidence slot and task digest; do not import or resubmit this receipt.")
-        elif child.get("backgroundTasks") or child.get("phase") == "background":
-            report("background_work", "Original worker still has unresolved background work.",
-                   "Observe the original conversation until correlated final idle completion; accepted evidence is insufficient.")
+        elif _pane_background(child):
+            action = "Observe the original conversation until correlated final idle completion; accepted evidence is insufficient."
+            if submission and submission.get("status") == "accepted":
+                action += (" If drive stops on a background stall for this accepted evidence, or the pane closed, the user may"
+                           f" explicitly authorize accept-submission with taskId {task.get('id')} and their actual request.")
+            report("background_work", "Original worker still has unresolved background work.", action)
         elif child.get("phase") == "completed" and child.get("outcome") == "completed":
             report("completion_unreconciled", "Child reports durable completion; lifecycle import still requires validation.", resume)
         elif submission and submission.get("status") == "accepted":

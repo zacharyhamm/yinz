@@ -4,6 +4,7 @@ import { nextStep } from "./handoff_next.ts";
 import { z } from "npm:zod@4.6.7";
 import {
   abortableSleep,
+  acceptedEvidence,
   AgentInputSchema,
   AgentTaskSchema,
   childState,
@@ -58,7 +59,12 @@ import {
   RecoveryBudget,
   type WorkerVerdict,
 } from "./worker_recovery.ts";
-import { AgentResponseSchema, ControlIdentitySchema } from "./yinz_agent.ts";
+import {
+  AgentResponseSchema,
+  ControlIdentitySchema,
+  reportedBackground,
+  unidentifiedBackground,
+} from "./yinz_agent.ts";
 
 const Settings = AgentInputSchema.omit({ role: true, request: true });
 const SettingsOverride = Settings.omit({
@@ -78,6 +84,26 @@ export const DriveInputSchema = z.object({
   }).strict().optional(),
 })
   .strip();
+/**
+ * Consecutive ordinary wait timeouts, with accepted evidence and only pane
+ * background work outstanding, before drive stops observing and hands off.
+ */
+export const BACKGROUND_STALL_TIMEOUTS = 2;
+const BackgroundStallSchema = z.object({
+  taskId: z.uuid(),
+  role: AgentTaskSchema.shape.role,
+  paneId: z.string().optional(),
+  backgroundTasks: z.array(z.string()),
+  commit: z.string().optional(),
+  rounds: z.number().int().positive(),
+  observedAt: z.iso.datetime(),
+  // The child observation the stall rests on; any later observation supersedes it.
+  child: z.object({
+    phase: z.enum(["waiting", "background"]),
+    outcome: z.string().optional(),
+    updatedAt: z.iso.datetime(),
+  }).strict(),
+}).strict();
 const AutomaticRevisionSchema = z.object({
   generation: z.string(),
   assignment: AgentTaskSchema,
@@ -97,6 +123,9 @@ export const DriverSchema = z.object({
     previousAssignmentId: z.uuid().optional(),
     recoveryId: z.uuid().optional(),
   }).strict().optional(),
+  // Accepted evidence whose pane kept reporting background work; repeated drive
+  // calls re-present this blocker instead of observing the same task again.
+  backgroundStall: BackgroundStallSchema.optional(),
 }).strict();
 export const HandoffSchema = z.object({
   id: z.uuid(),
@@ -510,6 +539,50 @@ function present(
   return lines.join("\n");
 }
 
+/** Facts about a correlated ordinary timeout, for logs and the background-stall bound. */
+async function timeoutDiagnosis(context: IssueAgentContext, task: Task) {
+  const child = await childState(context, task);
+  const { backgroundTasks, agentState } = reportedBackground(child);
+  // The same validation import applies: accepted, for this assignment and digest.
+  const receipt = await acceptedEvidence(context, task).catch(() => undefined);
+  return {
+    child,
+    phase: child.phase,
+    paneId: child.paneId,
+    agentState,
+    backgroundTasks,
+    receipt,
+    // A submitted prompt is required; a spawned pane has no turn to finish.
+    backgroundOnly: !!receipt &&
+      (child.phase === "background" ||
+        (child.phase === "waiting" && backgroundTasks.length > 0)),
+  };
+}
+
+function backgroundStallReason(stall: z.infer<typeof BackgroundStallSchema>) {
+  // A flag without IDs rests on Claude's session registry or an older Yinz build.
+  const work = stall.backgroundTasks.length === 0
+    ? "background work (no task IDs reported)"
+    : unidentifiedBackground(stall.backgroundTasks)
+    ? "background work without task IDs (Claude's session registry or an older Yinz build)"
+    : `background work [${stall.backgroundTasks.join(", ")}]`;
+  return [
+    `Pane task ${stall.taskId} (${stall.role}) has an accepted Swamp evidence submission${
+      stall.commit ? ` for commit ${stall.commit}` : ""
+    }, but pane ${
+      stall.paneId ?? "unknown"
+    } still reports ${work} after ${stall.rounds} consecutive ordinary wait timeouts.`,
+    // Yinz cannot tell a running foreground turn from a finished one that left
+    // background work, so say so unless the child observed that turn's answer.
+    ...(stall.child.phase === "background" ? [] : [
+      "Yinz has not confirmed that the foreground turn ended; check that the pane is idle at its prompt before authorizing.",
+    ]),
+    "drive will not wait on this task again or launch another worker.",
+    `With the user's explicit authorization, import the accepted evidence without waiting on, prompting or closing the pane: accept-submission {taskId: "${stall.taskId}", request: "<the user's actual authorization>"}.`,
+    "To observe the pane again instead, run resume-agent.",
+  ].join(" ");
+}
+
 async function workerBlocker(
   context: IssueAgentContext,
   task: Task,
@@ -574,6 +647,7 @@ async function settle(
   handles: Handle[],
   expected: Task,
   first: () => Promise<{ dataHandles: Handle[] }>,
+  onTimeout: (task: Task) => Promise<{ dataHandles: Handle[] } | undefined>,
 ) {
   let attempt = first;
   while (true) {
@@ -608,6 +682,10 @@ async function settle(
         : undefined;
       if (verdict.kind !== "retry" || !grant?.allowed) {
         throw await workerBlocker(context, task, error, verdict, grant);
+      }
+      if (verdict.class === "long_wait") {
+        const stalled = await onTimeout(task);
+        if (stalled) return stalled;
       }
       context.logger.info(
         "Automatic recovery of original task {task} ({class} attempt {attempt}/{limit}, {elapsed}s elapsed): {reason}; waiting {delay} ms; no prompt is resent and no pane is spawned",
@@ -742,6 +820,7 @@ async function drive(
     decision: Handoff["decision"],
     reason: string,
     extra: Pick<Handoff, "requirementsChange"> = {},
+    reusable = decision !== "blocked",
   ) {
     const state = await loadState(context);
     const assignment = await task();
@@ -766,7 +845,7 @@ async function drive(
       : undefined;
     let result: Handoff;
     if (
-      decision !== "blocked" && cached?.status === "current" &&
+      reusable && cached?.status === "current" &&
       cached.decision === decision && cached.reason === reason &&
       JSON.stringify(cached.state) === JSON.stringify(state) &&
       cached.assignment?.id === assignment?.id &&
@@ -816,6 +895,61 @@ async function drive(
         ...new Map(handles.map((handle) => [handle.name, handle])).values(),
       ],
     };
+  }
+
+  // Ordinary timeouts observed by this invocation for the current task.
+  let timeouts:
+    | { taskId: string; rounds: number; stalled: number }
+    | undefined;
+  /** Log why observation continues; stop after a bounded background-only stall. */
+  async function ordinaryTimeoutHandoff(assignment: Task) {
+    const progress = timeouts?.taskId === assignment.id
+      ? timeouts
+      : { taskId: assignment.id, rounds: 0, stalled: 0 };
+    const diagnosis = await timeoutDiagnosis(context, assignment);
+    progress.rounds++;
+    progress.stalled = diagnosis.backgroundOnly ? progress.stalled + 1 : 0;
+    timeouts = progress;
+    const stalled = progress.stalled >= BACKGROUND_STALL_TIMEOUTS;
+    context.logger.info(
+      `${
+        stalled ? "Stopped observing" : "Continuing original"
+      } pane task {task} after ordinary wait timeout {rounds}: phase {phase}, agent state {agentState}, background tasks {backgroundTasks}, submission accepted {submissionAccepted}`,
+      {
+        task: assignment.id,
+        role: assignment.role,
+        rounds: progress.rounds,
+        stalledRounds: progress.stalled,
+        phase: diagnosis.phase,
+        agentState: diagnosis.agentState ?? "unknown",
+        backgroundTasks: diagnosis.backgroundTasks,
+        submissionAccepted: !!diagnosis.receipt,
+      },
+    );
+    if (!stalled) return undefined;
+    const evidence = diagnosis.receipt!.payload;
+    const stall = {
+      taskId: assignment.id,
+      role: assignment.role,
+      ...(diagnosis.paneId ? { paneId: diagnosis.paneId } : {}),
+      backgroundTasks: diagnosis.backgroundTasks,
+      ...(evidence.role === "implement" ||
+          evidence.role === "implement_review_fixes"
+        ? { commit: evidence.evidence.commit }
+        : {}),
+      rounds: progress.stalled,
+      observedAt: dependencies.now(),
+      child: {
+        phase: diagnosis.phase as "waiting" | "background",
+        ...(diagnosis.child.outcome
+          ? { outcome: diagnosis.child.outcome }
+          : {}),
+        updatedAt: diagnosis.child.updatedAt,
+      },
+    };
+    driver = { ...driver, backgroundStall: stall };
+    handles.push(await context.writeResource("driver", "driver", driver));
+    return await handoff("blocked", backgroundStallReason(stall), {}, true);
   }
 
   try {
@@ -987,6 +1121,34 @@ async function drive(
     while (true) {
       context.signal.throwIfAborted();
       const assignment = await task();
+      const stall = driver.backgroundStall;
+      if (stall) {
+        // Re-present the bounded stall only while nothing has observed the child
+        // since; a later resume-agent outcome supersedes it.
+        const child = stall.taskId === assignment?.id &&
+            assignment.status === "running" && !assignment.acceptance
+          ? await childState(context, assignment).catch(() => undefined)
+          : undefined;
+        if (
+          assignment && child && child.phase === stall.child.phase &&
+          child.outcome === stall.child.outcome &&
+          child.updatedAt === stall.child.updatedAt &&
+          await acceptedEvidence(context, assignment).then(
+            () => true,
+            () => false,
+          )
+        ) {
+          return await handoff(
+            "blocked",
+            backgroundStallReason(stall),
+            {},
+            true,
+          );
+        }
+        const { backgroundStall: _superseded, ...rest } = driver;
+        driver = rest;
+        handles.push(await context.writeResource("driver", "driver", driver));
+      }
       if (
         assignment &&
         ((assignment.status === "completed" &&
@@ -995,14 +1157,16 @@ async function drive(
       ) {
         driver = { ...driver, assignmentId: assignment.id };
         handles.push(await context.writeResource("driver", "driver", driver));
-        await settle(
+        const stalled = await settle(
           context,
           dependencies,
           budget,
           handles,
           assignment,
           () => resumeTask(context, dependencies),
+          ordinaryTimeoutHandoff,
         );
+        if (stalled) return stalled;
         continue;
       }
 
@@ -1387,14 +1551,16 @@ async function drive(
       }
       driver = { ...driver, assignmentId: next.id };
       handles.push(await context.writeResource("driver", "driver", driver));
-      await settle(
+      const stalled = await settle(
         context,
         dependencies,
         budget,
         handles,
         next,
         () => runTask(context, next, dependencies),
+        ordinaryTimeoutHandoff,
       );
+      if (stalled) return stalled;
     }
   } catch (error) {
     context.signal.throwIfAborted();

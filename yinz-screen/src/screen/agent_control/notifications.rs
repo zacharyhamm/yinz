@@ -1,14 +1,47 @@
-//! Pane-owned positive obligations. Registry inactivity never settles an identified launch.
+//! Pane-owned positive obligations. Registry inactivity alone never settles an identified
+//! launch: an idle registry cannot say whether Claude still owes that task's notification.
+//! A launch settles through its correlated answer, or through per-task positive evidence
+//! from Claude paired with idleness. When the newest turn's native root `Stop` snapshot no
+//! longer lists the task as in flight, the obligation is drained. It settles once the
+//! registry has read idle after that same turn and that turn has stayed the newest for
+//! [`DRAIN_GRACE_MS`]. Claude computes registry presence independently of its notification
+//! queue, so one idle reading can precede the turn of a notification it still owes; that
+//! turn's submit within the grace supersedes the drain. A snapshot that lists the task
+//! again also supersedes it. Settling this way records no answer.
 use super::*;
 use yinz_types::agent::claude_notifications::{
     Answer, Evidence, Obligation, Pending, TaskKind, MAX_FACTS,
 };
+
+/// How long a drained obligation's turn must stay the newest after an idle registry
+/// reading. Claude writes the registry from an asynchronous effect and may defer admitting
+/// a queued notification, whose submit hook then arrives through a separate reporter.
+pub(in crate::screen) const DRAIN_GRACE_MS: u64 = 3_000;
+
+/// Facts about the hook's turn that only the lifecycle knows.
+struct TurnFacts<'a> {
+    /// The newest turn the screen has accepted for this lifecycle.
+    newest: Option<&'a str>,
+    /// The registry read idle after the hook's turn ended.
+    idle: bool,
+}
+
+/// The newest turn the screen has accepted for this lifecycle.
+fn newest_claude_prompt(lifecycle: &Lifecycle) -> Option<String> {
+    lifecycle
+        .claude
+        .turns
+        .iter()
+        .find(|(_, turn)| turn.sequence == lifecycle.claude.sequence)
+        .map(|(prompt, _)| prompt.clone())
+}
 
 fn ingest(
     pending: &mut Pending,
     evidence: &Evidence,
     hook: &HookEvent,
     answer: Option<Answer>,
+    turn: TurnFacts,
 ) -> Option<Answer> {
     let evidence = evidence.bounded();
     let source = evidence.source.as_ref()?;
@@ -34,6 +67,7 @@ fn ingest(
                 remaining_ms: MAX_TIMEOUT_MS,
                 settled: false,
                 unavailable: false,
+                drained: None,
             });
         }
     }
@@ -159,7 +193,76 @@ fn ingest(
             }
         }
     }
+    drain(pending, &evidence, hook, turn);
     final_answer
+}
+
+/// Apply a newest-turn `Stop` snapshot and registry idleness after answers, so an
+/// answer that is available still settles its obligation and is published.
+fn drain(pending: &mut Pending, evidence: &Evidence, hook: &HookEvent, turn: TurnFacts) {
+    if let Some(prompt) = turn
+        .newest
+        .filter(|newest| hook.prompt_id.as_deref() == Some(*newest))
+    {
+        if hook.hook_event_name == "Stop"
+            && hook.claude_turn_complete.is_none()
+            && evidence.snapshot
+            && !evidence.unavailable
+        {
+            for obligation in &mut pending.launches {
+                if !obligation.settled && !obligation.unavailable {
+                    obligation.drained = (!evidence
+                        .tasks
+                        .iter()
+                        .any(|task| task.id == obligation.launch.task))
+                    .then(|| prompt.to_owned());
+                }
+            }
+        }
+        if turn.idle && pending.idle_prompt.as_deref() != Some(prompt) {
+            pending.idle_prompt = Some(prompt.to_owned());
+            pending.idle_grace_ms = DRAIN_GRACE_MS;
+        }
+    }
+    settle_drained(pending, turn.newest);
+}
+
+/// Settle obligations drained by the turn whose idle reading has outlasted the grace.
+/// A newer turn makes that reading stale before anything settles.
+fn settle_drained(pending: &mut Pending, newest: Option<&str>) {
+    let Some(idle) = pending.idle_prompt.as_ref() else {
+        return;
+    };
+    if newest != Some(idle.as_str()) {
+        pending.idle_prompt = None;
+        pending.idle_grace_ms = 0;
+        return;
+    }
+    if pending.idle_grace_ms > 0 {
+        return;
+    }
+    for obligation in &mut pending.launches {
+        if !obligation.settled
+            && !obligation.unavailable
+            && obligation.drained.as_ref() == Some(idle)
+        {
+            log::debug!(
+                "Claude background task drained task={:?} prompt={idle:?}",
+                obligation.launch.task
+            );
+            obligation.settled = true;
+        }
+    }
+}
+
+/// Time left before a drained obligation's grace may settle it, while one is waiting.
+fn drain_wait(pending: &Pending) -> Option<u64> {
+    let idle = pending.idle_prompt.as_ref()?;
+    pending
+        .launches
+        .iter()
+        .any(|o| !o.settled && !o.unavailable && o.drained.as_ref() == Some(idle))
+        .then_some(pending.idle_grace_ms)
 }
 
 fn answer_needed(pending: &Pending, prompt: &str) -> bool {
@@ -428,8 +531,19 @@ impl Screen {
             )
             .collect();
         let was_disabled = lifecycle.claude.obligations.disabled;
-        if let Some(answer) = ingest(&mut lifecycle.claude.obligations, evidence, hook, answer)
-            && answer.sequence >= lifecycle.claude.message_sequence
+        let newest = newest_claude_prompt(lifecycle);
+        let turn = TurnFacts {
+            newest: newest.as_deref(),
+            idle: (confirmed_answer && hook.claude_background == Some(false))
+                || hook.hook_event_name == yinz_types::agent::CLAUDE_BACKGROUND_IDLE,
+        };
+        if let Some(answer) = ingest(
+            &mut lifecycle.claude.obligations,
+            evidence,
+            hook,
+            answer,
+            turn,
+        ) && answer.sequence >= lifecycle.claude.message_sequence
         {
             lifecycle.claude.message_sequence = answer.sequence;
             lifecycle.last_message = answer.text;
@@ -494,6 +608,11 @@ impl Screen {
                 permission.elapse(elapsed);
             }
             lifecycle.claude.obligations.elapse(elapsed);
+            // This runs before every screen instruction; scan turns only while a drain waits.
+            if lifecycle.claude.obligations.idle_prompt.is_some() {
+                let newest = newest_claude_prompt(lifecycle);
+                settle_drained(&mut lifecycle.claude.obligations, newest.as_deref());
+            }
             release_unavailable_notifications(lifecycle);
             if (permission_active
                 && !lifecycle
@@ -510,6 +629,21 @@ impl Screen {
         for pane in changed {
             self.publish_claude_observation_activity(pane);
         }
+    }
+
+    /// When the screen must wake to settle a drained obligation whose grace is running.
+    pub(in crate::screen) fn claude_drain_deadline(&self) -> Option<Duration> {
+        let now = Instant::now();
+        self.agent_lifecycle
+            .values()
+            .filter_map(|lifecycle| {
+                let remaining = drain_wait(&lifecycle.claude.obligations)?;
+                Some(
+                    (lifecycle.notification_tick + Duration::from_millis(remaining))
+                        .saturating_duration_since(now),
+                )
+            })
+            .min()
     }
 
     fn publish_claude_observation_activity(&mut self, pane: PaneId) {

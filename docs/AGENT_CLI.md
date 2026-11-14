@@ -715,7 +715,14 @@ stays `waiting` until all worker waits clear. Claude then shows `busy` while its
 parent turn or task-notification processing is active, or while Claude's session
 registry reports background agents, workflows or Bash still running after a
 confirmed turn. Prompt replies and status set `background: true` for registry work
-or identified notification obligations.
+or identified notification obligations. Each `agents[i]` status also lists the IDs
+of identified tasks still pending in `background_tasks`; the list is empty when none
+are pending, including when `background` rests only on the registry. That status list
+is the current, authoritative one. A reply's top-level `background_tasks` copies it
+only when the reply itself sets `background: true`, and is omitted otherwise, so a
+prompt reply whose turn ended with the registry idle can omit it while identified
+tasks remain pending. Text output prints the IDs on a `background_tasks:` line.
+Older servers omit both fields.
 
 Local interactive Claude also reports permission `waiting` from its guarded session
 registry when `status=waiting` and `waitingFor=permission prompt`, before Claude's
@@ -743,9 +750,26 @@ before the launching hook returns. They stay pending across registry idle, short
 work completed before the first status read, newer false confirmations, and delayed
 notification journals. A structural root task/tool/run identity binds the obligation
 to its notification prompt; that prompt's correlated confirmed answer releases it.
+When a task finishes while a turn is running, Claude can fold its notification into
+that turn as a queued `task-notification` attachment instead of starting a new turn.
+The observer accepts only an attachment that descends from the observed turn and
+holds exactly one envelope with a task and tool-use ID. The obligation then binds to
+that turn, and the turn's own confirmed answer releases it. Monitor events carry no
+tool-use ID and are not matched.
 The final relevant answer is published before an idle wait returns. The launching
 submission retains its own result and text independently. Exact successful local
 Bash `TaskStop` instead waits for the cancelling prompt's confirmed answer.
+
+Claude's native root `Stop` hook lists the background work still in flight in
+`background_tasks`. When that list, for the newest turn Yinz has accepted, omits an
+identified task, the obligation is drained. It settles once Claude's registry has
+read idle after that same turn (the turn's confirmation sampled idle, or its
+background watch later reported idle) and that turn has stayed the newest for three
+seconds. Claude computes registry presence independently of its notification queue
+and may defer admitting a queued notification, so one idle reading can precede the
+turn of a notification it still owes. That turn's submit within the grace cancels
+the drain, as does a later snapshot that lists the task again. Settling this way
+records no answer, so an idle wait returns the last confirmed turn's text.
 
 This guarantee covers root-owned launches answered by root task notifications.
 Sidechain-owned work, unattributed resumed passes, anonymous hook-declined wakes,
@@ -753,8 +777,9 @@ gated GetTask/tool-result delivery, remote/served shells and other unvalidated
 shapes retain registry/hook fallback. Missing hooks, failed observation, capacity
 limits, process replacement and the 24-hour operational observation budget also
 degrade to that fallback; expiry never proves task completion. Pane transfer
-preserves the remaining budget and dependent identities. No idle debounce or
-empty task snapshot settles an identified obligation. Older Claude versions or
+preserves the remaining budget and dependent identities. Neither an idle debounce
+nor an empty task snapshot alone settles an identified obligation, and a snapshot
+from a worker, another process or an older turn never does. Older Claude versions or
 unreadable registries retain available hooks and supported positive evidence.
 A newer local provider's native startup/resume adopts its process identity even
 when the conversation ID stays the same and no new background task launches.

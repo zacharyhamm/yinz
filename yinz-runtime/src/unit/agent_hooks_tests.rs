@@ -1103,3 +1103,56 @@ fn claude_cancellation_requires_exact_successful_local_result_and_snapshots_are_
         1
     );
 }
+
+#[test]
+fn claude_stop_snapshot_distinguishes_empty_from_missing_or_malformed() {
+    let stop = |patch: serde_json::Value| {
+        let mut raw = json!({"hook_event_name":"Stop", "session_id":"conversation",
+            "prompt_id":"prompt"});
+        raw.as_object_mut()
+            .unwrap()
+            .extend(patch.as_object().unwrap().clone());
+        parse_hook_event("claude", raw.to_string())
+            .unwrap()
+            .0
+            .claude_notifications
+    };
+    // Empty is Claude's positive "nothing in flight" answer, not missing evidence.
+    let empty = stop(json!({"background_tasks":[]})).unwrap();
+    assert!(empty.snapshot && empty.tasks.is_empty() && !empty.unavailable);
+    let listed = stop(json!({"background_tasks":[
+        {"id":"bsi01ktyo", "type":"local_bash", "status":"running"}]}))
+    .unwrap();
+    assert!(listed.snapshot);
+    assert_eq!(listed.tasks[0].id, "bsi01ktyo");
+    // Survives the reporter's serialization into the screen's hook.
+    let (_, json) = parse_hook_event(
+        "claude",
+        json!({"hook_event_name":"Stop", "session_id":"conversation", "background_tasks":[]})
+            .to_string(),
+    )
+    .unwrap();
+    let event: HookEvent = serde_json::from_str(&json).unwrap();
+    assert!(event.claude_notifications.unwrap().snapshot);
+    assert!(stop(json!({})).is_none_or(|e| !e.snapshot));
+    for malformed in [
+        json!({"background_tasks":[{"id":"task", "type":"local_bash"}]}),
+        json!({"background_tasks":[{"id":"bad id", "type":"local_bash", "status":"running"}]}),
+        json!({"background_tasks":(0..=yinz_types::agent::claude_notifications::MAX_FACTS)
+            .map(|i| json!({"id":format!("t{i}"), "type":"local_bash", "status":"running"}))
+            .collect::<Vec<_>>()}),
+    ] {
+        let evidence = stop(malformed).unwrap();
+        assert!(evidence.unavailable && !evidence.snapshot);
+    }
+    // Worker and served Stops never describe the root session's in-flight list.
+    assert!(stop(json!({"agent_id":"worker", "background_tasks":[]})).is_none());
+    assert!(stop(json!({"session_id":"served:x", "background_tasks":[]})).is_none());
+    let mut native = json!({"hook_event_name":"PostToolUse", "background_tasks":[]});
+    native["session_id"] = "conversation".into();
+    assert!(parse_hook_event("claude", native.to_string())
+        .unwrap()
+        .0
+        .claude_notifications
+        .is_none_or(|e| !e.snapshot));
+}

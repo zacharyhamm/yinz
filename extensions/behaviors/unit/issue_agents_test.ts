@@ -4241,45 +4241,58 @@ Deno.test("driver resumes a lost prompt response from the submitting phase on it
 });
 
 Deno.test("driver keeps observing background work while unconsumed input is reported", async () => {
-  const h = harness();
-  h.controls.evidenceForRole = driverEvidence;
-  const cli: string[][] = [];
-  let backgroundWaits = 0;
-  let prompted = false;
-  h.controls.agentRunner = (args) => {
-    cli.push(args);
-    const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
-    if (args[3] === "spawn") {
-      return reply({
-        outcome: "ok",
-        spawned: { pane_id: "terminal_7", cwd: task.config.cwd },
-      });
-    }
-    if (args.includes("--until")) {
-      if (task.role === "triage" && prompted) {
-        backgroundWaits++;
-        if (backgroundWaits <= 2) {
-          return reply({ outcome: "timed_out", agents: [busyAgent(task)] });
-        }
+  for (const timeoutRounds of [1, 2]) {
+    const h = harness();
+    h.controls.evidenceForRole = driverEvidence;
+    const cli: string[][] = [];
+    let backgroundWaits = 0;
+    let prompted = false;
+    h.controls.agentRunner = (args) => {
+      cli.push(args);
+      const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+      if (args[3] === "spawn") {
+        return reply({
+          outcome: "ok",
+          spawned: { pane_id: "terminal_7", cwd: task.config.cwd },
+        });
       }
-      return reply({ outcome: "ok", agents: [idleAgent(task)] });
+      if (args.includes("--until")) {
+        if (task.role === "triage" && prompted) {
+          backgroundWaits++;
+          if (backgroundWaits <= timeoutRounds) {
+            return reply({ outcome: "timed_out", agents: [busyAgent(task)] });
+          }
+        }
+        return reply({ outcome: "ok", agents: [idleAgent(task)] });
+      }
+      prompted = true;
+      return reply({
+        outcome: "completed",
+        submission_id: "submission-1",
+        acknowledged: true,
+        prompt_delivery: "started",
+        agents: [idleAgent(task)],
+        ...(task.role === "triage" ? { background_tasks: ["worker"] } : {}),
+      });
+    };
+    await h.drive.execute({ agent: options }, h.context);
+    if (timeoutRounds === 2) {
+      equal(result(h).decision, "blocked");
+      equal(
+        DriverSchema.parse(h.resources.get("driver")).backgroundStall?.child
+          .phase,
+        "background",
+      );
+      assert(!result(h).reason.includes("Yinz has not confirmed"));
+      await h.methods.resume_agent.execute({}, h.context);
+      await h.drive.execute({}, h.context);
     }
-    prompted = true;
-    return reply({
-      outcome: "completed",
-      submission_id: "submission-1",
-      acknowledged: true,
-      prompt_delivery: "started",
-      agents: [idleAgent(task)],
-      ...(task.role === "triage" ? { background_tasks: ["worker"] } : {}),
-    });
-  };
-  await h.drive.execute({ agent: options }, h.context);
-  equal(result(h).decision, "approve_plan");
-  equal(backgroundWaits, 3);
-  equal(h.controls.sleeps, []);
-  equal(cli.filter((args) => args[3] === "spawn").length, 3);
-  equal(cli.filter((args) => args[3] === "prompt").length, 3);
+    equal(result(h).decision, "approve_plan");
+    equal(backgroundWaits, timeoutRounds + 1);
+    equal(h.controls.sleeps, []);
+    equal(cli.filter((args) => args[3] === "spawn").length, 3);
+    equal(cli.filter((args) => args[3] === "prompt").length, 3);
+  }
 });
 
 Deno.test("driver bounds long waits by the drive deadline", async () => {
@@ -7599,4 +7612,541 @@ Deno.test("legacy continuation text is unchanged; contract-3 continuation uses t
   );
   assert(publishedBeforeContinue, "assignment files published before continue");
   equal(helper.status, "completed");
+});
+
+/** A pane whose submission stalls on ordinary timeouts while other roles complete. */
+function stallHarness(
+  initial: LifecycleState,
+  plan: {
+    role: string;
+    background: string[] | "flag" | "none";
+    submitAt: "prompt" | number;
+    completeAt?: number;
+    // Observations (0 for the prompt) that report background work; default all.
+    backgroundAt?: number[];
+  },
+) {
+  const h = harness(initial);
+  h.controls.evidenceForRole = driverEvidence;
+  h.controls.submitEvidence = false;
+  const cli: string[][] = [];
+  const logs: { message: string; values: Record<string, unknown> }[] = [];
+  h.context.logger = {
+    info: (message, values) => logs.push({ message, values }),
+  };
+  let waits = 0;
+  h.controls.agentRunner = async (args) => {
+    cli.push(args);
+    const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    const agent = {
+      pane_id: "terminal_7",
+      session: options.session,
+      agent: { kind: "claude", session_id: "conversation-1", state: "idle" },
+      cwd: task.config.cwd,
+      ready: true,
+      status_available: true,
+      prompt_supported: true,
+    };
+    const completed = {
+      outcome: "completed",
+      submission_id: "submission-1",
+      acknowledged: true,
+      agents: [agent],
+      message: "Finished",
+    };
+    let value: Record<string, unknown>;
+    if (args[3] === "spawn") {
+      value = {
+        outcome: "ok",
+        spawned: { pane_id: "terminal_7", cwd: task.config.cwd },
+      };
+    } else if (args.includes("--until") && !args.includes("--submission")) {
+      value = { outcome: "ok", agents: [agent] };
+    } else if (task.role !== plan.role) {
+      if (args[3] === "prompt") await h.submitEvidence();
+      value = completed;
+    } else {
+      const wait = args[3] === "prompt" ? 0 : ++waits;
+      if (plan.submitAt === (wait === 0 ? "prompt" : wait)) {
+        await h.submitEvidence();
+      }
+      const background = plan.background === "none" ||
+          plan.backgroundAt?.includes(wait) === false
+        ? {}
+        : plan.background === "flag"
+        ? { background: true }
+        : { background: true, background_tasks: plan.background };
+      // Yinz reports background work on a timed-out wait only on the agent row.
+      value = wait > 0 && wait === plan.completeAt ? completed : {
+        outcome: "timed_out",
+        submission_id: "submission-1",
+        acknowledged: true,
+        agents: [{
+          ...agent,
+          agent: { ...agent.agent, state: "Busy" },
+          not_ready_reason: "unresolved_turn",
+          ...background,
+        }],
+      };
+    }
+    return { code: 0, stdout: JSON.stringify(value), stderr: "" };
+  };
+  const timeoutLogs = () =>
+    logs.filter((entry) => entry.message.includes("ordinary wait timeout"));
+  return { ...h, cli, logs, timeoutLogs, waits: () => waits };
+}
+
+Deno.test("driver hands off accepted evidence once the pane reports only background work for bounded timeouts", async () => {
+  for (
+    const [background, shown] of [
+      [["bsi01ktyo"], "background work [bsi01ktyo]"],
+      [
+        "flag",
+        "background work without task IDs (Claude's session registry or an older Yinz build)",
+      ],
+    ] as const
+  ) {
+    const h = stallHarness(implementing(), {
+      role: "implement",
+      background: typeof background === "string" ? background : [
+        ...background,
+      ],
+      submitAt: "prompt",
+    });
+    await h.drive.execute({ agent: options }, h.context);
+    const handoff = result(h);
+    equal(handoff.decision, "blocked");
+    const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    equal(task.status, "running");
+    equal(
+      handoff.reason,
+      `Pane task ${task.id} (implement) has an accepted Swamp evidence submission for commit ${head}, but pane terminal_7 still reports ${shown} after 2 consecutive ordinary wait timeouts. Yinz has not confirmed that the foreground turn ended; check that the pane is idle at its prompt before authorizing. drive will not wait on this task again or launch another worker. With the user's explicit authorization, import the accepted evidence without waiting on, prompting or closing the pane: accept-submission {taskId: "${task.id}", request: "<the user's actual authorization>"}. To observe the pane again instead, run resume-agent.`,
+    );
+    // The prompt timed out once, then one further observation timed out.
+    equal(h.waits(), 1);
+    const logs = h.timeoutLogs();
+    equal(logs.length, 2);
+    assert(logs[0].message.startsWith("Continuing original pane task"));
+    assert(logs[1].message.startsWith("Stopped observing pane task"));
+    equal(
+      logs.map((entry) => entry.values),
+      [1, 2].map((round) => ({
+        task: task.id,
+        role: "implement",
+        rounds: round,
+        stalledRounds: round,
+        phase: "waiting",
+        agentState: "Busy",
+        backgroundTasks: typeof background === "string"
+          ? ["background"]
+          : background,
+        submissionAccepted: true,
+      })),
+    );
+    const stall = DriverSchema.parse(h.resources.get("driver")).backgroundStall;
+    equal(stall?.taskId, task.id);
+    equal(stall?.commit, head);
+    // Repeated drive calls re-present the same handoff without observing,
+    // prompting or launching anything.
+    const cli = h.cli.length;
+    for (let i = 0; i < 2; i++) {
+      await h.drive.execute({}, h.context);
+      equal(result(h), handoff);
+    }
+    equal(h.cli.length, cli);
+    equal(h.calls.length, 2);
+    equal(dispatchedRoles(h), ["implement"]);
+  }
+});
+
+Deno.test("driver keeps observing timeouts when evidence is unaccepted or the pane reports no background work", async () => {
+  for (
+    const plan of [
+      { background: ["job-1"], submitAt: 3, completeAt: 4 },
+      { background: "none", submitAt: "prompt", completeAt: 4 },
+    ] as const
+  ) {
+    const h = stallHarness(createState(issue), {
+      role: "triage",
+      background: typeof plan.background === "string" ? plan.background : [
+        ...plan.background,
+      ],
+      submitAt: plan.submitAt,
+      completeAt: plan.completeAt,
+    });
+    await h.drive.execute({ agent: options }, h.context);
+    equal(result(h).decision, "approve_plan");
+    equal(dispatchedRoles(h), ["triage", "plan", "review_plan"]);
+    equal(h.waits(), 4);
+    const logs = h.timeoutLogs();
+    equal(logs.length, 4);
+    assert(
+      logs.every((entry) =>
+        entry.message.startsWith("Continuing original pane task")
+      ),
+    );
+    // A single accepted background-only round stays below the bound.
+    equal(
+      logs.map((entry) => entry.values.stalledRounds),
+      plan.submitAt === "prompt" ? [0, 0, 0, 0] : [0, 0, 0, 1],
+    );
+    equal(
+      logs.map((entry) => entry.values.submissionAccepted),
+      plan.submitAt === "prompt"
+        ? [true, true, true, true]
+        : [false, false, false, true],
+    );
+    equal(
+      DriverSchema.parse(h.resources.get("driver")).backgroundStall,
+      undefined,
+    );
+  }
+});
+
+Deno.test("driver counts only consecutive background-only timeouts toward the stall bound", async () => {
+  const h = stallHarness(createState(issue), {
+    role: "triage",
+    background: ["job-1"],
+    submitAt: "prompt",
+    backgroundAt: [0, 2],
+    completeAt: 3,
+  });
+  await h.drive.execute({ agent: options }, h.context);
+  equal(result(h).decision, "approve_plan");
+  equal(dispatchedRoles(h), ["triage", "plan", "review_plan"]);
+  equal(
+    h.timeoutLogs().map((entry) => entry.values.stalledRounds),
+    [1, 0, 1],
+  );
+  equal(
+    DriverSchema.parse(h.resources.get("driver")).backgroundStall,
+    undefined,
+  );
+});
+
+Deno.test("a later resume-agent observation supersedes a recorded background stall", async () => {
+  for (const importFails of [false, true]) {
+    const plan: Parameters<typeof stallHarness>[1] = {
+      role: "implement",
+      background: ["bsi01ktyo"],
+      submitAt: "prompt",
+    };
+    const h = stallHarness(implementing(), plan);
+    await h.drive.execute({ agent: options }, h.context);
+    equal(result(h).decision, "blocked");
+    const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    // The pane finishes; resume-agent observes its completion.
+    plan.completeAt = h.waits() + 1;
+    if (importFails) {
+      // Import refuses a dirty worktree, leaving the completed child unimported.
+      h.controls.repo.clean = false;
+      await rejects(
+        () => h.methods.resume_agent.execute({}, h.context),
+        "clean issue branch's current commit",
+      );
+      equal(
+        AgentTaskSchema.parse(h.resources.get("agent-task")).status,
+        "running",
+      );
+      h.controls.repo.clean = true;
+    } else {
+      await h.methods.resume_agent.execute({}, h.context);
+      equal(
+        AgentTaskSchema.parse(h.resources.get("agent-task")).status,
+        "completed",
+      );
+    }
+    const waits = h.waits();
+    // drive imports or moves past the task instead of re-presenting the stall.
+    await h.drive.execute({}, h.context);
+    equal(result(h).decision, "authorize_merge");
+    equal(dispatchedRoles(h), ["implement", "review_code", "review_ux"]);
+    equal(h.waits(), waits);
+    equal(
+      DriverSchema.parse(h.resources.get("driver")).backgroundStall,
+      undefined,
+    );
+    const archived = h.writes.filter((write) =>
+      write.spec === "agent-task" && write.value.id === task.id
+    ).at(-1)?.value;
+    equal(archived?.status, "completed");
+    equal(archived?.acceptance, undefined);
+  }
+});
+
+Deno.test("accept-submission refuses a waiting pane without drive's recorded background stall", async () => {
+  const h = stallHarness(implementing(), {
+    role: "implement",
+    background: ["bsi01ktyo"],
+    submitAt: "prompt",
+  });
+  await h.drive.execute({ agent: options }, h.context);
+  equal(result(h).decision, "blocked");
+  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  // Without the stall a waiting pane may still be running its foreground turn.
+  const { backgroundStall: stall, ...driver } = DriverSchema.parse(
+    h.resources.get("driver"),
+  );
+  // A stall that a later child observation superseded is no longer drive's handoff.
+  for (
+    const recorded of [
+      driver,
+      {
+        ...driver,
+        backgroundStall: {
+          ...stall!,
+          child: { ...stall!.child, updatedAt: "2026-11-03T11:00:00.000Z" },
+        },
+      },
+    ]
+  ) {
+    h.resources.set("driver", recorded);
+    await rejects(
+      () =>
+        h.methods.accept_submission.execute({
+          taskId: task.id,
+          request: "Accept the submitted implementation",
+        }, h.context),
+      "background stall handoff",
+    );
+    equal(AgentTaskSchema.parse(h.resources.get("agent-task")), task);
+  }
+});
+
+Deno.test("accept-submission imports stalled accepted implementation evidence through the ordinary import without touching the pane", async () => {
+  const h = stallHarness(implementing(), {
+    role: "implement",
+    background: ["bsi01ktyo"],
+    submitAt: "prompt",
+  });
+  await h.drive.execute({ agent: options }, h.context);
+  equal(result(h).decision, "blocked");
+  const before = await loadState(h.context);
+  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const cli = h.cli.length;
+  const request = "Accept the submitted implementation; the pane is stuck";
+  await h.methods.accept_submission.execute(
+    h.methods.accept_submission.arguments.parse({
+      taskId: task.id,
+      request,
+      workspace: "default",
+      itemId: 85,
+    }),
+    h.context,
+  );
+  const accepted = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  equal(accepted.status, "completed");
+  equal(accepted.cleanup, undefined);
+  equal(accepted.acceptance?.request, request);
+  equal(accepted.acceptance?.childPhase, "waiting");
+  equal(accepted.acceptance?.backgroundTasks, ["bsi01ktyo"]);
+  assert(
+    accepted.acceptance?.reason.includes("without waiting, input or closure"),
+  );
+  equal(accepted.evidence?.payload, {
+    role: "implement",
+    evidence: driverEvidence(task),
+  });
+  // Implementation reports leave lifecycle state unchanged, as on the happy path.
+  equal(await loadState(h.context), before);
+  assert(h.resources.has(`event-agent-${task.id}`));
+  equal(h.cli.length, cli);
+  equal(h.controls.cleanupCalls, 0);
+  // An identical retry is a no-op; a different request is refused.
+  await h.methods.accept_submission.execute(
+    { taskId: task.id, request },
+    h.context,
+  );
+  equal(h.cli.length, cli);
+  await rejects(
+    () =>
+      h.methods.accept_submission.execute({
+        taskId: task.id,
+        request: "Another request",
+      }, h.context),
+    "different request",
+  );
+  // drive continues from the imported implementation exactly as after completion.
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "authorize_merge");
+  equal(dispatchedRoles(h), ["implement", "review_code", "review_ux"]);
+  assert(
+    result(h).presentation.includes(
+      "Delivered change: Repaired the affected caller and added a regression",
+    ),
+  );
+});
+
+Deno.test("accept-submission refuses blank requests, other tasks, unaccepted or mismatched evidence and stale worktrees", async () => {
+  const stalled = async () => {
+    const h = stallHarness(implementing(), {
+      role: "implement",
+      background: ["bsi01ktyo"],
+      submitAt: "prompt",
+    });
+    await h.drive.execute({ agent: options }, h.context);
+    equal(result(h).decision, "blocked");
+    return { h, task: AgentTaskSchema.parse(h.resources.get("agent-task")) };
+  };
+  const request = "Accept the submitted implementation";
+  const unchanged = (
+    h: Awaited<ReturnType<typeof stalled>>["h"],
+    task: ReturnType<typeof AgentTaskSchema.parse>,
+  ) => equal(AgentTaskSchema.parse(h.resources.get("agent-task")), task);
+
+  {
+    const { h, task } = await stalled();
+    for (const blank of ["", "   "]) {
+      assert(
+        !h.methods.accept_submission.arguments.safeParse({
+          taskId: task.id,
+          request: blank,
+        }).success,
+      );
+      await rejects(
+        () =>
+          h.methods.accept_submission.execute(
+            { taskId: task.id, request: blank },
+            h.context,
+          ),
+        "request",
+      );
+    }
+    await rejects(
+      () =>
+        h.methods.accept_submission.execute({
+          taskId: "a6da10b0-c980-4b82-b920-999999999999",
+          request,
+        }, h.context),
+      "current pane task's taskId",
+    );
+    unchanged(h, task);
+  }
+
+  for (
+    const [tamper, message] of [
+      [(saved: Record<string, unknown>) => {
+        (saved.receipt as Record<string, unknown>).assignmentDigest = "f"
+          .repeat(64);
+      }, "Accepted receipt does not match"],
+      [(saved: Record<string, unknown>) => {
+        (saved.assignment as Record<string, unknown>).digest = "f".repeat(64);
+      }, "superseded or different assignment"],
+      [(saved: Record<string, unknown>) => {
+        saved.status = "open";
+        delete saved.receipt;
+      }, "submission_required"],
+    ] as const
+  ) {
+    const { h, task } = await stalled();
+    const records = h.submissions.get(task.submission!.behaviorName)!;
+    const saved = structuredClone(records.get("submission")) as Record<
+      string,
+      unknown
+    >;
+    tamper(saved);
+    records.set("submission", saved);
+    await rejects(
+      () =>
+        h.methods.accept_submission.execute(
+          { taskId: task.id, request },
+          h.context,
+        ),
+      message,
+    );
+    unchanged(h, task);
+  }
+
+  for (
+    const patch of [{ clean: false }, { head: "c".repeat(40) }]
+  ) {
+    const { h, task } = await stalled();
+    Object.assign(h.controls.repo, patch);
+    await rejects(
+      () =>
+        h.methods.accept_submission.execute(
+          { taskId: task.id, request },
+          h.context,
+        ),
+      "clean issue branch's current commit",
+    );
+    unchanged(h, task);
+  }
+
+  {
+    // Unaccepted evidence never stalls drive; the task stays observable.
+    const h = stallHarness(createState(issue), {
+      role: "triage",
+      background: ["job-1"],
+      submitAt: 99,
+    });
+    h.controls.agentRunner = ((runner) => (args, stdin, signal) => {
+      // Stop the otherwise endless observation with a non-timeout failure.
+      if (h.waits() >= 3 && args[3] === "wait") {
+        return Promise.reject(new Error("Session disappeared"));
+      }
+      return runner(args, stdin, signal);
+    })(h.controls.agentRunner!);
+    await h.drive.execute({ agent: options }, h.context);
+    equal(result(h).decision, "blocked");
+    assert(!result(h).reason.includes("accept-submission"));
+    const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    await rejects(
+      () =>
+        h.methods.accept_submission.execute(
+          { taskId: task.id, request },
+          h.context,
+        ),
+      "submission_required",
+    );
+    equal(
+      AgentTaskSchema.parse(h.resources.get("agent-task")).acceptance,
+      undefined,
+    );
+  }
+});
+
+Deno.test("worker prompts require foreground commands and forbid background jobs", async () => {
+  const h = harness();
+  await h.methods.run_agent.execute({ ...options, role: "triage" }, h.context);
+  const prompt = AgentTaskSchema.parse(h.resources.get("agent-task")).prompt;
+  assert(
+    prompt.includes(
+      "Run every command and check in the foreground. Do not use run_in_background, Monitor, background subagents or any other background job. If a check exceeds the tool timeout, split it into smaller checks rather than backgrounding it.",
+    ),
+  );
+});
+
+Deno.test("an interrupted accept-submission import resumes through drive without observing the pane", async () => {
+  const h = stallHarness(createState(issue), {
+    role: "triage",
+    background: ["bsi01ktyo"],
+    submitAt: "prompt",
+  });
+  await h.drive.execute({ agent: options }, h.context);
+  equal(result(h).decision, "blocked");
+  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const waits = h.waits();
+  h.controls.failTaskCompletionOnce = true;
+  await rejects(
+    () =>
+      h.methods.accept_submission.execute({
+        taskId: task.id,
+        request: "Accept the submitted triage",
+      }, h.context),
+    "Fixture task completion write failed",
+  );
+  const applying = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  equal(applying.status, "applying");
+  assert(applying.acceptance);
+  equal((await loadState(h.context)).phase, "classified");
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "approve_plan");
+  equal(dispatchedRoles(h), ["triage", "plan", "review_plan"]);
+  equal(h.waits(), waits);
+  const archived = h.writes.filter((write) =>
+    write.spec === "agent-task" && write.value.id === task.id
+  ).at(-1)?.value;
+  equal(archived?.status, "completed");
+  equal(archived?.cleanup, undefined);
 });

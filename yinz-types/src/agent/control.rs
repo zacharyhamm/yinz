@@ -471,6 +471,10 @@ pub struct AgentResponse {
     /// answer arrives in a later turn; `agent wait --until idle` returns it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub background: bool,
+    /// Identified Claude background task IDs still unresolved when the response was built.
+    /// Set only with `background`; empty when the work is known only from the registry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub background_tasks: Vec<String>,
 }
 
 impl AgentResponse {
@@ -630,6 +634,11 @@ pub struct AgentStatus {
     /// Claude reported work still running in the background after its last turn ended.
     #[serde(default)]
     pub background: bool,
+    /// IDs of identified Claude background tasks (asynchronous Bash and Agent launches)
+    /// whose completion Yinz has not yet observed. Empty when none are pending, including
+    /// when `background` rests only on Claude's session registry.
+    #[serde(default)]
+    pub background_tasks: Vec<String>,
 }
 
 mod pane_string {

@@ -14914,6 +14914,7 @@ fn identified_notice(prompt: &str, task: &str, tool: &str, run: &str) -> HookEve
                 run: run.into(),
                 prompt: prompt.into(),
                 row: format!("row-{prompt}"),
+                queued: false,
             }),
             ..Default::default()
         }),
@@ -18848,4 +18849,324 @@ fn osc7501_programmatic_enter_publishes_retirement_without_pty_output() {
             })
         }));
     }
+}
+
+fn sourced(hook: HookEvent) -> HookEvent {
+    HookEvent {
+        claude_notifications: Some(yinz_types::agent::claude_notifications::Evidence {
+            source: Some(notification_source()),
+            ..Default::default()
+        }),
+        ..hook
+    }
+}
+
+/// Claude's native root `Stop`, listing the background work still in flight.
+fn native_stop(prompt: &str, tasks: &[&str]) -> HookEvent {
+    let tasks: Vec<_> = tasks
+        .iter()
+        .map(|id| serde_json::json!({"id":id, "type":"local_bash", "status":"running"}))
+        .collect();
+    let raw = serde_json::json!({"hook_event_name":"Stop", "session_id":"conversation",
+        "prompt_id":prompt, "background_tasks":tasks});
+    let (mut event, _) =
+        yinz_runtime::agent::hooks::parse_hook_event("claude", raw.to_string()).unwrap();
+    let evidence = event.claude_notifications.as_mut().unwrap();
+    assert!(evidence.snapshot);
+    evidence.source = Some(notification_source());
+    event
+}
+
+/// Start a prompt whose turn launches background `tasks`.
+fn launch_background(
+    tasks: &[(&str, &str, &str)],
+) -> (
+    Screen,
+    CapturedClientMessages,
+    Receiver<(PtyWriteInstruction, ErrorContext)>,
+) {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    for (task, tool, kind) in tasks {
+        report_kind(
+            &mut screen,
+            "claude",
+            native_background_launch(task, tool, kind),
+        );
+    }
+    (screen, messages, writes)
+}
+
+/// Covers the screen's binding of a queued notice to the caller's turn. Detecting the
+/// queued attachment row and confirming the turn are covered by yinz-process's
+/// `queued_notification_*` and `a_queued_notice_keeps_a_registry_ended_turn_complete`.
+#[test]
+fn a_notification_queued_into_the_running_turn_is_answered_by_that_turn() {
+    for queued in [true, false] {
+        let (mut screen, messages, _writes) =
+            launch_background(&[("bsi01ktyo", "toolu_01Jx9ciai1vWWaWKKUMRgD6t", "Bash")]);
+        let status = screen.agent_status_for_test();
+        assert!(status.background);
+        assert_eq!(status.background_tasks, ["bsi01ktyo"]);
+        if queued {
+            let mut notice = identified_notice(
+                "prompt",
+                "bsi01ktyo",
+                "toolu_01Jx9ciai1vWWaWKKUMRgD6t",
+                "0mwgkinw9-7de56f80",
+            );
+            notice
+                .claude_notifications
+                .as_mut()
+                .unwrap()
+                .notice
+                .as_mut()
+                .unwrap()
+                .queued = true;
+            report_kind(&mut screen, "claude", notice);
+            // Binding alone is not the answer; the turn is still running.
+            assert!(screen.agent_status_for_test().background);
+            assert!(replies(&messages, CLIENT).is_empty());
+        }
+        report_kind(&mut screen, "claude", sourced_stop("prompt", "SUBMITTED"));
+        let reply = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(reply.outcome, AgentOutcome::Completed);
+        assert_eq!(reply.message.as_deref(), Some("SUBMITTED"));
+        // The caller's prompt never became a separate notification turn.
+        assert!(claude_lifecycle(&screen).claude_notifications.is_empty());
+        let status = screen.agent_status_for_test();
+        if queued {
+            assert!(!status.background);
+            assert!(status.background_tasks.is_empty());
+            assert_eq!(status.agent.state, AgentState::Idle);
+            screen.agent_control(wait(AgentState::Idle), CLIENT);
+            let idle = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(idle.outcome, AgentOutcome::Ok);
+            assert_eq!(idle.message.as_deref(), Some("SUBMITTED"));
+        } else {
+            // Without the queued notice (and no snapshot), the identified launch stays
+            // pending: the original stuck-lifecycle incident.
+            assert!(status.background);
+            assert_eq!(status.background_tasks, ["bsi01ktyo"]);
+            assert_eq!(status.agent.state, AgentState::Busy);
+        }
+    }
+}
+
+#[test]
+fn a_queued_notice_settles_only_its_own_launch() {
+    let (mut screen, messages, _writes) = launch_background(&[
+        ("done", "done-tool", "Bash"),
+        ("running", "running-tool", "Bash"),
+    ]);
+    let mut notice = identified_notice("prompt", "done", "done-tool", "run-done");
+    notice
+        .claude_notifications
+        .as_mut()
+        .unwrap()
+        .notice
+        .as_mut()
+        .unwrap()
+        .queued = true;
+    report_kind(&mut screen, "claude", notice);
+    report_kind(&mut screen, "claude", sourced_stop("prompt", "SUBMITTED"));
+    let reply = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(reply.outcome, AgentOutcome::Completed);
+    assert_eq!(reply.message.as_deref(), Some("SUBMITTED"));
+    let status = screen.agent_status_for_test();
+    assert!(status.background);
+    assert_eq!(status.background_tasks, ["running"]);
+    assert_eq!(status.agent.state, AgentState::Busy);
+}
+
+/// Let a drained obligation's idle reading outlast its grace.
+fn outlast_drain_grace(screen: &mut Screen) {
+    screen.refresh_agent_controls_at(
+        Instant::now() + Duration::from_millis(crate::screen::agent_control::DRAIN_GRACE_MS + 1),
+    );
+}
+
+#[test]
+fn a_stop_snapshot_drains_absent_tasks_only_with_that_turns_registry_idle() {
+    let tasks = [
+        ("bash", "bash-tool", "Bash"),
+        ("agent", "agent-tool", "Agent"),
+    ];
+    // Absence followed by the confirming turn's idle registry settles every drained task.
+    let (mut screen, messages, _writes) = launch_background(&tasks);
+    report_kind(&mut screen, "claude", native_stop("prompt", &[]));
+    let status = screen.agent_status_for_test();
+    assert!(status.background, "a snapshot alone settles nothing");
+    assert_eq!(status.background_tasks, ["bash", "agent"]);
+    report_kind(&mut screen, "claude", sourced_stop("prompt", "DONE"));
+    let reply = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(reply.message.as_deref(), Some("DONE"));
+    // One idle reading can precede a notification turn Claude still owes.
+    let status = screen.agent_status_for_test();
+    assert!(status.background, "the idle reading must outlast its grace");
+    assert_eq!(status.background_tasks, ["bash", "agent"]);
+    assert_eq!(status.agent.state, AgentState::Busy);
+    draft_frame(&mut screen, "claude", "", 0, Instant::now());
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    assert!(replies(&messages, CLIENT).is_empty());
+    outlast_drain_grace(&mut screen);
+    let idle = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(idle.outcome, AgentOutcome::Ok);
+    assert_eq!(idle.message.as_deref(), Some("DONE"));
+    let status = screen.agent_status_for_test();
+    assert!(!status.background && status.background_tasks.is_empty());
+    assert_eq!(status.agent.state, AgentState::Idle);
+    // Settling by drain records no answer of its own.
+    assert!(claude_lifecycle(&screen).claude.obligations.answers.len() <= 1);
+    assert_eq!(
+        claude_lifecycle(&screen).last_message.as_deref(),
+        Some("DONE")
+    );
+
+    // The registry can read idle before the snapshot arrives.
+    let (mut screen, _messages, _writes) = launch_background(&tasks);
+    report_kind(&mut screen, "claude", sourced_stop("prompt", "DONE"));
+    assert!(screen.agent_status_for_test().background);
+    report_kind(&mut screen, "claude", native_stop("prompt", &[]));
+    assert!(screen.agent_status_for_test().background);
+    outlast_drain_grace(&mut screen);
+    assert!(!screen.agent_status_for_test().background);
+
+    // A notification turn submitted within the grace supersedes the idle reading.
+    let (mut screen, messages, _writes) = launch_background(&tasks);
+    report_kind(&mut screen, "claude", native_stop("prompt", &[]));
+    report_kind(&mut screen, "claude", sourced_stop("prompt", "DONE"));
+    let reply = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(reply.message.as_deref(), Some("DONE"));
+    draft_frame(&mut screen, "claude", "", 0, Instant::now());
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    report_kind(&mut screen, "claude", task_notification("owed", &["bash"]));
+    outlast_drain_grace(&mut screen);
+    assert!(replies(&messages, CLIENT).is_empty());
+    assert_eq!(
+        screen.agent_status_for_test().background_tasks,
+        ["bash", "agent"]
+    );
+    report_kind(&mut screen, "claude", native_stop("owed", &[]));
+    report_kind(&mut screen, "claude", sourced_stop("owed", "OWED"));
+    assert!(replies(&messages, CLIENT).is_empty());
+    outlast_drain_grace(&mut screen);
+    let idle = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(idle.outcome, AgentOutcome::Ok);
+    assert_eq!(idle.message.as_deref(), Some("OWED"));
+
+    // Absence without idle keeps the work; the turn's background watch later settles it.
+    let (mut screen, messages, _writes) = launch_background(&tasks);
+    report_kind(&mut screen, "claude", native_stop("prompt", &[]));
+    report_kind(
+        &mut screen,
+        "claude",
+        sourced(claude_stop("prompt", "STARTED", true)),
+    );
+    let reply = replies(&messages, CLIENT).pop().unwrap();
+    assert!(reply.background);
+    assert_eq!(reply.background_tasks, ["bash", "agent"]);
+    let status = screen.agent_status_for_test();
+    assert_eq!(status.background_tasks, ["bash", "agent"]);
+    assert_eq!(status.agent.state, AgentState::Busy);
+    draft_frame(&mut screen, "claude", "", 0, Instant::now());
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    assert!(replies(&messages, CLIENT).is_empty());
+    report_kind(&mut screen, "claude", sourced(background_idle("prompt")));
+    assert!(replies(&messages, CLIENT).is_empty());
+    outlast_drain_grace(&mut screen);
+    let idle = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(idle.outcome, AgentOutcome::Ok);
+    assert_eq!(idle.agents[0].agent.state, AgentState::Idle);
+    assert!(!idle.agents[0].background && idle.agents[0].background_tasks.is_empty());
+
+    // A task the snapshot still lists stays pending; only the absent one settles.
+    let (mut screen, _messages, _writes) = launch_background(&tasks);
+    report_kind(&mut screen, "claude", native_stop("prompt", &["bash"]));
+    report_kind(&mut screen, "claude", sourced_stop("prompt", "DONE"));
+    outlast_drain_grace(&mut screen);
+    let status = screen.agent_status_for_test();
+    assert!(status.background);
+    assert_eq!(status.background_tasks, ["bash"]);
+    assert_eq!(status.agent.state, AgentState::Busy);
+
+    // A later snapshot of the same turn that lists the task again supersedes the drain.
+    let (mut screen, _messages, _writes) = launch_background(&tasks);
+    report_kind(&mut screen, "claude", native_stop("prompt", &[]));
+    report_kind(
+        &mut screen,
+        "claude",
+        native_stop("prompt", &["bash", "agent"]),
+    );
+    report_kind(&mut screen, "claude", sourced_stop("prompt", "DONE"));
+    outlast_drain_grace(&mut screen);
+    assert_eq!(
+        screen.agent_status_for_test().background_tasks,
+        ["bash", "agent"]
+    );
+
+    // A newer turn makes the older turn's snapshot and idleness stale.
+    let (mut screen, _messages, _writes) = launch_background(&tasks);
+    report_kind(&mut screen, "claude", native_stop("prompt", &[]));
+    report_kind(
+        &mut screen,
+        "claude",
+        sourced(claude_stop("prompt", "STARTED", true)),
+    );
+    report_kind(&mut screen, "claude", task_notification("next", &["other"]));
+    report_kind(&mut screen, "claude", sourced(background_idle("prompt")));
+    outlast_drain_grace(&mut screen);
+    assert_eq!(
+        screen.agent_status_for_test().background_tasks,
+        ["bash", "agent"]
+    );
+    // Its own snapshot and idle can still drain the work.
+    report_kind(&mut screen, "claude", native_stop("next", &[]));
+    report_kind(&mut screen, "claude", sourced_stop("next", "NEXT"));
+    outlast_drain_grace(&mut screen);
+    let status = screen.agent_status_for_test();
+    assert!(!status.background && status.background_tasks.is_empty());
+    assert_eq!(status.agent.state, AgentState::Idle);
+
+    // Another process's snapshot cannot drain this process's launches.
+    let (mut screen, _messages, _writes) = launch_background(&tasks);
+    let mut foreign = native_stop("prompt", &[]);
+    foreign
+        .claude_notifications
+        .as_mut()
+        .unwrap()
+        .source
+        .as_mut()
+        .unwrap()
+        .pid = 999;
+    report_kind(&mut screen, "claude", foreign);
+    report_kind(&mut screen, "claude", sourced_stop("prompt", "DONE"));
+    outlast_drain_grace(&mut screen);
+    assert_eq!(
+        screen.agent_status_for_test().background_tasks,
+        ["bash", "agent"]
+    );
+}
+
+#[test]
+fn background_task_ids_are_listed_in_status_json_while_pending() {
+    let (mut screen, _messages, _writes) = launch_background(&[
+        ("bsi01ktyo", "tool", "Bash"),
+        ("agent-1", "agent-tool", "Agent"),
+    ]);
+    let json = serde_json::to_value(screen.agent_status_for_test()).unwrap();
+    assert_eq!(json["background"], true);
+    assert_eq!(
+        json["background_tasks"],
+        serde_json::json!(["bsi01ktyo", "agent-1"])
+    );
+    report_kind(&mut screen, "claude", native_stop("prompt", &[]));
+    report_kind(&mut screen, "claude", sourced_stop("prompt", "DONE"));
+    outlast_drain_grace(&mut screen);
+    let json = serde_json::to_value(screen.agent_status_for_test()).unwrap();
+    assert_eq!(json["background"], false);
+    assert_eq!(json["background_tasks"], serde_json::json!([]));
 }

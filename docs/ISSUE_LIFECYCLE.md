@@ -350,8 +350,9 @@ binds on its first prompt. Dialog interaction is deliberate.
 The controller saves the task before dispatch; the reusable behavior saves launch
 intent before spawn and unique submission ID before prompt. Unresolved tasks
 exclude mutations and second workers. Background work requires a further
-observation of the same conversation's final idle answer before success. Accepted
-evidence and completion precede guarded pane cleanup. Cleanup retries separately
+observation of the same conversation's final idle answer before success. Workers
+are told to run every command in the foreground and not to start background jobs.
+Accepted evidence and completion precede guarded pane cleanup. Cleanup retries separately
 without evidence replay. Failed, blocked, superseded and unusable-result panes
 remain visible; closing the last worker releases the region. Conditional
 recovery procedures live in the recovery reference.
@@ -433,6 +434,7 @@ branch names or abbreviations.
 | `repair` | Optional `reason`; required only when no failed verification or merge attempt is recorded, whose details are attached automatically. |
 | `closeout` | Offer `handoffId`, `decision` (`accept` or `decline`) and actual user `request`. |
 | `discard-agent` | Actual operator `request`; optional `confirmedStopped: true` only for a completed worker the behavior reports it cannot observe. |
+| `accept-submission` | Current running pane task's `taskId`; `request`: actual user authorization to import its accepted evidence without waiting for the pane. |
 | `summarize` | `outcomeMet: true`; `summary`: original problem, delivered outcome and limits. |
 
 Finding severities are `low`, `medium`, `high`, `critical`. Unresolved high/critical
@@ -782,6 +784,53 @@ per-task event identity and resumes partial event/state/task writes without
 repeating investigation. Later requirements or Git changes can make accepted
 historical evidence inapplicable without deleting it.
 
+Accepted evidence can still wait indefinitely on its pane, for example when the
+pane keeps reporting background work that already finished. When the receipt is
+accepted and the pane reports only background work for two consecutive ordinary
+timeouts (`BACKGROUND_STALL_TIMEOUTS`), `drive` stops observing and returns a
+`blocked` handoff. Background work counts from the child's saved state or from the
+worker's agent row in the timed-out response, where Yinz reports it; the child
+must be waiting on its submitted prompt or observing background work. The handoff
+names the task, the implementation commit when there is one, the reported
+background task IDs and the recovery command. Yinz cannot tell a foreground turn
+that is still running from one that ended with background work left, so unless
+the child observed the turn's answer the handoff says so and asks for the pane to
+be checked first. The driver saves this as `backgroundStall` with the child
+observation it rests on. Later `drive` calls present the same handoff without
+observing the pane or launching another worker while that observation is the
+latest. `resume-agent` still observes the pane; once it saves a newer observation,
+`drive` drops the stall and continues from it, importing a completed child or
+observing again. When evidence is not accepted, or the pane reports no background
+work, `drive` keeps observing.
+
+With the user's explicit authorization, `accept-submission {taskId, request}`
+imports the accepted receipt without waiting:
+
+```sh
+"$LIFECYCLE_REPO/scripts/issue-lifecycle" --item "$AGENDA_ITEM_ID" \
+  accept-submission --input-file /tmp/accept-submission.json
+```
+
+It requires the current running task, an accepted receipt with that task ID and
+assignment digest, and current requirements and lifecycle snapshot. The task must
+also have `drive`'s recorded stall, a child observing background work after its
+turn's answer, or a closed pane (`target_closed`); a waiting pane may still be
+running its foreground turn. For
+implementation and repair roles it also requires the clean issue branch at the
+evidence commit. A child that completed normally is refused; use `resume-agent`
+for it. The command records the request, a reason, the observed phase and
+background tasks on the task as `acceptance` before import. It then follows the
+ordinary import, so lifecycle state and the driver's implementation are the same
+as after normal completion. An interrupted import resumes through `drive` or
+`resume-agent`. An identical retry does nothing; a different request is refused.
+The pane receives no input and is not closed, and guarded cleanup is skipped.
+Close it deliberately after inspection. While the task is unresolved, do not
+close the pane, run `agent close-completed`, or send it prompts or steering text to
+make it finish; startup dialogs and permission prompts are still answered
+deliberately. A pane closed without a retained completion proof leaves the result
+`target_closed`, and only accepted evidence or an explicitly requested rollback or
+`restart-agent` can then resolve the task.
+
 For a missing submission or legacy supplement, continue the original context:
 
 ```sh
@@ -1097,7 +1146,9 @@ identity is eligible for automatic observation: phase `spawned`, `waiting`,
 `submitting` when the saved reply is the same submission's acknowledged,
 started delivery; the agent busy with no not-ready reason or `not_idle`,
 `unresolved_turn` or `unconsumed_input`. Transport errors cannot reuse a
-previous timeout's raw response. Legacy records acquire this classification on
+previous timeout's raw response. Each ordinary timeout that `drive` continues past
+is logged with `task`, `role`, `rounds`, `stalledRounds`, `phase`, `agentState`,
+`backgroundTasks` and `submissionAccepted`. Legacy records acquire this classification on
 the next observation; elapsed time never determines worker staleness.
 
 Drive retries are bounded per invocation: 48 wait windows for ordinary timeouts,

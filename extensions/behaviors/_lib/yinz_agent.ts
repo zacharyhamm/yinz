@@ -30,6 +30,7 @@ export const ContinueArgsSchema = z.object({
   id: z.uuid(),
   prompt: z.string().trim().min(1),
 }).strip();
+const BACKGROUND_FLAG = "background";
 /**
  * Yinz reports Claude background work as `background: true`; older builds listed
  * task IDs in `background_tasks`. Fold the flag into the list so every background
@@ -39,8 +40,15 @@ function foldBackground<
   T extends { background: boolean; background_tasks: string[] },
 >(value: T): T {
   return value.background && value.background_tasks.length === 0
-    ? { ...value, background_tasks: ["background"] }
+    ? { ...value, background_tasks: [BACKGROUND_FLAG] }
     : value;
+}
+/**
+ * Whether reported background work is only the folded flag, without task IDs:
+ * Yinz's background rests on Claude's session registry, or the build predates IDs.
+ */
+export function unidentifiedBackground(tasks: string[]) {
+  return tasks.length === 1 && tasks[0] === BACKGROUND_FLAG;
 }
 const AgentStatusSchema = z.object({
   pane_id: Pane,
@@ -403,6 +411,33 @@ export function terminalFailureProblems(state: AgentState): string[] {
     );
   }
   return problems;
+}
+
+/**
+ * Background work the saved child state and its latest response report for the
+ * recorded pane. A timed-out wait carries Yinz's background flag and task IDs
+ * only on the agent row, never at the top level saved in `backgroundTasks`.
+ */
+export function reportedBackground(state: AgentState) {
+  const ids = new Set(state.backgroundTasks);
+  let agentState: string | undefined;
+  if (state.rawResponse) {
+    let parsed;
+    try {
+      parsed = AgentResponseSchema.safeParse(JSON.parse(state.rawResponse));
+    } catch {
+      parsed = undefined;
+    }
+    if (parsed?.success) {
+      for (const id of parsed.data.background_tasks) ids.add(id);
+      const agent = parsed.data.agents.find((agent) =>
+        agent.pane_id === state.paneId
+      );
+      agentState = agent?.agent.state;
+      for (const id of agent?.background_tasks ?? []) ids.add(id);
+    }
+  }
+  return { backgroundTasks: [...ids], agentState };
 }
 
 /** A correlated provider failure or explicit non-delivery proves terminality. */

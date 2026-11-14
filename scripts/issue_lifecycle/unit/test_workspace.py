@@ -141,6 +141,18 @@ else:
         return next(call["input"] for call in reversed(self.calls())
                     if call["args"][:3] == ["workflow", "run", "yinz-issue-start"])
 
+    def test_accept_submission_dispatches_operator_request_without_control_identity(self):
+        self.env.update(YINZ_SESSION_NAME="dev", YINZ_PANE_ID="0")
+        request = {"taskId": "a6da10b0-c980-4b82-b920-000000000001",
+                   "request": "Accept the submitted implementation"}
+        inputs = self.root / "accept.json"
+        inputs.write_text(json.dumps(request))
+        result = self.launch("accept-submission", "--input-file", str(inputs))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        call = self.calls()[-1]
+        self.assertEqual(call["args"][:4], ["behavior", "run", "issue-work-7", "accept_submission"])
+        self.assertEqual(call["input"], request)
+
     def test_start_passes_vault_workspace_as_issue_identity(self):
         result = self.launch("start")
         self.assertEqual(result.returncode, 0, result.stderr)
