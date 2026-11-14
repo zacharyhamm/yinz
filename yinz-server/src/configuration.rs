@@ -196,10 +196,11 @@ impl SessionConfiguration {
             &self.apply_editor_overrides(self.application_theme_source().clone()),
         )
     }
-    /// The session theme source with a session-wide KDL `fragment` applied.
+    /// The session theme source with a session-wide KDL `fragment` applied. A parse
+    /// failure reports the same actionable reason as the runtime reconfigure.
     fn application_theme_source_with(&self, fragment: &str) -> Result<Config> {
         Config::from_kdl(fragment, Some(self.application_theme_source().clone()))
-            .map_err(|error| anyhow!("{error}"))
+            .map_err(|error| anyhow!(yinz_config::editor::validation_error(error)))
     }
     fn set_application_theme_source(&mut self, source: Config) {
         self.application_theme_source = Some(source);
