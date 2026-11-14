@@ -7,6 +7,8 @@ import {
   AssignmentSchema,
   canonical,
   evidenceDigest,
+  EvidenceReceiptSchema,
+  fillAssignedEvidence,
   type RoleEvidence,
   SubmissionSchema,
   SubmitArgsSchema,
@@ -673,5 +675,166 @@ Deno.test("UX assignments reject changed requirements state plan role and pendin
   await rejects(
     () => h.submit({ ...h.input().evidence, planVersion: 2 }),
     "current plan version",
+  );
+});
+
+Deno.test("plan and repair-plan submissions reject policy-violating checks and stay open", async () => {
+  for (const role of ["plan", "plan_review_fixes"] as const) {
+    const h = await fixture(role);
+    for (
+      const command of [
+        ["cargo", "x", "test"],
+        ["sh", "-c", "cargo x test -p yinz-server"],
+      ]
+    ) {
+      await rejects(
+        () =>
+          h.submit({
+            ...plan,
+            checks: [{ id: "fix", command, covers: ["fix"] }],
+          }),
+        'Plan checks violate repository test policy:\n- checks[0] (id "fix"): ',
+      );
+      equal(
+        SubmissionSchema.parse(h.records.get("submission")).status,
+        "open",
+      );
+      equal(h.writes.length, 1);
+    }
+    await h.submit();
+    equal(
+      SubmissionSchema.parse(h.records.get("submission")).status,
+      "accepted",
+    );
+  }
+});
+
+Deno.test("accepted receipts with now-invalid checks still replay and import", async () => {
+  for (const role of ["plan", "plan_review_fixes"] as const) {
+    const h = await fixture(role);
+    const legacy = {
+      ...plan,
+      checks: [{
+        id: "fix",
+        command: ["sh", "-c", "cargo x test"],
+        covers: ["fix"],
+      }],
+    };
+    // validateEvidence has no policy: receipts accepted before it still verify.
+    const validated = validateEvidence(h.assignment, {
+      role,
+      evidence: legacy,
+    });
+    const receipt = EvidenceReceiptSchema.parse({
+      taskId,
+      assignmentDigest: h.assignment.digest,
+      payloadDigest: evidenceDigest(validated.payload),
+      acceptedAt: "2026-11-08T18:00:00.000Z",
+      ...validated,
+    });
+    h.records.set(
+      "submission",
+      SubmissionSchema.parse({
+        status: "accepted",
+        assignment: h.assignment,
+        receipt,
+      }),
+    );
+    equal(validateReceipt(h.assignment, receipt), receipt);
+    equal(await h.submit(legacy), { dataHandles: [] });
+    equal(h.writes.length, 1);
+  }
+});
+
+Deno.test("review evidence may omit planVersion and commit; the assignment fills them", async () => {
+  for (const role of ["review_plan", "review_code", "review_ux"] as const) {
+    const h = await fixture(role);
+    const full = h.input().evidence as Record<string, unknown>;
+    const { planVersion: _version, commit: _commit, ...omitted } = full;
+    const raw = { role, evidence: omitted };
+    const filled = fillAssignedEvidence(h.assignment, raw);
+    equal(raw, { role, evidence: omitted });
+    equal(filled, { role, evidence: full });
+    await h.submit(omitted);
+    const saved = SubmissionSchema.parse(h.records.get("submission"));
+    assert(saved.status === "accepted");
+    const evidence = saved.receipt.payload.evidence as Record<string, unknown>;
+    equal(evidence.planVersion, 1);
+    if (role !== "review_plan") equal(evidence.commit, head);
+    equal(
+      saved.receipt.payloadDigest,
+      evidenceDigest({ role, evidence: full }),
+    );
+    // Explicit equal values are an identical replay.
+    equal(await h.submit(full), { dataHandles: [] });
+    equal(h.writes.length, 2);
+    equal(validateReceipt(h.assignment, saved.receipt), saved.receipt);
+  }
+  for (const role of ["review_plan", "review_code", "review_ux"] as const) {
+    const h = await fixture(role);
+    await rejects(
+      () => h.submit({ ...h.input().evidence, planVersion: 2 }),
+      "Evidence must reference the current plan version (assigned 1, submitted 2)",
+    );
+    if (role !== "review_plan") {
+      await rejects(
+        () => h.submit({ ...h.input().evidence, commit: "b".repeat(40) }),
+        "Pane reviewed a different commit than the dispatched task",
+      );
+    }
+    equal(h.writes.length, 1);
+  }
+});
+
+Deno.test("implementation commit stays required", async () => {
+  for (const role of ["implement", "implement_review_fixes"] as const) {
+    const h = await fixture(role);
+    await rejects(
+      () =>
+        h.methods.submit.execute({
+          taskId,
+          assignmentDigest: h.assignment.digest,
+          role,
+          evidence: { summary: "Implemented" },
+        } as never, h.context),
+      "commit",
+    );
+    await rejects(
+      () => h.submit({ summary: "Implemented" }),
+      "commit",
+    );
+    equal(h.writes.length, 1);
+  }
+});
+
+Deno.test("submit arguments stay strict while receipts keep requiring assigned values", async () => {
+  const h = await fixture("review_code");
+  const { planVersion: _version, commit: _commit, ...omitted } = h.input()
+    .evidence as Record<string, unknown>;
+  SubmitArgsSchema.parse({ ...h.input(), evidence: omitted });
+  await rejects(
+    () => SubmitArgsSchema.parse({ ...h.input(), extra: true }),
+    "Unrecognized key",
+  );
+  await rejects(
+    () =>
+      SubmitArgsSchema.parse({
+        ...h.input(),
+        evidence: { ...omitted, approved: true },
+      }),
+    "Unrecognized key",
+  );
+  await h.submit(omitted);
+  const saved = SubmissionSchema.parse(h.records.get("submission"));
+  assert(saved.status === "accepted");
+  const { planVersion: _p, ...missing } = saved.receipt.payload
+    .evidence as Record<string, unknown>;
+  await rejects(
+    () =>
+      EvidenceReceiptSchema.parse({
+        ...saved.receipt,
+        payload: { role: "review_code", evidence: missing },
+      }),
+    "planVersion",
   );
 });

@@ -1,6 +1,6 @@
 """Resolve new-issue worker defaults from the canonical control checkout."""
 
-import json
+from .config import config_path, read_config
 
 
 SUPPORTED_AGENTS = ("claude", "codex", "muse", "pi", "agy")
@@ -27,23 +27,10 @@ def resolve_agent(control, inputs):
     """Return a resolved selection, or None for the explicit-agent flow."""
     if inputs.keys() - {"agent"}:
         raise ValueError("start accepts only an optional agent object")
-    path = control / ".yinz" / "issue-lifecycle.json"
+    config = read_config(control)
     selection = {}
-    try:
-        contents = path.read_text()
-    except FileNotFoundError:
-        contents = None
-    except (OSError, UnicodeError) as error:
-        raise ValueError(f"Cannot read {path}: {error}") from error
-    if contents is not None:
-        try:
-            config = json.loads(contents)
-        except ValueError as error:
-            raise ValueError(f"Invalid JSON in {path}: {error}") from error
-        if not isinstance(config, dict) or config.keys() - {"agent"}:
-            raise ValueError(f"{path} must be an object containing only optional 'agent'")
-        if "agent" in config:
-            selection = dict(_agent(config["agent"], f"{path}: agent"))
+    if "agent" in config:
+        selection = dict(_agent(config["agent"], f"{config_path(control)}: agent"))
     if "agent" in inputs:
         override = _agent(inputs["agent"], "start agent", partial=True)
         if "kind" in override and override["kind"] != selection.get("kind"):

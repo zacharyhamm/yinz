@@ -24,6 +24,10 @@ TIMING_LIMITS = [
 ]
 
 
+# Assignment contracts that bind review continuity (3 adds assignment files).
+CONTINUITY_CONTRACTS = (2, 3)
+
+
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
@@ -60,7 +64,7 @@ def normalize(export):
                 continue
             for kind in ("automaticRevision", "revisionAuthorization"):
                 task = (record["content"].get(kind) or {}).get("assignment")
-                if task and task.get("contractVersion") == 2 and task.get("round"):
+                if task and task.get("contractVersion") in CONTINUITY_CONTRACTS and task.get("round"):
                     reserved.append(task)
         tasks = unique(reserved + [r["content"] for r in records if r["specName"] == "agent-task"], lambda t: t["id"])
         rounds = next((r["content"]["records"] for r in reversed(records) if r["name"] == "rounds"), [])
@@ -201,9 +205,9 @@ def cohort(issues):
 def compare(baseline, pilot):
     if baseline["schemaVersion"] != 1 or pilot["schemaVersion"] != 1:
         raise ValueError("Unknown normalized export schema")
-    if any(t.get("contractVersion") == 2 for i in baseline["issues"] for t in i["assignments"]):
+    if any(t.get("contractVersion") in CONTINUITY_CONTRACTS for i in baseline["issues"] for t in i["assignments"]):
         raise ValueError("Frozen pre-change sample contains new-contract assignments")
-    candidates = [i for i in pilot["issues"] if instant(i["completedAt"]) > instant(baseline["frozenAt"]) and any(t.get("contractVersion") == 2 for t in i["assignments"])]
+    candidates = [i for i in pilot["issues"] if instant(i["completedAt"]) > instant(baseline["frozenAt"]) and any(t.get("contractVersion") in CONTINUITY_CONTRACTS for t in i["assignments"])]
     candidates = sorted(unique(candidates, lambda i: i["key"]), key=lambda i: (i["completedAt"], i["key"]))[:20]
     if {i["key"] for i in baseline["issues"]} & {i["key"] for i in candidates}:
         raise ValueError("Pilot overlaps frozen baseline issues")

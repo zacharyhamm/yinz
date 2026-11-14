@@ -73,16 +73,23 @@ const Argument = z.string().refine(
   (value) => !value.includes("\0"),
   "Command arguments cannot contain NUL",
 );
+const CheckCommand = z.array(Argument).min(1).refine(
+  (argv) => (argv[0] ?? "x").trim().length > 0,
+  "The command's executable must be nonempty",
+);
 /** One deterministic development check. The lifecycle runs argv verbatim, without a shell. */
 export const CheckSchema = z.object({
   id: CheckId,
-  command: z.array(Argument).min(1).refine(
-    (argv) => (argv[0] ?? "x").trim().length > 0,
-    "The command's executable must be nonempty",
-  ),
+  command: CheckCommand,
   covers: z.array(Text).min(1),
 }).strict();
 export type Check = z.infer<typeof CheckSchema>;
+/** A static check from the control checkout's configuration, run before plan checks. */
+export const BaselineCheckSchema = z.object({
+  id: CheckId,
+  command: CheckCommand,
+}).strict();
+export type BaselineCheck = z.infer<typeof BaselineCheckSchema>;
 const PlanBaseSchema = z.object({
   summary: Text,
   steps: z.array(
@@ -278,7 +285,7 @@ const ReviewFixSchema = ReviewDecisionSchema.extend({
   approval: UserRequestSchema.optional(),
   result: RepairResultSchema.optional(),
 }).strict();
-const CheckResultSchema = CheckSchema.extend({
+const RunFields = {
   // Null when the executable could not be started.
   exitCode: z.number().int().nullable(),
   durationMs: z.number().int().nonnegative(),
@@ -289,16 +296,55 @@ const CheckResultSchema = CheckSchema.extend({
   // Set when the Git helper stopped the check at its time limit.
   timedOut: z.literal(true).optional(),
   status: z.enum(["passed", "failed"]),
-}).strict().refine(
-  (result) => (result.log === undefined) !== (result.skipped === undefined),
-  "A check result has either a log or a skip reason",
-).refine(
-  (result) => !result.timedOut || result.exitCode === null,
-  "A timed-out check has no exit code",
-).refine(
-  (result) => !result.skipped || result.status === "failed",
-  "A skipped check cannot pass",
+};
+type RunResult = {
+  exitCode: number | null;
+  log?: string;
+  skipped?: string;
+  timedOut?: true;
+  worktreeUnchanged: boolean;
+  status: "passed" | "failed";
+};
+function refineRun<T extends z.ZodType<RunResult>>(schema: T) {
+  return schema.refine(
+    (result) => (result.log === undefined) !== (result.skipped === undefined),
+    "A check result has either a log or a skip reason",
+  ).refine(
+    (result) => !result.timedOut || result.exitCode === null,
+    "A timed-out check has no exit code",
+  ).refine(
+    (result) => !result.skipped || result.status === "failed",
+    "A skipped check cannot pass",
+  );
+}
+const CheckResultSchema = refineRun(CheckSchema.extend(RunFields).strict());
+export const BaselineResultSchema = refineRun(
+  BaselineCheckSchema.extend(RunFields).strict(),
 );
+/**
+ * Whether the reviewed commit would rebase onto local main without conflicts.
+ * Unavailable is not a failure: the merge gate rebases under its lock.
+ */
+export const RebaseProbeSchema = z.object({
+  main: Commit.optional(),
+  status: z.enum(["clean", "conflicts", "unavailable"]),
+  paths: z.array(Text).optional(),
+  pathsTruncated: z.number().int().positive().optional(),
+  reason: Text.optional(),
+}).strict().refine(
+  (probe) => probe.status === "unavailable" || probe.main !== undefined,
+  "A clean or conflicting rebase probe names the local main commit",
+).refine(
+  (probe) => (probe.status === "conflicts") === (probe.paths !== undefined),
+  "Only a conflicting rebase probe lists paths",
+).refine(
+  (probe) => (probe.status === "unavailable") === (probe.reason !== undefined),
+  "Only an unavailable rebase probe has a reason",
+).refine(
+  (probe) => probe.pathsTruncated === undefined || probe.status === "conflicts",
+  "Only a conflicting rebase probe truncates paths",
+);
+export type RebaseProbe = z.infer<typeof RebaseProbeSchema>;
 /** One lifecycle-run verification of the plan's checks at an exact commit. */
 export const VerificationSchema = z.object({
   id: z.uuid(),
@@ -309,8 +355,35 @@ export const VerificationSchema = z.object({
   finishedAt: z.iso.datetime(),
   status: z.enum(["passed", "failed"]),
   checks: z.array(CheckResultSchema).min(1),
+  // Absent on verifications recorded before baseline checks and the probe.
+  baseline: z.array(BaselineResultSchema).min(1).optional(),
+  rebaseProbe: RebaseProbeSchema.optional(),
 }).strict();
 export type Verification = z.infer<typeof VerificationSchema>;
+type RunRecord = Pick<
+  RunResult,
+  "exitCode" | "skipped" | "timedOut" | "worktreeUnchanged"
+>;
+
+/** Quote argv for display only; the lifecycle never runs it through a shell. */
+export function displayCommand(argv: string[]) {
+  return argv.map((value) =>
+    /^[A-Za-z0-9_@%+=:,./-]+$/.test(value)
+      ? value
+      : `'${value.replaceAll("'", `'"'"'`)}'`
+  ).join(" ");
+}
+
+/** How one check ended, shared by the checklist and drive's blocked reason. */
+export function checkOutcome(check: RunRecord) {
+  if (check.skipped) return "not run";
+  const ended = check.timedOut
+    ? "timed out"
+    : `exit ${check.exitCode ?? "(could not start)"}`;
+  return check.worktreeUnchanged
+    ? ended
+    : `${ended}; changed the worktree, branch or HEAD`;
+}
 
 /**
  * The deterministic evidence a merge of the reviewed commit requires. `ready`,
@@ -349,9 +422,67 @@ export function mergeGate(
 }
 
 export function failedCheckIds(verification: Verification): string[] {
-  return verification.checks
-    .filter((check) => check.status === "failed")
-    .map((check) => check.id);
+  return [
+    ...(verification.rebaseProbe?.status === "conflicts"
+      ? ["rebase-probe"]
+      : []),
+    ...(verification.baseline ?? [])
+      .filter((check) => check.status === "failed")
+      .map((check) => `baseline:${check.id}`),
+    ...verification.checks
+      .filter((check) => check.status === "failed")
+      .map((check) => check.id),
+  ];
+}
+
+const PROBE_PATHS_SHOWN = 20;
+
+/** The rebase probe's conflicting paths, capped for display. */
+export function probeConflictPaths(probe: RebaseProbe): string {
+  const paths = probe.paths ?? [];
+  const more = paths.length - PROBE_PATHS_SHOWN + (probe.pathsTruncated ?? 0);
+  return paths.slice(0, PROBE_PATHS_SHOWN).join(", ") +
+    (more > 0 ? ` (+${more} more)` : "");
+}
+
+/**
+ * One item per failure: probe conflicts, then failed baseline checks, then
+ * failed plan checks. `logRef` turns a stored log name into what the reader
+ * should run; the default keeps the resource name.
+ */
+export function verificationFailureItems(
+  verification: Verification,
+  logRef: (log: string) => string = (log) => log,
+): string[] {
+  const item = (label: string, check: RunRecord & { log?: string }) =>
+    `${label} (${
+      check.skipped ?? `${checkOutcome(check)}; log: ${logRef(check.log!)}`
+    })`;
+  const probe = verification.rebaseProbe;
+  return [
+    ...(probe?.status === "conflicts"
+      ? [
+        `rebase conflicts with local main ${probe.main} in ${
+          probeConflictPaths(probe)
+        }`,
+      ]
+      : []),
+    ...(verification.baseline ?? [])
+      .filter((check) => check.status === "failed")
+      .map((check) => item(`baseline ${check.id}`, check)),
+    ...verification.checks
+      .filter((check) => check.status === "failed")
+      .map((check) => item(check.id, check)),
+  ];
+}
+
+export function describeVerificationFailure(
+  verification: Verification,
+  logRef?: (log: string) => string,
+): string {
+  return `Verification ${verification.id} failed at ${verification.commit} (plan version ${verification.planVersion}): ${
+    verificationFailureItems(verification, logRef).join("; ")
+  }`;
 }
 export const AttemptSchema = z.object({
   id: z.uuid(),
@@ -691,6 +822,15 @@ export function validateRepairResponses(
     );
   }
 }
+/** Prior findings of one review role that a new review must account for. */
+export function priorFindingObligations(
+  state: LifecycleState,
+  role: "review_code" | "review_ux",
+) {
+  return priorImplementationFindings(state).filter((p) =>
+    p.ref.role === role && !p.fixed
+  );
+}
 export function validateImplementationReview(
   state: LifecycleState,
   role: "review_code" | "review_ux",
@@ -701,7 +841,7 @@ export function validateImplementationReview(
   const prior = allPrior.filter((p) => p.ref.role === role);
   const outcomes = review.priorFindings ?? [];
   if (required || review.priorFindings) {
-    const obligations = prior.filter((p) => !p.fixed);
+    const obligations = priorFindingObligations(state, role);
     const extras = outcomes.filter((o) =>
       !obligations.some((p) => identityKey(p.ref) === identityKey(o.finding))
     );
@@ -1115,7 +1255,8 @@ export const ActionSchemas = {
   verify: z.object({ verification: VerificationSchema }).strict(),
   ready: z.object({ commit: Commit, mergeRequest: Text }).strict(),
   begin_merge: z.object({ attempt: AttemptSchema }).strict(),
-  repair: z.object({ reason: Text }).strict(),
+  // Optional when a failed verification or merge attempt is recorded.
+  repair: z.object({ reason: Text.optional() }).strict(),
   merged: z.object({ receipt: ReceiptSchema }).strict(),
   done: StateSchema.shape.outcome.unwrap().strict(),
 };
@@ -1328,6 +1469,16 @@ function clearReview(state: LifecycleState): void {
   if (state.implementation) delete state.implementation.head;
 }
 
+const REFRESHABLE_PHASES: LifecycleState["phase"][] = [
+  "triaging",
+  "classified",
+  "planning",
+  "approved",
+  "implementing",
+  "ready",
+];
+const MAX_CHANGE_LINES = 40;
+
 /** A changed Agenda description invalidates every decision based on its old contents. */
 export function refreshIssue(
   current: LifecycleState,
@@ -1342,14 +1493,7 @@ export function refreshIssue(
     throw new Error("Cannot replace an issue with a different Agenda identity");
   }
   if (next.digest === state.issue.digest) return state;
-  requirePhase(state, [
-    "triaging",
-    "classified",
-    "planning",
-    "approved",
-    "implementing",
-    "ready",
-  ]);
+  requirePhase(state, REFRESHABLE_PHASES);
   if (state.attempt) {
     throw new Error(
       "Repair the active merge attempt before refreshing its issue",
@@ -1373,6 +1517,85 @@ export function refreshIssue(
   delete state.uxReview;
   clearReview(state);
   return state;
+}
+
+/**
+ * What refreshing to a changed Agenda item would change and void. Drive only
+ * refreshes automatically before any human authorization exists.
+ */
+export function refreshImpact(state: LifecycleState, issue: Issue): {
+  automatic: boolean;
+  refreshable: boolean;
+  changes: string[];
+  invalidates: string[];
+} {
+  const changes: string[] = [];
+  if (issue.text !== state.issue.text) {
+    changes.push(`Title: "${state.issue.text}" -> "${issue.text}"`);
+  }
+  if (issue.note !== state.issue.note) {
+    const lines = (note: string) =>
+      note.split("\n").map((line) => line.trim()).filter(Boolean);
+    const before = lines(state.issue.note);
+    const after = lines(issue.note);
+    const diff = [
+      ...before.filter((line) => !after.includes(line)).map((line) =>
+        `- ${line}`
+      ),
+      ...after.filter((line) => !before.includes(line)).map((line) =>
+        `+ ${line}`
+      ),
+    ];
+    if (!diff.length) diff.push("Note whitespace or line order changed");
+    changes.push(...diff.slice(0, MAX_CHANGE_LINES));
+    if (diff.length > MAX_CHANGE_LINES) {
+      changes.push(`(+${diff.length - MAX_CHANGE_LINES} more lines)`);
+    }
+  }
+  if (!changes.length) {
+    changes.push("Agenda digest changed with identical title and note");
+  }
+  // Only authorizations that still bind current evidence: earlier generations'
+  // decisions and revoked closeouts are already history.
+  const invalidates: string[] = [];
+  if (state.approval) {
+    invalidates.push(
+      `plan approval for version ${state.approval.planVersion}: "${state.approval.request}"`,
+    );
+  }
+  for (const decision of state.reviewDecisions ?? []) {
+    if (!state.plan || decision.planVersion !== state.plan.version) continue;
+    invalidates.push(`review decision ${decision.id}: "${decision.request}"`);
+    if (decision.approval) {
+      invalidates.push(
+        `repair-plan approval for ${decision.id}: "${decision.approval}"`,
+      );
+    }
+  }
+  if (state.mergeAuthorization) {
+    invalidates.push(
+      `merge authorization for ${state.mergeAuthorization.commit}: "${state.mergeAuthorization.request}"`,
+    );
+  }
+  if (
+    state.closeout?.authorizedRequest &&
+    state.closeout.decision !== "invalidated"
+  ) {
+    invalidates.push(`closeout consent: "${state.closeout.authorizedRequest}"`);
+  }
+  if (state.verification?.status === "passed") {
+    invalidates.push(`passed verification ${state.verification.id}`);
+  }
+  const refreshable = REFRESHABLE_PHASES.includes(state.phase) &&
+    !state.attempt;
+  return {
+    automatic: refreshable &&
+      ["triaging", "classified", "planning"].includes(state.phase) &&
+      !invalidates.length,
+    refreshable,
+    changes,
+    invalidates,
+  };
 }
 
 /** Pure transitions: callers persist the returned value after validating external effects. */
@@ -1707,13 +1930,18 @@ export function transition(
           "Verification must run every plan check exactly as approved, in order",
         );
       }
-      const consistent =
-        verification.checks.every((result) =>
-          (result.status === "passed") ===
-            (result.exitCode === 0 && result.worktreeUnchanged)
-        ) &&
+      const baseline = verification.baseline ?? [];
+      if (new Set(baseline.map((b) => b.id)).size !== baseline.length) {
+        throw new Error("Baseline check IDs must be unique");
+      }
+      const runs = [...verification.checks, ...baseline];
+      const consistent = runs.every((result) =>
+        (result.status === "passed") ===
+          (result.exitCode === 0 && result.worktreeUnchanged)
+      ) &&
         (verification.status === "passed") ===
-          verification.checks.every((result) => result.status === "passed");
+          (runs.every((result) => result.status === "passed") &&
+            verification.rebaseProbe?.status !== "conflicts");
       if (!consistent) {
         throw new Error(
           "Verification status must follow its recorded exit codes and worktree checks",
@@ -1804,12 +2032,24 @@ export function transition(
       requirePhase(state, ["implementing", "ready"]);
       const { reason } = ActionSchemas.repair.parse(args);
       const failure = activeMergeFailure(state);
+      const gate = !failure && state.phase === "implementing" &&
+          state.codeReview && state.plan
+        ? implementationMergeGate(state)
+        : undefined;
+      // The implement agent sees lastFailure; copy the recorded evidence there.
+      const evidence = failure
+        ? describeMergeFailure(failure)
+        : gate?.kind === "failed"
+        ? describeVerificationFailure(gate.verification)
+        : undefined;
+      if (!reason && !evidence) {
+        throw new Error(
+          "repair needs a reason unless a failed verification or merge attempt is recorded",
+        );
+      }
       clearReview(state);
       state.phase = "implementing";
-      // The implement agent sees lastFailure; give it the gate's evidence too.
-      state.lastFailure = failure
-        ? `${reason}\n\n${describeMergeFailure(failure)}`
-        : reason;
+      state.lastFailure = [reason, evidence].filter(Boolean).join("\n\n");
       break;
     }
     case "merged": {

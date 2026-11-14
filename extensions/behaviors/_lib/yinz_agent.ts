@@ -121,7 +121,35 @@ export const AgentResponseSchema = z.object({
   background: z.boolean().default(false),
   background_tasks: z.array(z.string()).default([]),
 }).transform(foldBackground);
-type AgentResponse = z.infer<typeof AgentResponseSchema>;
+export type AgentResponse = z.infer<typeof AgentResponseSchema>;
+
+/** Which read or write produced the state's latest saved agent response. */
+export const ObservedViaSchema = z.enum([
+  "startup",
+  "prompt",
+  "submission",
+  "idle",
+  "launch",
+  "launch_status",
+]);
+export type ObservedVia = z.infer<typeof ObservedViaSchema>;
+
+/**
+ * The latest failed cleanup attempt. `thrown` is the exact error text
+ * cleanupAgent threw, so a controller can tell this refusal from a stale one.
+ * It is not trimmed: CLI output in the text can end in whitespace, and the
+ * controller compares it byte for byte.
+ */
+export const CleanupRefusalSchema = z.object({
+  outcome: Text,
+  message: z.string().optional(),
+  thrown: z.string().min(1),
+  retryable: z.boolean(),
+  submissionId: Text.optional(),
+  conversationId: Text.optional(),
+  observedAt: z.iso.datetime(),
+}).strict();
+export type CleanupRefusal = z.infer<typeof CleanupRefusalSchema>;
 
 export const AgentStateSchema = z.object({
   config: AgentConfigSchema,
@@ -160,7 +188,9 @@ export const AgentStateSchema = z.object({
   rawResponse: z.string().optional(),
   lastError: Text.optional(),
   failureKind: z.enum(["timeout", "other"]).optional(),
+  observedVia: ObservedViaSchema.optional(),
   cleanedUp: z.boolean().optional(),
+  cleanupRefusal: CleanupRefusalSchema.optional(),
   continuation: z.object({
     id: z.uuid(),
     prompt: z.string().min(1),
@@ -171,39 +201,133 @@ export const AgentStateSchema = z.object({
 }).strict();
 export type AgentState = z.infer<typeof AgentStateSchema>;
 
+/** Resources a rejection response retains, or why it is not a rejection. */
+function rejectedResponseProblems(value: AgentResponse): string[] {
+  const problems: string[] = [];
+  if (value.outcome !== "rejected") {
+    problems.push(`response outcome is "${value.outcome}", expected rejected`);
+  }
+  const retained = [
+    value.spawned != null && "spawned pane",
+    value.agents.length > 0 && "agent rows",
+    value.submission_id != null && "submission",
+    value.acknowledged && "acknowledgement",
+    value.turn_id != null && "turn",
+    value.background_tasks.length > 0 && "background tasks",
+    value.project != null && "project",
+    value.restarted != null && "restarted pane",
+    value.launch_resources != null && "launch resources",
+  ].filter((item): item is string => typeof item === "string");
+  if (retained.length) {
+    problems.push(`saved rejection retains resources: ${retained.join(", ")}`);
+  }
+  return problems;
+}
+
 function rejectedWithoutResources(value: AgentResponse): boolean {
-  return value.outcome === "rejected" && value.spawned == null &&
-    value.agents.length === 0 && value.submission_id == null &&
-    !value.acknowledged && value.turn_id == null &&
-    value.background_tasks.length === 0 && value.project == null &&
-    value.restarted == null && value.launch_resources == null;
+  return rejectedResponseProblems(value).length === 0;
+}
+
+function quoted(value: unknown): string {
+  return value === undefined ? "absent" : JSON.stringify(value);
+}
+
+/**
+ * Why the saved state does not prove a resource-free launch rejection. Empty
+ * exactly when the launch is definitively rejected: a matching version-two
+ * receipt with closed, non-running resources, or a legacy resource-free
+ * structured rejection.
+ */
+export function rejectedLaunchProblems(state: AgentState): string[] {
+  if (state.launchId && state.launchReceipt && !state.submissionId) {
+    const receipt = state.launchReceipt;
+    const problems: string[] = [];
+    if (receipt.launch_id !== state.launchId) {
+      problems.push(
+        `launch receipt id ${
+          quoted(receipt.launch_id)
+        } differs from the saved launch ${quoted(state.launchId)}`,
+      );
+    }
+    if (receipt.server_instance !== state.launchServer) {
+      problems.push(
+        `launch receipt server ${
+          quoted(receipt.server_instance)
+        } differs from the saved server ${quoted(state.launchServer)}`,
+      );
+    }
+    if (receipt.request_digest !== state.launchRequestDigest) {
+      problems.push(
+        "launch receipt request digest differs from the saved request",
+      );
+    }
+    if (!["rejected", "cancelled", "failed"].includes(receipt.outcome)) {
+      problems.push(
+        `launch receipt outcome is ${
+          quoted(receipt.outcome)
+        }, expected rejected, cancelled or failed`,
+      );
+    }
+    if (!["not_started", "exited"].includes(receipt.process)) {
+      problems.push(
+        `launch receipt process is ${
+          quoted(receipt.process)
+        }, expected not_started or exited`,
+      );
+    }
+    if (receipt.resources.cleanup_pending) {
+      problems.push("cleanup is still pending");
+    }
+    if (receipt.disposition !== "closed") {
+      problems.push(
+        `receipt disposition is ${
+          quoted(receipt.disposition)
+        }, expected closed`,
+      );
+    }
+    return problems;
+  }
+  const problems: string[] = [];
+  if (state.phase !== "launch_rejected") {
+    const why = state.launchId && state.launchReceipt
+      ? "a submission exists, so the version-two launch receipt does not apply,"
+      : "no version-two launch receipt";
+    problems.push(
+      `${why} and phase is ${quoted(state.phase)}, not launch_rejected`,
+    );
+  }
+  if (state.outcome !== "rejected") {
+    problems.push(`outcome is ${quoted(state.outcome)}, expected rejected`);
+  }
+  const retained = [
+    state.paneId !== undefined && "spawned pane",
+    state.tabId !== undefined && "tab",
+    state.conversationId !== undefined && "conversation",
+    state.submissionId !== undefined && "submission",
+    state.turnId !== undefined && "turn",
+    state.backgroundTasks.length > 0 && "background tasks",
+  ].filter((item): item is string => typeof item === "string");
+  if (retained.length) {
+    problems.push(`saved rejection retains resources: ${retained.join(", ")}`);
+  }
+  if (state.rawResponse === undefined) {
+    problems.push("no saved rejection response");
+    return problems;
+  }
+  try {
+    problems.push(
+      ...rejectedResponseProblems(
+        AgentResponseSchema.parse(JSON.parse(state.rawResponse)),
+      ),
+    );
+  } catch {
+    problems.push("saved rejection response is not a valid agent response");
+  }
+  return problems;
 }
 
 export function isRejectedLaunch(state: AgentState): boolean {
-  if (state.launchId && state.launchReceipt && !state.submissionId) {
-    const receipt = state.launchReceipt;
-    return receipt.launch_id === state.launchId &&
-      receipt.server_instance === state.launchServer &&
-      receipt.request_digest === state.launchRequestDigest &&
-      ["rejected", "cancelled", "failed"].includes(receipt.outcome) &&
-      ["not_started", "exited"].includes(receipt.process) &&
-      !receipt.resources.cleanup_pending &&
-      receipt.disposition === "closed";
-  }
-  if (
-    state.phase !== "launch_rejected" || state.outcome !== "rejected" ||
-    state.paneId !== undefined || state.tabId !== undefined ||
-    state.conversationId !== undefined || state.submissionId !== undefined ||
-    state.turnId !== undefined || state.backgroundTasks.length ||
-    state.rawResponse === undefined
-  ) return false;
-  try {
-    return rejectedWithoutResources(
-      AgentResponseSchema.parse(JSON.parse(state.rawResponse)),
-    );
-  } catch {
-    return false;
-  }
+  return rejectedLaunchProblems(state).length === 0;
 }
 const PreparationFailures = new Set([
   "failed",
@@ -214,28 +338,131 @@ const PreparationFailures = new Set([
   "timed_out",
 ]);
 
+/**
+ * Why the saved response does not prove a terminal failure. Empty exactly when
+ * a correlated provider failure or explicit non-delivery proves terminality.
+ */
+export function terminalFailureProblems(state: AgentState): string[] {
+  const problems: string[] = [];
+  if (!state.paneId) problems.push("no pane id");
+  if (!state.conversationId) problems.push("no conversation id");
+  if (!state.submissionId) problems.push("no submission id");
+  if (!["waiting", "submitting"].includes(state.phase)) {
+    problems.push(
+      `phase is ${quoted(state.phase)}, expected waiting or submitting`,
+    );
+  }
+  if (!state.rawResponse) {
+    problems.push("no saved submission response");
+    return problems;
+  }
+  let value: AgentResponse;
+  try {
+    value = AgentResponseSchema.parse(JSON.parse(state.rawResponse));
+  } catch {
+    problems.push("latest response is not a valid agent response");
+    return problems;
+  }
+  let agentBackground: string[] = [];
+  try {
+    agentBackground = selectedAgent(state, value).agent.background_tasks;
+  } catch (error) {
+    problems.push(
+      `latest response: ${error instanceof Error ? error.message : error}`,
+    );
+  }
+  if (value.submission_id !== state.submissionId) {
+    problems.push(
+      "latest response submission differs from the saved submission",
+    );
+  }
+  if (value.prompt_delivery === "not_sent") {
+    if (!PreparationFailures.has(value.outcome)) {
+      problems.push(
+        `structured not_sent outcome ${
+          quoted(value.outcome)
+        } is not a preparation failure`,
+      );
+    }
+    if (value.acknowledged) problems.push("not_sent response is acknowledged");
+    if (value.turn_id != null) problems.push("not_sent response has a turn id");
+    if (state.turnId !== undefined) problems.push("saved state has a turn id");
+    if (
+      value.background_tasks.length || agentBackground.length ||
+      state.backgroundTasks.length
+    ) problems.push("background tasks are running");
+    return problems;
+  }
+  // A delivery error is also called `failed`; only an acknowledged provider
+  // failure can use the existing terminal-turn recovery path.
+  if (value.outcome !== "failed" || !value.acknowledged) {
+    problems.push(
+      `latest response outcome ${quoted(value.outcome)}${
+        value.outcome === "failed" ? " (unacknowledged)" : ""
+      } is neither an acknowledged failed nor a structured not_sent preparation failure`,
+    );
+  }
+  return problems;
+}
+
 /** A correlated provider failure or explicit non-delivery proves terminality. */
 export function isTerminalFailure(state: AgentState): boolean {
-  if (
-    !state.paneId || !state.conversationId || !state.submissionId ||
-    !["waiting", "submitting"].includes(state.phase) || !state.rawResponse
-  ) return false;
-  try {
-    const value = AgentResponseSchema.parse(JSON.parse(state.rawResponse));
-    const { agent } = selectedAgent(state, value);
-    if (value.submission_id !== state.submissionId) return false;
-    if (value.prompt_delivery === "not_sent") {
-      return PreparationFailures.has(value.outcome) && !value.acknowledged &&
-        value.turn_id == null && state.turnId === undefined &&
-        !value.background_tasks.length && !agent.background_tasks.length &&
-        !state.backgroundTasks.length;
-    }
-    // A delivery error is also called `failed`; only an acknowledged provider
-    // failure can use the existing terminal-turn recovery path.
-    return value.outcome === "failed" && value.acknowledged;
-  } catch {
-    return false;
+  return terminalFailureProblems(state).length === 0;
+}
+
+/**
+ * Why the durable state is not a completed, quiescent worker with a retained
+ * pane, conversation and submission. It carries no fresh observation.
+ */
+export function completedWorkerProblems(state: AgentState): string[] {
+  const problems: string[] = [];
+  if (!["completed", "completed_unusable"].includes(state.phase)) {
+    problems.push(
+      `phase is ${
+        quoted(state.phase)
+      }, expected completed or completed_unusable`,
+    );
   }
+  if (state.outcome !== "completed") {
+    problems.push(`outcome is ${quoted(state.outcome)}, expected completed`);
+  }
+  if (state.backgroundTasks.length) {
+    problems.push(
+      `background tasks are running: ${state.backgroundTasks.join(", ")}`,
+    );
+  }
+  if (!state.paneId) problems.push("no pane id");
+  if (!state.conversationId) problems.push("no conversation id");
+  if (!state.submissionId) problems.push("no submission id");
+  return problems;
+}
+
+type AgentRow = AgentResponse["agents"][number];
+
+/**
+ * Why a fresh status row is not idle and drained. A leftover
+ * `unconsumed_input` marker is not a problem.
+ */
+export function idleProblems(agent: AgentRow, value: AgentResponse): string[] {
+  const problems: string[] = [];
+  if (!agent.status_available) problems.push("status unavailable");
+  if (agent.agent.state.toLowerCase() !== "idle") {
+    problems.push(`agent state is ${quoted(agent.agent.state)}, expected idle`);
+  }
+  const background = [...agent.background_tasks, ...value.background_tasks];
+  if (background.length) {
+    problems.push(`background tasks are running: ${background.join(", ")}`);
+  }
+  if (!agent.prompt_supported) problems.push("prompt unsupported");
+  if (
+    agent.not_ready_reason != null &&
+    agent.not_ready_reason !== "unconsumed_input"
+  ) {
+    problems.push(`not ready: ${agent.not_ready_reason}`);
+  } else if (!agent.ready && agent.not_ready_reason !== "unconsumed_input") {
+    problems.push("not ready: no reason reported");
+  }
+  return problems;
 }
 
 export const AgentResultSchema = z.object({
@@ -536,10 +763,13 @@ async function response(
   state: AgentState,
   args: string[],
   dependencies: Dependencies,
+  observedVia: ObservedVia,
   stdin?: string,
 ): Promise<AgentResponse> {
   const result = await dependencies.run(args, stdin, context.signal);
   state.rawResponse = result.stdout || result.stderr;
+  // Diagnostic only: legacy records lack it, so no recovery decision depends on it.
+  state.observedVia = observedVia;
   let parsed: AgentResponse;
   try {
     parsed = AgentResponseSchema.parse(JSON.parse(result.stdout));
@@ -669,6 +899,7 @@ async function observeBackground(
       `${state.config.timeoutSeconds}s`,
     ]),
     dependencies,
+    "idle",
   );
   if (value.outcome !== "ok" && value.outcome !== "completed") {
     throw new ObservationError(
@@ -786,6 +1017,7 @@ async function submit(
       ...(state.conversationId ? ["--conversation", state.conversationId] : []),
     ]),
     dependencies,
+    "startup",
   );
   if (value.outcome !== "ok") {
     throw new ObservationError(
@@ -833,6 +1065,7 @@ async function submit(
       ...(conversation ? ["--conversation", conversation] : []),
     ]),
     dependencies,
+    "prompt",
     prompt,
   );
   state.phase = "waiting";
@@ -885,7 +1118,47 @@ async function waitForSubmission(
       ...(state.conversationId ? ["--conversation", state.conversationId] : []),
     ]),
     dependencies,
+    "submission",
   );
+}
+
+/**
+ * A read-only launch preflight lost its transport (CLI failure or unparsable
+ * output) before any launch intent was saved or spawn was sent.
+ */
+export class PreflightTransportError extends Error {}
+
+function preflightTransport(
+  state: AgentState,
+  what: string,
+  detail: string,
+): PreflightTransportError {
+  state.outcome = "preflight_transport";
+  return new PreflightTransportError(
+    `Launch preflight transport failure (${what}): ${detail}; launch was not sent`,
+  );
+}
+
+function preflightJson(
+  state: AgentState,
+  what: string,
+  result: CommandResult,
+): unknown {
+  try {
+    return JSON.parse(result.stdout);
+  } catch (error) {
+    throw preflightTransport(
+      state,
+      what,
+      `invalid JSON (exit ${result.code}): ${
+        error instanceof Error ? error.message : String(error)
+      }${
+        result.stderr || result.stdout
+          ? `: ${result.stderr || result.stdout}`
+          : ""
+      }`,
+    );
+  }
 }
 
 async function launch(
@@ -893,6 +1166,9 @@ async function launch(
   state: AgentState,
   dependencies: Dependencies,
 ): Promise<ResourceHandle[]> {
+  // A retried preflight starts fresh; a previous attempt's outcome must not
+  // describe this attempt's failure.
+  delete state.outcome;
   if (state.config.stackWorkers && !state.config.control) {
     throw new Error("Worker stacks require a control pane");
   }
@@ -946,7 +1222,9 @@ async function launch(
       context.signal,
     );
     if (result.code !== 0) {
-      throw new Error(
+      throw preflightTransport(
+        state,
+        "list-panes",
         `Cannot resolve control pane: ${result.stderr || result.stdout}`,
       );
     }
@@ -954,7 +1232,7 @@ async function launch(
       id: z.number().int().nonnegative(),
       is_plugin: z.boolean(),
       tab_id: z.number().int().nonnegative(),
-    })).parse(JSON.parse(result.stdout));
+    })).parse(preflightJson(state, "list-panes", result));
     const matches = panes.filter((pane) =>
       !pane.is_plugin && `terminal_${pane.id}` === control.paneId
     );
@@ -976,7 +1254,9 @@ async function launch(
     undefined,
     context.signal,
   );
-  const support = AgentResponseSchema.parse(JSON.parse(supportResult.stdout));
+  const support = AgentResponseSchema.parse(
+    preflightJson(state, "launch-support", supportResult),
+  );
   if (
     supportResult.code !== 0 || support.outcome !== "ok" ||
     support.output !== "agent-launch-transaction-v2" || !support.server_instance
@@ -990,12 +1270,17 @@ async function launch(
   state.launchId = `${support.server_instance}.${dependencies.id()}`;
   args.push("--launch-id", state.launchId);
   state.phase = "launching";
+  // Invariant: the launch intent (launchId, phase `launching`) is saved before
+  // spawn is sent. A state still in `preflight` without launchId therefore
+  // proves no spawn was sent, so retrying a preflight transport failure is a
+  // first launch, never a respawn. Keep this order if launch() is reordered.
   await save(context, state, dependencies);
   const value = await response(
     context,
     state,
     commandArgs(state, args),
     dependencies,
+    "launch",
   );
   return await acceptLaunch(context, state, value, dependencies);
 }
@@ -1161,6 +1446,7 @@ export async function confirmFailureAgent(
         `${state.config.timeoutSeconds}s`,
       ]),
       dependencies,
+      "submission",
     );
     if (!isTerminalFailure(state)) {
       throw new Error(
@@ -1174,16 +1460,12 @@ export async function confirmFailureAgent(
     );
     const value = AgentResponseSchema.parse(JSON.parse(raw.rawResponse));
     const { agent } = selectedAgent(state, value);
-    if (
-      !agent.status_available || agent.agent.state.toLowerCase() !== "idle" ||
-      agent.background_tasks.length || value.background_tasks.length ||
-      !agent.prompt_supported ||
-      (agent.not_ready_reason != null &&
-        agent.not_ready_reason !== "unconsumed_input") ||
-      (!agent.ready && agent.not_ready_reason !== "unconsumed_input")
-    ) {
+    const problems = idleProblems(agent, value);
+    if (problems.length) {
       throw new Error(
-        "Cannot discard an uncertain or active pane task: require fresh idle status with no background work or pending clearing/submission writes; wait for writes to drain and inspect the composer before reuse",
+        `Cannot discard an uncertain or active pane task: ${
+          problems.join("; ")
+        }; require fresh idle status with no background work or pending clearing/submission writes; wait for writes to drain and inspect the composer before reuse`,
       );
     }
     return observation.dataHandles;
@@ -1254,6 +1536,7 @@ export async function resumeAgent(
         state,
         commandArgs(state, ["launch-status", state.launchId]),
         dependencies,
+        "launch_status",
       );
       return await acceptLaunch(context, state, value, dependencies);
     }
@@ -1268,14 +1551,13 @@ export async function resumeAgent(
 
 /** Check before persisting a new continuation in either controller or provider. */
 export function assertContinuationEligible(state: AgentState) {
-  if (
-    !["completed", "completed_unusable"].includes(state.phase) ||
-    state.outcome !== "completed" || state.backgroundTasks.length ||
-    !state.paneId || !state.conversationId || !state.submissionId ||
-    state.cleanedUp
-  ) {
+  const problems = completedWorkerProblems(state);
+  if (state.cleanedUp) problems.push("the worker was already cleaned up");
+  if (problems.length) {
     throw new Error(
-      "Submission continuation requires the original completed, retained conversation with no background work; inspect the pane, do not launch a replacement",
+      `Submission continuation requires the original completed, retained conversation with no background work; inspect the pane, do not launch a replacement (${
+        problems.join("; ")
+      })`,
     );
   }
 }
@@ -1393,6 +1675,140 @@ export async function statusAgent(
   return { dataHandles: [observation] };
 }
 
+/**
+ * confirm_stopped's refusal prefix when it did observe the worker and found it
+ * not stopped. An operator attestation never overrides that observation.
+ */
+export const WORKER_NOT_STOPPED = "Completed worker is not stopped";
+
+/**
+ * Freshly observe that a completed worker stopped: its pane is listed in its
+ * session and idle in the same provider and conversation with no background
+ * work or pending writes. A pane missing from the session's listing is not
+ * evidence of a stop: warp-pane and warp-tab move a pane, running process and
+ * all, to another session, and a pty-host supervisor can outlive its server
+ * while a new server reuses the session name. That case, like a failed
+ * listing, is refused as unobservable. It writes only the `observation`
+ * resource; it never changes `state`, so a refusal leaves no lastError or
+ * failureKind behind.
+ */
+export async function confirmStoppedAgent(
+  context: AgentContext,
+  dependencies = defaultDependencies,
+) {
+  const state = await load(context, dependencies);
+  const problems = completedWorkerProblems(state);
+  if (problems.length) {
+    throw new Error(
+      `Cannot confirm a stopped worker: ${problems.join("; ")}`,
+    );
+  }
+  const session = state.config.session;
+  const listing = await dependencies.run(
+    ["--session", session, "action", "list-panes", "--json"],
+    undefined,
+    context.signal,
+  );
+  const unobservable =
+    "the behavior cannot observe whether the completed worker stopped";
+  if (listing.code !== 0) {
+    throw new Error(`Cannot list panes in session ${session}; ${unobservable}`);
+  }
+  let panes: { id: number; is_plugin: boolean }[];
+  try {
+    panes = z.array(z.object({ id: z.number(), is_plugin: z.boolean() }))
+      .parse(JSON.parse(listing.stdout));
+  } catch {
+    throw new Error(
+      `Pane listing for session ${session} is malformed; ${unobservable}`,
+    );
+  }
+  if (!panes.some((p) => !p.is_plugin && `terminal_${p.id}` === state.paneId)) {
+    throw new Error(
+      `Pane ${state.paneId} is not listed in session ${session}; it may have moved to another session or outlived its server, so ${unobservable}`,
+    );
+  }
+  // statusAgent rejects a failed observation or a changed session, provider
+  // or conversation before the idle check below.
+  const observation = await statusAgent(context, dependencies);
+  const raw = AgentObservationSchema.parse(
+    await context.readResource("observation"),
+  );
+  const value = AgentResponseSchema.parse(JSON.parse(raw.rawResponse));
+  const { agent } = selectedAgent(state, value);
+  const idle = idleProblems(agent, value);
+  if (idle.length) {
+    throw new Error(`${WORKER_NOT_STOPPED}: ${idle.join("; ")}`);
+  }
+  return observation;
+}
+
+/**
+ * Fragments of Rust `CloseCompleted` refusals (yinz-screen agent_control.rs)
+ * that concern identity, correlation or pane topology. Retrying cannot change
+ * them, so they always need a human. unit/yinz_agent_test.ts pins them against
+ * the Rust source.
+ */
+export const CLOSE_COMPLETED_CORRELATION_REFUSALS = [
+  "close-completed requires the worker's conversation",
+  "is not retained for this worker",
+  "is not the worker's latest submission",
+  "has no acknowledged completed result in this conversation",
+  "worker cleanup would affect other panes",
+  "worker pane could not be closed",
+] as const;
+
+/** Exact `CloseCompleted` guards for work that finishes by itself. */
+export const CLOSE_COMPLETED_TRANSIENT_REFUSALS = [
+  "worker is Busy, not idle",
+  "worker background work is still running",
+  "worker has an unresolved accepted turn",
+  "a Yinz prompt write to the worker is still in flight",
+  "a Yinz control operation on the worker is still in flight",
+] as const;
+
+const TransientNotReady = new Set([
+  "pending_submission",
+  "clearing_draft",
+  "unresolved_turn",
+  "not_idle",
+]);
+
+/**
+ * Whether a close-completed refusal is a transient guard on the same worker,
+ * conversation and submission. Status, dialog, exit, identity and correlation
+ * refusals are never transient. Rust checks the conversation and idleness
+ * before correlation, so a correlation failure hidden behind `Busy` appears on
+ * a later attempt and is then not retryable; close-completed stays fully
+ * guarded on every attempt.
+ */
+export function transientCleanupRefusal(
+  state: AgentState,
+  value: AgentResponse,
+): boolean {
+  if (value.outcome !== "rejected") return false;
+  const message = value.message ?? "";
+  if (CLOSE_COMPLETED_CORRELATION_REFUSALS.some((f) => message.includes(f))) {
+    return false;
+  }
+  if (/^worker is (Waiting|Exited), not idle$/.test(message)) return false;
+  const rows = value.agents.filter((row) => row.pane_id === state.paneId);
+  if (rows.length !== 1) return false;
+  const [row] = rows;
+  if (
+    row.session !== state.config.session ||
+    row.agent.kind !== state.config.kind ||
+    (row.agent.session_id || undefined) !== state.conversationId
+  ) return false;
+  const agentState = row.agent.state.toLowerCase();
+  if (agentState === "waiting" || agentState === "exited") return false;
+  return (CLOSE_COMPLETED_TRANSIENT_REFUSALS as readonly string[]).includes(
+    message,
+  ) || agentState === "busy" || row.background_tasks.length > 0 ||
+    value.background_tasks.length > 0 ||
+    TransientNotReady.has(row.not_ready_reason ?? "");
+}
+
 /** Called only after the lifecycle has durably accepted the result. */
 export async function cleanupAgent(
   context: AgentContext,
@@ -1400,21 +1816,60 @@ export async function cleanupAgent(
 ) {
   const state = await load(context, dependencies);
   if (state.cleanedUp) return { dataHandles: [] };
+  // Every refusal is saved before it is thrown, with the exact thrown text, so
+  // a controller can match a fresh refusal to the error it received.
+  const refuse = async (
+    error: Error,
+    outcome: string,
+    retryable: boolean,
+    message?: string,
+  ): Promise<Error> => {
+    state.cleanupRefusal = CleanupRefusalSchema.parse({
+      outcome,
+      ...(message != null ? { message } : {}),
+      thrown: error.message,
+      retryable,
+      ...(state.submissionId ? { submissionId: state.submissionId } : {}),
+      ...(state.conversationId ? { conversationId: state.conversationId } : {}),
+      observedAt: dependencies.now(),
+    });
+    await save(context, state, dependencies);
+    return error;
+  };
   if (
     state.phase !== "completed" || !state.paneId || !state.conversationId ||
     !state.submissionId ||
     state.backgroundTasks.length
-  ) throw new Error("Worker is not ready for cleanup");
+  ) {
+    throw await refuse(
+      new Error("Worker is not ready for cleanup"),
+      "not_ready",
+      false,
+    );
+  }
   const listing = await dependencies.run(
     ["--session", state.config.session, "action", "list-panes", "--json"],
     undefined,
     context.signal,
   );
   if (listing.code !== 0) {
-    throw new Error("Cannot inspect worker before cleanup");
+    throw await refuse(
+      new Error("Cannot inspect worker before cleanup"),
+      "list_panes_failed",
+      true,
+    );
   }
-  const panes = z.array(z.object({ id: z.number(), is_plugin: z.boolean() }))
-    .parse(JSON.parse(listing.stdout));
+  let panes: { id: number; is_plugin: boolean }[];
+  try {
+    panes = z.array(z.object({ id: z.number(), is_plugin: z.boolean() }))
+      .parse(JSON.parse(listing.stdout));
+  } catch (error) {
+    throw await refuse(
+      error instanceof Error ? error : new Error(String(error)),
+      "list_panes_failed",
+      true,
+    );
+  }
   if (panes.some((p) => !p.is_plugin && `terminal_${p.id}` === state.paneId)) {
     const result = await dependencies.run(
       commandArgs(state, [
@@ -1432,20 +1887,30 @@ export async function cleanupAgent(
     try {
       value = AgentResponseSchema.parse(JSON.parse(result.stdout));
     } catch {
-      throw new Error(
-        `Worker cleanup returned no valid agent response (exit ${result.code}): ${
-          result.stderr || result.stdout
-        }`,
+      throw await refuse(
+        new Error(
+          `Worker cleanup returned no valid agent response (exit ${result.code}): ${
+            result.stderr || result.stdout
+          }`,
+        ),
+        "transport_error",
+        true,
       );
     }
     if (result.code !== 0 || value.outcome !== "ok") {
-      throw new Error(
-        `Worker cleanup blocked: ${value.outcome}${
-          value.message ? `: ${value.message}` : ""
-        }`,
+      throw await refuse(
+        new Error(
+          `Worker cleanup blocked: ${value.outcome}${
+            value.message ? `: ${value.message}` : ""
+          }`,
+        ),
+        value.outcome,
+        transientCleanupRefusal(state, value),
+        value.message ?? undefined,
       );
     }
   }
+  delete state.cleanupRefusal;
   state.cleanedUp = true;
   return { dataHandles: [await save(context, state, dependencies)] };
 }

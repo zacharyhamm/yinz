@@ -41,6 +41,9 @@ import {
 function assert(v: unknown, message = "Assertion failed"): asserts v {
   if (!v) throw new Error(message);
 }
+function equal(actual: unknown, expected: unknown) {
+  assert(actual === expected, `${actual} !== ${expected}`);
+}
 function rejects(f: () => unknown, text: string) {
   try {
     f();
@@ -138,6 +141,7 @@ function assignment(
   role: "review_code" | "plan_review_fixes" | "implement_review_fixes" =
     "review_code",
   modern = true,
+  contractVersion: 2 | 3 = 2,
 ) {
   const task = {
     id,
@@ -159,7 +163,7 @@ function assignment(
   const core = modern
     ? {
       ...legacy,
-      contractVersion: 2,
+      contractVersion,
       round: {
         assignmentId: id,
         role,
@@ -199,59 +203,62 @@ function assignment(
     promptDigest: "d".repeat(64),
   });
 }
-Deno.test("continuity: version-two repair receipts retain review archival on replay", () => {
-  let state = selected();
-  const findings = selectedRepairFindings(state);
-  state = transition(state, "plan_review_fixes", {
-    ...plan,
-    findingMappings: findings.map((p) => ({
-      finding: p.ref,
-      steps: ["check"],
-      checks: ["check"],
-    })),
-  });
-  state = transition(state, "approve_review_fixes", {
-    id,
-    handoffId: id,
-    request: "Implement both fixes",
-  });
-  archiveReviews(state, "Earlier review", "review_code");
-  const current = assignment(state, "implement_review_fixes");
-  const validated = validateEvidence(current, {
-    role: "implement_review_fixes",
-    evidence: {
-      summary: "Repaired",
-      commit: head,
-      responses: findings.map((p) => ({
+for (const version of [2, 3] as const) {
+  Deno.test(`continuity: version-${version === 2 ? "two" : "three"} repair receipts retain review archival on replay`, () => {
+    let state = selected();
+    const findings = selectedRepairFindings(state);
+    state = transition(state, "plan_review_fixes", {
+      ...plan,
+      findingMappings: findings.map((p) => ({
         finding: p.ref,
-        status: "addressed",
-        rationale: "Fixed and probed",
-        affectedPaths: ["check.ts"],
-        checkIds: ["check"],
-        evidence: ["probe.log"],
+        steps: ["check"],
+        checks: ["check"],
       })),
-    },
+    });
+    state = transition(state, "approve_review_fixes", {
+      id,
+      handoffId: id,
+      request: "Implement both fixes",
+    });
+    archiveReviews(state, "Earlier review", "review_code");
+    const current = assignment(state, "implement_review_fixes", true, version);
+    equal(current.contractVersion, version);
+    const validated = validateEvidence(current, {
+      role: "implement_review_fixes",
+      evidence: {
+        summary: "Repaired",
+        commit: head,
+        responses: findings.map((p) => ({
+          finding: p.ref,
+          status: "addressed",
+          rationale: "Fixed and probed",
+          affectedPaths: ["check.ts"],
+          checkIds: ["check"],
+          evidence: ["probe.log"],
+        })),
+      },
+    });
+    assert(validated.next.reviewHistory?.length === 2);
+    assert(!validated.next.codeReview && !validated.next.uxReview);
+    assert(current.before.reviewHistory?.length === 1);
+    const receipt = {
+      taskId: current.taskId,
+      assignmentDigest: current.digest,
+      payloadDigest: evidenceDigest(validated.payload),
+      acceptedAt: "2026-11-11T00:00:00Z",
+      ...validated,
+    };
+    assert(validateReceipt(current, receipt).next.reviewHistory?.length === 2);
+    rejects(
+      () =>
+        validateReceipt(current, {
+          ...receipt,
+          next: { ...receipt.next, reviewHistory: state.reviewHistory },
+        }),
+      "original assignment",
+    );
   });
-  assert(validated.next.reviewHistory?.length === 2);
-  assert(!validated.next.codeReview && !validated.next.uxReview);
-  assert(current.before.reviewHistory?.length === 1);
-  const receipt = {
-    taskId: current.taskId,
-    assignmentDigest: current.digest,
-    payloadDigest: evidenceDigest(validated.payload),
-    acceptedAt: "2026-11-11T00:00:00Z",
-    ...validated,
-  };
-  assert(validateReceipt(current, receipt).next.reviewHistory?.length === 2);
-  rejects(
-    () =>
-      validateReceipt(current, {
-        ...receipt,
-        next: { ...receipt.next, reviewHistory: state.reviewHistory },
-      }),
-    "original assignment",
-  );
-});
+}
 
 Deno.test("continuity: role collisions retain separate origins and exact repair coverage", () => {
   const s = selected();
@@ -404,46 +411,58 @@ Deno.test("continuity: ignored concerns stay unresolved and require a fresh fing
     s.reviewDecisions![0].reviewFingerprint === old && !activeReviewFix(s),
   );
 });
-Deno.test("continuity: new assignment binding rejects missing context, requirements and baseline tampering; legacy parses", () => {
-  const s = fixture();
-  const legacy = assignment(s, "review_code", false);
-  validateAssignment(legacy);
-  const current = assignment(s);
-  validateAssignment(current);
-  rejects(
-    () => validateAssignment({ ...current, continuity: undefined }),
-    "continuity",
-  );
-  rejects(
-    () =>
-      validateAssignment({
-        ...current,
-        before: { ...s, issue: { ...issue, digest: "f".repeat(64) } },
-      }),
-    "continuity",
-  );
-  rejects(
-    () =>
-      validateAssignment({
-        ...current,
-        continuity: {
-          ...current.continuity!,
-          baseline: { ...baseline, head: "f".repeat(40) },
-        },
-      }),
-    "continuity",
-  );
-  const evidence = {
-    role: "review_code",
-    evidence: {
-      planVersion: 1,
-      commit: "f".repeat(40),
-      steps: [{ id: "check", status: "implemented" }],
-      findings: [],
-    },
-  };
-  rejects(() => validateEvidence(current, evidence), "different commit");
-});
+for (const version of [2, 3] as const) {
+  Deno.test(`continuity: contract-${version} assignment binding rejects missing context, requirements and baseline tampering; legacy parses`, () => {
+    const s = fixture();
+    const legacy = assignment(s, "review_code", false);
+    validateAssignment(legacy);
+    const current = assignment(s, "review_code", true, version);
+    equal(current.contractVersion, version);
+    validateAssignment(current);
+    rejects(
+      () => validateAssignment({ ...current, continuity: undefined }),
+      "continuity",
+    );
+    rejects(
+      () =>
+        validateAssignment({
+          ...current,
+          before: { ...s, issue: { ...issue, digest: "f".repeat(64) } },
+        }),
+      "continuity",
+    );
+    rejects(
+      () =>
+        validateAssignment({
+          ...current,
+          continuity: {
+            ...current.continuity!,
+            baseline: { ...baseline, head: "f".repeat(40) },
+          },
+        }),
+      "continuity",
+    );
+    const evidence = {
+      role: "review_code",
+      evidence: {
+        planVersion: 1,
+        commit: "f".repeat(40),
+        steps: [{ id: "check", status: "implemented" }],
+        findings: [],
+      },
+    };
+    rejects(() => validateEvidence(current, evidence), "different commit");
+    // Changing the contract version changes the bound digest.
+    rejects(
+      () =>
+        validateAssignment({
+          ...current,
+          contractVersion: version === 2 ? 3 : 2,
+        }),
+      "digest",
+    );
+  });
+}
 const advisory = () =>
   AdvisoryEvidence.parse({
     producingTask: id,
@@ -619,5 +638,47 @@ Deno.test("continuity: reuse must retain known original provenance and cannot in
         },
       }),
     "original provenance",
+  );
+});
+function goldenPacketStates() {
+  const repair = selected();
+  const repairPlanned = transition(repair, "plan_review_fixes", {
+    ...plan,
+    findingMappings: selectedRepairFindings(repair).map((p) => ({
+      finding: p.ref,
+      steps: ["check"],
+      checks: ["check"],
+    })),
+  });
+  const approved = transition(repairPlanned, "approve_review_fixes", {
+    id,
+    handoffId: id,
+    request: "Implement both fixes",
+  });
+  archiveReviews(approved, "Earlier review", "review_code");
+  return { fixture: fixture(), reviewed: reviewed(), repair, approved };
+}
+// Golden digests recorded on the code before contract 3. validateAssignment
+// recomputes packetDigest for every open or accepted contract-2/3 assignment,
+// so any change to reviewPacket(), canonical() or evidenceDigest() output
+// fences in-flight tasks and accepted receipts.
+const GOLDEN_PACKET_DIGESTS: Record<string, string> = {
+  fixture: "ff8ad4bfa2558e6c1b1128f7c8442d29f3d2e9e8b347e4519cc58ced741f9c4b",
+  reviewed: "a06c449fa009d723fc8c981442cbaab08ae41d13dc36c2a9b2a76fde78d63b62",
+  repair: "043a7bd4790e94bc78a6298adaac79db77b7c35eddbd803b7356136d436060e9",
+  approved: "bf507d6479489206c3099850cdea93b4f7bb001c525522cd4ca039debe9bf289",
+};
+Deno.test("reviewPacket output is byte-stable for bound assignments", () => {
+  const states = goldenPacketStates();
+  const actual = Object.fromEntries(
+    Object.entries(states).map((
+      [name, state],
+    ) => [name, evidenceDigest(reviewPacket(state))]),
+  );
+  for (const [name, digest] of Object.entries(GOLDEN_PACKET_DIGESTS)) {
+    assert(actual[name] === digest, `${name}: ${actual[name]} !== ${digest}`);
+  }
+  assert(
+    Object.keys(actual).length === Object.keys(GOLDEN_PACKET_DIGESTS).length,
   );
 });

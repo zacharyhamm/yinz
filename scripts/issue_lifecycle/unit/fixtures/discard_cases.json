@@ -1,0 +1,332 @@
+[
+  {
+    "name": "v2 rejected",
+    "child": {
+      "config": {
+        "session": "dev",
+        "kind": "claude",
+        "cwd": "/work/issue",
+        "startupTimeoutSeconds": 120,
+        "timeoutSeconds": 600
+      },
+      "prompt": "Fix it",
+      "promptDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "phase": "launch_rejected",
+      "launchVersion": 2,
+      "launchId": "launch-1",
+      "launchRequestDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "launchServer": "server-test",
+      "launchReceipt": {
+        "version": 2,
+        "launch_id": "launch-1",
+        "request_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "server_instance": "server-test",
+        "outcome": "rejected",
+        "phase": "finished",
+        "reason": "invalid_request",
+        "process": "not_started",
+        "resources": {
+          "cleanup_pending": false
+        },
+        "disposition": "closed"
+      },
+      "outcome": "rejected",
+      "message": "Unsupported effort: ultra",
+      "backgroundTasks": [],
+      "rawResponse": "{\"outcome\": \"rejected\", \"message\": \"Unsupported effort: ultra\", \"launch\": {\"version\": 2, \"launch_id\": \"launch-1\", \"request_digest\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"server_instance\": \"server-test\", \"outcome\": \"rejected\", \"phase\": \"finished\", \"reason\": \"invalid_request\", \"process\": \"not_started\", \"resources\": {\"cleanup_pending\": false}, \"disposition\": \"closed\"}}",
+      "lastError": "Agent launch was rejected",
+      "failureKind": "other",
+      "createdAt": "2026-11-03T12:00:00.000Z",
+      "updatedAt": "2026-11-03T12:00:00.000Z"
+    },
+    "expected": {
+      "rejectedLaunch": true,
+      "terminalFailure": false,
+      "completedWorker": false
+    }
+  },
+  {
+    "name": "v2 running",
+    "child": {
+      "config": {
+        "session": "dev",
+        "kind": "claude",
+        "cwd": "/work/issue",
+        "startupTimeoutSeconds": 120,
+        "timeoutSeconds": 600
+      },
+      "prompt": "Fix it",
+      "promptDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "phase": "launching",
+      "launchVersion": 2,
+      "launchId": "launch-1",
+      "launchRequestDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "launchServer": "server-test",
+      "launchReceipt": {
+        "version": 2,
+        "launch_id": "launch-1",
+        "request_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "server_instance": "server-test",
+        "outcome": "started",
+        "phase": "finished",
+        "reason": null,
+        "process": "running",
+        "resources": {
+          "cleanup_pending": false
+        },
+        "disposition": "available"
+      },
+      "outcome": "ok",
+      "backgroundTasks": [],
+      "rawResponse": "{\"outcome\": \"ok\", \"launch\": {\"version\": 2, \"launch_id\": \"launch-1\", \"request_digest\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"server_instance\": \"server-test\", \"outcome\": \"started\", \"phase\": \"finished\", \"reason\": null, \"process\": \"running\", \"resources\": {\"cleanup_pending\": false}, \"disposition\": \"available\"}}",
+      "createdAt": "2026-11-03T12:00:00.000Z",
+      "updatedAt": "2026-11-03T12:00:00.000Z"
+    },
+    "expected": {
+      "rejectedLaunch": false,
+      "terminalFailure": false,
+      "completedWorker": false
+    }
+  },
+  {
+    "name": "legacy structured rejection",
+    "child": {
+      "config": {
+        "session": "dev",
+        "kind": "claude",
+        "cwd": "/work/issue",
+        "startupTimeoutSeconds": 120,
+        "timeoutSeconds": 600
+      },
+      "prompt": "Fix it",
+      "promptDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "phase": "launch_rejected",
+      "outcome": "rejected",
+      "message": "Unsupported effort: ultra",
+      "backgroundTasks": [],
+      "rawResponse": "{\"outcome\": \"rejected\", \"message\": \"Unsupported effort: ultra\", \"agents\": [], \"spawned\": null}",
+      "createdAt": "2026-11-03T12:00:00.000Z",
+      "updatedAt": "2026-11-03T12:00:00.000Z"
+    },
+    "expected": {
+      "rejectedLaunch": true,
+      "terminalFailure": false,
+      "completedWorker": false
+    }
+  },
+  {
+    "name": "legacy rejection with spawned pane",
+    "child": {
+      "config": {
+        "session": "dev",
+        "kind": "claude",
+        "cwd": "/work/issue",
+        "startupTimeoutSeconds": 120,
+        "timeoutSeconds": 600
+      },
+      "prompt": "Fix it",
+      "promptDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "phase": "launching",
+      "outcome": "rejected",
+      "backgroundTasks": [],
+      "rawResponse": "{\"outcome\": \"rejected\", \"spawned\": {\"pane_id\": \"terminal_7\"}}",
+      "createdAt": "2026-11-03T12:00:00.000Z",
+      "updatedAt": "2026-11-03T12:00:00.000Z"
+    },
+    "expected": {
+      "rejectedLaunch": false,
+      "terminalFailure": false,
+      "completedWorker": false
+    }
+  },
+  {
+    "name": "acknowledged failed",
+    "child": {
+      "config": {
+        "session": "dev",
+        "kind": "claude",
+        "cwd": "/work/issue",
+        "startupTimeoutSeconds": 120,
+        "timeoutSeconds": 600
+      },
+      "prompt": "Fix it",
+      "promptDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "phase": "waiting",
+      "paneId": "terminal_7",
+      "tabId": 3,
+      "conversationId": "conversation-1",
+      "submissionId": "submission-1",
+      "outcome": "failed",
+      "turnId": "turn-1",
+      "backgroundTasks": [],
+      "rawResponse": "{\"outcome\": \"failed\", \"acknowledged\": true, \"submission_id\": \"submission-1\", \"turn_id\": \"turn-1\", \"prompt_delivery\": \"started\", \"agents\": [{\"pane_id\": \"terminal_7\", \"session\": \"dev\", \"agent\": {\"kind\": \"claude\", \"session_id\": \"conversation-1\", \"state\": \"idle\"}, \"ready\": true, \"status_available\": true, \"prompt_supported\": true}]}",
+      "lastError": "Agent submission has not completed: failed",
+      "failureKind": "other",
+      "createdAt": "2026-11-03T12:00:00.000Z",
+      "updatedAt": "2026-11-03T12:00:00.000Z"
+    },
+    "expected": {
+      "rejectedLaunch": false,
+      "terminalFailure": true,
+      "completedWorker": false
+    }
+  },
+  {
+    "name": "not_sent timed_out",
+    "child": {
+      "config": {
+        "session": "dev",
+        "kind": "claude",
+        "cwd": "/work/issue",
+        "startupTimeoutSeconds": 120,
+        "timeoutSeconds": 600
+      },
+      "prompt": "Fix it",
+      "promptDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "phase": "waiting",
+      "paneId": "terminal_7",
+      "tabId": 3,
+      "conversationId": "conversation-1",
+      "submissionId": "submission-1",
+      "outcome": "timed_out",
+      "backgroundTasks": [],
+      "rawResponse": "{\"outcome\": \"timed_out\", \"acknowledged\": false, \"submission_id\": \"submission-1\", \"turn_id\": null, \"prompt_delivery\": \"not_sent\", \"agents\": [{\"pane_id\": \"terminal_7\", \"session\": \"dev\", \"agent\": {\"kind\": \"claude\", \"session_id\": \"conversation-1\", \"state\": \"idle\"}, \"ready\": true, \"status_available\": true, \"prompt_supported\": true}]}",
+      "lastError": "Agent submission has not completed: timed_out",
+      "failureKind": "timeout",
+      "createdAt": "2026-11-03T12:00:00.000Z",
+      "updatedAt": "2026-11-03T12:00:00.000Z"
+    },
+    "expected": {
+      "rejectedLaunch": false,
+      "terminalFailure": true,
+      "completedWorker": false
+    }
+  },
+  {
+    "name": "acknowledged timed_out",
+    "child": {
+      "config": {
+        "session": "dev",
+        "kind": "claude",
+        "cwd": "/work/issue",
+        "startupTimeoutSeconds": 120,
+        "timeoutSeconds": 600
+      },
+      "prompt": "Fix it",
+      "promptDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "phase": "waiting",
+      "paneId": "terminal_7",
+      "tabId": 3,
+      "conversationId": "conversation-1",
+      "submissionId": "submission-1",
+      "outcome": "timed_out",
+      "turnId": "turn-1",
+      "backgroundTasks": [],
+      "rawResponse": "{\"outcome\": \"timed_out\", \"acknowledged\": true, \"submission_id\": \"submission-1\", \"turn_id\": \"turn-1\", \"prompt_delivery\": \"started\", \"agents\": [{\"pane_id\": \"terminal_7\", \"session\": \"dev\", \"agent\": {\"kind\": \"claude\", \"session_id\": \"conversation-1\", \"state\": \"idle\"}, \"ready\": true, \"status_available\": true, \"prompt_supported\": true}]}",
+      "lastError": "Agent submission has not completed: timed_out",
+      "failureKind": "timeout",
+      "createdAt": "2026-11-03T12:00:00.000Z",
+      "updatedAt": "2026-11-03T12:00:00.000Z"
+    },
+    "expected": {
+      "rejectedLaunch": false,
+      "terminalFailure": false,
+      "completedWorker": false
+    }
+  },
+  {
+    "name": "completed",
+    "child": {
+      "config": {
+        "session": "dev",
+        "kind": "claude",
+        "cwd": "/work/issue",
+        "startupTimeoutSeconds": 120,
+        "timeoutSeconds": 600
+      },
+      "prompt": "Fix it",
+      "promptDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "phase": "completed",
+      "paneId": "terminal_7",
+      "tabId": 3,
+      "conversationId": "conversation-1",
+      "submissionId": "submission-1",
+      "outcome": "completed",
+      "message": "Done",
+      "turnId": "turn-1",
+      "backgroundTasks": [],
+      "rawResponse": "{\"outcome\": \"completed\", \"acknowledged\": true, \"submission_id\": \"submission-1\", \"message\": \"Done\", \"agents\": [{\"pane_id\": \"terminal_7\", \"session\": \"dev\", \"agent\": {\"kind\": \"claude\", \"session_id\": \"conversation-1\", \"state\": \"idle\"}, \"ready\": true, \"status_available\": true, \"prompt_supported\": true}]}",
+      "createdAt": "2026-11-03T12:00:00.000Z",
+      "updatedAt": "2026-11-03T12:00:00.000Z"
+    },
+    "expected": {
+      "rejectedLaunch": false,
+      "terminalFailure": false,
+      "completedWorker": true
+    }
+  },
+  {
+    "name": "completed with background",
+    "child": {
+      "config": {
+        "session": "dev",
+        "kind": "claude",
+        "cwd": "/work/issue",
+        "startupTimeoutSeconds": 120,
+        "timeoutSeconds": 600
+      },
+      "prompt": "Fix it",
+      "promptDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "phase": "completed",
+      "paneId": "terminal_7",
+      "tabId": 3,
+      "conversationId": "conversation-1",
+      "submissionId": "submission-1",
+      "outcome": "completed",
+      "message": "Working",
+      "backgroundTasks": [
+        "job"
+      ],
+      "rawResponse": "{\"outcome\": \"completed\", \"acknowledged\": true, \"submission_id\": \"submission-1\", \"message\": \"Working\", \"background_tasks\": [\"job\"], \"agents\": [{\"pane_id\": \"terminal_7\", \"session\": \"dev\", \"agent\": {\"kind\": \"claude\", \"session_id\": \"conversation-1\", \"state\": \"idle\"}, \"ready\": true, \"status_available\": true, \"prompt_supported\": true}]}",
+      "createdAt": "2026-11-03T12:00:00.000Z",
+      "updatedAt": "2026-11-03T12:00:00.000Z"
+    },
+    "expected": {
+      "rejectedLaunch": false,
+      "terminalFailure": false,
+      "completedWorker": false
+    }
+  },
+  {
+    "name": "interrupted",
+    "child": {
+      "config": {
+        "session": "dev",
+        "kind": "claude",
+        "cwd": "/work/issue",
+        "startupTimeoutSeconds": 120,
+        "timeoutSeconds": 600
+      },
+      "prompt": "Fix it",
+      "promptDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "phase": "waiting",
+      "paneId": "terminal_7",
+      "tabId": 3,
+      "conversationId": "conversation-1",
+      "submissionId": "submission-1",
+      "outcome": "interrupted",
+      "turnId": "turn-1",
+      "backgroundTasks": [],
+      "rawResponse": "{\"outcome\": \"interrupted\", \"acknowledged\": true, \"submission_id\": \"submission-1\", \"turn_id\": \"turn-1\", \"prompt_delivery\": \"started\", \"agents\": [{\"pane_id\": \"terminal_7\", \"session\": \"dev\", \"agent\": {\"kind\": \"claude\", \"session_id\": \"conversation-1\", \"state\": \"idle\"}, \"ready\": true, \"status_available\": true, \"prompt_supported\": true}]}",
+      "lastError": "Agent submission has not completed: interrupted",
+      "failureKind": "other",
+      "createdAt": "2026-11-03T12:00:00.000Z",
+      "updatedAt": "2026-11-03T12:00:00.000Z"
+    },
+    "expected": {
+      "rejectedLaunch": false,
+      "terminalFailure": false,
+      "completedWorker": false
+    }
+  }
+]

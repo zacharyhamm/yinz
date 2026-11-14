@@ -11,7 +11,7 @@ operator instructions and resume routing. Read its
 only when the driver reports a blocker. This document describes identity,
 contracts, persistence and validation boundaries; the
 [rule map](../.agents/skills/issue-lifecycle/references/rule-map.md) traces the
-instruction reorganization against its baseline.
+instruction reorganization and the determinism revision against their baselines.
 
 ```mermaid
 flowchart LR
@@ -57,8 +57,10 @@ duplicate, and gives a new task a concise title and a note with the problem,
 acceptance criteria and useful reproduction details. Project categories may be
 reused by returned ID; automation has no dependency on fixed category IDs.
 
-Operator actions (approval, worktree preparation, merge authorization and
-close-out) belong to the controlling workflow. Direct `triage`, `plan`,
+Operator actions (approval, merge authorization and close-out) belong to the
+controlling workflow. `drive` adopts the recorded worker worktree itself; worktree
+selection is an operator action only after accepted close-out cleanup or for a
+legacy issue. Direct `triage`, `plan`,
 `review-plan`, `review-code` and `review-ux` methods record evidence; they do not replace pane
 workers. Neither input objects nor worker claims establish human authorization.
 Existing authorization remains valid within its actual scope. Implementation
@@ -102,18 +104,32 @@ Agenda and Git must be on `PATH`; verification needs normal Yinz build
 prerequisites. Pane tasks need installed `yinz`, a running local session and the
 selected provider. With a saved worker choice, `drive` infers the session from
 the controlling pane; outside that environment supply `agent.session` and control
-identity. Legacy issues still need explicit provider settings. Installed command help defines unfamiliar flags;
+identity. Installed command help defines unfamiliar flags;
 JSON is the machine-read format. Input evidence files are issue-scoped to prevent
 concurrent overwrites; paths and text are arguments, never issue text interpolated
 into shell programs.
 
 ### Worker identity and claims
 
-`start` uses the invoking Git worktree root, including invocation from a
-subdirectory. `yinz-issue-start` passes and records canonical `workerWorktree`;
-direct workflow calls must supply it too. Before state is saved, the issue claims
+`start` selects the worker worktree in one of two ways:
+
+- From the control checkout on `main`, or anywhere with `--new-worktree`, it
+  creates or adopts the canonical `<primary checkout>/.worktrees/issue-<item>` on
+  branch `issue-<item>` from local `main` (the `claim-new` Git action). An
+  existing path is adopted only when it is that worktree on that branch; a
+  symlinked `.worktrees` or issue path, an existing branch without the worktree
+  (unless this issue's own interrupted creation left it), or another issue's
+  claim is refused before any write. The pending claim is written before
+  `git worktree add`, so an interrupted creation is adopted on retry.
+- From a feature worktree, including a subdirectory, it claims that worktree
+  root. A detached HEAD is refused.
+
+`yinz-issue-start` records the canonical `workerWorktree`; direct workflow calls
+supply exactly one of `workerWorktree` or `newWorktree: true`. Before state is saved, the issue claims
 the worktree in `<git-common-dir>/yinz-lifecycle/worktree-owners.json`. A worktree
-on `main`, detached HEAD, or a worktree/branch claimed by another issue is refused.
+or branch claimed by another issue is refused. `start` prints a JSON document on
+stdout. Item numbers name the canonical path, so an item number reused in another
+Agenda workspace is refused with the existing ownership message.
 
 A claim is pending until state is saved, then permanent: one worktree serves one
 issue. Another issue's `start` reclaims a pending claim only when the original
@@ -122,13 +138,14 @@ elsewhere. Repeated `start` returns existing state unchanged and confirms a
 leftover pending claim. Later invocation directories do not change worker origin.
 
 Every new role, revision, repair, restart and rollback replacement uses that
-saved directory. Pending tasks retain their original configuration. `implement`
-adopts the recorded worktree and existing feature branch, rejecting a conflicting
-path before Git preparation and upgrading the start claim to worktree/branch
-ownership. Branch, approval and merge checks still apply. Legacy states without
-`workerWorktree` keep implementation-worktree selection when present, otherwise
-the control checkout; legacy preparation may create or adopt a worktree. Resume
-and repeated `start` do not invent an origin.
+saved directory. Pending tasks retain their original configuration. After plan
+approval, `drive` adopts the recorded worktree and its branch (the recorded
+implementation branch, or the branch checked out there), rejecting `main`, a
+detached HEAD and a conflicting path before Git preparation, and upgrades the
+start claim to worktree/branch ownership. After a rollback to plan or approve it
+reuses the implementation the rollback kept. Branch, approval and merge checks
+still apply. Resume and repeated `start` do not invent an origin; see
+[Legacy states](#legacy-states) for issues without `workerWorktree`.
 
 Local `main` must be checked out in exactly one clean worktree; the issue uses a
 different local branch in the same repository. Worker origin is spawn-directory
@@ -147,9 +164,25 @@ Optionally create `.yinz/issue-lifecycle.json` in the canonical control checkout
 
 Supported kinds are `claude`, `codex`, `muse`, `pi` and `agy`. Model and effort
 are provider-defined strings; omit them for provider defaults. Unknown fields,
-unsupported kinds, empty strings and malformed configuration are errors. The
-launcher reads this file only for `start`, always from `--control`, even when
-invoked in another worktree.
+unsupported kinds, empty strings and malformed configuration are errors. The file
+is always read from `--control`, even when invoked in another worktree: `start`
+reads `agent`, and every verification reads `verification` live through the Git
+helper.
+
+The optional `verification` object configures checks every verification runs
+before the plan's checks:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `baselineChecks` | `format` (`cargo x format --check`), `dependency-boundaries` (`cargo x test -p xtask --no-tests=warn -E 'test(=metadata::tests::current_workspace_respects_dependency_boundaries)'`), `lint` (`cargo x lint`) | Up to 16 `{id, command}` argv checks; `[]` opts out. |
+| `rebaseProbe` | `true` | Run the read-only rebase-conflict probe against local `main`. |
+
+The boundary check passes `--no-tests=warn` through to nextest: a branch based
+before that test existed matches no test, which nextest otherwise fails with
+exit 4, and the merge gate still checks the boundaries on the rebased commit.
+
+Test fixtures commit `{"verification":{"baselineChecks":[],"rebaseProbe":false}}`
+(or keep the probe) so verification never runs Cargo.
 
 `start --input-file` accepts an optional `agent` override. For example, save
 `{"agent": {"effort": "your-effort"}}` in an issue-scoped JSON file to change only
@@ -182,8 +215,7 @@ An explicit `drive.agent.kind` retains the existing replacement behavior: supply
 the desired model and effort there or omit them for provider defaults. The driver
 persists explicit settings for future workers without changing `state.workerAgent`.
 Pending workers and saved revision assignments always retain their original
-configuration. Legacy states without a saved choice still require explicit
-`drive.agent` provider settings; no model or effort is hardcoded.
+configuration. No model or effort is hardcoded.
 
 ## Stages and evidence
 
@@ -203,14 +235,41 @@ worker finishes. Final chat text is presentation and is never imported as eviden
 records human authorization and performs deterministic lifecycle operations; it
 does not replace pane workers with headless agents or inline agent work.
 
-`drive` runs in the foreground to a concrete handoff or blocker. The launcher
-prints readable evidence to stderr and one handoff JSON object to stdout; the
-behavior also logs the readable result and publishes `handoff`. Its fields
-include identity/status, issue snapshot, plan version or commit, assignment and
-recovery identity, decision and presentation. Decisions are
-`authorize_plan_revision`, `approve_plan`, `prepare_worktree`, `authorize_merge`,
-`integrate`, `summarize`, `complete` and `blocked`. Completed handoffs keep their
-identity across resume; changed state or assignments invalidate them.
+`drive` runs to a concrete handoff or blocker. The launcher prints readable
+evidence to stderr and one handoff JSON object to stdout; the behavior also logs
+the readable result and publishes `handoff`. Its fields include identity/status,
+issue snapshot, plan version or commit, assignment and recovery identity,
+decision, an optional `requirementsChange` and presentation, which ends with a
+`Next:` line naming the exact launcher command. Decisions are
+`authorize_plan_revision`, `approve_plan`, `address_review_findings`,
+`approve_review_fixes`, `authorize_merge`, `integrate`, `summarize`,
+`authorize_closeout`, `resume_closeout`, `complete` and `blocked`.
+`prepare_worktree` appears only after accepted close-out cleanup or for a legacy
+issue without a recorded worker worktree, since drive adopts the recorded one.
+Completed handoffs keep their identity across resume; changed state or
+assignments invalidate them.
+
+Each human decision is one launcher command bound to the presented handoff id
+(`--handoff`, never filled automatically) and the user's actual words
+(`--request`/`--request-file`), plus `--repair`/`--ignore`/`--ignore-remaining`
+for review findings and `--decision` for close-out. The behavior derives plan
+versions, fingerprints, repair IDs and commits from that exact current handoff
+and rejects a stale one. Decision commands and `implement`, `repair`, `refresh`,
+`resume-rollback` and `merge` then continue with `drive` unless `--no-drive`.
+Only after `ready` or `drive`, when drive yields an authorized `integrate`
+handoff with no existing merge attempt, does the launcher (not drive, which holds
+the issue lock that `integrate` needs) run merge once and drive again, unless
+`--no-merge`. Other chained commands stop at an `integrate` handoff even when it
+is authorized, as after `decide-review` on a legacy `ready` state with a merge
+authorization or `resume-rollback` that finishes a rollback to `merge`; the
+`--skip-ci-request` waiver is likewise accepted only by `ready`, `drive` and
+`merge`. An existing attempt is never re-run automatically. Because the merge's
+CI gate can last hours, controllers run `ready`, `drive` and `merge` in the
+background or with long timeouts. Chained commands print exactly one handoff JSON on stdout, and
+exit with the merge's code if an automatic merge failed. Rollback,
+`restart-agent`, `continue-agent`, `discard-agent` and `closeout` never chain:
+surviving workers are inspected first, and close-out acceptance ends the
+controller conversation.
 
 The driver supplies role-specific prompts and validates results against the
 original task and current issue, plan and commit before import. Implementation
@@ -258,15 +317,7 @@ conventions.
 
 Existing records need no bulk rewrite: new fields are optional, and saved prompts
 and snapshots are kept. Already-applied lifecycle state stays historical evidence.
-Unresolved older assignments need a typed submission supplement from their original
-worker through `continue-agent`; their final messages are never imported. A legacy
-`applying` task with a saved state-changing `next` projection can reconcile directly.
-Legacy implementation-only reports need a typed supplement because their commit
-binding was formerly stored only in chat. An unavailable original conversation
-blocks supplementation and never automatically launches another investigation. Legacy
-plans beyond version one are treated as having used the allowance; legacy
-first-version plans may receive one automatic revision. Already-recorded revision
-authorizations remain usable.
+Older pending tasks and plans are described under [Legacy states](#legacy-states).
 
 
 ## Pane tasks
@@ -280,11 +331,10 @@ pane's current tab. Existing workers stay in their tabs. Stack spawning preserve
 keyboard focus.
 
 Direct lifecycle callers must supply control identity. `drive` accepts it
-alongside `agent`, including adding identity to an older driver without replacing
-provider settings. Outside a pane environment, saved or explicit identity is
+alongside `agent`. Outside a pane environment, saved or explicit identity is
 used. Missing panes, lookup failure or session mismatch block new launches;
 there is no automatic-placement fallback. Existing tasks retain original
-configuration, and unlaunched legacy tasks require explicit restart.
+configuration.
 
 Agent inputs are `role`, `session`, `kind`, optional `model`, `effort`,
 `permissionMode`, `startupTimeoutSeconds` and `timeoutSeconds`. Kinds are `claude`,
@@ -303,9 +353,34 @@ exclude mutations and second workers. Background work requires a further
 observation of the same conversation's final idle answer before success. Accepted
 evidence and completion precede guarded pane cleanup. Cleanup retries separately
 without evidence replay. Failed, blocked, superseded and unusable-result panes
-remain visible; closing the last worker releases the region. Existing tasks keep
-legacy placement/cleanup behavior. Conditional recovery procedures and structured
-`prompt_delivery`/discard semantics live in the recovery reference.
+remain visible; closing the last worker releases the region. Conditional
+recovery procedures live in the recovery reference.
+
+`prompt_delivery` is optional: missing means unknown, even if older response text
+says the prompt was not sent. Text alone cannot authorize unsent recovery.
+`started` is recorded before the first actual prompt write, including a typed
+prefix, and is never downgraded even when that write fails. Preparation marker
+and clearing writes do not count as prompt delivery. Structured non-delivery
+recovery requires updated server responses and behavior code; older tasks without
+that evidence use explicit rollback or restart.
+
+### Discard bases
+
+`discard-agent` takes the operator's actual `request` and refuses unless lifecycle
+state still equals the task's dispatch snapshot. The behavior verifies one of
+three bases itself and records it with its stop evidence (`basis`, `stopEvidence`)
+on the task; a refusal names every failed condition for each basis.
+
+| Basis | Verified by the behavior | Attestation |
+| --- | --- | --- |
+| Terminal failure | Correlated acknowledged `failed` (including `StopFailure`), or structured `prompt_delivery: "not_sent"` with no acknowledgement, turn or background work. The child re-waits the original submission, then fresh status must show the same pane, session, provider and conversation idle with no background work and no `clearing_draft` or `pending_submission`. The failure response stays separate from fresh status. | Not used. |
+| Rejected launch | A matching version-two launch receipt proving non-execution or process exit with completed cleanup, or a legacy structured rejection retaining no resources. | Not used. |
+| Completed worker without usable evidence | Completed phase and outcome, no background work, recorded pane, conversation and submission, evidence not applied. The child's `confirm_stopped` freshly observes the pane listed in its session and idle in the same conversation with no background work. A pane missing from the session's listing is not stop evidence: `warp-pane` and `warp-tab` move a running pane to another session, and a pty-host supervisor can outlive its server. | `confirmedStopped: true` is accepted only when that observation is impossible (for example the session cannot be listed, the pane is absent from it, or fresh status fails) and the operator has confirmed the stop. The behavior attempts the observation first even when the flag is supplied, and refuses a worker it observes running. |
+
+Malformed responses, transport failures, responses retaining resources and
+legacy uncertain launches have no basis; explicit rollback or restart supersedes
+them. Discard never stops work, undoes source or Git changes, resends, respawns
+or closes a pane.
 
 ### Rollback persistence
 
@@ -328,29 +403,36 @@ The reusable behavior saves a versioned launch ID and server incarnation before 
 
 ## Structured evidence and operator inputs
 
-Inputs are JSON objects for the selected command. Worker outputs are supplied by
-pane roles; `status` supplies current versions and recorded commits. Commit
-identifiers are full issue-worktree Git IDs, never branch names or abbreviations.
+Inputs are JSON objects for the selected command; the launcher maps its decision
+flags into them (`--handoff` to `handoffId`, `--request` to the command's request
+field, `--repair`/`--ignore`/`--ignore-remaining`, `--decision`). A flag that
+conflicts with the same key in `--input-file` is rejected. Worker outputs are
+supplied by pane roles. Commit identifiers are full issue-worktree Git IDs, never
+branch names or abbreviations.
 
 | Contract | Fields |
 | --- | --- |
 | Triage result | `classification`: `bug`, `feature`, `maintenance` or `security`; `summary`: investigation and acceptance criteria. |
 | Plan result | `summary`; nonempty `steps` with unique `id`, `description` (including risks) and `files`; `testingStrategy`; nonempty `checks`; optional `assumptions`. Revisions add `revision`: `summary`, `responses` (`findingId`, `status`, `rationale`, nonempty `evidence`) and `acceptedDecisions`. Response status is `addressed`, `disputed` or `unresolved`. |
 | Plan review result | `planVersion`; `findings` with unique `id`, `severity`, `description`, optional `resolution`. Blockers require `requirement`, `mechanism`, nonempty source `evidence`; reopening requires `reopening: {rationale, evidence}` with new evidence. |
-| `adjudicate-plan` | Current `planVersion`, `reviewFingerprint`, nonempty `dispositions`: `findingId`, `disposition` (`resolved`, `rejected`, `downgraded`), `rationale`, nonempty `evidence`; lower corrected `severity` required only for downgrade. |
-| `approve` | `planVersion`; `request`: actual user authorization and scope. |
-| `implement` | Recorded absolute `worktree`, existing feature `branch`; matching worktree is adopted. |
+| `start` | Optional `agent` override; launcher flag `--new-worktree` creates or adopts the canonical issue worktree. |
+| `adjudicate-plan` | `handoffId` of the current `authorize_plan_revision` or `approve_plan` handoff (plan version and review fingerprint are derived from it); nonempty `dispositions`: `findingId`, `disposition` (`resolved`, `rejected`, `downgraded`), `rationale`, nonempty `evidence`; lower corrected `severity` required only for downgrade. |
+| `approve` | `handoffId` of the current `approve_plan` handoff (plan version derived); `request`: actual user authorization and scope. |
+| `drive` | Optional `agent` and `control`; `revisionApproval: {handoffId, request}` from `--handoff` with `--request` authorizes one targeted revision. |
+| `implement` | Normally run by `drive`. Explicitly, a deliberately selected absolute `worktree` and existing feature `branch`; omitted values default to the recorded worker worktree and its branch. |
 | Implementation result | `summary`; full `commit` of clean issue worktree. |
 | Code review result | `planVersion`, `commit`, `steps` covering plan step IDs with `implemented` or `deviated` status; deviations require `justification`; `findings`; optional advisory `preliminaryChecks`. |
 | UX review result (`review-ux`) | `planVersion`, full `commit`, `assessment: {impact: material\|no_material_impact, summary, assessedPaths, limitations}`, shared `findings`, optional advisory `preliminaryChecks`. Rationale and assessed paths are nonempty even for no material impact. |
-| `decide-review` | Current findings handoff `id`, `reviewFingerprint` from its `codeReviewFingerprint`, actual user `request`, `repair` and `ignore` arrays of `{role: review_code\|review_ux, findingId}`. Role qualifies IDs shared across reviews. |
+| `decide-review` | `handoffId` of the current `address_review_findings` handoff (review fingerprint derived from its `codeReviewFingerprint`), actual user `request`, `repair` and `ignore` arrays of `{role: review_code\|review_ux, findingId}`, optional `ignoreRemaining` to ignore every other outstanding finding. Role qualifies IDs shared across reviews. |
 | Repair plan result (`plan_review_fixes`) | Same checked plan content as an initial plan; selected findings only. Stored separately from the approved issue plan. |
-| `approve-review-fixes` | Repair selection `id`, current approval `handoffId`, actual user `request`. |
+| `approve-review-fixes` | Current `approve_review_fixes` `handoffId` (repair selection ID derived), actual user `request`. |
 | Repair implementation result (`implement_review_fixes`) | `summary`, full clean worktree `commit`. Requires the selected repair plan's approval. |
 | `verify` | No input; approved issue and completed repair checks run at the reviewed commit through `yinz-issue-verify`. |
-| `ready` | `commit`; `mergeRequest`: user authorization to merge, accepting remaining findings at this commit. |
+| `ready` | `handoffId` of the current `authorize_merge` handoff (commit derived); `mergeRequest` (from `--request`): user authorization to merge, accepting remaining findings at this commit. |
 | `merge` | Normally no input; explicit exception is `skipCiRequest`. |
-| `repair` | `reason`: failure and repair. |
+| `repair` | Optional `reason`; required only when no failed verification or merge attempt is recorded, whose details are attached automatically. |
+| `closeout` | Offer `handoffId`, `decision` (`accept` or `decline`) and actual user `request`. |
+| `discard-agent` | Actual operator `request`; optional `confirmedStopped: true` only for a completed worker the behavior reports it cannot observe. |
 | `summarize` | `outcomeMet: true`; `summary`: original problem, delivered outcome and limits. |
 
 Finding severities are `low`, `medium`, `high`, `critical`. Unresolved high/critical
@@ -366,7 +448,10 @@ Each plan check has a unique `id` (lowercase letters, digits, `-`, `_`, at most
 run verbatim without a shell, for example
 `["cargo", "x", "test", "-p", "yinz-server", "-E", "test(/^tabs::/)"]`.
 Checks are focused according to `AGENTS.md`, not unfiltered full suites already
-covered by the merge gate. Reviewer preliminary checks contain `command`,
+covered by the merge gate. The [check policy](../.agents/skills/issue-lifecycle/references/planning.md#check-policy)
+enforces argv form and focused selection when `plan` or `plan_review_fixes`
+evidence is submitted and when a controller records those methods directly. It
+never runs in transitions or receipt replay, so persisted plans still verify. Reviewer preliminary checks contain `command`,
 `result` (`passed`, `failed`, `skipped`) and `summary`; they are advisory for
 plans with checks. Approval of the presented plan approves running its checks.
 
@@ -420,16 +505,11 @@ resume the same saved worker assignment. Explicit repair-worker restart preserve
 selected scope and existing implementation approval while fencing the old worker.
 Ordinary rollback requires renewed decisions for retained findings.
 
-Existing records need no bulk rewrite. Legacy unmerged findings reach the new
-handoff without inferred acceptance. Already-landed receipts remain authoritative.
-
-Legacy pending tasks finish under their saved contract and never count as UX.
-Legacy implementing work with current technical review proceeds to UX. An
-unmerged ready state without UX blocks with rollback-to-review_ux/drive guidance
-and requires checks and new merge authorization; an unlanded active attempt
-requires repair and fresh reviews. Integration first reconciles durable landed
-receipts; landed merges and merge/close-out rollback/replay do not require
-retrospective review or fabricated evidence. See [recovery](../.agents/skills/issue-lifecycle/references/recovery.md).
+Existing records need no bulk rewrite. Already-landed receipts remain
+authoritative; integration first reconciles durable landed receipts, and landed
+merges and merge/close-out rollback/replay do not require retrospective review or
+fabricated evidence. Older review states are under [Legacy states](#legacy-states);
+see [recovery](../.agents/skills/issue-lifecycle/references/recovery.md).
 
 The [bounded reviewer evaluation](../.agents/skills/issue-lifecycle/references/review-evaluation.md)
 records actual planted-defect and no-impact outcomes separately from lifecycle
@@ -521,10 +601,34 @@ an answer, not correctness evidence replacing lifecycle review/verification.
 
 ## Deterministic verification
 
-After current technical code review, separate UX review and user findings decisions, `drive` (or explicit `verify`) runs the approved plan's
-checks in order outside the repository merge lock. Before each check, the Git
-helper requires a clean issue branch at the reviewed commit with its own real
-`target/`. Each check records exit code, duration and output.
+After current technical code review, separate UX review and user findings
+decisions, `drive` (or explicit `verify`) runs, outside the repository merge lock:
+
+1. the rebase-conflict probe (unless `rebaseProbe` is false): a read-only
+   replay of the reviewed branch onto local `main` that matches `git rebase`.
+   It skips branch commits whose patch is already on `main`, then replays the
+   rest one by one with `git merge-tree --write-tree --merge-base` (Git 2.40+).
+   The intermediate commits exist only as unreachable objects. The result is
+   `clean`, `conflicts` with the first conflicting commit's paths, or
+   `unavailable` with a reason, for example when the branch contains a merge
+   commit;
+2. the configured baseline checks, in order (see
+   [worker defaults](#worker-defaults-and-issue-overrides));
+3. the approved plan's checks, then completed repair checks, in order.
+
+A configuration error stops verification before anything runs. Before each check,
+the Git helper requires a clean issue branch at the reviewed commit with its own
+real `target/`. Each check records exit code, duration and output. Verification
+passes only when every baseline and plan check passes and the probe found no
+conflicts. An unavailable probe is not a failure: the merge gate rebases under
+its lock and stays authoritative, since `main` can move after the probe.
+
+Baseline checks run at the un-rebased reviewed commit, while the merge gate runs
+the same phases after rebasing. A baseline failure can therefore come from the
+branch's older base, for example a new stable Clippy lint already fixed on
+`main`. It still fails verification; drive's blocked reason says that the cause
+may be the stale base, and the repaired implementation worker may rebase onto
+local `main` when `main` already fixes it, instead of re-fixing `main`'s lines.
 
 A check that dirties the worktree, changes branch/HEAD or is refused by the helper
 fails with a reason; later checks are not run because they would test a different
@@ -533,8 +637,11 @@ kills remaining processes in its process group so background children cannot
 hold logs open. At one hour, a running check and its group are stopped and the
 check fails as timed out with no exit code; later checks still run.
 
-`verification` binds the run to plan version, branch and commit. Output resources
-are `check-log-<verification id>-<check id>` of type `check-log`, retrievable with
+`verification` binds the run to plan version, branch and commit, with optional
+`baseline` results and `rebaseProbe` (older runs have neither). Output resources
+are `check-log-<verification id>-<check id>` for plan checks and
+`baseline-log-<verification id>-<check id>` for baseline checks, of type
+`check-log`, retrievable with
 `swamp data query 'modelName == "<issue behavior>" && name == "check-log-<id>-<check>"'
 --select content --repo-dir <control>`. The checklist supplies the actual query,
 including any hashed behavior identity.
@@ -543,15 +650,18 @@ including any hashed behavior identity.
 New plan, worktree adoption, technical or UX review, repair, refresh or rollback to
 `review_ux` or earlier discards verification. Rollback of only `ready` retains
 verification for an unchanged commit. Failed runs block and are not automatically
-rerun by `drive`; environment-only explicit reruns and repair procedures are in
+rerun by `drive`, and drive never runs `repair` itself. `repair` with no reason
+copies the recorded failure items (probe conflicts, failed baseline and plan
+checks with their log names) into `lastFailure`; the implementation worker's
+prompt tells it how to read those logs and, for probe conflicts or a failed
+baseline check that local `main` already fixes, permits a rebase onto local
+`main`. Environment-only explicit reruns and repair procedures are in
 the recovery reference. Every run remains in event history. The launcher prints
-the checklist on stderr and JSON on stdout, exiting 2 on failure.
+the checklist (probe line, baseline lines, plan lines) on stderr and JSON on
+stdout, exiting 2 on failure.
 
-Legacy plans without `checks` still require both current reviews and retain the
-reviewer-reported gate: `ready` rejects failed preliminary checks from either
-reviewer. Approved repair checks augment this gate; they never discard failed
-preliminary checks. Without repair checks, the handoff states no deterministic
-verification ran. New plans/revisions require checks. Empty or cancelled checks are not success.
+New plans/revisions require checks. Empty or cancelled checks are not success.
+Plans without `checks` are described under [Legacy states](#legacy-states).
 
 ## Development checks and the merge gate
 
@@ -587,11 +697,14 @@ failure/timeout/signal lines and failed doctests, at most 50),
 partial logs with null exit code.
 
 Each new receipt's `previousAttempts` lists the issue's earlier failed attempts.
+A failed test that also failed in recent earlier attempts (any issue) is listed in
+optional `ci.recurringTests` and named in the summary suffix
+`recurring: <test> (also failed in N earlier attempts: ...)`.
 State `mergeFailures` survives repair, rollback and eventual merge, exposing the
 failed-then-passed sequence. A later pass cannot hide a flake. Failure output and
 blocked presentation include phases, failed tests, summary, log and attempt
 history. `repair` appends summary/log to `lastFailure` for the next implementation
-worker. Retrying does not overwrite evidence.
+worker, with or without a reason. Retrying does not overwrite evidence.
 
 ## Typed evidence submissions
 
@@ -602,8 +715,43 @@ issue requirements generation, lifecycle snapshot and rollback identity, plan
 version, and dispatched technical/UX review commit. `status` includes the task's current
 submission resource as well as the lifecycle and provider records.
 
-The worker writes a temporary JSON submission file with `taskId`,
-`assignmentDigest`, `role` and `evidence`, then runs the supplied commands:
+New tasks use assignment contract 3. Before the prompt is sent, the controller
+publishes the assignment's files in a private directory outside every worktree,
+`<git-common-dir>/yinz-lifecycle/assignments/<task UUID>/` (mode `0700`, files
+`0400`), and binds its manifest into the prompt:
+
+| File | Contents |
+| --- | --- |
+| `target.json` | Submission target: protocol, task ID, role, evidence behavior, control directory, assignment digest. |
+| `snapshot.json` | The lifecycle snapshot the task was dispatched from; packet `sourceRef` paths resolve against it. |
+| `packet.json` | The deterministic review/repair packet; its SHA-256 equals `continuity.packetDigest`. |
+| `evidence-template.json` | Role evidence with every required identity pre-filled (plan steps, prior-finding obligations, selected findings, blocking findings). An unedited template fails validation. |
+| `evidence-schema.json` | The role's JSON Schema. |
+| `baseline.json`, `feature.diff`, `delta.diff` | Captured continuity endpoints and the decoded diffs, when present. |
+| `manifest.json` | Path, size and SHA-256 of every file. |
+
+Publication is idempotent and refuses files that differ from the manifest; a
+missing file is regenerated only when it reproduces byte for byte. The directories
+are retained. The worker fills the template and runs the helper:
+
+```sh
+python3 -I "$CONTROL_REPO/scripts/issue_lifecycle/submit_evidence.py" \
+  --task-dir "$ASSIGNMENT_DIR" --assignment-digest "$DIGEST" evidence.json
+```
+
+The helper takes the behavior and control directory only from `target.json`,
+checks every file against the manifest and the digest before sending, fills
+`taskId`, `assignmentDigest` and `role`, submits, then queries the submission. It
+exits 0 only for this task's accepted receipt (printing it), 1 for a rejection,
+supersession or error (printing the validation message), and 2 when it refused
+before sending. `--status` reports acceptance without submitting (0 accepted,
+3 open), for use after a lost acknowledgement; `--print-commands` prints the
+underlying commands. The server fills `planVersion` and `commit` from the bound
+assignment for every contract; supplied values must match.
+
+The underlying interface is unchanged, and contract-1/2 prompts still name it:
+the worker writes a temporary JSON submission file with `taskId`,
+`assignmentDigest`, `role` and `evidence`, then runs:
 
 ```sh
 swamp behavior run "$EVIDENCE_BEHAVIOR" submit \
@@ -823,8 +971,13 @@ development. Root Python test modules are selected separately with
 
 | Module | Boundary |
 | --- | --- |
-| `test_git_ops.py` | Local Git locking, ordering and recovery, with fake Cargo gates. |
-| `test_workspace.py` | Workspace configuration and identity. |
+| `test_git_ops.py` | Local Git locking, ordering and recovery, claim-new, the rebase probe and recurring failures, with fake Cargo gates. |
+| `test_workspace.py` | Workspace configuration and identity, launcher start origin and verification settings. |
+| `test_decisions.py` | Launcher decision flags and the drive/merge chaining rules, without Swamp. |
+| `test_submit_evidence.py` | The worker submission helper's refusals, outcomes and exit codes. |
+| `test_observations.py` | Status diagnostics and `taskRecovery`, including the shared discard fixture. |
+| `test_continuity_report.py` | The read-only continuity report. |
+| `test_skill_links.py` | Every relative link and anchor in the skill, its references and this guide; single-copy and wording guards. |
 | `test_swamp_smoke.py` | Installed-command dispatch, Agenda and local merges in disposable repository/data fixtures; requires installed Swamp and Agenda. |
 
 Focused tests cover transitions, role dispatch, revision authorization,
@@ -848,8 +1001,37 @@ They establish neither live provider launch nor a passed full feature gate. A
 separate live smoke check exercised installed Swamp through a visible Claude pane
 using the earlier final-message transport; it does not establish live-provider
 coverage of the typed submission protocol. The
-real full gate runs at authorized local merge. No dedicated skill-text smoke test
-is defined here.
+real full gate runs at authorized local merge. `test_skill_links.py` checks links,
+anchors and a few wording guards in the skill text; no test checks that the
+instructions are semantically complete.
+
+## Legacy states
+
+Six open issues predate current contracts. Their records parse unchanged and
+finish under their saved contracts; nothing migrates them or regenerates saved
+prompts. When a handoff, status or blocker names one of these states:
+
+| State | What to do |
+| --- | --- |
+| Origin without `workerWorktree` | Resume and repeated `start` do not invent an origin. Workers use the recorded implementation worktree when present, otherwise the control checkout; `prepare_worktree` asks for `implement` with an explicit `worktree` and `branch`, and legacy preparation may create or adopt a worktree. |
+| Legacy explicit agent flow (no saved `workerAgent`) | `drive` needs explicit `{agent: {session, kind, model?, effort?, ...}}` provider settings. |
+| Older driver without control identity | Supply `control: {session, paneId}` (with or without `agent`) before new launches; it is added without replacing provider settings. No automatic-tab fallback. |
+| Unlaunched legacy task | Needs an explicit `restart-agent` with control identity and the user's request. |
+| Legacy pending task without a typed submission | `continue-agent` with the user's request asks the original worker for a typed submission supplement without changing its prompt or configuration. Legacy implementation-only reports need one because their commit binding was stored only in chat. A legacy `applying` task with a saved state-changing `next` projection reconciles directly. An unavailable original conversation blocks supplementation and never launches another investigation. |
+| Legacy structured rejection | A resource-free structured `launch_rejected` without a version-two receipt stays readable and discard-eligible; legacy ID-less launches remain uncertain. |
+| Legacy placement and cleanup | Existing saved tasks keep their original tab placement and cleanup behavior. |
+| Legacy first-version plan | May receive one automatic revision; later legacy versions count as having used it. Recorded revision authorizations remain usable. |
+| Legacy plan without `checks` | Keeps the reviewer-reported gate: both current reviews are required and `ready` rejects failed preliminary checks from either reviewer. Approved repair checks augment it without discarding failed preliminary checks; without them the handoff states that no deterministic verification ran. A separate current UX assessment is still required. |
+| Legacy implementing work with technical review only | Proceeds to UX review; this is not synthetic approval. |
+| Legacy unmerged ready state without UX | Blocks: with the user's request, `rollback` to `review_ux`, then `drive`, checks and a new merge authorization. Legacy ready findings with both reviews return to `address_review_findings`. |
+| Legacy unlanded active attempt | Needs `repair` and fresh reviews. First consult its durable receipt: a landed merge is a fact, and merge/close-out replay reuses it without inventing UX evidence. |
+
+Legacy explicit decision inputs (`approve {planVersion, request}`,
+`adjudicate-plan {planVersion, reviewFingerprint, dispositions}`,
+`decide-review {id, reviewFingerprint, ...}`, `ready {commit, mergeRequest}`)
+keep their original binding for records and fixtures that predate handoff-bound
+decisions; controllers use `--handoff`. Any explicit value supplied with a
+`handoffId` must match the derived one.
 
 ## Design origin
 
@@ -907,11 +1089,26 @@ commit freshness. It does not invoke the completed worker again. Interrupted
 imports retain their existing event and task reconciliation guards; cleanup
 remains separately retryable.
 
-Wait failures carry an optional `failureKind` (`timeout` or `other`). Only a
+Wait failures carry an optional `failureKind` (`timeout` or `other`), and child
+state records which wait produced the latest observation (`observedVia`). Only a
 fresh, correlated timeout with matching available server, turn and directory
-identity is eligible for automatic observation. Transport errors cannot reuse a
+identity is eligible for automatic observation: phase `spawned`, `waiting`,
+`background` (the phase itself proves the correlated completed reply), or
+`submitting` when the saved reply is the same submission's acknowledged,
+started delivery; the agent busy with no not-ready reason or `not_idle`,
+`unresolved_turn` or `unconsumed_input`. Transport errors cannot reuse a
 previous timeout's raw response. Legacy records acquire this classification on
 the next observation; elapsed time never determines worker staleness.
+
+Drive retries are bounded per invocation: 48 wait windows for ordinary timeouts,
+two re-observations of completion-unreconciled or recorded post-submission
+transport errors, six retries of transient cleanup guards, and three
+launch-preflight transport retries (a `preflight` child with no launch intent
+has sent no spawn), all within 8 hours. Budgets live in memory; rerunning drive
+starts a new one. A close-completed refusal is recorded on the child as
+`cleanupRefusal` with a `retryable` flag computed from the refusal text and the
+worker's structured facts; identity and correlation refusals are never retryable.
+The recovery reference lists every class and the failures that stay blocked.
 
 The launcher's read-only `status` adds `workerObservation` and `diagnostics` to
 its existing JSON response. Diagnostics include reason codes, original worker
@@ -920,10 +1117,26 @@ still recorded running after its issue reaches done is an inconsistent
 observation, not proof of a dead controller. Status never cancels, finalizes or
 rewrites historical runs, and its observations never authorize evidence import.
 
+`status` also adds `taskRecovery`, computed in Python from the same durable
+records so it works while `drive` holds the issue lock. Its rules follow drive's
+classification: the first match among pending rollback, no or resolved task,
+pending discard, pending cleanup, identity diagnostics, undelivered continuation,
+the bounded retry classes, discard bases, completed worker without evidence,
+interruption, dialog and a final `inspect`. It names `kind`, `command`,
+`requiresUserRequest`, `alternatives`, `discard` eligibility with every
+condition, and `lastError`, with the placeholder `<the user's actual request>`
+where a request is needed. It is advisory; every named method re-verifies its
+conditions. `scripts/issue_lifecycle/unit/fixtures/discard_cases.json` keeps its
+discard predicates aligned with the TypeScript ones, and
+`scripts/issue_lifecycle/unit/fixtures/recovery_cases.json` keeps its recovery
+classes aligned with drive's `classifyWorkerFailure`.
+
 ## Review continuity and assessment
 
-New worker assignments use `contractVersion: 2` alongside the unchanged submission
-protocol. Their optional-on-disk `continuity` context is mandatory for new dispatch
+New worker assignments use `contractVersion: 3`: contract-2 continuity plus the
+assignment files and helper described under
+[typed evidence submissions](#typed-evidence-submissions). Contract-2 assignments
+keep their inline packet and base64 diffs. Their optional-on-disk `continuity` context is mandatory for new dispatch
 and bound by the assignment digest to task ID, requirements digest/generation,
 rollback identity, plan version, current role review fingerprints, packet digest
 and captured full Git object IDs. Saved legacy assignments retain their original

@@ -6,9 +6,11 @@ import {
 /** Agenda-backed issue development with local Git integration and durable evidence. */
 import { z } from "npm:zod@4.6.7";
 import {
+  adoptWorkerWorktree,
   createDriveMethod,
   DriverSchema,
   HandoffSchema,
+  ImplementArgsSchema,
 } from "./_lib/issue_driver.ts";
 import {
   agentMethods,
@@ -17,8 +19,15 @@ import {
   RecoverySchema,
 } from "./_lib/issue_agents.ts";
 import {
+  type DecisionAction,
+  DecisionInputSchemas,
+  isDecisionAction,
+  resolveDecisionArgs,
+} from "./_lib/decisions.ts";
+import { assertCheckPolicy } from "./_lib/check_policy.ts";
+import {
   ActionSchemas,
-  codeReviewFingerprint,
+  CheckSchema,
   completeAgenda,
   createState,
   type LifecycleState,
@@ -37,7 +46,6 @@ import {
   gitOperation,
   GlobalArgsSchema,
   inspect,
-  InspectionSchema,
   loadState,
   mergeLogName,
   normalizeFailure,
@@ -46,14 +54,19 @@ import {
   withIssue,
 } from "./_lib/runtime.ts";
 import { RoundRecord } from "./_lib/review_continuity.ts";
-import { runVerification } from "./_lib/verification.ts";
+import {
+  loadVerificationSettings,
+  runVerification,
+} from "./_lib/verification.ts";
 import { WorkerSelectionSchema } from "./_lib/worker_selection.ts";
 
 // Swamp delivers globals alongside method arguments. Strip them here; the
 // pure transitions still validate their own inputs with strict schemas.
 const Empty = z.object({}).strip();
 const StartArgs = z.object({
-  workerWorktree: z.string().trim().min(1),
+  // An explicit origin, or "" when start creates or adopts the canonical one.
+  workerWorktree: z.string().trim().default(""),
+  newWorktree: z.boolean().default(false),
   // The workflow supplies {} when no default was selected.
   agent: z.union([
     WorkerSelectionSchema,
@@ -61,7 +74,16 @@ const StartArgs = z.object({
   ]).optional(),
 })
   .strip();
-const ClaimSchema = z.object({ worktree: z.string().min(1) });
+// Checked only on a first start: a repeated start never consults its origin.
+const StartOrigin = StartArgs.refine(
+  (args) => args.newWorktree !== (args.workerWorktree !== ""),
+  "Supply exactly one of workerWorktree or newWorktree",
+);
+const ClaimSchema = z.object({
+  worktree: z.string().min(1),
+  branch: z.string().optional(),
+  created: z.boolean().optional(),
+});
 const IntegrateArgs = z.object({ skipCiRequest: z.string().trim().default("") })
   .strip();
 
@@ -100,6 +122,11 @@ async function reviewedHead(
   }
 }
 
+/** Decision actions take handoff-bound inputs; the rest take their strict transition input. */
+type TransitionInput<K extends keyof typeof ActionSchemas> = K extends
+  DecisionAction ? z.input<(typeof DecisionInputSchemas)[K]>
+  : z.infer<(typeof ActionSchemas)[K]>;
+
 function recordedTransition<K extends keyof typeof ActionSchemas>(
   action: K,
   description: string,
@@ -107,41 +134,44 @@ function recordedTransition<K extends keyof typeof ActionSchemas>(
   return {
     kind: "update" as const,
     description,
-    arguments: ActionSchemas[action].strip(),
-    execute: (args: z.infer<(typeof ActionSchemas)[K]>, context: Context) =>
+    arguments: isDecisionAction(action)
+      ? DecisionInputSchemas[action]
+      : ActionSchemas[action].strip(),
+    execute: (args: TransitionInput<K>, context: Context) =>
       withIssue(context, async () => {
         const state = await mutableState(context);
         await currentIssue(state);
+        let input: unknown = args;
+        if (isDecisionAction(action)) {
+          // Legacy explicit inputs never parse the handoff.
+          const raw = await context.readResource("handoff");
+          input = resolveDecisionArgs(
+            action,
+            args,
+            state,
+            () => raw == null ? undefined : HandoffSchema.parse(raw),
+          );
+        }
+        if (action === "plan" || action === "plan_review_fixes") {
+          // Submission-time policy for new plans; transition() replays persisted
+          // plans without it. Malformed checks fall through to transition's error.
+          const plan = z.object({ checks: z.array(CheckSchema) }).loose()
+            .safeParse(input);
+          if (plan.success) assertCheckPolicy(plan.data.checks);
+        }
         if (
           action === "review_code" || action === "review_ux" ||
           action === "ready" || action === "plan_review_fixes"
         ) {
           const commit = action === "plan_review_fixes"
             ? (state.codeReview?.commit ?? "")
-            : z.object({ commit: z.string() }).parse(args).commit;
+            : z.object({ commit: z.string() }).parse(input).commit;
           await reviewedHead(context, state, commit);
         }
         if (action === "decide_review" || action === "approve_review_fixes") {
-          const handoff = HandoffSchema.parse(
-            await context.readResource("handoff"),
-          );
-          const input = args as { id: string; handoffId?: string };
-          if (
-            handoff.status !== "current" ||
-            handoff.decision !==
-              (action === "decide_review"
-                ? "address_review_findings"
-                : "approve_review_fixes") ||
-            handoff.id !==
-              (action === "decide_review" ? input.id : input.handoffId) ||
-            JSON.stringify(handoff.state) !== JSON.stringify(state)
-          ) throw new Error("Review decision handoff is stale");
           await reviewedHead(context, state, state.codeReview!.commit);
-          if (handoff.codeReviewFingerprint !== codeReviewFingerprint(state)) {
-            throw new Error("Review findings changed");
-          }
         }
-        return saveState(context, action, transition(state, action, args));
+        return saveState(context, action, transition(state, action, input));
       }),
   };
 }
@@ -149,7 +179,7 @@ function recordedTransition<K extends keyof typeof ActionSchemas>(
 /** Local behavior; the issue's state and every decision are versioned Swamp data. */
 export const behavior = {
   type: "@yinz/issue-lifecycle",
-  version: "2026.11.11.1",
+  version: "2026.11.14.1",
   globalArguments: GlobalArgsSchema,
   resources: {
     rounds: {
@@ -258,7 +288,7 @@ export const behavior = {
       description:
         "Capture a pending Agenda issue, or return its existing lifecycle unchanged",
       arguments: StartArgs,
-      execute: (args: z.infer<typeof StartArgs>, context: Context) =>
+      execute: (args: z.input<typeof StartArgs>, context: Context) =>
         withIssue(context, async () => {
           const issueKey =
             `${context.globalArgs.workspace}/${context.globalArgs.itemId}`;
@@ -290,19 +320,36 @@ export const behavior = {
             context.globalArgs.workspace,
             context.globalArgs.itemId,
           );
+          // Parsed after Agenda, so a non-pending item never creates a worktree.
+          const parsed = StartOrigin.parse(args);
           // Claim the origin before saving state, so a worktree serves one issue.
           // The claim stays reclaimable until the saved state confirms it.
           const origin = ClaimSchema.parse(
-            await gitOperation(context, {
-              action: "claim",
-              worktree: StartArgs.parse(args).workerWorktree,
-              issueKey,
-            }),
+            await gitOperation(
+              context,
+              parsed.newWorktree
+                ? {
+                  action: "claim-new",
+                  itemId: context.globalArgs.itemId,
+                  issueKey,
+                }
+                : {
+                  action: "claim",
+                  worktree: parsed.workerWorktree,
+                  issueKey,
+                },
+            ),
           );
+          if (origin.created) {
+            context.logger.info(
+              "Created {worktree} on {branch} from local main",
+              origin,
+            );
+          }
           const saved = await saveState(
             context,
             "start",
-            createState(issue, origin.worktree, StartArgs.parse(args).agent),
+            createState(issue, origin.worktree, parsed.agent),
           );
           await gitOperation(context, {
             action: "confirm",
@@ -336,9 +383,9 @@ export const behavior = {
       kind: "update",
       description:
         "Adopt the recorded worker worktree for implementation (legacy issues may create one)",
-      arguments: ActionSchemas.implement.strip(),
+      arguments: ImplementArgsSchema.strip(),
       execute: (
-        args: z.infer<typeof ActionSchemas.implement>,
+        args: z.infer<typeof ImplementArgsSchema>,
         context: Context,
       ) =>
         withIssue(context, async () => {
@@ -346,25 +393,11 @@ export const behavior = {
           await currentIssue(state);
           // New lifecycles adopt their existing origin. Only legacy lifecycles
           // without an implementation may still create a worktree.
-          const implementation = state.workerWorktree || state.implementation
-            ? { ...args, worktree: await Deno.realPath(args.worktree) }
-            : args;
-          // Validate the phase and approval before creating a branch or worktree.
-          transition(state, "implement", implementation);
-          const repo = InspectionSchema.parse(
-            await gitOperation(context, {
-              action: "prepare",
-              ...implementation,
-              issueKey: `${state.issue.workspace}/${state.issue.itemId}`,
-            }),
-          );
-          return saveState(
+          return adoptWorkerWorktree(
             context,
-            "implement",
-            transition(state, "implement", {
-              worktree: repo.worktree,
-              branch: repo.branch,
-            }),
+            state,
+            ImplementArgsSchema.parse(args),
+            { realPath: (path) => Deno.realPath(path), inspect, gitOperation },
           );
         }),
     },
@@ -391,7 +424,7 @@ export const behavior = {
     verify: {
       kind: "action",
       description:
-        "Run the approved plan's checks in the issue worktree at the reviewed commit, outside the merge lock",
+        "Probe rebase conflicts with local main, then run the configured baseline checks and the approved plan's checks in the issue worktree at the reviewed commit, outside the merge lock",
       arguments: Empty,
       execute: (_args: Record<string, never>, context: Context) =>
         withIssue(context, async () => {
@@ -405,6 +438,8 @@ export const behavior = {
             gitOperation,
             id: () => crypto.randomUUID(),
             now: () => new Date().toISOString(),
+            verificationSettings: (c) =>
+              loadVerificationSettings(c, gitOperation),
           });
         }),
     },
@@ -430,7 +465,7 @@ export const behavior = {
     repair: {
       kind: "update",
       description:
-        "Return to implementation after inspecting any previous merge attempt",
+        "Return to implementation after inspecting any previous merge attempt; a recorded failed verification or merge attempt becomes lastFailure",
       arguments: ActionSchemas.repair.strip(),
       execute: (args: z.infer<typeof ActionSchemas.repair>, context: Context) =>
         withIssue(context, async () => {

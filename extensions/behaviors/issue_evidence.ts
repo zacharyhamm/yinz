@@ -17,6 +17,7 @@ import {
   validateReceipt,
 } from "./_lib/issue_evidence.ts";
 import { AgentConfigSchema, promptDigest } from "./_lib/yinz_agent.ts";
+import { assertCheckPolicy } from "./_lib/check_policy.ts";
 
 export interface EvidenceContext
   extends Pick<Context, "signal" | "createFileWriter"> {
@@ -165,6 +166,13 @@ export function createEvidenceMethods(dependencies = evidenceDependencies) {
             );
           }
           return { dataHandles: [] };
+        }
+        // New acceptances only: accepted receipts replay above without policy.
+        if (
+          validated.payload.role === "plan" ||
+          validated.payload.role === "plan_review_fixes"
+        ) {
+          assertCheckPolicy(validated.payload.evidence.checks);
         }
         const task = await checkTask(context, assignment);
         const recovery = await parentResource(context, assignment, "recovery");
@@ -332,7 +340,7 @@ async function parentTaskWithIdentity(
 
 export const behavior = {
   type: "@yinz/issue-evidence",
-  version: "2026.11.11.1",
+  version: "2026.11.14.1",
   globalArguments: z.object({}).strict(),
   resources: {
     submission: {

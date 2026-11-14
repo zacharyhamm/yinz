@@ -37,10 +37,13 @@ direction, not a resolution. Plan blockers remain blocked; implementation review
 findings may be accepted for merge by the user. Keep the original review
 and record dispositions separately against its exact fingerprint.
 
-Submit findings through the assigned Swamp evidence behavior and inspect the
-accepted receipt before ending the task. Final chat formatting is presentation.
-Correct submission errors using the same investigation; do not repeat the review.
-Workers may submit only their own assignment's evidence and inspect its receipt.
+Start from the evidence template in the assignment directory and submit with the
+assignment's `submit_evidence.py` command; it exits 0 only after printing the
+accepted receipt (`--status` after an interrupted run). Older assignments without
+assignment files use the Swamp evidence behavior and commands in their saved
+prompt. Final chat formatting is presentation. Correct submission errors using
+the same investigation; do not repeat the review. Workers may submit only their
+own assignment's evidence and inspect its receipt.
 
 
 ## Implementation review ownership
@@ -80,17 +83,23 @@ repairs require fresh technical and UX reviews and verification. No reviewer or
 controller may infer permission to fix or ignore a finding. Checks actually performed by either
 reviewer remain advisory for structured plans; the lifecycle runs approved checks.
 Follow AGENTS.md's focused-test policy; review never authorizes full suites.
-Plan checks are valid command argument arrays executed directly without a shell,
-using supported flags and covering changed behavior and affected callers.
+Plan checks are valid command argument arrays executed directly without a shell;
+the [check policy](planning.md#check-policy) enforces argv form and focused suite
+selection at submission, so reviewers judge coverage of changed behavior and
+affected callers.
 See the bounded [reviewer evaluation](review-evaluation.md) for measured outcomes
 and limits; fixture reviews are not approval of a real implementation.
 
 ## Durable implementation review continuity (assignment contract 2)
 
 New assignments carry a versioned `continuity` binding and a complete deterministic
-review packet. Read the saved packet, source reviews and referenced failure logs.
+review packet. Contract 3 delivers them as read-only files bound by the
+assignment manifest: `packet.json`, `snapshot.json` (which packet `sourceRef`
+paths resolve against), `baseline.json`, and the decoded `feature.diff` and
+`delta.diff`. Contract-2 prompts inline the packet and base64 diffs. Read the
+saved packet, source reviews and referenced failure logs.
 The captured `baseline.main`, `mergeBase` and `head` are full object IDs. Review
-`featureDiff` across the complete merge-base-to-HEAD scope; `delta` is optional
+the feature diff across the complete merge-base-to-HEAD scope; the delta is optional
 endpoint assistance. A moved local main never changes the technical/UX pair's
 baseline. Divergent/rebased history is not a descendant repair. Missing previous
 objects explicitly disable delta and reuse assistance; missing required current
@@ -103,7 +112,8 @@ never discharge its review. New findings include `affectedPaths`, source or
 behavioral `evidence`, and relevant approved `checkIds` (an empty check list may
 indicate a coverage gap).
 
-Return `priorFindings` outcomes for every prior unresolved finding of your role:
+Return `priorFindings` outcomes for every prior unresolved finding of your role
+(the contract-3 evidence template pre-fills one entry per obligation):
 `persists`, `verified_fixed`, or `reopened`, each with rationale and evidence.
 For `persists`, also carry the same finding and its origin in `findings`, leaving
 `resolution` unset. Describe an unchanged ignored concern as historical

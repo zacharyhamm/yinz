@@ -4,20 +4,28 @@ import {
   type AgentContext,
   AgentStateSchema,
   cleanupAgent,
+  CLOSE_COMPLETED_CORRELATION_REFUSALS,
+  CLOSE_COMPLETED_TRANSIENT_REFUSALS,
   type CommandResult,
+  completedWorkerProblems,
   confirmFailureAgent,
+  confirmStoppedAgent,
   continueAgent,
   type Dependencies,
   EmptySchema,
   hooksReady,
+  isRejectedLaunch,
   isTerminalFailure,
+  PreflightTransportError,
   promptDigest,
   publishPromptArtifact,
   recoverAgent,
+  rejectedLaunchProblems,
   resumeAgent,
   runAgent,
   RunArgsSchema,
   statusAgent,
+  terminalFailureProblems,
 } from "../_lib/yinz_agent.ts";
 
 function assert(
@@ -1918,4 +1926,586 @@ Deno.test("issue85 positive interruption remains distinct on repeated original-s
     assert(!h.records.get("state")?.retainedSubmission);
   }
   equal(h.calls.filter((c) => c.args.includes("prompt")).length, 1);
+});
+
+function busyRow(overrides: Record<string, unknown> = {}) {
+  return {
+    ...agent(),
+    agent: { ...agent().agent, state: "busy" },
+    ready: false,
+    not_ready_reason: "not_idle",
+    ...overrides,
+  };
+}
+function stateRow(state: string) {
+  return { ...agent(), agent: { ...agent().agent, state }, ready: false };
+}
+
+Deno.test("cleanup records structured refusals with the exact thrown text", async () => {
+  const h = harness([spawned, ready(), completed()]);
+  await runAgent({ prompt: "Fix it" }, h.context, h.dependencies);
+  const cases: [string, string, unknown[], boolean][] = [
+    ["rejected", "worker is Busy, not idle", [busyRow()], true],
+    ["rejected", "worker background work is still running", [{
+      ...agent(),
+      background: true,
+    }], true],
+    ["rejected", "a Yinz prompt write to the worker is still in flight", [{
+      ...agent(),
+      ready: false,
+      not_ready_reason: "pending_submission",
+    }], true],
+    ["rejected", "a Yinz control operation on the worker is still in flight", [
+      { ...agent(), ready: false, not_ready_reason: "clearing_draft" },
+    ], true],
+    // A pending non-prompt control reports no not-ready reason; the exact
+    // guard text still identifies it as transient.
+    [
+      "rejected",
+      "a Yinz control operation on the worker is still in flight",
+      [agent()],
+      true,
+    ],
+    ["rejected", "worker has an unresolved accepted turn", [{
+      ...agent(),
+      ready: false,
+      not_ready_reason: "unresolved_turn",
+    }], true],
+    ["rejected", "worker is Waiting, not idle", [stateRow("waiting")], false],
+    ["rejected", "worker is Exited, not idle", [stateRow("exited")], false],
+    ["rejected", "worker is Busy, not idle", [
+      busyRow({
+        agent: { kind: "claude", session_id: "conversation-2", state: "busy" },
+      }),
+    ], false],
+    [
+      "rejected",
+      "worker is Busy, not idle",
+      [busyRow({ session: "other" })],
+      false,
+    ],
+    ["rejected", "worker is Busy, not idle", [
+      busyRow({ pane_id: "terminal_8" }),
+    ], false],
+    ["rejected", "worker is Busy, not idle", [], false],
+    [
+      "rejected",
+      "submission submission-1 is not the worker's latest submission (submission-2)",
+      [busyRow()],
+      false,
+    ],
+    [
+      "rejected",
+      "submission submission-1 is not retained for this worker",
+      [busyRow()],
+      false,
+    ],
+    [
+      "rejected",
+      "submission submission-1 has no acknowledged completed result in this conversation (outcome unresolved)",
+      [busyRow()],
+      false,
+    ],
+    [
+      "rejected",
+      "close-completed requires the worker's conversation",
+      [busyRow()],
+      false,
+    ],
+    ["rejected", "worker cleanup would affect other panes", [busyRow()], false],
+    ["rejected", "worker pane could not be closed", [busyRow()], false],
+    ["status_unavailable", "worker status is unavailable", [busyRow()], false],
+  ];
+  for (const [outcome, message, agents, retryable] of cases) {
+    h.replies.push([{ id: 7, is_plugin: false }], {
+      code: 1,
+      stdout: JSON.stringify({ outcome, message, agents }),
+      stderr: "",
+    });
+    const thrown = `Worker cleanup blocked: ${outcome}: ${message}`;
+    let error: unknown;
+    try {
+      await cleanupAgent(h.context, h.dependencies);
+    } catch (caught) {
+      error = caught;
+    }
+    assert(error instanceof Error, `${message}: expected a refusal`);
+    equal(error.message, thrown);
+    const state = AgentStateSchema.parse(h.records.get("state"));
+    equal(state.cleanupRefusal, {
+      outcome,
+      message,
+      thrown,
+      retryable,
+      submissionId: "submission-1",
+      conversationId: "conversation-1",
+      observedAt: "2026-11-03T12:00:00.000Z",
+    });
+    assert(!state.cleanedUp);
+  }
+  h.replies.push({ code: 1, stdout: "", stderr: "server busy" });
+  await rejects(
+    () => cleanupAgent(h.context, h.dependencies),
+    "Cannot inspect worker before cleanup",
+  );
+  equal(h.records.get("state")?.cleanupRefusal, {
+    outcome: "list_panes_failed",
+    thrown: "Cannot inspect worker before cleanup",
+    retryable: true,
+    submissionId: "submission-1",
+    conversationId: "conversation-1",
+    observedAt: "2026-11-03T12:00:00.000Z",
+  });
+  h.replies.push([{ id: 7, is_plugin: false }], {
+    code: 1,
+    stdout: "",
+    stderr: "connection refused",
+  });
+  const invalid =
+    "Worker cleanup returned no valid agent response (exit 1): connection refused";
+  await rejects(() => cleanupAgent(h.context, h.dependencies), invalid);
+  equal(h.records.get("state")?.cleanupRefusal, {
+    outcome: "transport_error",
+    thrown: invalid,
+    retryable: true,
+    submissionId: "submission-1",
+    conversationId: "conversation-1",
+    observedAt: "2026-11-03T12:00:00.000Z",
+  });
+  // CLI output keeps its trailing whitespace in the saved text, so the
+  // controller's exact comparison matches the error it received.
+  for (
+    const [stdout, stderr] of [["", "Error: connection refused\n"], ["", ""]]
+  ) {
+    h.replies.push([{ id: 7, is_plugin: false }], { code: 1, stdout, stderr });
+    let error: unknown;
+    try {
+      await cleanupAgent(h.context, h.dependencies);
+    } catch (caught) {
+      error = caught;
+    }
+    assert(
+      error instanceof Error,
+      `${JSON.stringify(stderr)}: expected a refusal`,
+    );
+    equal(
+      error.message,
+      `Worker cleanup returned no valid agent response (exit 1): ${stderr}`,
+    );
+    const refusal =
+      AgentStateSchema.parse(h.records.get("state")).cleanupRefusal;
+    equal(refusal?.thrown, error.message);
+    equal(refusal?.outcome, "transport_error");
+    equal(refusal?.retryable, true);
+  }
+  h.replies.push([{ id: 7, is_plugin: false }], { outcome: "ok" });
+  await cleanupAgent(h.context, h.dependencies);
+  const cleaned = AgentStateSchema.parse(h.records.get("state"));
+  equal(cleaned.cleanupRefusal, undefined);
+  equal(cleaned.cleanedUp, true);
+});
+
+Deno.test("cleanup of an unfinished worker records a non-retryable refusal", async () => {
+  const h = harness([spawned, ready(), {
+    outcome: "timed_out",
+    submission_id: "submission-1",
+    acknowledged: true,
+    prompt_delivery: "started",
+    agents: [busyRow()],
+  }]);
+  await rejects(
+    () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+    "timed_out",
+  );
+  const count = h.calls.length;
+  await rejects(
+    () => cleanupAgent(h.context, h.dependencies),
+    "Worker is not ready for cleanup",
+  );
+  equal(h.calls.length, count);
+  const refusal = AgentStateSchema.parse(h.records.get("state")).cleanupRefusal;
+  equal(refusal?.outcome, "not_ready");
+  equal(refusal?.retryable, false);
+  equal(refusal?.thrown, "Worker is not ready for cleanup");
+});
+
+Deno.test("close-completed refusal classification is pinned to the Rust CloseCompleted wording", async () => {
+  const source = await Deno.readTextFile(
+    new URL(
+      "../../../yinz-screen/src/screen/agent_control.rs",
+      import.meta.url,
+    ),
+  );
+  const start = source.search(/CloseCompleted \{[^}]*\} => \{/);
+  assert(start >= 0, "CloseCompleted handler not found");
+  const end = source.indexOf('"worker pane could not be closed"', start);
+  assert(end > start, "CloseCompleted handler end not found");
+  const handler = source.slice(start, end + 40);
+  for (const fragment of CLOSE_COMPLETED_CORRELATION_REFUSALS) {
+    assert(handler.includes(fragment), `Rust no longer says: ${fragment}`);
+  }
+  for (const message of CLOSE_COMPLETED_TRANSIENT_REFUSALS) {
+    if (message === "worker is Busy, not idle") continue;
+    assert(handler.includes(`"${message}"`), `Rust no longer says: ${message}`);
+  }
+  // `worker is {state}, not idle` renders AgentState's Display (Busy, Waiting,
+  // Exited); only Busy is transient.
+  assert(handler.includes('"worker is {}, not idle"'));
+  assert(handler.includes('"worker status is unavailable"'));
+  assert(handler.includes("AgentOutcome::StatusUnavailable"));
+});
+
+Deno.test("responses record which observation produced them", async () => {
+  const timedOut = {
+    outcome: "timed_out",
+    submission_id: "submission-1",
+    acknowledged: true,
+    prompt_delivery: "started",
+    agents: [busyRow()],
+  };
+  const h = harness([
+    spawned,
+    ready(),
+    timedOut,
+    completed({
+      background_tasks: ["worker-1"],
+    }),
+    { ...ready(), message: "Final answer" },
+  ]);
+  await rejects(
+    () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+    "timed_out",
+  );
+  equal(h.calls[1].state?.observedVia, "launch");
+  equal(h.calls[2].state?.observedVia, "startup");
+  equal(h.records.get("state")?.observedVia, "prompt");
+  await resumeAgent(h.context, h.dependencies);
+  equal(h.calls[4].state?.observedVia, "submission");
+  equal(h.records.get("state")?.observedVia, "idle");
+
+  const launch = harness([
+    new Error("lost reply"),
+    { ...spawned, launch: receipt("server-test.submission-1") },
+    new Error("lost startup"),
+  ]);
+  await rejects(
+    () => runAgent({ prompt: "Fix it" }, launch.context, launch.dependencies),
+    "lost reply",
+  );
+  await rejects(
+    () => resumeAgent(launch.context, launch.dependencies),
+    "lost startup",
+  );
+  equal(launch.calls[2].state?.observedVia, "launch_status");
+
+  const legacy = structuredClone(h.records.get("state")!);
+  delete legacy.observedVia;
+  delete legacy.cleanupRefusal;
+  equal(AgentStateSchema.parse(legacy).observedVia, undefined);
+  let strict = false;
+  try {
+    AgentStateSchema.parse({ ...legacy, observation: "prompt" });
+  } catch {
+    strict = true;
+  }
+  assert(strict, "AgentStateSchema must stay strict");
+});
+
+Deno.test("launch preflight transport failures save no launch intent and retry as a first launch", async () => {
+  const control = { control: { session: "dev", paneId: "terminal_1" } };
+  const updating = harness([{
+    code: 1,
+    stdout: "",
+    stderr: "This session is updating Yinz; retry after it finishes",
+  }], control);
+  let error: unknown;
+  try {
+    await runAgent(
+      { prompt: "Fix it" },
+      updating.context,
+      updating.dependencies,
+    );
+  } catch (caught) {
+    error = caught;
+  }
+  assert(error instanceof PreflightTransportError, String(error));
+  equal(
+    error.message,
+    "Launch preflight transport failure (list-panes): Cannot resolve control pane: This session is updating Yinz; retry after it finishes; launch was not sent",
+  );
+  let state = AgentStateSchema.parse(updating.records.get("state"));
+  equal(state.outcome, "preflight_transport");
+  equal(state.phase, "preflight");
+  equal(state.launchId, undefined);
+  assert(updating.calls.every((call) => !call.args.includes("spawn")));
+  updating.replies.push(
+    [{ id: 1, is_plugin: false, tab_id: 0 }],
+    spawned,
+    ready(),
+    completed(),
+  );
+  await recoverAgent(
+    { prompt: "Fix it" },
+    updating.context,
+    updating.dependencies,
+  );
+  equal(updating.calls.filter((call) => call.args.includes("spawn")).length, 1);
+  equal(updating.records.get("state")?.phase, "completed");
+
+  const invalidPanes = harness([{ code: 0, stdout: "", stderr: "" }], control);
+  await rejects(
+    () =>
+      runAgent(
+        { prompt: "Fix it" },
+        invalidPanes.context,
+        invalidPanes.dependencies,
+      ),
+    "Launch preflight transport failure (list-panes): invalid JSON (exit 0)",
+  );
+  equal(invalidPanes.records.get("state")?.outcome, "preflight_transport");
+  // A retry that fails for another reason does not keep the stale outcome.
+  invalidPanes.replies.push([{ id: 2, is_plugin: false, tab_id: 0 }]);
+  await rejects(
+    () =>
+      recoverAgent(
+        { prompt: "Fix it" },
+        invalidPanes.context,
+        invalidPanes.dependencies,
+      ),
+    "Cannot resolve control pane terminal_1 in session dev",
+  );
+  state = AgentStateSchema.parse(invalidPanes.records.get("state"));
+  equal(state.outcome, undefined);
+  equal(state.phase, "preflight");
+
+  let support: CommandResult | undefined = { code: 0, stdout: "", stderr: "" };
+  const emptySupport = harness([spawned, ready(), completed()]);
+  const run = emptySupport.dependencies.run;
+  emptySupport.dependencies.run = (args, stdin, signal) =>
+    args[3] === "launch-support" && support
+      ? Promise.resolve(support)
+      : run(args, stdin, signal);
+  await rejects(
+    () =>
+      runAgent(
+        { prompt: "Fix it" },
+        emptySupport.context,
+        emptySupport.dependencies,
+      ),
+    "Launch preflight transport failure (launch-support): invalid JSON (exit 0)",
+  );
+  state = AgentStateSchema.parse(emptySupport.records.get("state"));
+  equal(state.outcome, "preflight_transport");
+  equal(state.phase, "preflight");
+  equal(state.launchId, undefined);
+  equal(emptySupport.calls.length, 0);
+
+  // A valid reply from an older server is not a transport failure.
+  support = {
+    code: 0,
+    stdout: JSON.stringify({ outcome: "ok", output: "agent-launch" }),
+    stderr: "",
+  };
+  await rejects(
+    () =>
+      recoverAgent(
+        { prompt: "Fix it" },
+        emptySupport.context,
+        emptySupport.dependencies,
+      ),
+    "agent-launch-transaction-v2 is required; launch was not sent",
+  );
+  equal(emptySupport.records.get("state")?.outcome, undefined);
+  equal(emptySupport.calls.length, 0);
+
+  support = undefined;
+  await recoverAgent(
+    { prompt: "Fix it" },
+    emptySupport.context,
+    emptySupport.dependencies,
+  );
+  equal(
+    emptySupport.calls.filter((call) => call.args.includes("spawn")).length,
+    1,
+  );
+  equal(emptySupport.records.get("state")?.phase, "completed");
+});
+
+Deno.test("confirm_stopped freshly observes a completed worker without changing its state", async () => {
+  const busy = { ...agent(), agent: { ...agent().agent, state: "busy" } };
+  const cases: [string, Reply[], string | undefined, string | undefined][] = [
+    ["idle", [[{ id: 7, is_plugin: false }], ready()], undefined, "ok"],
+    [
+      "unconsumed input",
+      [[{ id: 7, is_plugin: false }], {
+        outcome: "ok",
+        agents: [{
+          ...agent(),
+          ready: false,
+          not_ready_reason: "unconsumed_input",
+        }],
+      }],
+      undefined,
+      "ok",
+    ],
+    [
+      "busy",
+      [[{ id: 7, is_plugin: false }], { outcome: "ok", agents: [busy] }],
+      'Completed worker is not stopped: agent state is "busy", expected idle',
+      "ok",
+    ],
+    [
+      "background",
+      [[{ id: 7, is_plugin: false }], {
+        ...ready(),
+        background_tasks: ["job"],
+      }],
+      "background tasks are running: job",
+      "ok",
+    ],
+    [
+      "pending writes",
+      [[{ id: 7, is_plugin: false }], {
+        outcome: "ok",
+        agents: [{ ...agent(), not_ready_reason: "pending_submission" }],
+      }],
+      "not ready: pending_submission",
+      "ok",
+    ],
+    [
+      "conversation changed",
+      [[{ id: 7, is_plugin: false }], ready("replacement")],
+      "conversation changed",
+      "ok",
+    ],
+    [
+      "failed status",
+      [[{ id: 7, is_plugin: false }], { outcome: "target_changed" }],
+      "Agent observation failed: target_changed",
+      "target_changed",
+    ],
+    [
+      // A warped pane or an orphaned supervisor is absent too, so absence is
+      // not stop evidence.
+      "pane absent",
+      [[{ id: 8, is_plugin: false }, { id: 7, is_plugin: true }]],
+      "Pane terminal_7 is not listed in session dev; it may have moved to another session or outlived its server, so the behavior cannot observe whether the completed worker stopped",
+      undefined,
+    ],
+    [
+      "list-panes failure",
+      [{ code: 1, stdout: "", stderr: "no session" }],
+      "Cannot list panes in session dev; the behavior cannot observe whether the completed worker stopped",
+      undefined,
+    ],
+    [
+      "malformed listing",
+      [{ code: 0, stdout: "not json", stderr: "" }],
+      "cannot observe whether the completed worker stopped",
+      undefined,
+    ],
+  ];
+  for (const [name, replies, error, observed] of cases) {
+    const h = harness([spawned, ready(), completed()]);
+    await runAgent({ prompt: "Fix it" }, h.context, h.dependencies);
+    const before = structuredClone(h.records.get("state"));
+    const result = structuredClone(h.records.get("result"));
+    const calls = h.calls.length;
+    const writes = h.writes.length;
+    h.replies.push(...replies);
+    if (error) {
+      await rejects(
+        () => confirmStoppedAgent(h.context, h.dependencies),
+        error,
+      );
+    } else await confirmStoppedAgent(h.context, h.dependencies);
+    // Only the observation resource may change; no lastError or failureKind.
+    equal(h.records.get("state"), before);
+    equal(h.records.get("result"), result);
+    equal(
+      [...new Set(h.writes.slice(writes).map((w) => w.name))],
+      observed ? ["observation"] : [],
+    );
+    assert(h.replies.length === 0, `${name}: unused replies`);
+    equal(h.calls[calls].args, [
+      "--session",
+      "dev",
+      "action",
+      "list-panes",
+      "--json",
+    ]);
+    equal(h.records.get("observation")?.outcome, observed);
+    // An unobservable stop makes no status call after the listing.
+    if (!observed) equal(h.calls.length, calls + 1);
+    if (observed === "ok" || observed === "target_changed") {
+      const status = h.calls[calls + 1].args;
+      equal(status.slice(2, 5), ["agent", "status", "terminal_7"]);
+      equal(status[status.indexOf("--conversation") + 1], "conversation-1");
+    }
+  }
+});
+
+Deno.test("confirm_stopped refuses a worker that has not completed without observing it", async () => {
+  const h = harness([spawned, ready(), completed({ outcome: "timed_out" })]);
+  await rejects(
+    () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+    "",
+  );
+  const before = structuredClone(h.records.get("state"));
+  const calls = h.calls.length;
+  await rejects(
+    () => confirmStoppedAgent(h.context, h.dependencies),
+    'Cannot confirm a stopped worker: phase is "waiting", expected completed or completed_unusable; outcome is "timed_out", expected completed',
+  );
+  equal(h.records.get("state"), before);
+  equal(h.calls.length, calls);
+  assert(!h.records.has("observation"));
+});
+
+Deno.test("discard predicates match the shared fixture", async () => {
+  const cases = JSON.parse(
+    await Deno.readTextFile(
+      new URL(
+        "../../../scripts/issue_lifecycle/unit/fixtures/discard_cases.json",
+        import.meta.url,
+      ),
+    ),
+  ) as {
+    name: string;
+    child: unknown;
+    expected: {
+      rejectedLaunch: boolean;
+      terminalFailure: boolean;
+      completedWorker: boolean;
+    };
+  }[];
+  equal(cases.map((c) => c.name), [
+    "v2 rejected",
+    "v2 running",
+    "legacy structured rejection",
+    "legacy rejection with spawned pane",
+    "acknowledged failed",
+    "not_sent timed_out",
+    "acknowledged timed_out",
+    "completed",
+    "completed with background",
+    "interrupted",
+  ]);
+  for (const { name, child, expected } of cases) {
+    // Every child is a complete, valid persisted state.
+    const state = AgentStateSchema.parse(child);
+    equal(state, child);
+    const actual = {
+      rejectedLaunch: isRejectedLaunch(state),
+      terminalFailure: isTerminalFailure(state),
+      completedWorker: completedWorkerProblems(state).length === 0,
+    };
+    assert(
+      JSON.stringify(actual) === JSON.stringify(expected),
+      `${name}: ${JSON.stringify(actual)} != ${JSON.stringify(expected)}`,
+    );
+    // The problem lists are the predicates' only source of truth.
+    equal(rejectedLaunchProblems(state).length === 0, actual.rejectedLaunch);
+    equal(terminalFailureProblems(state).length === 0, actual.terminalFailure);
+  }
 });

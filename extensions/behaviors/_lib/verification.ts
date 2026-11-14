@@ -1,7 +1,13 @@
 /** Run the approved plan's checks at the reviewed commit and record the results. */
 import { z } from "npm:zod@4.6.7";
 import {
+  BaselineCheckSchema,
+  checkOutcome,
+  displayCommand,
   type LifecycleState,
+  probeConflictPaths,
+  type RebaseProbe,
+  RebaseProbeSchema,
   transition,
   type Verification,
   verificationPlan,
@@ -9,10 +15,38 @@ import {
 } from "./lifecycle.ts";
 import { type Context, type gitOperation, saveState } from "./runtime.ts";
 
+export { checkOutcome, displayCommand } from "./lifecycle.ts";
+
+/** Control-checkout policy read live at each verification. */
+export const VerificationSettingsSchema = z.object({
+  baselineChecks: z.array(BaselineCheckSchema).max(16).refine(
+    (checks) => new Set(checks.map((check) => check.id)).size === checks.length,
+    "Baseline check IDs must be unique",
+  ),
+  rebaseProbe: z.boolean(),
+}).strict();
+export type VerificationSettings = z.infer<typeof VerificationSettingsSchema>;
+/** Settings for fixtures that run neither baseline checks nor the probe. */
+export const NO_VERIFICATION_EXTRAS: VerificationSettings = {
+  baselineChecks: [],
+  rebaseProbe: false,
+};
+
+/** Read `.yinz/issue-lifecycle.json`'s verification section through the Git helper. */
+export async function loadVerificationSettings(
+  context: Context,
+  git: typeof gitOperation,
+) {
+  return VerificationSettingsSchema.parse(
+    await git(context, { action: "verification-settings" }),
+  );
+}
+
 export interface VerificationDependencies {
   gitOperation: typeof gitOperation;
   id: () => string;
   now: () => string;
+  verificationSettings: (context: Context) => Promise<VerificationSettings>;
 }
 
 const CheckOutcome = z.object({
@@ -26,6 +60,11 @@ export function checkLogName(verificationId: string, checkId: string) {
   return `check-log-${verificationId}-${checkId}`;
 }
 
+/** A distinct prefix, so a plan check named `baseline-x` cannot collide. */
+export function baselineLogName(verificationId: string, checkId: string) {
+  return `baseline-log-${verificationId}-${checkId}`;
+}
+
 /** The command an operator runs to read one check's stored output. */
 export function checkLogQuery(issueName: string, log: string) {
   return `swamp data query 'modelName == ${
@@ -33,24 +72,37 @@ export function checkLogQuery(issueName: string, log: string) {
   } && name == ${JSON.stringify(log)}' --select content`;
 }
 
-/** Quote argv for display only; the lifecycle never runs it through a shell. */
-export function displayCommand(argv: string[]) {
-  return argv.map((value) =>
-    /^[A-Za-z0-9_@%+=:,./-]+$/.test(value)
-      ? value
-      : `'${value.replaceAll("'", `'"'"'`)}'`
-  ).join(" ");
+function probeLine(probe: RebaseProbe) {
+  if (probe.status === "clean") {
+    return `- [x] rebase probe: no conflicts with local main ${probe.main}`;
+  }
+  if (probe.status === "conflicts") {
+    return `- [ ] rebase probe: conflicts with local main ${probe.main} in ${
+      probeConflictPaths(probe)
+    }`;
+  }
+  return `- rebase probe unavailable: ${probe.reason} (not a failure; the merge gate rebases under its lock)`;
 }
 
-/** How one check ended, shared by the checklist and drive's blocked reason. */
-export function checkOutcome(check: Verification["checks"][number]) {
-  if (check.skipped) return "not run";
-  const ended = check.timedOut
-    ? "timed out"
-    : `exit ${check.exitCode ?? "(could not start)"}`;
-  return check.worktreeUnchanged
-    ? ended
-    : `${ended}; changed the worktree, branch or HEAD`;
+type RunLine =
+  | Verification["checks"][number]
+  | NonNullable<
+    Verification["baseline"]
+  >[number];
+
+function runLine(
+  issueName: string,
+  label: string,
+  check: RunLine,
+  covers?: string[],
+) {
+  return `- [${check.status === "passed" ? "x" : " "}] ${label}: ${
+    displayCommand(check.command)
+  } -> ${checkOutcome(check)} in ${(check.durationMs / 1000).toFixed(1)}s${
+    covers ? ` (covers ${covers.join(", ")})` : ""
+  }. ${
+    check.log ? `Log: ${checkLogQuery(issueName, check.log)}` : check.skipped
+  }`;
 }
 
 export function verificationChecklist(
@@ -59,26 +111,46 @@ export function verificationChecklist(
 ): string[] {
   return [
     `Verification ${verification.id}: ${verification.status} at ${verification.commit} (plan version ${verification.planVersion})`,
+    ...(verification.rebaseProbe ? [probeLine(verification.rebaseProbe)] : []),
+    ...(verification.baseline ?? []).map((check) =>
+      runLine(issueName, `baseline ${check.id}`, check)
+    ),
     ...verification.checks.map((check) =>
-      `- [${check.status === "passed" ? "x" : " "}] ${check.id}: ${
-        displayCommand(check.command)
-      } -> ${checkOutcome(check)} in ${
-        (check.durationMs / 1000).toFixed(1)
-      }s (covers ${check.covers.join(", ")}). ${
-        check.log
-          ? `Log: ${checkLogQuery(issueName, check.log)}`
-          : check.skipped
-      }`
+      runLine(issueName, check.id, check, check.covers)
     ),
   ];
 }
 
+async function rebaseProbe(
+  context: Context,
+  dependencies: VerificationDependencies,
+  commit: string,
+): Promise<RebaseProbe> {
+  try {
+    return RebaseProbeSchema.parse(
+      await dependencies.gitOperation(context, {
+        action: "rebase-probe",
+        expectedHead: commit,
+      }),
+    );
+  } catch (error) {
+    if (context.signal.aborted) throw error;
+    const message = (error instanceof Error ? error.message : String(error))
+      .trim().slice(0, 400);
+    return {
+      status: "unavailable",
+      reason: message || "The rebase probe failed",
+    };
+  }
+}
+
 /**
  * The caller owns the issue lock and has confirmed that the clean worktree is at
- * the reviewed commit. Every check runs even after a failure, so the checklist
- * is complete. The exceptions are a check that changes the worktree and one the
- * Git helper cannot run: later checks are then recorded as not run, and the run
- * is still saved as a failure. No merge lock is taken.
+ * the reviewed commit. The rebase probe runs first, then the configured
+ * baseline checks, then the plan checks. Every check runs even after a failure,
+ * so the checklist is complete. The exceptions are a check that changes the
+ * worktree and one the Git helper cannot run: later checks are then recorded
+ * as not run, and the run is still saved as a failure. No merge lock is taken.
  */
 export async function runVerification(
   context: Context,
@@ -121,23 +193,33 @@ export async function runVerification(
       })),
     },
   });
-  const checks: Verification["checks"] = [];
+  // A configuration error stops verification before anything runs.
+  const settings = VerificationSettingsSchema.parse(
+    await dependencies.verificationSettings(context),
+  );
+  context.signal.throwIfAborted();
+  const probe = settings.rebaseProbe
+    ? await rebaseProbe(context, dependencies, review.commit)
+    : undefined;
+  if (probe) {
+    context.logger.info("Rebase probe: {status}", { status: probe.status });
+  }
   // Set once the reviewed clean tree can no longer be trusted for later checks.
   let stopped: string | undefined;
-  for (const check of plan.checks) {
+  async function runOne(
+    entry: { id: string; command: string[] },
+    log: string,
+  ) {
     context.signal.throwIfAborted();
     if (stopped) {
-      checks.push({
-        ...check,
+      return {
         exitCode: null,
         durationMs: 0,
         skipped: `Not run: ${stopped}`,
         worktreeUnchanged: false,
-        status: "failed",
-      });
-      continue;
+        status: "failed" as const,
+      };
     }
-    const log = checkLogName(id, check.id);
     let outcome: z.infer<typeof CheckOutcome>;
     try {
       outcome = CheckOutcome.parse(
@@ -145,10 +227,10 @@ export async function runVerification(
           context,
           {
             action: "check",
-            worktree: implementation.worktree,
-            expectedBranch: implementation.branch,
-            expectedHead: review.commit,
-            argv: check.command,
+            worktree: implementation!.worktree,
+            expectedBranch: implementation!.branch,
+            expectedHead: review!.commit,
+            argv: entry.command,
           },
           log,
           "check-log",
@@ -158,43 +240,61 @@ export async function runVerification(
       if (context.signal.aborted) throw error;
       // Keep completed results: record the refusal (for example, a worktree
       // that changed after the previous check) instead of losing the run.
-      checks.push({
-        ...check,
+      stopped = `check ${entry.id} could not run`;
+      return {
         exitCode: null,
         durationMs: 0,
         skipped: `Could not run: ${
           error instanceof Error ? error.message : String(error)
         }`,
         worktreeUnchanged: false,
-        status: "failed",
-      });
-      stopped = `check ${check.id} could not run`;
-      continue;
+        status: "failed" as const,
+      };
     }
     if (!outcome.worktreeUnchanged) {
-      stopped = `check ${check.id} changed the worktree`;
+      stopped = `check ${entry.id} changed the worktree`;
     }
     context.logger.info("Check {check} exited {code} in {duration} ms", {
-      check: check.id,
+      check: entry.id,
       code: outcome.exitCode,
       duration: outcome.durationMs,
     });
-    checks.push({
-      ...check,
+    return {
       ...outcome,
       log,
       status: outcome.exitCode === 0 && outcome.worktreeUnchanged
         ? "passed" as const
         : "failed" as const,
+    };
+  }
+  const baseline: NonNullable<Verification["baseline"]> = [];
+  for (const check of settings.baselineChecks) {
+    baseline.push({
+      ...check,
+      ...await runOne(
+        { id: `baseline ${check.id}`, command: check.command },
+        baselineLogName(id, check.id),
+      ),
+    });
+  }
+  const checks: Verification["checks"] = [];
+  for (const check of plan.checks) {
+    checks.push({
+      ...check,
+      ...await runOne(check, checkLogName(id, check.id)),
     });
   }
   const verification = VerificationSchema.parse({
     ...record,
     finishedAt: dependencies.now(),
-    status: checks.every((check) => check.status === "passed")
+    status: [...baseline, ...checks].every((check) =>
+        check.status === "passed"
+      ) && probe?.status !== "conflicts"
       ? "passed"
       : "failed",
     checks,
+    ...(baseline.length ? { baseline } : {}),
+    ...(probe ? { rebaseProbe: probe } : {}),
   });
   return saveState(
     context,

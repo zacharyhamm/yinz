@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import fcntl
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -28,6 +29,7 @@ from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 import uuid
 
+from config import verification_settings as configured_verification
 from workspace import agenda_workspace, local_environment
 
 
@@ -75,6 +77,12 @@ CHECK_TIMEOUT_SECONDS = 3600
 CI_LOG_NAME = "ci-check.log"
 # Receipts and handoffs list failing tests; the log keeps every one.
 FAILED_TEST_LIMIT = 50
+# Flake hints compare a failed gate with this many of the newest receipts.
+RECURRENCE_SCAN_LIMIT = 200
+# Summaries name at most this many recurring tests, and attempts per test.
+RECURRENCE_SHOWN = 3
+# Verification records at most this many conflicting paths.
+REBASE_PROBE_PATH_LIMIT = 100
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 # `cargo x ci check` prints one marker per finished phase (xtask/src/ci.rs, phase_marker).
 PHASE_MARKER = re.compile(r">> ci phase (.+): (passed|failed)")
@@ -321,6 +329,74 @@ def previous_attempts(receipts, issue_key, current):
     return sorted(found, key=lambda entry: str(entry.get("timestamp") or ""))
 
 
+def recurring_test_failures(receipts, current, failed_tests):
+    """Earlier attempts, of any issue, whose merge gate failed the same tests.
+
+    Scans the newest RECURRENCE_SCAN_LIMIT receipts, whatever their status: a
+    merged receipt can still record a test that failed and passed on retry.
+    Returns one entry per recurring test in failed_tests order, newest attempt first.
+    """
+    wanted = set(failed_tests)
+    if not wanted:
+        return []
+    candidates = []
+    for candidate in receipts.glob("*.json"):
+        if candidate.stem == current:
+            continue
+        try:
+            candidates.append((candidate.stat().st_mtime, candidate))
+        except OSError:
+            continue  # Replaced or removed while scanning.
+    candidates.sort(key=lambda entry: entry[0], reverse=True)
+    found = {}
+    for _, candidate in candidates[:RECURRENCE_SCAN_LIMIT]:
+        try:
+            value = json.loads(candidate.read_text())
+        except (OSError, ValueError) as error:
+            print(f"Skipping unreadable merge receipt {candidate.name}: {error}", file=sys.stderr, flush=True)
+            continue
+        if not isinstance(value, dict):
+            print(f"Skipping malformed merge receipt {candidate.name}", file=sys.stderr, flush=True)
+            continue
+        ci = value.get("ci")
+        tests = ci.get("failedTests") if isinstance(ci, dict) else None
+        if not is_text_list(tests):
+            continue
+        attempt = {key: value.get(key) for key in ("issueKey", "status", "timestamp")}
+        attempt["attemptId"] = value.get("attemptId", candidate.stem)
+        for name in wanted.intersection(tests):
+            found.setdefault(name, []).append(attempt)
+    return [
+        {"name": name, "attempts": sorted(found[name], key=lambda entry: str(entry.get("timestamp") or ""),
+                                          reverse=True)}
+        for name in dict.fromkeys(failed_tests) if name in found
+    ]
+
+
+def describe_recurrence(recurring):
+    parts = []
+    for entry in recurring[:RECURRENCE_SHOWN]:
+        attempts = entry["attempts"]
+        shown = ", ".join(f"{attempt.get('issueKey')} {attempt.get('attemptId')}"
+                          for attempt in attempts[:RECURRENCE_SHOWN])
+        more = f" +{len(attempts) - RECURRENCE_SHOWN} more" if len(attempts) > RECURRENCE_SHOWN else ""
+        noun = "attempt" if len(attempts) == 1 else "attempts"
+        parts.append(f"{entry['name']} (also failed in {len(attempts)} earlier {noun}: {shown}{more})")
+    extra = f" (+{len(recurring) - RECURRENCE_SHOWN} more tests)" if len(recurring) > RECURRENCE_SHOWN else ""
+    return "recurring: " + "; ".join(parts) + extra
+
+
+def annotate_recurrence(ci, receipts, current):
+    """Add recurring-test evidence to a gate result; never raises."""
+    try:
+        recurring = recurring_test_failures(receipts, current, ci.get("failedTests") or [])
+        if recurring:
+            ci["recurringTests"] = recurring
+            ci["summary"] = f"{ci.get('summary') or ''}; {describe_recurrence(recurring)}".lstrip("; ")
+    except Exception as error:  # A hint must never mask the gate result.
+        print(f"Cannot compare earlier attempts: {error}", file=sys.stderr, flush=True)
+
+
 def git(path, *args, check=True):
     return command(["git", "-C", str(path), *args], path, check=check)
 
@@ -514,6 +590,49 @@ def issue_idle(directory, issue_key):
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
+def _claim_locked(directory, owners, issue_key, worktree, branch):
+    """Record this issue's pending start claim; the caller holds the ownership lock.
+
+    Refuses another issue's confirmed or prepared claim on the worktree or
+    branch, reclaims pending claims of idle issues, and drops this issue's
+    orphaned start claims elsewhere. A pending entry never carries a branch.
+    Raises before writing anything when the claim is refused.
+    """
+    conflicts = [
+        owner for owner in owners
+        if owner["issueKey"] != issue_key
+        and (owner["worktree"] == str(worktree) or owner.get("branch") == branch)
+    ]
+    for owner in conflicts:
+        if not owner.get("pending"):
+            raise LifecycleError(
+                f"Worktree or branch already belongs to issue {owner['issueKey']} at {owner['worktree']}"
+            )
+    with ExitStack() as held:
+        # flock is per open file, so lock each owning issue once.
+        for owner_key in dict.fromkeys(owner["issueKey"] for owner in conflicts):
+            if not held.enter_context(issue_idle(directory, owner_key)):
+                raise LifecycleError(
+                    f"Worktree is being claimed by issue {owner_key}'s start in progress; retry later"
+                )
+        # Start claims only when no state exists, under the issue lock, so this
+        # issue's start claims elsewhere are orphans from a failed state save.
+        kept = [
+            owner for owner in owners
+            if owner not in conflicts
+            and not (owner["issueKey"] == issue_key and "branch" not in owner
+                     and owner["worktree"] != str(worktree))
+        ]
+        if not any(owner["issueKey"] == issue_key and owner["worktree"] == str(worktree) for owner in kept):
+            kept.append({"issueKey": issue_key, "worktree": str(worktree), "pending": True})
+        if kept != owners:
+            save_receipt(directory / "worktree-owners.json", {"owners": kept})
+        for owner in conflicts:
+            print(f"Reclaimed worktree {worktree} from issue {owner['issueKey']}, whose start never saved state",
+                  file=sys.stderr, flush=True)
+    return kept
+
+
 def claim(request):
     """Reserve the worker worktree for an issue before its lifecycle state exists.
 
@@ -531,39 +650,87 @@ def claim(request):
     with merge_lock(common, 60, name="worktree-ownership", label="worktree ownership") as directory:
         owners = read_owners(directory)
         assert_not_closing(owners, issue_key, str(worktree), branch)
-        conflicts = [
-            owner for owner in owners
-            if owner["issueKey"] != issue_key
-            and (owner["worktree"] == str(worktree) or owner.get("branch") == branch)
-        ]
-        for owner in conflicts:
-            if not owner.get("pending"):
-                raise LifecycleError(
-                    f"Worktree or branch already belongs to issue {owner['issueKey']} at {owner['worktree']}"
-                )
-        with ExitStack() as held:
-            # flock is per open file, so lock each owning issue once.
-            for owner_key in dict.fromkeys(owner["issueKey"] for owner in conflicts):
-                if not held.enter_context(issue_idle(directory, owner_key)):
-                    raise LifecycleError(
-                        f"Worktree is being claimed by issue {owner_key}'s start in progress; retry later"
-                    )
-            # Start claims only when no state exists, under the issue lock, so this
-            # issue's start claims elsewhere are orphans from a failed state save.
-            kept = [
-                owner for owner in owners
-                if owner not in conflicts
-                and not (owner["issueKey"] == issue_key and "branch" not in owner
-                         and owner["worktree"] != str(worktree))
-            ]
-            if not any(owner["issueKey"] == issue_key and owner["worktree"] == str(worktree) for owner in kept):
-                kept.append({"issueKey": issue_key, "worktree": str(worktree), "pending": True})
-            if kept != owners:
-                save_receipt(directory / "worktree-owners.json", {"owners": kept})
-            for owner in conflicts:
-                print(f"Reclaimed worktree {worktree} from issue {owner['issueKey']}, whose start never saved state",
-                      file=sys.stderr, flush=True)
+        _claim_locked(directory, owners, issue_key, worktree, branch)
     return {"worktree": str(worktree)}
+
+
+def primary_worktree(repo):
+    """The repository's main working tree; Git always lists it first.
+
+    Unlike main_worktree(), this does not require the checkout to be clean or
+    on main: start only needs a stable location for canonical issue worktrees.
+    """
+    entries = git(repo, "worktree", "list", "--porcelain", "-z")[1].split("\x00\x00")
+    fields = entries[0].split("\x00") if entries else []
+    paths = [field[9:] for field in fields if field.startswith("worktree ")]
+    if not paths:
+        raise LifecycleError("Git reported no main working tree")
+    if "bare" in fields:
+        raise LifecycleError("The repository's main working tree is bare; cannot place issue worktrees")
+    return Path(paths[0]).resolve(strict=True)
+
+
+def claim_new(request):
+    """Create or adopt <primary checkout>/.worktrees/issue-<item> on branch issue-<item>.
+
+    The worktree is claimed (pending) before it is created, so an interrupted
+    creation is adopted on retry and stays reclaimable until start saves state
+    and confirms the claim. Refusals happen before any registry write.
+    """
+    repo, common = canonical_repo(text_field(request, "repoPath"))
+    issue_key = text_field(request, "issueKey")
+    item = request.get("itemId")
+    if isinstance(item, bool) or not isinstance(item, int) or item <= 0:
+        raise LifecycleError("itemId must be a positive integer")
+    branch = f"issue-{item}"
+    branch_name(repo, branch)
+    desired = primary_worktree(repo) / ".worktrees" / branch
+    if git(repo, "show-ref", "--verify", "--quiet", "refs/heads/main", check=False)[0]:
+        raise LifecycleError("Local main is missing; cannot create the issue worktree")
+    with merge_lock(common, 60, name="worktree-ownership", label="worktree ownership") as directory:
+        owners = read_owners(directory)
+        assert_not_closing(owners, issue_key, str(desired), branch)
+        # Every check below runs before any write, so a refusal leaves the registry
+        # and the filesystem untouched. A symlinked .worktrees or issue path would
+        # place the worktree somewhere other than the canonical location.
+        parent = desired.parent
+        if parent.is_symlink() or (parent.exists() and parent.resolve(strict=True) != parent):
+            raise LifecycleError(f"{parent} resolves elsewhere; refusing a non-canonical issue worktree")
+        if desired.is_symlink():
+            raise LifecycleError(f"{desired} is a symbolic link; refusing a non-canonical issue worktree")
+        attach = False
+        if desired.exists():
+            state = inspect({"repoPath": str(repo), "worktree": str(desired)})
+            if Path(state["worktree"]) != desired or state["branch"] != branch:
+                raise LifecycleError(
+                    f"{desired} exists but is not a worktree on branch {branch}; remove or rename it, "
+                    "or run start from the worktree you intend to use"
+                )
+        elif git(repo, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}", check=False)[0] == 0:
+            # Only this issue's earlier claim-new leaves a pending claim on the
+            # canonical path while it is missing: its worktree add created the
+            # branch and was interrupted before the checkout existed.
+            attach = {"issueKey": issue_key, "worktree": str(desired), "pending": True} in owners
+            if not attach:
+                raise LifecycleError(
+                    f"Branch {branch} already exists without {desired}; check it out there "
+                    f"(git worktree add {desired} {branch}) and rerun start, or run start from its existing worktree"
+                )
+        # Refuses another issue's confirmed or prepared claim on the path or branch.
+        _claim_locked(directory, owners, issue_key, desired, branch)
+        created = False
+        if not desired.exists():
+            # The pending claim is already durable: an interrupted add is adopted on
+            # retry, and the claim stays reclaimable because no state was saved.
+            parent.mkdir(parents=True, exist_ok=True)
+            if attach:
+                git(repo, "worktree", "add", str(desired), branch)
+            else:
+                git(repo, "worktree", "add", "-b", branch, str(desired), "refs/heads/main")
+            created = True
+        if desired.resolve(strict=True) != desired:
+            raise LifecycleError(f"{desired} resolves elsewhere; refusing a non-canonical issue worktree")
+    return {"worktree": str(desired), "branch": branch, "created": created}
 
 
 def confirm(request):
@@ -828,6 +995,9 @@ def validate_ci_details(ci):
         ("exitCode", lambda value: value is None or type(value) is int),
         ("failedTests", is_text_list),
         ("failedTestsTruncated", lambda value: type(value) is int and value > 0),
+        ("recurringTests", lambda value: isinstance(value, list) and all(
+            isinstance(entry, dict) and isinstance(entry.get("name"), str)
+            and isinstance(entry.get("attempts"), list) for entry in value)),
         ("phases", lambda value: isinstance(value, list) and all(
             isinstance(phase, dict) and set(phase) == {"name", "status"} and isinstance(phase["name"], str)
             and phase["status"] in ("passed", "failed") for phase in value)),
@@ -981,6 +1151,7 @@ def integrate(request):
                 finally:
                     # Record what the log shows even when the gate was interrupted.
                     result["ci"].update(summarize_ci_log(log, code))
+                    annotate_recurrence(result["ci"], path.parent, request["attemptId"])
                 if code:
                     raise LifecycleError(f"{' '.join(CI_COMMAND)} failed: {result['ci']['summary']}; log: {log}")
                 result["ci"]["status"] = "passed"
@@ -1070,6 +1241,123 @@ def run_check(request):
         result["timedOut"] = True
     return result
 
+
+
+def verification_settings_action(request):
+    """Baseline checks and probe switch from this checkout's lifecycle configuration."""
+    repo, _ = canonical_repo(text_field(request, "repoPath"))
+    return configured_verification(repo)
+
+
+OBJECT_ID = r"[0-9a-f]{40}|[0-9a-f]{64}"
+
+
+class ProbeUnavailable(Exception):
+    """The probe cannot predict the rebase; the merge gate stays authoritative."""
+
+
+def probe_git(repo, *args, what):
+    try:
+        code, out, err = command(["git", "-C", str(repo), *args], repo, check=False)
+    except OSError as error:
+        raise ProbeUnavailable(f"Cannot run git {what}: {error}") from error
+    return code, out, err
+
+
+def probe_failure(what, code, out, err, hint=""):
+    lines = (err or out or f"exit {code}").strip().splitlines()
+    detail = lines[0] if lines else f"exit {code}"
+    return ProbeUnavailable(f"git {what} failed (exit {code}{hint}): {detail}")
+
+
+def replay_commit(repo, current, current_tree, commit):
+    """Cherry-pick one commit onto `current` in the object store, as rebase would.
+
+    Returns the new (commit, tree), or the conflicting paths. A replay whose
+    tree equals the current tree is dropped, like rebase drops commits that
+    become empty.
+    """
+    what = "merge-tree --write-tree --merge-base"
+    code, out, err = probe_git(repo, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z",
+                               f"--merge-base={commit}^", current, commit, what=what)
+    fields = out.split("\0")
+    if code not in (0, 1) or not re.fullmatch(OBJECT_ID, fields[0]):
+        # Exit 1 with a tree OID is a conflicted merge; an unknown object prints no tree.
+        raise probe_failure(what, code, out, err, "; needs Git 2.40+ and full history")
+    if code == 1:
+        return None, None, list(dict.fromkeys(itertools.takewhile(bool, fields[1:])))
+    tree = fields[0]
+    if tree == current_tree:
+        return current, current_tree, None
+    # Object-only and unreachable: no ref, index or worktree changes. A fixed
+    # identity and no signing keep it independent of the user's commit config.
+    code, out, err = probe_git(repo, "-c", "user.name=yinz rebase probe", "-c", "user.email=probe@yinz.invalid",
+                               "commit-tree", "--no-gpg-sign", "-p", current, "-m", f"rebase probe {commit}", tree,
+                               what="commit-tree")
+    if code or not re.fullmatch(OBJECT_ID, out):
+        raise probe_failure("commit-tree", code, out, err)
+    return out, tree, None
+
+
+def replay_branch(repo, main, head):
+    """Replay head's commits onto main with rebase's selection; conflicting paths or None."""
+    what = "rev-list"
+    code, out, err = probe_git(repo, "rev-list", "--count", "--min-parents=2", f"{main}..{head}", what=what)
+    if code or not out.isdigit():
+        raise probe_failure(what, code, out, err)
+    if int(out):
+        raise ProbeUnavailable(f"the branch has {out} merge commit(s); only a linear branch is probed")
+    # The commits `git rebase main` picks: not in main and not patch-equivalent to a main commit.
+    code, out, err = probe_git(repo, "rev-list", "--reverse", "--topo-order", "--no-merges", "--cherry-pick",
+                               "--right-only", "--parents", f"{main}...{head}", what=what)
+    if code:
+        raise probe_failure(what, code, out, err)
+    code, current_tree, err = probe_git(repo, "rev-parse", "--verify", f"{main}^{{tree}}", what="rev-parse")
+    if code or not re.fullmatch(OBJECT_ID, current_tree):
+        raise probe_failure("rev-parse", code, current_tree, err)
+    current = main
+    for line in out.splitlines():
+        commit, *parents = line.split()
+        if len(parents) != 1:
+            raise ProbeUnavailable(f"commit {commit} has no parent; only a branch based on main is probed")
+        current, current_tree, paths = replay_commit(repo, current, current_tree, commit)
+        if paths is not None:
+            return paths
+    return None
+
+
+def rebase_probe(request):
+    """Report whether the reviewed commit would rebase onto local main cleanly.
+
+    It matches `git rebase main`: the branch commits not patch-equivalent to a
+    main commit are replayed one by one with merge-tree onto unreachable
+    commit-tree objects. Conflicting paths come from the first commit that
+    conflicts. Read-only apart from unreachable objects: it takes no lock and
+    touches no worktree, index or ref. Any result other than a resolved main
+    hash and a completed replay is "unavailable", including a branch with merge
+    commits, which is not a failure; the merge gate's rebase under the lock
+    stays authoritative.
+    """
+    repo, _ = canonical_repo(text_field(request, "repoPath"))
+    head = text_field(request, "expectedHead")
+    if not re.fullmatch(OBJECT_ID, head):
+        raise LifecycleError("expectedHead must be a full commit hash")
+    if git(repo, "cat-file", "-e", f"{head}^{{commit}}", check=False)[0]:
+        raise LifecycleError("expectedHead is not a commit in this repository")
+    code, main, err = git(repo, "rev-parse", "--verify", "--quiet", "refs/heads/main^{commit}", check=False)
+    if code or not re.fullmatch(OBJECT_ID, main):
+        detail = (err or main or f"exit {code}").strip()
+        return {"status": "unavailable", "reason": f"local main is not a commit: {detail}"[:400]}
+    try:
+        paths = replay_branch(repo, main, head)
+    except ProbeUnavailable as error:
+        return {"main": main, "status": "unavailable", "reason": str(error)[:400]}
+    if paths is None:
+        return {"main": main, "status": "clean"}
+    result = {"main": main, "status": "conflicts", "paths": paths[:REBASE_PROBE_PATH_LIMIT]}
+    if len(paths) > REBASE_PROBE_PATH_LIMIT:
+        result["pathsTruncated"] = len(paths) - REBASE_PROBE_PATH_LIMIT
+    return result
 
 
 def assert_not_closing(owners, issue_key, worktree, branch=None):
@@ -1302,10 +1590,11 @@ def main():
         request = json.load(sys.stdin)
         if not isinstance(request, dict):
             raise LifecycleError("Request must be a JSON object")
-        actions = {"inspect": inspect, "review-context": review_context, "claim": claim, "confirm": confirm, "prepare": prepare, "integrate": integrate,
+        actions = {"inspect": inspect, "review-context": review_context, "claim": claim, "claim-new": claim_new, "confirm": confirm, "prepare": prepare, "integrate": integrate,
                    "receipt": receipt_action, "closeout-receipt": closeout_receipt,
                    "agenda-workspace": configured_workspace,
-                   "check": run_check, "closeout-preview": closeout_preview, "closeout-cleanup": closeout_cleanup}
+                   "check": run_check, "closeout-preview": closeout_preview, "closeout-cleanup": closeout_cleanup,
+                   "verification-settings": verification_settings_action, "rebase-probe": rebase_probe}
         action = request.get("action")
         if not isinstance(action, str) or action not in actions:
             raise LifecycleError(f"Unknown action: {action}")

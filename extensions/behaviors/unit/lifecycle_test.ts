@@ -2,6 +2,7 @@ import {
   codeReviewFingerprint,
   completeAgenda,
   createState,
+  describeVerificationFailure,
   digestIssue,
   effectivePlanFindings,
   type Issue,
@@ -10,13 +11,16 @@ import {
   mergeGate,
   previousPlanFindings,
   readAgenda,
+  RebaseProbeSchema,
   recordMergeFailure,
+  refreshImpact,
   refreshIssue,
   reopenAgenda,
   reviewFingerprint,
   rollbackState,
   transition,
   validatePlanReview,
+  verificationFailureItems,
   verificationPlan,
   VerificationSchema,
 } from "../_lib/lifecycle.ts";
@@ -670,6 +674,279 @@ Deno.test("verification goes stale after repair, a new review, a new plan, refre
     rollbackState(authorized, "ready", "a6da10b0-c980-4b82-b920-640238095f1e")
       .verification,
     state.verification,
+  );
+});
+
+const mainHead = "e".repeat(40);
+/** A verification with baseline results and a rebase probe; the status follows all three. */
+function extendedVerification(
+  state: LifecycleState,
+  baseline: { id: string; exitCode: number | null }[],
+  probe?: Record<string, unknown>,
+  plan: { exitCode: number | null }[] = [{ exitCode: 0 }, { exitCode: 0 }],
+) {
+  const input = verification(state, plan);
+  const record: Record<string, unknown> = { ...input.verification };
+  const results = baseline.map(({ id, exitCode }) => ({
+    id,
+    command: ["cargo", "x", id],
+    exitCode,
+    durationMs: 900,
+    log: `baseline-log-${input.verification.id}-${id}`,
+    worktreeUnchanged: true,
+    status: exitCode === 0 ? "passed" : "failed",
+  }));
+  if (results.length) record.baseline = results;
+  if (probe) record.rebaseProbe = probe;
+  record.status = input.verification.status === "passed" &&
+      results.every((r) => r.status === "passed") &&
+      probe?.status !== "conflicts"
+    ? "passed"
+    : "failed";
+  return { verification: record };
+}
+
+Deno.test("verification records baseline checks and the rebase probe separately from plan checks", () => {
+  const state = reviewed();
+  // A record from before baseline checks and the probe keeps its meaning.
+  const old = verification(state);
+  assert(VerificationSchema.safeParse(old.verification).success);
+  equal(transition(state, "verify", old).verification?.baseline, undefined);
+  const input = extendedVerification(
+    state,
+    [{ id: "format", exitCode: 0 }, { id: "lint", exitCode: 0 }],
+    { main: mainHead, status: "clean" },
+  );
+  const next = transition(state, "verify", input);
+  equal(next.verification?.status, "passed");
+  equal(next.verification?.checks.map((check) => check.id), ["crate", "docs"]);
+  equal(next.verification?.baseline?.map((check) => check.id), [
+    "format",
+    "lint",
+  ]);
+  equal(next.verification?.rebaseProbe, { main: mainHead, status: "clean" });
+  equal(
+    transition(next, "ready", { commit: head, mergeRequest: "Merge" }).phase,
+    "ready",
+  );
+  // An empty baseline list is not recorded; the field is absent instead.
+  rejects(
+    () =>
+      transition(state, "verify", {
+        verification: { ...old.verification, baseline: [] },
+      }),
+    "",
+  );
+  // A baseline result carries no plan coverage.
+  const covered = structuredClone(input);
+  (covered.verification.baseline as Record<string, unknown>[])[0].covers = [
+    "fix",
+  ];
+  rejects(() => transition(state, "verify", covered), "");
+});
+
+Deno.test("verification status follows baseline results and rebase conflicts", () => {
+  const state = reviewed();
+  const failedBaseline = extendedVerification(state, [
+    { id: "lint", exitCode: 101 },
+  ]);
+  equal(failedBaseline.verification.status, "failed");
+  equal(
+    transition(state, "verify", failedBaseline).verification?.status,
+    "failed",
+  );
+  const lyingBaseline = structuredClone(failedBaseline);
+  lyingBaseline.verification.status = "passed";
+  rejects(() => transition(state, "verify", lyingBaseline), "exit codes");
+  const lyingResult = structuredClone(failedBaseline);
+  (lyingResult.verification.baseline as Record<string, unknown>[])[0].status =
+    "passed";
+  rejects(() => transition(state, "verify", lyingResult), "exit codes");
+  const conflicts = extendedVerification(state, [], {
+    main: mainHead,
+    status: "conflicts",
+    paths: ["src/lib.rs"],
+  });
+  equal(conflicts.verification.status, "failed");
+  transition(state, "verify", conflicts);
+  const lyingConflicts = structuredClone(conflicts);
+  lyingConflicts.verification.status = "passed";
+  rejects(() => transition(state, "verify", lyingConflicts), "exit codes");
+  // An unavailable probe is not a failure.
+  const unavailable = extendedVerification(state, [], {
+    status: "unavailable",
+    reason: "git merge-tree --write-tree failed",
+  });
+  equal(unavailable.verification.status, "passed");
+  equal(
+    transition(state, "verify", unavailable).verification?.status,
+    "passed",
+  );
+  const duplicate = extendedVerification(state, [
+    { id: "lint", exitCode: 0 },
+    { id: "lint", exitCode: 0 },
+  ]);
+  rejects(
+    () => transition(state, "verify", duplicate),
+    "Baseline check IDs must be unique",
+  );
+});
+
+Deno.test("RebaseProbeSchema enforces status-specific fields", () => {
+  const valid = [
+    { main: mainHead, status: "clean" },
+    { main: mainHead, status: "conflicts", paths: ["a"] },
+    { main: mainHead, status: "conflicts", paths: ["a"], pathsTruncated: 3 },
+    { status: "unavailable", reason: "local main is not a commit" },
+    { main: mainHead, status: "unavailable", reason: "merge-tree failed" },
+  ];
+  for (const probe of valid) {
+    assert(RebaseProbeSchema.safeParse(probe).success, JSON.stringify(probe));
+  }
+  const invalid = [
+    { status: "clean" },
+    { status: "conflicts", paths: ["a"] },
+    { main: mainHead, status: "conflicts" },
+    { main: mainHead, status: "clean", paths: [] },
+    { main: mainHead, status: "clean", reason: "why" },
+    { status: "unavailable" },
+    { main: mainHead, status: "clean", pathsTruncated: 1 },
+    { main: mainHead, status: "conflicts", paths: ["a"], pathsTruncated: 0 },
+    { main: "main", status: "clean" },
+    { main: mainHead, status: "clean", extra: true },
+  ];
+  for (const probe of invalid) {
+    assert(!RebaseProbeSchema.safeParse(probe).success, JSON.stringify(probe));
+  }
+});
+
+Deno.test("ready names failed baseline checks and rebase conflicts", () => {
+  const state = reviewed();
+  const failed = transition(
+    state,
+    "verify",
+    extendedVerification(
+      state,
+      [{ id: "format", exitCode: 0 }, { id: "lint", exitCode: 101 }],
+      { main: mainHead, status: "conflicts", paths: ["src/lib.rs"] },
+      [{ exitCode: 0 }, { exitCode: 2 }],
+    ),
+  );
+  rejects(
+    () => transition(failed, "ready", { commit: head, mergeRequest: "Merge" }),
+    "Verification failed for rebase-probe, baseline:lint, docs;",
+  );
+});
+
+Deno.test("verification failure items list conflicts, baseline and plan failures", () => {
+  const state = reviewed();
+  const paths = Array.from({ length: 22 }, (_, i) => `file-${i}.rs`);
+  const failed = transition(
+    state,
+    "verify",
+    extendedVerification(
+      state,
+      [{ id: "lint", exitCode: 101 }],
+      {
+        main: mainHead,
+        status: "conflicts",
+        paths,
+        pathsTruncated: 5,
+      },
+      [{ exitCode: 0 }, { exitCode: 2 }],
+    ),
+  ).verification!;
+  const id = failed.id;
+  equal(verificationFailureItems(failed), [
+    `rebase conflicts with local main ${mainHead} in ${
+      paths.slice(0, 20).join(", ")
+    } (+7 more)`,
+    `baseline lint (exit 101; log: baseline-log-${id}-lint)`,
+    `docs (exit 2; log: check-log-${id}-docs)`,
+  ]);
+  equal(
+    verificationFailureItems(failed, (log) => `query ${log}`)[2],
+    `docs (exit 2; log: query check-log-${id}-docs)`,
+  );
+  assert(
+    describeVerificationFailure(failed).startsWith(
+      `Verification ${id} failed at ${head} (plan version 1): rebase conflicts`,
+    ),
+  );
+});
+
+Deno.test("repair attaches a failed verification and needs no reason", () => {
+  const state = reviewed();
+  const failed = transition(
+    state,
+    "verify",
+    extendedVerification(
+      state,
+      [{ id: "lint", exitCode: 101 }],
+      { main: mainHead, status: "conflicts", paths: ["src/lib.rs", "a b.rs"] },
+    ),
+  );
+  const id = failed.verification!.id;
+  const repaired = transition(failed, "repair", {});
+  equal(repaired.phase, "implementing");
+  assert(!repaired.verification && !repaired.codeReview);
+  const description = describeVerificationFailure(failed.verification!);
+  equal(repaired.lastFailure, description);
+  assert(
+    repaired.lastFailure!.startsWith(`Verification ${id} failed at ${head}`),
+  );
+  assert(
+    repaired.lastFailure!.includes(
+      `baseline lint (exit 101; log: baseline-log-${id}-lint)`,
+    ),
+    repaired.lastFailure,
+  );
+  assert(repaired.lastFailure!.includes("src/lib.rs, a b.rs"));
+  equal(
+    transition(failed, "repair", { reason: "The lint is a real defect" })
+      .lastFailure,
+    `The lint is a real defect\n\n${description}`,
+  );
+});
+
+Deno.test("repair without a recorded failure still requires a reason", () => {
+  for (const state of [implementing(), reviewed(), verified(), ready()]) {
+    rejects(
+      () => transition(state, "repair", {}),
+      "repair needs a reason unless a failed verification or merge attempt is recorded",
+    );
+    equal(
+      transition(state, "repair", { reason: "Rework it" }).lastFailure,
+      "Rework it",
+    );
+  }
+  rejects(() => transition(reviewed(), "repair", { reason: " " }), "");
+});
+
+Deno.test("repair attaches a merge failure without a reason", () => {
+  const attempt = {
+    id: "a6da10b0-c980-4b82-b920-640238095f1a",
+    originalHead: head,
+    startedAt: "2026-11-03T12:00:00Z",
+  };
+  const failed = recordMergeFailure(
+    transition(ready(), "begin_merge", { attempt }),
+    {
+      attemptId: attempt.id,
+      at: "2026-11-03T12:30:00.000Z",
+      originalCommit: head,
+      summary: "phases failed: lint; exit 101",
+      failure: "cargo x ci check failed: phases failed: lint",
+      ciStatus: "failed",
+      logResource: `merge-log-${attempt.id}`,
+      exitCode: 101,
+      phases: [{ name: "lint", status: "failed" as const }],
+      failedTests: [],
+    },
+  );
+  equal(
+    transition(failed, "repair", {}).lastFailure,
+    `Merge attempt ${attempt.id} failed: phases failed: lint; exit 101`,
   );
 });
 
@@ -1671,5 +1948,138 @@ Deno.test("changed review evidence and rollback require renewed acceptance", () 
   rejects(
     () => transition(state, "verify", verification(state)),
     "user's decision",
+  );
+});
+
+Deno.test("refreshImpact is automatic only before any approval and lists invalidated authorizations", () => {
+  const changed = { ...issue, note: "Changed", digest: "e".repeat(64) };
+  const triaging = createState(issue);
+  const classified = transition(triaging, "triage", {
+    classification: "bug",
+    summary: "Confirmed reproduction",
+  });
+  const reviewedPlan = transition(planned(), "review_plan", {
+    planVersion: 1,
+    findings: [],
+  });
+  for (const state of [triaging, classified, planned(), reviewedPlan]) {
+    equal(refreshImpact(state, changed), {
+      automatic: true,
+      refreshable: true,
+      changes: ["- Acceptance criteria", "+ Changed"],
+      invalidates: [],
+    });
+  }
+  const approved = transition(reviewedPlan, "approve", {
+    planVersion: 1,
+    request: "Implement this plan",
+  });
+  const approval = 'plan approval for version 1: "Implement this plan"';
+  equal(refreshImpact(approved, changed), {
+    automatic: false,
+    refreshable: true,
+    changes: ["- Acceptance criteria", "+ Changed"],
+    invalidates: [approval],
+  });
+
+  // A decision with an approved repair plan, then a passed verification.
+  let repaired = selectRepairs(findingsState());
+  repaired = transition(repaired, "plan_review_fixes", plan);
+  repaired = transition(repaired, "approve_review_fixes", {
+    id: decisionId,
+    handoffId: decisionId,
+    request: "Implement these repairs",
+  });
+  equal(repaired.phase, "implementing");
+  equal(refreshImpact(repaired, changed).invalidates, [
+    approval,
+    `review decision ${decisionId}: "Plan the technical fix; ignore the UX finding"`,
+    `repair-plan approval for ${decisionId}: "Implement these repairs"`,
+  ]);
+  const passed = verified();
+  equal(refreshImpact(passed, changed).invalidates, [
+    approval,
+    `passed verification ${passed.verification!.id}`,
+  ]);
+  const authorized = ready();
+  const impact = refreshImpact(authorized, changed);
+  equal(impact.refreshable, true);
+  equal(impact.automatic, false);
+  assert(
+    impact.invalidates.includes(
+      `merge authorization for ${head}: "Merge this issue"`,
+    ),
+  );
+  const attempting = transition(ready(), "begin_merge", {
+    attempt: {
+      id: "a6da10b0-c980-4b82-b920-640238095f1a",
+      originalHead: head,
+      startedAt: "2026-11-03T12:00:00.000Z",
+    },
+  });
+  const merged = structuredClone(done());
+  merged.phase = "merged";
+  delete merged.outcome;
+  for (const state of [attempting, merged, done()]) {
+    const result = refreshImpact(state, changed);
+    equal([result.refreshable, result.automatic], [false, false]);
+  }
+
+  // Revoked consent and earlier plan versions' decisions bind nothing current.
+  const rolledBack = rollbackState(
+    repaired,
+    "plan",
+    "a6da10b0-c980-4b82-b920-640238095f1b",
+  );
+  equal(rolledBack.phase, "classified");
+  equal(refreshImpact(rolledBack, changed).invalidates, []);
+  equal(refreshImpact(rolledBack, changed).automatic, true);
+  // Re-approving the same plan version would reuse its repair decisions.
+  const reapproving = rollbackState(
+    repaired,
+    "approve",
+    "a6da10b0-c980-4b82-b920-640238095f1c",
+  );
+  equal(reapproving.phase, "planning");
+  equal(refreshImpact(reapproving, changed).automatic, false);
+  equal(refreshImpact(reapproving, changed).invalidates.length, 2);
+});
+
+Deno.test("refreshImpact describes title, capped note and digest-only changes", () => {
+  const state = createState({ ...issue, note: "keep\nold one\n  old two  " });
+  equal(
+    refreshImpact(state, {
+      ...issue,
+      text: "Renamed issue",
+      note: "keep\nnew one",
+      digest: "e".repeat(64),
+    }).changes,
+    [
+      'Title: "Fix issue" -> "Renamed issue"',
+      "- old one",
+      "- old two",
+      "+ new one",
+    ],
+  );
+  const many = Array.from({ length: 45 }, (_, index) => `line ${index}`);
+  const capped = refreshImpact(state, {
+    ...state.issue,
+    note: ["keep", ...many].join("\n"),
+    digest: "e".repeat(64),
+  }).changes;
+  equal(capped.length, 41);
+  equal(capped.slice(0, 2), ["- old one", "- old two"]);
+  equal(capped.at(-1), "(+7 more lines)");
+  equal(
+    refreshImpact(state, { ...state.issue, digest: "e".repeat(64) }).changes,
+    ["Agenda digest changed with identical title and note"],
+  );
+  equal(
+    refreshImpact(state, {
+      ...state.issue,
+      note: "old one\nkeep\nold two",
+      digest: "e".repeat(64),
+    }).changes,
+    ["Note whitespace or line order changed"],
   );
 });

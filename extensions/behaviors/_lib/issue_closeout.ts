@@ -18,6 +18,7 @@ import {
   saveState,
 } from "./runtime.ts";
 import { yinzCommand, type YinzRunner } from "./yinz_agent.ts";
+import { nextStep } from "./handoff_next.ts";
 
 export const CloseoutArgsSchema = z.object({
   handoffId: z.uuid().optional(),
@@ -395,16 +396,19 @@ export function closeoutPresentation(state: LifecycleState) {
 }
 function publishCloseoutOffer(context: Context, state: LifecycleState) {
   const c = state.closeout!;
+  const decision = c.git === "complete" && ["closed", "absent"].includes(c.pane)
+    ? "complete"
+    : "authorize_closeout";
   return context.writeResource("handoff", "handoff", {
     id: c.offerId,
     status: "current",
-    decision: c.git === "complete" && ["closed", "absent"].includes(c.pane)
-      ? "complete"
-      : "authorize_closeout",
+    decision,
     reason: closeoutPresentation(state),
     createdAt: new Date().toISOString(),
     state: StateSchema.parse(state),
-    presentation: closeoutPresentation(state),
+    presentation: `${closeoutPresentation(state)}\n${
+      nextStep({ id: c.offerId, decision, state })
+    }`,
   });
 }
 export async function closeout(

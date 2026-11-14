@@ -307,6 +307,26 @@ Deno.test("closeout explicit accept refreshes accepting turn and persists Git be
   equal(h.events.filter((e) => e.startsWith("effect:")).length, 3);
 });
 
+Deno.test("closeout offers end with the exact launcher command and keep the reason", async () => {
+  const h = fixture();
+  await h.offer();
+  const offer = h.resources.get("handoff") as {
+    id: string;
+    decision: string;
+    reason: string;
+    presentation: string;
+  };
+  equal(offer.decision, "authorize_closeout");
+  equal(offer.id, h.state().closeout!.offerId);
+  equal(offer.reason, closeoutPresentation(h.state()));
+  const lines = offer.presentation.split("\n");
+  equal(lines.slice(0, -1).join("\n"), offer.reason);
+  equal(
+    lines.at(-1),
+    `Next: scripts/issue-lifecycle --item 7 closeout --handoff ${offer.id} --decision accept|decline --request '<the explicit user closeout decision>'`,
+  );
+});
+
 function lockBusy(stage: string, progress?: unknown) {
   return new GitOperationError(
     `Optional closeout deferred during ${stage}: worktree ownership lock is busy; another lifecycle operation holds the brief worktree ownership guard. The completed outcome and recorded cleanup progress are unchanged. Let that operation finish, then retry closeout or resume-closeout.`,

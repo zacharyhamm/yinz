@@ -2,6 +2,15 @@ import { captureCloseoutOrigin, offerCloseout } from "./issue_closeout.ts";
 /** Assign pane work and consume acknowledged Swamp evidence independently of chat. */
 import { join } from "node:path";
 import { z } from "npm:zod@4.6.7";
+import { CHECK_POLICY_SUMMARY } from "./check_policy.ts";
+import {
+  assignmentFileContents,
+  type AssignmentFiles,
+  AssignmentFilesSchema,
+  assignmentManifest,
+  baselineView,
+  publishAssignmentFiles,
+} from "./assignment_files.ts";
 import { AgentKindSchema } from "./worker_selection.ts";
 import {
   activeReviewFix,
@@ -28,11 +37,14 @@ import {
   evidenceDigest,
   EvidenceReceiptSchema,
   EvidenceTargetSchema,
+  hasContinuityContract,
   ImplementationResult,
   reviewPacket,
   RoleSchema,
+  shellQuote,
   submissionInstructions,
   SubmissionSchema,
+  SWAMP_LOCAL,
   validateReceipt,
 } from "./issue_evidence.ts";
 export { ImplementationResult } from "./issue_evidence.ts";
@@ -48,14 +60,21 @@ import {
   withIssue,
 } from "./runtime.ts";
 import {
+  loadVerificationSettings,
+  type VerificationSettings,
+} from "./verification.ts";
+import {
   AgentConfigSchema,
+  AgentObservationSchema,
   AgentResultSchema,
   AgentStateSchema,
   assertContinuationEligible,
+  completedWorkerProblems,
   ControlIdentitySchema,
-  isRejectedLaunch,
-  isTerminalFailure,
   promptDigest,
+  rejectedLaunchProblems,
+  terminalFailureProblems,
+  WORKER_NOT_STOPPED,
 } from "./yinz_agent.ts";
 
 import {
@@ -80,6 +99,29 @@ export const AgentInputSchema = z.object({
 }).strict();
 const Input = AgentInputSchema;
 
+const DiscardBasisSchema = z.enum([
+  "terminal_failure",
+  "rejected_launch",
+  "completed_unusable",
+]);
+const StopEvidenceSchema = z.enum([
+  "confirmed_failure",
+  "launch_receipt",
+  "rejected_response",
+  "fresh_idle",
+  "attested",
+]);
+/**
+ * Caller input for discard-agent. `confirmedStopped` attests only that a
+ * completed worker has stopped, and counts only when the behavior's own
+ * confirm_stopped observation is impossible; caller-supplied
+ * basis or stop evidence is stripped and never persisted.
+ */
+const DiscardArgs = z.object({
+  request: UserRequestSchema,
+  confirmedStopped: z.literal(true).optional(),
+}).strip();
+
 export const AgentTaskSchema = z.object({
   id: z.uuid(),
   behaviorName: z.string(),
@@ -88,7 +130,9 @@ export const AgentTaskSchema = z.object({
   prompt: z.string().min(1),
   promptDigest: z.string().regex(/^[0-9a-f]{64}$/),
   request: z.string().min(1).optional(),
-  contractVersion: z.literal(2).optional(),
+  // 3 adds private assignment files; tasks saved as 1 or 2 replay unchanged.
+  contractVersion: z.literal([2, 3]).optional(),
+  assignmentFiles: AssignmentFilesSchema.optional(),
   continuity: ContinuityContext.optional(),
   round: RoundRecord.optional(),
   before: StateSchema,
@@ -103,9 +147,13 @@ export const AgentTaskSchema = z.object({
     "superseded",
   ]),
   supersededBy: z.uuid().optional(),
+  // basis and stopEvidence are optional so records saved before they existed
+  // still parse; the behavior derives both and never accepts them as input.
   discard: z.object({
     request: UserRequestSchema,
-    confirmedStopped: z.literal(true),
+    confirmedStopped: z.literal(true).optional(),
+    basis: DiscardBasisSchema.optional(),
+    stopEvidence: StopEvidenceSchema.optional(),
   }).strict().optional(),
   message: z.string().optional(),
   lastError: z.string().optional(),
@@ -167,6 +215,30 @@ export interface IssueAgentDependencies {
   id: () => string;
   now: () => string;
   submissionPreflight: typeof submissionPreflight;
+  /** The control checkout's baseline checks and rebase-probe switch. */
+  verificationSettings: (context: Context) => Promise<VerificationSettings>;
+  /** Publishes a contract-3 task's assignment files before any prompt is sent. */
+  publishAssignment: (task: Task) => Promise<void>;
+  /** Abortable delay between bounded automatic recovery attempts. */
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  /** Monotonic milliseconds for recovery budgets. */
+  monotonicNow?: () => number;
+}
+
+/** An abortable delay that rejects with the signal's reason. */
+export function abortableSleep(ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", abort, { once: true });
+  });
 }
 export const defaultDependencies: IssueAgentDependencies = {
   captureCloseoutOrigin,
@@ -180,6 +252,22 @@ export const defaultDependencies: IssueAgentDependencies = {
   id: () => crypto.randomUUID(),
   now: () => new Date().toISOString(),
   submissionPreflight,
+  verificationSettings: (context) =>
+    loadVerificationSettings(context, gitOperation),
+  publishAssignment: (task) => {
+    if (!task.assignmentFiles || !task.submission) {
+      return Promise.reject(
+        new Error("Task has no assignment files or submission target"),
+      );
+    }
+    return publishAssignmentFiles({
+      ...task,
+      assignmentFiles: task.assignmentFiles,
+      submission: task.submission,
+    });
+  },
+  sleep: abortableSleep,
+  monotonicNow: () => performance.now(),
 };
 
 async function savedRevisions(context: Context) {
@@ -229,7 +317,7 @@ async function assertNoPendingRecovery(context: Context) {
   const raw = await context.readResource("recovery");
   if (raw != null && RecoverySchema.parse(raw).status === "pending") {
     throw new Error(
-      "Rollback is incomplete; use resume-rollback before other lifecycle operations",
+      "Rollback is incomplete; run drive or resume-rollback to finish its recorded intent before other lifecycle operations",
     );
   }
 }
@@ -255,7 +343,27 @@ export function taskPrompt(
   commit?: string,
   request?: string,
   continuity?: z.infer<typeof ContinuityContext>,
+  extras: {
+    logAccess?: { issueName: string; controlDir: string };
+    // Contract 3: only the continuity block changes, to reference the files.
+    files?: AssignmentFiles;
+  } = {},
 ) {
+  const files = extras.files;
+  const implementing = role === "implement" ||
+    role === "implement_review_fixes";
+  const logAccess = extras.logAccess && implementing &&
+      /log: (?:check|baseline)-log-/.test(state.lastFailure ?? "")
+    ? [
+      `Read each log named in lastFailure (read-only; this is not the evidence interface) with: ${SWAMP_LOCAL} data query ${
+        shellQuote(
+          `modelName == ${
+            JSON.stringify(extras.logAccess.issueName)
+          } && name == "<log>"`,
+        )
+      } --select content --repo-dir ${shellQuote(extras.logAccess.controlDir)}`,
+    ]
+    : [];
   const instructions = {
     triage:
       "Investigate the issue against the source. Reproduce a bug when practical. Return its classification and an evidence-based summary, including acceptance criteria and uncertainties.",
@@ -264,7 +372,7 @@ export function taskPrompt(
     review_plan:
       "Adversarially review the current plan against the actual code, including whether its checks are valid command argument arrays that execute directly without a shell, use supported flags, are focused and safe to run unattended, and cover the changed behavior and affected callers. Return planVersion and every actionable finding. Do not approve the plan or invent resolutions. An empty findings array is appropriate only after a real review found none.",
     implement:
-      "Implement the approved plan in this existing issue worktree. Run focused checks following AGENTS.md, investigate failures, and commit the intended changes on the existing feature branch. Return a summary and the full resulting commit hash. Do not rebase, merge, push, or run the full CI gate here. If lastFailure records a failed merge gate, read its log first and fix the cause, selecting focused tests that reproduce it; treat a flake or timeout as a defect, not something a rerun resolves.",
+      "Implement the approved plan in this existing issue worktree. Run focused checks following AGENTS.md, investigate failures, and commit the intended changes on the existing feature branch. Return a summary and the full resulting commit hash. Do not merge into main, push, or run the full CI gate here. Do not rebase, except when lastFailure records conflicts with local main, or a failed baseline check that local main (refs/heads/main) already fixes: then rebase this branch onto local main and resolve each conflict deliberately, never discarding either side's intent to make it apply. Baseline checks run at this un-rebased branch, so before fixing a baseline failure in code this branch did not change, check whether it comes from the branch's older base; prefer that rebase over re-fixing main's lines here. If lastFailure records a failed merge gate, read its log first and fix the cause, selecting focused tests that reproduce it; treat a flake or timeout as a defect, not something a rerun resolves.",
     review_code:
       "Review the committed diff against local main, issue requirements and the approved plan. Independently assess whether the behavior is correct, including incorrect assumptions or defects in the approved approach. Trace affected callers and relevant state transitions, failure paths, cleanup, ownership, concurrency and platform behavior as applicable. Inspect tests for missing cases and assertions that could pass despite incorrect behavior. Prioritize actionable defects introduced or exposed by this change. For each finding identify the trigger, consequence and concrete source locations, explain severity and distinguish demonstrated behavior from assumptions. Avoid speculative concerns and unrelated cleanup. An empty findings array is valid after a real review. Cover each plan step exactly once and justify deviations. Record only preliminary checks actually performed. Preliminary checks are advisory; the lifecycle runs the approved plan checks itself. Do not invent passing checks. Return the supplied full commit hash and planVersion.",
     plan_review_fixes:
@@ -278,7 +386,7 @@ export function taskPrompt(
     "You are working on one Yinz issue lifecycle task in a visible Yinz pane.",
     `Work only in ${cwd}. Follow its AGENTS.md and applicable repository instructions.`,
     "Do not invoke the lifecycle launcher. Use only the assigned Swamp evidence interface described below. Do not merge or contact remote Git services.",
-    (role === "implement" || role === "implement_review_fixes")
+    implementing
       ? "Only this task may edit the issue worktree."
       : "This is investigation or review: do not edit source files, Git refs, or configuration.",
     "Finish this task in the foreground. Do not leave background subagents or jobs running when returning your answer.",
@@ -288,16 +396,57 @@ export function taskPrompt(
         "from the captured merge base to reviewed HEAD",
       )
       : instructions,
+    ...logAccess,
     ...(continuity
       ? [
-        "Assignment contract version 2. The bound packet below contains authoritative findings and decisions; do not truncate or reconstruct history. Worker-proposed tradeoffs are proposals; controller dispositions and exact user authorizations have their recorded scope only.",
+        `${
+          files
+            ? "Assignment contract version 3. Assignment files are read-only and bound by the manifest below."
+            : "Assignment contract version 2."
+        } The bound packet below contains authoritative findings and decisions; do not truncate or reconstruct history. Worker-proposed tradeoffs are proposals; controller dispositions and exact user authorizations have their recorded scope only.`,
         "Preserve unaffected decisions and identify newly necessary scope changes. Repair planners return findingMappings with one exact finding identity per selected finding, approved step IDs and check IDs. Implementers return responses (addressed, disputed or unresolved), rationale, affectedPaths, source/check evidence and checkIds for every selected finding. Implementation claims never close findings. Broader work requires a revised plan and approval through the controller.",
-        "Review the complete feature diff, current requirements, approved assumptions, affected callers, tests and failure paths independently. Endpoint delta prioritizes investigation; it never bounds scope. Decode featureDiff/delta from base64 when their encoding field says base64; otherwise they are UTF-8. Rebased/divergent history is not a descendant repair. Return priorFindings with an outcome (persists, verified_fixed or reopened), rationale and evidence for every prior unresolved finding of your role; keep persistent IDs and origin identities. For a persists outcome, also include the same finding with its origin in findings and leave resolution unset; label an unchanged ignored concern as historical continuity, not a new defect. Keep ignored findings visibly unresolved. Prior acceptance does not authorize a changed review. Reopening a verified-fixed/disposed concern requires new concrete source or behavioral evidence and rationale addressing the earlier decision. New defects anywhere in the full feature scope remain reportable. Findings include affectedPaths and relevant approved checkIds.",
+        `Review the complete feature diff, current requirements, approved assumptions, affected callers, tests and failure paths independently. Endpoint delta prioritizes investigation; it never bounds scope. ${
+          files
+            ? `The complete feature diff and endpoint delta are decoded in ${
+              files.files.featureDiff?.path ??
+                join(files.directory, "feature.diff")
+            } and ${
+              files.files.delta?.path ?? join(files.directory, "delta.diff")
+            } (when present).`
+            : "Decode featureDiff/delta from base64 when their encoding field says base64; otherwise they are UTF-8."
+        } Rebased/divergent history is not a descendant repair. Return priorFindings with an outcome (persists, verified_fixed or reopened), rationale and evidence for every prior unresolved finding of your role; keep persistent IDs and origin identities. For a persists outcome, also include the same finding with its origin in findings and leave resolution unset; label an unchanged ignored concern as historical continuity, not a new defect. Keep ignored findings visibly unresolved. Prior acceptance does not authorize a changed review. Reopening a verified-fixed/disposed concern requires new concrete source or behavioral evidence and rationale addressing the earlier decision. New defects anywhere in the full feature scope remain reportable. Findings include affectedPaths and relevant approved checkIds.`,
         "Structured advisoryEvidence names producingTask, original full commit, requirementDigest, argv/cwd, result, durable outputRef, relevantFiles/tests, platform/toolchain and prerequisites. Reused evidence must retain original attribution and explain applicability at the current commit. Changed commits require a documented comparison of implementation, callers, tests, fixtures, dependencies, build configuration, requirements and environment; patch identity alone is insufficient. Missing objects/logs, dirty state, unknown dependencies or failed/flaky execution cannot support passing reuse. Free-text preliminaryChecks remain available; reused evidence is never newly executed. Advisory evidence cannot replace approved deterministic verification or rebased merge CI.",
-        `Bound review continuity: ${JSON.stringify(continuity)}`,
-        `Authoritative repair/review packet (complete saved snapshot references): ${
-          JSON.stringify(reviewPacket(state))
-        }`,
+        ...(files
+          ? [
+            `Bound review continuity (diff bodies in ${
+              files.files.baseline?.path ??
+                join(files.directory, "baseline.json")
+            }): ${
+              JSON.stringify({
+                ...continuity,
+                baseline: continuity.baseline
+                  ? baselineView(continuity.baseline)
+                  : undefined,
+              })
+            }`,
+            `Authoritative repair/review packet: read ${files.files.packet.path} completely (sha256 ${files.files.packet.sha256}, equal to continuity.packetDigest). sourceRef paths beginning "assignment.before" resolve inside ${files.files.snapshot.path}.`,
+            ...([
+                "review_code",
+                "review_ux",
+                "plan_review_fixes",
+                "implement_review_fixes",
+              ].includes(role)
+              ? [
+                `Start from ${files.files.template.path}; it already lists every plan step, prior-finding obligation and selected finding identity you must cover exactly once.`,
+              ]
+              : []),
+          ]
+          : [
+            `Bound review continuity: ${JSON.stringify(continuity)}`,
+            `Authoritative repair/review packet (complete saved snapshot references): ${
+              JSON.stringify(reviewPacket(state))
+            }`,
+          ]),
       ]
       : []),
     ...(["plan", "review_plan", "plan_review_fixes"].includes(role)
@@ -314,6 +463,7 @@ export function taskPrompt(
             "Compare the previous plan, review findings, revision responses and current plan in planningContext. Verify fixes and inspect for new defects. Do not invent resolutions or discard prior accepted tradeoffs.",
           ]
           : []),
+        CHECK_POLICY_SUMMARY,
       ]
       : []),
     ...(["review_plan", "review_code", "review_ux"].includes(role)
@@ -341,8 +491,9 @@ export function taskPrompt(
         classification: state.classification,
         implementation: state.implementation,
         sourceRef: "assignment.before",
-        note:
-          "Complete requirements and review obligations are in the packet. The full original snapshot, including referenced historical diffs, remains in this task's authorized submission record.",
+        note: files
+          ? `Complete requirements and review obligations are in the packet. The full original snapshot, including referenced historical diffs, is in ${files.files.snapshot.path} and remains in this task's authorized submission record.`
+          : "Complete requirements and review obligations are in the packet. The full original snapshot, including referenced historical diffs, remains in this task's authorized submission record.",
       })
       : JSON.stringify(state),
     ...(commit ? [`The commit being reviewed is ${commit}.`] : []),
@@ -835,7 +986,7 @@ export async function prepareTask(
     config,
     before: state,
     ...(commit ? { reviewCommit: commit } : {}),
-    contractVersion: 2 as const,
+    contractVersion: 3 as const,
     createdAt: dependencies.now(),
     round: undefined as z.infer<typeof RoundRecord> | undefined,
     continuity: undefined as z.infer<typeof ContinuityContext> | undefined,
@@ -910,19 +1061,32 @@ export async function prepareTask(
       assignmentCore(context, identity, controlDir),
     ),
   });
+  // Private, outside every worktree; the prompt binds the manifest's sha256.
+  const commonDir = await dependencies.realPath(
+    (await dependencies.inspect(context)).commonDir,
+  );
+  const assignmentFiles = assignmentManifest(
+    join(commonDir, "yinz-lifecycle", "assignments", identity.id),
+    assignmentFileContents({ ...identity, submission }),
+  );
   const prompt = taskPrompt(
     args.role,
     promptState,
     cwd,
     references,
-    submissionInstructions(identity, submission),
+    submissionInstructions(identity, submission, assignmentFiles),
     commit,
     args.request,
     identity.continuity,
+    {
+      logAccess: { issueName: context.definition.name, controlDir },
+      files: assignmentFiles,
+    },
   );
   const task: Task = {
     ...identity,
     submission,
+    assignmentFiles,
     prompt,
     promptDigest: await promptDigest(prompt),
     status: "running",
@@ -971,9 +1135,13 @@ async function createRound(
     });
   }
   if (state.lastFailure) {
+    // repair clears the verification and may prefix the recorded evidence.
     const gateFailure = state.verification?.status === "failed" ||
       state.mergeFailures?.some((f) =>
-        describeMergeFailure(f) === state.lastFailure
+        state.lastFailure!.includes(describeMergeFailure(f))
+      ) ||
+      /(?:^|\n)Verification [0-9a-f-]{36} failed at [0-9a-f]{40,64}/.test(
+        state.lastFailure,
       );
     causes.push({
       kind: gateFailure ? "verification_merge_failure" : "unknown",
@@ -1035,7 +1203,7 @@ async function createRound(
  * This journal projection reconciles after interrupted publication, without phantom
  * rounds for assignments whose reservation never persisted. */
 async function appendReservedRound(context: Context, task: Task) {
-  if (task.contractVersion !== 2 || !task.round) return;
+  if (!hasContinuityContract(task.contractVersion) || !task.round) return;
   const raw = await context.readResource("rounds");
   const journal = z.object({ records: z.array(RoundRecord) }).strict().parse(
     raw ?? { records: [] },
@@ -1048,7 +1216,7 @@ async function appendReservedRound(context: Context, task: Task) {
 async function recordRoundOutcomes(context: Context, task: Task) {
   const payload = task.evidence?.payload;
   if (
-    task.contractVersion !== 2 || !payload ||
+    !hasContinuityContract(task.contractVersion) || !payload ||
     (payload.role !== "review_code" && payload.role !== "review_ux")
   ) return;
   const raw = await context.readResource("rounds");
@@ -1159,6 +1327,13 @@ export async function runTask(
         }
       }
     }
+    // Contracts 1 and 2 never publish: their saved prompts carry everything.
+    if (task.contractVersion === 3 && !task.assignmentFiles) {
+      throw new Error(
+        "Contract-3 task has no assignment files; inspect, then explicitly restart the worker",
+      );
+    }
+    if (task.assignmentFiles) await dependencies.publishAssignment(task);
     const continuing = recover && task.continuation;
     const outcome = await context.runModel({
       modelType: "@yinz/agent",
@@ -1182,7 +1357,8 @@ export async function runTask(
   }
 }
 
-async function finishRecovery(
+/** Completes a pending rollback's saved intent. The caller owns the issue lock. */
+export async function finishRecovery(
   context: IssueAgentContext,
   recovery: Recovery,
   dependencies: IssueAgentDependencies,
@@ -1441,6 +1617,29 @@ export async function resumeTask(
   return runTask(context, task, dependencies, true);
 }
 
+/**
+ * Finishes the recorded rollback and resumes its exact replacement, if any.
+ * The caller owns the issue lock.
+ */
+export async function resumeRollback(
+  context: IssueAgentContext,
+  dependencies: IssueAgentDependencies,
+) {
+  const recovery = RecoverySchema.parse(
+    await context.readResource("recovery"),
+  );
+  const result = await finishRecovery(context, recovery, dependencies);
+  if (recovery.replacement) {
+    const task = AgentTaskSchema.parse(
+      await context.readResource("agent-task"),
+    );
+    if (task.id === recovery.replacement.id) {
+      return resumeTask(context, dependencies);
+    }
+  }
+  return result;
+}
+
 export function createAgentMethods(
   dependencies: IssueAgentDependencies = defaultDependencies,
 ) {
@@ -1532,11 +1731,16 @@ export function createAgentMethods(
               prompt: [
                 "Finish submission of the findings already established in this conversation. Preserve this task and its investigation; do not repeat the review or edit source or Git refs.",
                 args.request,
-                submissionInstructions(task, task.submission!),
+                submissionInstructions(
+                  task,
+                  task.submission!,
+                  task.assignmentFiles,
+                ),
               ].join("\n\n"),
             };
           task = { ...task, continuation };
           await saveTask(context, task);
+          if (task.assignmentFiles) await dependencies.publishAssignment(task);
           const outcome = await context.runModel({
             definition: task.behaviorName,
             method: "continue",
@@ -1571,21 +1775,10 @@ export function createAgentMethods(
         "Finish a partially recorded rollback and resume its exact replacement, if requested",
       arguments: z.object({}).strip(),
       execute: (_args: Record<string, never>, context: IssueAgentContext) =>
-        dependencies.withIssue(context, async () => {
-          const recovery = RecoverySchema.parse(
-            await context.readResource("recovery"),
-          );
-          const result = await finishRecovery(context, recovery, dependencies);
-          if (recovery.replacement) {
-            const task = AgentTaskSchema.parse(
-              await context.readResource("agent-task"),
-            );
-            if (task.id === recovery.replacement.id) {
-              return resumeTask(context, dependencies);
-            }
-          }
-          return result;
-        }),
+        dependencies.withIssue(
+          context,
+          () => resumeRollback(context, dependencies),
+        ),
     },
     restart_agent: {
       kind: "action",
@@ -1662,15 +1855,15 @@ export function createAgentMethods(
     discard_agent: {
       kind: "update",
       description:
-        "Explicitly discard unapplied terminal work or a resource-free launch rejection, fencing further submissions with the operator's reason and confirmation",
-      arguments: AgentTaskSchema.shape.discard.unwrap().strip(),
+        "Explicitly discard unapplied terminal work, a resource-free launch rejection or a completed unusable worker, fencing further submissions with the operator's request; the behavior verifies eligibility, and confirmedStopped only attests a completed worker after the behavior's own observation proves impossible",
+      arguments: DiscardArgs,
       execute: (
-        input: z.infer<ReturnType<typeof AgentTaskSchema.shape.discard.unwrap>>,
+        input: z.infer<typeof DiscardArgs>,
         context: IssueAgentContext,
       ) =>
         dependencies.withIssue(context, async () => {
           await assertNoPendingRecovery(context);
-          const discard = AgentTaskSchema.shape.discard.unwrap().parse(input);
+          const discard = DiscardArgs.parse(input);
           const task = AgentTaskSchema.parse(
             await context.readResource("agent-task"),
           );
@@ -1681,35 +1874,124 @@ export function createAgentMethods(
               "Pane evidence is already applied; revise the lifecycle instead",
             );
           }
-          let child = await childState(context, task);
-          let confirmedFailure = false;
-          if (isTerminalFailure(child)) {
+          const who =
+            `task ${task.id} (${task.role}, child ${task.behaviorName})`;
+          const childOf = () =>
+            childState(context, task).catch((error) => {
+              throw new Error(
+                `Cannot discard ${who}: ${
+                  error instanceof Error ? error.message : error
+                }`,
+              );
+            });
+          let child = await childOf();
+          let basis: z.infer<typeof DiscardBasisSchema> | undefined;
+          let stopEvidence: z.infer<typeof StopEvidenceSchema> | undefined;
+          let terminal = terminalFailureProblems(child);
+          if (!terminal.length) {
+            // confirm_failure re-waits the original submission and requires
+            // fresh idle status; its refusal names the failed idle conditions.
             const outcome = await context.runModel({
               definition: task.behaviorName,
               method: "confirm_failure",
             });
             if (!outcome.ok) throw new Error(outcome.error.message);
-            child = await childState(context, task);
-            confirmedFailure = isTerminalFailure(child);
+            child = await childOf();
+            terminal = terminalFailureProblems(child);
+            if (!terminal.length) {
+              basis = "terminal_failure";
+              stopEvidence = "confirmed_failure";
+            }
           }
-          if (
-            !confirmedFailure && !isRejectedLaunch(child) &&
-            (!["completed", "completed_unusable"].includes(child.phase) ||
-              child.outcome !== "completed" ||
-              child.backgroundTasks.length || !child.paneId ||
-              !child.conversationId || !child.submissionId)
-          ) {
-            throw new Error(
-              "Cannot discard an uncertain or active pane task; retrieve its original submission for structured not_sent evidence or an acknowledged provider failure, then inspect the pane; legacy text is insufficient",
-            );
+          const rejected = basis ? [] : rejectedLaunchProblems(child);
+          if (!basis && !rejected.length) {
+            basis = "rejected_launch";
+            // The same condition selects the receipt branch of the predicate.
+            stopEvidence =
+              child.launchId && child.launchReceipt && !child.submissionId
+                ? "launch_receipt"
+                : "rejected_response";
+          }
+          const completed = basis ? [] : completedWorkerProblems(child);
+          if (!basis && !completed.length) {
+            // The behavior always tries its own observation first.
+            // confirmedStopped stands in only when that observation is
+            // impossible, never when it found the worker running.
+            const unobserved = (cause: string) => {
+              if (discard.confirmedStopped) return "attested" as const;
+              throw new Error(
+                `Cannot discard ${who}: ${cause}. The behavior could not verify that the completed worker stopped. Confirm the stop yourself (look for the pane in every session, including warped panes and orphaned pty-host supervisors, and check that its process has exited); once it has stopped, rerun discard-agent with the same request and confirmedStopped: true.`,
+              );
+            };
+            const outcome = await context.runModel({
+              definition: task.behaviorName,
+              method: "confirm_stopped",
+            });
+            if (!outcome.ok) {
+              if (outcome.error.message.includes(WORKER_NOT_STOPPED)) {
+                throw new Error(
+                  `Cannot discard ${who}: ${outcome.error.message}. The behavior observed the completed worker running, and confirmedStopped cannot override an observation. Wait for the worker to stop, or inspect it and close its pane, then rerun discard-agent with the same request.`,
+                );
+              }
+              stopEvidence = unobserved(outcome.error.message);
+            } else {
+              const bytes = await context.dataRepository.getContent(
+                "@yinz/agent",
+                task.behaviorName,
+                "observation",
+              );
+              const observation = bytes
+                ? AgentObservationSchema.parse(
+                  JSON.parse(new TextDecoder().decode(bytes)),
+                )
+                : undefined;
+              // Only a fresh idle status of the worker's own pane proves the
+              // stop; anything else is treated as unobserved.
+              stopEvidence = !observation
+                ? unobserved("the stop observation was not recorded")
+                : observation.outcome === "ok" &&
+                    observation.paneId === child.paneId
+                ? "fresh_idle"
+                : unobserved(
+                  `the stop observation is not a fresh idle status of ${child.paneId}`,
+                );
+            }
+            basis = "completed_unusable";
+          }
+          if (!basis) {
+            throw new Error([
+              `Cannot discard an uncertain or active pane task: no discard basis applies to ${who}.`,
+              `- Completed worker: ${completed.join("; ")}`,
+              `- Terminal failure: ${terminal.join("; ")}`,
+              `- Rejected launch: ${rejected.join("; ")}`,
+              "Retrieve the original submission for structured not_sent evidence or an acknowledged provider failure, then inspect the pane; legacy text is insufficient. Malformed responses, transport failures and legacy uncertain launches cannot be discarded. drive keeps observing an ordinary timeout; an explicit rollback or restart-agent with the user's request supersedes this task.",
+            ].join("\n"));
           }
           const current = await loadState(context);
           if (JSON.stringify(current) !== JSON.stringify(task.before)) {
+            const now = current as Record<string, unknown>;
+            const before = task.before as Record<string, unknown>;
+            const changed = [
+              ...new Set([...Object.keys(now), ...Object.keys(before)]),
+            ].filter((key) => canonical(now[key]) !== canonical(before[key]));
             throw new Error(
-              "Pane evidence may already be applied; resume the task before discarding it",
+              `Pane evidence may already be applied: lifecycle fields changed since ${who} was dispatched (${
+                changed.length ? changed.join(", ") : "field order only"
+              }); resume the task before discarding it`,
             );
           }
-          const pending = { ...task, discard };
+          const pending: Task = {
+            ...task,
+            discard: {
+              request: discard.request,
+              // The caller's flag; stopEvidence records whether it was used.
+              ...(discard.confirmedStopped
+                ? { confirmedStopped: true as const }
+                : {}),
+              basis,
+              stopEvidence,
+            },
+          };
           await saveTask(context, pending);
           return finishDiscard(context, pending);
         }),

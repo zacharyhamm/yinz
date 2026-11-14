@@ -6,7 +6,18 @@ import {
 import { cancelExport, ExportJob, help } from "./fixtures/issue_review/ux.ts";
 import { after, before } from "./fixtures/issue_review/control.ts";
 import { taskPrompt } from "../_lib/issue_agents.ts";
-import { createState, transition } from "../_lib/lifecycle.ts";
+import { CHECK_POLICY_SUMMARY } from "../_lib/check_policy.ts";
+import {
+  createState,
+  planningGeneration,
+  transition,
+} from "../_lib/lifecycle.ts";
+import {
+  assignmentFileContents,
+  assignmentManifest,
+} from "../_lib/assignment_files.ts";
+import { evidenceDigest, reviewPacket } from "../_lib/issue_evidence.ts";
+import { ContinuityContext } from "../_lib/review_continuity.ts";
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -40,8 +51,7 @@ Deno.test("review fixture: private extraction preserves public output including 
     assert(before(name) === after(name), "Public output changed");
   }
 });
-Deno.test("production review prompts retain independent duties, standards and exact identity", () => {
-  const commit = "a".repeat(40);
+function reviewState() {
   let state = createState({
     workspace: "test",
     itemId: 1,
@@ -67,6 +77,64 @@ Deno.test("production review prompts retain independent duties, standards and ex
       covers: ["command"],
     }],
   });
+  return state;
+}
+function assertReviewDuties(
+  role: "review_code" | "review_ux" | "review_plan",
+  prompt: string,
+  identity: string[],
+) {
+  for (
+    const text of [
+      "/standards/review.md",
+      "/standards/dimensions.md",
+      ...identity,
+      "planVersion",
+      "focused-test",
+      "reopening",
+      "Evaluation-only response contract",
+    ]
+  ) {
+    assert(prompt.includes(text), `${role} missing ${text}`);
+  }
+  if (role === "review_code") {
+    for (
+      const text of [
+        "incorrect assumptions",
+        "state transitions",
+        "cleanup",
+        "concurrency",
+        "assertions that could pass",
+        "exactly once",
+        "advisory",
+      ]
+    ) assert(prompt.includes(text), text);
+  } else if (role === "review_ux") {
+    for (
+      const text of [
+        "affected users and tasks",
+        "waiting",
+        "cancellation",
+        "recovery",
+        "no_material_impact",
+        "limitations",
+        "user consequence",
+        "aesthetic",
+        "meaningful user decision",
+      ]
+    ) assert(prompt.includes(text), text);
+  } else {
+    assert(
+      prompt.includes(
+        "valid command argument arrays that execute directly without a shell",
+      ),
+      "Plain command wording",
+    );
+  }
+}
+Deno.test("production review prompts retain independent duties, standards and exact identity", () => {
+  const commit = "a".repeat(40);
+  const state = reviewState();
   for (const role of ["review_code", "review_ux", "review_plan"] as const) {
     const prompt = taskPrompt(
       role,
@@ -76,52 +144,185 @@ Deno.test("production review prompts retain independent duties, standards and ex
       "Evaluation-only response contract",
       commit,
     );
+    assertReviewDuties(role, prompt, [
+      state.issue.note,
+      `The commit being reviewed is ${commit}.`,
+    ]);
+  }
+});
+
+Deno.test("contract-3 review prompts retain duties and reference private assignment files", () => {
+  const commit = "a".repeat(40);
+  const state = reviewState();
+  const id = "a6da10b0-c980-4b82-b920-000000000003";
+  for (const role of ["review_code", "review_ux", "review_plan"] as const) {
+    const featureDiff = "diff --git a/command.ts b/command.ts";
+    const continuity = ContinuityContext.parse({
+      version: 1,
+      assignmentId: id,
+      issueDigest: state.issue.digest,
+      generation: planningGeneration(state),
+      planVersion: state.planVersion,
+      packetDigest: evidenceDigest(reviewPacket(state)),
+      reviewFingerprints: [],
+      ...(role === "review_plan" ? {} : {
+        baseline: {
+          main: "c".repeat(40),
+          mergeBase: "c".repeat(40),
+          head: commit,
+          featureDiff,
+          ancestry: "initial",
+          baselineChanged: false,
+          limitations: [],
+        },
+      }),
+    });
+    const files = assignmentManifest(
+      `/repo/.git/yinz-lifecycle/assignments/${id}`,
+      assignmentFileContents({
+        id,
+        role,
+        before: state,
+        ...(role === "review_plan" ? {} : { reviewCommit: commit }),
+        continuity,
+        submission: {
+          protocol: 1,
+          behaviorName: `issue-evidence-${id}`,
+          controlDir: "/control",
+          assignmentDigest: "d".repeat(64),
+        },
+      }),
+    );
+    const prompt = taskPrompt(
+      role,
+      state,
+      "/fixture",
+      "/standards",
+      "Evaluation-only response contract",
+      commit,
+      undefined,
+      continuity,
+      { files },
+    );
+    assertReviewDuties(role, prompt, [
+      `The commit being reviewed is ${commit}.`,
+    ]);
     for (
       const text of [
-        "/standards/review.md",
-        "/standards/dimensions.md",
-        state.issue.note,
-        `The commit being reviewed is ${commit}.`,
-        "planVersion",
-        "focused-test",
-        "reopening",
-        "Evaluation-only response contract",
+        "Assignment contract version 3. Assignment files are read-only",
+        `read ${files.files.packet.path} completely (sha256 ${continuity.packetDigest}`,
+        `resolve inside ${files.files.snapshot.path}`,
       ]
-    ) {
-      assert(prompt.includes(text), `${role} missing ${text}`);
-    }
-    if (role === "review_code") {
-      for (
-        const text of [
-          "incorrect assumptions",
-          "state transitions",
-          "cleanup",
-          "concurrency",
-          "assertions that could pass",
-          "exactly once",
-          "advisory",
-        ]
-      ) assert(prompt.includes(text), text);
-    } else if (role === "review_ux") {
-      for (
-        const text of [
-          "affected users and tasks",
-          "waiting",
-          "cancellation",
-          "recovery",
-          "no_material_impact",
-          "limitations",
-          "user consequence",
-          "aesthetic",
-          "meaningful user decision",
-        ]
-      ) assert(prompt.includes(text), text);
-    } else {assert(
-        prompt.includes(
-          "valid command argument arrays that execute directly without a shell",
-        ),
-        "Plain command wording",
-      );}
+    ) assert(prompt.includes(text), `${role} missing ${text}`);
+    assert(
+      prompt.includes(`Start from ${files.files.template.path};`) ===
+        (role !== "review_plan"),
+      `${role} template sentence`,
+    );
+    assert(!prompt.includes(featureDiff), `${role} inlines the diff`);
+    assert(!prompt.includes("Bound review continuity: {"), role);
+    assert(!prompt.includes("Decode featureDiff/delta from base64"), role);
+    // The requirements stay authoritative through the bound snapshot file.
+    assert(
+      new TextDecoder().decode(
+        assignmentFileContents({
+          id,
+          role,
+          before: state,
+          continuity,
+          submission: {
+            protocol: 1,
+            behaviorName: `issue-evidence-${id}`,
+            controlDir: "/control",
+            assignmentDigest: "d".repeat(64),
+          },
+        }).get("snapshot"),
+      ).includes(state.issue.note),
+      `${role} snapshot keeps the requirements`,
+    );
+  }
+});
+
+Deno.test("implementation prompts allow a rebase only for recorded main conflicts and explain log access", () => {
+  const state = transition(
+    transition(
+      createState({
+        workspace: "test",
+        itemId: 1,
+        text: "Preserve command behavior",
+        note: "Caller requires every check to pass",
+        digest: "b".repeat(64),
+      }),
+      "triage",
+      { classification: "feature", summary: "Inspect commands" },
+    ),
+    "plan",
+    {
+      summary: "Inspect command behavior",
+      steps: [{ id: "command", description: "Update", files: ["c.ts"] }],
+      testingStrategy: "Focused command check",
+      checks: [{
+        id: "command",
+        command: ["deno", "test"],
+        covers: ["command"],
+      }],
+    },
+  );
+  const logAccess = { issueName: "issue-test-1", controlDir: "/control dir" };
+  const prompt = (
+    role: Parameters<typeof taskPrompt>[0],
+    lastFailure?: string,
+    extras: Parameters<typeof taskPrompt>[8] = { logAccess },
+  ) =>
+    taskPrompt(
+      role,
+      { ...state, lastFailure },
+      "/fixture",
+      "/standards",
+      "Submission",
+      undefined,
+      undefined,
+      undefined,
+      extras,
+    );
+  const access =
+    `Read each log named in lastFailure (read-only; this is not the evidence interface) with: env -u SWAMP_SERVE_URL -u SWAMP_SERVER_URL -u SWAMP_REPO_DIR -u SWAMP_WORKFLOWS_DIR swamp data query 'modelName == "issue-test-1" && name == "<log>"' --select content --repo-dir '/control dir'`;
+  const failed =
+    "Verification b6da10b0-c980-4b82-b920-640238095f1a failed at " +
+    `${"a".repeat(40)} (plan version 1): baseline lint (exit 101; log: ` +
+    "baseline-log-b6da10b0-c980-4b82-b920-640238095f1a-lint)";
+  const implement = prompt("implement", failed);
+  assert(implement.includes(access), implement);
+  assert(
+    implement.includes(
+      "Do not rebase, except when lastFailure records conflicts with local main, or a failed baseline check that local main (refs/heads/main) already fixes: then rebase this branch onto local main",
+    ),
+    "Rebase wording",
+  );
+  assert(
+    implement.includes("prefer that rebase over re-fixing main's lines here"),
+    "Stale-base baseline wording",
+  );
+  assert(!implement.includes("Do not rebase, merge"), "Old rebase wording");
+  assert(
+    prompt("implement_review_fixes", "x (exit 2; log: check-log-id-x)")
+      .includes(access),
+    "Repair implementer reads check logs",
+  );
+  for (
+    const [role, lastFailure, extras] of [
+      ["implement", undefined, { logAccess }],
+      ["implement", "Merge attempt a failed: exit 101; log: /repo/ci.log", {
+        logAccess,
+      }],
+      ["implement", failed, {}],
+      ["review_code", failed, { logAccess }],
+    ] as const
+  ) {
+    assert(
+      !prompt(role, lastFailure, extras).includes("Read each log named"),
+      `${role} ${lastFailure} must not explain log access`,
+    );
   }
 });
 
@@ -205,5 +406,38 @@ Deno.test("paired continuity evaluation artifacts retain evaluated source identi
         "Neither new defects nor ignored continuity may be silently resolved",
       );
     }
+  }
+});
+
+Deno.test("planning and plan-review prompts state the submission check policy", () => {
+  const state = transition(
+    createState({
+      workspace: "test",
+      itemId: 1,
+      text: "Preserve command behavior",
+      note: "Caller requires every check to pass",
+      digest: "b".repeat(64),
+    }),
+    "triage",
+    { classification: "feature", summary: "Inspect commands" },
+  );
+  for (
+    const role of [
+      "triage",
+      "plan",
+      "review_plan",
+      "implement",
+      "review_code",
+      "review_ux",
+      "plan_review_fixes",
+      "implement_review_fixes",
+    ] as const
+  ) {
+    const prompt = taskPrompt(role, state, "/fixture", "/standards", "Submit");
+    assert(
+      prompt.includes(CHECK_POLICY_SUMMARY) ===
+        ["plan", "review_plan", "plan_review_fixes"].includes(role),
+      `${role} check policy summary`,
+    );
   }
 });

@@ -237,6 +237,84 @@ contracts, not preserved as additional required steps.
 | D091 | ISSUE_LIFECYCLE.md:836–851 | Injected/fake adapter and Cargo coverage vs limited live Claude check; full gate only at authorized merge | [Design: validation boundaries](../../../../docs/ISSUE_LIFECYCLE.md#validation-boundaries) |
 | D092 | ISSUE_LIFECYCLE.md:855–865 | Source design/primitive separation, Agenda/local receipt adaptation and no synthetic review/unmet completion | [Design: origin](../../../../docs/ISSUE_LIFECYCLE.md#design-origin) |
 
+## Determinism revision
+
+Baseline: commit `b03d974383900c02fa73cd27fb311a7a534fdfaf`. Source line numbers in
+this section refer to that commit. The revision moved deterministic steps from
+controllers and workers into Swamp behaviors and the launcher: handoff-bound
+decision flags with launcher chaining, drive's worktree adoption, pending-rollback
+completion, automatic refresh and bounded retries, verification's probe and
+baseline checks, contract-3 assignment files with the submission helper,
+submission-time check policy, canonical start worktrees, behavior-verified discard
+and `status` `taskRecovery`. Rows destined for a code file name the enforcement
+point; the rule is then enforced by code rather than restated as an instruction.
+
+Earlier rows are not edited. These baseline rows are semantically superseded by
+the rows that name them: S005, S006, S030, S044, S058, S063, S064, S103, S105,
+D036, D038, D039, D056 and D058.
+
+| ID | Baseline source | Rule label | Authoritative destination |
+| --- | --- | --- | --- |
+| R001 | SKILL.md:32–37 | Start on main or with --new-worktree creates or adopts canonical `issue-<item>`; a feature worktree claims itself; detached HEAD refused (supersedes S005, S006) | [Skill: identity/setup](../SKILL.md#identity-and-setup), [Design: worker identity/claims](../../../../docs/ISSUE_LIFECYCLE.md#worker-identity-and-claims), [Code: git_ops.py claim_new](../../../../scripts/issue_lifecycle/git_ops.py), [Code: launcher start origin](../../../../scripts/issue-lifecycle) |
+| R002 | SKILL.md:38–39, 60–62, 68–69 | Legacy implementation/control selection, explicit agent flow and older-driver identity | [Design: legacy states](../../../../docs/ISSUE_LIFECYCLE.md#legacy-states) |
+| R003 | SKILL.md:43–54 | Worker defaults and start overrides reduced to a pointer; verification settings in the same file | [Skill: drive/resume](../SKILL.md#drive-and-resume), [Design: worker defaults](../../../../docs/ISSUE_LIFECYCLE.md#worker-defaults-and-issue-overrides) |
+| R004 | SKILL.md:71 | Launch-transaction-v2 paragraph removed from the skill; discard consequence lives in the behavior's refusal | [Design: rollback persistence](../../../../docs/ISSUE_LIFECYCLE.md#rollback-persistence), [Design: discard bases](../../../../docs/ISSUE_LIFECYCLE.md#discard-bases) |
+| R005 | SKILL.md:73–78 | Chained ready/drive/merge run in the background or with long timeouts; presentations end with a Next: line | [Skill: drive/resume](../SKILL.md#drive-and-resume), [Code: handoff_next.ts nextStep](../../../../extensions/behaviors/_lib/handoff_next.ts), [Code: launcher chaining](../../../../scripts/issue-lifecycle) |
+| R006 | SKILL.md:80–85 | Drive finishes a pending rollback, retries bounded correlated recoveries and auto-refreshes before approval (supersedes S030, S103) | [Skill: drive/resume](../SKILL.md#drive-and-resume), [Recovery: unresolved tasks](recovery.md#unresolved-tasks), [Code: issue_driver.ts drive](../../../../extensions/behaviors/_lib/issue_driver.ts), [Code: worker_recovery.ts](../../../../extensions/behaviors/_lib/worker_recovery.ts) |
+| R007 | SKILL.md:92 | Approved phase: drive adopts the recorded worktree; prepare_worktree only after close-out cleanup or for legacy issues (supersedes S058, S063, S064) | [Skill: drive/resume](../SKILL.md#drive-and-resume), [Design: worker identity/claims](../../../../docs/ISSUE_LIFECYCLE.md#worker-identity-and-claims), [Code: issue_driver.ts adoptWorkerWorktree](../../../../extensions/behaviors/_lib/issue_driver.ts) |
+| R008 | SKILL.md:93–94 | Implementing row trimmed to its gates; ready yields integrate, which the launcher merges | [Skill: drive/resume](../SKILL.md#drive-and-resume) |
+| R009 | SKILL.md:101, 103–105, 108 | Decisions take --handoff, --request and selection flags; the behavior derives versions, fingerprints, repair IDs and commits; the launcher never fills --handoff | [Skill: drive/resume](../SKILL.md#drive-and-resume), [Code: decisions.ts resolveDecisionArgs](../../../../extensions/behaviors/_lib/decisions.ts), [Code: decisions.py build_inputs](../../../../scripts/issue_lifecycle/decisions.py) |
+| R010 | SKILL.md:102, 106 | prepare_worktree is close-out/legacy only; the launcher runs merge only after ready/drive (other chained commands stop at integrate) and never re-runs an existing attempt | [Skill: drive/resume](../SKILL.md#drive-and-resume), [Code: decisions.py should_auto_merge](../../../../scripts/issue_lifecycle/decisions.py) |
+| R011 | SKILL.md:111 | Blocked handoffs start from status taskRecovery | [Skill: blocker routing](../SKILL.md#blocker-routing), [Code: observations.py task_recovery](../../../../scripts/issue_lifecycle/observations.py) |
+| R012 | SKILL.md:113–127 | Close-out lock and contention prose kept only in recovery; the skill links it | [Recovery: close-out](recovery.md#close-out-failures) |
+| R013 | SKILL.md:134 | Legacy first-version plan revision allowance | [Design: legacy states](../../../../docs/ISSUE_LIFECYCLE.md#legacy-states) |
+| R014 | SKILL.md:137–143 | adjudicate-plan binds the handoff; dispositions only (supersedes S044) | [Skill: review/authorization](../SKILL.md#review-and-authorization), [Code: decisions.ts](../../../../extensions/behaviors/_lib/decisions.ts) |
+| R015 | SKILL.md:145–150 | Revision authorization is drive --handoff with --request, bound to that handoff | [Skill: review/authorization](../SKILL.md#review-and-authorization) |
+| R016 | SKILL.md:161–168 | UX review description shortened; design owns detail | [Skill: review/authorization](../SKILL.md#review-and-authorization), [Design: separate reviews](../../../../docs/ISSUE_LIFECYCLE.md#separate-implementation-reviews) |
+| R017 | SKILL.md:170–176 | decide-review flags; review fingerprint derived from the handoff | [Skill: review/authorization](../SKILL.md#review-and-authorization), [Code: decisions.ts](../../../../extensions/behaviors/_lib/decisions.ts) |
+| R018 | SKILL.md:178–183 | approve-review-fixes --handoff with --request; repair ID derived | [Skill: review/authorization](../SKILL.md#review-and-authorization) |
+| R019 | SKILL.md:195–200 | Legacy UX, ready and unlanded-attempt states | [Design: legacy states](../../../../docs/ISSUE_LIFECYCLE.md#legacy-states) |
+| R020 | SKILL.md:204–214 | Check policy enforced at submission; verification runs probe, baseline and plan checks; legacy plans without checks moved | [Skill: review/authorization](../SKILL.md#review-and-authorization), [Planning: check policy](planning.md#check-policy), [Design: verification](../../../../docs/ISSUE_LIFECYCLE.md#deterministic-verification), [Code: check_policy.ts](../../../../extensions/behaviors/_lib/check_policy.ts), [Code: verification.ts runVerification](../../../../extensions/behaviors/_lib/verification.ts) |
+| R021 | SKILL.md:216–232 | Blocker routing leads with taskRecovery | [Skill: blocker routing](../SKILL.md#blocker-routing) |
+| R022 | SKILL.md:234–249 | Run drive after restart or rollback; drive finishes saved intent | [Skill: rollback/restart](../SKILL.md#explicit-rollback-or-restart) |
+| R023 | SKILL.md:251–257 | Workers start from the evidence template and submit through submit_evidence.py; final prose is never evidence | [Skill: rollback/restart](../SKILL.md#explicit-rollback-or-restart), [Planning](planning.md), [Review](review.md), [Code: submit_evidence.py](../../../../scripts/issue_lifecycle/submit_evidence.py) |
+| R024 | SKILL.md:259–271, 281–287 | One discard paragraph: the behavior verifies its basis; confirmedStopped only when it cannot observe a completed worker (supersedes S105) | [Skill: rollback/restart](../SKILL.md#explicit-rollback-or-restart), [Design: discard bases](../../../../docs/ISSUE_LIFECYCLE.md#discard-bases), [Code: issue_agents.ts discard_agent](../../../../extensions/behaviors/_lib/issue_agents.ts), [Code: yinz_agent.ts confirmStoppedAgent](../../../../extensions/behaviors/_lib/yinz_agent.ts) |
+| R025 | SKILL.md:264–265, 276–277 | Legacy structured rejections and legacy pending-task supplements | [Design: legacy states](../../../../docs/ISSUE_LIFECYCLE.md#legacy-states) |
+| R026 | SKILL.md:289–293 | Submission lock and datastore requirements kept only in the design | [Design: typed submissions](../../../../docs/ISSUE_LIFECYCLE.md#typed-evidence-submissions) |
+| R027 | SKILL.md:297–328 | Qualified completion after closure has a single copy in the design | [Design: qualified completion](../../../../docs/ISSUE_LIFECYCLE.md#qualified-completion-after-closure), [Recovery: unresolved tasks](recovery.md#unresolved-tasks) |
+| R028 | recovery.md:21–23 | Changed requirements refresh automatically before approval; afterwards drive blocks with requirementsChange | [Recovery: inspect blocker](recovery.md#inspect-the-blocker), [Code: issue_driver.ts requirementsChangedReason](../../../../extensions/behaviors/_lib/issue_driver.ts) |
+| R029 | recovery.md:25–34 | taskRecovery first; retry classes, budgets and the must-stay-blocked list; interrupted routes to restart or rollback | [Recovery: unresolved tasks](recovery.md#unresolved-tasks), [Code: worker_recovery.ts RECOVERY_POLICY](../../../../extensions/behaviors/_lib/worker_recovery.ts) |
+| R030 | recovery.md:59–60 | Unlaunched legacy task needs explicit restart | [Design: legacy states](../../../../docs/ISSUE_LIFECYCLE.md#legacy-states) |
+| R031 | recovery.md:71–77 | prompt_delivery protocol detail | [Design: pane tasks](../../../../docs/ISSUE_LIFECYCLE.md#pane-tasks) |
+| R032 | recovery.md:79–93 | Rejected-launch discard takes the request; the behavior verifies the receipt (supersedes D036 for launches) | [Recovery: rejected launches](recovery.md#rejected-launches) |
+| R033 | recovery.md:95–116 | Manual discard checklist replaced by the behavior's verification and the discard-bases table (supersedes D036, D038, D039) | [Recovery: unusable/stopped results](recovery.md#unusable-evidence-and-stopped-failures), [Design: discard bases](../../../../docs/ISSUE_LIFECYCLE.md#discard-bases) |
+| R034 | recovery.md:118–137 | Transient cleanup guards retried by drive; retry_cleanup; Busy-close risk; legacy placement moved | [Recovery: imports/cleanup](recovery.md#interrupted-imports-and-cleanup), [Design: legacy states](../../../../docs/ISSUE_LIFECYCLE.md#legacy-states) |
+| R035 | recovery.md:167–181 | drive finishes a pending rollback; `resume-rollback --no-drive` finishes and stops before drive but still resumes a saved restart replacement (plain `resume-rollback` chains drive) | [Recovery: rollback/restart](recovery.md#rollback-and-restart) |
+| R036 | recovery.md:189–190 | decide-review flags | [Recovery: review/verification](recovery.md#review-and-verification-failures) |
+| R037 | recovery.md:206–213 | Legacy review states | [Design: legacy states](../../../../docs/ISSUE_LIFECYCLE.md#legacy-states) |
+| R038 | recovery.md:215–223 | repair needs no reason when a failure is recorded; probe conflicts permit a rebase onto local main | [Recovery: review/verification](recovery.md#review-and-verification-failures), [Code: lifecycle.ts repair](../../../../extensions/behaviors/_lib/lifecycle.ts) |
+| R039 | recovery.md:237–251 | Merge failure details attached by repair; recurring tests named; the probe reports conflicts before the gate | [Recovery: integration failures](recovery.md#integration-failures), [Code: git_ops.py recurring_test_failures](../../../../scripts/issue_lifecycle/git_ops.py) |
+| R040 | recovery.md:266 | closeout --handoff with --decision and --request | [Recovery: close-out](recovery.md#close-out-failures) |
+| R041 | recovery.md:323–354 | Duplicate qualified-completion section deleted | [Design: qualified completion](../../../../docs/ISSUE_LIFECYCLE.md#qualified-completion-after-closure) |
+| R042 | recovery.md:356–377 | taskRecovery fields and kinds | [Recovery: completion diagnostics](recovery.md#completion-and-stale-run-diagnostics), [Code: observations.py task_recovery](../../../../scripts/issue_lifecycle/observations.py) |
+| R043 | planning.md:15–32, 43–52 | Template pre-fills responses and mappings; helper submission; check policy section | [Planning](planning.md), [Planning: check policy](planning.md#check-policy) |
+| R044 | review.md:40–43, 82–84, 91–97, 106–110 | Helper submission; policy enforces argv; assignment files; pre-filled priorFindings | [Review](review.md) |
+| R045 | ISSUE_LIFECYCLE.md:60–62 | Worktree preparation is no longer an operator action | [Design: ownership](../../../../docs/ISSUE_LIFECYCLE.md#ownership) |
+| R046 | ISSUE_LIFECYCLE.md:110–131 | Start origin, claim-new adoption and refusal rules, drive adoption; legacy origins moved (supersedes S006, S064) | [Design: worker identity/claims](../../../../docs/ISSUE_LIFECYCLE.md#worker-identity-and-claims), [Design: legacy states](../../../../docs/ISSUE_LIFECYCLE.md#legacy-states) |
+| R047 | ISSUE_LIFECYCLE.md:148–152 | Verification configuration keys; the file is read live from --control | [Design: worker defaults](../../../../docs/ISSUE_LIFECYCLE.md#worker-defaults-and-issue-overrides), [Code: config.py](../../../../scripts/issue_lifecycle/config.py) |
+| R048 | ISSUE_LIFECYCLE.md:206–213 | Handoff decisions, Next: line, decision flags and launcher chaining | [Design: stages/evidence](../../../../docs/ISSUE_LIFECYCLE.md#stages-and-evidence) |
+| R049 | ISSUE_LIFECYCLE.md:259–269 | Existing records and legacy plan allowance | [Design: legacy states](../../../../docs/ISSUE_LIFECYCLE.md#legacy-states) |
+| R050 | ISSUE_LIFECYCLE.md:329–354 | Inputs derive from the handoff; start, drive, closeout and discard-agent rows; optional repair reason (supersedes D056, D058) | [Design: evidence/input contracts](../../../../docs/ISSUE_LIFECYCLE.md#structured-evidence-and-operator-inputs) |
+| R051 | ISSUE_LIFECYCLE.md:364–371 | Check policy applies at submission only | [Design: evidence/input contracts](../../../../docs/ISSUE_LIFECYCLE.md#structured-evidence-and-operator-inputs), [Planning: check policy](planning.md#check-policy) |
+| R052 | ISSUE_LIFECYCLE.md:423–432 | Legacy review states | [Design: legacy states](../../../../docs/ISSUE_LIFECYCLE.md#legacy-states) |
+| R053 | ISSUE_LIFECYCLE.md:522–554 | Probe, baseline and plan checks; baseline logs; status rule; repair attaches failures; legacy plans moved | [Design: verification](../../../../docs/ISSUE_LIFECYCLE.md#deterministic-verification), [Code: verification.ts](../../../../extensions/behaviors/_lib/verification.ts) |
+| R054 | ISSUE_LIFECYCLE.md:589–594 | recurringTests and the summary suffix | [Design: merge evidence](../../../../docs/ISSUE_LIFECYCLE.md#merge-gate-evidence) |
+| R055 | ISSUE_LIFECYCLE.md:596–615 | Contract-3 assignment files and the submission helper | [Design: typed submissions](../../../../docs/ISSUE_LIFECYCLE.md#typed-evidence-submissions), [Code: assignment_files.ts](../../../../extensions/behaviors/_lib/assignment_files.ts) |
+| R056 | ISSUE_LIFECYCLE.md:816–852 | Python test modules, including test_skill_links.py | [Design: validation boundaries](../../../../docs/ISSUE_LIFECYCLE.md#validation-boundaries) |
+| R057 | ISSUE_LIFECYCLE.md:901–921 | Retry eligibility, budgets, observedVia, cleanupRefusal and taskRecovery | [Design: completion recovery](../../../../docs/ISSUE_LIFECYCLE.md#completion-recovery-and-inconsistent-run-observations) |
+| R058 | ISSUE_LIFECYCLE.md:925–931 | Contract 3 extends contract-2 continuity | [Design: review continuity](../../../../docs/ISSUE_LIFECYCLE.md#review-continuity-and-assessment) |
+| R059 | (new) | Legacy states collected in one section | [Design: legacy states](../../../../docs/ISSUE_LIFECYCLE.md#legacy-states) |
+
 ## Audit and limits
 
 The source-span correction audit checked all 114 skill entries and all 92
@@ -254,8 +332,15 @@ remain distinct; explicit restart/rollback does not inherit discard prerequisite
 
 All eight phases and all eight handoff decisions were checked against
 `extensions/behaviors/_lib/lifecycle.ts` and
-`extensions/behaviors/_lib/issue_driver.ts`. Pending work precedes phase dispatch;
+`extensions/behaviors/_lib/issue_driver.ts`. For the determinism revision, the
+handoff decisions were revalidated against `HandoffSchema` in `issue_driver.ts`:
+there are now twelve (adding `address_review_findings`, `approve_review_fixes`,
+`authorize_closeout` and `resume_closeout`), and `prepare_worktree` is reached
+only after accepted close-out cleanup or for legacy issues. Rules now enforced by
+code are a row category: their destination names the enforcement point. Pending work precedes phase dispatch;
 the blocker table includes a free-text catch-all. Explicit restart routing does
 not require eager recovery loading. Local-link and focused consumer checks are
-separate from this semantic audit. Review must still verify preservation clause
-by clause: link existence or paragraph coverage alone cannot prove it.
+separate from this semantic audit. `scripts/issue_lifecycle/unit/test_skill_links.py`
+checks that every row's links and anchors resolve. Review must still verify
+preservation clause by clause: link existence or paragraph coverage alone cannot
+prove it.

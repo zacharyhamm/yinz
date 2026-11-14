@@ -13,7 +13,10 @@ import sys
 
 from issue_lifecycle.workspace import agenda_workspace, local_environment
 from issue_lifecycle.agent import resolve_agent
-from issue_lifecycle.observations import diagnose
+from issue_lifecycle.decisions import (
+    CHAINED, InputError, auto_merge_allowed, build_inputs, check_chain_flags, continue_to_gate,
+)
+from issue_lifecycle.observations import diagnose, task_recovery
 
 
 METHODS = (
@@ -22,12 +25,43 @@ METHODS = (
     "closeout", "resume-closeout", "rollback", "resume-rollback", "restart-agent", "continue-agent", "drive", "verify",
 )
 
+EPILOG = """\
+Decision commands (approve, adjudicate-plan, decide-review, approve-review-fixes,
+ready) and implement, repair, refresh, resume-rollback and merge continue with
+drive unless --no-drive. Only after ready or drive, when drive yields an
+authorized integrate handoff with no existing merge attempt, the launcher runs
+merge (rebase, full CI gate, fast-forward) once, then drives again. Every other
+chained command stops at an integrate handoff, even an authorized one (for
+example decide-review on a legacy ready state, or resume-rollback to merge). A
+merge can hold the shared CI gate for hours: run ready, drive and merge in the
+background or with a long timeout, or pass --no-merge to ready or drive.
+Chained commands print progress on stderr and exactly one handoff JSON on
+stdout.
+"""
+
+
+class WorkflowFailed(Exception):
+    """A Swamp run exited nonzero; its output is already on stderr."""
+
+    def __init__(self, code):
+        super().__init__(f"Swamp exited {code}")
+        self.code = code
+
 
 def issue_name(workspace, item):
     name = f"issue-{workspace}-{item}"
     if len(name) <= 64:
         return name
     return f"issue-{hashlib.sha256(workspace.encode()).hexdigest()[:24]}-{item}"
+
+
+def control_identity():
+    """The invoking Yinz pane, when the launcher runs inside one."""
+    session = os.environ.get("YINZ_SESSION_NAME", "").strip()
+    pane = os.environ.get("YINZ_PANE_ID", "")
+    if session and re.fullmatch(r"[0-9]+", pane):
+        return {"session": session, "paneId": f"terminal_{int(pane)}"}
+    return None
 
 
 def query_resource(name, resource, tail, control, env):
@@ -42,18 +76,38 @@ def query_resource(name, resource, tail, control, env):
     return records[0] if len(records) == 1 else None
 
 
+def check_line(name, label, check):
+    mark = "x" if check["status"] == "passed" else " "
+    code = "(could not start)" if check["exitCode"] is None else check["exitCode"]
+    outcome = "not run" if check.get("skipped") else "timed out" if check.get("timedOut") else f"exit {code}"
+    if not check.get("skipped") and not check["worktreeUnchanged"]:
+        outcome += ", changed the worktree, branch or HEAD"
+    detail = check.get("skipped") or (
+        f"log: swamp data query 'modelName == {json.dumps(name)} && name == {json.dumps(check['log'])}' --select content")
+    return (f"- [{mark}] {label}: {shlex.join(check['command'])} -> {outcome} "
+            f"in {check['durationMs'] / 1000:.1f}s; {detail}")
+
+
+def probe_line(probe):
+    if probe["status"] == "clean":
+        return f"- [x] rebase probe: no conflicts with local main {probe['main']}"
+    if probe["status"] == "conflicts":
+        paths = probe.get("paths", [])
+        more = len(paths) - 20 + probe.get("pathsTruncated", 0)
+        return (f"- [ ] rebase probe: conflicts with local main {probe['main']} in "
+                + ", ".join(paths[:20]) + (f" (+{more} more)" if more > 0 else ""))
+    return (f"- rebase probe unavailable: {probe.get('reason')} "
+            "(not a failure; the merge gate rebases under its lock)")
+
+
 def print_checklist(name, verification):
     print(f"Verification {verification['id']}: {verification['status']} at {verification['commit']}", file=sys.stderr)
+    if verification.get("rebaseProbe"):
+        print(probe_line(verification["rebaseProbe"]), file=sys.stderr)
+    for check in verification.get("baseline", []):
+        print(check_line(name, f"baseline {check['id']}", check), file=sys.stderr)
     for check in verification["checks"]:
-        mark = "x" if check["status"] == "passed" else " "
-        code = "(could not start)" if check["exitCode"] is None else check["exitCode"]
-        outcome = "not run" if check.get("skipped") else "timed out" if check.get("timedOut") else f"exit {code}"
-        if not check.get("skipped") and not check["worktreeUnchanged"]:
-            outcome += ", changed the worktree, branch or HEAD"
-        detail = check.get("skipped") or (
-            f"log: swamp data query 'modelName == {json.dumps(name)} && name == {json.dumps(check['log'])}' --select content")
-        print(f"- [{mark}] {check['id']}: {shlex.join(check['command'])} -> {outcome} "
-              f"in {check['durationMs'] / 1000:.1f}s; {detail}", file=sys.stderr)
+        print(check_line(name, check["id"], check), file=sys.stderr)
 
 
 def print_merge_failure(name, state):
@@ -77,40 +131,101 @@ def print_merge_failure(name, state):
     print("Investigate the cause, then run repair with it; a flake is a defect.", file=sys.stderr)
 
 
+def read_text_argument(path):
+    return sys.stdin.read() if str(path) == "-" else Path(path).read_text()
+
+
+def read_request(path):
+    """A request file's text; only the line ending a file or heredoc is dropped."""
+    return read_text_argument(path).rstrip("\r\n")
+
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, epilog=EPILOG,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--control", type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument("--workspace", help="Assert the workspace matches vault default/AGENDA_WORKSPACE")
     parser.add_argument("--item", required=True, type=int, help="Agenda task ID")
     parser.add_argument("command", choices=METHODS)
     parser.add_argument("--input-file", type=Path, help="JSON method arguments; use - for stdin")
+    parser.add_argument("--handoff", metavar="UUID",
+                        help="The exact presented handoff this decision answers (never filled automatically)")
+    request = parser.add_mutually_exclusive_group()
+    request.add_argument("--request", metavar="TEXT", help="The user's actual words for this decision")
+    request.add_argument("--request-file", type=Path, metavar="PATH",
+                         help="Read --request text from a file; use - for stdin")
+    parser.add_argument("--repair", action="append", default=[], metavar="ROLE/ID",
+                        help="decide-review: a finding the user selected for repair (repeatable)")
+    parser.add_argument("--ignore", action="append", default=[], metavar="ROLE/ID",
+                        help="decide-review: a finding the user chose to accept (repeatable)")
+    parser.add_argument("--ignore-remaining", action="store_true",
+                        help="decide-review: accept every outstanding finding not selected for repair")
+    parser.add_argument("--decision", choices=("accept", "decline"), help="closeout: the user's decision")
+    parser.add_argument("--skip-ci-request", metavar="TEXT",
+                        help="ready, drive or merge: the user's explicit CI waiver for this merge")
+    parser.add_argument("--no-drive", action="store_true", help="Stop after this command; do not continue with drive")
+    parser.add_argument("--no-merge", action="store_true",
+                        help="Never run merge automatically after ready or drive")
+    parser.add_argument("--new-worktree", action="store_true",
+                        help="start only: create or adopt <primary checkout>/.worktrees/issue-<item> on branch "
+                             "issue-<item> from local main (implied when start runs on main)")
     args = parser.parse_args()
+    if args.new_worktree and args.command != "start":
+        parser.error("--new-worktree applies only to start")
     if (args.workspace is not None and not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", args.workspace)) or not 0 < args.item <= 2**53 - 1:
         parser.error("invalid Agenda workspace or item ID")
+    if str(args.input_file) == "-" and str(args.request_file) == "-":
+        parser.error("only one of --input-file and --request-file can read stdin")
+    try:
+        check_chain_flags(args.command, no_drive=args.no_drive, no_merge=args.no_merge)
+    except InputError as error:
+        parser.error(str(error))
     # Capture the caller's worktree before dispatching Swamp in the control checkout.
-    worker_worktree = None
-    if args.command == "start":
+    worker_worktree, new_worktree = None, args.new_worktree
+    if args.command == "start" and not new_worktree:
         origin = subprocess.run(["git", "rev-parse", "--show-toplevel"],
                                 capture_output=True, text=True)
         if origin.returncode:
-            parser.error("start must be invoked from a Git worktree")
-        worker_worktree = str(Path(origin.stdout.strip()).resolve(strict=True))
+            parser.error("start must be invoked from a Git worktree, or pass --new-worktree")
+        top = Path(origin.stdout.strip()).resolve(strict=True)
+        head = subprocess.run(["git", "-C", str(top), "symbolic-ref", "--quiet", "--short", "HEAD"],
+                              capture_output=True, text=True)
+        if head.returncode == 0 and head.stdout.strip() == "main":
+            new_worktree = True
+            print("issue-lifecycle: invoked on main; start creates or adopts the canonical issue worktree",
+                  file=sys.stderr)
+        else:
+            # Feature branches and detached HEADs keep the claim checks of an explicit origin.
+            worker_worktree = str(top)
     control = args.control.resolve(strict=True)
     if not (control / ".swamp.yaml").is_file():
         parser.error("control checkout has no .swamp.yaml; select the initialized Yinz checkout")
     inputs = {}
     if args.input_file:
-        inputs = json.loads(sys.stdin.read() if str(args.input_file) == "-" else args.input_file.read_text())
+        inputs = json.loads(read_text_argument(args.input_file))
     if not isinstance(inputs, dict):
         parser.error("input file must contain a JSON object")
+    request_text = read_request(args.request_file) if args.request_file else args.request
+    try:
+        inputs = build_inputs(args.command, inputs, handoff=args.handoff, request=request_text,
+                              repair=args.repair, ignore=args.ignore, ignore_remaining=args.ignore_remaining,
+                              decision=args.decision, skip_ci_request=args.skip_ci_request)
+    except InputError as error:
+        parser.error(str(error))
     if args.command == "start":
         agent = resolve_agent(control, inputs)
         inputs = {"agent": agent} if agent else {}
-    if args.command in ("drive", "agent", "restart-agent"):
-        session = os.environ.get("YINZ_SESSION_NAME", "").strip()
-        pane = os.environ.get("YINZ_PANE_ID", "")
-        if session and re.fullmatch(r"[0-9]+", pane):
-            inputs["control"] = {"session": session, "paneId": f"terminal_{int(pane)}"}
+    identity = control_identity()
+    if args.command in ("drive", "agent", "restart-agent") and identity:
+        inputs["control"] = identity
+    if args.command == "status" and inputs:
+        parser.error("status takes no method inputs")
+    if args.command == "verify" and inputs:
+        parser.error("verify takes no method inputs")
+    if args.command == "merge" and set(inputs) - {"skipCiRequest"}:
+        parser.error("merge accepts only skipCiRequest")
+    if args.command == "drive" and set(inputs) - {"agent", "control", "revisionApproval"}:
+        parser.error("drive accepts only agent settings, control identity and revisionApproval; omit them to resume")
     workspace = agenda_workspace(control, args.workspace)
     name = issue_name(workspace, args.item)
     # A shell configured for a remote Swamp server must not redirect local Git.
@@ -119,8 +234,6 @@ def main():
     env.setdefault("SWAMP_LOCK_TIMEOUT_MS", "14400000")
     tail = ["--repo-dir", str(control), "--no-telemetry"]
     if args.command == "status":
-        if inputs:
-            parser.error("status takes no method inputs")
         result = subprocess.run([
             "swamp", "data", "query", f"modelName == {json.dumps(name)} && (name == 'state' || name == 'agent-task' || name == 'recovery' || name == 'driver' || name == 'handoff' || name == 'controller-origin')",
             "--select", "content", "--json", *tail,
@@ -131,6 +244,9 @@ def main():
         sys.stderr.write(result.stderr)
         document = json.loads(result.stdout)
         task = next((record for record in document["results"] if "before" in record and "behaviorName" in record), None)
+        rollback = next((record for record in document["results"]
+                         if "step" in record and "next" in record and "status" in record), None)
+        submission = None
         if task and task.get("submission"):
             submission = query_resource(task["submission"]["behaviorName"], "submission", tail, control, env)
             if submission is not None:
@@ -151,8 +267,9 @@ def main():
                 raise ValueError("workflow history results must be a list")
         except (ValueError, KeyError) as error:
             history_error = str(error)
-        document["diagnostics"] = diagnose(name, state, task, child,
-                                           submission if task and task.get("submission") else None, runs)
+        document["diagnostics"] = diagnose(name, state, task, child, submission, runs)
+        # Advisory: every method it names re-verifies its own conditions.
+        document["taskRecovery"] = task_recovery(state, task, child, submission, rollback, document["diagnostics"])
         document["workerObservation"] = child
         if history_error:
             document["diagnostics"].append({"code": "workflow_history_unavailable",
@@ -160,35 +277,76 @@ def main():
                                             "action": "Inspect workflow history in the canonical store; no liveness conclusion is available."})
         print(json.dumps(document))
         return 0
-    if args.command in ("start", "merge", "drive", "verify"):
-        workflow = "yinz-issue-" + args.command
-        validation = subprocess.run(["swamp", "workflow", "validate", workflow, "--json", *tail], cwd=control, env=env, text=True, capture_output=True)
-        if validation.returncode:
-            sys.stderr.write(validation.stderr + validation.stdout)
-            return validation.returncode
-        if args.command == "start":
-            inputs = {"workspace": workspace, "itemId": args.item, "issueName": name,
-                      "workerWorktree": worker_worktree, **inputs}
-        elif args.command == "verify":
-            if inputs:
-                parser.error("verify takes no method inputs")
-            inputs = {"issueName": name}
-        elif args.command == "merge":
-            if set(inputs) - {"skipCiRequest"}:
-                parser.error("merge accepts only skipCiRequest")
-            inputs = {"issueName": name, **inputs}
-        else:
-            if set(inputs) - {"agent", "control", "revisionApproval"}:
-                parser.error("drive accepts only agent settings, control identity and revisionApproval; omit them to resume")
-            inputs = {"issueName": name, "drive": inputs}
-        command = ["swamp", "workflow", "run", workflow, "--stdin", *tail]
-    else:
-        method = {"agent": "run_agent", "resume-agent": "resume_agent"}.get(args.command, args.command.replace("-", "_"))
-        command = ["swamp", "behavior", "run", name, method, "--stdin", *tail]
+
+    validated = set()
+
+    def run_workflow(kind, payload, stdout=None):
+        """Run one issue workflow, validating each workflow once per invocation."""
+        workflow = "yinz-issue-" + kind
+        if workflow not in validated:
+            validation = subprocess.run(["swamp", "workflow", "validate", workflow, "--json", *tail],
+                                        cwd=control, env=env, text=True, capture_output=True)
+            if validation.returncode:
+                sys.stderr.write(validation.stderr + validation.stdout)
+                raise WorkflowFailed(validation.returncode)
+            validated.add(workflow)
+        return subprocess.run(["swamp", "workflow", "run", workflow, "--stdin", *tail],
+                              input=json.dumps(payload), text=True, cwd=control, env=env, stdout=stdout).returncode
+
+    def drive_once(payload):
+        # Keep the controller attached until it has the concrete handoff. Workflow
+        # progress belongs on stderr; stdout is exactly the machine-readable result.
+        code = run_workflow("drive", {"issueName": name, "drive": payload}, stdout=sys.stderr)
+        if code:
+            raise WorkflowFailed(code)
+        handoff = query_resource(name, "handoff", tail, control, env)
+        if handoff is None or handoff.get("status") != "current":
+            raise ValueError("drive did not return a current handoff; inspect the exact workflow run")
+        return handoff
+
+    def merge_once(payload, stdout=sys.stderr):
+        code = run_workflow("merge", {"issueName": name, **payload}, stdout=stdout)
+        if code:
+            try:
+                print_merge_failure(name, query_resource(name, "state", tail, control, env))
+            except (ValueError, KeyError, TypeError) as error:
+                print(f"issue-lifecycle: cannot read the merge failure: {error}", file=sys.stderr)
+        return code
+
+    merged = []
+
+    def auto_merge():
+        print("issue-lifecycle: merge authorization recorded; running merge (rebase, full CI gate, fast-forward)",
+              file=sys.stderr)
+        merged.append(True)
+        return merge_once({"skipCiRequest": args.skip_ci_request} if args.skip_ci_request else {})
+
+    def finish(handoff, code):
+        print(handoff["presentation"], file=sys.stderr)
+        print(json.dumps(handoff))
+        if args.skip_ci_request and not merged and args.command != "merge":
+            print("issue-lifecycle: the CI waiver was not used; no merge ran", file=sys.stderr)
+        return code
+
+    later = {"control": identity} if identity else {}
+    if args.command == "start":
+        # Workflow progress belongs on stderr; stdout is exactly the recorded origin.
+        code = run_workflow("start", {"workspace": workspace, "itemId": args.item, "issueName": name,
+                                      "workerWorktree": worker_worktree or "", "newWorktree": new_worktree,
+                                      **inputs}, stdout=sys.stderr)
+        if code:
+            return code
+        state = query_resource(name, "state", tail, control, env)
+        if state is None:
+            raise ValueError("start recorded no lifecycle state; inspect the exact workflow run")
+        worktree = state.get("workerWorktree")
+        print(f"Issue {name}: workers use {worktree or 'the legacy selection'}", file=sys.stderr)
+        print(json.dumps({"issueName": name, "workerWorktree": worktree, "phase": state.get("phase")}))
+        return 0
     if args.command == "verify":
-        result = subprocess.run(command, input=json.dumps(inputs), text=True, cwd=control, env=env, stdout=sys.stderr)
-        if result.returncode:
-            return result.returncode
+        code = run_workflow("verify", {"issueName": name}, stdout=sys.stderr)
+        if code:
+            return code
         state = query_resource(name, "state", tail, control, env)
         if state is None:
             raise ValueError("expected exactly one current lifecycle state")
@@ -199,31 +357,38 @@ def main():
         print(json.dumps(verification))
         return 0 if verification["status"] == "passed" else 2
     if args.command == "merge":
+        if args.no_drive:
+            return merge_once(inputs, stdout=None)
+        code = merge_once(inputs)
+        handoff, _ = continue_to_gate(drive_once, auto_merge, later, later, allow_merge=False, merge_ran=True)
+        return finish(handoff, code)
+    if args.command == "drive":
+        return finish(*continue_to_gate(drive_once, auto_merge, inputs, later,
+                                        allow_merge=auto_merge_allowed("drive", no_merge=args.no_merge)))
+    method = {"agent": "run_agent", "resume-agent": "resume_agent"}.get(args.command, args.command.replace("-", "_"))
+    command = ["swamp", "behavior", "run", name, method, "--stdin", *tail]
+    if args.command not in CHAINED or args.no_drive:
         code = subprocess.run(command, input=json.dumps(inputs), text=True, cwd=control, env=env).returncode
-        if code:
-            try:
-                print_merge_failure(name, query_resource(name, "state", tail, control, env))
-            except (ValueError, KeyError, TypeError) as error:
-                print(f"issue-lifecycle: cannot read the merge failure: {error}", file=sys.stderr)
+        if args.skip_ci_request:
+            print("issue-lifecycle: the CI waiver was not used; no merge ran", file=sys.stderr)
         return code
-    if args.command != "drive":
-        return subprocess.run(command, input=json.dumps(inputs), text=True, cwd=control, env=env).returncode
-    # Keep the controller attached until it has the concrete handoff. Workflow
-    # progress belongs on stderr; stdout is exactly the machine-readable result.
-    result = subprocess.run(command, input=json.dumps(inputs), text=True, cwd=control, env=env, stdout=sys.stderr)
-    if result.returncode:
-        return result.returncode
-    handoff = query_resource(name, "handoff", tail, control, env)
-    if handoff is None or handoff.get("status") != "current":
-        raise ValueError("drive did not return a current handoff; inspect the exact workflow run")
-    print(handoff["presentation"], file=sys.stderr)
-    print(json.dumps(handoff))
-    return 0
+    # A failed decision never drives: the next step must start from the user's correction.
+    code = subprocess.run(command, input=json.dumps(inputs), text=True, cwd=control, env=env,
+                          stdout=sys.stderr).returncode
+    if code:
+        return code
+    print(f"issue-lifecycle: recorded {args.command}; continuing with drive (--no-drive stops after a decision)",
+          file=sys.stderr)
+    # Only ready merges; any other decision stops at an integrate handoff.
+    return finish(*continue_to_gate(drive_once, auto_merge, later, later,
+                                    allow_merge=auto_merge_allowed(args.command, no_merge=args.no_merge)))
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except WorkflowFailed as failure:
+        sys.exit(failure.code)
     except (OSError, ValueError) as error:
         print(f"issue-lifecycle: {error}", file=sys.stderr)
         sys.exit(1)

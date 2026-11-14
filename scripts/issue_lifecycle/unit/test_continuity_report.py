@@ -65,9 +65,10 @@ class ContinuityReportTests(unittest.TestCase):
         self.assertEqual(len(report["pilot"]["strata"]), 2)
         self.assertIn("No improvement claim", report["assessment"])
         self.assertTrue(report["timingLimitations"])
-        baseline["issues"][0]["assignments"][0]["contractVersion"] = 2
-        with self.assertRaisesRegex(ValueError, "pre-change"):
-            compare(baseline, pilot)
+        for version in (2, 3):
+            baseline["issues"][0]["assignments"][0]["contractVersion"] = version
+            with self.assertRaisesRegex(ValueError, "pre-change"):
+                compare(baseline, pilot)
 
     def test_normalization_refuses_partial_export_and_uses_latest_task_projection(self):
         with self.assertRaisesRegex(ValueError, "incomplete"):
@@ -80,13 +81,15 @@ class ContinuityReportTests(unittest.TestCase):
         self.assertEqual(len(result["issues"][0]["sourceRefs"]), 3)
 
     def test_reserved_assignment_carries_original_round_before_journal_projection(self):
-        task = {"id": "reserved", "role": "plan", "createdAt": "2026-11-01T01:00:00Z", "contractVersion": 2,
-                "before": {"issue": {"digest": "a"}}, "round": {"assignmentId": "reserved", "launchCauses": [{"kind": "unknown"}], "corrections": []}}
-        records = [{"modelName": "issue", "name": "driver", "specName": "driver", "version": 1, "createdAt": task["createdAt"], "content": {"automaticRevision": {"assignment": task}}},
-                   {"modelName": "issue", "name": "state", "specName": "state", "version": 1, "createdAt": "2026-11-01T02:00:00Z", "content": {"phase": "done", "issue": {"digest": "a"}}}]
-        result = normalize({"limited": False, "results": records})
-        self.assertEqual(len(result["issues"][0]["rounds"]), 1)
-        self.assertEqual(issue_metrics(result["issues"][0])["rounds"], 1)
+        for version in (2, 3):
+            with self.subTest(contractVersion=version):
+                task = {"id": "reserved", "role": "plan", "createdAt": "2026-11-01T01:00:00Z", "contractVersion": version,
+                        "before": {"issue": {"digest": "a"}}, "round": {"assignmentId": "reserved", "launchCauses": [{"kind": "unknown"}], "corrections": []}}
+                records = [{"modelName": "issue", "name": "driver", "specName": "driver", "version": 1, "createdAt": task["createdAt"], "content": {"automaticRevision": {"assignment": task}}},
+                           {"modelName": "issue", "name": "state", "specName": "state", "version": 1, "createdAt": "2026-11-01T02:00:00Z", "content": {"phase": "done", "issue": {"digest": "a"}}}]
+                result = normalize({"limited": False, "results": records})
+                self.assertEqual(len(result["issues"][0]["rounds"]), 1)
+                self.assertEqual(issue_metrics(result["issues"][0])["rounds"], 1)
 
     def test_explicit_first_repair_outcomes_and_quality_observations(self):
         row = issue(modern=True)

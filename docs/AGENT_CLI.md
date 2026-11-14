@@ -674,8 +674,9 @@ claims of non-delivery do not acquire this evidence.
 drained. Before discarding an unsent task, retrieve its exact submission and verify
 fresh status for the same pane, session, provider and conversation: idle, no
 background work, no `clearing_draft` or `pending_submission`. Inspect the composer
-before reuse. The issue lifecycle's explicit `discard-agent` additionally requires
-an operator reason, `confirmedStopped: true` and unchanged lifecycle state; it
+before reuse. The issue lifecycle's explicit `discard-agent` requires an operator
+reason and unchanged lifecycle state, verifies the stop itself, and accepts
+`confirmedStopped: true` only for a completed worker it cannot observe. It
 preserves the failure and status observations and never submits replacement work.
 
 The server retains a recent window of 32 submissions per pane/conversation in memory,

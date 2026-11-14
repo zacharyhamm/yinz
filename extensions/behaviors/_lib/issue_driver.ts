@@ -1,11 +1,14 @@
 import { closeoutPresentation } from "./issue_closeout.ts";
+import { nextStep } from "./handoff_next.ts";
 /** Foreground orchestration up to a human decision, with durable pane recovery. */
 import { z } from "npm:zod@4.6.7";
 import {
+  abortableSleep,
   AgentInputSchema,
   AgentTaskSchema,
   childState,
   defaultDependencies,
+  finishRecovery,
   implementationEvidence,
   type IssueAgentContext,
   type IssueAgentDependencies,
@@ -25,26 +28,36 @@ import {
   initialPlanning,
   type LifecycleState,
   planningGeneration,
+  refreshImpact,
+  refreshIssue,
   requireCurrentReviews,
   requireReviewAcceptance,
   reviewFingerprint,
   StateSchema,
   transition,
   UserRequestSchema,
+  verificationFailureItems,
 } from "./lifecycle.ts";
 import {
+  type Context,
   type Handle,
+  InspectionSchema,
   loadState,
   normalizeReceipt,
   saveState,
 } from "./runtime.ts";
 import {
   checkLogQuery,
-  checkOutcome,
   displayCommand,
   runVerification,
   verificationChecklist,
 } from "./verification.ts";
+import {
+  type Grant,
+  inspectWorkerFailure,
+  RecoveryBudget,
+  type WorkerVerdict,
+} from "./worker_recovery.ts";
 import { AgentResponseSchema, ControlIdentitySchema } from "./yinz_agent.ts";
 
 const Settings = AgentInputSchema.omit({ role: true, request: true });
@@ -113,9 +126,16 @@ export const HandoffSchema = z.object({
   commit: z.string().optional(),
   reviewFingerprint: z.string().optional(),
   codeReviewFingerprint: z.string().optional(),
+  // Set when drive stopped because the Agenda item no longer matches the state.
+  requirementsChange: z.object({
+    previousDigest: z.string(),
+    digest: z.string(),
+    changes: z.array(z.string()),
+    invalidates: z.array(z.string()),
+  }).strict().optional(),
   presentation: z.string().min(1),
 }).strict();
-type Handoff = z.infer<typeof HandoffSchema>;
+export type Handoff = z.infer<typeof HandoffSchema>;
 type Task = z.infer<typeof AgentTaskSchema>;
 
 function blockedFindings(findings: z.infer<typeof FindingSchema>[] = []) {
@@ -182,6 +202,20 @@ function present(
     ...(handoff.planVersion ? [`Plan version: ${handoff.planVersion}`] : []),
     ...(handoff.commit ? [`Commit: ${handoff.commit}`] : []),
     `Requirements: ${state.issue.note}`,
+    ...(handoff.requirementsChange
+      ? [
+        "Requirements changes:",
+        ...handoff.requirementsChange.changes.map((change) => `  ${change}`),
+        ...(handoff.requirementsChange.invalidates.length
+          ? [
+            "Refresh would invalidate:",
+            ...handoff.requirementsChange.invalidates.map((item) =>
+              `- ${item}`
+            ),
+          ]
+          : []),
+      ]
+      : []),
     ...(state.workerAgent
       ? [
         `Saved worker choice: ${state.workerAgent.kind}; model: ${
@@ -193,13 +227,10 @@ function present(
   if (handoff.decision === "authorize_plan_revision") {
     lines.push(
       `Proposed next plan version: ${handoff.proposedPlanVersion}`,
-      `To authorize this one revision, call drive with revisionApproval: {handoffId: "${handoff.id}", request: "<the user's actual authorization>"}.`,
       "Revision authorization does not approve implementation or merge.",
       ...(state.planReview && state.plan
         ? [
-          `Alternatively, inspect cited code and record supported dispositions with adjudicate-plan using planVersion ${state.plan.version} and reviewFingerprint ${
-            reviewFingerprint(state)
-          }. Accepted unresolved high/critical risks still require user direction.`,
+          "Alternatively, inspect cited code and adjudicate supported findings. Accepted unresolved high/critical risks still require user direction.",
         ]
         : []),
     );
@@ -207,12 +238,12 @@ function present(
   if (handoff.decision === "address_review_findings") {
     lines.push(
       "Which findings would you like addressed? You may ignore any findings or sign off on merge with findings outstanding.",
-      `Record your selection with decide-review: {id: "${handoff.id}", reviewFingerprint: "${handoff.codeReviewFingerprint}", request: "<actual user direction>", repair: [{role: "review_code", findingId: "..."}], ignore: []}. Planning is authorized only for selected repairs; implementation needs separate plan approval.`,
+      "Planning is authorized only for selected repairs; implementation needs separate plan approval.",
     );
   }
   if (handoff.decision === "approve_review_fixes") {
     lines.push(
-      "Review the proposed repairs and checks, then approve-review-fixes with the repair id, this handoffId, and the actual user request. Approval authorizes only this repair plan.",
+      "Review the proposed repairs and checks. Approval authorizes only this repair plan.",
     );
   }
   for (const decision of state.reviewDecisions ?? []) {
@@ -461,6 +492,12 @@ function present(
     );
   }
   lines.push(...mergeAttemptLines(state, issueName));
+  if (state.mergeAuthorization) {
+    const authorization = state.mergeAuthorization;
+    lines.push(
+      `Merge authorization for ${authorization.commit} (plan version ${authorization.planVersion}): ${authorization.request}`,
+    );
+  }
   if (handoff.assignment) {
     lines.push(
       `Worker: ${handoff.assignment.role}, task ${handoff.assignment.id}, behavior ${handoff.assignment.behaviorName}`,
@@ -468,67 +505,25 @@ function present(
   }
   lines.push(
     "The controlling agent must collect and present this result before ending its turn.",
+    nextStep(handoff),
   );
   return lines.join("\n");
-}
-
-/** Continue only a correlated, acknowledged ordinary timeout, never a dialog or uncertain delivery. */
-async function ordinaryTimeout(
-  context: IssueAgentContext,
-  task: Task,
-  error: unknown,
-) {
-  const child = await childState(context, task);
-  // Match the current persisted failure, not a particular human-readable error.
-  // A transport error after an older timeout must never reuse that timeout.
-  if (
-    !["spawned", "waiting", "background"].includes(child.phase) ||
-    child.failureKind !== "timeout" ||
-    child.outcome !== "timed_out" || !child.paneId || !child.rawResponse ||
-    !(error instanceof Error) ||
-    (child.lastError !== error.message &&
-      `Error: ${child.lastError}` !== error.message) ||
-    (child.phase !== "spawned" &&
-      (!child.conversationId || !child.submissionId))
-  ) return false;
-  const parsed = AgentResponseSchema.safeParse(JSON.parse(child.rawResponse));
-  if (!parsed.success) return false;
-  const response = parsed.data;
-  const matches = response.agents.filter((agent) =>
-    agent.pane_id === child.paneId
-  );
-  if (matches.length !== 1) return false;
-  const agent = matches[0];
-  return response.outcome === "timed_out" &&
-    (!child.launchServer || !response.server_instance ||
-      response.server_instance === child.launchServer) &&
-    (!child.turnId || !response.turn_id || response.turn_id === child.turnId) &&
-    (!agent.cwd || agent.cwd === task.config.cwd) &&
-    response.prompt_delivery !== "not_sent" &&
-    (child.phase === "spawned" || response.acknowledged || !!response.turn_id ||
-      (child.phase === "background" && !!child.turnId)) &&
-    (child.phase === "spawned" ||
-      response.submission_id === child.submissionId ||
-      (child.phase === "background" && response.submission_id == null)) &&
-    agent.session === task.config.session &&
-    agent.agent.kind === task.config.kind &&
-    (child.conversationId == null ||
-      agent.agent.session_id === child.conversationId) &&
-    agent.agent.state.toLowerCase() === "busy" &&
-    (agent.not_ready_reason == null ||
-      ["not_idle", "unresolved_turn"].includes(agent.not_ready_reason));
 }
 
 async function workerBlocker(
   context: IssueAgentContext,
   task: Task,
   error: unknown,
+  verdict?: WorkerVerdict,
+  grant?: Grant,
 ) {
   const child = await childState(context, task).catch(() => undefined);
   let observed: string | undefined;
   if (child?.rawResponse) {
     try {
-      const response = AgentResponseSchema.parse(JSON.parse(child.rawResponse));
+      const response = AgentResponseSchema.parse(
+        JSON.parse(child.rawResponse),
+      );
       observed = `Latest response: outcome ${response.outcome}, server ${
         response.server_instance ?? "unspecified"
       }, turn ${response.turn_id ?? "unspecified"}, submission ${
@@ -538,6 +533,19 @@ async function workerBlocker(
       }.`;
     } catch { /* The original error retains malformed-response details. */ }
   }
+  let recovery: string | undefined;
+  if (verdict?.kind === "human") {
+    recovery = `Automatic recovery not applicable: ${verdict.reason}.`;
+  } else if (verdict?.kind === "retry" && grant && !grant.allowed) {
+    recovery =
+      `Automatic ${verdict.class} recovery exhausted after ${grant.attempt} attempt(s) over ${
+        Math.round(grant.elapsedMs / 1000)
+      }s (${
+        grant.exhausted === "deadline"
+          ? "8 h drive deadline"
+          : `limit ${grant.limit}`
+      }). Rerunning drive starts a new bounded budget.`;
+  }
   return new Error([
     error instanceof Error ? error.message : String(error),
     ...(observed ? [observed] : []),
@@ -546,8 +554,170 @@ async function workerBlocker(
     }, conversation ${child?.conversationId ?? "unknown"}, submission ${
       child?.submissionId ?? "unknown"
     }.`,
-    "Completion is not reconciled. Inspect the saved child state and original submission with resume-agent; do not resend the prompt or infer termination from a closed pane or elapsed time.",
+    ...(recovery ? [recovery] : []),
+    task.status === "completed" && task.cleanup === "pending"
+      ? "Evidence is already imported; only guarded pane cleanup remains. Resolve the named guard, then drive; do not discard or restart."
+      : "Completion is not reconciled. Inspect the saved child state and original submission with resume-agent; do not resend the prompt or infer termination from a closed pane or elapsed time.",
   ].join("\n"));
+}
+
+/**
+ * Runs `first`, then re-observes the original task through resumeTask while
+ * a correlated failure is retryable within the invocation's budget. A retry
+ * never resends a prompt or spawns after a launch intent; every other
+ * outcome blocks immediately with the reason.
+ */
+async function settle(
+  context: IssueAgentContext,
+  dependencies: IssueAgentDependencies,
+  budget: RecoveryBudget,
+  handles: Handle[],
+  expected: Task,
+  first: () => Promise<{ dataHandles: Handle[] }>,
+) {
+  let attempt = first;
+  while (true) {
+    try {
+      handles.push(...(await attempt()).dataHandles);
+      return;
+    } catch (error) {
+      context.signal.throwIfAborted();
+      const raw = await context.readResource("agent-task").catch(() => null);
+      const parsed = AgentTaskSchema.safeParse(raw);
+      // runTask can fail before saving its task; never judge the previous one.
+      const current = parsed.success && parsed.data.id === expected.id
+        ? parsed.data
+        : undefined;
+      const task = current ?? expected;
+      const verdict: WorkerVerdict = current
+        ? await inspectWorkerFailure(context, current, error).catch((
+          failure,
+        ) => ({
+          kind: "human" as const,
+          reason: `recovery classification failed: ${
+            failure instanceof Error ? failure.message : failure
+          }`,
+        }))
+        : {
+          kind: "human",
+          reason:
+            `the saved assignment is not the expected task ${expected.id}`,
+        };
+      const grant = verdict.kind === "retry"
+        ? budget.take(task.id, verdict.class)
+        : undefined;
+      if (verdict.kind !== "retry" || !grant?.allowed) {
+        throw await workerBlocker(context, task, error, verdict, grant);
+      }
+      context.logger.info(
+        "Automatic recovery of original task {task} ({class} attempt {attempt}/{limit}, {elapsed}s elapsed): {reason}; waiting {delay} ms; no prompt is resent and no pane is spawned",
+        {
+          task: task.id,
+          class: verdict.class,
+          attempt: grant.attempt,
+          limit: grant.limit,
+          elapsed: Math.round(grant.elapsedMs / 1000),
+          reason: verdict.reason,
+          delay: grant.delayMs,
+        },
+      );
+      if (grant.delayMs) {
+        await (dependencies.sleep ?? abortableSleep)(
+          grant.delayMs,
+          context.signal,
+        );
+      }
+      attempt = () => resumeTask(context, dependencies);
+    }
+  }
+}
+
+export const ImplementArgsSchema = z.object({
+  worktree: z.string().trim().min(1).optional(),
+  branch: z.string().trim().min(1).optional(),
+});
+
+/**
+ * Binds implementation to the recorded worker worktree, defaulting its branch
+ * to the recorded implementation branch or the branch checked out there.
+ * Legacy creation, and a worktree that closeout may have removed, require an
+ * explicit worktree and branch. The caller owns the issue lock.
+ */
+export async function adoptWorkerWorktree(
+  context: Context,
+  state: LifecycleState,
+  args: z.infer<typeof ImplementArgsSchema>,
+  deps: Pick<IssueAgentDependencies, "realPath" | "inspect" | "gitOperation">,
+) {
+  const recorded = Boolean(state.workerWorktree || state.implementation);
+  if (state.closeout?.authorizedRequest && (!args.worktree || !args.branch)) {
+    throw new Error(
+      "Closeout may have removed the recorded worktree; deliberately select a new worktree and supply both worktree and branch to implement",
+    );
+  }
+  let worktree = args.worktree ?? state.workerWorktree ??
+    state.implementation?.worktree;
+  if (!recorded && (!worktree || !args.branch)) {
+    throw new Error(
+      "Legacy issue without a recorded worker worktree: supply both worktree and branch to implement",
+    );
+  }
+  if (!worktree) throw new Error("Implementation requires a worktree");
+  // Only adoptions canonicalize; legacy creation passes the path through.
+  if (recorded) worktree = await deps.realPath(worktree);
+  let branch = args.branch ?? state.implementation?.branch;
+  if (!branch) {
+    const repo = await deps.inspect(context, worktree);
+    if (!repo.branch || repo.branch === "main") {
+      throw new Error(
+        `Recorded worker worktree ${worktree} is ${
+          repo.branch ? "on main" : "at a detached HEAD"
+        }; check out the issue's feature branch there, or run implement with an explicit worktree and branch, then drive`,
+      );
+    }
+    branch = repo.branch;
+  }
+  const implementation = { worktree, branch };
+  // Validate the phase, approval and closeout before creating or claiming Git state.
+  transition(state, "implement", implementation);
+  const repo = InspectionSchema.parse(
+    await deps.gitOperation(context, {
+      action: "prepare",
+      ...implementation,
+      issueKey: `${state.issue.workspace}/${state.issue.itemId}`,
+    }),
+  );
+  return saveState(
+    context,
+    "implement",
+    transition(state, "implement", {
+      worktree: repo.worktree,
+      branch: repo.branch,
+    }),
+  );
+}
+
+/** Why drive stopped on a changed Agenda item instead of refreshing it. */
+function requirementsChangedReason(
+  state: LifecycleState,
+  impact: ReturnType<typeof refreshImpact>,
+  authorizationHandoffId?: string,
+): string {
+  if (authorizationHandoffId) {
+    return `Agenda requirements changed during ${state.phase}; automatic refresh would discard the user's revision authorization for handoff ${authorizationHandoffId}, and refresh refuses while that authorization is reserved. Present the changes; with the user's direction run rollback to triage (it records the authorization's request as planning feedback and supersedes the reservation) then drive to re-plan, or restore the previous Agenda text to use the authorization.`;
+  }
+  if (["merged", "done"].includes(state.phase)) {
+    return "Agenda requirements changed after merge; record the difference in the summary/closeout instead of refreshing.";
+  }
+  if (!impact.refreshable) {
+    return "Agenda requirements changed during an active merge attempt. Repair the active merge attempt before refreshing its issue.";
+  }
+  const when = ["approved", "implementing", "ready"].includes(state.phase)
+    ? "after plan approval"
+    : `during ${state.phase}`;
+  return `Agenda requirements changed ${when}. Refresh returns to triage and invalidates: ${
+    impact.invalidates.join("; ") || "no recorded authorizations"
+  }. Present the changes and the invalidated approvals; with the user's direction run refresh then drive, or restore the previous Agenda text.`;
 }
 
 /** The caller owns the issue lock. Helpers here deliberately do not acquire it again. */
@@ -557,6 +727,10 @@ async function drive(
   dependencies: IssueAgentDependencies,
 ) {
   const handles: Handle[] = [];
+  // Automatic recovery allowances last for this invocation only.
+  const budget = new RecoveryBudget(
+    dependencies.monotonicNow ?? (() => performance.now()),
+  );
   const rawDriver = await context.readResource("driver");
   let driver = DriverSchema.parse(rawDriver ?? {});
 
@@ -564,7 +738,11 @@ async function drive(
     const raw = await context.readResource("agent-task");
     return raw == null ? undefined : AgentTaskSchema.parse(raw);
   }
-  async function handoff(decision: Handoff["decision"], reason: string) {
+  async function handoff(
+    decision: Handoff["decision"],
+    reason: string,
+    extra: Pick<Handoff, "requirementsChange"> = {},
+  ) {
     const state = await loadState(context);
     const assignment = await task();
     const rawRecovery = await context.readResource("recovery");
@@ -621,6 +799,7 @@ async function drive(
           : {}),
         ...(state.plan ? { planVersion: state.plan.version } : {}),
         ...(state.codeReview ? { commit: state.codeReview.commit } : {}),
+        ...extra,
       };
       result = HandoffSchema.parse({
         ...value,
@@ -641,13 +820,31 @@ async function drive(
 
   try {
     const rawRecovery = await context.readResource("recovery");
-    const recovery = rawRecovery == null
+    let recovery = rawRecovery == null
       ? undefined
       : RecoverySchema.parse(rawRecovery);
     if (recovery?.status === "pending") {
-      throw new Error(
-        "Rollback is incomplete; use resume-rollback to finish its recorded intent, then drive",
+      // The rollback's own recorded request is the authority. Finish it before
+      // reading the task and state, so the driver follows the replacement and
+      // any revision approval is checked against the post-recovery handoff.
+      // finishRecovery takes no lock; resume_rollback.execute would nest it.
+      context.logger.info(
+        "Completing saved rollback {id} to {step} (recorded request: {request}); no new authorization is inferred",
+        { id: recovery.id, step: recovery.step, request: recovery.request },
       );
+      try {
+        handles.push(
+          ...(await finishRecovery(context, recovery, dependencies))
+            .dataHandles,
+        );
+      } catch (error) {
+        throw new Error(
+          `Rollback is incomplete (recovery ${recovery.id} to ${recovery.step}): ${
+            error instanceof Error ? error.message : error
+          }. Rerunning drive retries the saved intent; a new explicit rollback may supersede it.`,
+        );
+      }
+      recovery = RecoverySchema.parse(await context.readResource("recovery"));
     }
     const currentTask = await task();
     const state = await loadState(context);
@@ -798,22 +995,14 @@ async function drive(
       ) {
         driver = { ...driver, assignmentId: assignment.id };
         handles.push(await context.writeResource("driver", "driver", driver));
-        try {
-          handles.push(
-            ...(await resumeTask(context, dependencies)).dataHandles,
-          );
-        } catch (error) {
-          context.signal.throwIfAborted();
-          if (
-            !await ordinaryTimeout(context, assignment, error).catch(() =>
-              false
-            )
-          ) throw await workerBlocker(context, assignment, error);
-          context.logger.info(
-            "Continuing original pane task {task} after an ordinary wait timeout",
-            { task: assignment.id },
-          );
-        }
+        await settle(
+          context,
+          dependencies,
+          budget,
+          handles,
+          assignment,
+          () => resumeTask(context, dependencies),
+        );
         continue;
       }
 
@@ -824,8 +1013,54 @@ async function drive(
         state.phase === "done",
       );
       if (fresh.digest !== state.issue.digest) {
-        throw new Error(
-          "Agenda requirements changed; refresh before continuing or presenting an approval handoff",
+        const impact = refreshImpact(state, fresh);
+        // Only a human revision authorization reserved for this exact state
+        // can be voided before approval. Any running agent-task has already
+        // been resolved above, and refresh makes automatic reservations
+        // inapplicable because their `before` no longer matches.
+        const authorization = driver.revisionAuthorization;
+        const unspent = !!authorization &&
+          JSON.stringify(authorization.assignment.before) ===
+            JSON.stringify(state);
+        if (impact.automatic && !unspent) {
+          const refreshed = refreshIssue(state, fresh);
+          context.logger.info(
+            "Agenda requirements changed during {phase} before any approval; refreshing to planning generation {generation}: {changes}",
+            {
+              phase: state.phase,
+              generation: refreshed.planningContext!.generation,
+              changes: impact.changes.join("; "),
+            },
+          );
+          // refreshIssue is deterministic, so a retry after a partial write
+          // reuses this event; the generation keeps an A->B->A->B history distinct.
+          handles.push(
+            ...(await saveState(
+              context,
+              "refresh",
+              refreshed,
+              `event-refresh-${state.issue.digest.slice(0, 16)}-${
+                fresh.digest.slice(0, 16)
+              }-g${refreshed.planningContext!.generation}`,
+            )).dataHandles,
+          );
+          continue;
+        }
+        return await handoff(
+          "blocked",
+          requirementsChangedReason(
+            state,
+            impact,
+            unspent ? authorization!.handoffId : undefined,
+          ),
+          {
+            requirementsChange: {
+              previousDigest: state.issue.digest,
+              digest: fresh.digest,
+              changes: impact.changes,
+              invalidates: impact.invalidates,
+            },
+          },
         );
       }
       let role: z.infer<typeof AgentInputSchema>["role"];
@@ -846,10 +1081,30 @@ async function drive(
           );
         }
       } else if (state.phase === "approved") {
+        // The recorded worker worktree, or the implementation a rollback kept,
+        // determines the binding; the plan approval is already recorded.
+        if (
+          (state.workerWorktree || state.implementation) &&
+          !state.closeout?.authorizedRequest
+        ) {
+          const adopted = await adoptWorkerWorktree(
+            context,
+            state,
+            {},
+            dependencies,
+          );
+          handles.push(...adopted.dataHandles);
+          const implementation = (await loadState(context)).implementation!;
+          context.logger.info(
+            "Adopted worker worktree {worktree} on branch {branch} for the approved plan",
+            implementation,
+          );
+          continue;
+        }
         return await handoff(
           "prepare_worktree",
-          state.workerWorktree
-            ? `Adopt the recorded worker worktree ${state.workerWorktree} with implement, then drive the approved plan`
+          state.closeout?.authorizedRequest
+            ? "Closeout may have removed the recorded worktree; deliberately select a new worktree with implement, then drive"
             : "Prepare or adopt the issue worktree with implement, then drive the approved plan",
         );
       } else if (state.phase === "implementing") {
@@ -923,21 +1178,20 @@ async function drive(
               }
               if (gate.kind === "failed") {
                 const { verification } = gate;
-                const failures = verification.checks
-                  .filter((check) => check.status === "failed")
-                  .map((check) =>
-                    `${check.id} (${
-                      check.skipped ??
-                        `${checkOutcome(check)}; log: ${
-                          checkLogQuery(context.definition.name, check.log!)
-                        }`
-                    })`
-                  );
+                const failures = verificationFailureItems(
+                  verification,
+                  (log) => checkLogQuery(context.definition.name, log),
+                );
+                const staleBase = (verification.baseline ?? []).some((check) =>
+                    check.status === "failed"
+                  )
+                  ? ". Baseline checks ran at the un-rebased reviewed commit: a baseline failure in code this branch did not change can come from its older base, and the repaired worker rebases onto local main when main already fixes it"
+                  : "";
                 return await handoff(
                   "blocked",
                   `Verification ${verification.id} failed at ${verification.commit}: ${
                     failures.join("; ")
-                  }. Repair and obtain review of a new commit, or rerun verify explicitly for an environment failure${
+                  }. Run repair (no input needed: the recorded failures become lastFailure for the implementation worker; add a reason only for context the logs lack), or rerun verify explicitly for an environment failure at this same commit${staleBase}${
                     atReview
                       ? ""
                       : ". The worktree is no longer clean at the reviewed commit: obtain review of its new commit, or restore the reviewed commit before rerunning verify"
@@ -1133,20 +1387,14 @@ async function drive(
       }
       driver = { ...driver, assignmentId: next.id };
       handles.push(await context.writeResource("driver", "driver", driver));
-      try {
-        handles.push(
-          ...(await runTask(context, next, dependencies)).dataHandles,
-        );
-      } catch (error) {
-        context.signal.throwIfAborted();
-        if (!await ordinaryTimeout(context, next, error).catch(() => false)) {
-          throw await workerBlocker(context, next, error);
-        }
-        context.logger.info(
-          "Continuing original pane task {task} after an ordinary wait timeout",
-          { task: next.id },
-        );
-      }
+      await settle(
+        context,
+        dependencies,
+        budget,
+        handles,
+        next,
+        () => runTask(context, next, dependencies),
+      );
     }
   } catch (error) {
     context.signal.throwIfAborted();

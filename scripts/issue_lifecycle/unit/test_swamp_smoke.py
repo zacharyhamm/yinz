@@ -19,6 +19,11 @@ import unittest
 
 
 SOURCE = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(SOURCE / "scripts"))
+from issue_lifecycle.decisions import CHAINED
+
+# Fixture verifications run no default (cargo) baseline check.
+OPT_OUT_CONFIG = {"verification": {"baselineChecks": []}}
 
 
 class InstalledSwampSmokeTest(unittest.TestCase):
@@ -36,8 +41,10 @@ class InstalledSwampSmokeTest(unittest.TestCase):
         for name in (".swamp.yaml", ".gitignore"):
             shutil.copy2(SOURCE / name, self.repo / name)
         (self.repo / "scripts" / "issue_lifecycle").mkdir(parents=True)
-        for name in ("issue-lifecycle", "issue_lifecycle/git_ops.py", "issue_lifecycle/workspace.py", "issue_lifecycle/agent.py"):
-            shutil.copy2(SOURCE / "scripts" / name, self.repo / "scripts" / name)
+        shutil.copy2(SOURCE / "scripts" / "issue-lifecycle", self.repo / "scripts" / "issue-lifecycle")
+        # Every launcher module, so newly added helpers are never missing from the fixture.
+        for module in sorted((SOURCE / "scripts" / "issue_lifecycle").glob("*.py")):
+            shutil.copy2(module, self.repo / "scripts" / "issue_lifecycle" / module.name)
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.xdg_data = self.root / "data"
@@ -171,45 +178,75 @@ else:
         assert args[args.index("--file")+1] == "-"
         assert args[args.index("--conversation")+1] == "smoke-conversation"
         assert "--wait" in args
-        if "Current lifecycle snapshot (issue requirements and recorded evidence):" in stdin:
-            snapshot = json.loads(stdin.split("Current lifecycle snapshot (issue requirements and recorded evidence):\\n\\n", 1)[1].split("\\n\\nThe commit being reviewed is ", 1)[0])
+        # Contract 3: the prompt binds a manifest of this task's private,
+        # read-only assignment files; dispatch on the target's role.
+        manifest = json.loads(stdin.split("Assignment manifest (", 1)[1].split(":\\n", 1)[1].split("\\n\\n", 1)[0])
+        files = manifest["files"]
+        def read(key):
+            return json.loads(pathlib.Path(files[key]["path"]).read_text())
+        target = read("target")
+        template = read("template")
+        packet = read("packet")
+        assert target == json.loads(stdin.split("Swamp submission target:\\n", 1)[1].split("\\n\\n", 1)[0]), target
+        assert template["role"] == target["role"] and "requirements" in packet, template
+        for entry in files.values():
+            assert pathlib.Path(entry["path"]).stat().st_mode & 0o777 == 0o400, entry
+        role = target["role"]
+        evidence = template["evidence"]
         if "Finish submission of the findings already established" in stdin:
             evidence = state["evidence"]
-        elif "Review the committed diff against local main" in stdin:
-            evidence = {"planVersion":snapshot["plan"]["version"], "commit":snapshot["implementation"]["head"], "steps":[{"id":step["id"],"status":"implemented"} for step in snapshot["plan"]["steps"]], "findings":[]}
-        elif "Review the supplied committed change specifically" in stdin:
-            evidence = {"planVersion":snapshot["plan"]["version"], "commit":snapshot["implementation"]["head"], "assessment":{"impact":"no_material_impact","summary":"The marker is internal fixture data; command discovery, output and repeat use are unchanged.","assessedPaths":["marker.txt: internal fixture data and repeat CLI use"],"limitations":["Protocol stub; no real interaction evaluation"]},"findings":[]}
-            if os.environ.get("YINZ_SMOKE_BLOCK_UX"):
-                evidence["findings"] = [{"id":"ux-feedback","severity":"high","description":"Fixture cancellation hides continuing work", "requirement":"Understand progress", "mechanism":"Feedback claims completion before settlement", "evidence":["fixture.ts:42"]}]
-        elif "Plan focused repairs for" in stdin:
-            evidence = {"summary":"Repair selected UX feedback", "steps":[{"id":"feedback","description":"Add repair marker for feedback", "files":["marker.txt"]}], "testingStrategy":"Check the repair marker", "checks":[{"id":"feedback","command":["grep","-q","repaired feedback","marker.txt"],"covers":["feedback"]}]}
-        elif "Implement only the approved repair plan" in stdin:
+        elif role == "review_code":
+            evidence["steps"] = [{**step, "status":"implemented"} for step in evidence["steps"]]
+            evidence["priorFindings"] = [{**entry, "outcome":"verified_fixed", "rationale":"The fixture change resolves this prior finding", "evidence":["marker.txt"]} for entry in evidence["priorFindings"]]
+            # The assignment determines both; omitting them exercises the server fill.
+            evidence.pop("planVersion")
+            evidence.pop("commit")
+        elif role == "review_ux":
+            block = bool(os.environ.get("YINZ_SMOKE_BLOCK_UX"))
+            evidence["assessment"] = {"impact":"no_material_impact","summary":"The marker is internal fixture data; command discovery, output and repeat use are unchanged.","assessedPaths":["marker.txt: internal fixture data and repeat CLI use"],"limitations":["Protocol stub; no real interaction evaluation"]}
+            evidence["priorFindings"] = [{**entry, "outcome":"persists" if block else "verified_fixed", "rationale":"Fixture feedback still claims completion before settlement" if block else "The repair marker resolves the fixture feedback", "evidence":["fixture.ts:42" if block else "marker.txt"]} for entry in evidence["priorFindings"]]
+            if block:
+                finding = {"id":"ux-feedback","severity":"high","description":"Fixture cancellation hides continuing work", "requirement":"Understand progress", "mechanism":"Feedback claims completion before settlement", "affectedPaths":["fixture.ts"], "evidence":["fixture.ts:42"]}
+                origin = next((entry["finding"] for entry in evidence["priorFindings"] if entry["finding"]["findingId"] == finding["id"]), None)
+                if origin is not None:
+                    finding["origin"] = origin
+                evidence["findings"] = [finding]
+        elif role == "plan_review_fixes":
+            evidence = {"summary":"Repair selected UX feedback", "steps":[{"id":"feedback","description":"Add repair marker for feedback", "files":["marker.txt"]}], "testingStrategy":"Check the repair marker", "checks":[{"id":"feedback","command":["grep","-q","repaired feedback","marker.txt"],"covers":["feedback"]}],
+                        "findingMappings":[{**mapping, "steps":["feedback"], "checks":["feedback"]} for mapping in evidence["findingMappings"]]}
+        elif role == "implement":
+            (pathlib.Path(state["cwd"]) / "marker.txt").write_text("smoke marker\\n")
+            subprocess.run(["git", "-C", state["cwd"], "add", "marker.txt"], check=True)
+            subprocess.run(["git", "-C", state["cwd"], "commit", "-m", "Add fixture marker"], check=True, capture_output=True)
+            evidence = {"summary":"Added the fixture marker", "commit":subprocess.check_output(["git", "-C", state["cwd"], "rev-parse", "HEAD"], text=True).strip()}
+        elif role == "implement_review_fixes":
             marker = pathlib.Path(state["cwd"]) / "marker.txt"
             marker.write_text(marker.read_text() + "repaired feedback\\n")
             subprocess.run(["git", "-C", state["cwd"], "add", "marker.txt"], check=True)
             subprocess.run(["git", "-C", state["cwd"], "commit", "-m", "Repair fixture feedback"], check=True, capture_output=True)
-            evidence = {"summary":"Repaired selected UX feedback", "commit":subprocess.check_output(["git", "-C", state["cwd"], "rev-parse", "HEAD"], text=True).strip()}
-        elif "Adversarially review the current plan" in stdin:
-            evidence = {"planVersion":snapshot["plan"]["version"], "findings":[]}
-            if snapshot["plan"]["version"] <= int(os.environ.get("YINZ_SMOKE_BLOCKED_VERSIONS", "0")):
+            evidence = {"summary":"Repaired selected UX feedback", "commit":subprocess.check_output(["git", "-C", state["cwd"], "rev-parse", "HEAD"], text=True).strip(),
+                        "responses":[{**response, "status":"addressed", "rationale":"Added the repair marker for the selected feedback", "affectedPaths":["marker.txt"], "evidence":["marker.txt: repaired feedback"], "checkIds":["feedback"]} for response in evidence["responses"]]}
+        elif role == "review_plan":
+            if evidence["planVersion"] <= int(os.environ.get("YINZ_SMOKE_BLOCKED_VERSIONS", "0")):
                 evidence["findings"] = [{"id":"coverage", "severity":"high", "description":"Cover the missing caller", "requirement":"Marker covers caller", "mechanism":"Caller can miss the marker", "evidence":["marker.txt"]}]
-        elif "Develop or revise a concrete implementation plan" in stdin:
+        elif role == "plan":
+            revision = evidence.get("revision")
             evidence = {"summary":"Add the disposable fixture marker.","steps":[{"id":"marker","description":"Create marker.txt","files":["marker.txt"]}],"testingStrategy":"Inspect marker contents with focused fixture checks.","checks":[{"id":"marker","command":["grep","-q","smoke marker","marker.txt"],"covers":["marker"]}],"assumptions":["The marker is the complete fixture requirement."]}
-            if "This is a targeted revision" in stdin:
-                evidence["revision"] = {"summary":"Kept marker scope and checked the caller", "responses":[{"findingId":"coverage", "status":"disputed", "rationale":"The fixture has only one caller", "evidence":["marker.txt"]}], "acceptedDecisions":["One fixture marker is sufficient"]}
+            if revision is not None:
+                evidence["revision"] = {"summary":"Kept marker scope and checked the caller", "acceptedDecisions":["One fixture marker is sufficient"],
+                                        "responses":[{**response, "status":"disputed", "rationale":"The fixture has only one caller", "evidence":["marker.txt"]} for response in revision["responses"]]}
         else:
-            assert "Investigate the issue" in stdin
+            assert role == "triage", role
             evidence = {"classification":"maintenance","summary":"Add a smoke marker; acceptance requires the marker on local main."}
-        target = json.loads(stdin.split("Swamp submission target:\\n", 1)[1].split("\\n\\n", 1)[0])
-        envelope = {"taskId":target["taskId"], "assignmentDigest":target["assignmentDigest"], "role":target["role"], "evidence":evidence}
         if not os.environ.get("YINZ_SMOKE_NO_SUBMISSION"):
             submit_env = {**os.environ, "SWAMP_LOCK_TIMEOUT_MS":"3000"}
-            submitted = subprocess.run(["swamp", "behavior", "run", target["behaviorName"], "submit", "--repo-dir", target["controlDir"], "--stdin", "--literal-inputs", "--json", "--no-telemetry"], input=json.dumps(envelope), text=True, capture_output=True, env=submit_env, timeout=30)
+            # Outside the source tree, as the prompt requires.
+            evidence_file = state_file.with_name("evidence-" + target["taskId"] + ".json")
+            evidence_file.write_text(json.dumps({"role":role, "evidence":evidence}))
+            submitted = subprocess.run([sys.executable, "-I", target["controlDir"] + "/scripts/issue_lifecycle/submit_evidence.py", "--task-dir", manifest["directory"], "--assignment-digest", target["assignmentDigest"], str(evidence_file)], text=True, capture_output=True, env=submit_env, timeout=60)
             assert submitted.returncode == 0, submitted.stderr + submitted.stdout
-            accepted = subprocess.run(["swamp", "data", "query", 'behavior("' + target["behaviorName"] + '") && name == "submission"', "--repo-dir", target["controlDir"], "--select", "content", "--single", "--json", "--no-telemetry"], text=True, capture_output=True, env=submit_env, timeout=30)
-            assert accepted.returncode == 0, accepted.stderr + accepted.stdout
-            receipt = json.loads(accepted.stdout)
-            assert receipt["status"] == "accepted" and receipt["receipt"]["taskId"] == target["taskId"], receipt
+            receipt = json.loads(submitted.stdout.strip().splitlines()[-1])
+            assert receipt["status"] == "accepted" and receipt["taskId"] == target["taskId"] and receipt["assignmentDigest"] == target["assignmentDigest"], receipt
         state.update(submission=args[args.index("--submission")+1], evidence=evidence, evidence_target=target)
         state_file.write_text(json.dumps(state))
         if os.environ.get("YINZ_SMOKE_DROP_ACK") and "classification" in evidence:
@@ -223,6 +260,11 @@ else:
         raise AssertionError("Unexpected Yinz operation: " + operation)
 print(json.dumps(response))
 ''')
+        # The Cargo stub accepts only the merge gate, so no default baseline check
+        # may run; the rebase probe stays on because it is real Git. Committed
+        # with the fixture: integrate requires a clean main.
+        (self.repo / ".yinz").mkdir()
+        (self.repo / ".yinz" / "issue-lifecycle.json").write_text(json.dumps(OPT_OUT_CONFIG))
         self.git(self.repo, "init", "--initial-branch=main")
         self.git(self.repo, "config", "user.name", "Lifecycle Smoke")
         self.git(self.repo, "config", "user.email", "lifecycle@example.invalid")
@@ -282,8 +324,12 @@ print(json.dumps(response))
         selection = ["--workspace", "lifecycle-test"] if workspace else []
         return json.loads(self.command(["agenda", "--json", *selection, *args]))
 
-    def lifecycle(self, method, inputs=None, cwd=None):
-        command = [sys.executable, str(self.repo / "scripts" / "issue-lifecycle"), "--control", str(self.repo), "--item", str(self.item_id), method]
+    def lifecycle(self, method, inputs=None, cwd=None, flags=(), chain=False):
+        """Run one launcher command. Chained commands stop after themselves unless chain=True,
+        so each test keeps its explicit step sequence."""
+        command = [sys.executable, str(self.repo / "scripts" / "issue-lifecycle"), "--control", str(self.repo), "--item", str(self.item_id), method, *flags]
+        if method in CHAINED and not chain:
+            command.append("--no-drive")
         if inputs is not None:
             command.extend(["--input-file", "-"])
         return self.command(command, stdin=json.dumps(inputs) if inputs is not None else None, cwd=cwd)
@@ -325,20 +371,47 @@ print(json.dumps(response))
         self.assertEqual(resumed["id"], handoff["id"])
         self.assertEqual(len(self.yinz_log.read_text().splitlines()), len(calls))
         self.lifecycle("approve", {"planVersion": 1, "request": "Approve this disposable fixture plan"})
-        prepared = json.loads(self.lifecycle("drive"))
-        self.assertEqual(prepared["decision"], "prepare_worktree")
         self.assertEqual(len(self.yinz_log.read_text().splitlines()), len(calls))
+        # drive adopts the recorded origin and its checked-out branch, then implements there.
+        implemented = json.loads(self.lifecycle("drive"))
+        self.assertEqual(implemented["decision"], "authorize_merge", implemented)
+        adopted = self.state()["implementation"]
+        self.assertEqual((adopted["worktree"], adopted["branch"]), (str(worktree.resolve()), "origin"))
+        later = [json.loads(line) for line in self.yinz_log.read_text().splitlines()][len(calls):]
+        spawns = [call["args"] for call in later if call["args"][3] == "spawn"]
+        self.assertEqual(len(spawns), 3)
+        self.assertTrue(all(args[args.index("--cwd") + 1] == str(worktree.resolve()) for args in spawns))
+
+    def test_installed_start_on_main_creates_canonical_issue_worktree(self):
+        # The control checkout is on main, so start creates the canonical issue worktree there.
+        started = json.loads(self.lifecycle("start"))
+        canonical = self.repo.resolve() / ".worktrees" / f"issue-{self.item_id}"
+        self.assertEqual(started["workerWorktree"], str(canonical), started)
+        self.assertEqual(started["phase"], "triaging")
+        self.assertTrue(started["issueName"].endswith(f"-{self.item_id}"))
+        self.assertEqual(self.state()["workerWorktree"], str(canonical))
+        self.assertEqual(self.git(canonical, "symbolic-ref", "--short", "HEAD"), f"issue-{self.item_id}")
+        self.assertEqual(self.git(self.repo, "rev-parse", f"refs/heads/issue-{self.item_id}"),
+                         self.git(self.repo, "rev-parse", "refs/heads/main"))
+        owners = json.loads((self.repo / ".git" / "yinz-lifecycle" / "worktree-owners.json").read_text())["owners"]
+        self.assertEqual([owner["worktree"] for owner in owners if not owner.get("pending")], [str(canonical)])
+        # .worktrees/ is ignored, so the control checkout stays clean for later merges.
+        self.assertEqual(self.git(self.repo, "status", "--porcelain", "--untracked-files=all"), "")
+        # A repeated start from main resumes the same origin without creating anything.
+        self.assertEqual(json.loads(self.lifecycle("start")), started)
+        self.assertEqual(json.loads(self.lifecycle("start", flags=("--new-worktree",), cwd=canonical)), started)
+        self.assertEqual(self.git(self.repo, "worktree", "list", "--porcelain").count("worktree "), 2)
 
     def test_installed_saved_worker_choice_survives_config_changes_and_resume(self):
         worktree = self.root / "configured-origin"
         self.git(self.repo, "worktree", "add", "-b", "configured-origin", str(worktree))
         config = self.repo / ".yinz" / "issue-lifecycle.json"
         config.parent.mkdir(exist_ok=True)
-        config.write_text(json.dumps({"agent": {"kind": "claude", "model": "fixture-model", "effort": "deep"}}))
+        config.write_text(json.dumps({**OPT_OUT_CONFIG, "agent": {"kind": "claude", "model": "fixture-model", "effort": "deep"}}))
         self.lifecycle("start", {"agent": {"effort": None}}, cwd=worktree)
         expected = {"kind": "claude", "model": "fixture-model"}
         self.assertEqual(self.state()["workerAgent"], expected)
-        config.write_text(json.dumps({"agent": {"kind": "codex", "model": "changed"}}))
+        config.write_text(json.dumps({**OPT_OUT_CONFIG, "agent": {"kind": "codex", "model": "changed"}}))
         self.lifecycle("start")
         self.assertEqual(self.state()["workerAgent"], expected)
         handoff = json.loads(self.lifecycle("drive", {"agent": {"timeoutSeconds": 42}}))
@@ -423,15 +496,18 @@ print(json.dumps(response))
     def test_installed_accepted_evidence_survives_lost_provider_response(self):
         self.start_submission_fixture()
         self.env["YINZ_SMOKE_DROP_ACK"] = "1"
-        handoff = json.loads(self.lifecycle("drive", {"agent": {"session": "smoke", "kind": "claude"}}))
-        self.assertEqual(handoff["decision"], "blocked")
+        # The lost acknowledgement is a recorded transport error after submission, so drive
+        # re-observes the original task once and continues without resending or respawning.
+        recovered = json.loads(self.lifecycle("drive", {"agent": {"session": "smoke", "kind": "claude"}}))
+        self.assertEqual(recovered["decision"], "approve_plan")
         records = json.loads(self.lifecycle("status"))["results"]
         self.assertTrue(any(record.get("status") == "accepted" and "receipt" in record for record in records))
-        recovered = json.loads(self.lifecycle("drive"))
-        self.assertEqual(recovered["decision"], "approve_plan")
         calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
         self.assertEqual(sum(call["args"][3] == "prompt" for call in calls), 3)
         self.assertEqual(sum(call["args"][3] == "spawn" for call in calls), 3)
+        log = self.yinz_log.read_text()
+        self.assertEqual(json.loads(self.lifecycle("drive"))["id"], recovered["id"])
+        self.assertEqual(self.yinz_log.read_text(), log)
 
     def test_installed_revision_approval_is_single_use(self):
         worktree = self.root / "revision"
@@ -481,7 +557,10 @@ print(json.dumps(response))
         self.assertEqual(json.loads(self.lifecycle("drive"))["id"], reviewed["id"])
         self.assertEqual(self.yinz_log.read_text(), calls)
         self.lifecycle("approve", {"planVersion": 3, "request": "Implement the reviewed fixture plan"})
-        self.assertEqual(json.loads(self.lifecycle("drive"))["decision"], "prepare_worktree")
+        implemented = json.loads(self.lifecycle("drive"))
+        self.assertEqual(implemented["decision"], "authorize_merge", implemented)
+        adopted = self.state()["implementation"]
+        self.assertEqual((adopted["worktree"], adopted["branch"]), (str(worktree.resolve()), "revision"))
 
     def closeout_fixture(self):
         worktree = self.dispatch_completion_fixture(replay=False)
@@ -665,7 +744,19 @@ raise SystemExit(result.returncode)
         self.assertEqual(state["classification"]["classification"], "maintenance")
         calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
         self.assertEqual([call["args"][3] for call in calls], ["list-panes", "spawn", "wait", "prompt", "list-panes", "close-completed"])
-        self.assertIn("Submit evidence through Swamp before ending this task", next(call["stdin"] for call in calls if call["args"][3] == "prompt"))
+        self.assertIn("Submit evidence with this task's helper before ending this task", next(call["stdin"] for call in calls if call["args"][3] == "prompt"))
+        # The helper's private assignment files outlive the closed worker pane.
+        task = next(record for record in json.loads(self.lifecycle("status"))["results"] if "behaviorName" in record)
+        assignment = self.repo / ".git" / "yinz-lifecycle" / "assignments" / task["id"]
+        self.assertEqual(Path(task["assignmentFiles"]["directory"]), assignment.resolve())
+        self.assertEqual(assignment.stat().st_mode & 0o777, 0o700)
+        for entry in task["assignmentFiles"]["files"].values():
+            self.assertEqual(Path(entry["path"]).stat().st_mode & 0o777, 0o400, entry)
+        status = subprocess.run([sys.executable, "-I", str(self.repo / "scripts" / "issue_lifecycle" / "submit_evidence.py"),
+                                 "--task-dir", str(assignment), "--assignment-digest", task["submission"]["assignmentDigest"], "--status"],
+                                cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertEqual(status.returncode, 0, status.stderr + status.stdout)
+        self.assertEqual(json.loads(status.stdout)["status"], "accepted")
         records = json.loads(self.lifecycle("status"))["results"]
         task = next(record for record in records if "behaviorName" in record)
         restart = {"taskId": task["id"], "role": "triage", "session": "smoke",
@@ -690,8 +781,11 @@ raise SystemExit(result.returncode)
         self.git(worktree, "commit", "-m", "add smoke marker")
         original = self.git(worktree, "rev-parse", "HEAD")
         # Move local main after development so the merge workflow must rebase.
+        # The same commit adds a baseline check; verification reads it live.
         (self.repo / "base-change.txt").write_text("main advanced\n")
-        self.git(self.repo, "add", "base-change.txt")
+        (self.repo / ".yinz" / "issue-lifecycle.json").write_text(json.dumps({"verification": {"baselineChecks": [
+            {"id": "fixture-baseline", "command": ["grep", "-q", "smoke marker", "marker.txt"]}]}}))
+        self.git(self.repo, "add", "base-change.txt", ".yinz/issue-lifecycle.json")
         self.git(self.repo, "commit", "-m", "advance main before merge")
         base = self.git(self.repo, "rev-parse", "HEAD")
         self.lifecycle("review-code", {
@@ -716,6 +810,14 @@ raise SystemExit(result.returncode)
         log = json.loads(self.command(["swamp", "data", "query", f"modelName == {json.dumps(name)} && name == {json.dumps(check['log'])}", "--select", "content", "--json"]))
         self.assertEqual(len(log["results"]), 1)
         self.assertIn("$ grep -c 'smoke marker' marker.txt\n1\nexit 0 after", log["results"][0])
+        # The rebase probe compared against the advanced local main, then the baseline check ran.
+        self.assertEqual(verification["rebaseProbe"], {"main": base, "status": "clean"})
+        [baseline] = verification["baseline"]
+        self.assertEqual((baseline["id"], baseline["status"], baseline["exitCode"]), ("fixture-baseline", "passed", 0))
+        self.assertEqual(baseline["log"], f"baseline-log-{verification['id']}-fixture-baseline")
+        baseline_log = json.loads(self.command(["swamp", "data", "query", f"modelName == {json.dumps(name)} && name == {json.dumps(baseline['log'])}", "--select", "content", "--json"]))
+        self.assertEqual(len(baseline_log["results"]), 1)
+        self.assertIn("$ grep -q 'smoke marker' marker.txt\nexit 0 after", baseline_log["results"][0])
         self.lifecycle("ready", ready)
         self.lifecycle("merge")
         merged = self.state()
@@ -732,6 +834,8 @@ raise SystemExit(result.returncode)
         self.assertFalse(self.agenda("item", "show", str(self.item_id))["item"]["completed"])
         self.lifecycle("summarize", {"outcomeMet": True, "summary": "The disposable marker reached local main; dispatch and Cargo/Yinz stub protocols passed."})
         self.assertEqual(self.state()["phase"], "done")
+        # The restarted triage task is completed and cleaned up: no recovery applies.
+        self.assertEqual(json.loads(self.lifecycle("status"))["taskRecovery"]["kind"], "none")
         self.assertTrue(self.agenda("item", "show", str(self.item_id))["item"]["completed"])
         receipt = self.state()["receipt"]
         if not replay:
@@ -845,6 +949,95 @@ raise SystemExit(result.returncode)
         self.assertEqual(json.loads(self.lifecycle("verify"))["status"], "passed")
         self.lifecycle("ready", {"commit": commit, "mergeRequest": request})
         return commit
+
+    def direct_through_reviews(self, name):
+        """Record triage through both reviews directly, without worker launches."""
+        worktree = self.root / f"{name}-worktree"
+        self.git(self.repo, "worktree", "add", "-b", f"{name}-issue", str(worktree))
+        self.lifecycle("start", cwd=worktree)
+        self.lifecycle("triage", {"classification": "maintenance", "summary": "Add the smoke marker."})
+        self.lifecycle("plan", {
+            "summary": "Add the disposable fixture's marker.",
+            "steps": [{"id": "marker", "description": "Create marker.txt", "files": ["marker.txt"]}],
+            "testingStrategy": "Exercise launcher chaining with an explicit Cargo stub.",
+            "checks": [{"id": "marker", "command": ["grep", "-c", "smoke marker", "marker.txt"], "covers": ["marker"]}],
+        })
+        self.lifecycle("review-plan", {"planVersion": 1, "findings": []})
+        self.lifecycle("approve", {"planVersion": 1, "request": "Approve the disposable smoke fixture plan."})
+        self.lifecycle("implement", {"worktree": str(worktree), "branch": f"{name}-issue"})
+        (worktree / "marker.txt").write_text("smoke marker\n")
+        self.git(worktree, "add", "marker.txt")
+        self.git(worktree, "commit", "-m", "add smoke marker")
+        commit = self.git(worktree, "rev-parse", "HEAD")
+        self.lifecycle("review-code", {
+            "planVersion": 1, "commit": commit,
+            "steps": [{"id": "marker", "status": "implemented"}], "findings": [],
+        })
+        self.record_ux(commit)
+        return worktree, commit
+
+    def test_installed_ready_handoff_chains_merge_to_summarize(self):
+        _, commit = self.direct_through_reviews("chain")
+        authorize = json.loads(self.lifecycle("drive"))
+        self.assertEqual(authorize["decision"], "authorize_merge", authorize)
+        self.assertEqual(authorize["commit"], commit)
+        self.assertEqual(authorize["state"]["verification"]["status"], "passed")
+        self.assertFalse(self.cargo_log.exists())
+        summary = json.loads(self.lifecycle("ready", flags=("--handoff", authorize["id"], "--request",
+                                                            "Merge the disposable smoke fixture locally."), chain=True))
+        self.assertEqual(summary["decision"], "summarize", summary)
+        state = self.state()
+        self.assertEqual(state["phase"], "merged")
+        self.assertEqual(state["mergeAuthorization"]["commit"], commit)
+        self.assertEqual(state["mergeAuthorization"]["request"], "Merge the disposable smoke fixture locally.")
+        self.assertEqual(len(self.cargo_log.read_text().splitlines()), 1)
+        self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), state["receipt"]["mergedCommit"])
+
+    def test_installed_approve_handoff_adopts_worker_worktree(self):
+        worktree = self.root / "adopt-worktree"
+        self.git(self.repo, "worktree", "add", "-b", "adopt-issue", str(worktree))
+        self.lifecycle("start", cwd=worktree)
+        self.lifecycle("triage", {"classification": "maintenance", "summary": "Add the smoke marker."})
+        self.lifecycle("plan", {
+            "summary": "Add the disposable fixture's marker.",
+            "steps": [{"id": "marker", "description": "Create marker.txt", "files": ["marker.txt"]}],
+            "testingStrategy": "Exercise worktree adoption after a handoff-bound approval.",
+            "checks": [{"id": "marker", "command": ["grep", "-c", "smoke marker", "marker.txt"], "covers": ["marker"]}],
+        })
+        self.lifecycle("review-plan", {"planVersion": 1, "findings": []})
+        approve = json.loads(self.lifecycle("drive"))
+        self.assertEqual(approve["decision"], "approve_plan", approve)
+        blocked = json.loads(self.lifecycle("approve", flags=("--handoff", approve["id"], "--request",
+                                                             "Approve the disposable smoke fixture plan."), chain=True))
+        self.assertEqual(blocked["decision"], "blocked", blocked)
+        self.assertIn("Select a running session", blocked["reason"])
+        state = self.state()
+        self.assertEqual(state["phase"], "implementing")
+        self.assertEqual(state["approval"], {"planVersion": 1, "request": "Approve the disposable smoke fixture plan."})
+        self.assertEqual(state["implementation"]["worktree"], state["workerWorktree"])
+        self.assertEqual(state["implementation"]["worktree"], str(worktree.resolve()))
+        self.assertEqual(state["implementation"]["branch"], "adopt-issue")
+        calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()] if self.yinz_log.exists() else []
+        self.assertNotIn("spawn", [call["args"][3] for call in calls])
+
+    def test_installed_merge_command_drives_to_blocked_after_failure(self):
+        self.env["YINZ_SMOKE_CARGO_FAIL_ONCE"] = str(self.root / "cargo-failed-once")
+        worktree, commit = self.direct_through_reviews("blocked")
+        self.assertEqual(json.loads(self.lifecycle("verify"))["status"], "passed")
+        self.lifecycle("ready", {"commit": commit, "mergeRequest": "Merge the disposable smoke fixture locally."})
+        launcher = [sys.executable, str(self.repo / "scripts" / "issue-lifecycle"), "--control", str(self.repo),
+                    "--item", str(self.item_id)]
+        failed = subprocess.run([*launcher, "merge"], cwd=self.repo, env=self.env, text=True,
+                                capture_output=True, timeout=120)
+        self.assertNotEqual(failed.returncode, 0, failed.stderr)
+        blocked = json.loads(failed.stdout)
+        self.assertEqual(blocked["decision"], "blocked", blocked)
+        self.assertIn("Merge attempts:", blocked["presentation"])
+        state = self.state()
+        [failure] = state["mergeFailures"]
+        self.assertEqual(blocked["state"]["attempt"]["id"], failure["attemptId"])
+        self.assertIn(f"Merge attempt {failure['attemptId']} failed", failed.stderr)
+        self.assertEqual(len(self.cargo_log.read_text().splitlines()), 1)
 
     def test_installed_failed_merge_gate_is_recorded_blocked_and_kept_after_a_later_pass(self):
         self.env["YINZ_SMOKE_CARGO_FAIL_ONCE"] = str(self.root / "cargo-failed-once")

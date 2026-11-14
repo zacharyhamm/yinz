@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 import uuid
 
 
@@ -809,6 +810,144 @@ raise SystemExit(subprocess.run([{real_git!r}, *args]).returncode)
         self.assertIn("already belongs to issue default:issue-a", result["error"])
         self.assertEqual(self.owners(), before)
 
+    def claim_new(self, issue_key="default/7", *, item=7, repo=None, success=True, env=None):
+        return self.run_request({"action": "claim-new", "repoPath": str(repo or self.repo), "itemId": item,
+                                 "issueKey": issue_key}, success=success, env=env)
+
+    def canonical_issue_worktree(self, item=7):
+        return self.repo.resolve() / ".worktrees" / f"issue-{item}"
+
+    def test_claim_new_creates_canonical_worktree_from_main(self):
+        desired = self.canonical_issue_worktree()
+        result = self.claim_new()
+        self.assertEqual(result, {"worktree": str(desired), "branch": "issue-7", "created": True})
+        self.assertEqual(self.git(desired, "branch", "--show-current"), "issue-7")
+        self.assertEqual(self.git(self.repo, "rev-parse", "refs/heads/issue-7"),
+                         self.git(self.repo, "rev-parse", "refs/heads/main"))
+        self.assertEqual(self.owners(), [{"issueKey": "default/7", "worktree": str(desired), "pending": True}])
+        self.confirm(desired, "default/7")
+        self.assertEqual(self.owners(), [{"issueKey": "default/7", "worktree": str(desired)}])
+
+    def test_claim_new_adopts_this_issues_worktree_idempotently(self):
+        desired = self.canonical_issue_worktree()
+        self.claim_new()
+        before = self.owners()
+        self.assertEqual(self.claim_new(), {"worktree": str(desired), "branch": "issue-7", "created": False})
+        self.assertEqual(self.owners(), before)
+        self.confirm(desired, "default/7")
+        confirmed = self.owners()
+        self.assertEqual(self.claim_new()["created"], False)
+        self.assertEqual(self.owners(), confirmed)
+
+    def test_claim_new_adopts_an_unclaimed_canonical_worktree(self):
+        desired = self.canonical_issue_worktree()
+        self.git(self.repo, "worktree", "add", "-b", "issue-7", str(desired))
+        self.assertEqual(self.claim_new(), {"worktree": str(desired), "branch": "issue-7", "created": False})
+        self.assertEqual(self.owners(), [{"issueKey": "default/7", "worktree": str(desired), "pending": True}])
+
+    def test_claim_new_refuses_worktree_or_branch_of_another_issue(self):
+        desired = self.canonical_issue_worktree()
+        self.claim_new()
+        self.confirm(desired, "default/7")
+        before = self.owners()
+        result = self.claim_new("other/7", success=False)
+        self.assertIn("already belongs to issue default/7", result["error"])
+        self.assertEqual(self.owners(), before)
+        # A prepared claim pins the branch as well: issue-7 moved to another path stays owned.
+        self.write_owners([{"issueKey": "default/7", "worktree": str(desired), "branch": "issue-7"}])
+        before = self.owners()
+        result = self.claim_new("other/7", success=False)
+        self.assertIn("already belongs to issue default/7", result["error"])
+        self.assertEqual(self.owners(), before)
+        self.assertEqual(self.git(self.repo, "worktree", "list", "--porcelain").count("worktree "), 2)
+
+    def test_claim_new_refuses_existing_branch_without_worktree(self):
+        self.git(self.repo, "branch", "issue-7")
+        result = self.claim_new(success=False)
+        self.assertIn("Branch issue-7 already exists without", result["error"])
+        self.assertEqual(self.owners(), [])
+        self.assertFalse(self.canonical_issue_worktree().exists())
+
+    def test_claim_new_refuses_path_on_other_branch(self):
+        desired = self.canonical_issue_worktree()
+        self.git(self.repo, "worktree", "add", "-b", "elsewhere", str(desired))
+        result = self.claim_new(success=False)
+        self.assertIn("is not a worktree on branch issue-7", result["error"])
+        self.assertEqual(self.owners(), [])
+        # A plain directory there is not a worktree either.
+        plain = self.canonical_issue_worktree(8)
+        plain.mkdir()
+        result = self.claim_new("default/8", item=8, success=False)
+        self.assertIn("is not a worktree on branch issue-8", result["error"])
+        self.assertEqual(self.owners(), [])
+
+    def test_claim_new_refuses_symlinked_worktrees_directory_before_creating(self):
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        (self.repo / ".worktrees").symlink_to(elsewhere)
+        result = self.claim_new(success=False)
+        self.assertIn("resolves elsewhere", result["error"])
+        self.assertEqual(self.owners(), [])
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        self.assertNotEqual(self.git(self.repo, "show-ref", "--verify", "refs/heads/main"), "")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.git(self.repo, "show-ref", "--verify", "refs/heads/issue-7")
+
+    def test_claim_new_recovers_after_interrupted_worktree_add(self):
+        real_git = subprocess.check_output(["sh", "-c", "command -v git"], text=True).strip()
+        stub_bin = self.root / "failing-git"
+        stub_bin.mkdir()
+        failing = stub_bin / "git"
+        failing.write_text(f"""#!{sys.executable}
+import os, sys
+if "worktree" in sys.argv and "add" in sys.argv:
+    sys.exit("interrupted worktree add")
+os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])
+""")
+        failing.chmod(0o755)
+        desired = self.canonical_issue_worktree()
+        result = self.claim_new(success=False, env={"PATH": str(stub_bin) + os.pathsep + self.env["PATH"]})
+        self.assertIn("interrupted worktree add", result["error"])
+        # The durable pending claim survives; no state was saved, so it stays reclaimable.
+        self.assertEqual(self.owners(), [{"issueKey": "default/7", "worktree": str(desired), "pending": True}])
+        self.assertFalse(desired.exists())
+        self.assertEqual(self.claim_new()["created"], True)
+        self.assertEqual(self.git(desired, "branch", "--show-current"), "issue-7")
+        self.assertEqual(self.owners(), [{"issueKey": "default/7", "worktree": str(desired), "pending": True}])
+
+    def test_claim_new_attaches_branch_left_by_interrupted_add(self):
+        desired = self.canonical_issue_worktree()
+        # An add interrupted after creating its branch, before the checkout existed.
+        self.write_owners([{"issueKey": "default/7", "worktree": str(desired), "pending": True}])
+        self.git(self.repo, "branch", "issue-7")
+        self.assertEqual(self.claim_new(), {"worktree": str(desired), "branch": "issue-7", "created": True})
+        self.assertEqual(self.git(desired, "branch", "--show-current"), "issue-7")
+        # Another issue's pending claim on the path does not let this issue attach the branch.
+        self.git(self.repo, "worktree", "remove", str(desired))
+        self.write_owners([{"issueKey": "other/7", "worktree": str(desired), "pending": True}])
+        result = self.claim_new(success=False)
+        self.assertIn("Branch issue-7 already exists without", result["error"])
+        self.assertEqual(self.owners(), [{"issueKey": "other/7", "worktree": str(desired), "pending": True}])
+
+    def test_claim_new_does_not_require_clean_main(self):
+        (self.repo / "base.txt").write_text("dirty\n")
+        (self.repo / "untracked.txt").write_text("untracked\n")
+        self.assertEqual(self.claim_new()["created"], True)
+        self.assertEqual((self.canonical_issue_worktree() / "base.txt").read_text(), "base\n")
+
+    def test_claim_new_from_linked_control_uses_primary_checkout(self):
+        linked = self.feature_worktree("control")
+        desired = self.canonical_issue_worktree()
+        self.assertEqual(self.claim_new(repo=linked)["worktree"], str(desired))
+        self.assertFalse((linked / ".worktrees").exists())
+
+    def test_claim_new_rejects_invalid_item_ids(self):
+        for item in (0, -1, True, "7", 1.5, None):
+            with self.subTest(item=item):
+                result = self.claim_new(item=item, success=False)
+                self.assertIn("itemId must be a positive integer", result["error"])
+        self.assertEqual(self.owners(), [])
+
     def test_prepare_upgrades_start_claim_to_full_ownership(self):
         worktree = self.feature_worktree("origin")
         canonical = str(worktree.resolve())
@@ -885,6 +1024,29 @@ raise SystemExit(subprocess.run([{real_git!r}, *args]).returncode)
         self.run_request(request, success=False)
         self.assertEqual(len(self.event_rows()), 2)
 
+    def test_failed_ci_summary_names_recurring_tests_from_earlier_attempts(self):
+        worktree = self.branch("issue-a")
+        output = ">> ci phase test: failed\n        FAIL [   0.019s] (1/4) yinz-server tests::flaky\n"
+        env = {"YINZ_TEST_CI_EXIT": "101", "YINZ_TEST_CI_OUTPUT": output}
+        first = self.request(worktree)
+        self.run_request(first, env=env, success=False)
+        self.assertNotIn("recurringTests", self.receipt(first)["ci"])
+        second = self.request(worktree)
+        error = self.run_request(second, env=env, success=False)
+        receipt = self.receipt(second)
+        ci = receipt["ci"]
+        self.assertEqual(ci["recurringTests"], [{"name": "yinz-server tests::flaky", "attempts": [{
+            "attemptId": first["attemptId"], "issueKey": "default:issue-a", "status": "failed",
+            "timestamp": self.receipt(first)["timestamp"],
+        }]}])
+        self.assertEqual(
+            ci["summary"],
+            "phases failed: test; tests: yinz-server tests::flaky; exit 101; recurring: yinz-server tests::flaky "
+            f"(also failed in 1 earlier attempt: default:issue-a {first['attemptId']})",
+        )
+        self.assertIn(ci["summary"], receipt["failure"])
+        self.assertEqual(error["error"], receipt["failure"])
+
     def test_failed_receipt_is_readable_while_the_merge_lock_is_held(self):
         worktree = self.branch("issue-a")
         failed = self.request(worktree)
@@ -933,7 +1095,9 @@ raise SystemExit(subprocess.run([{real_git!r}, *args]).returncode)
         legacy = {**result, "ci": {"status": "passed", "command": ["cargo", "x", "ci", "check"]}}
         path.write_text(json.dumps(legacy))
         self.assertEqual(self.receipt(request)["ci"], legacy["ci"])
-        for ci in ({"phases": [{"name": "lint", "status": "skipped"}]}, {"failedTests": [1]}, {"exitCode": "1"}):
+        for ci in ({"phases": [{"name": "lint", "status": "skipped"}]}, {"failedTests": [1]}, {"exitCode": "1"},
+                   {"recurringTests": [{"name": "t"}]}, {"recurringTests": [{"name": 1, "attempts": []}]},
+                   {"recurringTests": {}}):
             with self.subTest(ci=ci):
                 path.write_text(json.dumps({**legacy, "ci": {**legacy["ci"], **ci}}))
                 error = self.run_request({"action": "receipt", "repoPath": str(self.repo), "attemptId": request["attemptId"]}, success=False)
@@ -1181,6 +1345,252 @@ raise SystemExit(subprocess.run([{real_git!r}, *args]).returncode)
         self.assertIn("UU base.txt", self.git(worktree, "status", "--porcelain"))
         self.assertFalse(self.events.exists())
 
+    def probe_request(self, worktree, **overrides):
+        return {"action": "rebase-probe", "repoPath": str(self.repo),
+                "expectedHead": self.git(worktree, "rev-parse", "HEAD"), **overrides}
+
+    def conflicting_branch(self):
+        worktree = self.branch("issue-a")
+        for root, text in ((worktree, "issue edit"), (self.repo, "main edit")):
+            (root / "base.txt").write_text(text)
+            (root / "sp ace.txt").write_text(text)
+            self.git(root, "add", "base.txt", "sp ace.txt")
+            self.git(root, "commit", "-m", "conflict")
+        return worktree
+
+    def repository_snapshot(self, worktree):
+        return {
+            "refs": self.git(self.repo, "for-each-ref", "--format=%(refname) %(objectname)"),
+            "main status": self.git(self.repo, "status", "--porcelain"),
+            "issue status": self.git(worktree, "status", "--porcelain"),
+            "issue head": self.git(worktree, "rev-parse", "HEAD"),
+            "issue branch": self.git(worktree, "branch", "--show-current"),
+            "worktrees": self.git(self.repo, "worktree", "list", "--porcelain"),
+        }
+
+    def test_rebase_probe_reports_clean_and_touches_nothing(self):
+        worktree = self.branch("issue-a")
+        (self.repo / "main-only.txt").write_text("main\n")
+        self.git(self.repo, "add", "main-only.txt")
+        self.git(self.repo, "commit", "-m", "main moves")
+        before = self.repository_snapshot(worktree)
+        result = self.run_request(self.probe_request(worktree))
+        self.assertEqual(result, {"main": self.git(self.repo, "rev-parse", "main"), "status": "clean"})
+        self.assertEqual(self.repository_snapshot(worktree), before)
+        self.assertEqual(before["main status"], "")
+        self.assertEqual(before["issue status"], "")
+        self.assertFalse((self.repo / ".git" / "yinz-lifecycle" / "merges").exists())
+
+    def test_rebase_probe_lists_conflicting_paths_while_merge_lock_is_held(self):
+        worktree = self.conflicting_branch()
+        before = self.repository_snapshot(worktree)
+        directory = self.repo / ".git" / "yinz-lifecycle"
+        directory.mkdir(exist_ok=True)
+        with (directory / "merge.lock").open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = self.run_request(self.probe_request(worktree))
+        self.assertEqual(result, {"main": self.git(self.repo, "rev-parse", "main"), "status": "conflicts",
+                                  "paths": ["base.txt", "sp ace.txt"]})
+        self.assertEqual(self.repository_snapshot(worktree), before)
+        self.assertEqual(before["issue status"], "")
+        self.assertIsNone(git_ops.unfinished_operation(worktree))
+        self.assertFalse((directory / "merges").exists())
+
+    def test_rebase_probe_truncates_paths(self):
+        worktree = self.conflicting_branch()
+        with mock.patch.object(git_ops, "REBASE_PROBE_PATH_LIMIT", 1):
+            result = git_ops.rebase_probe(self.probe_request(worktree))
+        self.assertEqual((result["status"], result["paths"], result["pathsTruncated"]), ("conflicts", ["base.txt"], 1))
+
+    def test_rebase_probe_reports_unsupported_git_as_unavailable(self):
+        worktree = self.branch("issue-a")
+        original = git_ops.command
+
+        def old_git(args, cwd, **options):
+            if "merge-tree" in args:
+                return 129, "", "usage: git merge-tree [--write-tree] [<options>] <branch1> <branch2>"
+            return original(args, cwd, **options)
+
+        with mock.patch.object(git_ops, "command", old_git):
+            result = git_ops.rebase_probe(self.probe_request(worktree))
+        self.assertEqual(result, {
+            "main": self.git(self.repo, "rev-parse", "main"), "status": "unavailable",
+            "reason": "git merge-tree --write-tree --merge-base failed (exit 129; needs Git 2.40+ and full history): "
+                      "usage: git merge-tree [--write-tree] [<options>] <branch1> <branch2>",
+        })
+        # Exit 1 without a tree OID is not evidence of conflicts.
+        with mock.patch.object(git_ops, "command", lambda args, cwd, **options: (
+            (1, "", "fatal: bad object") if "merge-tree" in args else original(args, cwd, **options)
+        )):
+            result = git_ops.rebase_probe(self.probe_request(worktree))
+        self.assertEqual(result["status"], "unavailable")
+        self.assertIn("fatal: bad object", result["reason"])
+        self.git(self.repo, "branch", "-m", "main", "trunk")
+        result = self.run_request(self.probe_request(worktree))
+        self.assertEqual(result["status"], "unavailable")
+        self.assertNotIn("main", result)
+
+    def commit_file(self, root, name, text, message):
+        (root / name).write_text(text)
+        self.git(root, "add", name)
+        self.git(root, "commit", "-m", message)
+        return self.git(root, "rev-parse", "HEAD")
+
+    def test_rebase_probe_skips_commits_already_on_main(self):
+        # The audit scenario: the branch cherry-picked main's fix F, and main
+        # then changed the same line again. One three-way merge conflicts, but
+        # rebase drops the patch-equivalent pick and succeeds.
+        self.commit_file(self.repo, "f", "a\nb\nc\n", "base f")
+        worktree = self.branch("issue-a")
+        fix = self.commit_file(self.repo, "f", "a\nX\nc\n", "fix")
+        self.commit_file(self.repo, "f", "a\nY\nc\n", "later")
+        self.git(worktree, "cherry-pick", fix)
+        merge_tree = subprocess.run(["git", "-C", str(self.repo), "merge-tree", "--write-tree", "main",
+                                     self.git(worktree, "rev-parse", "HEAD")], env=self.env, capture_output=True)
+        self.assertEqual(merge_tree.returncode, 1, "the scenario needs a single merge to conflict")
+        before = self.repository_snapshot(worktree)
+        result = self.run_request(self.probe_request(worktree))
+        self.assertEqual(result, {"main": self.git(self.repo, "rev-parse", "main"), "status": "clean"})
+        self.assertEqual(self.repository_snapshot(worktree), before)
+        self.git(worktree, "rebase", "main")  # The gate's rebase agrees.
+
+    def test_rebase_probe_reports_paths_from_first_conflicting_commit(self):
+        worktree = self.branch("issue-a")
+        self.commit_file(worktree, "first.txt", "issue first", "first conflict")
+        self.commit_file(worktree, "second.txt", "issue second", "second conflict")
+        self.commit_file(self.repo, "first.txt", "main first", "main first")
+        self.commit_file(self.repo, "second.txt", "main second", "main second")
+        before = self.repository_snapshot(worktree)
+        result = self.run_request(self.probe_request(worktree))
+        self.assertEqual(result, {"main": self.git(self.repo, "rev-parse", "main"), "status": "conflicts",
+                                  "paths": ["first.txt"]})
+        self.assertEqual(self.repository_snapshot(worktree), before)
+
+    def test_rebase_probe_replays_onto_earlier_replayed_commits(self):
+        # The second commit edits a line the first commit added, so it only
+        # applies on top of the replayed first commit, not on main.
+        worktree = self.branch("issue-a")
+        self.commit_file(worktree, "new.txt", "one\n", "add")
+        self.commit_file(worktree, "new.txt", "two\n", "edit")
+        self.commit_file(self.repo, "main-only.txt", "main\n", "main moves")
+        # The intermediate commit objects do not need the user's identity.
+        self.git(self.repo, "config", "--unset", "user.email")
+        self.git(self.repo, "config", "--unset", "user.name")
+        self.git(self.repo, "config", "user.useConfigOnly", "true")
+        before = self.git(self.repo, "count-objects", "-v")
+        result = self.run_request(self.probe_request(worktree))
+        self.assertEqual(result, {"main": self.git(self.repo, "rev-parse", "main"), "status": "clean"})
+        self.assertNotEqual(self.git(self.repo, "count-objects", "-v"), before, "the replay wrote commit objects")
+
+    def test_rebase_probe_reports_merge_commits_as_unavailable(self):
+        worktree = self.branch("issue-a")
+        self.git(worktree, "checkout", "-b", "side")
+        self.commit_file(worktree, "side.txt", "side", "side")
+        self.git(worktree, "checkout", "issue-a")
+        self.commit_file(worktree, "other.txt", "other", "other")
+        self.git(worktree, "merge", "--no-ff", "-m", "merge side", "side")
+        result = self.run_request(self.probe_request(worktree))
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["main"], self.git(self.repo, "rev-parse", "main"))
+        self.assertIn("merge commit", result["reason"])
+
+    def test_rebase_probe_reports_empty_branch_as_clean(self):
+        worktree = self.branch("issue-a")
+        self.git(worktree, "reset", "--hard", "main")
+        self.commit_file(self.repo, "main-only.txt", "main\n", "main moves")
+        result = self.run_request(self.probe_request(worktree))
+        self.assertEqual(result, {"main": self.git(self.repo, "rev-parse", "main"), "status": "clean"})
+
+    def test_rebase_probe_rejects_unknown_expected_head(self):
+        worktree = self.branch("issue-a")
+        for head, message in (("0" * 40, "not a commit"), ("main", "full commit hash")):
+            with self.subTest(head=head):
+                error = self.run_request(self.probe_request(worktree, expectedHead=head), success=False)
+                self.assertIn(message, error["error"])
+
+    def settings(self, config=None, *, success=True):
+        path = self.repo / ".yinz" / "issue-lifecycle.json"
+        if config is not None:
+            path.parent.mkdir(exist_ok=True)
+            path.write_text(config if isinstance(config, str) else json.dumps(config))
+        result = subprocess.run(
+            [sys.executable, str(RUNNER)], input=json.dumps({"action": "verification-settings", "repoPath": str(self.repo)}),
+            text=True, capture_output=True, env=self.env, timeout=30,
+        )
+        if success:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(str(path), result.stderr)
+        return json.loads(result.stdout)["error"]
+
+    def test_verification_settings_defaults_overrides_and_opt_out(self):
+        defaults = {"baselineChecks": [
+            {"id": "format", "command": ["cargo", "x", "format", "--check"]},
+            {"id": "dependency-boundaries", "command": [
+                "cargo", "x", "test", "-p", "xtask", "--no-tests=warn", "-E",
+                "test(=metadata::tests::current_workspace_respects_dependency_boundaries)"]},
+            {"id": "lint", "command": ["cargo", "x", "lint"]},
+        ], "rebaseProbe": True}
+        self.assertEqual(self.settings(), defaults)
+        self.assertEqual(self.settings({"agent": {"kind": "codex"}}), defaults)
+        self.assertEqual(self.settings({"verification": {}}), defaults)
+        self.assertEqual(self.settings({"verification": {"baselineChecks": [], "rebaseProbe": False}}),
+                         {"baselineChecks": [], "rebaseProbe": False})
+        custom = [{"id": "unit_1", "command": ["grep", "-q", "marker", "marker.txt"]}]
+        self.assertEqual(self.settings({"verification": {"baselineChecks": custom}}),
+                         {"baselineChecks": custom, "rebaseProbe": True})
+        # A worktree reads its own checkout's configuration, not another one's.
+        worktree = self.branch("issue-a")
+        result = subprocess.run(
+            [sys.executable, str(RUNNER)], input=json.dumps({"action": "verification-settings", "repoPath": str(worktree)}),
+            text=True, capture_output=True, env=self.env, timeout=30, check=True,
+        )
+        self.assertEqual(json.loads(result.stdout), defaults)
+
+    def test_default_boundary_check_passes_at_a_commit_without_its_test(self):
+        # Emulates cargo-nextest at a commit that predates the boundary test: the
+        # filter matches nothing, which fails with exit 4 unless --no-tests=warn.
+        self.stub("cargo", '''import sys
+args = sys.argv[1:]
+assert args[:4] == ["x", "test", "-p", "xtask"], args
+if "--no-tests=warn" in args:
+    print("warning: no tests to run", file=sys.stderr)
+    sys.exit(0)
+print("error: no tests to run", file=sys.stderr)
+sys.exit(4)
+''')
+        boundary = next(check for check in self.settings()["baselineChecks"]
+                        if check["id"] == "dependency-boundaries")
+        worktree = self.branch("issue-a")
+        code, result, log = self.run_check(self.check_request(worktree, boundary["command"]))
+        self.assertEqual((code, result["exitCode"]), (0, 0), log)
+        self.assertIn("warning: no tests to run", log)
+        without = [value for value in boundary["command"] if value != "--no-tests=warn"]
+        code, result, log = self.run_check(self.check_request(worktree, without))
+        self.assertEqual((code, result["exitCode"]), (0, 4), log)
+
+    def test_verification_settings_rejects_invalid_config(self):
+        check = {"id": "fmt", "command": ["cargo", "fmt"]}
+        for config in (
+            {"verification": {"baselineChecks": [{**check, "id": "Bad"}]}},
+            {"verification": {"baselineChecks": [check, check]}},
+            {"verification": {"baselineChecks": [{**check, "command": []}]}},
+            {"verification": {"baselineChecks": [{**check, "command": ["cargo", "a\u0000b"]}]}},
+            {"verification": {"baselineChecks": [{**check, "command": [" ", "fmt"]}]}},
+            {"verification": {"baselineChecks": [{**check, "timeout": 1}]}},
+            {"verification": {"baselineChecks": None}},
+            {"verification": {"rebaseProbe": "yes"}},
+            {"verification": {"baselineChecks": [{**check, "id": f"c{index}"} for index in range(17)]}},
+            {"verification": {"other": 1}},
+            {"verification": []},
+            {"other": 1},
+            [],
+            "{",
+        ):
+            with self.subTest(config=config):
+                self.settings(config, success=False)
+
 
     def check_request(self, worktree, argv, **overrides):
         return {
@@ -1358,6 +1768,86 @@ class CiLogSummaryTests(unittest.TestCase):
         self.assertEqual(len(result["failedTests"]), git_ops.FAILED_TEST_LIMIT)
         self.assertEqual(result["failedTestsTruncated"], 7)
         self.assertIn(f"(+{git_ops.FAILED_TEST_LIMIT + 2} more)", result["summary"])
+
+    @staticmethod
+    def write_receipt(directory, mtime, **fields):
+        attempt = fields.setdefault("attemptId", str(uuid.uuid4()))
+        path = directory / f"{attempt}.json"
+        path.write_text(json.dumps(fields))
+        os.utime(path, (mtime, mtime))
+        return attempt
+
+    def test_recurrence_spans_issues_excludes_current_and_skips_unreadable(self):
+        with tempfile.TemporaryDirectory(prefix="yinz-merges-") as name:
+            merges = Path(name)
+            a = self.write_receipt(merges, 1000, issueKey="default/1", status="failed",
+                                   timestamp="2026-11-01T00:00:00Z", ci={"failedTests": ["t1", "t2"]})
+            # A merged attempt can record a test that failed before a passing retry.
+            b = self.write_receipt(merges, 2000, issueKey="default/2", status="merged",
+                                   timestamp="2026-11-02T00:00:00Z", ci={"failedTests": ["t1"]})
+            self.write_receipt(merges, 3000, issueKey="default/3", status="failed", ci={"failedTests": ["other"]})
+            self.write_receipt(merges, 3000, issueKey="default/4", status="failed", ci={"failedTests": [1, "t1"]})
+            self.write_receipt(merges, 3000, issueKey="default/5", status="failed", ci="broken")
+            current = self.write_receipt(merges, 4000, issueKey="default/1", status="failed",
+                                         ci={"failedTests": ["t1", "t2", "t3"]})
+            (merges / f"{uuid.uuid4()}.json").write_text("not json")
+            (merges / f"{uuid.uuid4()}.json").write_text("[1]")
+            stderr = tempfile.TemporaryFile("w+")
+            with mock.patch.object(sys, "stderr", stderr):
+                result = git_ops.recurring_test_failures(merges, current, ["t3", "t2", "t1", "t2"])
+            stderr.seek(0)
+            notes = stderr.read()
+            stderr.close()
+        self.assertEqual(result, [
+            {"name": "t2", "attempts": [
+                {"attemptId": a, "issueKey": "default/1", "status": "failed", "timestamp": "2026-11-01T00:00:00Z"}]},
+            {"name": "t1", "attempts": [
+                {"attemptId": b, "issueKey": "default/2", "status": "merged", "timestamp": "2026-11-02T00:00:00Z"},
+                {"attemptId": a, "issueKey": "default/1", "status": "failed", "timestamp": "2026-11-01T00:00:00Z"}]},
+        ])
+        self.assertIn("Skipping unreadable merge receipt", notes)
+        self.assertIn("Skipping malformed merge receipt", notes)
+        self.assertEqual(git_ops.recurring_test_failures(Path("/nonexistent"), current, []), [])
+
+    def test_recurrence_scans_only_the_newest_receipts(self):
+        with tempfile.TemporaryDirectory(prefix="yinz-merges-") as name:
+            merges = Path(name)
+            old = self.write_receipt(merges, 1000, issueKey="default/1", status="failed", ci={"failedTests": ["t"]})
+            new = self.write_receipt(merges, 2000, issueKey="default/2", status="failed", ci={"failedTests": ["t"]})
+            with mock.patch.object(git_ops, "RECURRENCE_SCAN_LIMIT", 1):
+                result = git_ops.recurring_test_failures(merges, str(uuid.uuid4()), ["t"])
+        self.assertEqual([attempt["attemptId"] for attempt in result[0]["attempts"]], [new])
+        self.assertNotEqual(old, new)
+
+    def test_describe_recurrence_caps_tests_and_attempts(self):
+        recurring = [
+            {"name": f"t{test}", "attempts": [{"attemptId": f"a{test}{attempt}", "issueKey": f"default/{attempt}"}
+                                              for attempt in range(5)]}
+            for test in range(5)
+        ]
+        self.assertEqual(
+            git_ops.describe_recurrence(recurring),
+            "recurring: t0 (also failed in 5 earlier attempts: default/0 a00, default/1 a01, default/2 a02 +2 more); "
+            "t1 (also failed in 5 earlier attempts: default/0 a10, default/1 a11, default/2 a12 +2 more); "
+            "t2 (also failed in 5 earlier attempts: default/0 a20, default/1 a21, default/2 a22 +2 more) (+2 more tests)",
+        )
+        self.assertEqual(
+            git_ops.describe_recurrence([{"name": "t", "attempts": [{"attemptId": "a", "issueKey": "default/1"}]}]),
+            "recurring: t (also failed in 1 earlier attempt: default/1 a)",
+        )
+
+    def test_annotate_recurrence_never_raises(self):
+        ci = {"summary": "exit 1", "failedTests": ["t"]}
+        stderr = tempfile.TemporaryFile("w+")
+        with mock.patch.object(git_ops, "recurring_test_failures", side_effect=RuntimeError("boom")), \
+                mock.patch.object(sys, "stderr", stderr):
+            git_ops.annotate_recurrence(ci, Path("/nonexistent"), "current")
+        stderr.seek(0)
+        self.assertIn("Cannot compare earlier attempts: boom", stderr.read())
+        stderr.close()
+        self.assertEqual(ci, {"summary": "exit 1", "failedTests": ["t"]})
+        git_ops.annotate_recurrence(ci, Path("/nonexistent"), "current")
+        self.assertEqual(ci, {"summary": "exit 1", "failedTests": ["t"]})
 
     def test_missing_log_is_an_interrupted_gate_without_results(self):
         result = git_ops.summarize_ci_log(Path("/nonexistent/ci-check.log"), None)

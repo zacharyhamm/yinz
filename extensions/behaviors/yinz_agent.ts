@@ -6,6 +6,7 @@ import {
   AgentStateSchema,
   cleanupAgent,
   confirmFailureAgent,
+  confirmStoppedAgent,
   continueAgent,
   ContinueArgsSchema,
   EmptySchema,
@@ -18,7 +19,7 @@ import {
 
 export const behavior = {
   type: "@yinz/agent",
-  version: "2026.11.08.1",
+  version: "2026.11.14.1",
   globalArguments: AgentConfigSchema,
   resources: {
     state: {
@@ -80,6 +81,14 @@ export const behavior = {
       arguments: EmptySchema,
       execute: (_args: Record<string, never>, context: AgentContext) =>
         confirmFailureAgent(context),
+    },
+    confirm_stopped: {
+      kind: "action",
+      description:
+        "Freshly observe that a completed worker's pane is listed in its session and idle in the same conversation with no background work; an absent pane is unobservable",
+      arguments: EmptySchema,
+      execute: (_args: Record<string, never>, context: AgentContext) =>
+        confirmStoppedAgent(context),
     },
     resume: {
       kind: "action",

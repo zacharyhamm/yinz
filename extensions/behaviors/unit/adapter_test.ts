@@ -1,11 +1,14 @@
 import { join } from "node:path";
 import { behavior } from "../issue_lifecycle.ts";
 import {
+  codeReviewFingerprint,
   createState,
   digestIssue,
   type LifecycleState,
+  reviewFingerprint,
   transition,
 } from "../_lib/lifecycle.ts";
+import { HandoffSchema } from "../_lib/issue_driver.ts";
 import {
   type Context,
   EventSchema,
@@ -139,6 +142,10 @@ async function tempRepo(): Promise<string> {
       new URL("../../../scripts/issue_lifecycle/workspace.py", import.meta.url),
       join(helper, "workspace.py"),
     );
+    await Deno.copyFile(
+      new URL("../../../scripts/issue_lifecycle/config.py", import.meta.url),
+      join(helper, "config.py"),
+    );
     // Stub only the external vault command; exercise the real resolver and Git helper.
     const bin = join(repo, "vault-bin");
     await Deno.mkdir(bin);
@@ -157,6 +164,14 @@ async function tempRepo(): Promise<string> {
       } + os.pathsep + os.environ["PATH"]\nrunpy.run_path(${
         JSON.stringify(join(helper, "git_backend.py"))
       }, run_name="__main__")\n`,
+    );
+    // Real verifications in these fixtures run neither cargo baseline checks nor the probe.
+    await Deno.mkdir(join(repo, ".yinz"));
+    await Deno.writeTextFile(
+      join(repo, ".yinz", "issue-lifecycle.json"),
+      JSON.stringify({
+        verification: { baselineChecks: [], rebaseProbe: false },
+      }),
     );
     await git(repo, "add", ".");
     await git(
@@ -649,6 +664,239 @@ Deno.test("lifecycle origin and implementation adoption canonicalize aliases and
   }
 });
 
+async function stubAgenda(repo: string, completed = false): Promise<string> {
+  const bin = join(repo, "agenda-bin");
+  await Deno.mkdir(bin, { recursive: true });
+  const envelope = {
+    schema_version: 0,
+    item: {
+      id: issue.itemId,
+      kind: "task",
+      text: issue.text,
+      note: issue.note,
+      completed,
+      blocked: false,
+      discarded_at: null,
+      assignments: [],
+    },
+  };
+  await Deno.writeTextFile(
+    join(bin, "agenda"),
+    `#!/bin/sh\ncat <<'AGENDA_JSON'\n${
+      JSON.stringify(envelope)
+    }\nAGENDA_JSON\n`,
+  );
+  await Deno.chmod(join(bin, "agenda"), 0o755);
+  return bin;
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+Deno.test("start with newWorktree records the created canonical worktree; repeated start resumes", async () => {
+  const repo = await tempRepo();
+  const previousPath = Deno.env.get("PATH");
+  try {
+    Deno.env.set("PATH", `${await stubAgenda(repo)}:${previousPath ?? ""}`);
+    const fixture = fakeContext(repo);
+    const logged: string[] = [];
+    fixture.context.logger = {
+      info: (message: string) => logged.push(message),
+    } as Context["logger"];
+    await behavior.methods.start.execute(
+      { newWorktree: true, agent: { kind: "claude" } },
+      fixture.context,
+    );
+    const canonical = join(await Deno.realPath(repo), ".worktrees", "issue-85");
+    const started = await loadState(fixture.context);
+    equal(started.workerWorktree, canonical);
+    equal(started.workerAgent, { kind: "claude" });
+    equal(started.phase, "triaging");
+    assert(logged.includes("Created {worktree} on {branch} from local main"));
+    await git(canonical, "symbolic-ref", "--quiet", "HEAD");
+    const branch = await new Deno.Command("git", {
+      cwd: canonical,
+      args: ["symbolic-ref", "--quiet", "--short", "HEAD"],
+    }).output();
+    equal(new TextDecoder().decode(branch.stdout).trim(), "issue-85");
+    const owners = join(repo, ".git", "yinz-lifecycle", "worktree-owners.json");
+    const confirmed = [{ issueKey: "default/85", worktree: canonical }];
+    equal(JSON.parse(await Deno.readTextFile(owners)).owners, confirmed);
+    // Repeated start never replaces the origin, whatever the caller supplies.
+    const writes = fixture.writes.length;
+    for (const args of [{ newWorktree: true }, { workerWorktree: repo }, {}]) {
+      await behavior.methods.start.execute(args, fixture.context);
+      equal(await loadState(fixture.context), started);
+      equal(fixture.writes.length, writes);
+    }
+    // A start that lost its state adopts the existing worktree without creating it.
+    fixture.resources.set("state", null);
+    logged.length = 0;
+    await behavior.methods.start.execute(
+      { newWorktree: true },
+      fixture.context,
+    );
+    equal((await loadState(fixture.context)).workerWorktree, canonical);
+    assert(!logged.includes("Created {worktree} on {branch} from local main"));
+    equal(JSON.parse(await Deno.readTextFile(owners)).owners, confirmed);
+  } finally {
+    if (previousPath === undefined) Deno.env.delete("PATH");
+    else Deno.env.set("PATH", previousPath);
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("start rejects both or neither of workerWorktree/newWorktree before any claim or state write", async () => {
+  const repo = await tempRepo();
+  const previousPath = Deno.env.get("PATH");
+  try {
+    const worktree = join(repo, "feature");
+    await git(repo, "worktree", "add", "-b", "feature", worktree);
+    const owners = join(repo, ".git", "yinz-lifecycle", "worktree-owners.json");
+    Deno.env.set("PATH", `${await stubAgenda(repo)}:${previousPath ?? ""}`);
+    const fixture = fakeContext(repo);
+    for (
+      const args of [
+        {},
+        { workerWorktree: "  " },
+        { workerWorktree: worktree, newWorktree: true },
+      ]
+    ) {
+      await rejects(
+        () => behavior.methods.start.execute(args, fixture.context),
+        "Supply exactly one of workerWorktree or newWorktree",
+      );
+      equal(fixture.writes, []);
+      assert(!await exists(owners));
+      assert(!await exists(join(repo, ".worktrees")));
+    }
+    // A non-pending Agenda item never creates a worktree.
+    Deno.env.set(
+      "PATH",
+      `${await stubAgenda(repo, true)}:${previousPath ?? ""}`,
+    );
+    await rejects(
+      () =>
+        behavior.methods.start.execute({ newWorktree: true }, fixture.context),
+      "Agenda issue is already completed",
+    );
+    equal(fixture.writes, []);
+    assert(!await exists(owners));
+    assert(!await exists(join(repo, ".worktrees")));
+  } finally {
+    if (previousPath === undefined) Deno.env.delete("PATH");
+    else Deno.env.set("PATH", previousPath);
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("implement with no arguments adopts the recorded worker worktree and its branch", async () => {
+  const repo = await tempRepo();
+  const previousPath = Deno.env.get("PATH");
+  try {
+    const bin = join(repo, "bin");
+    await Deno.mkdir(bin);
+    const agenda = join(bin, "agenda");
+    const envelope = {
+      schema_version: 0,
+      item: {
+        id: issue.itemId,
+        kind: "task",
+        text: issue.text,
+        note: issue.note,
+        completed: false,
+        blocked: false,
+        discarded_at: null,
+        assignments: [],
+      },
+    };
+    await Deno.writeTextFile(
+      agenda,
+      `#!/bin/sh\ncat <<'AGENDA_JSON'\n${
+        JSON.stringify(envelope)
+      }\nAGENDA_JSON\n`,
+    );
+    await Deno.chmod(agenda, 0o755);
+    Deno.env.set("PATH", `${bin}:${previousPath ?? ""}`);
+    const worktree = join(repo, "worktrees", "issue-85");
+    await git(repo, "worktree", "add", "-b", "issue-85", worktree);
+    const canonical = await Deno.realPath(worktree);
+    const approve = (state: LifecycleState) => {
+      state = transition(state, "triage", {
+        classification: "bug",
+        summary: "Confirmed reproduction",
+      });
+      state = transition(state, "plan", {
+        summary: "Repair behavior",
+        steps: [{ id: "fix", description: "Repair and test", files: [] }],
+        testingStrategy: "Focused tests",
+        checks: [{
+          id: "focused",
+          command: ["cargo", "x", "test", "-p", "demo"],
+          covers: ["fix"],
+        }],
+      });
+      state = transition(state, "review_plan", {
+        planVersion: state.planVersion,
+        findings: [],
+      });
+      return transition(state, "approve", {
+        planVersion: state.planVersion,
+        request: "Implement this plan",
+      });
+    };
+    const digested = { ...issue, digest: await digestIssue(issue) };
+    // A legacy lifecycle without a recorded worktree must name both.
+    const legacy = approve(createState(digested));
+    const fixture = fakeContext(repo, legacy);
+    for (const args of [{}, { worktree }, { branch: "issue-85" }]) {
+      await rejects(
+        () => behavior.methods.implement.execute(args, fixture.context),
+        "supply both worktree and branch",
+      );
+      equal(await loadState(fixture.context), legacy);
+    }
+    // A detached or main worker worktree is rejected before Git preparation.
+    const approved = approve(createState(digested, worktree));
+    fixture.resources.set("state", approved);
+    await git(worktree, "checkout", "--quiet", "--detach");
+    await rejects(
+      () => behavior.methods.implement.execute({}, fixture.context),
+      "at a detached HEAD",
+    );
+    equal(await loadState(fixture.context), approved);
+    await git(worktree, "checkout", "--quiet", "issue-85");
+    await behavior.methods.implement.execute({}, fixture.context);
+    const adopted = await loadState(fixture.context);
+    equal(adopted.phase, "implementing");
+    equal(adopted.implementation, { worktree: canonical, branch: "issue-85" });
+    const owners = JSON.parse(
+      await Deno.readTextFile(
+        join(repo, ".git", "yinz-lifecycle", "worktree-owners.json"),
+      ),
+    ).owners;
+    equal(owners, [{
+      branch: "issue-85",
+      issueKey: "default/85",
+      worktree: canonical,
+    }]);
+    // Repeating it keeps the recorded branch without inspecting the checkout.
+    await behavior.methods.implement.execute({}, fixture.context);
+    equal(await loadState(fixture.context), adopted);
+  } finally {
+    if (previousPath === undefined) Deno.env.delete("PATH");
+    else Deno.env.set("PATH", previousPath);
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
 Deno.test("verify runs approved checks at the reviewed commit and refuses a moved or dirty worktree", async () => {
   const repo = await tempRepo();
   const previousPath = Deno.env.get("PATH");
@@ -755,11 +1003,40 @@ Deno.test("verify runs approved checks at the reviewed commit and refuses a move
     // argv reaches the command verbatim, without shell splitting.
     const quoting = fixture.files.get(verification.checks[1].log!)!.text;
     assert(quoting.includes("\na b; c\nexit 3 after"), quoting);
-    // An explicit rerun replaces the failed record at the same commit.
+    equal(verification.baseline, undefined);
+    equal(verification.rebaseProbe, undefined);
+    // An explicit rerun replaces the failed record at the same commit. The
+    // control checkout's settings are read live, so it adds a baseline check
+    // and the real rebase probe.
+    await Deno.writeTextFile(
+      join(repo, ".yinz", "issue-lifecycle.json"),
+      JSON.stringify({
+        verification: {
+          baselineChecks: [{
+            id: "marker",
+            command: ["grep", "-q", "marker", "m.txt"],
+          }],
+        },
+      }),
+    );
     fixture.resources.set("state", withUx(await loadState(fixture.context)));
     await behavior.methods.verify.execute({}, fixture.context);
     const rerun = (await loadState(fixture.context)).verification!;
     assert(rerun.id !== verification.id);
+    const main = new TextDecoder().decode(
+      (await new Deno.Command("git", {
+        cwd: repo,
+        args: ["rev-parse", "refs/heads/main"],
+        stdout: "piped",
+      }).output()).stdout,
+    ).trim();
+    equal(rerun.rebaseProbe, { main, status: "clean" });
+    equal(
+      rerun.baseline?.map((check) => [check.id, check.status, check.log]),
+      [["marker", "passed", `baseline-log-${rerun.id}-marker`]],
+    );
+    equal(fixture.files.get(rerun.baseline![0].log!)?.spec, "check-log");
+    equal(rerun.status, "failed");
     const before = await loadState(fixture.context);
     await Deno.writeTextFile(join(worktree, "untracked.txt"), "dirty\n");
     await rejects(
@@ -785,6 +1062,163 @@ Deno.test("verify runs approved checks at the reviewed commit and refuses a move
       "clean implementation worktree's current commit",
     );
     equal(await loadState(fixture.context), before);
+  } finally {
+    if (previousPath === undefined) Deno.env.delete("PATH");
+    else Deno.env.set("PATH", previousPath);
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("decision methods bind to the current handoff and derive recorded values", async () => {
+  const repo = await tempRepo();
+  const previousPath = Deno.env.get("PATH");
+  try {
+    const bin = join(repo, "bin");
+    await Deno.mkdir(bin);
+    const agenda = join(bin, "agenda");
+    const envelope = {
+      schema_version: 0,
+      item: {
+        id: issue.itemId,
+        kind: "task",
+        text: issue.text,
+        note: issue.note,
+        completed: false,
+        blocked: false,
+        discarded_at: null,
+        assignments: [],
+      },
+    };
+    await Deno.writeTextFile(
+      agenda,
+      `#!/bin/sh\ncat <<'AGENDA_JSON'\n${
+        JSON.stringify(envelope)
+      }\nAGENDA_JSON\n`,
+    );
+    await Deno.chmod(agenda, 0o755);
+    Deno.env.set("PATH", `${bin}:${previousPath ?? ""}`);
+    let state = transition(
+      createState({ ...issue, digest: await digestIssue(issue) }),
+      "triage",
+      { classification: "bug", summary: "Confirmed reproduction" },
+    );
+    state = transition(state, "plan", {
+      summary: "Add a marker",
+      steps: [{ id: "marker", description: "Add marker", files: ["m.txt"] }],
+      testingStrategy: "Inspect the marker",
+      checks: [{
+        id: "contents",
+        command: ["grep", "-c", "marker", "m.txt"],
+        covers: ["marker"],
+      }],
+    });
+    state = transition(state, "review_plan", { planVersion: 1, findings: [] });
+    const fixture = fakeContext(repo, state);
+    // Publish a handoff exactly as drive records it for the current state.
+    const publish = async (
+      decision: "approve_plan" | "authorize_merge",
+      id: string,
+    ) => {
+      const current = await loadState(fixture.context);
+      fixture.resources.set(
+        "handoff",
+        HandoffSchema.parse({
+          id,
+          status: "current",
+          decision,
+          reason: "Fixture",
+          createdAt: "2026-11-14T12:00:00.000Z",
+          state: current,
+          ...(current.codeReview && current.uxReview
+            ? { codeReviewFingerprint: codeReviewFingerprint(current) }
+            : {}),
+          reviewFingerprint: reviewFingerprint(current),
+          planVersion: current.plan!.version,
+          ...(current.codeReview ? { commit: current.codeReview.commit } : {}),
+          presentation: "Fixture",
+        }),
+      );
+    };
+    const approval = "a6da10b0-c980-4b82-b920-640238095f1a";
+    await publish("approve_plan", approval);
+    const before = await loadState(fixture.context);
+    await rejects(
+      () =>
+        behavior.methods.approve.execute({
+          handoffId: "b6da10b0-c980-4b82-b920-640238095f1a",
+          request: "Approve plan version 1",
+        }, fixture.context),
+      "stale",
+    );
+    equal(await loadState(fixture.context), before);
+    await behavior.methods.approve.execute(
+      { handoffId: approval, request: "Approve plan version 1" },
+      fixture.context,
+    );
+    equal((await loadState(fixture.context)).approval, {
+      planVersion: 1,
+      request: "Approve plan version 1",
+    });
+    const worktree = join(repo, "worktrees", "issue-85");
+    await behavior.methods.implement.execute(
+      { worktree, branch: "issue-85" },
+      fixture.context,
+    );
+    await Deno.writeTextFile(join(worktree, "m.txt"), "marker\n");
+    await git(worktree, "add", "m.txt");
+    await git(
+      worktree,
+      "-c",
+      "user.name=Lifecycle Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "-m",
+      "Add marker",
+    );
+    const head = new TextDecoder().decode(
+      (await new Deno.Command("git", {
+        cwd: worktree,
+        args: ["rev-parse", "HEAD"],
+        stdout: "piped",
+      }).output()).stdout,
+    ).trim();
+    fixture.resources.set(
+      "state",
+      transition(await loadState(fixture.context), "review_code", {
+        planVersion: 1,
+        commit: head,
+        steps: [{ id: "marker", status: "implemented" }],
+        findings: [],
+      }),
+    );
+    fixture.resources.set("state", withUx(await loadState(fixture.context)));
+    await behavior.methods.verify.execute({}, fixture.context);
+    equal((await loadState(fixture.context)).verification?.status, "passed");
+    // The approval handoff no longer matches the state, so it cannot authorize merge.
+    await rejects(
+      () =>
+        behavior.methods.ready.execute(
+          { handoffId: approval, mergeRequest: "Merge it" },
+          fixture.context,
+        ),
+      "stale",
+    );
+    const merge = "c6da10b0-c980-4b82-b920-640238095f1a";
+    await publish("authorize_merge", merge);
+    await behavior.methods.ready.execute(
+      { handoffId: merge, mergeRequest: "Merge it" },
+      fixture.context,
+    );
+    const ready = await loadState(fixture.context);
+    equal(ready.phase, "ready");
+    equal(ready.mergeAuthorization, {
+      commit: head,
+      planVersion: 1,
+      request: "Merge it",
+    });
   } finally {
     if (previousPath === undefined) Deno.env.delete("PATH");
     else Deno.env.set("PATH", previousPath);
@@ -1196,7 +1630,9 @@ Deno.test("synchronous log-writer creation failure also reaps the supervisor", a
 });
 
 Deno.test("review pair rejects direct verification before any subprocess", async () => {
-  const { runVerification } = await import("../_lib/verification.ts");
+  const { NO_VERIFICATION_EXTRAS, runVerification } = await import(
+    "../_lib/verification.ts"
+  );
   let state = transition(createState(issue), "triage", {
     classification: "feature",
     summary: "Fixture",
@@ -1234,6 +1670,7 @@ Deno.test("review pair rejects direct verification before any subprocess", async
     }
     const fixture = fakeContext("/tmp/fixture", test);
     let subprocesses = 0;
+    let settingsReads = 0;
     await rejects(
       () =>
         runVerification(fixture.context, test, {
@@ -1243,10 +1680,15 @@ Deno.test("review pair rejects direct verification before any subprocess", async
           },
           id: () => "a6da10b0-c980-4b82-b920-640238095f1a",
           now: () => "2026-11-03T12:00:00.000Z",
+          verificationSettings: () => {
+            settingsReads++;
+            return Promise.resolve(NO_VERIFICATION_EXTRAS);
+          },
         }),
       kind === "blocking" ? "Present review findings" : "Current UX review",
     );
     equal(subprocesses, 0);
+    equal(settingsReads, 0);
     equal(fixture.writes.length, 0);
   }
 });
@@ -1343,6 +1785,113 @@ print(${JSON.stringify(JSON.stringify(raw))})\n`,
       );
     }
   } finally {
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("controller plan methods reject policy-violating checks before recording", async () => {
+  const repo = await tempRepo();
+  const previousPath = Deno.env.get("PATH");
+  try {
+    const bin = join(repo, "bin");
+    await Deno.mkdir(bin);
+    const agenda = join(bin, "agenda");
+    const envelope = {
+      schema_version: 0,
+      item: {
+        id: issue.itemId,
+        kind: "task",
+        text: issue.text,
+        note: issue.note,
+        completed: false,
+        blocked: false,
+        discarded_at: null,
+        assignments: [],
+      },
+    };
+    await Deno.writeTextFile(
+      agenda,
+      `#!/bin/sh\ncat <<'AGENDA_JSON'\n${
+        JSON.stringify(envelope)
+      }\nAGENDA_JSON\n`,
+    );
+    await Deno.chmod(agenda, 0o755);
+    Deno.env.set("PATH", `${bin}:${previousPath ?? ""}`);
+    const commit = "a".repeat(40);
+    const plan = (command: string[]) => ({
+      summary: "Add a marker",
+      steps: [{ id: "marker", description: "Add marker", files: ["m.txt"] }],
+      testingStrategy: "Inspect the marker",
+      checks: [{ id: "contents", command, covers: ["marker"] }],
+    });
+    const triaged = transition(
+      createState({ ...issue, digest: await digestIssue(issue) }),
+      "triage",
+      { classification: "bug", summary: "Confirmed reproduction" },
+    );
+    let decided = transition(
+      triaged,
+      "plan",
+      plan(["grep", "-c", "marker", "m.txt"]),
+    );
+    decided = transition(decided, "review_plan", {
+      planVersion: 1,
+      findings: [],
+    });
+    decided = transition(decided, "approve", {
+      planVersion: 1,
+      request: "Implement",
+    });
+    decided = transition(decided, "implement", {
+      worktree: join(repo, "missing-worktree"),
+      branch: "issue-85",
+    });
+    decided = transition(decided, "review_code", {
+      planVersion: 1,
+      commit,
+      steps: [{ id: "marker", status: "implemented" }],
+      findings: [{ id: "gap", severity: "medium", description: "Gap" }],
+    });
+    decided = withUx(decided);
+    decided = transition(decided, "decide_review", {
+      id: crypto.randomUUID(),
+      reviewFingerprint: codeReviewFingerprint(decided),
+      request: "Repair the gap",
+      repair: [{ role: "review_code", findingId: "gap" }],
+      ignore: [],
+    });
+    for (
+      const [method, state] of [
+        [behavior.methods.plan, triaged],
+        [behavior.methods.plan_review_fixes, decided],
+      ] as const
+    ) {
+      const fixture = fakeContext(repo, state);
+      for (
+        const command of [
+          ["cargo", "x", "test"],
+          ["sh", "-c", "grep -c marker m.txt"],
+          ["env", "CARGO_TARGET_DIR=/tmp/t", "cargo", "x", "test", "-p", "a"],
+        ]
+      ) {
+        await rejects(
+          () => method.execute(plan(command) as never, fixture.context),
+          'Plan checks violate repository test policy:\n- checks[0] (id "contents"): ',
+        );
+        equal(await loadState(fixture.context), state);
+        equal(fixture.writes.length, 0);
+      }
+    }
+    // A compliant plan records normally through the same method.
+    const fixture = fakeContext(repo, triaged);
+    await behavior.methods.plan.execute(
+      plan(["cargo", "x", "test", "-p", "demo"]) as never,
+      fixture.context,
+    );
+    equal((await loadState(fixture.context)).planVersion, 1);
+  } finally {
+    if (previousPath === undefined) Deno.env.delete("PATH");
+    else Deno.env.set("PATH", previousPath);
     await Deno.remove(repo, { recursive: true });
   }
 });

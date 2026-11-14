@@ -3,7 +3,8 @@
 Read this reference only when `drive` reports `blocked`; use the matching section
 below. Ordinary operation and explicit restart/rollback routing are in the
 [skill](../SKILL.md). Persistence and protocol facts are in the
-[design reference](../../../../docs/ISSUE_LIFECYCLE.md).
+[design reference](../../../../docs/ISSUE_LIFECYCLE.md); states that predate
+current contracts are in [Legacy states](../../../../docs/ISSUE_LIFECYCLE.md#legacy-states).
 
 ## Inspect the blocker
 
@@ -18,28 +19,66 @@ recorded assignment, saved response, child state, requirements, configuration an
 exact run before selecting an action. Never manufacture evidence or reset history
 to advance. A workspace mismatch requires inspecting the control vault setting;
 changing it does not migrate an issue. Restore the issue's original workspace to
-resume it, rather than recreating it. Changed Agenda requirements require
-`refresh`, assessment of the changes and regenerated affected plan/review evidence;
-reconcile already-applied transitions first as described below.
+resume it, rather than recreating it.
+
+Changed Agenda requirements are refreshed by `drive` itself before any approval.
+After plan approval, drive blocks with the handoff's `requirementsChange`: the
+changes and the approvals a refresh would invalidate. Present both; with the
+user's direction run `refresh` (drive continues and regenerates the affected
+plan/review evidence), or restore the previous Agenda text. While a revision
+authorization is reserved, refresh refuses: with the user's direction roll back
+to `triage`, which records that request as planning feedback. Reconcile
+already-applied transitions first as described below.
 
 ## Unresolved tasks
 
-An unresolved pane task blocks ordinary mutations and replacement workers.
-`drive` resumes the original task and submission, including partially applied
-results; `resume-agent` provides lower-level observation. Ordinary correlated,
-acknowledged wait timeouts keep observing that submission. A timeout does not
-authorize a restart or a new prompt. Do not rerun `agent` as an automatic retry.
+Start with `status`.`taskRecovery`: it classifies the current task from durable
+records and names the command (see
+[completion diagnostics](#completion-and-stale-run-diagnostics)). An unresolved
+pane task blocks ordinary mutations and replacement workers. `drive` resumes the
+original task and submission, including partially applied results;
+`resume-agent` provides lower-level observation. A timeout does not authorize a
+restart or a new prompt. Do not rerun `agent` as an automatic retry.
+
+Drive retries these correlated failures itself, within a budget per drive
+invocation. Every retry re-observes the original task: it never resends a
+prompt, never spawns after a launch intent and never answers a dialog.
+
+| Class | Applies when | Budget |
+| --- | --- | --- |
+| `long_wait` | An ordinary wait timeout of the original, acknowledged busy target: phase `spawned`, `waiting`, `background`, or `submitting` with the same submission's started delivery; not-ready reason absent, `not_idle`, `unresolved_turn` or `unconsumed_input`. | 48 read-only waits of the task's `timeoutSeconds` |
+| `reobserve` | The child completed and its evidence is accepted (completion unreconciled), or a fresh recorded transport error after submission. | 2 attempts, after 1 s and 5 s |
+| `cleanup` | Close-completed refused by a transient guard on the same worker, conversation and submission: busy, background work, an unresolved accepted turn, or an in-flight prompt write or control operation. | 6 attempts, after 2 s to 60 s (about 127 s) |
+| `preflight` | A launch-preflight transport failure before any launch intent was saved. | 3 attempts, after 5 s, 15 s and 30 s |
+
+All classes share an 8-hour deadline per drive invocation. Budgets are never
+persisted: when drive reports a budget exhausted, rerunning drive is an explicit
+act that starts a new one. These must stay blocked for a deliberate decision:
+uncertain delivery (an unacknowledged interruption, or a timeout without a
+correlated busy observation), the submission's own `interrupted` outcome,
+`failed` provider or host failures, missing typed evidence, `not_sent`,
+`target_changed`/`target_closed`, `needs_input` dialogs, `status_unavailable`,
+`hooks_unavailable`, identity mismatches, uncertain or rejected launches, runner
+exceptions with no recorded reply, pending discards, an undelivered continuation
+and cleanup refusals of identity or correlation.
+
 Pane input during an accepted turn ends only the prompt's own observation as
 `interrupted`; the child then keeps observing the same submission, which input
-cannot end. Only that submission's own `interrupted` result is terminal.
+cannot end. Only that submission's own `interrupted` result is terminal. Then
+neither `continue-agent` (it needs a completed worker) nor `discard-agent` (it
+needs `failed` or `not_sent`) applies: only `restart-agent` or `rollback` with the
+user's request does.
 
 `needs_input`, interruptions, target replacement and timeouts are not successful
 evidence. Unknown or expired submissions without a validated saved terminal proof
 remain unresolved; inspect the retained pane and state before any explicitly
 requested rollback or restart. Background
 tasks require another observation of the same conversation's final idle answer
-before success. Completed handoffs persist across resume; changed state or
-assignments, including rollback/restart, invalidate superseded handoffs.
+before success. A closed Claude pane can still complete through a retained proof
+that drive observes automatically; see [design §Qualified completion after
+closure](../../../../docs/ISSUE_LIFECYCLE.md#qualified-completion-after-closure).
+Completed handoffs persist across resume; changed state or assignments,
+including rollback/restart, invalidate superseded handoffs.
 
 If dispatch stopped before the child saved initial state, `resume-agent`
 initializes that original task under the child execution lock using its saved
@@ -56,8 +95,7 @@ or stale Codex, Muse or AGY hooks fail preflight; inspect `yinz hooks status
 Missing sessions, failed control-pane lookup, provider failures and session
 mismatches block new launches. Inspect the session and saved configuration. New
 workers require control identity and the matching session, with no automatic-tab
-fallback. An unlaunched legacy task needs an explicit restart with control
-identity. Existing workers resume their original submissions and tabs. After
+fallback. Existing workers resume their original submissions and tabs. After
 deliberately resolving a dialog or other blocker, `drive` again.
 
 ## Uncertain delivery
@@ -66,43 +104,40 @@ An uncertain spawn is never automatically retried. Inspect the retained session,
 pane and saved response. Malformed or mismatched evidence, transport failures,
 unknown submissions, uncertain delivery, retained resources and active workers
 cannot be discarded as rejected launches. Explicit rollback or restart may
-supersede their assignments without proving a terminal outcome.
-
-`prompt_delivery` is optional: missing means unknown, even if older response text
-says the prompt was not sent. Text alone cannot authorize unsent recovery.
-`started` is recorded before the first actual prompt write, including a typed
-prefix, and is never downgraded even when that write fails. Preparation marker
-and clearing writes do not count as prompt delivery. Structured non-delivery
-recovery requires updated server responses and behavior code; older tasks without
-that evidence use explicit rollback or restart.
+supersede their assignments without proving a terminal outcome. Text alone
+cannot establish non-delivery; the structured `prompt_delivery` protocol is in
+[design §Pane tasks](../../../../docs/ISSUE_LIFECYCLE.md#pane-tasks).
 
 ## Rejected launches
 
-`discard-agent` requires the operator's actual `request` and
-`confirmedStopped: true`, the original task identity, and lifecycle state still
-equal to the task's original snapshot. A durable `launch_rejected` is eligible
-only with a saved structured `rejected` response retaining no pane, submission,
-background work or other resources. Malformed responses, transport failures,
-responses retaining resources and legacy uncertain launches remain blocked for
-discard.
+`discard-agent --request '<the operator request>'` verifies the original task
+identity, lifecycle state still equal to the task's original snapshot, and a
+durable `launch_rejected` whose launch receipt proves non-execution or process
+exit with completed cleanup (or a saved structured rejection retaining no pane,
+submission, background work or other resources). Malformed responses, transport
+failures, responses retaining resources and uncertain launches remain blocked
+for discard.
 
 After explicitly discarding a resource-free rejection, correct configuration
-(for example unsupported effort) in a new `agent` request. The old configuration
-stays recorded; neither resume nor discard changes it or launches a replacement.
-Standalone `@yinz/agent` callers need a new behavior identity with corrected
-inputs. Explicit rollback or restart remains available for uncertain launches.
+(for example unsupported effort) in a new `agent` request; nothing relaunches
+automatically. The old configuration stays recorded; neither resume nor discard
+changes it or launches a replacement. Standalone `@yinz/agent` callers need a new
+behavior identity with corrected inputs. Explicit rollback or restart remains
+available for uncertain launches.
 
 ## Unusable evidence and stopped failures
 
-Inspect the response and worktree before assigning replacement work. All discard
-cases require the actual operator request, `confirmedStopped: true`, matching
-original task identity and unchanged lifecycle snapshot:
-
-| Case | Required evidence |
-| --- | --- |
-| Completed response fails schema validation or is otherwise unusable | Matching completed worker, no background tasks, evidence not yet applied. |
-| Terminal provider failure, including `StopFailure` | Correlated, acknowledged `failed` response; recheck the original submission and freshly observe the same pane and conversation idle with no background tasks. Keep the failure response separate from fresh status. |
-| Finalized prompt-preparation failure | Retained server response explicitly says `prompt_delivery: "not_sent"`; retrieve the original submission and match submission ID, pane, Yinz session, provider and conversation. Require failure outcome, no acknowledgement, no turn ID and no background work. Fresh status must show that same worker idle with no background work or pending clearing/submission writes. |
+Inspect the response and worktree before assigning replacement work.
+`discard-agent` with the actual operator request checks the matching original
+task identity and unchanged lifecycle snapshot, then verifies its basis itself:
+it re-waits a terminal failure's original submission and requires fresh idle
+status, and freshly observes a completed worker's pane listed and idle. The
+[discard bases](../../../../docs/ISSUE_LIFECYCLE.md#discard-bases) table lists
+what each basis needs. A refusal names every failed condition. Add
+`confirmedStopped: true` only when the behavior says it cannot observe a
+completed worker and you have confirmed the stop yourself. A pane absent from
+its session is unobservable, because it may have warped to another session or
+outlived its server; look for it in every session before attesting.
 
 For prompt preparation, `clearing_draft` and `pending_submission` block discard
 until writes drain. An empty composer is not required: preparation may leave a
@@ -131,10 +166,13 @@ retryable through `drive` or `resume-agent` without replaying accepted evidence.
 Cleanup discards a worker's draft or unconsumed input; `unconsumed_input` never
 blocks it and needs no recovery or terminal verification. A rejection names the
 failed guard (changed conversation, not idle, another latest submission,
-background work or an in-flight control operation); resolve that cause.
-Failed, blocked, superseded and unusable-result panes stay available for
-inspection. Closing the last worker releases the region. Existing saved tasks
-retain legacy placement and cleanup behavior.
+background work or an in-flight control operation). `taskRecovery` kind
+`retry_cleanup` shows the saved refusal and whether it is retryable: drive
+retries transient guards on the same worker within the `cleanup` budget; resolve
+any other cause deliberately. A retried `worker is Busy, not idle` can close the
+pane after a user typed into a completed worker; the provider conversation
+survives. Failed, blocked, superseded and unusable-result panes stay available
+for inspection. Closing the last worker releases the region.
 
 ## Rollback and restart
 
@@ -144,7 +182,7 @@ malformed evidence. Record the actual request. Do not demand successful resume,
 proof of non-delivery, a terminal provider result, `confirmedStopped` or another
 permission question. Ordinary timeouts do not authorize automatic restart.
 
-`rollback` takes `{step, request}`. Steps are `triage`, `plan`, `review_plan`,
+`rollback` takes `step` and the user's `--request`. Steps are `triage`, `plan`, `review_plan`,
 `approve`, `implement`, `review_code`, `review_ux`, `ready`, `merge` and `summarize`. It retains
 preceding evidence and invalidates decisions from the selected step onward;
 prerequisites still apply (for example, `review_plan` needs a plan). Changed
@@ -164,21 +202,27 @@ the repository merge lock. A landed merge stays in history; `merge` and
 review and authorization for subsequent changes. Conflicts and rebased HEADs
 still require repair in the retained worktree.
 
-After rollback, use the ordinary command for the selected step, then `drive` to
-the next handoff. For worker steps, `restart-agent` combines rollback with a new
+After rollback, run `drive` to the next handoff (or the ordinary command for the
+selected step). For worker steps, `restart-agent` combines rollback with a new
 assignment using the current `taskId`, role, actual `request` and ordinary agent
 options. Select the intended running session; the old one may be gone. Omitted
 optional settings use provider defaults. The replacement has new task, behavior,
 pane and submission identities. Identical restart inputs resume that replacement;
 another restart must target its new task ID with a new request.
 
-Recovery intent is saved before Agenda, state or assignment changes. If interrupted,
-`resume-rollback` finishes that intent and resumes its exact saved replacement, if
-any, without another approval. Ordinary mutations wait for pending recovery. A
-new explicit rollback may supersede it without finishing it first, preserving the
-old intent in history. This also supports changed requirements or a different
-restart step. `status` includes the latest recovery; `recovery-<id>` and
-`agent-task-<id>` retain recovery and superseded assignment records.
+Recovery intent is saved before Agenda, state or assignment changes. If
+interrupted, `drive` finishes that intent before anything else and resumes its
+exact saved replacement, if any, without another approval. `resume-rollback
+--no-drive` finishes the intent and stops before `drive`; a plain
+`resume-rollback` continues with `drive` like the other chained commands. Either
+command still resumes a saved restart replacement in the same checkout, so
+inspect or stop surviving workers before running either. A failure reports
+`Rollback is incomplete`; rerunning drive retries the saved intent. Ordinary
+mutations wait for pending recovery. A new explicit rollback may supersede it without finishing
+it first, preserving the old intent in history. This also supports changed
+requirements or a different restart step. `status` includes the latest recovery;
+`recovery-<id>` and `agent-task-<id>` retain recovery and superseded assignment
+records.
 
 ## Review and verification failures
 
@@ -186,8 +230,9 @@ Plan blockers use the skill's `authorize_plan_revision` route: supported
 adjudication or separately authorized targeted revision, never implied approval.
 Technical and UX findings yield `address_review_findings` after both reviews.
 Present findings and ask which to repair or ignore; any severity may be accepted
-by the user. Use `decide-review` with the handoff ID, exact review fingerprint,
-actual request and role-qualified finding references. Selected repairs run a
+by the user. Use `decide-review --handoff <id> --request '<direction>'` with
+`--repair`/`--ignore` role-qualified finding references; the behavior binds the
+exact review fingerprint from that handoff. Selected repairs run a
 planner and yield `approve_review_fixes`; approval authorizes the implementation
 worker. Repairs require fresh technical and UX reviews and verification. The
 user may sign off on merge with outstanding findings; preserve them as unresolved.
@@ -203,24 +248,21 @@ but clears UX, verification, merge authorization and attempt eligibility. Rollba
 to `review_code` or earlier clears both reviews. Ready-only rollback retains both
 reviews and same-commit verification. A new technical review clears prior UX.
 
-Old saved assignments, receipts and prompts retain their original contracts.
-Legacy unmerged implementing work with technical review proceeds to UX; it is not
-synthetic approval. An unmerged ready state missing UX blocks: explicitly
-`rollback {step: "review_ux", request: <actual request>}`, then `drive`, checks and
-new merge authorization. An unlanded active attempt needs `repair` before fresh
-reviews. First consult its durable receipt: an already-landed merge is a fact,
-and merge/close-out replay (including rollback to merge/summarize) reuses it
-without retroactively inventing UX evidence.
-
-For a failed verification, read the checklist and each failing check's log. Fix
-the defect in the current branch, commit and obtain fresh technical review, UX review and verification
-of that exact commit. `drive` never automatically reruns failed verification.
-Only an environment failure at the same reviewed commit permits an explicit
-`verify` rerun. A dirty worktree or changed branch/HEAD must be inspected and
-repaired or restored to the reviewed commit before same-commit verification.
+For a failed verification, read the checklist and each failing check's log.
+`repair` needs no input: the recorded failed probe, baseline and plan checks and
+their log names become `lastFailure` for the implementation worker, which reads
+the logs itself; add a reason only for context the logs lack. A rebase-probe
+conflict tells the worker to rebase onto local `main` and resolve each conflict
+deliberately. Baseline checks run at the un-rebased commit, so a baseline
+failure in code the branch did not change may come from its older base; the
+worker then rebases onto local `main` when `main` already fixes it. The fixed commit needs fresh technical review, UX review and
+verification. `drive` never automatically reruns failed verification or runs
+repair. Only an environment failure at the same reviewed commit permits an
+explicit `verify` rerun. A dirty worktree or changed branch/HEAD must be inspected
+and repaired or restored to the reviewed commit before same-commit verification.
 Every run stays in event history. An empty checklist or cancelled run is not
 successful verification. Reviewer-reported checks remain advisory for structured
-plans; legacy plans explicitly retain their earlier gate.
+plans.
 
 Treat flakes and timeouts as defects: record, investigate and fix them in this
 branch. A passing diagnostic rerun alone does not resolve failure. When `/tmp`
@@ -236,19 +278,22 @@ runs. Per-issue locking does not replace the shared integration boundary.
 
 On merge-gate failure, show the attempt summary, failed phases/tests and log path
 from launcher output or the blocked handoff. Read
-`<git-common-dir>/yinz-lifecycle/merges/<attemptId>/ci-check.log`, then pass the
-cause to `repair`. `lastFailure` includes the summary and log for the next
-implementation worker. Fix the cause, including flakes/timeouts, in this branch
-and obtain current review/verification before retrying. Earlier attempts remain
-in `mergeFailures` and the next receipt's `previousAttempts`; retry must not hide
-them.
+`<git-common-dir>/yinz-lifecycle/merges/<attemptId>/ci-check.log` and investigate
+the cause. `repair` attaches the recorded summary and log to `lastFailure` for the
+next implementation worker; a reason adds only what the log lacks. A test that
+also failed in earlier attempts is named as recurring in the summary; a flake is
+a defect. Fix the cause in this branch and obtain current review/verification
+before retrying. Earlier attempts remain in `mergeFailures` and the next
+receipt's `previousAttempts`; retry must not hide them.
 
-For conflicts, dirty worktrees, changed targets or interrupted integration,
-inspect Git and the exact persisted run to determine whether rebase, verification
-or merge completed. Resolve conflicts deliberately in the retained worktree,
-record the repair and refresh review evidence before integration. Never silently
-abort rebase, reset/discard changes, delete branches or force a merge to make a
-retry appear clean. Failed worktrees stay available for diagnosis.
+Verification's rebase probe reports conflicts with local `main` before the merge
+gate; the gate's own rebase under the lock stays authoritative. For conflicts,
+dirty worktrees, changed targets or interrupted integration, inspect Git and the
+exact persisted run to determine whether rebase, verification or merge completed.
+Resolve conflicts deliberately in the retained worktree, record the repair and
+refresh review evidence before integration. Never silently abort rebase,
+reset/discard changes, delete branches or force a merge to make a retry appear
+clean. Failed worktrees stay available for diagnosis.
 
 The full merge gate still applies after repair. Only the user's explicit waiver
 for that merge, recorded with its scope in `skipCiRequest`, permits skipping it;
@@ -263,7 +308,7 @@ outcome to the original requirements. Complete only after merge and
 After successful completion, `authorize_closeout` offers optional bundled cleanup.
 Present the directory (including build outputs), local branch and original
 controller session/pane. Acceptance ends that conversation; record separate
-explicit consent with `closeout {handoffId, decision: "accept", request}`.
+explicit consent with `closeout --handoff <id> --decision accept --request '<consent>'`.
 Initial decline retains everything and is terminal for automatic drive. A renewed
 offer describes only remaining actions. If Git is complete, decline keeps the
 original pane and completed outcome; deleted resources remain deleted. Declining
@@ -319,49 +364,38 @@ closure remains a fact. Changed requirements/merge identity/targets block reuse
 without discarding historical effects. Before restarting
 implementation after cleanup, deliberately select a new valid worktree.
 
-
-### Qualified completion after closure
-
-Ordinary drive/resume observes the saved submission without repeating implementation.
-Claude observation retries initial transcript absence and exact completion delivery
-under an absolute deadline and the original process/conversation identity. A
-linked answer plus positive registry idle can qualify a screen-thread closure
-snapshot, provided no input or activity intervened. Accepted evidence remains
-insufficient until execution is positively terminal and quiescent.
-
-Validated passive permission samples from the same process/conversation preserve
-an existing completion claim; they never establish completion or quiescence.
-A matching normal SessionEnd freezes eligible facts before clearing the live
-record. Duplicate shutdown, held exit and pane/tab closure preserve that frozen
-proof and its original expiry. New input, activity or replacement still blocks it.
-A positively observed interruption remains retrievable as `interrupted` on the
-original submission; it never supplies a successful retained proof or allows
-accepted evidence to advance the lifecycle.
-
-The same server retains at most 1024 closed proofs for 24 hours. The child checks
-launch incarnation, session, provider, cwd, pane, conversation, submission and
-saved turn identity, then saves the proof before publishing its result. Interrupted
-publication resumes from that durable proof; normal parent import guards and
-stable events still apply. Retained completion does not imply live availability.
-
-Missing/legacy proof, expiry, eviction, restart, replacement, interruption and
-unknown/background work remain blocked with their actual diagnostic. Inspect
-saved identity and execution facts; do not infer success from receipt acceptance,
-elapsed time, absence, raw Stop, end_turn or EOF. Historical #78 facts already
-deleted cannot be reconstructed by this path. Restart/rollback and cleanup still
-require their existing controller authority; do not repeat finished work merely
-to rebuild bookkeeping. See docs/AGENT_CLI.md, “Closed submission reconciliation”,
-for the response fields and direct wait syntax.
-
 ## Completion and stale-run diagnostics
 
-Read `status` for `workerObservation` and `diagnostics`. An accepted receipt with
-`completion_unreconciled` means the child reports completion: `resume-agent`
-validates and imports the original result without invoking the worker again.
-`evidence_waiting_for_completion` and `background_work` retain the completion
-fence; continue observing the original submission. Neither transcript EOF nor
-pane closure proves termination. A qualified retained submission can supply the
-proof after closure; an expired or unavailable record cannot.
+Read `status` for `workerObservation`, `diagnostics` and `taskRecovery`.
+`taskRecovery` is computed from durable records and is advisory: the method it
+names re-verifies every condition. It reports `kind`, `taskId`, `role`,
+`summary`, `command` (`{method, input}` or null), `requiresUserRequest`,
+`alternatives`, `discard` (`eligible`, `basis` and the condition lists for
+rejected launch, terminal failure and completed worker), and `lastError`. Request
+inputs show the placeholder `<the user's actual request>`; substitute the user's
+actual words, never invented ones. Kinds:
+
+| Kind | Meaning |
+| --- | --- |
+| `none` | No pane task needs recovery; follow the current handoff. |
+| `finish_rollback` | A rollback is pending; `drive` finishes its saved intent. The launcher's `resume-rollback --no-drive` finishes it and stops before `drive`, but still resumes a saved restart replacement; inspect surviving workers before either. |
+| `finish_discard` | A recorded discard is unfinished; `drive` completes it first. |
+| `retry_cleanup` | The result is imported but cleanup was refused; drive retries a transient guard, otherwise inspect. |
+| `resume` | A bounded retry class applies, or background work has no recorded failure yet; `drive` re-observes without resending. A recorded background failure other than a correlated timeout or transport error gets the discard, `interrupted`, `dialog` or `inspect` kind instead. |
+| `discard` | A rejected launch or terminal failure is eligible; `discard-agent` with the user's request. |
+| `continue_or_discard` | A completed worker has no accepted evidence; `continue-agent` (unless cleaned up) or `discard-agent`, each with the user's request. |
+| `continuation_unsent` | A saved continuation never reached the worker; rerun `continue-agent` with the same request. |
+| `interrupted` | `drive` observes the submission; its own `interrupted` leaves only `restart-agent` or `rollback`. |
+| `dialog` | Resolve the dialog deliberately in the pane, then `drive`. |
+| `inspect` | No automatic or discard route applies; inspect, then restart or roll back only with the user's request. |
+
+An accepted receipt with `completion_unreconciled` means the child reports
+completion: `drive` (or `resume-agent`) validates and imports the original result
+without invoking the worker again. `evidence_waiting_for_completion` and
+`background_work` retain the completion fence; continue observing the original
+submission. Neither transcript EOF nor pane closure proves termination. A
+qualified retained submission can supply the proof after closure; an expired or
+unavailable record cannot.
 
 `worker_identity_mismatch` or `child_state_missing` requires inspection of the
 recorded assignment and original child. Never substitute a replacement

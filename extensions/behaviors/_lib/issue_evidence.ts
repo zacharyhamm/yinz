@@ -26,6 +26,7 @@ import {
   validateAdvisory,
 } from "./review_continuity.ts";
 import { AgentConfigSchema } from "./yinz_agent.ts";
+import type { AssignmentFiles } from "./assignment_files.ts";
 
 const Digest = z.string().regex(/^[0-9a-f]{64}$/);
 const Commit = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
@@ -81,16 +82,63 @@ export const RoleEvidenceSchema = z.discriminatedUnion("role", [
   }).strict(),
 ]);
 export type RoleEvidence = z.infer<typeof RoleEvidenceSchema>;
+/**
+ * Submission input. Review roles may omit the plan version and reviewed commit:
+ * the bound assignment determines them, and fillAssignedEvidence supplies them
+ * before the strict RoleEvidenceSchema parse. Receipts keep requiring both.
+ */
+export const SubmitRoleSchemas = {
+  ...RoleSchemas,
+  review_plan: ActionSchemas.review_plan.partial({ planVersion: true }),
+  review_code: ActionSchemas.review_code.partial({
+    planVersion: true,
+    commit: true,
+  }),
+  review_ux: ActionSchemas.review_ux.partial({
+    planVersion: true,
+    commit: true,
+  }),
+};
+export const SubmitRoleEvidenceSchema = z.discriminatedUnion("role", [
+  z.object({ role: z.literal("triage"), evidence: SubmitRoleSchemas.triage })
+    .strict(),
+  z.object({ role: z.literal("plan"), evidence: SubmitRoleSchemas.plan })
+    .strict(),
+  z.object({
+    role: z.literal("review_plan"),
+    evidence: SubmitRoleSchemas.review_plan,
+  }).strict(),
+  z.object({
+    role: z.literal("implement"),
+    evidence: SubmitRoleSchemas.implement,
+  }).strict(),
+  z.object({
+    role: z.literal("review_code"),
+    evidence: SubmitRoleSchemas.review_code,
+  }).strict(),
+  z.object({
+    role: z.literal("review_ux"),
+    evidence: SubmitRoleSchemas.review_ux,
+  }).strict(),
+  z.object({
+    role: z.literal("plan_review_fixes"),
+    evidence: SubmitRoleSchemas.plan_review_fixes,
+  }).strict(),
+  z.object({
+    role: z.literal("implement_review_fixes"),
+    evidence: SubmitRoleSchemas.implement_review_fixes,
+  }).strict(),
+]);
 const Envelope = { taskId: z.uuid(), assignmentDigest: Digest };
 export const SubmitArgsSchema = z.discriminatedUnion("role", [
-  RoleEvidenceSchema.options[0].extend(Envelope),
-  RoleEvidenceSchema.options[1].extend(Envelope),
-  RoleEvidenceSchema.options[2].extend(Envelope),
-  RoleEvidenceSchema.options[3].extend(Envelope),
-  RoleEvidenceSchema.options[4].extend(Envelope),
-  RoleEvidenceSchema.options[5].extend(Envelope),
-  RoleEvidenceSchema.options[6].extend(Envelope),
-  RoleEvidenceSchema.options[7].extend(Envelope),
+  SubmitRoleEvidenceSchema.options[0].extend(Envelope),
+  SubmitRoleEvidenceSchema.options[1].extend(Envelope),
+  SubmitRoleEvidenceSchema.options[2].extend(Envelope),
+  SubmitRoleEvidenceSchema.options[3].extend(Envelope),
+  SubmitRoleEvidenceSchema.options[4].extend(Envelope),
+  SubmitRoleEvidenceSchema.options[5].extend(Envelope),
+  SubmitRoleEvidenceSchema.options[6].extend(Envelope),
+  SubmitRoleEvidenceSchema.options[7].extend(Envelope),
 ]);
 export const EvidenceTargetSchema = z.object({
   protocol: z.literal(1),
@@ -111,7 +159,8 @@ const AssignmentCoreSchema = z.object({
   generation: z.string().min(1),
   request: z.string().min(1).optional(),
   reviewCommit: Commit.optional(),
-  contractVersion: z.literal(2).optional(),
+  // 3 is contract 2 plus private assignment files; the digest core is the same.
+  contractVersion: z.literal([2, 3]).optional(),
   continuity: ContinuityContext.optional(),
   round: RoundRecord.optional(),
 }).strict();
@@ -160,6 +209,9 @@ export function canonical(value: unknown): string {
 export function evidenceDigest(value: unknown): string {
   return createHash("sha256").update(canonical(value)).digest("hex");
 }
+/** Contracts 2 and 3 bind review continuity; 3 also delivers assignment files. */
+export const hasContinuityContract = (version?: number) =>
+  version === 2 || version === 3;
 
 export type AssignmentTask = {
   id: string;
@@ -169,7 +221,7 @@ export type AssignmentTask = {
   before: z.infer<typeof StateSchema>;
   request?: string;
   reviewCommit?: string;
-  contractVersion?: 2;
+  contractVersion?: 2 | 3;
   continuity?: z.infer<typeof ContinuityContext>;
   round?: z.infer<typeof RoundRecord>;
 };
@@ -268,7 +320,7 @@ export function reviewPacket(state: z.infer<typeof StateSchema>) {
 }
 export function validateAssignment(assignment: Assignment) {
   const { digest, promptDigest: _prompt, ...core } = assignment;
-  if (assignment.contractVersion === 2) {
+  if (hasContinuityContract(assignment.contractVersion)) {
     const c = assignment.continuity;
     const fingerprints = (["review_code", "review_ux"] as const).flatMap((
       role,
@@ -314,15 +366,59 @@ export function validateAssignment(assignment: Assignment) {
   ) throw new Error("Submission assignment digest does not match its binding");
 }
 
+/**
+ * Supplies the plan version and reviewed commit that the assignment determines.
+ * A supplied value must match; the input is never mutated. Applies to every
+ * contract: stored receipts always contain both values, so replay is a no-op.
+ */
+export function fillAssignedEvidence(
+  assignment: Assignment,
+  raw: unknown,
+): unknown {
+  if (
+    raw === null || typeof raw !== "object" || Array.isArray(raw) ||
+    !("role" in raw) || !("evidence" in raw)
+  ) return raw;
+  const { role, evidence } = raw as { role: unknown; evidence: unknown };
+  if (
+    evidence === null || typeof evidence !== "object" ||
+    Array.isArray(evidence) || role !== assignment.role ||
+    !["review_plan", "review_code", "review_ux"].includes(assignment.role)
+  ) return raw;
+  const filled: Record<string, unknown> = { ...evidence };
+  const planVersion = assignment.before.plan?.version;
+  if (planVersion !== undefined) {
+    if ("planVersion" in filled && filled.planVersion !== planVersion) {
+      throw new Error(
+        `Evidence must reference the current plan version (assigned ${planVersion}, submitted ${
+          JSON.stringify(filled.planVersion)
+        })`,
+      );
+    }
+    filled.planVersion = planVersion;
+  }
+  if (role !== "review_plan" && assignment.reviewCommit !== undefined) {
+    if ("commit" in filled && filled.commit !== assignment.reviewCommit) {
+      throw new Error(
+        "Pane reviewed a different commit than the dispatched task",
+      );
+    }
+    filled.commit = assignment.reviewCommit;
+  }
+  return { ...raw, evidence: filled };
+}
+
 /** Explicitly validate before writing: Swamp resource schemas only warn. */
 export function validateEvidence(assignment: Assignment, raw: unknown) {
   validateAssignment(assignment);
-  const payload = RoleEvidenceSchema.parse(raw);
+  const payload = RoleEvidenceSchema.parse(
+    fillAssignedEvidence(assignment, raw),
+  );
   if (payload.role !== assignment.role) {
     throw new Error("Evidence role does not match the assigned task");
   }
   const state = structuredClone(assignment.before);
-  if (assignment.contractVersion === 2) {
+  if (hasContinuityContract(assignment.contractVersion)) {
     if (payload.role === "plan_review_fixes") {
       validateRepairMappings(state, payload.evidence, true);
     }
@@ -424,7 +520,7 @@ export function validateEvidence(assignment: Assignment, raw: unknown) {
     : transition(state, payload.role, payload.evidence);
   // Replay the contract that accepted the receipt. Legacy transitions did not
   // archive reviews, but any history already bound into the snapshot is evidence.
-  if (assignment.contractVersion !== 2) {
+  if (!hasContinuityContract(assignment.contractVersion)) {
     if (assignment.before.reviewHistory === undefined) {
       delete next.reviewHistory;
     } else {
@@ -450,19 +546,29 @@ export function validateReceipt(assignment: Assignment, raw: unknown) {
 function quote(value: string) {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
+export { quote as shellQuote };
 
+/** Swamp against the local store, ignoring a shell configured for a remote server. */
+export const SWAMP_LOCAL =
+  `env -u SWAMP_SERVE_URL -u SWAMP_SERVER_URL -u SWAMP_REPO_DIR -u SWAMP_WORKFLOWS_DIR swamp`;
+
+/**
+ * Without assignment files (contracts 1 and 2), the text is unchanged so saved
+ * continuations stay byte-identical. Contract 3 submits through the task's helper.
+ */
 export function submissionInstructions(
   task: AssignmentTask,
   target: z.infer<typeof EvidenceTargetSchema>,
+  files?: AssignmentFiles,
 ) {
+  if (files) return helperSubmissionInstructions(task, target, files);
   const envelope = {
     taskId: task.id,
     assignmentDigest: target.assignmentDigest,
     role: task.role,
     evidence: "replace this value with the role evidence object",
   };
-  const command =
-    `env -u SWAMP_SERVE_URL -u SWAMP_SERVER_URL -u SWAMP_REPO_DIR -u SWAMP_WORKFLOWS_DIR swamp`;
+  const command = SWAMP_LOCAL;
   const repo = `--repo-dir ${quote(target.controlDir)}`;
   return [
     "Submit evidence through Swamp before ending this task. Final chat text is presentation and is never imported as lifecycle evidence.",
@@ -487,5 +593,41 @@ export function submissionInstructions(
     } ${repo} --select content --single --json`,
     "A successful submission records status accepted and a receipt with this task ID and assignment digest. Correct validation errors and resubmit while retaining your investigation. An identical replay returns the original receipt; changed evidence after acceptance is rejected. Query before retrying an interrupted acknowledgement. Never initialize another Swamp store.",
     "Finish only after inspecting the matching accepted receipt. Return readable prose; its formatting and contents do not carry lifecycle evidence.",
+  ].join("\n\n");
+}
+
+/** The manifest's own path and sha256, as the prompt binds them. */
+export function assignmentManifestReference(files: AssignmentFiles) {
+  const text = canonical(files);
+  return {
+    path: `${files.directory}/manifest.json`,
+    sha256: createHash("sha256").update(text).digest("hex"),
+    text,
+  };
+}
+
+function helperSubmissionInstructions(
+  task: AssignmentTask,
+  target: z.infer<typeof EvidenceTargetSchema>,
+  files: AssignmentFiles,
+) {
+  const manifest = assignmentManifestReference(files);
+  const helper =
+    `${target.controlDir}/scripts/issue_lifecycle/submit_evidence.py`;
+  return [
+    "Submit evidence with this task's helper before ending this task. Final chat text is presentation and is never imported as lifecycle evidence.",
+    `Swamp submission target:\n${
+      JSON.stringify({ ...target, taskId: task.id, role: task.role })
+    }`,
+    `Assignment manifest (${manifest.path}, sha256 ${manifest.sha256}):\n${manifest.text}`,
+    "You may invoke only this task's evidence submit method and data query. Approval, adjudication, rollback, restart, worktree preparation, merge, CI waivers and Agenda mutations belong to the controller. Do not invoke other lifecycle operations.",
+    `Start from the evidence template ${files.files.template.path}. Fill every empty string and the arrays you need, and keep the pre-filled identities exactly. planVersion and commit come from the assignment: you may omit them, but supplied values must match. Schema: ${files.files.schema.path}.`,
+    `Submit and confirm acceptance in one step (evidence file outside the source tree, or \`-\` for stdin):\npython3 -I ${
+      quote(helper)
+    } --task-dir ${
+      quote(files.directory)
+    } --assignment-digest ${target.assignmentDigest} <evidence.json|->`,
+    "It exits 0 and prints the accepted receipt only after this task's receipt is recorded. Otherwise it prints the validation error: correct the evidence and rerun. Rerunning identical evidence is safe and returns the original receipt. `--status` reports acceptance without submitting; use it after an interrupted run. `--print-commands` shows the equivalent swamp commands if the helper itself cannot start. Never initialize another Swamp store.",
+    "Finish only after the helper reports accepted. Return readable prose; its formatting and contents do not carry lifecycle evidence.",
   ].join("\n\n");
 }
