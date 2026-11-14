@@ -1,5 +1,7 @@
 // Agent detail (#/a/<id>?run=…&tab=…): Timeline | Screen | Details, composer and sheets.
-import { describeError, freshnessText } from '../api.js';
+import {
+  describeError, freshnessText, SCREEN_TEXT_SIZES, normalizeScreenView, readScreenView, writeScreenView,
+} from '../api.js';
 import { TimelineStore, ToolsReader } from '../timeline.js';
 import { sameTarget, targetOf, validTarget } from '../submission.js';
 import { detailHash } from '../app-route.js';
@@ -187,7 +189,7 @@ function ToolsReaderSheet({ env, item, onClose }) {
   <//>`;
 }
 
-function ScreenPanel({ env, live, enabled, onTargetGone, layoutKey, beforeResize }) {
+function ScreenPanel({ env, live, enabled, onTargetGone, layoutKey, beforeResize, view, onView }) {
   const ref = live && live.ref && validTarget(live.ref) ? targetOf(live.ref) : null;
   const now = useNow(1000);
   const [busy, setBusy] = useState(false);
@@ -229,8 +231,23 @@ function ScreenPanel({ env, live, enabled, onTargetGone, layoutKey, beforeResize
       : Math.max(0, Math.min(el.scrollHeight - el.clientHeight, position.current.top));
     if (Math.abs(el.scrollTop - target) > 1) el.scrollTop = target;
   }, []);
-  const onScroll = useScrollLayout(scroller, capture, restore, markup, layoutKey, beforeResize, !!ref);
+  const onScroll = useScrollLayout(scroller, capture, restore, markup, `${layoutKey}|${view.wrap}|${view.size}`, beforeResize, !!ref);
   if (!ref) return html`<p class="empty">No live agent to read.</p>`;
+  // Capture the reading position before the reflow; the composite layout key
+  // restores it (pinned, or a clamped offset) once the new classes apply.
+  const changeView = (next) => {
+    onScroll();
+    onView(next);
+  };
+  const sizeIndex = SCREEN_TEXT_SIZES.indexOf(view.size);
+  const smallest = sizeIndex <= 0;
+  const largest = sizeIndex >= SCREEN_TEXT_SIZES.length - 1;
+  // aria-disabled, never native disabled: a focused stepper keeps keyboard focus at its bound.
+  const step = (delta) => {
+    const next = SCREEN_TEXT_SIZES[sizeIndex + delta];
+    if (next === undefined) return;
+    changeView({ ...view, size: next });
+  };
   const response = data && data.response;
   const failed = response && response.outcome && response.outcome !== 'ok' && response.outcome !== 'completed';
   return html`<div class="screen-panel">
@@ -238,6 +255,15 @@ function ScreenPanel({ env, live, enabled, onTargetGone, layoutKey, beforeResize
       <div class="screen-status">
         ${state ? html`<span class=${cx('freshness', state.status !== 'ok' && 'freshness-stale')}>${freshnessText(state, now)}</span>` : null}
         <button type="button" class="link-button" id="screen-refresh" onClick=${() => refresh()}>Refresh</button>
+        <span class="screen-view" role="group" aria-label="Screen view">
+          <button type="button" class="screen-view-button" id="screen-wrap" aria-pressed=${String(view.wrap)}
+            onClick=${() => changeView({ ...view, wrap: !view.wrap })}>Wrap</button>
+          <button type="button" class="screen-view-button" id="screen-text-smaller" aria-label="Smaller screen text"
+            aria-disabled=${smallest ? 'true' : undefined} onClick=${() => step(-1)}>A−</button>
+          <button type="button" class="screen-view-button" id="screen-text-larger" aria-label="Larger screen text"
+            aria-disabled=${largest ? 'true' : undefined} onClick=${() => step(1)}>A+</button>
+          <span class="visually-hidden" id="screen-text-size" role="status" aria-live="polite">${`Text ${view.size} px`}</span>
+        </span>
       </div>
       ${failed ? html`<${Banner} id="banner-screen" tone="warn">${responseText(response)}<//>` : null}
       ${!data && state && state.error ? html`<${Banner} id="banner-screen" tone="warn">${describeError(state.error)}<//>` : null}
@@ -290,6 +316,14 @@ export function DetailView({ env, route }) {
   const [sheet, setSheet] = useState(null);
   const [informationOpen, setInformationOpen] = useState(false);
   const beforeResize = useRef(null);
+  // Per device: kept across polls, tab switches and reloads. When storage fails,
+  // the in-memory choice still applies to this view.
+  const [screenView, setScreenView] = useState(() => readScreenView(env.local));
+  const changeScreenView = useCallback((next) => {
+    const view = normalizeScreenView(next);
+    setScreenView(view);
+    writeScreenView(env.local, view);
+  }, []);
   const [retargetNotice, setRetargetNotice] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const earlierController = useRef(null);
@@ -443,7 +477,9 @@ export function DetailView({ env, route }) {
     else env.replaceHash('#/');
   };
 
-  return html`<div class=${cx('page', 'detail-page', activeTab === 'screen' && 'detail-screen')}>
+  const screenTab = activeTab === 'screen';
+  return html`<div class=${cx('page', 'detail-page', screenTab && 'detail-screen', screenTab && screenView.wrap && 'screen-wrap',
+    screenTab && `screen-text-${screenView.size}`)}>
     <header class="app-header detail-header" id="detail-header">
       <div class="header-row detail-summary">
         <button type="button" class="icon-button" id="detail-back" aria-label="Back" onClick=${back}>‹</button>
@@ -487,7 +523,8 @@ export function DetailView({ env, route }) {
         ${activeTab === 'timeline' ? html`<${Timeline} items=${items} memory=${memory} loaded=${!store || store.loaded} layoutKey=${informationOpen} beforeResize=${beforeResize}
           earlier=${store && !!store.earlierRequest()} loadingEarlier=${loadingEarlier} onEarlier=${loadEarlier}
           onTools=${(item) => setSheet({ type: 'tools', item })} onEvent=${(item) => setSheet({ type: 'event', item })} />` : null}
-        ${activeTab === 'screen' ? html`<${ScreenPanel} env=${env} live=${live} enabled=${actions} layoutKey=${informationOpen} beforeResize=${beforeResize} onTargetGone=${() => refreshTail()} />` : null}
+        ${activeTab === 'screen' ? html`<${ScreenPanel} env=${env} live=${live} enabled=${actions} layoutKey=${informationOpen} beforeResize=${beforeResize}
+          view=${screenView} onView=${changeScreenView} onTargetGone=${() => refreshTail()} />` : null}
         ${activeTab === 'details' ? html`<div class="details-panel">
           ${store && store.meta.details_html ? html`<${ServerHtml} html=${store.meta.details_html} class="details-html" id="details" />` : html`<p class="empty">No details yet.</p>`}
           <div class="details-nav">

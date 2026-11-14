@@ -1271,6 +1271,10 @@ receives `(next . args)`.
 The frontend's `login.js` and `app.js` rely on the IDs above and on the
 `yinz-config` script; a replacement `login` or `shell` hook must keep them.
 
+The Screen tab's **Wrap** and text-size controls style `pre.screen` elements
+in the hook's output. A replacement `screen` hook should keep a `pre.screen`
+element around the terminal text to inherit them.
+
 #### Customizing with a wrapper plugin
 
 User plugins cannot import the builtin source, so a custom app calls

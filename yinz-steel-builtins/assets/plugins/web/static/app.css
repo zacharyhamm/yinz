@@ -330,9 +330,14 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 /* Reserve one output line (including both layers of padding) and one complete
    action row per control region. Metadata and the composer can then shrink
-   without letting Screen children overflow beneath the composer. */
+   without letting Screen children overflow beneath the composer.
+   The output reserve stays at the default 12 px line: the 480 px worst case
+   (information, a banner and submission recovery) has no room for more, and
+   the newest line of larger text still fits inside it. */
 .detail-screen {
-  --screen-output-min: calc(16px + 20px + 12px * 1.3);
+  --screen-font: 12px;
+  --screen-line: 1.2;
+  --screen-output-min: calc(16px + 20px + 12px * var(--screen-line));
   --screen-feedback-min: calc(var(--tap) + 8px);
   --screen-keys-min: calc(var(--tap) + 16px + 1px);
 }
@@ -348,9 +353,25 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
   flex: 0 1 auto; min-height: var(--screen-feedback-min); overflow-y: auto; overscroll-behavior: contain;
 }
 .screen-status {
-  flex: none; display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted);
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; color: var(--muted);
   padding: 8px calc(12px + var(--safe-right)) 0 calc(12px + var(--safe-left));
 }
+/* Screen view controls: wrap toggle and text-size stepper, local to this device.
+   At 320 px the group wraps beneath the freshness text. */
+.screen-view { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.screen-view-button {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: var(--tap); min-height: var(--tap); padding: 0 10px;
+  font: inherit; font-weight: 600; color: var(--text); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 10px; cursor: pointer; touch-action: manipulation;
+}
+.screen-view-button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+/* A stepper at its bound stays focusable (aria-disabled). It is marked by a dashed
+   border and muted text that keeps 4.5:1 contrast, not by fading. */
+.screen-view-button[aria-disabled="true"] { color: var(--muted); border-style: dashed; cursor: not-allowed; }
+.detail-screen.screen-text-14 { --screen-font: 14px; }
+.detail-screen.screen-text-16 { --screen-font: 16px; }
+.detail-screen.screen-text-18 { --screen-font: 18px; }
 .screen-scroll {
   flex: 1; min-height: var(--screen-output-min); overflow-y: auto; overscroll-behavior: contain;
   padding: 8px calc(12px + var(--safe-right)) 8px calc(12px + var(--safe-left));
@@ -362,8 +383,10 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .screen-html pre.screen, pre.screen {
   margin: 0; padding: 10px; border-radius: 10px; background: #0b0f17; color: #e5e7eb;
-  font-size: 12px; line-height: 1.3; white-space: pre; overflow-x: auto;
+  font-size: var(--screen-font, 12px); line-height: var(--screen-line, 1.2); white-space: pre; overflow-x: auto;
 }
+/* Wrap reflows wide terminal lines to the phone width instead of panning each line. */
+.detail-screen.screen-wrap pre.screen { white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; }
 .details-html pre.details, pre.details { margin: 0; padding: 10px; border-radius: 10px; background: var(--surface-2); }
 .details-nav { display: flex; flex-wrap: wrap; gap: 8px; }
 .reader { display: grid; gap: 8px; }

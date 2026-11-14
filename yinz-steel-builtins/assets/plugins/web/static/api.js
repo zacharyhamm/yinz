@@ -10,6 +10,7 @@ export const KEYS = Object.freeze({
   returnHash: 'yinz.web.v1.return',
   notice: 'yinz.web.v1.notice',
   submissionPrefix: 'yinz.web.v1.submission:',
+  screenView: 'yinz.web.v1.screen_view',
 });
 
 export const QUICK_KEYS = Object.freeze([
@@ -508,6 +509,36 @@ export function takeReturn(session) {
   session.remove(KEYS.returnHash);
   const hash = r.ok ? r.value : null;
   return typeof hash === 'string' && /^#\/[^\s]{0,2046}$/.test(hash) ? hash : '';
+}
+
+/** Screen tab text sizes in px, smallest first; the first is the default. */
+export const SCREEN_TEXT_SIZES = Object.freeze([12, 14, 16, 18]);
+
+/**
+ * Per-device Screen view preference. Each field falls back to its default on
+ * its own, so a stored unknown size keeps a valid wrap choice and vice versa.
+ */
+export function normalizeScreenView(value) {
+  const v = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return {
+    wrap: typeof v.wrap === 'boolean' ? v.wrap : false,
+    size: SCREEN_TEXT_SIZES.includes(v.size) ? v.size : SCREEN_TEXT_SIZES[0],
+  };
+}
+
+export function readScreenView(local) {
+  const r = local.get(KEYS.screenView);
+  if (!r.ok || typeof r.value !== 'string') return normalizeScreenView(null);
+  try {
+    return normalizeScreenView(JSON.parse(r.value));
+  } catch {
+    return normalizeScreenView(null);
+  }
+}
+
+/** A convenience: callers keep the in-memory view when this reports failure. */
+export function writeScreenView(local, view) {
+  return local.set(KEYS.screenView, JSON.stringify(normalizeScreenView(view)));
 }
 
 export function setNotice(session, text) {

@@ -271,6 +271,16 @@ plugin configuration or secrets.
     In reduced space, scroll the labelled status/feedback and quick-key regions
     to reach every message and action. Agent information and the draft can also
     scroll, keeping terminal output and a complete control row available.
+    The **Screen view** controls beside **Refresh** change only how this device
+    shows the output. **Wrap** reflows wide terminal lines to the screen width
+    instead of panning each line sideways; box art and column alignment can
+    break while it is on. **A−** and **A+** step the text through 12, 14, 16
+    and 18 px. At the smallest or largest size the button stays focusable and is
+    announced as unavailable. The default is no wrap at 12 px. The choice is
+    stored per device in `localStorage` under `yinz.web.v1.screen_view` and is
+    kept across polling, tab switches and reloads; logging out does not clear
+    it. If the browser refuses site storage, the choice still applies until the
+    detail view is left. Pinch-zoom keeps working.
   - **Details** shows run details with **Previous run**, **Original run** and
     **Latest**. Previous and original runs open as stored runs, marked by
     `&bind=0` in the hash: they are read without the live agent, show a
@@ -305,7 +315,10 @@ token, open tabs of the app also return to `/login`.
 
 **Log out** and **Log out everywhere** call the native endpoints and clear the
 local token even when the request fails. If revocation was not confirmed by an
-empty `204`, the notice says so. All keys use the `yinz.web.v1.` prefix.
+empty `204`, the notice says so. The per-device Screen view choice
+(`yinz.web.v1.screen_view` in `localStorage`, holding only the wrap and text
+size) is not a credential and survives logout. All keys use the
+`yinz.web.v1.` prefix.
 
 ### Prompt safety
 

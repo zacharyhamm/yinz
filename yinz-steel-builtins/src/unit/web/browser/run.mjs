@@ -262,11 +262,25 @@ function history(fx, q) {
   };
 }
 
-/** 80 lines like a real pane read: older output, one wide line, then the question at the bottom. */
+/**
+ * 80 lines like a real pane read: older output, one wide line, a 124-column
+ * box-drawn agent panel and permission prompt, then the question at the bottom.
+ */
 const SCREEN_LAST = '  2. No';
+const WIDE_PATH = '/home/dev/projects/yinz/yinz-steel-builtins/assets/plugins/web/static/views/detail-screen-panel.js';
+const WIDE_OPTION = "2. Yes, and don't ask again this session for edits under /home/dev/projects/yinz/yinz-steel-builtins (shift+tab)";
+const SCREEN_COLUMNS = 124;
+const boxed = (lines) => [`╭${'─'.repeat(SCREEN_COLUMNS - 2)}╮`,
+  ...lines.map((l) => `│ ${l.padEnd(SCREEN_COLUMNS - 4)} │`), `╰${'─'.repeat(SCREEN_COLUMNS - 2)}╯`];
+const WIDE_BLOCK = [
+  ...boxed(['✻ Welcome to the agent', `cwd: ${WIDE_PATH}`]),
+  ...boxed([`Edit file ${WIDE_PATH}?`, '❯ 1. Yes', `  ${WIDE_OPTION}`, '  3. No, and tell the agent what to do differently (esc)']),
+];
+const WIDE_START = 50;
 function screenOutput(tick) {
   const older = Array.from({ length: 76 }, (_, i) => (i === 0 ? `output line 0 (read ${tick})`
-    : i === 40 ? `output line 40 ${'wide-'.repeat(30)}end` : `output line ${i}`));
+    : i === 40 ? `output line 40 ${'wide-'.repeat(30)}end`
+      : i >= WIDE_START && i < WIDE_START + WIDE_BLOCK.length ? WIDE_BLOCK[i - WIDE_START] : `output line ${i}`));
   return [...older, '$ cargo test', '? Allow edit', '  1. Yes', SCREEN_LAST].join('\n');
 }
 
@@ -748,8 +762,10 @@ async function assertScreenPinned(page, where) {
 
 // Scroll only the designated region. Browser auto-scrolling the document or a
 // different ancestor must not turn a covered control into a passing assertion.
-async function reachableTarget(page, selector, scroller) {
-  await until(`${selector} enabled`, () => page.locator(selector).isEnabled());
+// Playwright treats aria-disabled="true" as disabled, so a focusable stepper at
+// its bound opts out of the enabled wait; its caller checks that state itself.
+async function reachableTarget(page, selector, scroller, { requireEnabled = true } = {}) {
+  if (requireEnabled) await until(`${selector} enabled`, () => page.locator(selector).isEnabled());
   await page.evaluate(({ selector, scroller }) => {
     const el = document.querySelector(selector), region = document.querySelector(scroller);
     const r = el.getBoundingClientRect(), b = region.getBoundingClientRect();
@@ -1276,11 +1292,26 @@ async function reducedScreen(page, fx, width, fullHeight, scheme) {
     await assertScreenPinned(page, `reduced Screen disclosure ${open}`);
     check(await page.evaluate(() => { const el = document.getElementById('composer-input'); return el.selectionStart === 3 && el.selectionEnd === 9; }), 'Screen disclosure lost draft selection');
   }
+  // The largest reflow budget: wrapped output at 18 px, the stepper at its bound.
+  await reachableTarget(page, '#screen-wrap', '.screen-feedback');
+  await page.click('#screen-wrap');
+  await expectScreenView(page, { wrap: true, size: 12 }, 'reduced Screen wrap');
+  await assertScreenPinned(page, 'reduced Screen wrap');
+  for (const size of [14, 16, 18]) {
+    await reachableTarget(page, '#screen-text-larger', '.screen-feedback');
+    await page.click('#screen-text-larger');
+    await expectScreenView(page, { wrap: true, size }, `reduced Screen ${size}px`);
+    await assertScreenPinned(page, `reduced Screen ${size}px`);
+  }
   const keys = await page.locator('.screen-keys .quick-key').evaluateAll((els) => els.map((el) => el.dataset.key));
   check(keys.length === 7, 'default Screen fixture must exercise all seven configured quick keys');
   const targets = {};
   for (const key of keys) targets[key] = await reachableTarget(page, `.screen-keys [data-key="${key}"]`, '.screen-keys');
   targets.refresh = await reachableTarget(page, '#screen-refresh', '.screen-feedback');
+  targets.wrap = await reachableTarget(page, '#screen-wrap', '.screen-feedback');
+  targets.smaller = await reachableTarget(page, '#screen-text-smaller', '.screen-feedback');
+  check(await page.getAttribute('#screen-text-larger', 'aria-disabled') === 'true', 'reduced Screen A+ is not marked unavailable at 18px');
+  targets.larger = await reachableTarget(page, '#screen-text-larger', '.screen-feedback', { requireEnabled: false });
   for (const selector of ['#composer-input', '#composer-send', '#composer-prompts']) {
     await reachableTarget(page, selector, '.composer-dock');
   }
@@ -1383,6 +1414,182 @@ async function reducedScreen(page, fx, width, fullHeight, scheme) {
   await page.screenshot({ path: path.join(RESULTS_DIR, `screen-${width}-${scheme}.png`), mask: [page.locator('#composer-input')] });
   await page.setViewportSize({ width, height: fullHeight });
   await assertScreenPinned(page, 'Screen full height after recovery');
+}
+
+const SCREEN_VIEW_KEY = 'yinz.web.v1.screen_view';
+
+function screenViewState(page) {
+  return page.evaluate((key) => {
+    const pre = document.querySelector('#screen pre.screen');
+    const attr = (id, name) => { const el = document.getElementById(id); return el ? el.getAttribute(name) : null; };
+    const cs = pre ? getComputedStyle(pre) : null;
+    return {
+      wrap: attr('screen-wrap', 'aria-pressed'),
+      font: cs ? cs.fontSize : null,
+      lineHeight: cs ? cs.lineHeight : null,
+      scrollWidth: pre ? pre.scrollWidth : 0,
+      clientWidth: pre ? pre.clientWidth : 0,
+      text: pre ? pre.textContent : '',
+      smaller: attr('screen-text-smaller', 'aria-disabled'),
+      larger: attr('screen-text-larger', 'aria-disabled'),
+      nativeDisabled: ['screen-wrap', 'screen-text-smaller', 'screen-text-larger'].filter((id) => document.getElementById(id)?.hasAttribute('disabled')),
+      status: document.getElementById('screen-text-size')?.textContent ?? null,
+      group: document.querySelector('.screen-view')?.getAttribute('aria-label') ?? null,
+      stored: localStorage.getItem(key),
+      root: document.querySelector('.detail-page').className,
+    };
+  }, SCREEN_VIEW_KEY);
+}
+
+/** Wait for the rendered Screen view: toggle state, computed size, bound markers and status. */
+async function expectScreenView(page, { wrap, size }, where) {
+  let last = null;
+  try {
+    return await until(`${where}: Screen view wrap=${wrap} size=${size}`, async () => {
+      const v = last = await screenViewState(page);
+      return v.wrap === String(wrap) && v.font === `${size}px` && v.status === `Text ${size} px` && v.group === 'Screen view'
+        && v.root.split(' ').includes(`screen-text-${size}`) && v.root.split(' ').includes('screen-wrap') === wrap
+        && v.smaller === (size === 12 ? 'true' : null) && v.larger === (size === 18 ? 'true' : null) && !v.nativeDisabled.length ? v : null;
+    });
+  } catch (e) {
+    const { text, ...rest } = last || {};
+    throw new Error(`${e.message}; state ${JSON.stringify(rest)}`);
+  }
+}
+
+function storedScreenView(v) {
+  try {
+    return JSON.parse(v.stored);
+  } catch {
+    return null;
+  }
+}
+
+async function screenScroll(page) {
+  return page.evaluate(() => { const el = document.getElementById('screen-scroll'); return { top: el.scrollTop, max: el.scrollHeight - el.clientHeight }; });
+}
+
+// A scrolled-up reader keeps a clamped offset across a reflow and is never re-pinned.
+async function assertScreenHeld(page, top, where) {
+  await nextFrame(page);
+  const g = await screenScroll(page);
+  check(Math.abs(g.top - Math.min(top, g.max)) <= 2 && g.max - g.top >= 32,
+    `${where}: scrolled-up Screen moved to ${Math.round(g.top)} (max ${Math.round(g.max)}, expected ${top})`);
+}
+
+async function screenViewLayout(page, where) {
+  await noHorizontalOverflow(page, where);
+  await touchTargets(page, where);
+  await noClippedControls(page, where);
+  await detailContrast(page, where);
+}
+
+async function screenView(open, width, scheme) {
+  const height = width === 320 ? 640 : 844;
+  const { page, fx } = await open({ viewport: { width, height }, colorScheme: scheme });
+  await openDetail(page);
+  await page.emulateMedia({ colorScheme: scheme });
+  await page.click('#tab-screen');
+  await until('screen content', () => exists(page, '#screen pre.screen'));
+  // (a) Default: no wrap, 12 px, A− at its bound; wide lines pan inside the output.
+  let v = await expectScreenView(page, { wrap: false, size: 12 }, 'default');
+  check(v.stored === null, 'viewing Screen wrote a preference before any change');
+  check(v.scrollWidth > v.clientWidth + 100, `default Screen does not pan the wide fixture (${v.scrollWidth}/${v.clientWidth})`);
+  check(WIDE_BLOCK.every((line) => line.length >= 120) && WIDE_OPTION.length > 100, 'wide Screen fixture is too narrow');
+  if (v.lineHeight.endsWith('px')) check(Math.abs(parseFloat(v.lineHeight) / 12 - 1.2) < 0.05, `Screen line-height is ${v.lineHeight}`);
+  await assertScreenPinned(page, `default Screen ${width}px`);
+  await screenViewLayout(page, `Screen view default ${width}px ${scheme}`);
+  // (b) Wrap reflows to the phone width, stays pinned and survives polls when scrolled up.
+  await page.click('#screen-wrap');
+  v = await expectScreenView(page, { wrap: true, size: 12 }, 'wrap');
+  check(v.scrollWidth <= v.clientWidth + 1, `wrapped Screen still pans (${v.scrollWidth}/${v.clientWidth})`);
+  check(v.text.includes(WIDE_OPTION) && v.text.includes(WIDE_PATH), 'wrapped Screen lost the long option or path');
+  check(JSON.stringify(storedScreenView(v)) === JSON.stringify({ wrap: true, size: 12 }), `wrap was not persisted: ${v.stored}`);
+  await assertScreenPinned(page, `wrapped Screen ${width}px`);
+  await screenViewLayout(page, `Screen view wrapped ${width}px ${scheme}`);
+  await page.evaluate(() => { document.getElementById('screen-scroll').scrollTop = 100; });
+  await nextFrame(page);
+  await fixturePoll(page, fx, '/api/agent/screen');
+  await assertScreenHeld(page, 100, 'wrapped Screen poll');
+  await page.evaluate(() => { const el = document.getElementById('screen-scroll'); el.scrollTop = el.scrollHeight; });
+  await nextFrame(page);
+  await assertScreenPinned(page, 'wrapped Screen back at the newest line');
+  // (c) Every size step keeps a pinned reader pinned, up and back down.
+  for (const [button, size] of [['larger', 14], ['larger', 16], ['larger', 18], ['smaller', 16], ['smaller', 14], ['smaller', 12]]) {
+    await page.click(`#screen-text-${button}`);
+    v = await expectScreenView(page, { wrap: true, size }, `step to ${size}px`);
+    check(JSON.stringify(storedScreenView(v)) === JSON.stringify({ wrap: true, size }), `size ${size} was not persisted: ${v.stored}`);
+    await assertScreenPinned(page, `Screen ${size}px ${width}px`);
+    if (size === 18) await screenViewLayout(page, `Screen view 18px ${width}px ${scheme}`);
+  }
+  // ...and keeps a scrolled-up reader's clamped offset.
+  await page.evaluate(() => { document.getElementById('screen-scroll').scrollTop = 100; });
+  await nextFrame(page);
+  await page.click('#screen-text-larger');
+  await expectScreenView(page, { wrap: true, size: 14 }, 'scrolled-up step up');
+  await assertScreenHeld(page, 100, 'scrolled-up A+');
+  await page.click('#screen-text-smaller');
+  await expectScreenView(page, { wrap: true, size: 12 }, 'scrolled-up step down');
+  await assertScreenHeld(page, 100, 'scrolled-up A−');
+  await page.evaluate(() => { const el = document.getElementById('screen-scroll'); el.scrollTop = el.scrollHeight; });
+  await nextFrame(page);
+  // (d) Keyboard focus stays on a stepper at its bound, through extra presses and polls.
+  // A reordered but equivalent stored value detects any write by a no-op press.
+  const bound = async (id, key, size, where) => {
+    check(await activeId(page) === id, `${where}: focus left #${id} at its bound (now ${await activeId(page) || 'body'})`);
+    const marker = JSON.stringify({ size, wrap: true });
+    await page.evaluate(([k, m]) => localStorage.setItem(k, m), [SCREEN_VIEW_KEY, marker]);
+    await page.keyboard.press(key);
+    await nextFrame(page);
+    await nextFrame(page);
+    const after = await expectScreenView(page, { wrap: true, size }, `${where}: extra ${key}`);
+    check(after.stored === marker, `${where}: a press at the bound wrote ${after.stored}`);
+    check(await activeId(page) === id, `${where}: extra ${key} moved focus from #${id}`);
+    await fixturePoll(page, fx, '/api/agent/screen');
+    check(await activeId(page) === id, `${where}: Screen poll moved focus from #${id}`);
+  };
+  await page.focus('#screen-text-larger');
+  for (const size of [14, 16, 18]) {
+    await page.keyboard.press('Enter');
+    await expectScreenView(page, { wrap: true, size }, `Enter to ${size}px`);
+  }
+  await bound('screen-text-larger', 'Enter', 18, 'A+ at 18px');
+  await page.keyboard.press('Tab');
+  const next = await page.evaluate(() => {
+    const from = document.getElementById('screen-text-larger'), to = document.activeElement;
+    return { body: !to || to === document.body, same: to === from, after: !!(to && from.compareDocumentPosition(to) & Node.DOCUMENT_POSITION_FOLLOWING), id: to ? to.id || to.className : '' };
+  });
+  check(!next.body && !next.same && next.after, `Tab from the bound A+ did not reach the next control: ${JSON.stringify(next)}`);
+  await assertScreenPinned(page, 'Screen 18px after keyboard steps');
+  await page.focus('#screen-text-smaller');
+  for (const size of [16, 14, 12]) {
+    await page.keyboard.press('Space');
+    await expectScreenView(page, { wrap: true, size }, `Space to ${size}px`);
+  }
+  await bound('screen-text-smaller', 'Space', 12, 'A− at 12px');
+  await page.keyboard.press('Tab');
+  check(await activeId(page) === 'screen-text-larger', `Tab from the bound A− reached #${await activeId(page) || 'body'}`);
+  // (e) The choice survives a reload and a tab switch on this device.
+  await page.click('#screen-text-larger');
+  await page.click('#screen-text-larger');
+  v = await expectScreenView(page, { wrap: true, size: 16 }, 'before reload');
+  check(JSON.stringify(storedScreenView(v)) === JSON.stringify({ wrap: true, size: 16 }), `16px was not persisted: ${v.stored}`);
+  await page.reload();
+  await until('Screen after reload', () => exists(page, '#screen pre.screen'));
+  await page.emulateMedia({ colorScheme: scheme });
+  await expectScreenView(page, { wrap: true, size: 16 }, 'after reload');
+  await assertScreenPinned(page, 'Screen after reload');
+  await page.click('#tab-timeline');
+  await until('timeline panel', () => exists(page, '#panel-timeline'));
+  check(!(await page.evaluate(() => /\bscreen-(wrap|text-)/.test(document.querySelector('.detail-page').className))), 'Screen view classes leaked into the timeline');
+  await page.click('#tab-screen');
+  await until('Screen after a tab switch', () => exists(page, '#screen pre.screen'));
+  await expectScreenView(page, { wrap: true, size: 16 }, 'after a tab switch');
+  await assertScreenPinned(page, 'Screen after a tab switch');
+  // (f) Geometry, targets and contrast of the restored non-default view.
+  await screenViewLayout(page, `Screen view restored ${width}px ${scheme}`);
+  check(fx.count('/api/agent/keys') === 0 && fx.count('/api/agent/prompt') === 0, 'Screen view controls sent a key or prompt');
+  await noInjection(page);
 }
 
 async function detailSafety(open, width, scheme) {
@@ -2199,6 +2406,9 @@ async function main() {
   await scenario('compact agent list 1024px desktop', (open) => compactAgentList(open, 1024, 'light'));
   for (const width of [320, 390, 1024]) for (const scheme of ['light', 'dark']) {
     await scenario(`compact detail ${width}px ${scheme}`, (open) => compactDetail(open, width, scheme));
+  }
+  for (const width of [320, 390]) for (const scheme of ['light', 'dark']) {
+    await scenario(`screen view ${width}px ${scheme}: wrap, text size, bound focus and persistence`, (open) => screenView(open, width, scheme));
   }
   await scenario('detail disclosure fallbacks and quota discovery', detailFallbacks);
   for (const width of [320, 390]) for (const scheme of ['light', 'dark']) {

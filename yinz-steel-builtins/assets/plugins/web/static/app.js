@@ -86,6 +86,7 @@ function App({ initialNotice }) {
   const env = {
     api,
     config,
+    local,
     tz: clientTimezone(),
     submissions,
     visibility,
