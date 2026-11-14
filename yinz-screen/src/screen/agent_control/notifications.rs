@@ -609,7 +609,7 @@ impl Screen {
             }
             lifecycle.claude.obligations.elapse(elapsed);
             // This runs before every screen instruction; scan turns only while a drain waits.
-            if lifecycle.claude.obligations.idle_prompt.is_some() {
+            if drain_wait(&lifecycle.claude.obligations).is_some() {
                 let newest = newest_claude_prompt(lifecycle);
                 settle_drained(&mut lifecycle.claude.obligations, newest.as_deref());
             }
