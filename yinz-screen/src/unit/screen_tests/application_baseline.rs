@@ -599,3 +599,42 @@ fn application_baseline_preview_normal_entry_keeps_baseline_terminal() {
     assert_eq!(f.screen.style.colors, day);
     assert_eq!(f.screen.style.terminal, Some(dark()));
 }
+
+#[test]
+fn application_baseline_explicit_light_hue_without_terminal_block_answers_light_fallback() {
+    // The documented remedy for a light host terminal without a terminal block
+    // (docs/TERMINAL_COLORS.md): the session's own `explicit_theme_hue "light"`.
+    use yinz_types::style::ApplicationBaseline;
+    let mut f = fixture();
+    assert_eq!(
+        f.answers(PANE),
+        expected(
+            ApplicationBaseline::fallback(HostTerminalThemeMode::Dark).theme,
+            HostTerminalThemeMode::Dark
+        )
+    );
+    f.set_theme(ApplicationThemeConfig {
+        explicit_theme_hue: Some(ThemeHue::Light),
+        ..static_application_theme(None)
+    });
+    assert_eq!(
+        f.appearance_notifications(),
+        vec![(PANE, "\x1b[?997;2n".to_owned())]
+    );
+    let light = expected(
+        ApplicationBaseline::fallback(HostTerminalThemeMode::Light).theme,
+        HostTerminalThemeMode::Light,
+    );
+    assert_eq!(f.answers(PANE), light);
+    // Panes keep rendering host defaults: there is no block to paint with.
+    assert_eq!(f.screen.style.terminal, None);
+
+    // A viewer's dark reports change neither the answers nor the PTY.
+    f.screen
+        .update_terminal_background_color("rgb:0101/0101/0101".into());
+    f.screen
+        .update_host_terminal_theme_mode(HostTerminalThemeMode::Dark)
+        .unwrap();
+    assert!(f.appearance_notifications().is_empty());
+    assert_eq!(f.answers(PANE), light);
+}

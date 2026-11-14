@@ -57,7 +57,11 @@ These never change it:
   theme's terminal block.
 - Without a terminal block, applications get xterm's default colors: ANSI 0-15
   as in xterm, foreground `#e5e5e5` on `#000000` in dark mode and `#000000` on
-  `#ffffff` in light mode.
+  `#ffffff` in light mode. This applies to the default theme (`default`) and to
+  any theme that has no `terminal` block. The mode is `explicit_theme_hue` if
+  the session sets it, otherwise the brightness of the theme's background. The
+  built-in default palette counts as dark, so applications are told dark
+  whatever any viewer's terminal looks like.
 - Registers 16-255 are always xterm's 6x6x6 color cube and 24-step grayscale
   ramp.
 
@@ -67,10 +71,16 @@ changes, and nothing for a configuration reload that leaves the mode alone.
 
 ## Rendering and chrome
 
-Panes are painted with the same terminal block applications are told about.
-What an application is told therefore matches what it is painted on. A theme
-preview is the one exception: while it is open, panes render the previewed
-block. Cancelling or saving returns them to the baseline.
+When the baseline has a terminal block, panes are painted with the same block
+applications are told about, so what an application is told matches what it is
+painted on. A theme preview is the one exception: while it is open, panes render
+the previewed block. Cancelling or saving returns them to the baseline.
+
+Without a terminal block, panes keep each viewer's host default colors and host
+ANSI palette, while applications are told the xterm fallback. The two can then
+differ: a light host background behind an application told the background is
+black, or the host's ANSI 0-15 against xterm's in `OSC 4` answers. See the
+remedies under [Visible changes](#visible-changes).
 
 Chrome (frames, tab and status bars, plugin styling) is different. It still
 follows the last client's own theme options and host appearance reports, and
@@ -79,13 +89,32 @@ PTYs. Per-viewer rendering is later work.
 
 Nested Yinz sessions and remote panes are parsed by the same terminal, so a
 guest session and a remote application get the same answers as a local one.
-Screen captures, dump-screen and web renders use the baseline palette.
+Screen captures, dump-screen and web renders use the baseline's terminal block
+when one is configured, and host default colors otherwise.
 
 ## Visible changes
 
 - Applications no longer see a viewer's real host colors. Without a configured
   terminal block they see the xterm defaults above. Configure a theme with a
   `terminal` block to give them specific colors.
+- Light terminals, and terminals that follow the operating system's light or
+  dark appearance: without a terminal block, applications are told dark (a black
+  background and `CSI ? 997 ; 1 n`) even on a light terminal, so adaptive tools
+  such as editors and pagers pick dark colors. A host appearance change,
+  including the operating system switching between light and dark, no longer
+  reaches applications in panes. To tell them light, set the session's own
+  configuration:
+  - put `explicit_theme_hue "light"` in the config file, or
+  - run `yinz action reconfigure 'explicit_theme_hue "light"'` for the running
+    session (add `--write` to keep it), or
+  - save it from the settings editor.
+
+  This selects the light fallback (`#000000` on `#ffffff`) and sends one
+  `CSI ? 997 ; 2 n` to panes that subscribed. An attaching client's own
+  `--explicit-theme-hue` or config option only restyles chrome. Alternatively,
+  configure a theme with a `terminal` block, or a `theme_dark`/`theme_light`
+  pair and switch with `SetLightTheme`, `SetDarkTheme` or `ToggleTheme`.
+  Automatically following each viewer's appearance is later per-viewer work.
 - With a `theme_dark`/`theme_light` pair and no pin, a viewer whose terminal
   turns light gets light chrome, but pane colors and application answers stay on
   the dark theme. Switch them for everyone with `SetLightTheme`, `ToggleTheme`,

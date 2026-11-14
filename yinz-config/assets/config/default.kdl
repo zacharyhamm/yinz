@@ -621,9 +621,11 @@ background_opacity "85%"
 
 // Choose the theme that is specified in the themes section.
 // Its terminal block is also what applications in panes are told when they
-// query the terminal's colors (OSC 10/11/4); without one they get xterm's
-// defaults. Only the session's own config sets these answers, not a client
-// attaching with its own theme. See docs/TERMINAL_COLORS.md.
+// query the terminal's colors (OSC 10/11/4); without one (as with "default")
+// they get xterm's dark defaults, even on a light terminal, unless
+// explicit_theme_hue is "light". Only the session's own config sets these
+// answers, not a client attaching with its own theme. See
+// docs/TERMINAL_COLORS.md.
 // Default: default
 //
 // theme "default"
@@ -642,7 +644,10 @@ background_opacity "85%"
 // terminal reports. Resolved before the first render. When unset, the host
 // terminal decides the chrome. In the session's own config it also sets the
 // appearance applications are told (CSI ?996n) and, with theme_dark and
-// theme_light, which of the two they are told about.
+// theme_light, which of the two they are told about. When the theme has no
+// terminal block, it also chooses the light or dark xterm fallback colors
+// applications are told: use explicit_theme_hue "light" here for a light host
+// terminal. A client's command-line value only restyles that viewer's chrome.
 // Options: dark, light
 //
 // explicit_theme_hue "dark"

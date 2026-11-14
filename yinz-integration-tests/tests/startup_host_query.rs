@@ -298,3 +298,51 @@ fn application_baseline_ignores_second_client_theme_options() {
     second.quit();
     yinz.quit();
 }
+
+#[test]
+fn application_baseline_without_terminal_block_follows_a_session_light_hue() {
+    // The harness theme "default" has no terminal block, so applications start on
+    // xterm's dark fallback (docs/TERMINAL_COLORS.md).
+    const DARK_FALLBACK: &str =
+        "\x1b]11;rgb:0000/0000/0000\x07\x1b]10;rgb:e5e5/e5e5/e5e5\x07\x1b]4;1;rgb:cdcd/0000/0000\x07\x1b[?997;1n";
+    const LIGHT_FALLBACK: &str =
+        "\x1b]11;rgb:ffff/ffff/ffff\x07\x1b]10;rgb:0000/0000/0000\x07\x1b]4;1;rgb:cdcd/0000/0000\x07\x1b[?997;2n";
+    let mut yinz = start_yinz();
+    let terminal = claim_first_terminal_and_wait_for_prompt(&yinz);
+    // Querying apps use raw mode: echoing a reply would set an application color.
+    terminal.disable_echo();
+    terminal.output(b"\x1b[?2031h");
+    lock_interface(&yinz);
+    assert_eq!(application_answers(&terminal), DARK_FALLBACK);
+
+    // A light host terminal's reports, through the real client host-reply parser, do
+    // not reach applications. A keystroke behind the burst shows it arrived first.
+    yinz.send_stdin(
+        b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\\x1b]10;rgb:0000/0000/0000\x1b\\\x1b[?997;2n",
+    );
+    yinz.send_stdin(b"L");
+    terminal.wait_for_stdin("the light host reports reached the session", |bytes| {
+        bytes.contains(&b'L')
+    });
+    assert_eq!(application_answers(&terminal), DARK_FALLBACK);
+    assert_eq!(appearance_notifications(&terminal, 2), 0);
+
+    // The documented remedy: the session's own explicit light hue, announced once.
+    assert_eq!(
+        yinz.run_cli_action(CliAction::Reconfigure {
+            kdl: Some("explicit_theme_hue \"light\"".into()),
+            file: None,
+            write: false,
+        }),
+        0
+    );
+    terminal.wait_for_stdin("the light hue is announced", |bytes| {
+        bytes.windows(9).any(|window| window == b"\x1b[?997;2n")
+    });
+    assert_eq!(appearance_notifications(&terminal, 2), 1);
+    assert_eq!(application_answers(&terminal), LIGHT_FALLBACK);
+    assert_eq!(appearance_notifications(&terminal, 2), 2);
+
+    unlock_interface(&yinz);
+    yinz.quit();
+}

@@ -4,9 +4,11 @@
 //! appearance (CSI ?996n, ?2031h notifications). Those answers come from one session
 //! baseline, resolved only from session-wide configuration plus the session-wide
 //! `SetDarkTheme` / `SetLightTheme` / `ToggleTheme` pins. A viewer's host reports, its
-//! own theme options and theme previews never change it. The rendered pane palette
-//! (`style.terminal`) follows the same baseline outside a theme preview, so what an
-//! application is told matches what it is painted on. See `docs/TERMINAL_COLORS.md`.
+//! own theme options and theme previews never change it. When the baseline has a
+//! terminal block, the rendered pane palette (`style.terminal`) follows it outside a
+//! theme preview, so what an application is told matches what it is painted on.
+//! Without one, panes render the viewer's host defaults while applications are told
+//! the xterm fallback. See `docs/TERMINAL_COLORS.md`.
 
 use super::Screen;
 use crate::panes::PaneId;
@@ -24,6 +26,8 @@ use yinz_types::style::{
 /// `explicit_theme_hue`, then dark. Without a pair pins are ignored and the mode is
 /// `explicit_theme_hue`, then the static theme's hue. The baseline colors are the
 /// render block, or the documented xterm fallback for the mode when there is none.
+/// The render block is `None` in that case, so panes keep host default colors and
+/// may differ from the fallback applications are told.
 pub(crate) fn resolve_application_baseline(
     config: &ApplicationThemeConfig,
     pin: Option<HostTerminalThemeMode>,
