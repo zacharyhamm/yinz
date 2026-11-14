@@ -5221,7 +5221,11 @@ fn timeout_and_input_interruption_explain_acceptance_and_conditional_recovery() 
             );
             if acknowledged && !interrupted {
                 assert!(message.contains("completion was not observed"));
-                assert!(message.contains("may still be running"));
+                assert_eq!(
+                    message.matches("may still be running").count(),
+                    1,
+                    "{message}"
+                );
             }
             let submission = response.submission_id.clone().unwrap();
             let retrieval = format!(

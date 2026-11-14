@@ -3314,7 +3314,22 @@ impl Screen {
                     if let Some(submission) =
                         pending.submission_id.as_deref().filter(|_| retrievable)
                     {
-                        message.push_str(&format!(" The turn may still be running; retrieve its outcome with agent wait {} --submission {submission} --conversation {conversation}. Pane input does not end that wait.",
+                        let lead = if explanation.contains("may still be running") {
+                            " Retrieve"
+                        } else {
+                            " The turn may still be running; retrieve"
+                        };
+                        // An empty wait pin never matches; an unpinned turn wait omits it.
+                        let pin = if pending
+                            .conversation
+                            .as_deref()
+                            .is_some_and(|c| !c.is_empty())
+                        {
+                            format!(" --conversation {conversation}")
+                        } else {
+                            String::new()
+                        };
+                        message.push_str(&format!("{lead} its outcome with agent wait {} --submission {submission}{pin}. Pane input does not end that wait.",
                             pending.pane));
                     }
                     let unresolved = response.agents.first().is_some_and(|status| {
