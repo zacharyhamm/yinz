@@ -118,6 +118,7 @@ use {
 
 mod agent_placement;
 mod agent_worktrees;
+mod application_baseline;
 mod arrange_projects;
 mod break_panes;
 mod capabilities;
@@ -962,6 +963,11 @@ pub(crate) struct Screen {
     /// suppresses it so that unpinning can restore it.
     last_host_reported_theme_mode: Option<HostTerminalThemeMode>,
     theme_policy: ThemePolicy,
+    /// The session-owned theme shared application answers resolve from. Changed only by
+    /// `ScreenInstruction::SetApplicationThemeConfig`, never by one client's reconfigure.
+    application_theme: yinz_config::screen_config::ApplicationThemeConfig,
+    /// A session-wide manual dark/light pin of the application baseline.
+    application_pin: Option<HostTerminalThemeMode>,
     /// The `explicit_theme_hue` the session was last configured with, so a
     /// reconfigure can tell a changed pin from an unchanged one.
     configured_explicit_theme_hue: Option<ThemeHue>,
@@ -1380,6 +1386,7 @@ impl Screen {
             hide_session_name: _,
             // Applied by the screen thread once the screen exists.
             explicit_theme_hue: _,
+            application_theme,
             // Went into `mode_info`.
             default_mode: _,
             themes,
@@ -1432,6 +1439,13 @@ impl Screen {
             notification_position,
             notification_timeout_secs,
         } = config;
+        // Shared applications and pane rendering start on the session baseline, not on
+        // the creating client's chrome styling alone.
+        let (application, application_terminal) =
+            application_baseline::resolve_application_baseline(&application_theme, None);
+        let mut style = client_attributes.style;
+        style.application = application;
+        style.terminal = application_terminal;
         mode_info.max_agent_width = Some(max_agent_width);
         mode_info.tab_groups = Some(tab_groups);
         let arrow_fonts = !simplified_ui;
@@ -1502,7 +1516,7 @@ impl Screen {
             sixel_host_capabilities: Rc::new(RefCell::new(HashMap::new())),
             synchronized_output_capabilities: Rc::new(RefCell::new(HashMap::new())),
             client_kitty_host_state: Rc::new(RefCell::new(HashMap::new())),
-            style: client_attributes.style,
+            style,
             connected_clients: Rc::new(RefCell::new(AttachedClients::default())),
             active_tab_ids: BTreeMap::new(),
             client_sizes: HashMap::new(),
@@ -1661,6 +1675,8 @@ impl Screen {
             host_terminal_theme_mode: None,
             last_host_reported_theme_mode: None,
             theme_policy: ThemePolicy::Auto,
+            application_theme,
+            application_pin: None,
             configured_explicit_theme_hue: None,
             themes,
             theme_name,

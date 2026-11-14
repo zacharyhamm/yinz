@@ -115,6 +115,8 @@ fn mixed_kitty_and_text_in_a_plugin_frame_preserve_placement_order() {
     let lines: Vec<_> = screen.lines().collect();
     assert_eq!(lines[0].trim_end(), "a");
     assert_eq!(lines[1].trim_end(), "  BC");
+    // The OSC 10 query is answered locally from the application baseline; plugin
+    // panes have no PTY, so the reply is discarded like any other.
     assert!(grid.pending_messages_to_pty.is_empty());
     assert!(grid.pending_forwarded_queries.is_empty());
 }

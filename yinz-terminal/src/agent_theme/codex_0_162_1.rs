@@ -385,39 +385,6 @@ fn luminance(rgb: Rgb) -> f64 {
     0.2126 * r + 0.7152 * g + 0.0722 * b
 }
 
-/// Accept exactly a reply to the requested channel, using the provider's component
-/// scaling (including 1/2/3/4-digit components and rgba). Invalid replies teach nothing.
-pub(crate) fn parse_reply(code: u8, reply: &[u8]) -> Option<Rgb> {
-    let reply = std::str::from_utf8(reply).ok()?;
-    let prefix = format!("\x1b]{code};");
-    let body = reply.strip_prefix(&prefix)?;
-    let body = body
-        .strip_suffix('\x07')
-        .or_else(|| body.strip_suffix("\x1b\\"))?;
-    let (prefix, values) = body.trim().split_once(':')?;
-    let rgba = prefix.eq_ignore_ascii_case("rgba");
-    if !rgba && !prefix.eq_ignore_ascii_case("rgb") {
-        return None;
-    }
-    let component = |s: &str| {
-        if !(1..=4).contains(&s.len()) || !s.bytes().all(|c| c.is_ascii_hexdigit()) {
-            return None;
-        }
-        let value = u32::from(u16::from_str_radix(s, 16).ok()?);
-        Some((value * 255 / ((1u32 << (s.len() * 4)) - 1)) as u8)
-    };
-    let mut parts = values.split('/');
-    let rgb = (
-        component(parts.next()?)?,
-        component(parts.next()?)?,
-        component(parts.next()?)?,
-    );
-    if rgba {
-        component(parts.next()?)?;
-    }
-    parts.next().is_none().then_some(rgb)
-}
-
 #[cfg(test)]
 #[path = "unit/codex_0_162_1.rs"]
 mod tests;

@@ -118,11 +118,90 @@ impl TerminalTheme {
     ];
 }
 
+/// The colors and appearance mode shared applications see when they query the
+/// terminal (OSC 10/11/4, CSI ?996n). Owned by the server and independent of any
+/// attached viewer's host terminal; see `docs/TERMINAL_COLORS.md`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ApplicationBaseline {
+    pub theme: TerminalTheme,
+    pub mode: HostTerminalThemeMode,
+}
+
+/// xterm's default ANSI 0-15 palette, used when no terminal block is configured.
+const XTERM_ANSI: [(u8, u8, u8); 16] = [
+    (0x00, 0x00, 0x00),
+    (0xcd, 0x00, 0x00),
+    (0x00, 0xcd, 0x00),
+    (0xcd, 0xcd, 0x00),
+    (0x00, 0x00, 0xee),
+    (0xcd, 0x00, 0xcd),
+    (0x00, 0xcd, 0xcd),
+    (0xe5, 0xe5, 0xe5),
+    (0x7f, 0x7f, 0x7f),
+    (0xff, 0x00, 0x00),
+    (0x00, 0xff, 0x00),
+    (0xff, 0xff, 0x00),
+    (0x5c, 0x5c, 0xff),
+    (0xff, 0x00, 0xff),
+    (0x00, 0xff, 0xff),
+    (0xff, 0xff, 0xff),
+];
+
+/// xterm's 6x6x6 color cube channel levels.
+const XTERM_CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+
+impl ApplicationBaseline {
+    /// Documented stable fallback for a session without a terminal block.
+    pub const fn fallback(mode: HostTerminalThemeMode) -> Self {
+        let (foreground, background) = match mode {
+            HostTerminalThemeMode::Dark => ((0xe5, 0xe5, 0xe5), (0x00, 0x00, 0x00)),
+            HostTerminalThemeMode::Light => ((0x00, 0x00, 0x00), (0xff, 0xff, 0xff)),
+        };
+        Self {
+            theme: TerminalTheme {
+                foreground,
+                background,
+                ansi: XTERM_ANSI,
+            },
+            mode,
+        }
+    }
+
+    /// The color of 256-color register `index`: the theme's ANSI colors for
+    /// 0-15, then xterm's color cube (16-231) and grayscale ramp (232-255).
+    pub fn register(&self, index: u8) -> (u8, u8, u8) {
+        match index {
+            0..=15 => self.theme.ansi[index as usize],
+            16..=231 => {
+                let cube = index - 16;
+                (
+                    XTERM_CUBE_LEVELS[(cube / 36) as usize],
+                    XTERM_CUBE_LEVELS[(cube / 6 % 6) as usize],
+                    XTERM_CUBE_LEVELS[(cube % 6) as usize],
+                )
+            },
+            232..=255 => {
+                let level = 8 + 10 * (index - 232);
+                (level, level, level)
+            },
+        }
+    }
+}
+
+impl Default for ApplicationBaseline {
+    fn default() -> Self {
+        Self::fallback(HostTerminalThemeMode::Dark)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct Style {
     // Renderer policy is carried by Options, not the plugin styling contract.
     #[serde(skip)]
     pub agent_theme_mapping: crate::agent::theme::AgentThemeMapping,
+    /// Server-owned color-query answers; never part of the plugin contract.
+    #[serde(skip)]
+    pub application: ApplicationBaseline,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<TerminalTheme>,
     pub colors: Styling,
@@ -553,3 +632,7 @@ mod compatibility_tests;
 #[cfg(test)]
 #[path = "unit/pane_surround.rs"]
 mod pane_surround_tests;
+
+#[cfg(test)]
+#[path = "unit/application_baseline_tests.rs"]
+mod application_baseline_tests;

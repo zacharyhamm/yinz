@@ -1408,6 +1408,7 @@ pub fn start_server_impl(
                     let client_attributes = ClientAttributes {
                         size: cli_assets.terminal_window_size,
                         style: Style {
+                            application: Default::default(),
                             agent_theme_mapping: runtime_config_options
                                 .agent_theme_mapping
                                 .unwrap_or_default(),
@@ -1452,7 +1453,11 @@ pub fn start_server_impl(
                         .set_saved_configuration(config.clone());
                     session
                         .session_configuration
-                        .set_client_runtime_configuration(client_id, runtime_configuration);
+                        .set_client_runtime_configuration(client_id, runtime_configuration.clone());
+                    // The screen resolved its application baseline from this same config.
+                    session
+                        .session_configuration
+                        .initialize_application_theme(runtime_configuration);
                     let default_input_mode =
                         runtime_config_options.default_mode.unwrap_or_default();
                     session
@@ -1651,6 +1656,7 @@ pub fn start_server_impl(
                     let client_attributes = ClientAttributes {
                         size: cli_assets.terminal_window_size,
                         style: Style {
+                            application: Default::default(),
                             agent_theme_mapping: runtime_config_options
                                 .agent_theme_mapping
                                 .unwrap_or_default(),
@@ -2599,7 +2605,7 @@ pub fn start_server_impl(
                     with_session_mut(&session_data, |session| {
                         let changes = session
                             .session_configuration
-                            .change_saved_config(new_config);
+                            .reload_saved_config(new_config);
                         let config_was_written_to_disk = true;
                         session
                             .propagate_configuration_changes(changes, config_was_written_to_disk);

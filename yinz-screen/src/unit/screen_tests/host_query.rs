@@ -499,7 +499,8 @@ fn timeout_for_in_flight_token_releases_slot_with_cache_fallback() {
     // reply for the pane, release the slot, and dispatch the next
     // queued forward. (Identical externally to the empty-reply
     // cache-fallback case, since the timer fires by sending an empty
-    // reply for the in-flight token.)
+    // reply for the in-flight token.) A color query falls back to the
+    // application baseline, never to a viewer's cached host color.
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
     screen.update_terminal_background_color("rgb:1010/2020/3030".to_string());
@@ -518,7 +519,7 @@ fn timeout_for_in_flight_token_releases_slot_with_cache_fallback() {
     assert_eq!(writes.len(), 1, "cache fallback writes one reply");
     assert_eq!(
         std::str::from_utf8(&writes[0].0).unwrap(),
-        "\u{1b}]11;rgb:1010/2020/3030\u{1b}\\",
+        "\u{1b}]11;rgb:0000/0000/0000\u{1b}\\",
     );
     assert_eq!(
         screen.forward_in_flight_token,
@@ -591,11 +592,12 @@ fn plugin_pane_reply_is_dropped_without_write() {
 }
 
 // =====================================================================
-// Cache-fallback synthesis: empty reply → answer from Screen's caches
+// Cache-fallback synthesis: empty reply → answer from Screen's caches,
+// except colors, which come from the application baseline
 // =====================================================================
 
 #[test]
-fn empty_reply_falls_back_to_cached_background() {
+fn empty_reply_falls_back_to_the_application_baseline_background_not_cached_host_colors() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
     let pane = PaneId::Terminal(crate::TerminalId::new(9));
@@ -614,12 +616,27 @@ fn empty_reply_falls_back_to_cached_background() {
     assert_eq!(*terminal_id, crate::TerminalId::new(9));
     assert_eq!(
         std::str::from_utf8(bytes).unwrap(),
-        "\u{1b}]11;rgb:1010/2020/3030\u{1b}\\",
+        "\u{1b}]11;rgb:0000/0000/0000\u{1b}\\",
+    );
+
+    // A configured baseline answers instead.
+    screen
+        .set_application_theme_config(static_application_theme(Some(terminal_block(0x40))))
+        .unwrap();
+    let token = screen.forward_host_query(pane, bg_query());
+    let _ = capture.drain_forward_queries();
+    screen
+        .handle_forwarded_reply_from_host(token, Vec::new())
+        .expect("ok");
+    let writes = capture.drain_pty_writes();
+    assert_eq!(
+        std::str::from_utf8(&writes[0].0).unwrap(),
+        "\u{1b}]11;rgb:4343/4444/4545\u{1b}\\",
     );
 }
 
 #[test]
-fn empty_reply_falls_back_to_cached_foreground_with_bel_terminator() {
+fn empty_reply_falls_back_to_the_baseline_foreground_with_bel_terminator() {
     // Query used BEL; reply must mirror the same terminator.
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
@@ -636,7 +653,7 @@ fn empty_reply_falls_back_to_cached_foreground_with_bel_terminator() {
     assert_eq!(writes.len(), 1);
     assert_eq!(
         std::str::from_utf8(&writes[0].0).unwrap(),
-        "\u{1b}]10;rgb:dcdc/dcdc/dcdc\u{7}",
+        "\u{1b}]10;rgb:e5e5/e5e5/e5e5\u{7}",
     );
 }
 
@@ -683,7 +700,7 @@ fn empty_reply_falls_back_to_cached_pixel_dimensions() {
 }
 
 #[test]
-fn empty_reply_falls_back_to_cached_palette_register() {
+fn empty_reply_falls_back_to_the_baseline_palette_register() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
     let pane = PaneId::Terminal(crate::TerminalId::new(1));
@@ -699,21 +716,19 @@ fn empty_reply_falls_back_to_cached_palette_register() {
     assert_eq!(writes.len(), 1);
     assert_eq!(
         std::str::from_utf8(&writes[0].0).unwrap(),
-        "\u{1b}]4;42;rgb:abab/cdcd/efef\u{1b}\\",
+        "\u{1b}]4;42;rgb:0000/d7d7/8787\u{1b}\\",
     );
 }
 
 #[test]
 fn empty_reply_with_no_cache_writes_empty() {
-    // No background override, no palette, no pixel dims: synthesis
-    // returns empty and the pane receives an empty write — the app
-    // decides what to do with "host declined".
+    // No pixel dims cached: synthesis returns empty and the pane receives an
+    // empty write — the app decides what to do with "host declined".
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
     let pane = PaneId::Terminal(crate::TerminalId::new(1));
 
-    // Default Palette::fg is EightBit(0), not Rgb — synthesis refuses.
-    let token = screen.forward_host_query(pane, fg_query());
+    let token = screen.forward_host_query(pane, HostQuery::TextAreaPixelSize);
     let _ = capture.drain_forward_queries();
     screen
         .handle_forwarded_reply_from_host(token, Vec::new())
@@ -722,7 +737,26 @@ fn empty_reply_with_no_cache_writes_empty() {
     assert_eq!(writes.len(), 1, "still writes — the write is empty bytes");
     assert!(
         writes[0].0.is_empty(),
-        "no rgb cache → synthesis returns empty"
+        "no cached pixel size → synthesis returns empty"
+    );
+}
+
+#[test]
+fn empty_color_reply_without_host_colors_answers_the_stable_fallback() {
+    // A viewer's default palette is not RGB; applications still get the
+    // documented xterm fallback, never an empty reply.
+    let size = Size { cols: 80, rows: 20 };
+    let (mut screen, capture) = create_new_screen_with_forward_capture(size);
+    let pane = PaneId::Terminal(crate::TerminalId::new(1));
+    let token = screen.forward_host_query(pane, fg_query());
+    let _ = capture.drain_forward_queries();
+    screen
+        .handle_forwarded_reply_from_host(token, Vec::new())
+        .expect("ok");
+    let writes = capture.drain_pty_writes();
+    assert_eq!(
+        std::str::from_utf8(&writes[0].0).unwrap(),
+        "\u{1b}]10;rgb:e5e5/e5e5/e5e5\u{1b}\\",
     );
 }
 
@@ -751,10 +785,10 @@ fn non_empty_reply_bypasses_synthesis() {
 }
 
 #[test]
-fn codex_palette_observes_and_retains_local_forwarded_and_cached_color_replies() {
+fn codex_palette_observes_and_retains_local_override_and_baseline_color_answers() {
     use base64::Engine;
     use yinz_types::agent::theme::*;
-    for mode in ["local", "forwarded", "fallback"] {
+    for mode in ["override", "baseline"] {
         let (mut screen, capture) =
             create_new_screen_with_forward_capture(Size { cols: 80, rows: 20 });
         new_tab(&mut screen, 1, TabId::new(0));
@@ -782,57 +816,26 @@ fn codex_palette_observes_and_retains_local_forwarded_and_cached_color_replies()
             .get_pane_with_id_mut(pane_id)
             .unwrap()
             .handle_pty_bytes(format!("\x1b]777;yinz-agent-theme;{encoded}\x1b\\").into_bytes());
-        screen.update_terminal_foreground_color("rgb:dcdc/dcdc/dcdc".into());
-        screen.update_terminal_background_color("rgb:1212/1414/1e1e".into());
-        if mode == "local" {
-            screen
-                .tab_containing_pane_mut(pane_id)
-                .unwrap()
-                .handle_pty_bytes(
-                    TerminalId::new(1),
-                    b"\x1b]10;rgb:dcdc/dcdc/dcdc\x07\x1b]11;rgb:1212/1414/1e1e\x07\x1b]10;?;?\x07"
-                        .to_vec(),
-                )
-                .unwrap();
+        // A viewer's host colors never reach the agent palette.
+        screen.update_terminal_foreground_color("rgb:ffff/ffff/ffff".into());
+        screen.update_terminal_background_color("rgb:ffff/ffff/ffff".into());
+        let bytes: &[u8] = if mode == "override" {
+            b"\x1b]10;rgb:dcdc/dcdc/dcdc\x07\x1b]11;rgb:1212/1414/1e1e\x07\x1b]10;?;?\x07"
         } else {
-            for (query_bytes, reply) in [
-                (
-                    b"\x1b]10;?\x07".as_slice(),
-                    b"\x1b]10;rgb:dcdc/dcdc/dcdc\x07".as_slice(),
-                ),
-                (
-                    b"\x1b]11;?\x07".as_slice(),
-                    b"\x1b]11;rgb:1212/1414/1e1e\x07".as_slice(),
-                ),
-            ] {
-                let pane = screen
-                    .tab_containing_pane_mut(pane_id)
-                    .unwrap()
-                    .get_pane_with_id_mut(pane_id)
-                    .unwrap();
-                pane.handle_pty_bytes(query_bytes.to_vec());
-                let queries = pane.terminal_io_mut().unwrap().drain_forwarded_queries();
-                assert_eq!(queries.len(), 1);
-                let token = screen.forward_host_query(pane_id, queries[0].clone());
-                screen
-                    .handle_forwarded_reply_from_host(
-                        token,
-                        if mode == "fallback" {
-                            vec![]
-                        } else {
-                            reply.to_vec()
-                        },
-                    )
-                    .unwrap();
-                // Duplicate replies (including timeout callbacks) must not change the sample.
-                screen
-                    .handle_forwarded_reply_from_host(
-                        token,
-                        b"\x1b]11;rgb:ffff/ffff/ffff\x07".to_vec(),
-                    )
-                    .unwrap();
-            }
-        }
+            let mut block = terminal_block(0);
+            block.foreground = (0xdc, 0xdc, 0xdc);
+            block.background = (0x12, 0x14, 0x1e);
+            screen
+                .set_application_theme_config(static_application_theme(Some(block)))
+                .unwrap();
+            b"\x1b]10;?\x07\x1b]11;?\x07"
+        };
+        screen
+            .tab_containing_pane_mut(pane_id)
+            .unwrap()
+            .handle_pty_bytes(TerminalId::new(1), bytes.to_vec())
+            .unwrap();
+        assert!(capture.drain_forward_queries().is_empty());
         let pane = screen
             .tab_containing_pane_mut(pane_id)
             .unwrap()

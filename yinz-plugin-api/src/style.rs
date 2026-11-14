@@ -17,6 +17,7 @@ impl TryFrom<ProtobufStyle> for Style {
             .try_into()?;
         Ok(Style {
             agent_theme_mapping: Default::default(),
+            application: Default::default(),
             terminal: None,
             colors: s,
             rounded_corners: protobuf_style.rounded_corners,

@@ -313,6 +313,7 @@ impl Screen {
         self.style = yinz_types::style::Style {
             agent_theme_mapping: self.style.agent_theme_mapping,
             terminal: self.style.terminal,
+            application: self.style.application,
             ..mode_info.style
         };
         self.mode_info.insert(client_id, mode_info.clone());

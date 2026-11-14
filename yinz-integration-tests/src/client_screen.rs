@@ -34,7 +34,7 @@ pub struct ClientScreen {
     /// A wait that times out has three ways to have got there: the keystroke never reached the
     /// server, the server never re-rendered, or the render never reached the client. The grid alone
     /// cannot tell them apart - this trail can, so the timeout message carries its tail.
-    server_messages: Arc<Mutex<Vec<String>>>,
+    server_messages: yinz_test_support::Watched<Vec<String>>,
 }
 
 impl ClientScreen {
@@ -42,21 +42,18 @@ impl ClientScreen {
         ClientScreen {
             inner: Arc::new(ReceivedBytesWithChangeSignal::default()),
             size,
-            server_messages: Arc::new(Mutex::new(Vec::new())),
+            server_messages: Default::default(),
         }
     }
 
     /// The shared trail, for `FakeClientOsApi` to append to and hand back out.
-    pub fn server_messages(&self) -> Arc<Mutex<Vec<String>>> {
+    pub fn server_messages(&self) -> yinz_test_support::Watched<Vec<String>> {
         self.server_messages.clone()
     }
 
     pub(crate) fn server_message_tail(&self) -> String {
         const TAIL: usize = 30;
-        let server_messages = match self.server_messages.lock() {
-            Ok(server_messages) => server_messages,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let server_messages = self.server_messages.lock();
         let skipped = server_messages.len().saturating_sub(TAIL);
         format!(
             "=== last {} of {} server messages ===\n{}",

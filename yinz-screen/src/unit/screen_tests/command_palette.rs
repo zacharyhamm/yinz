@@ -5787,6 +5787,79 @@ fn theme_preview_cancel_invalidates_queued_save() {
     assert_eq!(screen.style.colors, screen.themes["beta"]);
 }
 
+fn selected_palette_entry(screen: &Screen) -> Option<String> {
+    screen
+        .command_palettes
+        .get(&CLIENT)
+        .and_then(|state| state.widget().selected_entry())
+        .map(|entry| entry.id.clone())
+}
+
+#[test]
+fn theme_picker_preselects_active_theme_under_auto_pair_after_viewer_light_report() {
+    use yinz_types::style::{HostTerminalThemeMode, TerminalTheme};
+    let mut screen = screen();
+    let block = |shade: u8| TerminalTheme {
+        foreground: (shade, shade, shade),
+        background: (shade, 0, 0),
+        ansi: [(shade, 1, 1); 16],
+    };
+    let mut night = screen.style.colors;
+    night.text_unselected.background = yinz_types::colors::PaletteColor::Rgb((17, 17, 17));
+    let mut day = night;
+    day.text_unselected.background = yinz_types::colors::PaletteColor::Rgb((238, 238, 238));
+    let mut own = night;
+    own.text_unselected.background = yinz_types::colors::PaletteColor::Rgb((90, 0, 90));
+    screen.themes = std::collections::BTreeMap::from([
+        ("day".into(), day),
+        ("night".into(), night),
+        ("own".into(), own),
+    ]);
+    screen.terminal_themes =
+        std::collections::BTreeMap::from([("day".into(), block(200)), ("night".into(), block(10))]);
+    screen.theme_dark_name = Some("night".into());
+    screen.theme_light_name = Some("day".into());
+    screen.host_theme_dark_styling = Some(night);
+    screen.host_theme_light_styling = Some(day);
+    screen
+        .set_application_theme_config(yinz_config::screen_config::ApplicationThemeConfig {
+            static_terminal: None,
+            static_background: night.text_unselected.background,
+            pair: Some((Some(block(10)), Some(block(200)))),
+            explicit_theme_hue: None,
+        })
+        .unwrap();
+    screen
+        .update_host_terminal_theme_mode(HostTerminalThemeMode::Light)
+        .unwrap();
+    // Chrome follows the viewer, panes stay on the dark baseline block.
+    assert_eq!(screen.style.colors, day);
+    assert_eq!(screen.style.terminal, Some(block(10)));
+    open_themes(&mut screen);
+    assert_eq!(
+        selected_palette_entry(&screen).as_deref(),
+        Some("theme:day")
+    );
+    screen.close_command_palette(CLIENT);
+
+    // A client reconfigured with its own static theme gets it preselected too.
+    let mut config = test_screen_config();
+    config.theme = own;
+    config.theme_name = Some("own".into());
+    config.themes = screen.themes.clone();
+    config.terminal_themes = screen.terminal_themes.clone();
+    screen
+        .reconfigure(config, Keybinds::default(), CLIENT)
+        .unwrap();
+    assert_eq!(screen.style.colors, own);
+    assert_eq!(screen.style.terminal, Some(block(10)));
+    open_themes(&mut screen);
+    assert_eq!(
+        selected_palette_entry(&screen).as_deref(),
+        Some("theme:own")
+    );
+}
+
 fn history_run(
     mut rows: Vec<yinz_bus::command_palette::HistoryRow>,
 ) -> yinz_bus::command_palette::HistoryReply {

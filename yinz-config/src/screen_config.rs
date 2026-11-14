@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use yinz_types::colors::PaletteColor;
 use yinz_types::data::InputMode;
 use yinz_types::input::context_menu::ContextMenu;
 use yinz_types::input::options::{
@@ -10,10 +11,53 @@ use yinz_types::input::options::{
     DEFAULT_NOTIFICATION_TIMEOUT_SECS, DEFAULT_WORD_SEPARATORS,
 };
 use yinz_types::pane_size::Size;
-use yinz_types::style::{default_palette, Styling, ThemeHue};
+use yinz_types::style::{default_palette, Styling, TerminalTheme, ThemeHue};
 use yinz_types::units::ElapsedSeconds;
 
 use crate::config::Config;
+
+/// The session-owned theme definition that shared application color answers are
+/// resolved from. It is derived only from session-wide configuration (never from one
+/// attaching client's own options), and reaches `Screen` at startup through
+/// [`ScreenConfig::application_theme`] and afterwards only through
+/// `ScreenInstruction::SetApplicationThemeConfig`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApplicationThemeConfig {
+    /// The static `theme`'s terminal block.
+    pub static_terminal: Option<TerminalTheme>,
+    /// The static `theme`'s chrome background, the appearance-mode guess when the
+    /// theme has no terminal block.
+    pub static_background: PaletteColor,
+    /// `theme_dark` and `theme_light` terminal blocks, present only when both
+    /// names resolve to themes.
+    pub pair: Option<(Option<TerminalTheme>, Option<TerminalTheme>)>,
+    pub explicit_theme_hue: Option<ThemeHue>,
+}
+
+impl ApplicationThemeConfig {
+    pub fn from_config(config: &Config) -> Self {
+        let options = &config.options;
+        let resolves = |name: &Option<String>| {
+            name.as_ref()
+                .is_some_and(|name| config.theme_config(Some(name)).is_some())
+        };
+        let pair = (resolves(&options.theme_dark) && resolves(&options.theme_light)).then(|| {
+            (
+                config.terminal_theme_config(options.theme_dark.as_ref()),
+                config.terminal_theme_config(options.theme_light.as_ref()),
+            )
+        });
+        let static_styling: Styling = config
+            .theme_config(options.theme.as_ref())
+            .unwrap_or_else(|| default_palette().into());
+        Self {
+            static_terminal: config.terminal_theme_config(options.theme.as_ref()),
+            static_background: static_styling.text_unselected.background,
+            pair,
+            explicit_theme_hue: options.explicit_theme_hue,
+        }
+    }
+}
 
 /// Everything `Screen` takes from the configuration, resolved once by
 /// [`ScreenConfig::from_config`].
@@ -45,6 +89,10 @@ pub struct ScreenConfig {
     pub host_theme_dark: Option<Styling>,
     pub host_theme_light: Option<Styling>,
     pub explicit_theme_hue: Option<ThemeHue>,
+    /// The session's application color baseline source. Read only at startup:
+    /// `Screen::reconfigure` is per client and ignores it, so one client's config
+    /// cannot change what shared applications are told.
+    pub application_theme: ApplicationThemeConfig,
     /// See `theme`.
     pub rounded_corners: bool,
     /// See `theme`.
@@ -153,6 +201,7 @@ impl ScreenConfig {
             host_theme_dark: host_theme(&options.theme_dark, "theme_dark"),
             host_theme_light: host_theme(&options.theme_light, "theme_light"),
             explicit_theme_hue: options.explicit_theme_hue,
+            application_theme: ApplicationThemeConfig::from_config(config),
             rounded_corners: config.ui.pane_frames.rounded_corners,
             hide_session_name: config.ui.pane_frames.hide_session_name,
             pane_frame_style: PaneFrameStyle::from_options(options),

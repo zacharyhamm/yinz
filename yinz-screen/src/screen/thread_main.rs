@@ -2045,6 +2045,9 @@ pub fn screen_thread_main(
                 ScreenInstruction::HostTerminalThemeChanged(mode) => {
                     screen.update_host_terminal_theme_mode(mode)?;
                 },
+                ScreenInstruction::SetApplicationThemeConfig(config) => {
+                    screen.set_application_theme_config(config)?;
+                },
                 ScreenInstruction::SetDarkTheme(mut completion_tx) => {
                     screen.apply_manual_host_terminal_theme_mode(
                         HostTerminalThemeMode::Dark,
@@ -2058,13 +2061,7 @@ pub fn screen_thread_main(
                     )?;
                 },
                 ScreenInstruction::ToggleTheme(mut completion_tx) => {
-                    let next = match screen.host_terminal_theme_mode {
-                        Some(HostTerminalThemeMode::Dark) => HostTerminalThemeMode::Light,
-                        Some(HostTerminalThemeMode::Light) => HostTerminalThemeMode::Dark,
-                        // No prior mode: treat as Dark and toggle to Light.
-                        None => HostTerminalThemeMode::Light,
-                    };
-                    screen.apply_manual_host_terminal_theme_mode(next, &mut completion_tx)?;
+                    screen.toggle_manual_host_terminal_theme_mode(&mut completion_tx)?;
                 },
                 ScreenInstruction::ChangeMode(
                     input_mode,

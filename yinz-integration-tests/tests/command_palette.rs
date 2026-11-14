@@ -1470,7 +1470,9 @@ fn theme_picker_preview_cancel_save_and_reload() {
             && snapshot.contains("> dracula")
             && snapshot.cell_foreground(0, 0) != frame
     });
-    assert_terminal_background(&shell, (0x28, 0x2a, 0x36));
+    // A preview restyles the session for the viewer, but applications keep the
+    // session's baseline (docs/TERMINAL_COLORS.md).
+    assert_terminal_background(&shell, (0x19, 0x23, 0x30));
     assert!(!managed.exists());
     yinz.send_stdin(&keys::ESC);
     yinz.wait_until("cancel restores frame", |snapshot| {

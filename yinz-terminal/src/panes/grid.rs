@@ -631,8 +631,6 @@ pub struct Grid {
     agent_launch: Option<yinz_types::agent::theme::AgentThemeLaunch>,
     detected_theme_interval: Option<String>,
     pub pending_agent_theme_updates: Vec<yinz_types::agent::theme::AgentThemeEvent>,
-    // The query owns this association, even if a different run starts before its reply.
-    agent_color_queries: VecDeque<(u8, std::rc::Weak<crate::agent_theme::SourcePalette>)>,
     history_replay: Option<(
         yinz_types::agent::theme::AgentThemeHandoff,
         Vec<Rc<crate::agent_theme::SourcePalette>>,
@@ -662,10 +660,11 @@ pub struct Grid {
     pub pending_desktop_notifications: Vec<PendingNotification>,
     notification_tracker: NotificationTracker,
     /// Whitelisted host-terminal queries intercepted from the app running
-    /// in this pane (CSI 14t / 16t pixel-dim queries, OSC 10;? / 11;? /
-    /// 4;N;? color queries). Each entry is the raw byte sequence that
-    /// Yinz should forward to the host terminal; the host's reply is
-    /// later routed back to this pane's pty.
+    /// in this pane (CSI 14t / 16t pixel-dim queries, OSC 52 clipboard
+    /// reads, CSI ?996n). Each entry is a query Yinz should answer from
+    /// outside the pane; the reply is later routed back to this pane's pty.
+    /// Color queries (OSC 10 / 11 / 4) are answered in the pane from the
+    /// application baseline and never appear here.
     pub pending_forwarded_queries: Vec<crate::host_query::HostQuery>,
     pub pending_nested_session_messages: Vec<NestedSessionMessage>,
     ui_component_bytes: Option<Vec<u8>>,
@@ -719,6 +718,31 @@ impl Grid {
         self.application_bg
             .or(self.pane_default_bg)
             .or(self.style.terminal.map(|t| t.background))
+    }
+    /// OSC 10 answer: the application's override, then the pane default, then the
+    /// server baseline. Never a viewer's host color.
+    pub(crate) fn application_foreground(&self) -> (u8, u8, u8) {
+        self.application_fg
+            .or(self.pane_default_fg)
+            .unwrap_or(self.style.application.theme.foreground)
+    }
+    /// OSC 11 answer, in the same order as [`Self::application_foreground`].
+    pub(crate) fn application_background(&self) -> (u8, u8, u8) {
+        self.application_bg
+            .or(self.pane_default_bg)
+            .unwrap_or(self.style.application.theme.background)
+    }
+    /// OSC 4 answer: the application's literal register override, then the baseline.
+    pub(crate) fn application_register(&self, index: u8) -> (u8, u8, u8) {
+        self.changed_colors
+            .and_then(|colors| colors[index as usize])
+            .and_then(rgb_of_ansi_code)
+            .unwrap_or_else(|| self.style.application.register(index))
+    }
+    /// Store the server-owned color-query baseline. Rendering follows
+    /// `update_terminal_theme` separately.
+    pub fn set_application_baseline(&mut self, baseline: yinz_types::style::ApplicationBaseline) {
+        self.style.application = baseline;
     }
     fn theme_background(&self) -> bool {
         self.style.terminal.is_some()
@@ -1018,7 +1042,6 @@ impl Grid {
             agent_launch: None,
             detected_theme_interval: None,
             pending_agent_theme_updates: vec![],
-            agent_color_queries: VecDeque::new(),
             history_replay: None,
             title_stack: vec![],
             title: None,
@@ -3896,35 +3919,6 @@ impl Grid {
             self.output_buffer.update_all_lines();
             self.repaint_completed_text = true;
             self.should_render = true;
-        }
-    }
-    /// Called only for a completed host query, after the screen's token guard and
-    /// fallback synthesis. Clipboard replies cannot consume color observations.
-    pub fn record_terminal_color_reply(
-        &mut self,
-        query: &crate::host_query::HostQuery,
-        reply: &[u8],
-    ) {
-        use crate::host_query::HostQuery;
-        let code = match query {
-            HostQuery::DefaultForeground { .. } => 10,
-            HostQuery::DefaultBackground { .. } => 11,
-            _ => return,
-        };
-        let Some(index) = self
-            .agent_color_queries
-            .iter()
-            .position(|(c, _)| *c == code)
-        else {
-            return;
-        };
-        let Some((_, palette)) = self.agent_color_queries.remove(index) else {
-            return;
-        };
-        if palette.ptr_eq(&Rc::downgrade(&self.agent_theme))
-            && let Some(rgb) = crate::agent_theme::terminal_color_reply(code, reply)
-        {
-            self.observe_agent_terminal_color(code, rgb);
         }
     }
     fn recompile_agent_theme(&mut self) {

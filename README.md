@@ -20,7 +20,9 @@ be, so that agents stay readable.
 See running agents with "Ctrl+e+a".
 
 Yinz works best with a modern terminal emulator. I use kitty and ghostty. Yinz
-makes use of the kitty graphics protocol.
+makes use of the kitty graphics protocol. Applications in shared panes see one
+session color baseline, whichever client is attached:
+[Terminal colors in shared panes](docs/TERMINAL_COLORS.md).
 
 Yinz is pretty fast! It runs `notcurses-demo` pretty well, which causes upstream
 zellij to panic.

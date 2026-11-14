@@ -14,7 +14,7 @@ use yinz_types::style::{default_palette, Styling, ThemeHue};
 use yinz_types::units::ElapsedSeconds;
 
 use crate::config::Config;
-use crate::screen_config::ScreenConfig;
+use crate::screen_config::{ApplicationThemeConfig, ScreenConfig};
 use crate::theme::{FrameConfig, Theme, Themes, UiConfig};
 
 /// A styling that differs from every other shade's, and from the default palette.
@@ -122,6 +122,7 @@ fn defaults_match_the_documented_fallbacks() {
         host_theme_dark,
         host_theme_light,
         explicit_theme_hue,
+        application_theme,
         rounded_corners,
         hide_session_name,
         pane_frame_style,
@@ -174,6 +175,15 @@ fn defaults_match_the_documented_fallbacks() {
     assert_eq!(host_theme_dark, None);
     assert_eq!(host_theme_light, None);
     assert_eq!(explicit_theme_hue, None);
+    assert_eq!(
+        application_theme,
+        ApplicationThemeConfig {
+            static_terminal: None,
+            static_background: Styling::from(default_palette()).text_unselected.background,
+            pair: None,
+            explicit_theme_hue: None,
+        }
+    );
     assert!(!rounded_corners);
     assert!(!hide_session_name);
     assert_eq!(pane_frame_style, PaneFrameStyle::Titles);
@@ -251,6 +261,7 @@ fn every_option_reaches_its_field() {
         host_theme_dark,
         host_theme_light,
         explicit_theme_hue,
+        application_theme,
         rounded_corners,
         hide_session_name,
         pane_frame_style,
@@ -303,6 +314,15 @@ fn every_option_reaches_its_field() {
     assert_eq!(host_theme_dark, Some(styling(2)));
     assert_eq!(host_theme_light, Some(styling(3)));
     assert_eq!(explicit_theme_hue, Some(ThemeHue::Light));
+    assert_eq!(
+        application_theme,
+        ApplicationThemeConfig {
+            static_terminal: None,
+            static_background: styling(1).text_unselected.background,
+            pair: Some((None, None)),
+            explicit_theme_hue: Some(ThemeHue::Light),
+        }
+    );
     assert!(rounded_corners);
     assert!(hide_session_name);
     assert_eq!(pane_frame_style, PaneFrameStyle::Full);
@@ -360,6 +380,34 @@ fn a_theme_name_the_config_does_not_define_leaves_that_side_of_the_pair_unset() 
 
     assert_eq!(screen_config.host_theme_dark, None);
     assert_eq!(screen_config.host_theme_light, Some(styling(3)));
+    assert_eq!(screen_config.application_theme.pair, None);
+}
+
+#[test]
+fn application_theme_takes_terminal_blocks_from_the_static_theme_and_the_pair() {
+    let block = |shade: u8| yinz_types::style::TerminalTheme {
+        foreground: (shade, shade, shade),
+        background: (shade, 0, 0),
+        ansi: [(shade, 1, 1); 16],
+    };
+    let mut config = every_option_set();
+    let mut with_block = |name: &str, shade: u8| {
+        let mut theme = theme(shade);
+        theme.terminal = Some(block(shade));
+        config.themes.insert(name.into(), theme);
+    };
+    with_block("main", 1);
+    with_block("night", 2);
+    let application = ScreenConfig::from_config(&config).application_theme;
+    assert_eq!(application.static_terminal, Some(block(1)));
+    assert_eq!(application.pair, Some((Some(block(2)), None)));
+    assert_eq!(application.explicit_theme_hue, Some(ThemeHue::Light));
+
+    config.options.theme_light = None;
+    assert_eq!(
+        ScreenConfig::from_config(&config).application_theme.pair,
+        None
+    );
 }
 
 #[test]

@@ -157,6 +157,33 @@ fn migration_preserves_incomplete_frame_but_waits_for_host_reply() {
 }
 
 #[test]
+fn restore_keeps_the_receiving_grids_application_baseline() {
+    let mut original = grid(b"content\x1b]11;#102030\x07");
+    original.set_application_baseline(yinz_types::style::ApplicationBaseline::fallback(
+        yinz_types::style::HostTerminalThemeMode::Dark,
+    ));
+    let mut destination = grid(b"old");
+    let mut baseline = yinz_types::style::ApplicationBaseline::fallback(
+        yinz_types::style::HostTerminalThemeMode::Light,
+    );
+    baseline.theme.foreground = (1, 2, 3);
+    destination.set_application_baseline(baseline);
+    destination
+        .restore_migration_state(original.migration_state().unwrap())
+        .unwrap();
+    assert_eq!(destination.style.application, baseline);
+    vte::Parser::new().advance(&mut destination, b"\x1b]10;?\x07\x1b]11;?\x07");
+    assert_eq!(
+        destination.pending_messages_to_pty,
+        vec![
+            b"\x1b]10;rgb:0101/0202/0303\x07".to_vec(),
+            // The migrated application override still wins.
+            b"\x1b]11;rgb:1010/2020/3030\x07".to_vec(),
+        ]
+    );
+}
+
+#[test]
 fn a_restored_synchronized_frame_gets_a_fresh_deadline() {
     let mut original = grid(b"content");
     original.lock_renders();

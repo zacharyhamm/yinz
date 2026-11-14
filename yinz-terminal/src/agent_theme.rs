@@ -5,7 +5,6 @@ use yinz_types::agent::theme::{AgentThemeSnapshot, Channel, MatchKey, Role, Sour
 use yinz_types::{colors::PaletteColor, style::Style};
 
 mod codex_0_162_1;
-pub(crate) use codex_0_162_1::parse_reply as terminal_color_reply;
 
 #[derive(Debug)]
 struct Resolved {

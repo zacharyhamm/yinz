@@ -318,6 +318,16 @@ impl TestClient {
         self.fake_client_handle.received_server_messages()
     }
 
+    /// Block until the names of the server messages this client received, in order,
+    /// satisfy `predicate`.
+    pub fn wait_for_server_messages(&self, what: &str, predicate: impl Fn(&[String]) -> bool) {
+        self.fake_client_handle.received_server_messages.wait_until(
+            what,
+            crate::default_timeout(),
+            |messages| predicate(messages).then_some(()),
+        );
+    }
+
     pub fn quit(mut self) {
         if self
             .thread
@@ -641,6 +651,10 @@ impl TestSession {
         self.main_client.received_server_messages()
     }
 
+    pub fn wait_for_server_messages(&self, what: &str, predicate: impl Fn(&[String]) -> bool) {
+        self.main_client.wait_for_server_messages(what, predicate)
+    }
+
     pub fn wait_for_app_load(&self) -> GridSnapshot {
         self.main_client.wait_until("app to load", |grid_snapshot| {
             (grid_snapshot.status_bar_appears() || grid_snapshot.contains("Descend:"))
@@ -673,6 +687,25 @@ impl TestSession {
 
     pub fn attach_client_with_timezone(&self, size: Size, timezone: Option<&str>) -> TestClient {
         self.attach_client_options(size, None, Some(timezone.map(str::to_owned)))
+    }
+
+    /// Attach a client whose own configuration options (its config file and command line)
+    /// are `options`, on top of the harness options.
+    pub fn attach_client_with_config_options(&self, size: Size, options: Options) -> TestClient {
+        let (fake_client_os_api, fake_client_handle) = FakeClientOsApi::new(size, None);
+        let options = self.config_options.merge(options);
+        let thread = spawn_client_thread(
+            fake_client_os_api,
+            self.cli_args.clone(),
+            self.config.clone(),
+            options.clone(),
+            ClientInfo::Attach(self.session_name.clone().into(), options),
+            None,
+        );
+        TestClient {
+            fake_client_handle,
+            thread: Some(thread),
+        }
     }
 
     fn attach_client_options(
@@ -748,7 +781,6 @@ impl TestSession {
         let reported = client_screen
             .server_messages()
             .lock()
-            .unwrap()
             .iter()
             .filter_map(|message| message.split_once(": "))
             .filter_map(|(name, output)| match name {
@@ -770,7 +802,6 @@ impl TestSession {
         let reported = client_screen
             .server_messages()
             .lock()
-            .unwrap()
             .iter()
             .filter_map(|message| message.split_once(": "))
             .filter_map(|(name, output)| match name {

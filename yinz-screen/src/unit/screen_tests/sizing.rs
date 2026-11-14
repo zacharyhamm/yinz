@@ -28,23 +28,19 @@ fn pane_buffers_pty_bytes_while_forward_paused() {
 
 #[test]
 fn pane_forward_in_vte_stops_processing_with_remainder_queued() {
-    // App sends `OSC 10;? + after`. When vte's OSC dispatch runs and
-    // Grid pushes the forward query, processing must stop, leaving
-    // `after` in the queue. Those bytes will be replayed AFTER the
-    // host reply has been written.
+    // App sends `CSI 14 t + after`. When vte's dispatch runs and Grid
+    // pushes the forward query, processing must stop, leaving `after` in
+    // the queue. Those bytes will be replayed AFTER the host reply has
+    // been written. (Color queries are answered in the pane and never
+    // forward; see docs/TERMINAL_COLORS.md.)
     let mut pane = new_terminal_pane_for_pause_test(1);
-    let mut input = b"\x1b]10;?\x07".to_vec();
+    let mut input = b"\x1b[14t".to_vec();
     input.extend_from_slice(b"after");
     pane.handle_pty_bytes(input);
 
     let queries = pane.drain_forwarded_queries();
     assert_eq!(queries.len(), 1, "exactly one forward must be queued");
-    assert_eq!(
-        queries[0],
-        crate::host_query::HostQuery::DefaultForeground {
-            terminator: crate::host_query::OscTerminator::Bel,
-        }
-    );
+    assert_eq!(queries[0], crate::host_query::HostQuery::TextAreaPixelSize);
 
     let buffered = pane.drain_pending_pty_input();
     assert_eq!(
@@ -157,17 +153,17 @@ fn forwarded_reply_routes_through_tab_for_unpaused_pane() {
 #[test]
 fn paused_pane_with_da1_in_queue_emits_da1_after_resume() {
     // Simulates the user-reported ordering bug: app sends
-    // `OSC 10;? + CSI c`. The OSC 10 forward must be dispatched
+    // `CSI 14 t + CSI c`. The CSI 14 t forward must be dispatched
     // first, then the DA1 reply emitted only after the resume kicks
     // processing of the queued `\x1b[c`.
     let mut pane = new_terminal_pane_for_pause_test(1);
-    let mut input = b"\x1b]10;?\x07".to_vec();
+    let mut input = b"\x1b[14t".to_vec();
     input.extend_from_slice(b"\x1b[c");
     pane.handle_pty_bytes(input);
 
     // Forward emitted; DA1 still queued behind it.
     let queries = pane.drain_forwarded_queries();
-    assert_eq!(queries.len(), 1, "OSC 10 forward emitted first");
+    assert_eq!(queries.len(), 1, "CSI 14 t forward emitted first");
     assert!(
         pane.drain_messages_to_pty().is_empty(),
         "DA1 reply must NOT be emitted yet — it is queued behind the forward"

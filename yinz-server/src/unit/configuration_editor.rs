@@ -1019,8 +1019,24 @@ fn palette_theme_transaction_preserves_overrides_variants_and_future_clients() {
                 .try_iter()
                 .map(|(instruction, _)| instruction)
                 .collect();
+            // The saved theme's application baseline reaches the screen before the
+            // preview closes, so closing it keeps the saved pane palette.
             assert!(
-                matches!(instructions.first(), Some(ScreenInstruction::PaletteThemeSaved { client, request: actual, result: Ok(()) }) if *client == ClientId::new(1) && *actual == request)
+                matches!(
+                    instructions.first(),
+                    Some(ScreenInstruction::SetApplicationThemeConfig(_))
+                ),
+                "{instructions:?}"
+            );
+            assert!(
+                matches!(instructions.get(1), Some(ScreenInstruction::PaletteThemeSaved { client, request: actual, result: Ok(()) }) if *client == ClientId::new(1) && *actual == request)
+            );
+            assert_eq!(
+                instructions
+                    .iter()
+                    .filter(|i| matches!(i, ScreenInstruction::SetApplicationThemeConfig(_)))
+                    .count(),
+                1
             );
             assert_eq!(
                 instructions
@@ -1312,4 +1328,196 @@ fn editor_rejects_stale_draft_after_theme_confirmation() {
         assert!(screen_rx.try_recv().is_err());
         assert!(!dir.path().join("config.d/yinz-managed.kdl").exists());
     }
+}
+
+fn theme_patch(name: &str) -> Patch {
+    Patch {
+        reset: false,
+        path: vec!["theme".into()],
+        node: Some(yinz_types::configuration::Node {
+            name: "theme".into(),
+            arguments: vec![json!(name)],
+            properties: Default::default(),
+            children: vec![],
+        }),
+    }
+}
+
+fn published_application_themes(
+    screen_rx: &channels::Receiver<(ScreenInstruction, yinz_types::diagnostics::ErrorContext)>,
+) -> Vec<yinz_config::screen_config::ApplicationThemeConfig> {
+    screen_rx
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            ScreenInstruction::SetApplicationThemeConfig(config) => Some(config),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn application_theme_follows_permanent_picker_and_settings_saves_once() {
+    use yinz_config::screen_config::ApplicationThemeConfig;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.kdl"), "theme \"default\"\n").unwrap();
+    let base = loaded_theme_config(dir.path());
+    let (mut session, screen_rx) = session(dir.path());
+    session
+        .session_configuration
+        .set_saved_configuration(base.clone());
+    session
+        .session_configuration
+        .set_client_runtime_configuration(ClientId::new(1), base.clone());
+    // An earlier session save of the same path.
+    session
+        .apply_palette_theme(
+            ClientId::new(1),
+            uuid::Uuid::new_v4(),
+            "dayfox",
+            false,
+            &Default::default(),
+        )
+        .unwrap();
+    assert_eq!(published_application_themes(&screen_rx).len(), 1);
+
+    let request = uuid::Uuid::new_v4();
+    session
+        .apply_palette_theme(
+            ClientId::new(1),
+            request,
+            "dracula",
+            true,
+            &Default::default(),
+        )
+        .unwrap();
+    let instructions: Vec<_> = screen_rx.try_iter().map(|(i, _)| i).collect();
+    let position = |predicate: &dyn Fn(&ScreenInstruction) -> bool| {
+        instructions.iter().position(predicate).unwrap()
+    };
+    let published = position(&|i| matches!(i, ScreenInstruction::SetApplicationThemeConfig(_)));
+    let saved = position(&|i| matches!(i, ScreenInstruction::PaletteThemeSaved { .. }));
+    assert!(published < saved, "{instructions:?}");
+    assert_eq!(
+        instructions
+            .iter()
+            .filter(|i| matches!(i, ScreenInstruction::SetApplicationThemeConfig(_)))
+            .count(),
+        1
+    );
+    let dracula = ApplicationThemeConfig::from_config(&loaded_theme_config(dir.path()));
+    assert_eq!(
+        session
+            .session_configuration
+            .application_theme_configuration(),
+        dracula
+    );
+    assert!(matches!(
+        &instructions[published],
+        ScreenInstruction::SetApplicationThemeConfig(config) if *config == dracula
+    ));
+
+    // The watcher's echo of that write publishes nothing more.
+    let changes = session
+        .session_configuration
+        .reload_saved_config(loaded_theme_config(dir.path()));
+    session.propagate_configuration_changes(changes, true);
+    assert!(published_application_themes(&screen_rx).is_empty());
+
+    // A permanent settings-editor save of the theme publishes it once.
+    submit(
+        &mut session,
+        Destination::Permanent,
+        vec![theme_patch("nightfox")],
+        vec![],
+    )
+    .unwrap();
+    assert_eq!(
+        published_application_themes(&screen_rx),
+        vec![ApplicationThemeConfig::from_config(&loaded_theme_config(
+            dir.path()
+        ))]
+    );
+    assert_eq!(
+        loaded_theme_config(dir.path()).options.theme.as_deref(),
+        Some("nightfox")
+    );
+}
+
+#[test]
+fn application_theme_ignores_unrelated_editor_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.kdl"), "theme \"nightfox\"\n").unwrap();
+    let base = loaded_theme_config(dir.path());
+    let (mut session, screen_rx) = session(dir.path());
+    session
+        .session_configuration
+        .set_saved_configuration(base.clone());
+    session
+        .session_configuration
+        .set_client_runtime_configuration(ClientId::new(1), base);
+    submit(
+        &mut session,
+        Destination::Session,
+        vec![mouse(false)],
+        vec![],
+    )
+    .unwrap();
+    let mut frames = mouse(false);
+    frames.path[0] = "pane_frames".into();
+    frames.node.as_mut().unwrap().name = "pane_frames".into();
+    submit(&mut session, Destination::Permanent, vec![frames], vec![]).unwrap();
+    let instructions: Vec<_> = screen_rx.try_iter().map(|(i, _)| i).collect();
+    assert!(instructions
+        .iter()
+        .any(|i| matches!(i, ScreenInstruction::Reconfigure { .. })));
+    assert!(!instructions
+        .iter()
+        .any(|i| matches!(i, ScreenInstruction::SetApplicationThemeConfig(_))));
+}
+
+#[test]
+fn application_theme_picker_save_replaces_a_pair_only_the_session_source_has() {
+    use yinz_config::screen_config::ApplicationThemeConfig;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.kdl"), "theme \"default\"\n").unwrap();
+    let base = loaded_theme_config(dir.path());
+    let (mut session, screen_rx) = session(dir.path());
+    session
+        .session_configuration
+        .set_saved_configuration(base.clone());
+    // The creating client's own `--theme-dark` / `--theme-light` define the session pair;
+    // the client saving a theme has no pair of its own.
+    let creator = Config::from_kdl(
+        "theme_dark \"nightfox\"\ntheme_light \"dayfox\"",
+        Some(base.clone()),
+    )
+    .unwrap();
+    session
+        .session_configuration
+        .initialize_application_theme(creator);
+    session
+        .session_configuration
+        .set_client_runtime_configuration(ClientId::new(2), base.clone());
+    assert!(session
+        .session_configuration
+        .application_theme_configuration()
+        .pair
+        .is_some());
+    session
+        .apply_palette_theme(
+            ClientId::new(2),
+            uuid::Uuid::new_v4(),
+            "dracula",
+            false,
+            &Default::default(),
+        )
+        .unwrap();
+    let expected = ApplicationThemeConfig::from_config(
+        &Config::from_kdl(
+            "theme \"dracula\"\ntheme_dark \"dracula\"\ntheme_light \"dracula\"",
+            Some(base),
+        )
+        .unwrap(),
+    );
+    assert_eq!(published_application_themes(&screen_rx), vec![expected]);
 }

@@ -47,7 +47,8 @@ pub enum HostQuery {
     TextAreaPixelSize,
     /// `CSI 16 t` — character-cell pixel dimensions.
     CharacterCellPixelSize,
-    /// `OSC 10 ; ? <term>` — default foreground colour.
+    /// `OSC 10 ; ? <term>` — default foreground colour. Pane grids answer the
+    /// color queries themselves; the host-facing parsers still use them.
     DefaultForeground { terminator: OscTerminator },
     /// `OSC 11 ; ? <term>` — default background colour.
     DefaultBackground { terminator: OscTerminator },
@@ -60,13 +61,12 @@ pub enum HostQuery {
         selection: char,
         terminator: OscTerminator,
     },
-    /// `CSI ? 996 n` — query the host terminal's color-palette theme
-    /// mode (light or dark). NOT forwarded to the host. Yinz has
-    /// already queried the host once at startup (via the client's
-    /// `\e[?996n` write) and tracks unsolicited DSR 997 updates while
-    /// `\e[?2031h` is enabled, so it can answer this from cache. The
-    /// Screen handler short-circuits this variant: rather than writing
-    /// to the wire it synthesises `\e[?997;{0|1|2}n` directly into the
+    /// `CSI ? 996 n` — query the terminal's color-palette theme mode
+    /// (light or dark). NOT forwarded to the host: shared applications
+    /// are told the session's application baseline mode, never one
+    /// viewer's report (see `docs/TERMINAL_COLORS.md`). The Screen
+    /// handler short-circuits this variant: rather than writing to the
+    /// wire it synthesises `\e[?997;{1|2}n` directly into the
     /// originating pane's pty.
     ColorPaletteMode,
 }

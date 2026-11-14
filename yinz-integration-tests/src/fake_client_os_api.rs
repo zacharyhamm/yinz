@@ -72,7 +72,7 @@ pub struct FakeClientOsApi {
     session_name: Arc<Mutex<Option<String>>>,
     server_spawner: Arc<Mutex<Option<ServerSpawner>>>,
     env: Arc<Mutex<HashMap<String, String>>>,
-    received_server_messages: Arc<Mutex<Vec<String>>>,
+    received_server_messages: yinz_test_support::Watched<Vec<String>>,
     timezone: Arc<Mutex<Option<Option<String>>>>,
 }
 
@@ -110,13 +110,13 @@ pub struct FakeClientHandle {
     pub size: Arc<Mutex<Size>>,
     pub stdin_tx: crossbeam::channel::Sender<Vec<u8>>,
     pub signal_tx: crossbeam::channel::Sender<SignalEvent>,
-    pub received_server_messages: Arc<Mutex<Vec<String>>>,
+    pub received_server_messages: yinz_test_support::Watched<Vec<String>>,
     send_instructions_to_server: Arc<Mutex<Option<IpcSenderWithContext<ClientToServerMsg>>>>,
 }
 
 impl FakeClientHandle {
     pub fn received_server_messages(&self) -> Vec<String> {
-        self.received_server_messages.lock().unwrap().clone()
+        self.received_server_messages.get()
     }
 
     pub fn kill_session(&self) {
@@ -333,7 +333,7 @@ impl ServerConnection for FakeClientOsApi {
                 },
                 _ => server_message_name(msg),
             };
-            self.received_server_messages.lock().unwrap().push(recorded);
+            self.received_server_messages.lock().push(recorded);
         }
         received
     }

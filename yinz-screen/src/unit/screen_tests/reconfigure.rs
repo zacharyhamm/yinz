@@ -22,7 +22,11 @@ fn every_field_changed() -> ScreenConfig {
         overlay_tab_plugins: vec![],
         plugin_aliases: Default::default(),
         agent_theme_mapping: yinz_types::agent::theme::AgentThemeMapping::Off,
-        terminal_theme: None,
+        terminal_theme: Some(yinz_types::style::TerminalTheme {
+            foreground: (1, 2, 3),
+            background: (4, 5, 6),
+            ansi: [(7, 8, 9); 16],
+        }),
         terminal_themes: Default::default(),
         theme: styling(1),
         themes: std::collections::BTreeMap::from([("custom".into(), styling(1))]),
@@ -32,6 +36,16 @@ fn every_field_changed() -> ScreenConfig {
         host_theme_dark: Some(styling(2)),
         host_theme_light: Some(styling(3)),
         explicit_theme_hue: Some(ThemeHue::Light),
+        application_theme: yinz_config::screen_config::ApplicationThemeConfig {
+            static_terminal: Some(yinz_types::style::TerminalTheme {
+                foreground: (1, 2, 3),
+                background: (4, 5, 6),
+                ansi: [(7, 8, 9); 16],
+            }),
+            static_background: PaletteColor::Rgb((4, 5, 6)),
+            pair: None,
+            explicit_theme_hue: Some(ThemeHue::Light),
+        },
         rounded_corners: true,
         hide_session_name: true,
         pane_frame_style: PaneFrameStyle::Full,
@@ -135,6 +149,7 @@ fn a_reload_applies_every_field_of_the_screen_config() {
         host_theme_dark,
         host_theme_light,
         explicit_theme_hue,
+        application_theme,
         rounded_corners,
         hide_session_name,
         pane_frame_style,
@@ -193,7 +208,14 @@ fn a_reload_applies_every_field_of_the_screen_config() {
     assert_eq!(screen.theme_name, theme_name);
     assert_eq!(screen.theme_dark_name, theme_dark_name);
     assert_eq!(screen.theme_light_name, theme_light_name);
-    assert_eq!(screen.style.terminal, terminal_theme);
+    // A reload is per client: it never changes the pane palette or what shared
+    // applications are told. Those follow `SetApplicationThemeConfig` only.
+    assert_ne!(screen.style.terminal, terminal_theme);
+    assert_ne!(screen.application_theme, application_theme);
+    assert_eq!(
+        screen.style.application,
+        yinz_types::style::ApplicationBaseline::default()
+    );
     assert_eq!(screen.style.agent_theme_mapping, agent_theme_mapping);
     assert_eq!(screen.terminal_themes, terminal_themes);
     assert_eq!(screen.host_theme_dark_styling, host_theme_dark);

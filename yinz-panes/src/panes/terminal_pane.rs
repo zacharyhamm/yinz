@@ -212,9 +212,6 @@ impl TerminalPaneIo for TerminalPane {
     fn drain_forwarded_queries(&mut self) -> Vec<crate::host_query::HostQuery> {
         std::mem::take(&mut self.grid.pending_forwarded_queries)
     }
-    fn record_terminal_color_reply(&mut self, query: &crate::host_query::HostQuery, reply: &[u8]) {
-        self.grid.record_terminal_color_reply(query, reply);
-    }
     fn drain_nested_session_messages(&mut self) -> Vec<NestedSessionMessage> {
         std::mem::take(&mut self.grid.pending_nested_session_messages)
     }
@@ -602,6 +599,10 @@ impl Pane for TerminalPane {
     fn update_terminal_theme(&mut self, theme: Option<yinz_types::style::TerminalTheme>) {
         self.style.terminal = theme;
         self.grid.update_terminal_theme(theme);
+    }
+    fn update_application_baseline(&mut self, baseline: yinz_types::style::ApplicationBaseline) {
+        self.style.application = baseline;
+        self.grid.set_application_baseline(baseline);
     }
     fn host_colors(&self) -> (PaletteColor, PaletteColor) {
         self.grid.host_colors()

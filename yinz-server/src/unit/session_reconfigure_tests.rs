@@ -2257,3 +2257,259 @@ mod font_features_reconfigure {
         }
     }
 }
+
+/// The session theme source behind shared application color answers changes only on
+/// session-wide paths. See `docs/TERMINAL_COLORS.md`.
+mod application_theme {
+    use super::*;
+    use yinz_config::screen_config::ApplicationThemeConfig;
+
+    struct Fixture {
+        dir: tempfile::TempDir,
+        data: Arc<RwLock<Option<SessionMetaData>>>,
+        state: Arc<RwLock<SessionState>>,
+        screen: channels::Receiver<(ScreenInstruction, yinz_types::diagnostics::ErrorContext)>,
+    }
+
+    fn load(dir: &Path) -> Config {
+        yinz_config::cli_assets::load_config_and_layout(&yinz_types::input::cli_assets::CliAssets {
+            config_file_path: Some(dir.join("config.kdl")),
+            config_dir: Some(dir.into()),
+            ..Default::default()
+        })
+        .unwrap()
+        .0
+    }
+
+    fn theme(config: &Config, kdl: &str) -> ApplicationThemeConfig {
+        ApplicationThemeConfig::from_config(&Config::from_kdl(kdl, Some(config.clone())).unwrap())
+    }
+
+    impl Fixture {
+        /// A session created with `theme "nightfox"`. Every attached client brings its own
+        /// `theme "dayfox"` and light hue, merged the way the attach path merges them, so
+        /// whichever client a batch picks first holds those options.
+        fn new(attached: &[ClientId]) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("config.kdl"), "theme \"nightfox\"\n").unwrap();
+            let (to_screen, screen) = channels::unbounded();
+            let mut session = reconfiguration_session(ThreadSenders {
+                to_screen: Some(SenderWithContext::new(to_screen)),
+                should_silently_fail: true,
+                ..Default::default()
+            });
+            session.config_dir = Some(dir.path().to_path_buf());
+            session.config_file_path = Some(dir.path().join("config.kdl"));
+            let saved = load(dir.path());
+            session
+                .session_configuration
+                .set_saved_configuration(saved.clone());
+            session
+                .session_configuration
+                .initialize_application_theme(saved.clone());
+            let mut state = SessionState::new();
+            for client in attached {
+                state.clients.insert(*client);
+                state.interactive_clients.insert(*client);
+                let mut runtime = saved.clone();
+                runtime.options = saved.options.merge(yinz_types::input::options::Options {
+                    theme: Some("dayfox".into()),
+                    explicit_theme_hue: Some(yinz_types::style::ThemeHue::Light),
+                    ..Default::default()
+                });
+                session
+                    .session_configuration
+                    .set_client_runtime_configuration(*client, runtime);
+                let effective = session
+                    .session_configuration
+                    .get_client_configuration(client);
+                session.propagate_configuration_changes(vec![(*client, effective)], false);
+            }
+            let fixture = Fixture {
+                dir,
+                data: Arc::new(RwLock::new(Some(session))),
+                state: Arc::new(RwLock::new(state)),
+                screen,
+            };
+            assert!(
+                fixture.published().is_empty(),
+                "attaching with its own theme options must not change the session theme"
+            );
+            fixture
+        }
+
+        fn with<R>(&self, f: impl FnOnce(&mut SessionMetaData) -> R) -> R {
+            with_session_mut(&self.data, f).unwrap().unwrap()
+        }
+
+        fn instructions(&self) -> Vec<ScreenInstruction> {
+            self.screen
+                .try_iter()
+                .map(|(instruction, _)| instruction)
+                .collect()
+        }
+
+        fn published(&self) -> Vec<ApplicationThemeConfig> {
+            self.instructions()
+                .into_iter()
+                .filter_map(|instruction| match instruction {
+                    ScreenInstruction::SetApplicationThemeConfig(config) => Some(config),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// The session theme is published exactly once, ahead of every `Reconfigure`.
+        fn assert_published_once_ahead_of_reconfigure(&self, expected: &ApplicationThemeConfig) {
+            let instructions = self.instructions();
+            let published: Vec<_> = instructions
+                .iter()
+                .enumerate()
+                .filter_map(|(index, instruction)| match instruction {
+                    ScreenInstruction::SetApplicationThemeConfig(config) => Some((index, config)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(published.len(), 1, "{instructions:?}");
+            assert_eq!(published[0].1, expected);
+            assert!(instructions[..published[0].0]
+                .iter()
+                .all(|instruction| !matches!(instruction, ScreenInstruction::Reconfigure { .. })));
+        }
+
+        fn all(&self, fragment: &str, write: bool) -> yinz_bus::route::ActionCompletionResult {
+            let (tx, mut rx) = tokio::sync::oneshot::channel();
+            reconfigure_all_clients(
+                fragment.into(),
+                write,
+                Some(NotificationEnd::new(tx)),
+                &self.state,
+                &self.data,
+            );
+            rx.try_recv().unwrap()
+        }
+
+        fn source(&self) -> ApplicationThemeConfig {
+            self.with(|session| {
+                session
+                    .session_configuration
+                    .application_theme_configuration()
+            })
+        }
+
+        /// What `ServerInstruction::ConfigWrittenToDisk` does with the watcher's load.
+        fn disk_reload(&self) {
+            let disk = load(self.dir.path());
+            self.with(|session| {
+                let changes = session.session_configuration.reload_saved_config(disk);
+                session.propagate_configuration_changes(changes, true);
+            });
+        }
+    }
+
+    #[test]
+    fn application_theme_ignores_attach_and_unsaved_per_client_reconfigure() {
+        let fixture = Fixture::new(&[CLIENT, ClientId::new(2)]);
+        let before = fixture.source();
+        reconfigure_client(
+            ClientId::new(2),
+            "theme \"dracula\"".into(),
+            false,
+            &fixture.state,
+            &fixture.data,
+        )
+        .unwrap();
+        let instructions = fixture.instructions();
+        assert!(instructions
+            .iter()
+            .any(|instruction| matches!(instruction, ScreenInstruction::Reconfigure { .. })));
+        assert!(!instructions
+            .iter()
+            .any(|i| matches!(i, ScreenInstruction::SetApplicationThemeConfig(_))));
+        assert_eq!(fixture.source(), before);
+    }
+
+    #[test]
+    fn application_theme_follows_session_wide_unsaved_reconfigure() {
+        let fixture = Fixture::new(&[CLIENT, ClientId::new(2)]);
+        let saved = load(fixture.dir.path());
+        assert_eq!(fixture.all("theme \"dayfox\"", false).exit_status, None);
+        fixture.assert_published_once_ahead_of_reconfigure(&theme(&saved, "theme \"dayfox\""));
+        // Repeating it changes nothing.
+        fixture.all("theme \"dayfox\"", false);
+        assert!(fixture.published().is_empty());
+
+        // With nobody attached, a client's unsaved change is session-wide.
+        let fixture = Fixture::new(&[]);
+        reconfigure_client(
+            CLIENT,
+            "theme \"dracula\"".into(),
+            false,
+            &fixture.state,
+            &fixture.data,
+        )
+        .unwrap();
+        fixture.assert_published_once_ahead_of_reconfigure(&theme(&saved, "theme \"dracula\""));
+    }
+
+    #[test]
+    fn application_theme_takes_only_saved_fragments_and_disk_reloads() {
+        let fixture = Fixture::new(&[CLIENT, ClientId::new(2)]);
+        let saved = load(fixture.dir.path());
+        let before = fixture.source();
+        // A saved unrelated change from a client holding its own theme options.
+        assert_eq!(fixture.all("pane_frames false", true).exit_status, None);
+        assert!(fixture.published().is_empty());
+        reconfigure_client(
+            ClientId::new(2),
+            "mouse_mode false".into(),
+            true,
+            &fixture.state,
+            &fixture.data,
+        )
+        .unwrap();
+        assert!(fixture.published().is_empty());
+        assert_eq!(fixture.source(), before);
+        // The watcher's reload of those writes still has the session's theme.
+        fixture.disk_reload();
+        assert!(fixture.published().is_empty());
+        assert_eq!(fixture.source(), before);
+
+        // A saved theme fragment is session-wide.
+        assert_eq!(fixture.all("theme \"dayfox\"", true).exit_status, None);
+        fixture.assert_published_once_ahead_of_reconfigure(&theme(&saved, "theme \"dayfox\""));
+        fixture.disk_reload();
+        assert!(fixture.published().is_empty());
+    }
+
+    #[test]
+    fn application_theme_disk_reload_replaces_the_creators_options_once() {
+        let fixture = Fixture::new(&[CLIENT]);
+        let saved = load(fixture.dir.path());
+        // The creating client started the session with its own theme option.
+        fixture.with(|session| {
+            session.session_configuration.initialize_application_theme(
+                Config::from_kdl("theme \"dracula\"", Some(saved.clone())).unwrap(),
+            )
+        });
+        std::fs::write(fixture.dir.path().join("config.kdl"), "theme \"dayfox\"\n").unwrap();
+        fixture.disk_reload();
+        fixture.assert_published_once_ahead_of_reconfigure(&theme(&saved, "theme \"dayfox\""));
+        fixture.disk_reload();
+        assert!(fixture.published().is_empty());
+    }
+
+    #[test]
+    fn application_theme_failed_write_leaves_the_source_unchanged() {
+        let fixture = Fixture::new(&[CLIENT]);
+        let before = fixture.source();
+        // A config dir that is a file cannot hold `config.d`.
+        let blocked = fixture.dir.path().join("not-a-directory");
+        std::fs::write(&blocked, "").unwrap();
+        fixture.with(|session| session.config_dir = Some(blocked));
+        let result = fixture.all("theme \"dayfox\"", true);
+        assert_eq!(result.exit_status, Some(1));
+        assert!(fixture.published().is_empty());
+        assert_eq!(fixture.source(), before);
+    }
+}

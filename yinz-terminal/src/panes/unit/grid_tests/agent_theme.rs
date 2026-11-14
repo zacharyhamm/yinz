@@ -836,34 +836,36 @@ fn codex_local_queries_enrich_existing_cells_frames_and_handoff_without_output()
 }
 
 #[test]
-fn codex_forwarded_observations_ignore_invalid_missing_and_previous_launch_replies() {
+fn codex_observations_learn_baseline_answers_for_the_active_launch_only() {
     let mut grid = create_grid_with_content("");
+    let dark = terminal_style((220, 220, 220), (18, 20, 30));
+    grid.update_theme(dark.colors);
+    let mut baseline = yinz_types::style::ApplicationBaseline::default();
+    baseline.theme.foreground = (220, 220, 220);
+    baseline.theme.background = (18, 20, 30);
+    grid.set_application_baseline(baseline);
     event(&mut grid, "old", Some(codex_palette()));
     feed_bytes(&mut grid, b"\x1b]10;?\x07\x1b]11;?\x07");
-    let old = std::mem::take(&mut grid.pending_forwarded_queries);
+    assert!(grid.pending_forwarded_queries.is_empty());
+    assert_eq!(
+        std::mem::take(&mut grid.pending_messages_to_pty),
+        vec![
+            b"\x1b]10;rgb:dcdc/dcdc/dcdc\x07".to_vec(),
+            b"\x1b]11;rgb:1212/1414/1e1e\x07".to_vec(),
+        ]
+    );
+    let learned = grid.agent_launch.as_ref().unwrap().snapshot.clone();
+    assert_ne!(learned, codex_palette());
+    grid.pending_agent_theme_updates.clear();
+
+    // A new launch starts from its own palette: answers given to the previous run
+    // are not carried over.
     event(&mut grid, "new", Some(codex_palette()));
-    feed_bytes(&mut grid, b"\x1b]10;?\x07\x1b]11;?\x07");
-    let current = std::mem::take(&mut grid.pending_forwarded_queries);
-    for (query, reply) in old.iter().zip([
-        b"\x1b]10;rgb:ffff/ffff/ffff\x07".as_slice(),
-        b"\x1b]11;rgb:0000/0000/0000\x07",
-    ]) {
-        grid.record_terminal_color_reply(query, reply);
-    }
     assert_eq!(
         grid.agent_launch.as_ref().unwrap().snapshot,
         codex_palette()
     );
-    grid.record_terminal_color_reply(&current[0], b"\x1b]11;rgb:ffff/ffff/ffff\x07");
-    grid.record_terminal_color_reply(&current[1], b"");
-    assert!(grid.pending_agent_theme_updates.is_empty());
-    assert_eq!(
-        grid.agent_launch.as_ref().unwrap().snapshot,
-        codex_palette()
-    );
-    feed_bytes(&mut grid, b"\x1b]10;?\x07\x1b]11;?\x07");
-    let queries = std::mem::take(&mut grid.pending_forwarded_queries);
-    grid.record_terminal_color_reply(&queries[0], b"\x1b]10;rgb:dcdc/dcdc/dcdc\x07");
+    feed_bytes(&mut grid, b"\x1b]10;?\x07");
     assert!(!grid
         .agent_launch
         .as_ref()
@@ -872,12 +874,15 @@ fn codex_forwarded_observations_ignore_invalid_missing_and_previous_launch_repli
         .definitions
         .iter()
         .any(|d| d.target == Some(Role::Surface.into())));
-    grid.update_theme(terminal_style((0, 0, 0), (255, 255, 255)).colors);
-    grid.record_terminal_color_reply(&queries[1], b"\x1b]11;rgb:1212/1414/1e1e\x07");
+    feed_bytes(&mut grid, b"\x1b]11;?\x07");
+    let updates = std::mem::take(&mut grid.pending_agent_theme_updates);
+    assert!(!updates.is_empty());
+    assert!(updates.iter().all(|update| update.launch_id == "new"));
+    assert_eq!(grid.agent_launch.as_ref().unwrap().snapshot, learned);
     feed_bytes(&mut grid, b"\x1b[48;2;46;48;57mX");
     assert!(painted(&mut grid)
         .iter()
-        .any(|c| c.0 == 'X' && c.2 == Some(AnsiCode::RgbCode((235, 235, 235)))));
+        .any(|c| c.0 == 'X' && c.2 == Some(AnsiCode::RgbCode((34, 36, 45)))));
 }
 
 #[test]

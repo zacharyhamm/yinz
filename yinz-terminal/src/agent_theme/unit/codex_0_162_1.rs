@@ -305,29 +305,6 @@ fn other_providers_and_unavailable_palettes_are_unchanged() {
 }
 
 #[test]
-fn color_replies_match_provider_scaling_and_reject_invalid_or_wrong_channels() {
-    for (reply, expected) in [
-        ("\x1b]10;rgb:f/80/1000\x07", (255, 128, 15)),
-        ("\x1b]10;RGBA:123/456/789/ffff\x1b\\", (18, 69, 120)),
-    ] {
-        assert_eq!(parse_reply(10, reply.as_bytes()), Some(expected));
-        assert_eq!(parse_reply(11, reply.as_bytes()), None);
-    }
-    for reply in [
-        "",
-        "\x1b]10;rgb:/ff/ff\x07",
-        "\x1b]10;rgb:ff/ff/fffff\x07",
-        "\x1b]10;rgb:gg/00/00\x07",
-        "\x1b]10;rgb:+f/00/00\x07",
-        "\x1b]10;rgb:ff/ff/ff",
-        "\x1b]10;rgb:ff/ff/ff/ff\x07",
-        "\x1b]10;#ffffff\x07",
-    ] {
-        assert_eq!(parse_reply(10, reply.as_bytes()), None, "{reply:?}");
-    }
-}
-
-#[test]
 fn indexed_channels_and_selection_pairs_keep_semantic_roles_and_collision_precedence() {
     use yinz_types::agent::theme::MatchKey;
     let mut snapshot = snapshot();

@@ -885,6 +885,9 @@ pub enum ScreenInstruction {
         keybinds: Keybinds,
         config: ScreenConfig,
     },
+    /// The session-owned application color theme changed (session-wide config only;
+    /// never one client's own options). See `docs/TERMINAL_COLORS.md`.
+    SetApplicationThemeConfig(yinz_config::screen_config::ApplicationThemeConfig),
     RerunCommandPane(TerminalId, Option<NotificationEnd>), // u32 - terminal pane id
     RestartAgentPane {
         pane_id: PaneId,

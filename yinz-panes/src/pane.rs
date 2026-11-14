@@ -105,7 +105,6 @@ pub trait TerminalPaneIo {
     fn drain_agent_theme_updates(&mut self) -> Vec<yinz_types::agent::theme::AgentThemeEvent>;
     /// Whitelisted terminal queries to forward to the host terminal.
     fn drain_forwarded_queries(&mut self) -> Vec<crate::host_query::HostQuery>;
-    fn record_terminal_color_reply(&mut self, query: &crate::host_query::HostQuery, reply: &[u8]);
     fn drain_nested_session_messages(&mut self) -> Vec<NestedSessionMessage>;
     /// Buffer PTY input until the host reply reaches the pane's stdin, preserving stream order.
     fn arm_forward_pause(&mut self);
@@ -417,6 +416,8 @@ pub trait Pane {
     ) {
     }
     fn update_terminal_theme(&mut self, _theme: Option<yinz_types::style::TerminalTheme>) {}
+    /// The server-owned colors shared applications are told about (OSC 10/11/4).
+    fn update_application_baseline(&mut self, _baseline: yinz_types::style::ApplicationBaseline) {}
     /// Host defaults for chrome animation, excluding application and pane overrides.
     fn host_colors(&self) -> (PaletteColor, PaletteColor) {
         let palette = yinz_types::style::Palette::default();

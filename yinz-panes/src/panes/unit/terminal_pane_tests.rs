@@ -2090,13 +2090,13 @@ pub fn a_forward_interrupting_the_flush_after_a_batched_run_requeues_from_the_es
     // Pausing must retain both the unconsumed text and the entire Kitty prefix for replay.
     let mut pane = make_pane_for_ingest();
     pane.handle_pty_bytes(Vec::from(
-        &b"\x1b]10;?\x07plain\x1b_Gq=2,a=d,d=A\x1b\\tail"[..],
+        &b"\x1b]52;c;?\x07plain\x1b_Gq=2,a=d,d=A\x1b\\tail"[..],
     ));
 
     assert_eq!(
         pane.drain_forwarded_queries().len(),
         1,
-        "the OSC 10 query should have been forwarded to the host"
+        "the OSC 52 read should have been forwarded to the host"
     );
     assert_eq!(
         pane.drain_pending_pty_input(),
@@ -2122,7 +2122,7 @@ fn host_query_pause_and_replay_preserve_every_input_split() {
             // The query fills the whole parser batch before the capture starts.
             ("\x1b_Gq=2,a=d,d=A\x1b\\red\x1b[6n", "beforered"),
         ] {
-            let stream = format!("before\x1b]10;?{terminator}{tail}");
+            let stream = format!("before\x1b]52;c;?{terminator}{tail}");
             // vte dispatches an OSC on the ESC of ST, leaving its backslash to replay.
             let expected_pending =
                 format!("{}{tail}", if terminator == "\x1b\\" { "\\" } else { "" });
@@ -2188,7 +2188,7 @@ fn mixed_sgr_and_kitty_output_flushes_only_at_capture_boundaries() {
 fn host_query_pause_replays_held_prefix_before_a_later_read() {
     for prefix in ["\x1b", "\x1b_"] {
         let mut pane = make_pane_for_ingest();
-        pane.handle_pty_bytes(format!("before\x1b]10;?\x07plain{prefix}").into_bytes());
+        pane.handle_pty_bytes(format!("before\x1b]52;c;?\x07plain{prefix}").into_bytes());
         assert_eq!(pane.drain_forwarded_queries().len(), 1);
         pane.arm_forward_pause();
         let pending = pane.drain_pending_pty_input();
@@ -2890,12 +2890,20 @@ fn recovered_codex_palette_follows_themes_without_repeating_queries() {
         }),
         ..Default::default()
     })));
-    pane.handle_pty_bytes(b"\x1b]10;?\x07".to_vec());
-    let query = pane.drain_forwarded_queries().remove(0);
-    pane.record_terminal_color_reply(&query, b"\x1b]10;rgb:cd/ce/cf\x07");
-    pane.handle_pty_bytes(b"\x1b]11;?\x07".to_vec());
-    let query = pane.drain_forwarded_queries().remove(0);
-    pane.record_terminal_color_reply(&query, b"\x1b]11;rgb:19/23/30\x07");
+    // The pane learns from the answers it gives from the application baseline.
+    let mut baseline = yinz_types::style::ApplicationBaseline::default();
+    baseline.theme.foreground = (0xcd, 0xce, 0xcf);
+    baseline.theme.background = (0x19, 0x23, 0x30);
+    pane.update_application_baseline(baseline);
+    pane.handle_pty_bytes(b"\x1b]10;?\x07\x1b]11;?\x07".to_vec());
+    assert!(pane.drain_forwarded_queries().is_empty());
+    assert_eq!(
+        pane.drain_messages_to_pty(),
+        vec![
+            b"\x1b]10;rgb:cdcd/cece/cfcf\x07".to_vec(),
+            b"\x1b]11;rgb:1919/2323/3030\x07".to_vec(),
+        ]
+    );
     let learned = pane.drain_agent_theme_updates().pop().unwrap();
     // Adoption passes the supervisor's command to TerminalPane::new. It has
     // no serialized grid or startup replies from the still-running process.

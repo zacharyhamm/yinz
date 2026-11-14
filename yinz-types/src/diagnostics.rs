@@ -290,6 +290,7 @@ pub enum ScreenContext {
     ListTabs,
     GetCurrentTabInfo,
     Reconfigure,
+    SetApplicationThemeConfig,
     RerunCommandPane,
     RunCommandInPane,
     RestartAgentPane,

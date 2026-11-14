@@ -917,36 +917,35 @@ fn osc_11_set_stays_local() {
 }
 
 #[test]
-fn osc_11_query_without_override_forwards_to_host() {
-    // When no pane-local override is in place the query must still be
-    // forwarded — the host's actual bg is what the app asked for.
+fn osc_11_query_without_override_answers_from_the_application_baseline() {
+    // With no application or pane override the query is answered from the server
+    // baseline, never forwarded to whichever viewer is attached.
     let mut parser = vte::Parser::new();
     let mut grid = new_grid_for_forwarding_test();
     assert!(grid.effective_background().is_none());
     parser.advance(&mut grid, b"\x1b]11;?\x07");
-    assert!(
-        grid.pending_messages_to_pty.is_empty(),
-        "no override → no local reply"
+    assert!(grid.pending_forwarded_queries.is_empty());
+    assert_eq!(
+        grid.pending_messages_to_pty,
+        vec![b"\x1b]11;rgb:0000/0000/0000\x07".to_vec()]
     );
-    assert_eq!(grid.pending_forwarded_queries.len(), 1);
-    assert!(matches!(
-        grid.pending_forwarded_queries[0],
-        crate::host_query::HostQuery::DefaultBackground { .. }
-    ));
 }
 
 #[test]
-fn osc_10_query_without_override_forwards_to_host() {
+fn osc_10_query_without_override_answers_from_the_application_baseline() {
     let mut parser = vte::Parser::new();
     let mut grid = new_grid_for_forwarding_test();
-    assert!(grid.effective_foreground().is_none());
-    parser.advance(&mut grid, b"\x1b]10;?\x07");
-    assert!(grid.pending_messages_to_pty.is_empty());
-    assert_eq!(grid.pending_forwarded_queries.len(), 1);
-    assert!(matches!(
-        grid.pending_forwarded_queries[0],
-        crate::host_query::HostQuery::DefaultForeground { .. }
-    ));
+    let mut baseline = yinz_types::style::ApplicationBaseline::fallback(
+        yinz_types::style::HostTerminalThemeMode::Light,
+    );
+    baseline.theme.foreground = (0x12, 0x34, 0x56);
+    grid.set_application_baseline(baseline);
+    parser.advance(&mut grid, b"\x1b]10;?\x1b\\");
+    assert!(grid.pending_forwarded_queries.is_empty());
+    assert_eq!(
+        grid.pending_messages_to_pty,
+        vec![b"\x1b]10;rgb:1212/3434/5656\x1b\\".to_vec()]
+    );
 }
 
 #[test]
@@ -963,10 +962,7 @@ fn set_pane_default_colors_short_circuits_osc_queries() {
     parser.advance(&mut grid, b"\x1b]10;?\x07");
     parser.advance(&mut grid, b"\x1b]11;?\x07");
 
-    assert!(
-        grid.pending_forwarded_queries.is_empty(),
-        "overrides set via set_pane_default_colors must suppress forwarding"
-    );
+    assert!(grid.pending_forwarded_queries.is_empty());
     assert_eq!(grid.pending_messages_to_pty.len(), 2);
     let fg_reply = String::from_utf8(grid.pending_messages_to_pty[0].clone()).unwrap();
     let bg_reply = String::from_utf8(grid.pending_messages_to_pty[1].clone()).unwrap();
@@ -976,21 +972,23 @@ fn set_pane_default_colors_short_circuits_osc_queries() {
 
 #[test]
 fn osc_11_override_short_circuits_only_the_overridden_channel() {
-    // Setting only the bg must not short-circuit fg queries — each
-    // channel's override is independent. If only `pane_default_bg` is
-    // populated, an OSC 10 query (fg) still goes to the host.
+    // Setting only the bg must not change fg answers — each channel's override is
+    // independent, and the other channel falls back to the baseline.
     let mut parser = vte::Parser::new();
     let mut grid = new_grid_for_forwarding_test();
     parser.advance(&mut grid, b"\x1b]11;rgb:1010/2020/3030\x07");
     assert!(grid.effective_background().is_some());
     assert!(grid.effective_foreground().is_none());
 
-    parser.advance(&mut grid, b"\x1b]10;?\x07");
-    assert!(
-        grid.pending_messages_to_pty.is_empty(),
-        "fg has no override → must forward"
+    parser.advance(&mut grid, b"\x1b]10;?\x07\x1b]11;?\x07");
+    assert!(grid.pending_forwarded_queries.is_empty());
+    assert_eq!(
+        grid.pending_messages_to_pty,
+        vec![
+            b"\x1b]10;rgb:e5e5/e5e5/e5e5\x07".to_vec(),
+            b"\x1b]11;rgb:1010/2020/3030\x07".to_vec(),
+        ]
     );
-    assert_eq!(grid.pending_forwarded_queries.len(), 1);
 }
 
 #[test]
@@ -1111,8 +1109,6 @@ fn osc_4_set_stays_local() {
 
 #[test]
 fn osc_4_processes_every_palette_update_and_query() {
-    use crate::host_query::{HostQuery, OscTerminator};
-
     let mut parser = vte::Parser::new();
     let mut grid = new_grid_for_forwarding_test();
     parser.advance(
@@ -1122,12 +1118,15 @@ fn osc_4_processes_every_palette_update_and_query() {
     let changed = grid.changed_colors.unwrap();
     assert_eq!(changed[5], Some(AnsiCode::RgbCode((255, 0, 0))));
     assert_eq!(changed[6], Some(AnsiCode::RgbCode((0, 255, 0))));
+    assert!(grid.pending_forwarded_queries.is_empty());
     assert_eq!(
-        grid.pending_forwarded_queries,
-        vec![HostQuery::PaletteRegister {
-            index: 7,
-            terminator: OscTerminator::Bel,
-        }]
+        grid.pending_messages_to_pty,
+        vec![b"\x1b]4;7;rgb:e5e5/e5e5/e5e5\x07".to_vec()]
+    );
+    parser.advance(&mut grid, b"\x1b]4;5;?\x07");
+    assert_eq!(
+        grid.pending_messages_to_pty[1],
+        b"\x1b]4;5;rgb:ffff/0000/0000\x07".to_vec()
     );
 }
 
@@ -1632,7 +1631,16 @@ fn terminal_theme_colors_overrides_resets_and_queries() {
         background: (4, 5, 6),
         ansi: std::array::from_fn(|i| (i as u8, 20, 30)),
     };
+    // Screen keeps the render theme and the application baseline on the same block.
+    let baseline = |theme: Option<TerminalTheme>| {
+        let mut baseline = yinz_types::style::ApplicationBaseline::default();
+        if let Some(theme) = theme {
+            baseline.theme = theme;
+        }
+        baseline
+    };
     grid.update_terminal_theme(Some(theme));
+    grid.set_application_baseline(baseline(Some(theme)));
     parser.advance(&mut grid, b"\x1b]10;?\x07\x1b]11;?\x1b\\");
     assert_eq!(
         grid.pending_messages_to_pty.remove(0),
@@ -1655,8 +1663,10 @@ fn terminal_theme_colors_overrides_resets_and_queries() {
     }
     assert!(grid.pending_forwarded_queries.is_empty());
     parser.advance(&mut grid, b"\x1b]4;16;?\x07");
-    assert_eq!(grid.pending_forwarded_queries.len(), 1);
-    grid.pending_forwarded_queries.clear();
+    assert_eq!(
+        grid.pending_messages_to_pty.remove(0),
+        b"\x1b]4;16;rgb:0000/0000/0000\x07"
+    );
 
     grid.set_pane_default_colors(Some("#112233".into()), Some("#445566".into()));
     parser.advance(
@@ -1685,8 +1695,17 @@ fn terminal_theme_colors_overrides_resets_and_queries() {
     assert_eq!(grid.effective_foreground(), Some(theme.foreground));
     assert_eq!(grid.effective_colors().unwrap()[200], None);
     grid.update_terminal_theme(None);
+    grid.set_application_baseline(baseline(None));
     parser.advance(&mut grid, b"\x1b]10;?\x07\x1b]11;?\x07\x1b]4;1;?\x07");
-    assert_eq!(grid.pending_forwarded_queries.len(), 3);
+    assert!(grid.pending_forwarded_queries.is_empty());
+    assert_eq!(
+        grid.pending_messages_to_pty,
+        vec![
+            b"\x1b]10;rgb:e5e5/e5e5/e5e5\x07".to_vec(),
+            b"\x1b]11;rgb:0000/0000/0000\x07".to_vec(),
+            b"\x1b]4;1;rgb:cdcd/0000/0000\x07".to_vec(),
+        ]
+    );
 }
 
 #[test]

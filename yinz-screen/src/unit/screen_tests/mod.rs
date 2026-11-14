@@ -1263,6 +1263,44 @@ fn create_new_screen_with_forward_capture(size: Size) -> (Screen, ForwardCapture
 // want a fresh `HostQuery` value with the default terminator.
 use crate::host_query::{HostQuery, OscTerminator};
 
+/// A session application theme with `terminal` as its static terminal block.
+fn static_application_theme(
+    terminal: Option<yinz_types::style::TerminalTheme>,
+) -> yinz_config::screen_config::ApplicationThemeConfig {
+    yinz_config::screen_config::ApplicationThemeConfig {
+        static_terminal: terminal,
+        static_background: terminal
+            .map(|terminal| yinz_types::colors::PaletteColor::Rgb(terminal.background))
+            .unwrap_or(yinz_types::colors::PaletteColor::EightBit(0)),
+        pair: None,
+        explicit_theme_hue: None,
+    }
+}
+
+/// A session application theme with a `theme_dark` / `theme_light` pair.
+fn paired_application_theme(
+    dark: Option<yinz_types::style::TerminalTheme>,
+    light: Option<yinz_types::style::TerminalTheme>,
+) -> yinz_config::screen_config::ApplicationThemeConfig {
+    yinz_config::screen_config::ApplicationThemeConfig {
+        pair: Some((dark, light)),
+        ..static_application_theme(None)
+    }
+}
+
+/// A terminal block whose colors are all derived from `shade`.
+fn terminal_block(shade: u8) -> yinz_types::style::TerminalTheme {
+    yinz_types::style::TerminalTheme {
+        foreground: (shade, shade.wrapping_add(1), shade.wrapping_add(2)),
+        background: (
+            shade.wrapping_add(3),
+            shade.wrapping_add(4),
+            shade.wrapping_add(5),
+        ),
+        ansi: std::array::from_fn(|i| (shade, i as u8, shade.wrapping_add(6))),
+    }
+}
+
 fn bg_query() -> HostQuery {
     HostQuery::DefaultBackground {
         terminator: OscTerminator::St,
@@ -2075,6 +2113,7 @@ mod agent_control;
 mod agent_placement;
 mod agent_resume;
 mod animation_clock;
+mod application_baseline;
 mod background_permissions;
 mod break_and_move_panes;
 mod break_panes_to_tab;

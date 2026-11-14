@@ -3679,6 +3679,20 @@ impl Tab {
             pane.update_agent_theme_mapping(mapping);
         }
     }
+    /// Store the server-owned color-query baseline on every pane, including
+    /// floating, overlay and suppressed ones, and on the style new panes copy.
+    pub fn update_application_baseline(
+        &mut self,
+        baseline: yinz_types::style::ApplicationBaseline,
+    ) {
+        self.style.application = baseline;
+        self.floating_panes.update_application_baseline(baseline);
+        self.overlay_panes.update_application_baseline(baseline);
+        self.tiled_panes.update_application_baseline(baseline);
+        for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
+            pane.update_application_baseline(baseline);
+        }
+    }
     pub fn update_terminal_theme(&mut self, theme: Option<yinz_types::style::TerminalTheme>) {
         self.style.terminal = theme;
         self.set_force_render();

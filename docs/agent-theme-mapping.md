@@ -82,10 +82,12 @@ ignored.
   correction and ANSI-256 quantization. Automatic syntax selection, decorative
   animations and analytics-specific palettes remain outside this descriptor.
 
-Codex observations use the colors actually returned to the application, whether
-answered in the pane, forwarded from the host, or supplied by a successful cached
-fallback. Both foreground and background are required for derived colors. Missing
-or invalid replies leave dependent styles unchanged. Replies from an older launch
+Codex observations use the colors actually returned to the application, which
+are always answered in the pane: the application's own override, an explicit pane
+color, or the session's application baseline
+([TERMINAL_COLORS.md](TERMINAL_COLORS.md)). Both foreground and background are
+required for derived colors. Missing or invalid replies leave dependent styles
+unchanged. Replies from an older launch
 cannot enrich a newer launch. The first samples stay fixed through theme changes
 and previews; Yinz recompiles only their semantic destinations. Existing cells,
 blank fills and completed frames share the enriched palette, so the editor repaints

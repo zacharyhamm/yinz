@@ -2,10 +2,8 @@
 use super::get_default_editor;
 use super::Screen;
 use super::ThemePolicy;
-use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
 use crate::pty::get_default_shell;
-use crate::pty_writer::PtyWriteInstruction;
 use crate::route::NotificationEnd;
 use crate::ClientId;
 use yinz_config::screen_config::ScreenConfig;
@@ -14,7 +12,6 @@ use yinz_types::data::Event;
 use yinz_types::input::command::RunCommand;
 use yinz_types::input::command::TerminalAction;
 use yinz_types::input::keybinds::Keybinds;
-use yinz_types::internal_ids::TerminalId;
 use yinz_types::style::HostTerminalThemeMode;
 use yinz_types::style::Styling;
 use yinz_types::style::ThemeHue;
@@ -65,7 +62,11 @@ impl Screen {
             overlay_tab_plugins,
             plugin_aliases,
             agent_theme_mapping,
-            terminal_theme,
+            // Per-client configs must not change what shared applications are told
+            // or the pane palette they are painted on. The session baseline arrives
+            // through `ScreenInstruction::SetApplicationThemeConfig` instead.
+            terminal_theme: _,
+            application_theme: _,
             terminal_themes,
             theme,
             themes,
@@ -131,7 +132,6 @@ impl Screen {
         }
         self.themes = themes;
         self.terminal_themes = terminal_themes;
-        self.style.terminal = terminal_theme;
         self.style.agent_theme_mapping = agent_theme_mapping;
         self.theme_name = theme_name;
         self.theme_dark_name = theme_dark_name;
@@ -225,6 +225,7 @@ impl Screen {
             mode.max_agent_width = Some(max_agent_width);
             mode.tab_groups = Some(tab_groups);
         }
+        // Closing a preview above already returned `style.terminal` to the baseline block.
         for tab in self.tabs.values_mut() {
             tab.update_tab_groups(tab_groups)?;
             tab.update_terminal_theme(self.style.terminal);
@@ -305,13 +306,15 @@ impl Screen {
         self.apply_theme_mode(mode)
     }
 
-    /// Make `mode` the session's effective theme mode. It
+    /// Make `mode` the session's effective chrome theme mode. It
     /// 1. de-duplicates against the last-known mode,
-    /// 2. swaps the active palette to the configured `theme_dark` / `theme_light`
+    /// 2. swaps the chrome styling to the configured `theme_dark` / `theme_light`
     ///    (when both are configured) by reusing the reconfigure propagation,
-    /// 3. fans out an `Event::HostTerminalThemeChanged` plugin event,
-    /// 4. forwards a `CSI ?997;{1|2}n` DSR onto the pty of every terminal pane
-    ///    whose app opted in via `CSI ? 2031 h`.
+    /// 3. fans out an `Event::HostTerminalThemeChanged` plugin event.
+    ///
+    /// It never writes `CSI ?997;n` into shared PTYs nor changes the pane palette:
+    /// applications follow the session baseline, which announces its own mode
+    /// changes (`refresh_application_baseline`).
     pub(super) fn apply_theme_mode(&mut self, mode: HostTerminalThemeMode) -> Result<()> {
         let err_context = || "Failed to update host terminal theme mode".to_string();
 
@@ -335,35 +338,13 @@ impl Screen {
             )]))
             .with_context(err_context)?;
 
-        // forward DSR to opted-in terminal panes
-        let mut pty_writes: Vec<(Vec<u8>, TerminalId)> = vec![];
-        for tab in self.tabs.values_mut() {
-            for pane_id in tab.get_all_pane_ids() {
-                if let PaneId::Terminal(terminal_id) = pane_id
-                    && let Some(pane) = tab
-                        .get_pane_with_id_mut(pane_id)
-                        .and_then(|pane| pane.terminal_io_mut())
-                {
-                    pane.push_color_palette_dsr(mode);
-                    for bytes in pane.drain_messages_to_pty() {
-                        pty_writes.push((bytes, terminal_id));
-                    }
-                }
-            }
-        }
-        for (bytes, terminal_id) in pty_writes {
-            let _ = self
-                .bus
-                .senders
-                .send_to_pty_writer(PtyWriteInstruction::Write(bytes, terminal_id, None));
-        }
-
         self.render()?;
         Ok(())
     }
 
-    /// Swap the active palette to the `theme_dark` / `theme_light` styling for `mode` and
+    /// Swap the chrome styling to the `theme_dark` / `theme_light` styling for `mode` and
     /// push it into every tab and client, without announcing a mode change to anyone.
+    /// The pane palette stays on the application baseline.
     pub(super) fn repaint_theme_mode(&mut self, mode: HostTerminalThemeMode) -> Result<()> {
         if self.theme_preview.is_some() {
             return Ok(());
@@ -374,13 +355,6 @@ impl Screen {
                 HostTerminalThemeMode::Light => self.host_theme_light_styling,
             };
             if let Some(theme) = theme {
-                let name = match mode {
-                    HostTerminalThemeMode::Dark => self.theme_dark_name.as_ref(),
-                    HostTerminalThemeMode::Light => self.theme_light_name.as_ref(),
-                };
-                self.style.terminal = name
-                    .and_then(|name| self.terminal_themes.get(name))
-                    .copied();
                 self.repaint_theme(theme)?;
             }
         }
@@ -416,19 +390,17 @@ impl Screen {
     }
 
     /// Apply a manual host-terminal theme mode change requested via the CLI or a
-    /// keybinding. Surfaces a clear error to the CLI if the auto-switch gate
-    /// (both `theme_dark` and `theme_light` configured) is not satisfied;
-    /// otherwise pins the session to `mode` - a deliberate choice is not
-    /// reverted by a later host report - and applies it, which dedupes,
-    /// repaints, fans out the plugin event, and forwards DSR to opted-in panes.
+    /// keybinding. Surfaces a clear error to the CLI if the session theme has no
+    /// `theme_dark` / `theme_light` pair; otherwise pins the session to `mode` - a
+    /// deliberate choice is not reverted by a later host report. The pin is
+    /// session-wide: it moves the application baseline (answers, pane palette and one
+    /// `CSI ?997;n` to opted-in panes per mode change) and the chrome.
     pub fn apply_manual_host_terminal_theme_mode(
         &mut self,
         mode: HostTerminalThemeMode,
         completion_tx: &mut Option<NotificationEnd>,
     ) -> Result<()> {
-        let auto_switch_enabled =
-            self.host_theme_dark_styling.is_some() && self.host_theme_light_styling.is_some();
-        if !auto_switch_enabled {
+        if !self.application_theme_has_pair() {
             if let Some(c) = completion_tx.as_mut() {
                 c.set_exit_status(1);
                 c.set_error_message(
@@ -438,8 +410,23 @@ impl Screen {
             }
             return Ok(());
         }
+        self.pin_application_mode(mode);
         self.theme_policy = ThemePolicy::Pinned(mode);
-        self.apply_theme_mode(mode)
+        self.apply_theme_mode(mode)?;
+        self.render()
+    }
+
+    /// `ToggleTheme`: pin the opposite of the mode applications are told, not of the
+    /// last viewer report, so one press always flips what applications see.
+    pub fn toggle_manual_host_terminal_theme_mode(
+        &mut self,
+        completion_tx: &mut Option<NotificationEnd>,
+    ) -> Result<()> {
+        let next = match self.style.application.mode {
+            HostTerminalThemeMode::Dark => HostTerminalThemeMode::Light,
+            HostTerminalThemeMode::Light => HostTerminalThemeMode::Dark,
+        };
+        self.apply_manual_host_terminal_theme_mode(next, completion_tx)
     }
 
     /// Resolve the session to the dark theme when a `theme_dark` /

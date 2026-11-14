@@ -1,15 +1,14 @@
 use yinz_runtime::errors::prelude::*;
 
 use super::{
-    PendingForward, PendingForwardEntry, Screen, ScreenInstruction, ThemePolicy,
+    PendingForward, PendingForwardEntry, Screen, ScreenInstruction,
     SERVER_CLIPBOARD_FORWARD_TIMEOUT_MS, SERVER_FORWARD_TIMEOUT_MS, STARTUP_SENTINEL_TOKEN,
 };
 use crate::panes::PaneId;
 use crate::pty_writer::PtyWriteInstruction;
 use crate::ServerInstruction;
 
-use yinz_types::style::detect_theme_hue;
-use yinz_types::style::{HostTerminalThemeMode, ThemeHue};
+use yinz_types::style::HostTerminalThemeMode;
 
 impl Screen {
     /// Enqueue a whitelisted host-terminal query from pane `pane_id`.
@@ -21,11 +20,11 @@ impl Screen {
         pane_id: PaneId,
         query: crate::host_query::HostQuery,
     ) -> u32 {
-        // ColorPaletteMode is answered locally — Yinz already knows
-        // the host's mode from its own startup query and from
-        // unsolicited DSR 997 updates. Skip the entire forwarding
-        // machinery (no token, no in-flight slot, no host round-trip)
-        // and write the reply straight to the originating pane's pty.
+        // ColorPaletteMode is answered locally from the session's
+        // application baseline, never from a viewer's report. Skip the
+        // entire forwarding machinery (no token, no in-flight slot, no
+        // host round-trip) and write the reply straight to the
+        // originating pane's pty.
         if let crate::host_query::HostQuery::ColorPaletteMode = query {
             self.answer_color_palette_mode_query_locally(pane_id);
             return STARTUP_SENTINEL_TOKEN; // sentinel: no real forward happened
@@ -139,7 +138,8 @@ impl Screen {
         if matches!(pane_id, PaneId::Plugin(_)) {
             return;
         }
-        let code: u8 = match self.effective_host_terminal_theme_mode() {
+        // The session baseline's mode, never a viewer's report.
+        let code: u8 = match self.style.application.mode {
             HostTerminalThemeMode::Dark => 1,
             HostTerminalThemeMode::Light => 2,
         };
@@ -148,22 +148,6 @@ impl Screen {
         // stream position and any PTY input the app emitted while
         // waiting is replayed.
         let _ = self.resume_pane_after_forward(pane_id, reply);
-    }
-
-    /// The mode apps and nested guests are told the session is in: a pinned
-    /// hue first (`explicit_theme_hue` or a manual `SetDarkTheme` /
-    /// `SetLightTheme`), then the mode the session resolved to, and only
-    /// when neither is known a guess from the active palette's background.
-    pub(super) fn effective_host_terminal_theme_mode(&self) -> HostTerminalThemeMode {
-        if let ThemePolicy::Pinned(mode) = self.theme_policy {
-            return mode;
-        }
-        self.host_terminal_theme_mode.unwrap_or_else(|| {
-            match detect_theme_hue(self.style.colors.text_unselected.background) {
-                ThemeHue::Dark => HostTerminalThemeMode::Dark,
-                ThemeHue::Light => HostTerminalThemeMode::Light,
-            }
-        })
     }
 
     /// Dispatch a forward to the client and mark the slot as in-flight.
@@ -254,13 +238,6 @@ impl Screen {
                     } else {
                         reply_bytes
                     };
-                    if let Some(pane) = self
-                        .tab_containing_pane_mut(pane_id)
-                        .and_then(|tab| tab.get_pane_with_id_mut(pane_id))
-                        .and_then(|pane| pane.terminal_io_mut())
-                    {
-                        pane.record_terminal_color_reply(&query, &payload);
-                    }
                     // Route via Tab so the reply lands on the pane in
                     // the correct stream position and any PTY input
                     // the app emitted while waiting is replayed.

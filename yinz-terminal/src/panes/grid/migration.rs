@@ -365,7 +365,6 @@ impl Grid {
         );
         anyhow::ensure!(
             self.pending_forwarded_queries.is_empty()
-                && self.agent_color_queries.is_empty()
                 && self.pending_messages_to_pty.is_empty()
                 && self.pending_nested_session_messages.is_empty()
                 && self.pending_clipboard_updates.is_empty()
@@ -612,7 +611,12 @@ impl Grid {
         self.color_palette_notification_enabled = state.color_palette_notification_enabled;
         self.search_results = state.search_results;
         self.notification_tracker = state.notification_tracker;
-        self.style = state.style;
+        // The serialized style never carries the server's application baseline;
+        // keep the receiving session's.
+        self.style = yinz_types::style::Style {
+            application: self.style.application,
+            ..state.style
+        };
         self.debug = state.debug;
         self.arrow_fonts = state.arrow_fonts;
         self.styled_underlines = state.styled_underlines;

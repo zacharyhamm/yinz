@@ -1683,6 +1683,15 @@ impl OverlayPanes {
             pane.update_agent_theme_mapping(mapping);
         }
     }
+    pub fn update_application_baseline(
+        &mut self,
+        baseline: yinz_types::style::ApplicationBaseline,
+    ) {
+        self.style.application = baseline;
+        for (_, pane) in self.get_panes_mut() {
+            pane.update_application_baseline(baseline);
+        }
+    }
     pub fn update_terminal_theme(&mut self, theme: Option<yinz_types::style::TerminalTheme>) {
         self.style.terminal = theme;
         for (_, pane) in self.get_panes_mut() {

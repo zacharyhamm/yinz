@@ -64,7 +64,19 @@ impl SessionMetaData {
         cancelled: &std::sync::atomic::AtomicBool,
     ) -> Result<(), String> {
         let disk = Disk::read(self.config_file_path.as_deref(), self.config_dir.as_deref())?;
-        let current = self.session_configuration.get_client_configuration(&client);
+        let mut current = self.session_configuration.get_client_configuration(&client);
+        // A dark/light pair in the session theme outranks the static theme, so saving a
+        // theme replaces it too, even when this client's own config has no pair.
+        let source = &self
+            .session_configuration
+            .application_theme_source()
+            .options;
+        if current.options.theme_dark.is_none() {
+            current.options.theme_dark = source.theme_dark.clone();
+        }
+        if current.options.theme_light.is_none() {
+            current.options.theme_light = source.theme_light.clone();
+        }
         let fragment = theme_fragment(&current, name).map_err(|e| e.to_string())?;
         let options = Config::from_kdl(&fragment, None).map_err(|e| e.to_string())?;
         let patches = editor::document(&options)?
@@ -211,12 +223,16 @@ impl SessionMetaData {
                     &editor::apply(&background, &saved_patches)?,
                 ));
             }
+            staged.materialize_application_theme_source();
             staged.pending_editor_reload = Some(saved.clone());
             staged.saved_config = saved;
+            // The watcher's reload of this write is suppressed, so the session theme source
+            // takes the saved values here, like every runtime config.
             for config in staged
                 .runtime_config
                 .values_mut()
                 .chain(staged.detached_runtime_config.iter_mut())
+                .chain(staged.application_theme_source.iter_mut())
             {
                 *config = editor::apply(config, &saved_patches)?;
             }
@@ -293,6 +309,9 @@ impl SessionMetaData {
         }
         staged.refresh_effective_keybinds();
         self.session_configuration = staged;
+        // The screen must hold the saved theme's baseline before the preview closes, so
+        // closing it keeps that palette instead of the previous one.
+        self.publish_application_theme();
         // Close the preview before reconfiguration can restore its original theme.
         if let Some((client, request)) = theme_reply {
             self.senders

@@ -620,6 +620,10 @@ background_opacity "85%"
 // }
 
 // Choose the theme that is specified in the themes section.
+// Its terminal block is also what applications in panes are told when they
+// query the terminal's colors (OSC 10/11/4); without one they get xterm's
+// defaults. Only the session's own config sets these answers, not a client
+// attaching with its own theme. See docs/TERMINAL_COLORS.md.
 // Default: default
 //
 // theme "default"
@@ -627,14 +631,18 @@ background_opacity "85%"
 // Themes to use when the host terminal reports a dark or light color palette.
 // Both must be set for automatic switching to take place, otherwise `theme`
 // remains authoritative. Until the host terminal reports (or if it never does),
-// the dark theme is used.
+// the dark theme is used. A host report switches only the interface chrome;
+// pane colors and application color answers stay on theme_dark until
+// SetLightTheme, ToggleTheme, explicit_theme_hue or a session-wide change.
 //
 // theme_dark "nightfox"
 // theme_light "dayfox"
 
 // Pin the session to a dark or light appearance, ignoring what the host
 // terminal reports. Resolved before the first render. When unset, the host
-// terminal decides.
+// terminal decides the chrome. In the session's own config it also sets the
+// appearance applications are told (CSI ?996n) and, with theme_dark and
+// theme_light, which of the two they are told about.
 // Options: dark, light
 //
 // explicit_theme_hue "dark"

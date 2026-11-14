@@ -735,16 +735,13 @@ pub fn osc_4_background_query() {
     );
     let content = "\u{1b}]10;?\u{1b}\\";
     vte_parser.advance(&mut grid, content.as_bytes());
-    // Post-refactor: OSC 10;? is forwarded to the host, not answered
-    // from Yinz's cached palette. pending_messages_to_pty must stay
-    // empty.
-    assert!(grid.pending_messages_to_pty.is_empty());
-    let forwarded_string: String = grid
-        .pending_forwarded_queries
-        .iter()
-        .map(|q| String::from_utf8(q.to_query_bytes()).unwrap())
-        .collect();
-    assert_eq!(forwarded_string, "\u{1b}]10;?\u{1b}\\");
+    // OSC 10;? is answered from the server's application baseline, never
+    // forwarded to a viewer's host terminal.
+    assert!(grid.pending_forwarded_queries.is_empty());
+    assert_eq!(
+        grid.pending_messages_to_pty,
+        vec![b"\x1b]10;rgb:e5e5/e5e5/e5e5\x1b\\".to_vec()]
+    );
 }
 
 #[test]
@@ -775,19 +772,18 @@ pub fn osc_4_foreground_query() {
     );
     let content = "\u{1b}]11;?\u{1b}\\";
     vte_parser.advance(&mut grid, content.as_bytes());
-    assert!(grid.pending_messages_to_pty.is_empty());
-    let forwarded_string: String = grid
-        .pending_forwarded_queries
-        .iter()
-        .map(|q| String::from_utf8(q.to_query_bytes()).unwrap())
-        .collect();
-    assert_eq!(forwarded_string, "\u{1b}]11;?\u{1b}\\");
+    assert!(grid.pending_forwarded_queries.is_empty());
+    assert_eq!(
+        grid.pending_messages_to_pty,
+        vec![b"\x1b]11;rgb:0000/0000/0000\x1b\\".to_vec()]
+    );
 }
 
 #[test]
 pub fn osc_4_color_query() {
     let mut color_codes = HashMap::new();
-    color_codes.insert(222, String::from("rgb:ffff/d7d7/8787"));
+    // A viewer's cached host register must not leak into application answers.
+    color_codes.insert(222, String::from("rgb:1111/2222/3333"));
     let mut vte_parser = vte::Parser::new();
     let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));
     let terminal_emulator_color_codes = Rc::new(RefCell::new(color_codes));
@@ -814,14 +810,12 @@ pub fn osc_4_color_query() {
     );
     let content = "\u{1b}]4;222;?\u{1b}\\";
     vte_parser.advance(&mut grid, content.as_bytes());
-    // OSC 4;N;? is forwarded to the host for the real palette value.
-    assert!(grid.pending_messages_to_pty.is_empty());
-    let forwarded_string: String = grid
-        .pending_forwarded_queries
-        .iter()
-        .map(|q| String::from_utf8(q.to_query_bytes()).unwrap())
-        .collect();
-    assert_eq!(forwarded_string, "\u{1b}]4;222;?\u{1b}\\");
+    // OSC 4;N;? is answered from the xterm cube of the application baseline.
+    assert!(grid.pending_forwarded_queries.is_empty());
+    assert_eq!(
+        grid.pending_messages_to_pty,
+        vec![b"\x1b]4;222;rgb:ffff/d7d7/8787\x1b\\".to_vec()]
+    );
 }
 
 #[test]

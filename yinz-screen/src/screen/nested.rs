@@ -15,12 +15,11 @@ use yinz_types::input::keybinds::shortcut_for_action;
 use yinz_types::input::options::NestedSessionHandling;
 use yinz_types::internal_ids::SessionName;
 use yinz_types::keys::KeyWithModifier;
-use yinz_types::style::HostTerminalThemeMode;
 use {
     yinz_ipc::nested_session::NestedSessionCapability,
     yinz_ipc::nested_session::NestedSessionMessage,
 };
-use {yinz_types::data::InputMode, yinz_types::data::ModeInfo, yinz_types::data::PaletteColor};
+use {yinz_types::data::InputMode, yinz_types::data::ModeInfo};
 
 impl Screen {
     pub fn handle_nested_session_message_from_pane(
@@ -978,7 +977,9 @@ impl Screen {
     }
 
     /// Build a reply for `query` from whatever host state Yinz has
-    /// cached, or an empty `Vec` if nothing relevant is cached. The
+    /// cached, or an empty `Vec` if nothing relevant is cached. Color
+    /// queries are answered from the application baseline instead, never
+    /// from a viewer's cached host colors. The
     /// classification happened at intercept time (Grid produces a
     /// [`HostQuery`]), so this method is pure structural dispatch —
     /// no re-parsing of bytes.
@@ -995,46 +996,14 @@ impl Screen {
                 .character_cell_size
                 .map(|dims| format!("\x1b[6;{};{}t", dims.height, dims.width).into_bytes())
                 .unwrap_or_default(),
-            HostQuery::DefaultForeground { terminator }
-            | HostQuery::DefaultBackground { terminator } => {
-                let palette = self.terminal_emulator_colors.borrow();
-                let (channel, color) = match query {
-                    HostQuery::DefaultForeground { .. } => (10u32, palette.fg),
-                    HostQuery::DefaultBackground { .. } => (11u32, palette.bg),
-                    _ => unreachable!(),
-                };
-                if let PaletteColor::Rgb((r, g, b)) = color {
-                    let mut out = format!(
-                        "\x1b]{};rgb:{:04x}/{:04x}/{:04x}",
-                        channel,
-                        (r as u16) * 0x0101,
-                        (g as u16) * 0x0101,
-                        (b as u16) * 0x0101,
-                    )
-                    .into_bytes();
-                    out.extend_from_slice(terminator.as_bytes());
-                    out
-                } else {
-                    Vec::new()
-                }
-            },
-            HostQuery::PaletteRegister { index, terminator } => {
-                let codes = self.terminal_emulator_color_codes.borrow();
-                if let Some(color) = codes.get(&(*index as usize)) {
-                    let mut out = format!("\x1b]4;{};{}", index, color).into_bytes();
-                    out.extend_from_slice(terminator.as_bytes());
-                    out
-                } else {
-                    Vec::new()
-                }
+            // Never a viewer's cached host colors: shared applications get the baseline.
+            HostQuery::DefaultForeground { .. }
+            | HostQuery::DefaultBackground { .. }
+            | HostQuery::PaletteRegister { .. }
+            | HostQuery::ColorPaletteMode => {
+                self.application_color_reply(query).unwrap_or_default()
             },
             HostQuery::ClipboardContent { .. } => query.empty_reply_bytes(),
-            // Should not reach here: ColorPaletteMode short-circuits in
-            // `forward_host_query` before any cache-fallback path runs.
-            HostQuery::ColorPaletteMode => match self.effective_host_terminal_theme_mode() {
-                HostTerminalThemeMode::Dark => b"\x1b[?997;1n".to_vec(),
-                HostTerminalThemeMode::Light => b"\x1b[?997;2n".to_vec(),
-            },
         }
     }
 }

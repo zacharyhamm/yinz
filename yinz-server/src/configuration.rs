@@ -1,6 +1,7 @@
 //! Session configuration, live reconfiguration and persistence.
 use super::*;
 use yinz_config::config::watch_config_file_changes;
+use yinz_config::screen_config::ApplicationThemeConfig;
 use yinz_types::keys::KeyWithModifier;
 
 #[path = "configuration_editor.rs"]
@@ -101,6 +102,14 @@ pub(crate) struct SessionConfiguration {
     effective_keybinds: HashMap<ClientId, Keybinds>,
     plugin_default_keybinds: BTreeMap<PluginId, Keybinds>,
     background_plugins: Option<BackgroundPluginConfiguration>,
+    /// The session's own theme definition, which shared application color answers and the
+    /// pane palette resolve from (`docs/TERMINAL_COLORS.md`). It changes only on
+    /// session-wide paths: disk reloads, saved or session-wide fragments and editor edits.
+    /// One client's attach options or unsaved per-client reconfigure never reach it.
+    /// `None` follows `saved_config` until something changes either of them.
+    application_theme_source: Option<Config>,
+    /// The application theme the screen holds. `None` until the session is initialized.
+    published_application_theme: Option<ApplicationThemeConfig>,
     pub(super) saved_config: Config, // the config as it is on disk (not guaranteed),
                                      // when changed, this resets the runtime config to
                                      // be identical to it and override any previous
@@ -108,10 +117,14 @@ pub(crate) struct SessionConfiguration {
 }
 
 impl SessionConfiguration {
+    /// Replace the saved config. This never changes the session theme source: on the
+    /// `--write` path `new_saved_config` is one client's effective config, attach options
+    /// included. A disk reload goes through [`Self::reload_saved_config`].
     pub fn change_saved_config(&mut self, new_saved_config: Config) -> Vec<(ClientId, Config)> {
         if self.pending_editor_reload.as_ref() == Some(&new_saved_config) {
             return vec![];
         }
+        self.materialize_application_theme_source();
         self.pending_editor_reload = None;
         self.background_plugins = Some(BackgroundPluginConfiguration::from_config(
             &new_saved_config,
@@ -144,11 +157,66 @@ impl SessionConfiguration {
         self.recompute_effective_keybinds();
         config_changes
     }
+    /// The config file changed on disk. Unless this is the echo of a write the session
+    /// already applied (an editor or keybinding save), the disk config becomes the session
+    /// theme source.
+    pub fn reload_saved_config(&mut self, config: Config) -> Vec<(ClientId, Config)> {
+        if self.pending_editor_reload.as_ref() != Some(&config) {
+            self.application_theme_source = Some(config.clone());
+        }
+        self.change_saved_config(config)
+    }
     pub fn set_saved_configuration(&mut self, config: Config) {
         self.background_plugins = Some(BackgroundPluginConfiguration::from_config(&config));
         self.saved_config = config;
         self.detached_runtime_config = None;
         self.recompute_effective_keybinds();
+        self.initialize_application_theme(self.saved_config.clone());
+    }
+    /// Start the session theme source from `source` (the creating client's merged config),
+    /// which is what the screen resolved its initial baseline from, so nothing is sent.
+    pub fn initialize_application_theme(&mut self, source: Config) {
+        self.application_theme_source = Some(source);
+        self.published_application_theme = Some(self.application_theme_configuration());
+    }
+    fn application_theme_source(&self) -> &Config {
+        self.application_theme_source
+            .as_ref()
+            .unwrap_or(&self.saved_config)
+    }
+    /// Pin the source before `saved_config` changes on a path that must not move it.
+    fn materialize_application_theme_source(&mut self) {
+        if self.application_theme_source.is_none() {
+            self.application_theme_source = Some(self.saved_config.clone());
+        }
+    }
+    /// The session theme the screen resolves shared application answers from.
+    pub fn application_theme_configuration(&self) -> ApplicationThemeConfig {
+        ApplicationThemeConfig::from_config(
+            &self.apply_editor_overrides(self.application_theme_source().clone()),
+        )
+    }
+    /// The session theme source with a session-wide KDL `fragment` applied.
+    fn application_theme_source_with(&self, fragment: &str) -> Result<Config> {
+        Config::from_kdl(fragment, Some(self.application_theme_source().clone()))
+            .map_err(|error| anyhow!("{error}"))
+    }
+    fn set_application_theme_source(&mut self, source: Config) {
+        self.application_theme_source = Some(source);
+    }
+    /// Record the application theme the screen must hold now, returning it when it
+    /// changed. An uninitialized session records it silently: its screen resolved the
+    /// same value from the startup config.
+    fn take_application_theme_change(&mut self) -> Option<ApplicationThemeConfig> {
+        let current = self.application_theme_configuration();
+        let changed = self
+            .published_application_theme
+            .as_ref()
+            .is_some_and(|published| *published != current);
+        if self.published_application_theme.as_ref() != Some(&current) {
+            self.published_application_theme = Some(current.clone());
+        }
+        changed.then_some(current)
     }
     pub fn set_client_runtime_configuration(&mut self, client_id: ClientId, client_config: Config) {
         self.detached_runtime_config = None;
@@ -339,6 +407,7 @@ impl SessionConfiguration {
                 }
             }
         }
+        self.materialize_application_theme_source();
         self.pending_editor_reload = Some(saved.clone());
         self.saved_config = saved;
         self.recompute_effective_keybinds();
@@ -411,6 +480,17 @@ impl SessionConfiguration {
 }
 
 impl SessionMetaData {
+    /// Send the session's application theme to the screen when it changed. Called before
+    /// any `Reconfigure` it accompanies and before a theme save closes its preview.
+    pub(crate) fn publish_application_theme(&mut self) {
+        if let Some(config) = self.session_configuration.take_application_theme_change() {
+            self.senders
+                .send_to_screen(ScreenInstruction::SetApplicationThemeConfig(config))
+                .context("publishing the session's application theme")
+                .non_fatal();
+        }
+    }
+
     /// Tell the plugins that a config write failed: the file, when one was reached, and why,
     /// when it is known.
     fn report_config_write_failure(&self, file_path: Option<PathBuf>, reason: Option<String>) {
@@ -440,6 +520,7 @@ impl SessionMetaData {
         if let Some((_, last_config)) = effective_changes.last() {
             self.default_shell = thread_bus::default_shell_action(&last_config.options);
         }
+        self.publish_application_theme();
         self.senders.reconfigure_threads(
             effective_changes,
             self.config_dir.as_deref(),
@@ -527,6 +608,12 @@ pub(super) fn reconfigure_client(
                     .get_client_configuration(&target.client_id),
                 &staged.get_client_configuration(&target.client_id),
             )?;
+            // With nobody attached the change is session-wide, so it is the session's
+            // theme too. A saved change reaches the source once it is written.
+            if target.client_id == ClientId::NONE && !target.save_only {
+                let source = staged.application_theme_source_with(&config)?;
+                staged.set_application_theme_source(source);
+            }
         }
         if !target.save_only {
             session.session_configuration = staged;
@@ -547,7 +634,10 @@ pub(super) fn reconfigure_client(
         changed && !target.save_only,
         session_data,
         target.client_id,
-    )
+    )?;
+    // A session theme change can come without a per-client difference.
+    with_session_mut(session_data, |session| session.publish_application_theme())?;
+    Ok(())
 }
 
 pub(super) fn reconfigure_all_clients(
@@ -591,6 +681,9 @@ pub(super) fn reconfigure_all_clients(
         } else {
             with_session_mut(session_data, |session| -> Result<()> {
                 let mut staged = session.session_configuration.clone();
+                // `yinz action reconfigure` is session-wide, so it is the session's theme too.
+                let source = staged.application_theme_source_with(&config)?;
+                staged.set_application_theme_source(source);
                 let mut changes = vec![];
                 for client_id in client_ids {
                     let (new_config, changed) = staged.reconfigure_runtime_config(
@@ -635,6 +728,8 @@ pub(super) fn reconfigure_all_clients(
                 .context("query scheduled background plugins")?;
             complete_plugin_reconfiguration(receiver, completion.take(), Duration::from_secs(30));
         }
+        // A session theme change can come without a per-client difference.
+        with_session_mut(session_data, |session| session.publish_application_theme())?;
         Ok(())
     })();
     if let Err(error) = result {
@@ -988,12 +1083,26 @@ fn update_new_saved_config(
             session.propagate_configuration_changes(changes, true);
         };
         if let ConfigPersistence::Fragment(fragment) = persistence {
+            // A saved fragment is session-wide. Only the fragment reaches the session theme,
+            // never the writing client's whole config with its own attach options; it is
+            // committed only once the write succeeds.
+            let source = with_session(session_data, |session| {
+                session
+                    .session_configuration
+                    .application_theme_source_with(&fragment)
+            })?
+            .context("session is unavailable")??;
             let written = write_managed_config_fragment(session_data, &fragment)?;
             match written {
                 Ok(_) => {
                     // The session's saved config is the running one now, and every client
                     // hears that it was written.
-                    with_session_mut(session_data, |session| propagate_saved(session, new_config))?;
+                    with_session_mut(session_data, |session| {
+                        session
+                            .session_configuration
+                            .set_application_theme_source(source);
+                        propagate_saved(session, new_config)
+                    })?;
                 },
                 Err((file_path, reason)) => {
                     with_session(session_data, |session| {

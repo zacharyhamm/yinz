@@ -93,24 +93,12 @@ impl Grid {
                     } else if chunk.get(1).as_ref().and_then(|c| c.first()) == Some(&b'?')
                         && let Some(index) = index
                     {
-                        if let Some(rgb) = self
-                            .effective_colors()
-                            .and_then(|colors| colors[index as usize])
-                            .and_then(rgb_of_ansi_code)
-                        {
-                            self.pending_messages_to_pty.push(
-                                format!("\x1b]4;{index};{}{terminator}", osc_color_reply_body(rgb))
-                                    .into_bytes(),
-                            );
-                            continue;
-                        }
-                        self.pending_forwarded_queries.push(
-                            crate::host_query::HostQuery::PaletteRegister {
-                                index,
-                                terminator: crate::host_query::OscTerminator::from_bell_terminated(
-                                    bell_terminated,
-                                ),
-                            },
+                        // Answered locally from the application's own override or
+                        // the server baseline, never from an attached viewer.
+                        let rgb = self.application_register(index);
+                        self.pending_messages_to_pty.push(
+                            format!("\x1b]4;{index};{}{terminator}", osc_color_reply_body(rgb))
+                                .into_bytes(),
                         );
                     }
                 }
@@ -128,59 +116,27 @@ impl Grid {
                 {
                     for param in &params[1..] {
                         if param == b"?" {
-                            // If this pane has a local override for
-                            // the channel being queried (set via
-                            // `yinz action set-pane-color` or via
-                            // a prior OSC 10;<rgb> / 11;<rgb> from
-                            // inside the pane), answer with that
-                            // override directly instead of
-                            // forwarding to the host. Apps inside
-                            // the pane must see the colors Yinz
-                            // is actually rendering for them, not
-                            // the host terminal's background.
-                            let local_override = match dynamic_code {
-                                10 => self.effective_foreground(),
-                                11 => self.effective_background(),
-                                _ => None,
+                            // Answer locally: the application's override, then
+                            // the pane default (`yinz action set-pane-color`),
+                            // then the server baseline. Shared applications must
+                            // not see whichever viewer was active last; see
+                            // docs/TERMINAL_COLORS.md.
+                            let rgb = match dynamic_code {
+                                10 => self.application_foreground(),
+                                11 => self.application_background(),
+                                _ => {
+                                    dynamic_code += 1;
+                                    continue;
+                                },
                             };
-                            if let Some(rgb) = local_override {
-                                self.observe_agent_terminal_color(dynamic_code, rgb);
-                                let reply = format!(
-                                    "\u{1b}]{};{}{}",
-                                    dynamic_code,
-                                    osc_color_reply_body(rgb),
-                                    terminator
-                                );
-                                self.pending_messages_to_pty.push(reply.as_bytes().to_vec());
-                            } else {
-                                // No local override — forward to
-                                // the host so the app observes the
-                                // terminal's actual color. Yinz's
-                                // cached copy is refreshed via the
-                                // double-dispatch on the reply.
-                                let term = crate::host_query::OscTerminator::from_bell_terminated(
-                                    bell_terminated,
-                                );
-                                let query = match dynamic_code {
-                                    10 => crate::host_query::HostQuery::DefaultForeground {
-                                        terminator: term,
-                                    },
-                                    11 => crate::host_query::HostQuery::DefaultBackground {
-                                        terminator: term,
-                                    },
-                                    _ => {
-                                        // Out-of-range dynamic_code
-                                        // (shouldn't happen since
-                                        // the outer match pins it to
-                                        // 10 or 11): skip.
-                                        dynamic_code += 1;
-                                        continue;
-                                    },
-                                };
-                                self.agent_color_queries
-                                    .push_back((dynamic_code, Rc::downgrade(&self.agent_theme)));
-                                self.pending_forwarded_queries.push(query);
-                            }
+                            self.observe_agent_terminal_color(dynamic_code, rgb);
+                            let reply = format!(
+                                "\u{1b}]{};{}{}",
+                                dynamic_code,
+                                osc_color_reply_body(rgb),
+                                terminator
+                            );
+                            self.pending_messages_to_pty.push(reply.as_bytes().to_vec());
                         } else {
                             // Set: parse color and store as pane
                             // default. Only literal RGB is stored;

@@ -12,7 +12,9 @@ use yinz_types::style::{HostTerminalThemeMode, Styling};
 pub(crate) struct Preview {
     pub(crate) client: ClientId,
     original: Styling,
-    original_terminal: Option<yinz_types::style::TerminalTheme>,
+    /// The pane palette to return to: the application baseline's render block, kept
+    /// current by `refresh_application_baseline` while the preview is open.
+    pub(crate) original_terminal: Option<yinz_types::style::TerminalTheme>,
     saving: Option<uuid::Uuid>,
     cancelled: Arc<AtomicBool>,
 }
@@ -42,11 +44,10 @@ impl Screen {
             } else {
                 self.theme_name.as_deref().or(Some("default"))
             };
+        // Chrome identifies the active theme: the pane palette follows the session's
+        // application baseline, which may differ from this viewer's chrome theme.
         let active = configured
-            .filter(|name| {
-                self.themes.get(*name) == Some(&self.style.colors)
-                    && self.terminal_themes.get(*name).copied() == self.style.terminal
-            })
+            .filter(|name| self.themes.get(*name) == Some(&self.style.colors))
             .or_else(|| {
                 self.themes
                     .iter()
@@ -54,6 +55,12 @@ impl Screen {
                         **theme == self.style.colors
                             && self.terminal_themes.get(*name).copied() == self.style.terminal
                     })
+                    .map(|(name, _)| name.as_str())
+            })
+            .or_else(|| {
+                self.themes
+                    .iter()
+                    .find(|(_, theme)| **theme == self.style.colors)
                     .map(|(name, _)| name.as_str())
             })
             .map(|name| format!("theme:{name}"));
@@ -125,16 +132,10 @@ impl Screen {
             } else {
                 None
             };
+        // Entries that are not themes preview the viewer's chrome over the baseline
+        // pane palette, which is what panes return to.
         let terminal = match selected {
             Some(Builtin::Theme(name)) => self.terminal_themes.get(name).copied(),
-            _ if normal.is_some() => {
-                let name = match self.host_terminal_theme_mode {
-                    Some(HostTerminalThemeMode::Light) => self.theme_light_name.as_ref(),
-                    _ => self.theme_dark_name.as_ref(),
-                };
-                name.and_then(|name| self.terminal_themes.get(name))
-                    .copied()
-            },
             _ => preview.original_terminal,
         };
         let theme = theme.or(normal).unwrap_or(preview.original);
@@ -144,7 +145,7 @@ impl Screen {
         }
     }
 
-    pub(super) fn save_palette_theme(&mut self, client: ClientId, name: String, permanent: bool) {
+    pub(crate) fn save_palette_theme(&mut self, client: ClientId, name: String, permanent: bool) {
         let Some(preview) = self
             .theme_preview
             .as_mut()
@@ -188,7 +189,15 @@ impl Screen {
         match result {
             Ok(()) => {
                 super::notify(&self.bus.senders, "Completed: Apply theme".into());
-                self.theme_preview = None;
+                // The server published the saved theme's baseline before this reply, so
+                // `original_terminal` already holds it. When another configuration layer
+                // overrode the save, it is the unchanged baseline, and panes must not keep
+                // rendering the preview.
+                if let Some(preview) = self.theme_preview.take()
+                    && self.style.terminal != preview.original_terminal
+                {
+                    self.set_render_terminal(preview.original_terminal);
+                }
                 self.close_command_palette(client);
             },
             Err(error) => {
