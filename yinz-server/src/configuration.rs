@@ -20,6 +20,9 @@ fn validate_unsaved_native_settings(current: &Config, requested: &Config) -> Res
     {
         changed.push("line_height");
     }
+    if effective_font_features(&current.terminal) != effective_font_features(&requested.terminal) {
+        changed.push("font_features");
+    }
     if !changed.is_empty() {
         return Err(anyhow!(
             "changing terminal {} requires a saved configuration: \
@@ -29,6 +32,21 @@ fn validate_unsaved_native_settings(current: &Config, requested: &Config) -> Res
         ));
     }
     Ok(())
+}
+
+/// The feature list as the shaper sees it: omission and an empty list both mean
+/// none, and `calt` equals `+calt`. Order stays significant.
+fn effective_font_features(
+    terminal: &yinz_types::input::native_terminal::TerminalConfig,
+) -> Vec<std::result::Result<([u8; 4], u16), &str>> {
+    terminal
+        .font_features
+        .iter()
+        .flatten()
+        .map(|text| {
+            yinz_types::input::native_terminal::parse_font_feature(text).ok_or(text.as_str())
+        })
+        .collect()
 }
 
 fn validate_background_plugins(config: &Config) -> Result<()> {

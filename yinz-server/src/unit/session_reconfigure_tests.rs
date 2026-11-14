@@ -2064,3 +2064,193 @@ mod cell_metrics_reconfigure {
         }
     }
 }
+
+mod font_features_reconfigure {
+    use super::ligature_reconfigure::Fixture;
+    use super::*;
+
+    const SIBLINGS: &str = "mouse_mode false\nkeybinds { normal { bind \"Ctrl y\" { NewPane; }; }; }\nplugins { background location=\"file:/background.scm\"; }\nload_plugins { background; }";
+
+    fn guidance(error: &str) {
+        for word in [
+            "font_features",
+            "--write",
+            "configuration/drop-in",
+            "entire fragment",
+        ] {
+            assert!(error.contains(word), "{error}");
+        }
+    }
+
+    fn with_current(clients: &[ClientId], current: &str) -> Fixture {
+        let fixture = Fixture::new(clients, None);
+        fixture.with(|session| {
+            let config = Config::from_kdl(&format!("terminal {{ {current} }}"), None).unwrap();
+            session
+                .session_configuration
+                .set_saved_configuration(config.clone());
+            for client in clients {
+                session
+                    .session_configuration
+                    .set_client_runtime_configuration(*client, config.clone());
+            }
+        });
+        fixture
+    }
+
+    fn client_of(clients: &[ClientId]) -> ClientId {
+        if clients.is_empty() {
+            ClientId::NONE
+        } else {
+            CLIENT
+        }
+    }
+
+    #[test]
+    fn unsaved_feature_changes_refuse_whole_fragment_at_both_entry_points() {
+        for clients in [vec![CLIENT], vec![]] {
+            for (current, requested) in [
+                ("", "font_features \"ss01\";"),
+                ("font_features;", "font_features \"-calt\";"),
+                ("font_features \"ss01\";", "font_features;"),
+                ("font_features \"ss01\";", "font_features \"ss02\";"),
+                (
+                    "font_features \"ss01\" \"zero\";",
+                    "font_features \"zero\" \"ss01\";",
+                ),
+                ("font_features \"calt\";", "font_features \"-calt\";"),
+                (
+                    "font_features \"ss01\";",
+                    "font_features \"ss01\" \"ss01\";",
+                ),
+            ] {
+                let fixture = with_current(&clients, current);
+                let before = fixture.snapshot();
+                let fragment = format!("terminal {{ {requested} }}\n{SIBLINGS}");
+                for _ in 0..2 {
+                    let result = fixture.all(&fragment, false);
+                    assert_eq!(result.exit_status, Some(1), "{current} -> {requested}");
+                    guidance(result.error_message.as_deref().unwrap());
+                    assert_eq!(fixture.snapshot(), before);
+                    fixture.assert_no_propagation();
+                    let error = reconfigure_client(
+                        CLIENT,
+                        fragment.clone(),
+                        false,
+                        &fixture.state,
+                        &fixture.data,
+                    )
+                    .unwrap_err();
+                    guidance(&format!("{error:#}"));
+                    assert_eq!(fixture.snapshot(), before);
+                    fixture.assert_no_propagation();
+                }
+            }
+        }
+        // Combined native changes name every refused setting.
+        let fixture = with_current(&[CLIENT], "");
+        let result = fixture.all(
+            "terminal { ligatures false; cell_width 1.5; font_features \"ss01\"; }",
+            false,
+        );
+        let error = result.error_message.unwrap();
+        for word in ["ligatures/font_ligatures", "cell_width", "font_features"] {
+            assert!(error.contains(word), "{error}");
+        }
+    }
+
+    #[test]
+    fn omitted_and_equivalent_feature_lists_keep_runtime_changes_available() {
+        for clients in [vec![CLIENT], vec![]] {
+            for (current, requested) in [
+                ("", ""),
+                ("", "font_features;"),
+                ("font_features;", ""),
+                ("font_features \"ss01\";", ""),
+                ("font_features \"ss01\";", "font_features \"ss01\";"),
+                ("font_features \"ss01\";", "font_features \"+ss01\";"),
+                (
+                    "font_features \"+calt\" \"-zero\";",
+                    "font_features \"calt\" \"-zero\";",
+                ),
+                ("font_features \"ss01\";", "padding 3;"),
+            ] {
+                for all in [true, false] {
+                    let fixture = with_current(&clients, current);
+                    let fragment = format!("terminal {{ {requested} }}\nmouse_mode false");
+                    if all {
+                        let result = fixture.all(&fragment, false);
+                        assert_eq!(
+                            result.exit_status, None,
+                            "{current} -> {requested}: {result:?}"
+                        );
+                    } else {
+                        reconfigure_client(CLIENT, fragment, false, &fixture.state, &fixture.data)
+                            .unwrap();
+                    }
+                    fixture.with(|session| {
+                        let config = session
+                            .session_configuration
+                            .get_client_configuration(&client_of(&clients));
+                        assert_eq!(config.options.mouse_mode, Some(false));
+                    });
+                    assert!(!fixture.dir.path().join("config.d").exists());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn saved_feature_lists_persist_and_invalid_lists_change_nothing() {
+        for all in [false, true] {
+            let fixture = Fixture::new(&[CLIENT], None);
+            let before = fixture.snapshot();
+            let invalid = "terminal { font_features \"ss1\"; }\nmouse_mode false";
+            assert_eq!(fixture.all(invalid, false).exit_status, Some(1));
+            assert!(reconfigure_client(
+                CLIENT,
+                invalid.into(),
+                true,
+                &fixture.state,
+                &fixture.data
+            )
+            .is_err());
+            assert_eq!(fixture.snapshot(), before);
+            fixture.assert_no_propagation();
+            let path = fixture.dir.path().join("config.d/yinz-managed.kdl");
+            for (fragment, expected) in [
+                (
+                    "terminal { font_features \"ss01\" \"zero\" \"-calt\"; padding 2; }",
+                    vec!["ss01", "zero", "-calt"],
+                ),
+                ("terminal { font_features; }", vec![]),
+            ] {
+                if all {
+                    assert_eq!(fixture.all(fragment, true).exit_status, None);
+                } else {
+                    reconfigure_client(
+                        CLIENT,
+                        fragment.into(),
+                        true,
+                        &fixture.state,
+                        &fixture.data,
+                    )
+                    .unwrap();
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert_eq!(text.matches("font_features").count(), 1, "{text}");
+                let saved = Config::from_kdl(&text, None).unwrap();
+                let expected: Vec<String> = expected.iter().map(|tag| tag.to_string()).collect();
+                assert_eq!(saved.terminal.font_features, Some(expected));
+                assert_eq!(saved.terminal.padding, Some(2.0));
+                let loaded =
+                    Config::default().with_overlay_dir(Some(&fixture.dir.path().join("config.d")));
+                assert_eq!(loaded.terminal, saved.terminal);
+            }
+            assert_eq!(
+                std::fs::read_to_string(fixture.dir.path().join("config.kdl")).unwrap(),
+                "// unchanged main\n"
+            );
+        }
+    }
+}

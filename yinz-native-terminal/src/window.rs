@@ -202,8 +202,28 @@ pub(crate) fn font_options(settings: &TerminalConfig, zoom: f32) -> FontOptions 
             cell_width: settings.cell_width.unwrap_or(1.0),
             ..Default::default()
         },
-        ..Default::default()
+        features: font_features(settings),
     }
+}
+
+/// The configured OpenType features in list order, without deduplication, as
+/// upstream passes them to the shaper. KDL validates every entry; an invalid one
+/// from another constructor is reported, never silently dropped.
+fn font_features(settings: &TerminalConfig) -> Vec<crate::text::font::FontFeature> {
+    settings
+        .font_features
+        .iter()
+        .flatten()
+        .filter_map(|text| {
+            let feature = crate::text::font::FontFeature::parse(text);
+            if feature.is_none() {
+                log::warn!(
+                    "native terminal font_features: ignoring {text:?}, which is not a font feature"
+                );
+            }
+            feature
+        })
+        .collect()
 }
 
 // Store the physical options actually used by the cache, after all scaling.
@@ -229,7 +249,9 @@ pub(crate) fn effective_font_options(
 
 pub(crate) enum FontUpdate {
     Unchanged,
-    LigaturesOnly,
+    /// Only the ligature setting or feature list changed: re-derive the shaper's
+    /// features and drop shaped runs, keeping faces, rasters and atlases.
+    ShapingOnly,
     CellOnly,
     Replacement(Box<GlyphCache>),
 }
@@ -240,8 +262,9 @@ pub(crate) fn prepare_fonts(active: &FontOptions, requested: &FontOptions) -> Re
     }
     let mut comparison = active.clone();
     comparison.ligatures = requested.ligatures;
+    comparison.features.clone_from(&requested.features);
     if comparison == *requested {
-        return Ok(FontUpdate::LigaturesOnly);
+        return Ok(FontUpdate::ShapingOnly);
     }
     comparison.cell = requested.cell;
     if comparison == *requested {
@@ -263,14 +286,17 @@ pub(crate) fn apply_fonts(
 ) {
     match update {
         FontUpdate::Unchanged => return,
-        FontUpdate::LigaturesOnly => cache.update_ligatures(&requested),
+        FontUpdate::ShapingOnly => cache.update_shaping(&requested),
         FontUpdate::CellOnly => {
             let changed = cache.update_cell(&requested);
-            let ligatures_changed = active.ligatures != requested.ligatures;
-            if ligatures_changed {
-                cache.update_ligatures(&requested);
+            // A metric change alone keeps runs when the width is unchanged, so a
+            // combined shaping change must still drop runs shaped with old features.
+            let shaping_changed =
+                active.ligatures != requested.ligatures || active.features != requested.features;
+            if shaping_changed {
+                cache.update_shaping(&requested);
             }
-            if !changed && !ligatures_changed {
+            if !changed && !shaping_changed {
                 *active = requested;
                 return;
             }
@@ -278,7 +304,7 @@ pub(crate) fn apply_fonts(
         FontUpdate::Replacement(replacement) => *cache = *replacement,
     }
     *active = requested;
-    // The atlas identity stays valid for a ligature toggle, but retained row
+    // The atlas identity stays valid for a shaping change, but retained row
     // vertices still contain the previous run's glyphs.
     retained.mark(&crate::emulation::damage::Damage::Everything);
 }

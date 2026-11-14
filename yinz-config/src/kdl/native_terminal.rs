@@ -15,6 +15,19 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
         .into_iter()
         .flat_map(|children| children.nodes())
     {
+        if node.name().value() == "font_features" {
+            let features = font_features_from_kdl(node)?;
+            if object
+                .insert("font_features".to_owned(), features.into())
+                .is_some()
+            {
+                return Err(kdl_parsing_error!(
+                    "duplicate terminal setting font_features".to_owned(),
+                    node
+                ));
+            }
+            continue;
+        }
         if node.children().is_some()
             || node.entries().len() != 1
             || node.entries()[0].name().is_some()
@@ -111,6 +124,40 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
     }
     Ok(config)
 }
+/// One `font_features` node with zero or more plain string arguments; a bare node
+/// is an explicitly empty list. Each entry is validated with its own span.
+fn font_features_from_kdl(node: &KdlNode) -> Result<Vec<String>, ConfigError> {
+    if node.children().is_some() || node.ty().is_some() {
+        return Err(kdl_parsing_error!(
+            "terminal font_features takes plain string arguments only, without a type annotation or children".to_owned(),
+            node
+        ));
+    }
+    let mut features = Vec::with_capacity(node.entries().len());
+    for entry in node.entries() {
+        if entry.name().is_some() || entry.ty().is_some() {
+            return Err(kdl_parsing_error!(
+                "terminal font_features: a font feature must be a plain string argument, without a name or type annotation".to_owned(),
+                entry
+            ));
+        }
+        let Some(text) = entry.value().as_string() else {
+            return Err(kdl_parsing_error!(
+                "terminal font_features: a font feature must be given as a string".to_owned(),
+                entry
+            ));
+        };
+        if yinz_types::input::native_terminal::parse_font_feature(text).is_none() {
+            return Err(kdl_parsing_error!(
+                format!("terminal font_features: {text:?} is not a font feature; use a four-character OpenType tag such as \"ss01\", optionally prefixed with + to turn it on or - to turn it off"),
+                entry
+            ));
+        }
+        features.push(text.to_owned());
+    }
+    Ok(features)
+}
+
 pub(crate) fn merge(
     base: &TerminalConfig,
     overlay: TerminalConfig,
@@ -139,6 +186,15 @@ pub(crate) fn to_kdl(config: &TerminalConfig) -> Option<KdlNode> {
     let object = serde_json::to_value(config).ok()?;
     let mut children = KdlDocument::new();
     for (name, value) in object.as_object()? {
+        if let serde_json::Value::Array(features) = value {
+            // A bare node keeps an explicitly empty list distinct from omission.
+            let mut node = KdlNode::new(name.as_str());
+            for feature in features {
+                node.push(KdlValue::String(feature.as_str()?.to_owned()));
+            }
+            children.nodes_mut().push(node);
+            continue;
+        }
         let value = match value {
             serde_json::Value::String(value) => KdlValue::String(value.clone()),
             serde_json::Value::Bool(value) => KdlValue::Bool(*value),

@@ -87,6 +87,17 @@ fn documented_native_terminal_example_loads() {
         config.terminal.font_bold_italic,
         config.terminal.font_family
     );
+    let features_example = docs
+        .split("```kdl\n")
+        .skip(1)
+        .filter_map(|block| block.split("```").next())
+        .find(|block| block.contains("font_features"))
+        .unwrap();
+    let config = Config::from_kdl(features_example, None).unwrap();
+    assert_eq!(
+        config.terminal.font_features,
+        features(&["ss01", "zero", "-calt", "+dlig"])
+    );
 }
 
 #[test]
@@ -243,4 +254,139 @@ fn cell_metrics_validate_plain_finite_multipliers_and_roundtrip() {
             );
         }
     }
+}
+
+fn features(list: &[&str]) -> Option<Vec<String>> {
+    Some(list.iter().map(|tag| tag.to_string()).collect())
+}
+
+#[test]
+fn font_features_parse_in_order_roundtrip_and_preserve_explicit_empty() {
+    let config = Config::from_kdl(
+        r#"terminal { font_features "ss01" "zero" "-calt" "+dlig"; padding 2; }"#,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        config.terminal.font_features,
+        features(&["ss01", "zero", "-calt", "+dlig"])
+    );
+    assert_eq!(
+        Config::from_kdl("terminal { padding 2; }", None)
+            .unwrap()
+            .terminal
+            .font_features,
+        None
+    );
+    assert_eq!(
+        Config::from_kdl("terminal { font_features; }", None)
+            .unwrap()
+            .terminal
+            .font_features,
+        features(&[])
+    );
+    for input in [
+        r#"terminal { font_features "ss01" "zero" "-calt" "+dlig"; }"#,
+        r#"terminal { font_features "-calt"; padding 2; }"#,
+        "terminal { font_features; }",
+        r#"terminal { font_features "calt" "-calt" "calt"; }"#,
+    ] {
+        let config = Config::from_kdl(input, None).unwrap();
+        let text = config.to_string(false).unwrap();
+        assert_eq!(text.matches("font_features").count(), 1, "{text}");
+        let roundtrip = Config::from_kdl(&text, None).unwrap();
+        assert_eq!(roundtrip.terminal, config.terminal, "{text}");
+        assert_eq!(roundtrip.to_string(false).unwrap(), text);
+    }
+}
+
+#[test]
+fn malformed_font_features_point_at_the_offending_entry() {
+    for (value, bad) in [
+        (r#""ss1""#, r#""ss1""#),
+        (r#""ss011""#, r#""ss011""#),
+        (r#""--calt""#, r#""--calt""#),
+        (r#""""#, r#""""#),
+        ("4", "4"),
+        (r#""ss 1""#, r#""ss 1""#),
+        (r#""cv01=2""#, r#""cv01=2""#),
+        ("true", "true"),
+        ("null", "null"),
+        (r#"name="ss01""#, r#"name="ss01""#),
+        (r#"(tag)"ss01""#, r#"(tag)"ss01""#),
+        (r#""ss01" "ss1""#, r#""ss1""#),
+        (r#""ss01" 4 "zero""#, "4"),
+    ] {
+        let input = format!("terminal {{ font_features {value}; }}");
+        let parsed_error = Config::from_kdl(&input, None).unwrap_err();
+        let ConfigError::KdlError(error) = &parsed_error else {
+            panic!("expected a source-located KDL error: {parsed_error:?}");
+        };
+        let offset = error.offset.unwrap();
+        let len = error.len.unwrap();
+        assert!(len > 0, "{input}");
+        assert_eq!(
+            input[offset..offset + len].trim(),
+            bad,
+            "{input}: {parsed_error:?}"
+        );
+        let message = format!("{parsed_error:?}");
+        assert!(message.contains("font feature"), "{input}: {message}");
+        assert!(message.contains("font_features"), "{input}: {message}");
+    }
+    let error = format!(
+        "{:?}",
+        Config::from_kdl(r#"terminal { font_features "ss1"; }"#, None).unwrap_err()
+    );
+    assert!(
+        error.contains(r#"\"ss1\" is not a font feature"#),
+        "{error}"
+    );
+    assert!(error.contains("ss01"), "{error}");
+    for input in [
+        r#"terminal { (list)font_features "ss01"; }"#,
+        r#"terminal { font_features "ss01" { }; }"#,
+        r#"terminal { font_features { child "ss01"; }; }"#,
+        r#"terminal { font_features "ss01"; font_features "zero"; }"#,
+        r#"terminal { font_features; font_features; }"#,
+    ] {
+        let error = format!("{:?}", Config::from_kdl(input, None).unwrap_err());
+        assert!(error.contains("font_features"), "{input}: {error}");
+    }
+    let error = format!(
+        "{:?}",
+        Config::from_kdl(
+            r#"terminal { font_features "ss01"; font_features "zero"; }"#,
+            None
+        )
+        .unwrap_err()
+    );
+    assert!(
+        error.contains("duplicate terminal setting font_features"),
+        "{error}"
+    );
+}
+
+#[test]
+fn later_font_feature_layers_replace_wholesale_and_omission_inherits() {
+    let base = Config::from_kdl(
+        r#"terminal { font_features "ss01" "zero"; padding 2; }"#,
+        None,
+    )
+    .unwrap();
+    let inherited = Config::from_kdl("terminal { opacity 0.5; }", Some(base.clone())).unwrap();
+    assert_eq!(
+        inherited.terminal.font_features,
+        features(&["ss01", "zero"])
+    );
+    let replaced =
+        Config::from_kdl(r#"terminal { font_features "-calt"; }"#, Some(inherited)).unwrap();
+    assert_eq!(replaced.terminal.font_features, features(&["-calt"]));
+    assert_eq!(replaced.terminal.padding, Some(2.0));
+    assert_eq!(replaced.terminal.opacity, Some(0.5));
+    let cleared = Config::from_kdl("terminal { font_features; }", Some(replaced)).unwrap();
+    assert_eq!(cleared.terminal.font_features, features(&[]));
+    let restored =
+        Config::from_kdl(r#"terminal { font_features "ss01"; }"#, Some(cleared)).unwrap();
+    assert_eq!(restored.terminal.font_features, features(&["ss01"]));
 }

@@ -107,3 +107,73 @@ fn cell_metrics_preserve_omission_and_explicit_defaults_in_roundtrips() {
         }
     }
 }
+
+#[test]
+fn font_features_preserve_omission_empty_and_ordered_lists() {
+    assert_eq!(TerminalConfig::default().font_features, None);
+    let omitted: TerminalConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert_eq!(omitted.font_features, None);
+    assert_eq!(
+        serde_json::from_value::<TerminalConfig>(serde_json::json!({"font_features": null}))
+            .unwrap()
+            .font_features,
+        None
+    );
+    for list in [
+        vec![],
+        vec!["ss01"],
+        vec!["ss01", "zero", "-calt", "+dlig"],
+        vec!["calt", "-calt"],
+    ] {
+        let config: TerminalConfig =
+            serde_json::from_value(serde_json::json!({ "font_features": list })).unwrap();
+        let expected: Vec<String> = list.iter().map(|tag| tag.to_string()).collect();
+        assert_eq!(config.font_features.as_ref(), Some(&expected));
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(value["font_features"], serde_json::json!(list));
+        assert_eq!(
+            serde_json::from_value::<TerminalConfig>(value).unwrap(),
+            config
+        );
+    }
+    for value in [
+        serde_json::json!("ss01"),
+        serde_json::json!(true),
+        serde_json::json!([1]),
+        serde_json::json!([["ss01"]]),
+        serde_json::json!({"ss01": true}),
+    ] {
+        assert!(serde_json::from_value::<TerminalConfig>(
+            serde_json::json!({"font_features": value})
+        )
+        .is_err());
+    }
+    assert!(serde_json::from_value::<TerminalConfig>(
+        serde_json::json!({"font_feature": ["ss01"]})
+    )
+    .is_err());
+}
+
+#[test]
+fn font_feature_entries_follow_the_pinned_syntax() {
+    assert_eq!(parse_font_feature("ss01"), Some((*b"ss01", 1)));
+    assert_eq!(parse_font_feature("+dlig"), Some((*b"dlig", 1)));
+    assert_eq!(parse_font_feature("-calt"), Some((*b"calt", 0)));
+    assert_eq!(parse_font_feature("!~#$"), Some((*b"!~#$", 1)));
+    for text in [
+        "",
+        "+",
+        "-",
+        "ss1",
+        "ss011",
+        "--calt",
+        "+-calt",
+        "ss 1",
+        "cv01=2",
+        "c\u{e9}lt",
+        "\u{e9}\u{e9}",
+        "ss0\t",
+    ] {
+        assert_eq!(parse_font_feature(text), None, "{text:?}");
+    }
+}

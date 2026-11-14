@@ -1718,7 +1718,7 @@ fn ligature_updates_preserve_faces_clusters_and_original_feature_requests() {
             fonts.shape(font, "->");
             assert!(fonts.shaped_runs() > 0);
             options.ligatures = enabled;
-            fonts.update_ligatures(&options);
+            fonts.update_shaping(&options);
             assert_eq!(fonts.shaped_runs(), 0);
             assert!(Rc::ptr_eq(&fonts.shape_cluster(font, "e\u{301}"), &cluster));
             assert!(Rc::ptr_eq(&fonts.shape_cluster(EMOJI_FONT, "😀"), &emoji));
@@ -1730,6 +1730,65 @@ fn ligature_updates_preserve_faces_clusters_and_original_feature_requests() {
             assert_eq!(fonts.shapes_runs(), fresh.shapes_runs());
             assert_eq!(fonts.shape(font, "->"), fresh.shape(font, "->"));
         }
+    }
+}
+
+#[test]
+fn feature_only_updates_reshape_runs_and_preserve_faces_and_clusters() {
+    let mut options = FontOptions {
+        system_fonts: false,
+        ligatures: false,
+        ..Default::default()
+    };
+    let mut fonts = FontStack::build_with(&options, None).unwrap();
+    let font = fonts.primary_of(FaceStyle::Regular);
+    let nominal: Vec<GlyphId> = "->"
+        .chars()
+        .map(|character| glyph_of(&mut fonts, FaceStyle::Regular, character).glyph)
+        .collect();
+    let cluster = fonts.shape_cluster(font, "e\u{301}");
+    let faces = fonts.faces.len();
+    let resolved = fonts.resolved.clone();
+    let metrics = fonts.metrics();
+    for (features, ligatures, joined) in [
+        (vec!["-calt"], false, false),
+        (vec!["zero"], false, false),
+        (vec!["+calt"], false, true),
+        (vec!["-calt"], true, false),
+        (vec!["ss01", "calt"], true, true),
+        (vec![], false, false),
+    ] {
+        fonts.shape(font, "->");
+        assert!(fonts.shaped_runs() > 0);
+        options.features = features
+            .iter()
+            .map(|feature| FontFeature::parse(feature).unwrap())
+            .collect();
+        options.ligatures = ligatures;
+        fonts.update_shaping(&options);
+        assert_eq!(fonts.shaped_runs(), 0, "{features:?}");
+        assert_eq!(
+            fonts.shapes_runs(),
+            ligatures || !features.is_empty(),
+            "{features:?}"
+        );
+        // Production scenes draw nominal glyphs when runs are not shaped; direct
+        // shape() then uses the font's defaults and is not what is drawn.
+        if fonts.shapes_runs() {
+            let shaped: Vec<GlyphId> = fonts.shape(font, "->").iter().map(|g| g.glyph).collect();
+            assert_eq!(
+                shaped != nominal,
+                joined,
+                "{features:?} ligatures {ligatures}"
+            );
+        }
+        let mut fresh = FontStack::build_with(&options, None).unwrap();
+        assert_eq!(fonts.features, fresh.features);
+        assert_eq!(fonts.shape(font, "->"), fresh.shape(font, "->"));
+        assert!(Rc::ptr_eq(&fonts.shape_cluster(font, "e\u{301}"), &cluster));
+        assert_eq!(fonts.faces.len(), faces);
+        assert_eq!(fonts.resolved, resolved);
+        assert_eq!(fonts.metrics(), metrics);
     }
 }
 

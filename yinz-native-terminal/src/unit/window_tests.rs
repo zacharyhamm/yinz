@@ -212,6 +212,41 @@ fn four_faces_weight_defaults_and_blank_resets_reach_production_options() {
         font_options(&blank, 1.0),
         font_options(&TerminalConfig::default(), 1.0)
     );
+    let parse = |tag: &str| crate::text::font::FontFeature::parse(tag).unwrap();
+    let listed = TerminalConfig {
+        font_features: Some(vec![
+            "ss01".into(),
+            "zero".into(),
+            "-calt".into(),
+            "+dlig".into(),
+            "-calt".into(),
+        ]),
+        ..Default::default()
+    };
+    // List order is kept and duplicates are passed through, as upstream does.
+    assert_eq!(
+        font_options(&listed, 1.0).features,
+        vec![
+            parse("ss01"),
+            parse("zero"),
+            parse("-calt"),
+            parse("+dlig"),
+            parse("-calt")
+        ]
+    );
+    for scale in [1.0, 1.5] {
+        assert_eq!(
+            effective_font_options(&listed, 1.25, scale).features,
+            font_options(&listed, 1.0).features
+        );
+    }
+    for none in [None, Some(Vec::new())] {
+        let settings = TerminalConfig {
+            font_features: none,
+            ..Default::default()
+        };
+        assert!(font_options(&settings, 1.0).features.is_empty());
+    }
 }
 
 #[test]
@@ -691,7 +726,7 @@ fn ligature_reload_from_files_preserves_warmed_caches_cells_selection_and_geomet
         let requested = effective_font_options(&next, 1.0, 1.0);
         let update = prepare_fonts(&active, &requested).unwrap();
         assert_eq!(
-            matches!(update, FontUpdate::LigaturesOnly),
+            matches!(update, FontUpdate::ShapingOnly),
             previous != enabled
         );
         let entries = cache.entries();
@@ -776,8 +811,232 @@ fn ligature_reload_from_files_preserves_warmed_caches_cells_selection_and_geomet
     };
     assert!(matches!(
         prepare_fonts(&active, &features).unwrap(),
-        FontUpdate::Replacement(_)
+        FontUpdate::ShapingOnly
     ));
+}
+
+#[test]
+fn font_feature_reload_from_files_reshapes_runs_and_preserves_caches_cells_selection_and_geometry()
+{
+    use crate::testing::painter::Painter;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.kdl");
+    let drop_ins = directory.path().join("config.d");
+    std::fs::create_dir(&drop_ins).unwrap();
+    std::fs::write(&path, "terminal { system_fonts false; }").unwrap();
+    let opts = CliArgs {
+        config: Some(path.clone()),
+        config_dir: Some(directory.path().to_owned()),
+        ..Default::default()
+    };
+    let load = || {
+        yinz_cli::setup::Setup::config_without_layout(&opts)
+            .unwrap()
+            .0
+            .terminal
+    };
+    let mut active = effective_font_options(&load(), 1.0, 1.0);
+    let mut cache = GlyphCache::new(active.stack(1.0).unwrap());
+    let mut retained = RetainedScene::new();
+    let state = Painter::state(3, 16, |p| {
+        p.text(0, 0, "a->b =>");
+        p.cluster(1, 0, "e\u{301}", 1);
+        p.wide(1, 3, '😀');
+        p.wide(2, 0, '中');
+        p.cursor(0, 10, crate::emulation::screen_buffer::CursorShape::Beam);
+    });
+    let mut selection = LocalSelection::default();
+    selection.start(0, 1);
+    selection.extend(0, 2);
+    retained.set_selection(selection.range());
+    let range = selection.range();
+    let cursor = state.cursor_position();
+    let cells: Vec<_> = (0..3)
+        .flat_map(|row| (0..16).map(move |col| (row, col)))
+        .map(|(row, col)| state.screen().cell(row, col))
+        .collect();
+    let refresh = |retained: &mut RetainedScene, cache: &mut GlyphCache| {
+        retained.refresh(
+            SceneInputs {
+                state: &state,
+                phase: BlinkPhase::On,
+                paints: &Paints::default(),
+                cursor: CursorOptions::default(),
+                hovered_link: None,
+                preedit: None,
+            },
+            cache,
+        );
+    };
+    // Preserved atlas entries can pack differently from a fresh cache. Compare
+    // concrete placed geometry; GPU tests compare actual ink.
+    let normalize = |mut scene: crate::render::scene::test_helpers::Scene| {
+        for glyph in scene.glyphs.iter_mut().chain(scene.color_glyphs.iter_mut()) {
+            glyph.entry.x = 0;
+            glyph.entry.y = 0;
+        }
+        scene
+    };
+    let fresh_scene = |options: &FontOptions| {
+        let mut fresh = GlyphCache::new(options.stack(1.0).unwrap());
+        let mut scene = RetainedScene::new();
+        scene.set_selection(range);
+        refresh(&mut scene, &mut fresh);
+        normalize(scene.flatten())
+    };
+    let check_content = |selection: &LocalSelection| {
+        assert_eq!(selection.range(), range);
+        assert_eq!(selection.text(state.screen()).as_deref(), Some("->"));
+        assert_eq!(state.cursor_position(), cursor);
+        for (index, cell) in cells.iter().enumerate() {
+            assert_eq!(state.screen().cell(index / 16, index % 16), *cell);
+        }
+    };
+    refresh(&mut retained, &mut cache);
+    let joined = normalize(retained.flatten());
+    let unjoined = fresh_scene(&FontOptions {
+        ligatures: false,
+        ..active.clone()
+    });
+    assert_ne!(joined, unjoined);
+    let original_geometry = Geometry::calculate(400, 200, 0, cache.metrics()).unwrap();
+    let generation = cache.generation();
+    let font = cache.primary_of(crate::text::font::FaceStyle::Regular);
+    for (text, is_joined, shapes) in [
+        ("font_features \"-calt\";", false, true),
+        ("font_features \"zero\";", true, true),
+        ("ligatures false; font_features \"+calt\";", true, true),
+        ("ligatures false; font_features \"zero\";", false, true),
+        ("ligatures false; font_features;", false, false),
+        ("font_features \"calt\";", true, true),
+    ] {
+        std::fs::write(
+            drop_ins.join("20-features.kdl"),
+            format!("terminal {{ {text} }}"),
+        )
+        .unwrap();
+        let requested = effective_font_options(&load(), 1.0, 1.0);
+        let update = prepare_fonts(&active, &requested).unwrap();
+        assert!(matches!(update, FontUpdate::ShapingOnly), "{text}");
+        cache.shape(font, "->");
+        let entries = cache.entries();
+        let clusters = cache.cluster_entries();
+        let shaped_clusters = cache.shaped_clusters();
+        let atlas = (cache.atlases().mask.stamp(), cache.atlases().color.stamp());
+        apply_fonts(
+            &mut active,
+            &mut cache,
+            &mut retained,
+            requested.clone(),
+            update,
+        );
+        assert_eq!(active, requested);
+        assert_eq!(cache.shaped_runs(), 0, "{text}");
+        assert_eq!(cache.shapes_runs(), shapes, "{text}");
+        assert_eq!(cache.shaped_clusters(), shaped_clusters);
+        assert_eq!(cache.entries(), entries);
+        assert_eq!(cache.cluster_entries(), clusters);
+        assert_eq!(
+            (cache.atlases().mask.stamp(), cache.atlases().color.stamp()),
+            atlas
+        );
+        assert_eq!(cache.generation(), generation);
+        assert_eq!(
+            cache.primary_of(crate::text::font::FaceStyle::Regular),
+            font
+        );
+        assert!(Geometry::calculate(400, 200, 0, cache.metrics())
+            .unwrap()
+            .messages(Some(original_geometry))
+            .is_empty());
+        refresh(&mut retained, &mut cache);
+        assert!(retained.rebuilt_everything(), "{text}");
+        let live = normalize(retained.flatten());
+        assert_eq!(live, fresh_scene(&requested), "{text}");
+        assert_eq!(live == joined, is_joined, "{text}");
+        if !is_joined {
+            assert_eq!(live, unjoined, "{text}");
+        }
+        check_content(&selection);
+    }
+    // A combined metric change follows the metric path and still reshapes runs.
+    // line_height keeps the cell width, so runs survive update_cell itself.
+    for (text, joined_after) in [
+        ("line_height 1.25; font_features \"-calt\";", false),
+        ("line_height 1.5; font_features \"+calt\";", true),
+        ("cell_width 1.25; font_features \"-calt\";", false),
+        (
+            "cell_width 1.25; line_height 1.5; font_features \"zero\";",
+            true,
+        ),
+    ] {
+        std::fs::write(
+            drop_ins.join("20-features.kdl"),
+            format!("terminal {{ {text} }}"),
+        )
+        .unwrap();
+        let requested = effective_font_options(&load(), 1.0, 1.0);
+        let update = prepare_fonts(&active, &requested).unwrap();
+        assert!(matches!(update, FontUpdate::CellOnly), "{text}");
+        cache.shape(font, "->");
+        assert!(cache.shaped_runs() > 0);
+        apply_fonts(
+            &mut active,
+            &mut cache,
+            &mut retained,
+            requested.clone(),
+            update,
+        );
+        assert_eq!(active, requested);
+        assert_eq!(cache.shaped_runs(), 0, "{text}");
+        refresh(&mut retained, &mut cache);
+        assert!(retained.rebuilt_everything(), "{text}");
+        let live = normalize(retained.flatten());
+        let fresh = fresh_scene(&requested);
+        assert_eq!(live, fresh, "{text}");
+        let unjoined = fresh_scene(&FontOptions {
+            features: vec![crate::text::font::FontFeature::parse("-calt").unwrap()],
+            ..requested.clone()
+        });
+        assert_eq!(live != unjoined, joined_after, "{text}");
+        check_content(&selection);
+    }
+    // A family or size change still replaces affected font resources.
+    std::fs::write(
+        drop_ins.join("20-features.kdl"),
+        "terminal { font_size 14; font_features \"-calt\"; }",
+    )
+    .unwrap();
+    let requested = effective_font_options(&load(), 1.0, 1.0);
+    let update = prepare_fonts(&active, &requested).unwrap();
+    assert!(matches!(update, FontUpdate::Replacement(_)));
+    apply_fonts(
+        &mut active,
+        &mut cache,
+        &mut retained,
+        requested.clone(),
+        update,
+    );
+    refresh(&mut retained, &mut cache);
+    assert_eq!(normalize(retained.flatten()), fresh_scene(&requested));
+    check_content(&selection);
+    let working = load();
+    // Invalid drop-ins are skipped whole; working settings are kept.
+    std::fs::write(
+        drop_ins.join("30-invalid.kdl"),
+        "terminal { font_size 20; font_features \"ss1\"; }",
+    )
+    .unwrap();
+    assert_eq!(load(), working);
+    assert!(matches!(
+        prepare_fonts(&active, &effective_font_options(&load(), 1.0, 1.0)).unwrap(),
+        FontUpdate::Unchanged
+    ));
+    // Invalid main configuration aborts loading before fonts/settings commit.
+    std::fs::write(&path, "terminal { font_features 4; }").unwrap();
+    assert!(yinz_cli::setup::Setup::config_without_layout(&opts).is_err());
+    assert_eq!(active, effective_font_options(&working, 1.0, 1.0));
+    check_content(&selection);
 }
 
 #[test]

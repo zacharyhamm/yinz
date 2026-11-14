@@ -542,3 +542,100 @@ fn managed_cell_metrics_preserve_siblings_and_reject_whole_invalid_fragments() {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
     }
 }
+
+fn feature_list(list: &[&str]) -> Option<Vec<String>> {
+    Some(list.iter().map(|tag| tag.to_string()).collect())
+}
+
+#[test]
+fn font_features_layer_wholesale_in_filename_order_and_skip_invalid_fragments() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = Config::from_kdl(
+        "terminal { font_features \"ss01\" \"zero\"; padding 2; }",
+        None,
+    )
+    .unwrap();
+    for (file, text) in [
+        ("20-replace.kdl", "terminal { font_features \"-calt\"; }"),
+        (
+            "10-set.kdl",
+            "terminal { font_features \"ss02\" \"+dlig\"; opacity 0.5; }",
+        ),
+        (
+            "30-invalid.kdl",
+            "terminal { font_features \"ss01\" \"ss1\"; padding 99; }",
+        ),
+        (
+            "35-duplicate.kdl",
+            "terminal { font_features \"zero\"; font_features \"ss01\"; padding 98; }",
+        ),
+    ] {
+        std::fs::write(dir.path().join(file), text).unwrap();
+    }
+    let config = base.clone().with_overlay_dir(Some(dir.path()));
+    // The later list replaces the earlier one whole: no per-tag merging.
+    assert_eq!(config.terminal.font_features, feature_list(&["-calt"]));
+    assert_eq!(config.terminal.padding, Some(2.0));
+    assert_eq!(config.terminal.opacity, Some(0.5));
+
+    std::fs::write(
+        dir.path().join("40-clear.kdl"),
+        "terminal { font_features; }",
+    )
+    .unwrap();
+    let cleared = base.clone().with_overlay_dir(Some(dir.path()));
+    assert_eq!(cleared.terminal.font_features, feature_list(&[]));
+    assert_eq!(cleared.terminal.padding, Some(2.0));
+
+    let untouched = tempfile::tempdir().unwrap();
+    std::fs::write(
+        untouched.path().join("10-other.kdl"),
+        "terminal { opacity 0.7; }",
+    )
+    .unwrap();
+    let inherited = base.with_overlay_dir(Some(untouched.path()));
+    assert_eq!(
+        inherited.terminal.font_features,
+        feature_list(&["ss01", "zero"])
+    );
+}
+
+#[test]
+fn managed_font_feature_writes_replace_one_node_and_reject_errors_atomically() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = Config::write_managed_fragment(
+        dir.path(),
+        "terminal { font_features \"ss01\" \"zero\"; padding 2; }",
+    )
+    .unwrap();
+    for (fragment, expected) in [
+        (
+            "terminal { font_features \"-calt\" \"+dlig\"; }",
+            vec!["-calt", "+dlig"],
+        ),
+        ("terminal { font_features; }", vec![]),
+        ("terminal { font_features \"ss01\"; }", vec!["ss01"]),
+    ] {
+        Config::write_managed_fragment(dir.path(), fragment).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("font_features").count(), 1, "{text}");
+        let config = Config::from_kdl(&text, None).unwrap();
+        assert_eq!(config.terminal.font_features, feature_list(&expected));
+        assert_eq!(config.terminal.padding, Some(2.0));
+    }
+    let before = std::fs::read(&path).unwrap();
+    for fragment in [
+        "terminal { padding 9; font_features \"ss1\"; }",
+        "terminal { padding 9; font_features 4; }",
+        "terminal { padding 9; font_features \"cv01=2\"; }",
+        "terminal { font_features \"zero\"; font_features \"ss01\"; }",
+        "terminal { font_features \"zero\"; }\nterminal { font_features \"ss01\"; }",
+        "terminal { padding 9; }\nterminal { font_features \"--calt\"; }",
+    ] {
+        assert!(
+            Config::write_managed_fragment(dir.path(), fragment).is_err(),
+            "{fragment}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+}

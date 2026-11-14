@@ -545,6 +545,7 @@ fn reconfigure_help_explains_saved_native_settings_and_atomic_refusal() {
         "cell_width",
         "line_height",
         "ligatures/font_ligatures",
+        "font_features",
         "requires --write",
         "saved configuration/drop-in",
         "entire fragment",

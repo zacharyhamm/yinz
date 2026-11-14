@@ -346,8 +346,8 @@ impl GlyphCache {
         }
     }
 
-    pub(crate) fn update_ligatures(&mut self, options: &crate::text::font::FontOptions) {
-        self.fonts.update_ligatures(options);
+    pub(crate) fn update_shaping(&mut self, options: &crate::text::font::FontOptions) {
+        self.fonts.update_shaping(options);
     }
 
     pub(crate) fn update_cell(&mut self, options: &crate::text::font::FontOptions) -> bool {

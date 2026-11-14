@@ -207,16 +207,10 @@ pub struct FontFeature {
 }
 
 impl FontFeature {
+    /// Shares the configuration validator so config, server and shaping agree.
     pub fn parse(text: &str) -> Option<Self> {
-        let (value, tag) = match text.as_bytes().first() {
-            Some(b'-') => (0, &text[1..]),
-            Some(b'+') => (1, &text[1..]),
-            _ => (1, text),
-        };
-        let tag: [u8; 4] = tag.as_bytes().try_into().ok()?;
-        tag.iter()
-            .all(|byte| (0x21..=0x7e).contains(byte))
-            .then_some(Self { tag, value })
+        yinz_types::input::native_terminal::parse_font_feature(text)
+            .map(|(tag, value)| Self { tag, value })
     }
 }
 

@@ -129,6 +129,49 @@ fn an_arrow_becomes_ligature_pieces_over_the_same_two_cells() {
     );
 }
 
+fn cache_with_features(ligatures: bool, features: &[&str]) -> GlyphCache {
+    GlyphCache::new(
+        FontStack::build(&FontOptions {
+            system_fonts: false,
+            ligatures,
+            features: features
+                .iter()
+                .map(|feature| crate::text::font::FontFeature::parse(feature).unwrap())
+                .collect(),
+            ..FontOptions::default()
+        })
+        .unwrap(),
+    )
+}
+
+#[test]
+fn listed_features_override_the_ligature_setting_without_moving_cells() {
+    let unshaped = scene_with(false, 1, 4, |painter| painter.text(0, 0, "a->b"));
+    // `+calt` turns Iosevka's arrow pieces back on with ligatures off, and
+    // `-calt` turns them off with ligatures on. Either way each glyph keeps its cell.
+    for (ligatures, features, joined) in [
+        (false, vec!["+calt"], true),
+        (false, vec!["zero"], false),
+        (true, vec!["-calt"], false),
+        (true, vec!["zero"], true),
+    ] {
+        let mut cache = cache_with_features(ligatures, &features);
+        let scene = scene_through(&mut cache, 1, 4, |painter| painter.text(0, 0, "a->b"));
+        let dash = nominal_in(&mut cache, '-');
+        let greater = nominal_in(&mut cache, '>');
+        let a = nominal_in(&mut cache, 'a');
+        assert_eq!(
+            columns(&scene),
+            columns(&unshaped),
+            "{features:?} moved a glyph off its cell"
+        );
+        assert_eq!(scene.glyphs.len(), 4, "{features:?}");
+        assert!(draws(&scene, a), "{features:?}");
+        assert_eq!(!draws(&scene, dash), joined, "{features:?} hyphen");
+        assert_eq!(!draws(&scene, greater), joined, "{features:?} greater-than");
+    }
+}
+
 #[test]
 fn with_the_option_off_the_same_text_draws_the_nominal_glyphs() {
     let mut cache = cache_with(false);

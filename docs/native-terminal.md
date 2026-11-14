@@ -81,6 +81,43 @@ explicit `false`; omission inherits. Managed writes replace either spelling as
 one logical setting and preserve sibling settings. Invalid managed writes leave
 the file unchanged.
 
+`font_features` passes OpenType features to the shaper. It is one node with zero
+or more string arguments:
+
+```kdl
+terminal {
+    font_features "ss01" "zero" "-calt" "+dlig"
+}
+```
+
+Each entry is a four-character OpenType tag of printable ASCII (`0x21`–`0x7e`),
+optionally prefixed with one `+` (turn it on, the default) or `-` (turn it off).
+Only on/off values exist; forms such as `"cv01=2"` are rejected. Each invalid entry
+is an error that points at that entry, for example `terminal font_features: "ss1"
+is not a font feature; use a four-character OpenType tag such as "ss01", optionally
+prefixed with + to turn it on or - to turn it off`. Non-string entries (`4`, `true`,
+`null`), named properties, type annotations, children and a second `font_features`
+node in one block are errors too. A bare `font_features` node explicitly requests
+no features; omission inherits an earlier layer, and the default is none. The
+spelling and syntax match the pinned upstream source; there is no alias.
+
+The list reaches the shaper in its written order, without deduplication; a
+repeated or conflicting tag is passed through as written, as upstream does.
+Precedence with `ligatures`/`font_ligatures` also follows upstream. An empty list
+leaves the ligature setting alone. With ligatures off, `liga`, `calt` and `dlig`
+are turned off unless the list names that tag, so `ligatures false` with `"+calt"`
+re-enables contextual alternates. With ligatures on, `"-calt"` disables them. Any
+listed feature turns run shaping on, even with ligatures off; an unrelated feature
+such as `"zero"` does not re-enable ligatures. Features shape runs only: combining
+and emoji clusters shape without them, and every glyph keeps its cell, so column
+ownership, cursor coordinates and selection are unchanged.
+
+Across layers a later list, including a bare node, replaces the earlier list
+whole; tags are not merged. Invalid drop-ins are skipped as a whole. Serialization
+writes one node with each entry as an argument (a bare node for an empty list) and
+round-trips. Managed writes replace the node as one setting and preserve siblings;
+invalid managed writes leave the file unchanged.
+
 The default is embedded Iosevka Term at 12 points, weight 400. `font_weight`
 accepts integers 100–900: regular and italic request that weight, while bold and
 bold italic request `min(weight + 300, 900)`. Installed static fonts use the closest
@@ -121,13 +158,15 @@ Font settings reload automatically with the session's configuration updates,
 including drop-ins. A `config.d` directory first created while the session is
 running is discovered during the normal polling/debounce cycle.
 
-Changing `cell_width`, `line_height`, `ligatures` or `font_ligatures` with
-`action reconfigure` requires
+Changing `cell_width`, `line_height`, `ligatures`, `font_ligatures` or
+`font_features` with `action reconfigure` requires
 `--write`, or an edit to the session's saved configuration/drop-in. An unsaved
 change to any effective value refuses the entire fragment, including sibling
 settings, for all requested clients, with save guidance. Equivalent values and
 omissions remain valid runtime requests; explicit metric `1.0` equals omission
-when the effective value is already the default. For example, disable and then restore ligatures:
+when the effective value is already the default. For `font_features`, omission and
+a bare node are both no features and `"calt"` equals `"+calt"`; a reordered list
+counts as a change. For example, disable and then restore ligatures:
 
 ```sh
 yinz --session work action reconfigure --write --kdl 'terminal { ligatures false; }'
@@ -147,13 +186,25 @@ the grid unchanged, so they emit no resize or pixel-size reports. Combining and
 emoji clusters still shape with programming ligatures disabled; cursor, pane,
 style and fallback boundaries retain their existing behavior.
 
+Startup applies the effective feature list. A live change to `font_features`
+alone, or together with `ligatures`, takes the same path as a ligature-only change:
+it clears cached shaped runs and redraws retained text rows, and keeps faces,
+discovery, cluster shaping, raster glyphs, atlases, cells, cursor, selection, Copy
+text and physical geometry, so it emits no resize or pixel-size reports. Upstream
+rebuilds all fonts for any font change; this lighter path is a Yinz adaptation, and
+tests check that its output equals a fresh build. Combined with a `cell_width` or
+`line_height` change, it follows the metric path below and still clears shaped runs.
+Combined with a family, weight, size, zoom or monitor-scale change, it follows the
+replacement path.
+
 Metric-only changes retain loaded faces, discovery, character/cluster coverage
 choices and independent grapheme shaping. They recompute physical metrics and
 style-face fitting, discard cell-dependent rasters, cluster/procedural sprites
 and atlases, and redraw retained rows when effective metrics or fitting change.
 Width/fitting changes also clear cell-relative run shaping. Multipliers that round
 to identical effective output retain those resources and send no geometry reports.
-A simultaneous ligature toggle still clears run shaping. Other effective font
+A simultaneous ligature toggle or feature-list change still clears run shaping,
+including when only the line height changes. Other effective font
 changes (family, weight, font size, zoom or monitor scale) replace affected face,
 shaping, glyph and atlas caches. Both paths preserve visible content and selected
 Copy text. When a grid resize reflows text, the local highlight follows a unique match of the selected
@@ -182,6 +233,16 @@ symbols after a live legacy-alias drop-in, and the restored joined output after
 a canonical drop-in. Desktop selection/clipboard behavior was not established
 by that capture; the deterministic application and GPU checks cover selection
 and Copy. X11 and macOS execution were unavailable.
+
+Focused `font_features` checks cover entry validation and spans, omission versus
+an empty list, round trips, wholesale layering through sorted drop-ins, managed
+writes, unsaved `action reconfigure` refusal, production font options and
+precedence with the ligature setting. Warmed reload checks with embedded Iosevka
+Term toggle its `calt` arrow join through feature-only, feature-and-ligature,
+feature-and-metric and replacement updates, comparing live scenes with fresh
+caches. Linux headless EGL pixel checks compare live output with fresh renders at
+two cursor positions. Wayland/X11 desktop and macOS rendering of this setting were
+not checked.
 
 An earlier font-settings change recorded a native Wayland smoke check at scale 2
 for drop-in reload and CSI cell/text-area replies. Its powered-off display
