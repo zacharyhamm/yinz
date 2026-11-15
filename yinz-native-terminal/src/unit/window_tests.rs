@@ -1465,3 +1465,226 @@ fn baseline_offset_production_options_scale_round_clamp_and_keep_geometry() {
         }
     }
 }
+
+fn baseline_offset_equivalent_file_reloads(initial: Option<i32>, changes: &[Option<i32>]) {
+    use crate::testing::painter::Painter;
+    use yinz_types::structured_render::{ATTR_BOLD, ATTR_ITALIC};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.kdl");
+    let dropins = dir.path().join("config.d");
+    std::fs::create_dir(&dropins).unwrap();
+    std::fs::write(&path, "terminal { system_fonts false; }").unwrap();
+    let save = |offset: Option<i32>| {
+        let setting = offset
+            .map(|value| format!("baseline_offset {value};"))
+            .unwrap_or_default();
+        std::fs::write(
+            dropins.join("10-baseline.kdl"),
+            format!("terminal {{ {setting} }}"),
+        )
+        .unwrap();
+    };
+    let opts = CliArgs {
+        config: Some(path),
+        config_dir: Some(dir.path().to_owned()),
+        ..Default::default()
+    };
+    let load = || {
+        yinz_cli::setup::Setup::config_without_layout(&opts)
+            .unwrap()
+            .0
+            .terminal
+    };
+    save(initial);
+    let mut settings = load();
+    let mut paints = Paints::default();
+    let mut active = effective_font_options(&settings, 1.0, 1.0);
+    let mut cache = GlyphCache::new(active.stack(1.0).unwrap());
+    let mut retained = RetainedScene::new();
+    let state = Painter::state(5, 24, |p| {
+        for (row, attrs) in [0, ATTR_BOLD, ATTR_ITALIC, ATTR_BOLD | ATTR_ITALIC]
+            .into_iter()
+            .enumerate()
+        {
+            p.styled(row, 0, "Ag -> fi", |cell| cell.attrs |= attrs);
+        }
+        p.wide(4, 0, '中');
+        p.wide(4, 3, '😀');
+        p.cluster(4, 6, "e\u{301}", 1);
+        p.cluster(4, 8, "👩‍💻", 2);
+    });
+    let selection = Selection::at(0, 3).extended_to(0, 4);
+    let copied = selection.text(state.screen());
+    let cursor = state.cursor_position();
+    let cells: Vec<_> = (0..5)
+        .flat_map(|row| (0..24).map(move |col| (row, col)))
+        .map(|(row, col)| state.screen().cell(row, col))
+        .collect();
+    retained.set_selection(Some(selection));
+    let refresh = |retained: &mut RetainedScene,
+                   cache: &mut GlyphCache,
+                   settings: &TerminalConfig,
+                   paints: &Paints| {
+        retained.set_transparency(crate::render::scene::Transparency {
+            opacity: settings.opacity.unwrap_or(1.0),
+            mode: yinz_types::input::native_terminal::OpacityMode::Background,
+        });
+        retained.refresh(
+            SceneInputs {
+                state: &state,
+                phase: BlinkPhase::On,
+                paints,
+                cursor: CursorOptions {
+                    shape: settings
+                        .cursor_style
+                        .map(|_| crate::emulation::screen_buffer::CursorShape::Underline),
+                    blink: settings.cursor_blink,
+                    hollow: false,
+                },
+                hovered_link: None,
+                preedit: None,
+            },
+            cache,
+        );
+    };
+    refresh(&mut retained, &mut cache, &settings, &paints);
+    let original = retained.flatten();
+    let metrics = cache.metrics();
+    let geometry = Geometry::calculate(400, 200, 0, metrics).unwrap();
+    let resources = (
+        cache.generation(),
+        cache.atlases().mask.stamp(),
+        cache.atlases().color.stamp(),
+    );
+    for &offset in changes {
+        // A synchronous refresh has no scheduler/blink damage. Carry one known
+        // pending row through the same save as a separate positive control.
+        for damaged in [false, true] {
+            if damaged {
+                retained.mark_row(2);
+            }
+            save(offset);
+            let next = load();
+            assert_eq!(next.baseline_offset, offset);
+            let requested = effective_font_options(&next, 1.0, 1.0);
+            assert_eq!(requested.stack(1.0).unwrap().metrics(), metrics);
+            let update = prepare_fonts(&active, &requested).unwrap();
+            apply_fonts(
+                &mut active,
+                &mut cache,
+                &mut retained,
+                requested.clone(),
+                update,
+            );
+            let next_paints = paints;
+            apply_settings(
+                &mut settings,
+                &mut paints,
+                &mut retained,
+                next.clone(),
+                next_paints,
+            );
+            assert_eq!(settings, next);
+            assert_eq!(active, requested);
+            refresh(&mut retained, &mut cache, &settings, &paints);
+            assert!(!retained.rebuilt_everything(), "{initial:?} -> {offset:?}");
+            assert_eq!(
+                retained.rebuilt_rows(),
+                if damaged { &[2][..] } else { &[] }
+            );
+            assert_eq!(retained.flatten(), original);
+            assert_eq!(
+                (
+                    cache.generation(),
+                    cache.atlases().mask.stamp(),
+                    cache.atlases().color.stamp()
+                ),
+                resources,
+                "metrics, placement and style fitting must all remain equivalent"
+            );
+            assert!(Geometry::calculate(400, 200, 0, cache.metrics())
+                .unwrap()
+                .messages(Some(geometry))
+                .is_empty());
+            assert_eq!(selection.text(state.screen()), copied);
+            assert_eq!(state.cursor_position(), cursor);
+            for (index, cell) in cells.iter().enumerate() {
+                assert_eq!(state.screen().cell(index / 24, index % 24), *cell);
+            }
+        }
+    }
+    // Effective baseline changes still refresh text; clamped baseline plus a
+    // shaping change must redraw even when the regular metrics stay identical.
+    for fragment in [
+        "baseline_offset 2;",
+        "baseline_offset -2;",
+        "baseline_offset 0;",
+        "baseline_offset 64;",
+        "baseline_offset 63; ligatures false; font_features \"-calt\";",
+    ] {
+        std::fs::write(
+            dropins.join("10-baseline.kdl"),
+            format!("terminal {{ {fragment} }}"),
+        )
+        .unwrap();
+        let next = load();
+        let requested = effective_font_options(&next, 1.0, 1.0);
+        let update = prepare_fonts(&active, &requested).unwrap();
+        apply_fonts(&mut active, &mut cache, &mut retained, requested, update);
+        let next_paints = paints;
+        apply_settings(&mut settings, &mut paints, &mut retained, next, next_paints);
+        refresh(&mut retained, &mut cache, &settings, &paints);
+        assert!(retained.rebuilt_everything(), "{fragment}");
+    }
+    // Keep the baseline equivalent while changing each unrelated visual input.
+    // The cursor/opacity inputs use the same values passed by the window draw.
+    for field in ["paints", "cursor", "opacity", "padding"] {
+        let mut next = settings.clone();
+        next.baseline_offset = Some(if settings.baseline_offset == Some(63) {
+            64
+        } else {
+            63
+        });
+        let mut next_paints = paints;
+        match field {
+            "paints" => next_paints.foreground = [12, 34, 56],
+            "cursor" => {
+                next.cursor_style = Some(yinz_types::input::native_terminal::CursorStyle::Underline)
+            },
+            "opacity" => next.opacity = Some(0.5),
+            "padding" => next.padding = Some(8.0),
+            _ => unreachable!(),
+        }
+        let requested = effective_font_options(&next, 1.0, 1.0);
+        let update = prepare_fonts(&active, &requested).unwrap();
+        let generation = cache.generation();
+        apply_fonts(&mut active, &mut cache, &mut retained, requested, update);
+        apply_settings(
+            &mut settings,
+            &mut paints,
+            &mut retained,
+            next.clone(),
+            next_paints,
+        );
+        refresh(&mut retained, &mut cache, &settings, &paints);
+        assert!(retained.rebuilt_everything(), "{field}");
+        assert_eq!(settings, next);
+        assert_eq!(paints, next_paints);
+        assert_eq!(cache.generation(), generation);
+    }
+}
+
+#[test]
+fn baseline_offset_omitted_zero_file_reload_preserves_clean_and_damaged_rows() {
+    baseline_offset_equivalent_file_reloads(None, &[None, Some(0), Some(0), None]);
+}
+
+#[test]
+fn baseline_offset_clamped_file_reload_preserves_clean_and_damaged_rows() {
+    for sign in [-1, 1] {
+        baseline_offset_equivalent_file_reloads(
+            Some(sign * 64),
+            &[Some(sign * 63), Some(sign * 64)],
+        );
+    }
+}

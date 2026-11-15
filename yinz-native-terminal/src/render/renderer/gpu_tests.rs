@@ -1119,3 +1119,138 @@ fn baseline_offset_distinct_style_families_live_gpu_output_matches_fresh() {
         }
     });
 }
+
+#[test]
+fn baseline_offset_full_apply_equivalent_reloads_keep_rows_and_gpu_uploads() {
+    use crate::emulation::{color::Paints, selection::Selection};
+    use crate::testing::painter::Painter;
+    use crate::window::{apply_fonts, apply_settings, effective_font_options, prepare_fonts};
+    use yinz_types::input::native_terminal::TerminalConfig;
+
+    let uploads = |renderer: &Renderer| {
+        [
+            &renderer.solid_rows,
+            &renderer.glyph_rows,
+            &renderer.color_rows,
+        ]
+        .map(|buffer| (buffer.whole_uploads, buffer.sub_uploads))
+    };
+    with_renderer(|renderer| {
+        for distinct_styles in [false, true] {
+            for (zoom, scale) in [(1.0, 1.0), (1.15, 1.25), (1.0, 2.0)] {
+                let mut settings = TerminalConfig {
+                    font_family: Some("Iosevka Term".into()),
+                    system_fonts: Some(distinct_styles),
+                    ..Default::default()
+                };
+                if distinct_styles {
+                    settings.font_bold = Some("Noto Sans Mono CJK SC".into());
+                    settings.font_italic = settings.font_bold.clone();
+                    settings.font_bold_italic = settings.font_bold.clone();
+                }
+                let mut paints = Paints::default();
+                let mut active = effective_font_options(&settings, zoom, scale);
+                let mut cache = fixture_cache(&active);
+                let mut state = font_state();
+                Painter::apply(&mut state, |p| p.cluster(4, 6, "👩‍💻", 2));
+                let selection = Selection::at(0, 3).extended_to(0, 4);
+                let copied = selection.text(state.screen());
+                let mut retained = RetainedScene::new();
+                retained.set_selection(Some(selection));
+                let original = font_pixels(renderer, &mut retained, &state, &mut cache);
+                let mut previous = original.clone();
+                let dimensions = (cache.metrics().width, cache.metrics().height);
+                for (offset, equivalent) in [
+                    (Some(0), true),
+                    (None, true),
+                    (Some(64), false),
+                    (Some(63), true),
+                    (Some(64), true),
+                    (Some(-64), false),
+                    (Some(-63), true),
+                    (Some(-64), true),
+                    (Some(2), false),
+                    (Some(-2), false),
+                    (None, false),
+                ] {
+                    let next = TerminalConfig {
+                        baseline_offset: offset,
+                        ..settings.clone()
+                    };
+                    let requested = effective_font_options(&next, zoom, scale);
+                    // Verify equivalence includes placement and distinct style
+                    // fitting, independently of the regular metric comparison.
+                    let mut probe = fixture_cache(&active);
+                    assert_eq!(!probe.update_cell(&requested), equivalent);
+                    let before = uploads(renderer);
+                    let generation = cache.generation();
+                    let stamps = (cache.atlases().mask.stamp(), cache.atlases().color.stamp());
+                    let update = prepare_fonts(&active, &requested).unwrap();
+                    apply_fonts(
+                        &mut active,
+                        &mut cache,
+                        &mut retained,
+                        requested.clone(),
+                        update,
+                    );
+                    let next_paints = paints;
+                    apply_settings(
+                        &mut settings,
+                        &mut paints,
+                        &mut retained,
+                        next.clone(),
+                        next_paints,
+                    );
+                    assert_eq!(settings, next);
+                    assert_eq!(active, requested);
+                    assert_eq!((cache.metrics().width, cache.metrics().height), dimensions);
+
+                    // Only this synchronous draw is measured. No fresh scene or
+                    // atlas can force uploads between the two counter snapshots.
+                    let live = font_pixels(renderer, &mut retained, &state, &mut cache);
+                    let after = uploads(renderer);
+                    if equivalent {
+                        assert!(
+                            !retained.rebuilt_everything(),
+                            "{offset:?}, {zoom}, {scale}, styles={distinct_styles}"
+                        );
+                        assert!(retained.rebuilt_rows().is_empty());
+                        assert_eq!(after, before, "equivalent reload uploaded row buffers");
+                        assert_eq!(live, previous);
+                        assert_eq!(cache.generation(), generation);
+                        assert_eq!(
+                            (cache.atlases().mask.stamp(), cache.atlases().color.stamp()),
+                            stamps
+                        );
+                    } else {
+                        assert!(retained.rebuilt_everything());
+                        for (after, before) in after.into_iter().zip(before) {
+                            assert!(
+                                after.0 > before.0,
+                                "effective baseline change must upload each row buffer"
+                            );
+                        }
+                        let mut fresh_cache = fixture_cache(&requested);
+                        let mut fresh = RetainedScene::new();
+                        fresh.set_selection(Some(selection));
+                        assert_eq!(
+                            live,
+                            font_pixels(renderer, &mut fresh, &state, &mut fresh_cache)
+                        );
+                        // Restore the live scene/atlases before measuring the
+                        // next reload; the comparator intentionally used new ones.
+                        assert_eq!(
+                            live,
+                            font_pixels(renderer, &mut retained, &state, &mut cache)
+                        );
+                    }
+                    if offset.is_none() {
+                        assert_eq!(live, original);
+                    }
+                    assert_eq!(selection.text(state.screen()), copied);
+                    previous = live;
+                }
+            }
+        }
+    });
+}

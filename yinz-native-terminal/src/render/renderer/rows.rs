@@ -18,6 +18,10 @@ pub(super) struct RowVertices {
     pub(super) slots: Vec<Slot>,
     pub(super) uploaded: usize,
     pub(super) atlas_size: (u32, u32),
+    #[cfg(test)]
+    pub(super) whole_uploads: usize,
+    #[cfg(test)]
+    pub(super) sub_uploads: usize,
 }
 
 impl RowVertices {
@@ -28,6 +32,10 @@ impl RowVertices {
             slots: Vec::new(),
             uploaded: 0,
             atlas_size: (0, 0),
+            #[cfg(test)]
+            whole_uploads: 0,
+            #[cfg(test)]
+            sub_uploads: 0,
         }
     }
 
@@ -104,6 +112,10 @@ pub(super) fn sync_rows(
                 (offset * 4) as i32,
                 bytemuck_cast(&buffer.data[offset..offset + len]),
             );
+            #[cfg(test)]
+            {
+                buffer.sub_uploads += 1;
+            }
         }
     }
 }
@@ -165,6 +177,10 @@ pub(super) fn upload_whole(gl: &glow::Context, pass: &Pass, buffer: &mut RowVert
             bytemuck_cast(&buffer.data),
             glow::DYNAMIC_DRAW,
         );
+        #[cfg(test)]
+        {
+            buffer.whole_uploads += 1;
+        }
     }
 }
 

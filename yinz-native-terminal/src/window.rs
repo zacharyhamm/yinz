@@ -310,14 +310,19 @@ pub(crate) fn apply_fonts(
     retained.mark(&crate::emulation::damage::Damage::Everything);
 }
 
-fn apply_settings(
+pub(crate) fn apply_settings(
     settings: &mut TerminalConfig,
     paints: &mut Paints,
     retained: &mut RetainedScene,
     next_settings: TerminalConfig,
     next_paints: Paints,
 ) {
-    if *settings != next_settings || *paints != next_paints {
+    // apply_fonts owns baseline invalidation, including clamping and style
+    // fitting. Preserve its no-op decision without ignoring other settings or
+    // clearing damage already queued by fonts/terminal content.
+    let mut comparison = settings.clone();
+    comparison.baseline_offset = next_settings.baseline_offset;
+    if comparison != next_settings || *paints != next_paints {
         retained.mark_everything();
     }
     *settings = next_settings;

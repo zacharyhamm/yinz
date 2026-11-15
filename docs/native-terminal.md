@@ -174,9 +174,12 @@ selection ownership, Copy text and cell/text-area pixel reports.
 Startup and saved file/drop-in reload use the same offset. Baseline-only reloads
 reuse the metric path described below: faces, discovery and independent cluster
 shaping survive; effective baseline/decoration or style-fit changes invalidate
-cell-dependent glyphs and atlases and redraw retained rows. Clamped-equivalent
-changes retain resources when style fitting also agrees. Combined ligature or
-feature changes still refresh run shaping. Unsaved `action reconfigure` refuses
+cell-dependent glyphs and atlases and redraw retained rows. When baseline rendering
+and style fitting agree and other rendering inputs are unchanged, equivalent saves
+(including omission versus explicit zero) preserve fonts, atlases, clean retained
+rows and their row buffers. Existing terminal damage still refreshes affected rows;
+combined visual or shaping changes refresh the resources they require, including
+run shaping for ligature or feature changes. Unsaved `action reconfigure` refuses
 an effective offset change atomically; use `--write` or edit the saved file. The
 server compares configured integers with default zero, even when a particular
 window's font/scale would clamp different integers to identical pixels. Explicit
