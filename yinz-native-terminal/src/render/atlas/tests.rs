@@ -554,14 +554,24 @@ fn text_keys_count_against_the_entry_ceiling() {
 }
 
 #[test]
-fn cell_metrics_invalidate_rasters_clusters_sprites_and_both_atlas_identities() {
+fn baseline_offset_and_cell_metrics_invalidate_rasters_clusters_sprites_and_both_atlas_identities()
+{
     use crate::text::font::{CellAdjust, FontOptions};
     let options = FontOptions {
         system_fonts: false,
         ..Default::default()
     };
     let mut cache = GlyphCache::new(options.stack(1.0).unwrap());
-    for (width, height) in [(1.5, 1.25), (0.5, 0.5), (3.0, 3.0), (1.0, 1.0)] {
+    for (width, height, offset) in [
+        (1.0, 1.0, 2.0),
+        (1.0, 1.0, -2.0),
+        (1.0, 1.0, 64.0),
+        (1.0, 1.0, -64.0),
+        (1.5, 1.25, 2.0),
+        (0.5, 0.5, -2.0),
+        (3.0, 3.0, 2.0),
+        (1.0, 1.0, 0.0),
+    ] {
         for character in ['A', '中', '\u{1f600}', '─'] {
             cache.glyph(FaceStyle::Regular, character, 2);
         }
@@ -574,6 +584,7 @@ fn cell_metrics_invalidate_rasters_clusters_sprites_and_both_atlas_identities() 
             cell: CellAdjust {
                 cell_width: width,
                 line_height: height,
+                baseline_offset: offset,
                 ..Default::default()
             },
             ..options.clone()
@@ -695,4 +706,41 @@ fn cell_metrics_cluster_ink_differs_from_plain_heads_after_warm_updates() {
             );
         }
     }
+}
+
+#[test]
+fn baseline_offset_clamped_equivalent_changes_retain_warmed_resources() {
+    use crate::text::font::{CellAdjust, FontOptions};
+    let mut options = FontOptions {
+        system_fonts: false,
+        cell: CellAdjust {
+            baseline_offset: 64.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut cache = GlyphCache::new(options.stack(1.0).unwrap());
+    for character in ['A', '中', '😀', '─'] {
+        cache.glyph(FaceStyle::Regular, character, 2);
+    }
+    cache.cluster_glyph(FaceStyle::Regular, &GlyphKey::of("e\u{301}"), 1);
+    let before = (
+        cache.generation(),
+        cache.mask.stamp(),
+        cache.color.stamp(),
+        cache.entries(),
+        cache.shaped_clusters(),
+    );
+    options.cell.baseline_offset = 63.0;
+    assert!(!cache.update_cell(&options));
+    assert_eq!(
+        (
+            cache.generation(),
+            cache.mask.stamp(),
+            cache.color.stamp(),
+            cache.entries(),
+            cache.shaped_clusters()
+        ),
+        before
+    );
 }

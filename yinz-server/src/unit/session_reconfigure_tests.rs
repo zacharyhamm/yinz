@@ -1855,7 +1855,7 @@ mod ligature_reconfigure {
     }
 }
 
-mod cell_metrics_reconfigure {
+mod baseline_offset_reconfigure {
     use super::ligature_reconfigure::Fixture;
     use super::*;
 
@@ -1876,9 +1876,16 @@ mod cell_metrics_reconfigure {
             for (settings, names) in [
                 ("cell_width 1.5;", vec!["cell_width"]),
                 ("line_height 1.5;", vec!["line_height"]),
+                ("baseline_offset 2;", vec!["baseline_offset"]),
+                ("baseline_offset -2;", vec!["baseline_offset"]),
                 (
-                    "cell_width 1.5; line_height 0.75; ligatures false;",
-                    vec!["cell_width", "line_height", "ligatures/font_ligatures"],
+                    "cell_width 1.5; line_height 0.75; baseline_offset 2; ligatures false;",
+                    vec![
+                        "cell_width",
+                        "line_height",
+                        "baseline_offset",
+                        "ligatures/font_ligatures",
+                    ],
                 ),
             ] {
                 let fixture = Fixture::new(&clients, None);
@@ -1901,7 +1908,11 @@ mod cell_metrics_reconfigure {
 
     #[test]
     fn all_clients_use_each_current_override_and_reject_without_partial_mutation() {
-        for metric in ["cell_width", "line_height"] {
+        for (metric, value) in [
+            ("cell_width", "1.5"),
+            ("line_height", "1.5"),
+            ("baseline_offset", "-2"),
+        ] {
             let fixture = Fixture::new(&[CLIENT, ClientId::new(2)], None);
             let order = fixture.state.read().unwrap().interactive_client_ids();
             fixture.with(|session| {
@@ -1909,7 +1920,7 @@ mod cell_metrics_reconfigure {
                     .session_configuration
                     .get_client_configuration(&order[0]);
                 let config =
-                    Config::from_kdl(&format!("terminal {{ {metric} 1.5; }}"), Some(config))
+                    Config::from_kdl(&format!("terminal {{ {metric} {value}; }}"), Some(config))
                         .unwrap();
                 session
                     .session_configuration
@@ -1917,7 +1928,7 @@ mod cell_metrics_reconfigure {
             });
             let before = fixture.snapshot();
             let result = fixture.all(
-                &format!("terminal {{ {metric} 1.5; }}\nmouse_mode false"),
+                &format!("terminal {{ {metric} {value}; }}\nmouse_mode false"),
                 false,
             );
             assert_eq!(result.exit_status, Some(1));
@@ -1930,13 +1941,13 @@ mod cell_metrics_reconfigure {
     #[test]
     fn omitted_equivalent_and_explicit_default_metrics_allow_unrelated_runtime_changes() {
         for clients in [vec![CLIENT], vec![]] {
-            for current in ["", "cell_width 1.5; line_height 0.75;"] {
+            for current in ["", "cell_width 1.5; line_height 0.75; baseline_offset -2;"] {
                 for all in [false, true] {
                     for requested in [
                         "",
                         current,
                         if current.is_empty() {
-                            "cell_width 1; line_height 1;"
+                            "cell_width 1; line_height 1; baseline_offset 0;"
                         } else {
                             current
                         },
@@ -1980,6 +1991,10 @@ mod cell_metrics_reconfigure {
                                     });
                             assert_eq!(config.options.mouse_mode, Some(false));
                             assert_eq!(
+                                config.terminal.baseline_offset.unwrap_or(0),
+                                if current.is_empty() { 0 } else { -2 }
+                            );
+                            assert_eq!(
                                 config.terminal.cell_width.unwrap_or(1.0),
                                 if current.is_empty() { 1.0 } else { 1.5 }
                             );
@@ -1997,14 +2012,23 @@ mod cell_metrics_reconfigure {
     #[test]
     fn saved_metrics_persist_reload_and_surface_parse_and_write_failures() {
         for all in [false, true] {
-            for metric in ["cell_width", "line_height"] {
+            for (metric, value) in [
+                ("cell_width", "1.5"),
+                ("line_height", "1.5"),
+                ("baseline_offset", "-2"),
+            ] {
                 let fixture = Fixture::new(&[CLIENT], None);
                 let before = fixture.snapshot();
-                let invalid = format!("terminal {{ {metric} 4; }}\nmouse_mode false");
+                let bad = if metric == "baseline_offset" {
+                    "65"
+                } else {
+                    "4"
+                };
+                let invalid = format!("terminal {{ {metric} {bad}; }}\nmouse_mode false");
                 assert_eq!(fixture.all(&invalid, false).exit_status, Some(1));
                 assert_eq!(fixture.snapshot(), before);
                 fixture.assert_no_propagation();
-                let fragment = format!("terminal {{ {metric} 1.5; }}");
+                let fragment = format!("terminal {{ {metric} {value}; }}");
                 if all {
                     assert_eq!(fixture.all(&fragment, true).exit_status, None);
                 } else {
@@ -2023,7 +2047,10 @@ mod cell_metrics_reconfigure {
                 let loaded =
                     Config::default().with_overlay_dir(Some(&fixture.dir.path().join("config.d")));
                 assert_eq!(loaded.terminal, saved.terminal);
-                assert_eq!(serde_json::to_value(&loaded.terminal).unwrap()[metric], 1.5);
+                assert_eq!(
+                    serde_json::to_value(&loaded.terminal).unwrap()[metric],
+                    value.parse::<f64>().unwrap()
+                );
                 assert_eq!(
                     std::fs::read_to_string(fixture.dir.path().join("config.kdl")).unwrap(),
                     "// unchanged main\n"
@@ -2061,6 +2088,108 @@ mod cell_metrics_reconfigure {
                     "not a directory"
                 );
             }
+        }
+    }
+    #[test]
+    fn baseline_offset_unsaved_reset_and_clamped_values_still_require_saving() {
+        for current in [-64, -2, 2, 64] {
+            for clients in [vec![CLIENT], vec![]] {
+                let fixture = Fixture::new(&clients, None);
+                fixture.with(|session| {
+                    let config = Config::from_kdl(
+                        &format!("terminal {{ baseline_offset {current}; }}"),
+                        None,
+                    )
+                    .unwrap();
+                    session
+                        .session_configuration
+                        .set_saved_configuration(config.clone());
+                    if !clients.is_empty() {
+                        session
+                            .session_configuration
+                            .set_client_runtime_configuration(CLIENT, config);
+                    }
+                });
+                let before = fixture.snapshot();
+                for requested in [0, -current] {
+                    let fragment =
+                        format!("terminal {{ baseline_offset {requested}; }}\nmouse_mode false");
+                    assert_eq!(fixture.all(&fragment, false).exit_status, Some(1));
+                    assert!(reconfigure_client(
+                        CLIENT,
+                        fragment,
+                        false,
+                        &fixture.state,
+                        &fixture.data
+                    )
+                    .is_err());
+                    assert_eq!(fixture.snapshot(), before);
+                    fixture.assert_no_propagation();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn baseline_offset_saved_sign_zero_and_invalid_fragments_at_both_entry_points() {
+        for all in [false, true] {
+            let fixture = Fixture::new(&[CLIENT], None);
+            let request = |fragment: &str, write| {
+                if all {
+                    fixture.all(fragment, write).exit_status != Some(1)
+                } else {
+                    reconfigure_client(
+                        CLIENT,
+                        fragment.to_owned(),
+                        write,
+                        &fixture.state,
+                        &fixture.data,
+                    )
+                    .is_ok()
+                }
+            };
+            for bad in ["65", "-65", "2.0", "true", "(int)2"] {
+                for write in [false, true] {
+                    let before = fixture.snapshot();
+                    assert!(!request(
+                        &format!("terminal {{ baseline_offset {bad}; }}\nmouse_mode false"),
+                        write
+                    ));
+                    assert_eq!(fixture.snapshot(), before);
+                    fixture.assert_no_propagation();
+                    assert!(!fixture
+                        .dir
+                        .path()
+                        .join("config.d/yinz-managed.kdl")
+                        .exists());
+                }
+            }
+            for offset in [2, -2, 0] {
+                assert!(request(
+                    &format!("terminal {{ baseline_offset {offset}; }}"),
+                    true
+                ));
+                let loaded =
+                    Config::default().with_overlay_dir(Some(&fixture.dir.path().join("config.d")));
+                assert_eq!(loaded.terminal.baseline_offset, Some(offset));
+                fixture.with(|session| {
+                    session
+                        .session_configuration
+                        .change_saved_config(loaded.clone());
+                    assert_eq!(
+                        session
+                            .session_configuration
+                            .get_client_configuration(&CLIENT)
+                            .terminal
+                            .baseline_offset,
+                        Some(offset)
+                    );
+                });
+            }
+            assert_eq!(
+                std::fs::read_to_string(fixture.dir.path().join("config.kdl")).unwrap(),
+                "// unchanged main\n"
+            );
         }
     }
 }

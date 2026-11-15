@@ -1824,7 +1824,7 @@ fn feature_only_updates_reshape_runs_and_preserve_faces_and_clusters() {
 }
 
 #[test]
-fn cell_metrics_updates_preserve_faces_discovery_coverage_and_cluster_shapes() {
+fn baseline_offset_and_cell_metrics_updates_preserve_faces_discovery_coverage_and_cluster_shapes() {
     let options = FontOptions {
         family: Some("Iosevka Term".into()),
         bold_family: Some("Noto Sans Mono CJK SC".into()),
@@ -1844,7 +1844,6 @@ fn cell_metrics_updates_preserve_faces_discovery_coverage_and_cluster_shapes() {
     }
     let regular = stack.primary_of(FaceStyle::Regular);
     let cluster = stack.shape_cluster(regular, "e\u{301}");
-    let run = stack.shape(regular, "-> fi");
     let identities: Vec<_> = stack
         .faces
         .iter()
@@ -1856,19 +1855,36 @@ fn cell_metrics_updates_preserve_faces_discovery_coverage_and_cluster_shapes() {
     let coverage = stack.cluster_fonts.clone();
     let queries = stack.discovery_queries;
     let original = stack.metrics();
-    for (width, height) in [(1.5, 1.25), (0.5, 0.5), (3.0, 3.0), (1.0, 1.0)] {
+    for (width, height, offset) in [
+        (1.0, 1.0, 2.0),
+        (1.0, 1.0, -2.0),
+        (1.0, 1.0, 64.0),
+        (1.0, 1.0, -64.0),
+        (1.5, 1.25, 2.0),
+        (0.5, 0.5, -2.0),
+        (3.0, 3.0, 2.0),
+        (1.0, 1.0, 0.0),
+    ] {
         let cell = CellAdjust {
             cell_width: width,
             line_height: height,
+            baseline_offset: offset,
             ..Default::default()
         };
+        let old_width = stack.metrics().width;
+        let old_styled = stack.styled;
+        let run = stack.shape(regular, "-> fi");
         assert!(stack.update_cell(&cell));
-        assert_eq!(stack.shaped_runs(), 0);
         assert!(Rc::ptr_eq(
             &cluster,
             &stack.shape_cluster(regular, "e\u{301}")
         ));
-        assert!(!Rc::ptr_eq(&run, &stack.shape(regular, "-> fi")));
+        if old_width != stack.metrics().width || old_styled != stack.styled {
+            assert_eq!(stack.shaped_runs(), 0);
+            assert!(!Rc::ptr_eq(&run, &stack.shape(regular, "-> fi")));
+        } else {
+            assert!(Rc::ptr_eq(&run, &stack.shape(regular, "-> fi")));
+        }
         assert_eq!(stack.discovery_queries, queries);
         assert_eq!(stack.loaded, loaded);
         assert_eq!(stack.files, files);
@@ -2080,4 +2096,59 @@ fn cell_metrics_cluster_acceptance_uses_the_resolved_primary_natural_advance() {
         fonts.rasterize_cluster(FaceStyle::Regular, "e\u{301}", 1),
         ClusterRaster::Sprite(_)
     ));
+}
+
+#[test]
+fn baseline_offset_reclassifies_style_even_when_regular_metrics_are_clamped_equal() {
+    // Preserve total height/advance but move this synthetic face's ascent up by
+    // one physical pixel at size 4. A clamped regular baseline can then remain
+    // unchanged while the style enters/leaves the shared-cell classification.
+    let mut data = REGULAR.to_vec();
+    let tables = u16::from_be_bytes(data[4..6].try_into().unwrap()) as usize;
+    for index in 0..tables {
+        let record = 12 + index * 16;
+        let offset = u32::from_be_bytes(data[record + 8..record + 12].try_into().unwrap()) as usize;
+        let fields: &[(usize, i16)] = match &data[record..record + 4] {
+            b"hhea" => &[(4, 250), (6, 250)],
+            b"OS/2" => &[(68, 250), (70, 250), (74, 250), (76, -250)],
+            _ => &[],
+        };
+        for &(field, delta) in fields {
+            let at = offset + field;
+            let value = i16::from_be_bytes(data[at..at + 2].try_into().unwrap());
+            data[at..at + 2].copy_from_slice(&(value + delta).to_be_bytes());
+        }
+    }
+    let style = face(
+        Box::leak(data.into_boxed_slice()),
+        "same-height-higher-ascent",
+    )
+    .unwrap();
+    let mut stack = FontStack::embedded(4.0).unwrap();
+    let font = FontId(stack.faces.len());
+    stack.faces.push(style);
+    stack.coords.push(Vec::new());
+    stack.color_capable.push(false);
+    stack.styled[FaceStyle::Bold.index()] = Some(StyleFace {
+        font,
+        in_cell: false,
+    });
+    let mut witnessed = false;
+    for offset in -64..=64 {
+        let previous_metrics = stack.metrics();
+        let previous_style = stack.styled;
+        let changed = stack.update_cell(&CellAdjust {
+            baseline_offset: offset as f32,
+            ..Default::default()
+        });
+        if stack.metrics() == previous_metrics && stack.styled != previous_style {
+            assert!(changed);
+            assert_eq!(stack.shaped_runs(), 0);
+            witnessed = true;
+        }
+    }
+    assert!(
+        witnessed,
+        "must exercise fitting change with equal regular metrics"
+    );
 }

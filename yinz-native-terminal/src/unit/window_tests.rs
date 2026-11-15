@@ -1151,7 +1151,8 @@ fn cell_metrics_fractional_dpi_zoom_rounding_grid_edges_and_hit_testing() {
 }
 
 #[test]
-fn cell_metrics_file_reload_uses_metric_path_and_preserves_content_copy_and_rounding_noops() {
+fn baseline_offset_and_cell_metrics_file_reload_uses_metric_path_and_preserves_content_copy_and_rounding_noops(
+) {
     use crate::emulation::selection::LocalSelection;
     use crate::testing::painter::Painter;
     let dir = tempfile::tempdir().unwrap();
@@ -1173,6 +1174,10 @@ fn cell_metrics_file_reload_uses_metric_path_and_preserves_content_copy_and_roun
     let mut retained = RetainedScene::new();
     let mut state = Painter::state(2, 16, |p| {
         p.text(0, 0, "Ag -> fi");
+        use yinz_types::structured_render::{ATTR_BOLD, ATTR_ITALIC};
+        p.styled(0, 8, "Bi", |cell| cell.attrs |= ATTR_BOLD);
+        p.styled(0, 10, "It", |cell| cell.attrs |= ATTR_ITALIC);
+        p.styled(0, 12, "BI", |cell| cell.attrs |= ATTR_BOLD | ATTR_ITALIC);
         p.wide(1, 0, '中');
         p.wide(1, 2, '😀');
         p.cluster(1, 4, "👩‍💻", 2);
@@ -1201,19 +1206,29 @@ fn cell_metrics_file_reload_uses_metric_path_and_preserves_content_copy_and_roun
     };
     retained.set_selection(range);
     refresh(&mut retained, &mut cache);
-    for (width, height, ligatures) in [
-        (1.5, 1.0, true),
-        (1.5, 1.25, true),
-        (0.5, 0.5, false),
-        (3.0, 3.0, true),
-        (1.0, 1.0, true),
-        (1.001, 1.001, true),
-        (1.002, 1.002, false),
+    for (width, height, ligatures, offset) in [
+        (1.0, 1.0, true, 2),
+        (1.0, 1.0, true, -2),
+        (1.0, 1.0, true, 64),
+        (1.0, 1.0, true, 63),
+        (1.0, 1.0, true, -64),
+        (1.0, 1.0, false, -63),
+        (1.0, 1.0, true, 0),
+        (1.5, 1.0, true, 2),
+        (1.5, 1.25, true, -2),
+        (0.5, 0.5, false, 2),
+        (3.0, 3.0, true, -2),
+        (1.0, 1.0, true, 0),
+        (1.001, 1.001, true, 0),
+        (1.002, 1.002, false, 0),
     ] {
-        std::fs::write(&path, format!("terminal {{ system_fonts false; cell_width {width}; line_height {height}; ligatures {ligatures}; }}")).unwrap();
+        std::fs::write(&path, format!("terminal {{ system_fonts false; cell_width {width}; line_height {height}; ligatures {ligatures}; baseline_offset {offset}; }}")).unwrap();
         let requested = effective_font_options(&load(), 1.0, 1.0);
         let update = prepare_fonts(&active, &requested).unwrap();
         assert!(matches!(update, FontUpdate::CellOnly));
+        let offset_only = active.cell.cell_width == requested.cell.cell_width
+            && active.cell.line_height == requested.cell.line_height;
+        let old_metrics = cache.metrics();
         let generation = cache.generation();
         let atlas = cache.atlases().mask.stamp();
         let clusters = cache.shaped_clusters();
@@ -1227,13 +1242,20 @@ fn cell_metrics_file_reload_uses_metric_path_and_preserves_content_copy_and_roun
         );
         assert_eq!(cache.shaped_clusters(), clusters);
         let new = Geometry::calculate(400, 200, 0, cache.metrics()).unwrap();
-        if width > 1.0 && width < 1.01 {
+        if (width > 1.0 && width < 1.01) || offset == 63 || offset == -63 {
             assert_eq!(cache.generation(), generation);
             assert_eq!(cache.atlases().mask.stamp(), atlas);
             assert!(new.messages(Some(old)).is_empty());
         } else {
             assert_ne!(cache.generation(), generation);
             assert_ne!(cache.atlases().mask.stamp().identity, atlas.identity);
+        }
+        if offset_only {
+            assert_eq!(
+                (cache.metrics().width, cache.metrics().height),
+                (old_metrics.width, old_metrics.height)
+            );
+            assert!(new.messages(Some(old)).is_empty());
         }
         refresh(&mut retained, &mut cache);
         let mut fresh = GlyphCache::new(requested.stack(1.0).unwrap());
@@ -1269,9 +1291,33 @@ fn cell_metrics_file_reload_uses_metric_path_and_preserves_content_copy_and_roun
     }
     state.set_cell_size(cache.metrics().width, cache.metrics().height);
     let generation = cache.generation();
-    std::fs::write(&path, "terminal { cell_width 4; }").unwrap();
+    std::fs::write(&path, "terminal { baseline_offset 65; }").unwrap();
     assert!(yinz_cli::setup::Setup::config_without_layout(&opts).is_err());
     assert_eq!(cache.generation(), generation);
+    std::fs::write(
+        &path,
+        "terminal { system_fonts false; baseline_offset -2; }",
+    )
+    .unwrap();
+    let requested = effective_font_options(&load(), 1.0, 1.0);
+    let update = prepare_fonts(&active, &requested).unwrap();
+    apply_fonts(&mut active, &mut cache, &mut retained, requested, update);
+    assert_eq!(active.cell.baseline_offset, -2.0);
+    assert_eq!(selection.text(state.screen()), expected);
+    let dropins = dir.path().join("config.d");
+    std::fs::create_dir_all(&dropins).unwrap();
+    for offset in [2, -2, 0] {
+        std::fs::write(
+            dropins.join("10-baseline.kdl"),
+            format!("terminal {{ baseline_offset {offset}; }}"),
+        )
+        .unwrap();
+        let requested = effective_font_options(&load(), 1.0, 1.0);
+        assert_eq!(requested.cell.baseline_offset, offset as f32);
+        let update = prepare_fonts(&active, &requested).unwrap();
+        apply_fonts(&mut active, &mut cache, &mut retained, requested, update);
+        assert_eq!(selection.text(state.screen()), expected);
+    }
 }
 
 #[test]
@@ -1343,5 +1389,79 @@ fn cell_metrics_emulation_graphics_and_wide_hit_cells_use_the_measured_cache() {
         assert!(!state.sixels().is_empty());
         state.set_cell_size(metrics.width + 1, metrics.height);
         assert!(state.sixels().is_empty());
+    }
+}
+
+#[test]
+fn baseline_offset_production_options_scale_round_clamp_and_keep_geometry() {
+    for (zoom, scale) in [
+        (1.0, 1.0),
+        (1.15, 1.25),
+        (0.85, 1.5),
+        (1.2, 2.0),
+        (1.0, 1.0),
+    ] {
+        for (width, height) in [(1.0, 1.0), (1.375, 1.275), (0.5, 0.5), (3.0, 3.0)] {
+            let settings = TerminalConfig {
+                cell_width: Some(width),
+                line_height: Some(height),
+                ..embedded_settings()
+            };
+            let zero = effective_font_options(&settings, zoom, scale)
+                .stack(1.0)
+                .unwrap()
+                .metrics();
+            let natural = effective_font_options(&embedded_settings(), zoom, scale)
+                .stack(1.0)
+                .unwrap()
+                .metrics();
+            let geometry = Geometry::calculate(400, 200, 4, zero).unwrap();
+            for offset in [-64, -2, 0, 2, 64] {
+                let options = effective_font_options(
+                    &TerminalConfig {
+                        baseline_offset: Some(offset),
+                        ..settings.clone()
+                    },
+                    zoom,
+                    scale,
+                );
+                let physical = offset as f32 * zoom * scale as f32;
+                assert_eq!(options.cell.baseline_offset, physical);
+                assert_eq!(
+                    (options.cell.cell_width, options.cell.line_height),
+                    (width, height)
+                );
+                let metrics = options.stack(1.0).unwrap().metrics();
+                let expected = (natural.baseline as i32
+                    + (zero.height as i32 - natural.height as i32).div_euclid(2)
+                    + physical.round() as i32)
+                    .clamp(1, zero.height as i32) as u32;
+                assert_eq!(metrics.baseline, expected, "{offset}, {zoom}, {scale}");
+                assert_eq!((metrics.width, metrics.height), (zero.width, zero.height));
+                let changed = Geometry::calculate(400, 200, 4, metrics).unwrap();
+                assert!(changed.messages(Some(geometry)).is_empty());
+                let size = crate::emulation::screen_buffer::TermSize { cols: 16, rows: 8 };
+                assert_eq!(
+                    pointer_cell((35.0, 42.0), 4, metrics, size),
+                    pointer_cell((35.0, 42.0), 4, zero, size)
+                );
+                for query in [b"\x1b[16t".as_slice(), b"\x1b[14t"] {
+                    assert_eq!(
+                        crate::host_reply::answer(
+                            query,
+                            host_query_geometry(Some(changed), changed.grid, metrics),
+                            &Paints::default(),
+                            None
+                        ),
+                        crate::host_reply::answer(
+                            query,
+                            host_query_geometry(Some(geometry), geometry.grid, zero),
+                            &Paints::default(),
+                            None
+                        )
+                    );
+                }
+            }
+        }
     }
 }

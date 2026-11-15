@@ -639,3 +639,44 @@ fn managed_font_feature_writes_replace_one_node_and_reject_errors_atomically() {
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 }
+
+#[test]
+fn native_terminal_baseline_offset_layers_reset_zero_and_invalid_managed_writes_are_atomic() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = Config::from_kdl("terminal { baseline_offset -2; padding 3; }", None).unwrap();
+    for (name, text) in [
+        ("20-reset.kdl", "terminal { baseline_offset 0; }"),
+        ("10-set.kdl", "terminal { baseline_offset 2; }"),
+        (
+            "30-invalid.kdl",
+            "terminal { baseline_offset 65; padding 99; }",
+        ),
+        (
+            "40-invalid.kdl",
+            "terminal { baseline_offset 2; baseline_offset 2; padding 98; }",
+        ),
+    ] {
+        std::fs::write(dir.path().join(name), text).unwrap();
+    }
+    let config = base.with_overlay_dir(Some(dir.path()));
+    assert_eq!(config.terminal.baseline_offset, Some(0));
+    assert_eq!(config.terminal.padding, Some(3.0));
+    let inherited = Config::from_kdl("terminal { opacity 0.5; }", Some(config)).unwrap();
+    assert_eq!(inherited.terminal.baseline_offset, Some(0));
+    let path =
+        Config::write_managed_fragment(dir.path(), "terminal { baseline_offset -2; padding 4; }")
+            .unwrap();
+    Config::write_managed_fragment(dir.path(), "terminal { baseline_offset 0; }").unwrap();
+    let before = std::fs::read_to_string(&path).unwrap();
+    let saved = Config::from_kdl(&before, None).unwrap();
+    assert_eq!(saved.terminal.baseline_offset, Some(0));
+    assert_eq!(saved.terminal.padding, Some(4.0));
+    for bad in ["65", "2.0", "true", "(int)2", "2; baseline_offset 2"] {
+        assert!(Config::write_managed_fragment(
+            dir.path(),
+            &format!("terminal {{ baseline_offset {bad}; padding 99; }}")
+        )
+        .is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+}

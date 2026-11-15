@@ -1439,6 +1439,26 @@ fn reconfigure_takes_a_fragment_and_refuses_one_that_does_not_parse() {
             write_to_disk: true,
         }]
     );
+    for write in [false, true] {
+        for offset in [-64, -2, 0, 2, 64] {
+            let fragment = format!("terminal {{ baseline_offset {offset}; }}");
+            assert_eq!(
+                reconfigure(&fragment, write).unwrap(),
+                vec![Action::Reconfigure {
+                    config: fragment,
+                    write_to_disk: write
+                }]
+            );
+        }
+        for bad in ["65", "2.0", "true", "(int)2"] {
+            let refused =
+                reconfigure(&format!("terminal {{ baseline_offset {bad}; }}"), write).unwrap_err();
+            assert!(
+                refused.contains("baseline_offset") && refused.contains("-64 and 64"),
+                "{refused}"
+            );
+        }
+    }
     let refused = reconfigure("options { nonsense", false).unwrap_err();
     assert!(refused.contains("does not parse"), "{refused}");
     // The entry-level diagnostic reaches the user, not only a fixed headline.

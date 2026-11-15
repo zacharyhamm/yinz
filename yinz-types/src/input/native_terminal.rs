@@ -48,6 +48,8 @@ pub struct TerminalConfig {
     pub system_fonts: Option<bool>,
     pub line_height: Option<f32>,
     pub cell_width: Option<f32>,
+    /// Logical pixels, positive downwards; KDL accepts -64..=64.
+    pub baseline_offset: Option<i32>,
     pub padding: Option<f32>,
     pub opacity: Option<f32>,
     pub blur: Option<bool>,

@@ -54,6 +54,18 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
                 node
             ));
         }
+        if name == "baseline_offset"
+            && (node.ty().is_some()
+                || node.entries()[0].ty().is_some()
+                || !value
+                    .as_i64()
+                    .is_some_and(|value| (-64..=64).contains(&value)))
+        {
+            return Err(kdl_parsing_error!(
+                "terminal baseline_offset must be a plain integer between -64 and 64 logical pixels".to_owned(),
+                node
+            ));
+        }
         if matches!(name, "cell_width" | "line_height") {
             let numeric = value
                 .as_i64()

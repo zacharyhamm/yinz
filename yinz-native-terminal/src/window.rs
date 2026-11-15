@@ -200,6 +200,7 @@ pub(crate) fn font_options(settings: &TerminalConfig, zoom: f32) -> FontOptions 
         cell: crate::text::font::CellAdjust {
             line_height: settings.line_height.unwrap_or(1.0),
             cell_width: settings.cell_width.unwrap_or(1.0),
+            baseline_offset: settings.baseline_offset.unwrap_or(0) as f32 * zoom,
             ..Default::default()
         },
         features: font_features(settings),

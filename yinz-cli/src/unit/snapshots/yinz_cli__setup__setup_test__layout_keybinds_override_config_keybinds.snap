@@ -757,6 +757,7 @@ Config {
         system_fonts: None,
         line_height: None,
         cell_width: None,
+        baseline_offset: None,
         padding: None,
         opacity: None,
         blur: None,

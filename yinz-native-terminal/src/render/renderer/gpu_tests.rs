@@ -799,7 +799,7 @@ fn font_features_live_reloads_match_fresh_pixels_and_preserve_copy_cursor_and_ce
 }
 
 #[test]
-fn cell_metrics_warmed_spacing_zoom_scale_and_reset_match_fresh_gpu_output() {
+fn baseline_offset_and_cell_metrics_warmed_spacing_zoom_scale_and_reset_match_fresh_gpu_output() {
     use crate::emulation::selection::Selection;
     use crate::text::font::FaceStyle;
     use yinz_types::input::native_terminal::TerminalConfig;
@@ -819,25 +819,34 @@ fn cell_metrics_warmed_spacing_zoom_scale_and_reset_match_fresh_gpu_output() {
     let copied = selection.text(state.screen());
     retained.set_selection(Some(selection));
     with_renderer(|renderer| {
+        let original_metrics = cache.metrics();
         let original = font_pixels(renderer, &mut retained, &state, &mut cache);
         assert_eq!(
             font_pixels(renderer, &mut retained, &state, &mut cache),
             original
         );
-        for (width, height, zoom, scale, ligatures) in [
-            (1.5, 1.0, 1.0, 1.0, true),
-            (1.0, 1.25, 1.0, 1.0, true),
-            (0.5, 0.5, 1.0, 1.0, false),
-            (3.0, 3.0, 1.0, 1.0, true),
-            (1.375, 1.275, 1.15, 1.25, true),
-            (1.375, 1.275, 1.15, 1.5, true),
-            (1.375, 1.275, 1.15, 2.0, true),
-            (1.0, 1.0, 1.0, 1.0, true),
-            (1.001, 1.001, 1.0, 1.0, false),
+        for (width, height, zoom, scale, ligatures, offset) in [
+            (1.0, 1.0, 1.0, 1.0, true, 2),
+            (1.0, 1.0, 1.0, 1.0, true, -2),
+            (1.0, 1.0, 1.0, 1.0, true, 64),
+            (1.0, 1.0, 1.0, 1.0, true, 63),
+            (1.0, 1.0, 1.0, 1.0, true, -64),
+            (1.0, 1.0, 1.0, 1.0, true, 0),
+            (1.5, 1.0, 1.0, 1.0, true, 2),
+            (1.0, 1.25, 1.0, 1.0, true, -2),
+            (0.5, 0.5, 1.0, 1.0, false, 2),
+            (3.0, 3.0, 1.0, 1.0, true, -2),
+            (1.375, 1.275, 1.15, 1.25, true, 2),
+            (1.375, 1.275, 1.15, 1.5, true, -2),
+            (1.375, 1.275, 1.15, 2.0, true, 2),
+            (1.0, 1.0, 1.0, 1.0, true, 0),
+            (1.001, 1.001, 1.0, 1.0, false, 0),
         ] {
             let settings = TerminalConfig {
                 cell_width: Some(width),
                 line_height: Some(height),
+                baseline_offset: Some(offset),
+                font_features: Some(vec![if offset == 63 { "-calt" } else { "+calt" }.into()]),
                 font_ligatures: Some(ligatures),
                 ..settings.clone()
             };
@@ -877,10 +886,18 @@ fn cell_metrics_warmed_spacing_zoom_scale_and_reset_match_fresh_gpu_output() {
                 font_pixels(renderer, &mut fresh_retained, &state, &mut fresh),
                 live
             );
-            if width == 1.0 && height == 1.0 {
-                assert_eq!(live, original);
+            // +calt explicitly restores the original ligature behavior, even
+            // when ligatures=false. Rounded-equivalent spacing is a no-op too.
+            if metrics == original_metrics {
+                assert!(
+                    live == original,
+                    "reset/equivalent pixels: {width} {height} {offset}"
+                );
             } else {
-                assert_ne!(live, original);
+                assert!(
+                    live != original,
+                    "changed pixels: {width} {height} {offset}"
+                );
             }
         }
     });
@@ -966,6 +983,138 @@ fn cell_metrics_complete_clusters_keep_distinct_gpu_ink_across_updates() {
                     font_pixels(renderer, &mut fresh_scene, &state, &mut fresh)
                 );
                 assert_eq!(selection.text(state.screen()), text);
+            }
+        }
+    });
+}
+
+#[test]
+fn baseline_offset_latin_ink_moves_by_expected_physical_pixels() {
+    use crate::testing::painter::Painter;
+    use yinz_types::input::native_terminal::TerminalConfig;
+    with_renderer(|renderer| {
+        for (zoom, scale) in [(1.0, 1.0), (1.15, 1.25), (1.0, 2.0)] {
+            let settings = TerminalConfig {
+                system_fonts: Some(false),
+                ..Default::default()
+            };
+            let state = Painter::state(3, 8, |p| p.text(1, 2, "A"));
+            let blank = Painter::state(3, 8, |_| {});
+            let mut active = crate::window::effective_font_options(&settings, zoom, scale);
+            let mut cache = crate::render::atlas::GlyphCache::new(active.stack(1.0).unwrap());
+            let mut retained = RetainedScene::new();
+            let zero = cache.metrics();
+            let original = font_pixels(renderer, &mut retained, &state, &mut cache);
+            let mut empty = RetainedScene::new();
+            let background = font_pixels(renderer, &mut empty, &blank, &mut cache);
+            // GL readback is bottom-up; return top-down ink coordinates independent
+            // of the baseline implementation. The blank has the identical cursor.
+            let ink = |pixels: &[u8]| {
+                let mut positions = Vec::new();
+                for y in zero.height..2 * zero.height {
+                    for x in 2 * zero.width..3 * zero.width {
+                        let at = (((383 - y) * 768 + x) * 4) as usize;
+                        if pixels[at..at + 4] != background[at..at + 4] {
+                            positions.push((x, y));
+                        }
+                    }
+                }
+                positions
+            };
+            let original_ink = ink(&original);
+            assert!(!original_ink.is_empty());
+            for offset in [1, -1, 0] {
+                let requested = crate::window::effective_font_options(
+                    &TerminalConfig {
+                        baseline_offset: Some(offset),
+                        ..settings.clone()
+                    },
+                    zoom,
+                    scale,
+                );
+                let delta = (offset as f32 * zoom * scale as f32).round() as i32;
+                assert_eq!(
+                    requested.stack(1.0).unwrap().metrics().baseline as i32,
+                    zero.baseline as i32 + delta
+                );
+                let update = crate::window::prepare_fonts(&active, &requested).unwrap();
+                crate::window::apply_fonts(
+                    &mut active,
+                    &mut cache,
+                    &mut retained,
+                    requested,
+                    update,
+                );
+                let moved = font_pixels(renderer, &mut retained, &state, &mut cache);
+                let expected: Vec<_> = original_ink
+                    .iter()
+                    .map(|&(x, y)| (x, (y as i32 + delta) as u32))
+                    .collect();
+                assert_eq!(
+                    ink(&moved),
+                    expected,
+                    "offset={offset}, zoom={zoom}, scale={scale}"
+                );
+                if offset == 0 {
+                    assert_eq!(moved, original);
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn baseline_offset_distinct_style_families_live_gpu_output_matches_fresh() {
+    use crate::emulation::selection::Selection;
+    use yinz_types::input::native_terminal::TerminalConfig;
+    with_renderer(|renderer| {
+        for (zoom, scale) in [(1.0, 1.0), (1.15, 1.25), (1.0, 2.0)] {
+            let settings = TerminalConfig {
+                font_family: Some("Iosevka Term".into()),
+                font_bold: Some("Noto Sans Mono CJK SC".into()),
+                font_italic: Some("Noto Sans Mono CJK SC".into()),
+                font_bold_italic: Some("Noto Sans Mono CJK SC".into()),
+                system_fonts: Some(true),
+                ..Default::default()
+            };
+            let mut active = crate::window::effective_font_options(&settings, zoom, scale);
+            let mut cache = fixture_cache(&active);
+            let state = font_state();
+            let selection = Selection::at(4, 0).extended_to(4, 4);
+            let copied = selection.text(state.screen());
+            let mut retained = RetainedScene::new();
+            retained.set_selection(Some(selection));
+            let original = font_pixels(renderer, &mut retained, &state, &mut cache);
+            for offset in [2, -2, 64, -64, 0] {
+                let requested = crate::window::effective_font_options(
+                    &TerminalConfig {
+                        baseline_offset: Some(offset),
+                        ..settings.clone()
+                    },
+                    zoom,
+                    scale,
+                );
+                let update = crate::window::prepare_fonts(&active, &requested).unwrap();
+                assert!(matches!(update, crate::window::FontUpdate::CellOnly));
+                crate::window::apply_fonts(
+                    &mut active,
+                    &mut cache,
+                    &mut retained,
+                    requested.clone(),
+                    update,
+                );
+                let live = font_pixels(renderer, &mut retained, &state, &mut cache);
+                let mut fresh = fixture_cache(&requested);
+                let mut fresh_scene = RetainedScene::new();
+                fresh_scene.set_selection(Some(selection));
+                assert_eq!(
+                    live,
+                    font_pixels(renderer, &mut fresh_scene, &state, &mut fresh)
+                );
+                assert_eq!(selection.text(state.screen()), copied);
+                if offset == 0 {
+                    assert_eq!(live, original);
+                }
             }
         }
     });

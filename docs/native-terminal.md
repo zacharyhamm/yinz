@@ -44,6 +44,7 @@ terminal {
     system_fonts true
     line_height 1.0
     cell_width 1.0
+    baseline_offset 2
     padding 4.0
     opacity 1.0
     blur false
@@ -151,6 +152,39 @@ explicit `1.0` resets that dimension to natural spacing. For example,
 multipliers, not font points: change `font_size` to change the glyph size itself.
 CJK and emoji retain their logical column widths.
 
+`baseline_offset` moves the glyph baseline in logical pixels: positive values
+lower it and negative values raise it. It defaults to `0` and accepts one plain
+integer from `-64` through `64` inclusive. Strings, fractional values (including
+`2.0`), booleans, null, type annotations, named/multiple arguments, children and
+repeated settings are errors. Omission inherits; explicit `0` resets an earlier
+layer. Serialization and managed writes preserve that zero and sibling settings.
+For example, `terminal { baseline_offset -2; }` raises the baseline two logical
+pixels. This is a pixel offset, independent of the platform's font-point units.
+
+The physical offset is `baseline_offset * zoom * monitor scale`, rounded once to
+the nearest physical pixel (halfway values away from zero), then added to the
+natural baseline and half of any line-height change. The result clamps inside
+the cell, from physical pixel 1 to the cell height. Decorations follow the bounded
+baseline and remain inside the cell. Different style families and fallback glyphs
+retain existing fitting/cropping; full-cell emoji can be constrained differently
+from Latin, so extreme offsets need not translate every glyph's ink equally.
+Offset alone preserves physical cell dimensions, grid, hit testing, cursor and
+selection ownership, Copy text and cell/text-area pixel reports.
+
+Startup and saved file/drop-in reload use the same offset. Baseline-only reloads
+reuse the metric path described below: faces, discovery and independent cluster
+shaping survive; effective baseline/decoration or style-fit changes invalidate
+cell-dependent glyphs and atlases and redraw retained rows. Clamped-equivalent
+changes retain resources when style fitting also agrees. Combined ligature or
+feature changes still refresh run shaping. Unsaved `action reconfigure` refuses
+an effective offset change atomically; use `--write` or edit the saved file. The
+server compares configured integers with default zero, even when a particular
+window's font/scale would clamp different integers to identical pixels. Explicit
+zero equals omission only when the effective request is already zero. Saved
+changes reach native windows asynchronously through file reload and the next
+frame. Invalid main-file reloads preserve the active setting until a valid
+correction; invalid drop-ins are logged and skipped as a whole.
+
 Font points convert to pixels using the platform convention (96 pixels/inch on
 Linux, 72 on macOS). Zoom and monitor scale apply once to that font size; spacing
 multipliers remain dimensionless. Natural physical cell dimensions round first,
@@ -168,7 +202,7 @@ Font settings reload automatically with the session's configuration updates,
 including drop-ins. A `config.d` directory first created while the session is
 running is discovered during the normal polling/debounce cycle.
 
-Changing `cell_width`, `line_height`, `ligatures`, `font_ligatures` or
+Changing `cell_width`, `line_height`, `baseline_offset`, `ligatures`, `font_ligatures` or
 `font_features` with `action reconfigure` requires
 `--write`, or an edit to the session's saved configuration/drop-in. An unsaved
 change to any effective value refuses the entire fragment, including sibling
@@ -293,6 +327,27 @@ transition was verified. X11 (`DISPLAY` unset) and macOS were unavailable. These
 remain desktop acceptance limitations; headless EGL and simulated scale matrices
 do not substitute for those checks. Historical smoke observations above retain
 their original scope and are not current issue #106 verification.
+
+Issue #107 baseline-offset observations (2026-11-15): this worktree's debug
+binary ran in bounded foreground Linux/Sway Wayland sessions on DP-6 at
+5120×2880, scale 2, using embedded Iosevka Term, 12 points and padding 4.
+Cropped captures of a visible native window showed `+2` lowering Latin ink by
+4 physical pixels and `-2` raising it by 4, with the same Latin/four-style,
+CJK and emoji sample retained. Saved `--write` changes and direct drop-in edits
+reloaded; an invalid main file retained the prior placement, and a corrected
+file applied the negative offset. Unsaved reconfiguration returned save guidance.
+After the window was resized and the sample repainted, offset-only changes kept
+the 98×18 grid, 16×40 cell pixels and 1568×720 text-area pixels; native CSI 16t,
+CSI 14t and pane TIOCGWINSZ replies agreed before/after the changes.
+
+These observations establish Wayland scale-2 placement and file-event delivery.
+Earlier obscured/expired-window crops are excluded. Desktop keyboard zoom/reset,
+drag selection/clipboard, physical normal-scale and mixed-DPI transitions remain
+outstanding acceptance checks; X11 and macOS were unavailable. Portable CPU tests
+and Linux EGL pixel tests separately cover signed/boundary offsets, fractional
+scales, zoom/reset, distinct style families, CJK, emoji/combining/ZWJ clusters,
+selection/Copy, geometry, resource invalidation and clamped-equivalent updates.
+They do not substitute for the outstanding desktop observations.
 
 Font diagnostics go to the normal log, `$TMPDIR/yinz-<UID>/yinz-log/yinz.log`
 (`/tmp` when `TMPDIR` is unset).

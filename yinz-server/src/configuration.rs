@@ -21,6 +21,11 @@ fn validate_unsaved_native_settings(current: &Config, requested: &Config) -> Res
     {
         changed.push("line_height");
     }
+    if current.terminal.baseline_offset.unwrap_or(0)
+        != requested.terminal.baseline_offset.unwrap_or(0)
+    {
+        changed.push("baseline_offset");
+    }
     if effective_font_features(&current.terminal) != effective_font_features(&requested.terminal) {
         changed.push("font_features");
     }

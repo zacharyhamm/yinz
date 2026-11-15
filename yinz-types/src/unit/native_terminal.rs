@@ -177,3 +177,41 @@ fn font_feature_entries_follow_the_pinned_syntax() {
         assert_eq!(parse_font_feature(text), None, "{text:?}");
     }
 }
+
+#[test]
+fn baseline_offset_optional_integer_roundtrips_without_losing_zero() {
+    for text in ["{}", r#"{"baseline_offset":null}"#] {
+        assert_eq!(
+            serde_json::from_str::<TerminalConfig>(text)
+                .unwrap()
+                .baseline_offset,
+            None
+        );
+    }
+    for offset in [-64, -2, 0, 2, 64] {
+        let config: TerminalConfig =
+            serde_json::from_value(serde_json::json!({"baseline_offset":offset})).unwrap();
+        assert_eq!(config.baseline_offset, Some(offset));
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(value["baseline_offset"], offset);
+        assert_eq!(
+            serde_json::from_value::<TerminalConfig>(value).unwrap(),
+            config
+        );
+    }
+    for bad in [
+        "2.0",
+        "true",
+        "\"2\"",
+        "[]",
+        "{}",
+        "2147483648",
+        "-2147483649",
+    ] {
+        assert!(
+            serde_json::from_str::<TerminalConfig>(&format!("{{\"baseline_offset\":{bad}}}"))
+                .is_err(),
+            "{bad}"
+        );
+    }
+}

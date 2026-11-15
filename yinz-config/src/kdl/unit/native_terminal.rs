@@ -80,6 +80,7 @@ fn documented_native_terminal_example_loads() {
     assert_eq!(config.terminal.font_ligatures, Some(true));
     assert_eq!(config.terminal.cell_width, Some(1.0));
     assert_eq!(config.terminal.line_height, Some(1.0));
+    assert_eq!(config.terminal.baseline_offset, Some(2));
     assert_eq!(config.terminal.font_family.as_deref(), Some("Iosevka Term"));
     assert_eq!(config.terminal.font_bold, config.terminal.font_family);
     assert_eq!(config.terminal.font_italic, config.terminal.font_family);
@@ -389,4 +390,90 @@ fn later_font_feature_layers_replace_wholesale_and_omission_inherits() {
     let restored =
         Config::from_kdl(r#"terminal { font_features "ss01"; }"#, Some(cleared)).unwrap();
     assert_eq!(restored.terminal.font_features, features(&["ss01"]));
+}
+
+#[test]
+fn baseline_offset_validates_integer_pixels_and_roundtrips() {
+    assert_eq!(
+        Config::from_kdl("terminal {}", None)
+            .unwrap()
+            .terminal
+            .baseline_offset,
+        None
+    );
+    for offset in [-64, -2, 0, 2, 64] {
+        let config =
+            Config::from_kdl(&format!("terminal {{ baseline_offset {offset}; }}"), None).unwrap();
+        assert_eq!(config.terminal.baseline_offset, Some(offset));
+        assert_eq!(
+            Config::from_kdl(&config.to_string(false).unwrap(), None)
+                .unwrap()
+                .terminal,
+            config.terminal
+        );
+    }
+    for bad in [
+        "",
+        "-65",
+        "65",
+        "2147483648",
+        "-2147483649",
+        "2.0",
+        "1e999",
+        "\"2\"",
+        "true",
+        "null",
+        "2 3",
+        "value=2",
+        "(int)2",
+        "2 {}",
+    ] {
+        let input = format!("terminal {{ baseline_offset {bad}; }}");
+        let error = format!("{:?}", Config::from_kdl(&input, None).unwrap_err());
+        assert!(error.contains("baseline_offset"), "{input}: {error}");
+    }
+    for input in [
+        "terminal { (int)baseline_offset 2; }",
+        "terminal { baseline_offset 2; baseline_offset 2; }",
+    ] {
+        assert!(Config::from_kdl(input, None).is_err(), "{input}");
+    }
+    // Integer lexing overflow is diagnosed by KDL before setting validation.
+    assert!(Config::from_kdl(
+        "terminal { baseline_offset 99999999999999999999999999999; }",
+        None
+    )
+    .is_err());
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut block = KdlNode::new("terminal");
+        let mut children = KdlDocument::new();
+        let mut setting = KdlNode::new("baseline_offset");
+        setting.push(KdlValue::Base10Float(value));
+        children.nodes_mut().push(setting);
+        block.set_children(children);
+        let error = format!("{:?}", native_terminal::from_kdl(&block).unwrap_err());
+        assert!(
+            error.contains("plain integer") && error.contains("-64 and 64"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn baseline_offset_validation_points_at_the_setting_node() {
+    for value in ["65", "-65", "2.0", "true", "null", "(int)2"] {
+        let input = format!("terminal {{ padding 3; baseline_offset {value}; opacity 0.5; }}");
+        let error = Config::from_kdl(&input, None).unwrap_err();
+        let ConfigError::KdlError(error) = error else {
+            panic!("expected a source-located KDL diagnostic");
+        };
+        let offset = error.offset.unwrap();
+        let len = error.len.unwrap();
+        let source = input[offset..offset + len].trim();
+        assert!(source.starts_with("baseline_offset"), "{source}");
+        assert!(
+            !source.contains("padding") && !source.contains("opacity"),
+            "{source}"
+        );
+    }
 }

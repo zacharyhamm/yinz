@@ -544,6 +544,7 @@ fn reconfigure_help_explains_saved_native_settings_and_atomic_refusal() {
     for guidance in [
         "cell_width",
         "line_height",
+        "baseline_offset",
         "ligatures/font_ligatures",
         "font_features",
         "requires --write",
