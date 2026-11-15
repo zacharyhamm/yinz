@@ -1,4 +1,5 @@
 import { closeoutPresentation } from "./issue_closeout.ts";
+import { notifyHandoff } from "./issue_notifications.ts";
 import { nextStep } from "./handoff_next.ts";
 /** Foreground orchestration up to a human decision, with durable pane recovery. */
 import { z } from "npm:zod@4.6.7";
@@ -888,6 +889,13 @@ async function drive(
     // Publish the handle even when cached so this invocation returns a concrete result.
     handles.push(await context.writeResource("handoff", "handoff", result));
     context.logger.info("{handoff}", { handoff: result.presentation });
+    await notifyHandoff(
+      context,
+      result,
+      input.control ?? input.agent?.control ?? driver.agent?.control ??
+        assignment?.config.control,
+      dependencies.notificationRunner,
+    );
     // Swamp requires unique output names even when a foreground invocation has
     // written several versions of state, driver and agent-task along the way.
     return {

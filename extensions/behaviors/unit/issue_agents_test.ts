@@ -287,6 +287,7 @@ function harness(
     agendaReads: 0,
     controlTab: 0,
     placementCalls: [] as string[][],
+    notifications: [] as string[][],
     // Each entry replaces one successful control-pane listing.
     placementFailures: [] as { code: number; stdout: string; stderr: string }[],
     afterRun: () => {},
@@ -576,6 +577,11 @@ function harness(
     },
   };
   const dependencies: IssueAgentDependencies = {
+    notificationRunner: (args) => {
+      assert(resources.has("handoff"), "Persist handoff before notifying");
+      controls.notifications.push(args);
+      return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+    },
     offerCloseout,
     withIssue: async (_context, operation) => {
       assert(!issueLocked, "Nested issue lock");
@@ -2943,6 +2949,19 @@ Deno.test("driver takes planning through fresh review to a reusable approval han
   await h.drive.execute({}, h.context);
   equal(h.calls.length, 3);
   equal(result(h).id, handoff.id);
+  equal(h.controls.notifications.length, 2);
+  equal(h.controls.notifications[0], h.controls.notifications[1]);
+  equal(h.controls.notifications[0].slice(0, 6), [
+    "--session",
+    "development",
+    "action",
+    "notify",
+    "--pane-id",
+    "terminal_1",
+  ]);
+  const control = { session: "development", paneId: "terminal_99" };
+  await h.drive.execute({ control }, h.context);
+  equal(h.controls.notifications.at(-1)?.[5], control.paneId);
   equal((await loadState(h.context)).approval, undefined);
 });
 

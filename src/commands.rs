@@ -589,6 +589,7 @@ fn attach_with_cli_client(
     config: Option<Config>,
     caller: Option<TerminalId>,
 ) {
+    let caller = action_caller(&cli_action, caller);
     if let yinz_cli::args::CliAction::Wait(request) = cli_action {
         match yinz_client::wait_client::wait(&crate::remote_commands::target(session_name), request)
         {
@@ -659,6 +660,19 @@ fn attach_with_cli_client(
             log::error!("Error sending action: {}", e);
             crate::remote_commands::exit(2);
         },
+    }
+}
+
+/// Notifications may name their activation target even when sent outside that pane.
+fn action_caller(
+    action: &yinz_cli::args::CliAction,
+    caller: Option<TerminalId>,
+) -> Option<TerminalId> {
+    match action {
+        yinz_cli::args::CliAction::Notify {
+            pane_id: Some(id), ..
+        } => Some(TerminalId::new(*id)),
+        _ => caller,
     }
 }
 

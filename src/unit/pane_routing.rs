@@ -458,6 +458,41 @@ fn actions_reports_and_store_requests_use_the_current_owner() {
 }
 
 #[test]
+fn notification_activation_target_overrides_the_calling_pane() {
+    let dir = tempfile::tempdir().unwrap();
+    let owner = Session::new(dir.path(), "owner");
+    let control = Session::new(dir.path(), "control");
+    let _supervisor = Supervisor::new(dir.path(), "owner", 42);
+    for outside in [false, true] {
+        for (destination, target, expected) in [
+            ("owner", None, (!outside).then_some(42)),
+            ("owner", Some("7"), Some(7)),
+            ("control", Some("terminal_9"), Some(9)),
+        ] {
+            let mut cli = if outside {
+                outside_command(dir.path())
+            } else {
+                command(dir.path())
+            };
+            cli.args(["--session", destination, "action", "notify"]);
+            if let Some(target) = target {
+                cli.args(["--pane-id", target]);
+            }
+            let output = cli.args(["--", "Plan approval needed"]).output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let session = if destination == "control" {
+                &control
+            } else {
+                &owner
+            };
+            assert!(matches!(session.receive(), ClientToServerMsg::Action {
+                action: Action::Notify(text), terminal_id, ..
+            } if text == "Plan approval needed" && terminal_id == expected.map(TerminalId::new)));
+        }
+    }
+}
+
+#[test]
 fn invalid_or_missing_owner_never_reaches_the_only_available_session() {
     let dir = tempfile::tempdir().unwrap();
     let fallback = Session::new(dir.path(), "old");

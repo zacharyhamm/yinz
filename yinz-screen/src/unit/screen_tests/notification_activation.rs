@@ -51,6 +51,29 @@ fn bind(screen: &mut Screen, client: ClientId, keys: &[KeyWithModifier]) {
 }
 
 #[test]
+fn receiving_a_targeted_notification_keeps_focus_until_activation() {
+    let (mut screen, client, _viewport, now) = setup();
+    new_tab(&mut screen, 2, TabId::new(1));
+    let control = PaneId::Terminal(TerminalId::new(1));
+    let current = PaneId::Terminal(TerminalId::new(2));
+    screen
+        .focus_pane_with_id(current, true, false, client)
+        .unwrap();
+    screen
+        .receive_toast(
+            "Plan approval needed".into(),
+            Some(control),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(screen.get_active_pane_id(&client), Some(current));
+    screen.activate_last_notification(client, now);
+    assert_eq!(screen.get_active_pane_id(&client), Some(control));
+}
+
+#[test]
 fn activation_hint_uses_current_clients_direct_binding_in_stable_order() {
     let (mut screen, client, viewport, now) = setup();
     assert_eq!(

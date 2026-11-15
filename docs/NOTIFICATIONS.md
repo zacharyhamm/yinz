@@ -1,5 +1,11 @@
 # Notification subscriptions and policies
 
+`yinz action notify --pane-id terminal_7 -- "Plan approval needed"` associates
+an in-app notification with that terminal pane. Activating the toast or its
+history entry focuses the pane, including across tabs. Omit `--pane-id` to use
+the calling pane; bare terminal numbers are also accepted. Sending a notification
+does not move focus.
+
 Bind one policy plugin in your session configuration:
 
 ```kdl

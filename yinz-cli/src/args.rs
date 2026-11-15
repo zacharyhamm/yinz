@@ -2416,6 +2416,11 @@ pub enum CliAction {
     Notify {
         /// The message to show
         text: String,
+        /// Focus this terminal pane when the notification is activated (terminal_7 or 7).
+        /// Defaults to the calling pane.
+        #[clap(long, value_parser = parse_terminal_pane_number)]
+        #[serde(default)]
+        pane_id: Option<u32>,
     },
     /// Send data to one or more plugins, launch them if they are not running.
     #[clap(override_usage(

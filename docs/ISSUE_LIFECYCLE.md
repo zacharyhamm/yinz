@@ -66,6 +66,26 @@ workers. Neither input objects nor worker claims establish human authorization.
 Existing authorization remains valid within its actual scope. Implementation
 approval, merge authorization and a CI waiver are separate decisions.
 
+### Human-intervention notifications
+
+After saving a human-intervention handoff, `drive` sends an in-app Yinz
+notification to its saved control session and pane. This applies to
+`authorize_plan_revision`, `approve_plan`, `address_review_findings`,
+`approve_review_fixes`, `authorize_merge`, `authorize_closeout` and `blocked`,
+including every repeated return of an unchanged handoff. Direct behavior calls
+and launcher calls use the same driver path. Automatic transitions, completion
+and worker dialogs do not independently send these notifications.
+
+The notification identifies the issue, decision and a concise reason. Activating
+the toast or its history entry focuses the control pane, switching tabs when
+needed. Sending it does not change focus. Explicit control settings on resume
+update the target; a worker pane or the currently focused pane is never used as
+a substitute. Missing control identity or delivery failure is logged, and the
+five-second delivery deadline preserves the saved handoff and lifecycle result.
+Normal notification policy and timeout settings apply, as does the existing
+missing-pane behavior if the control pane disappears. The controller must still
+present the handoff evidence and obtain the actual decision.
+
 ## One control checkout
 
 The canonical control checkout contains `.swamp.yaml`, local behavior code and

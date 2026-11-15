@@ -1724,6 +1724,7 @@ fn command_palette_suspends_notifications_mode_and_restores_history() {
     yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
     assert_eq!(
         yinz.run_cli_action(CliAction::Notify {
+            pane_id: None,
             text: "Retained history".into()
         }),
         0
@@ -1749,6 +1750,7 @@ fn command_palette_suspends_notifications_mode_and_restores_history() {
     });
     assert_eq!(
         yinz.run_cli_action(CliAction::Notify {
+            pane_id: None,
             text: "Live over palette".into()
         }),
         0
@@ -1810,6 +1812,7 @@ fn session_palette_notifications_and_cancel_first_disconnect_confirmation() {
     yinz.wait_until("shell ready", |s| s.contains("$"));
     assert_eq!(
         yinz.run_cli_action(CliAction::Notify {
+            pane_id: None,
             text: "palette notification full message".into()
         }),
         0
@@ -1859,6 +1862,7 @@ fn session_palette_directory_picker_keeps_notifications_suspended_until_close() 
     yinz.wait_until("shell ready", |s| s.contains("$"));
     assert_eq!(
         yinz.run_cli_action(CliAction::Notify {
+            pane_id: None,
             text: "Retained picker history".into()
         }),
         0

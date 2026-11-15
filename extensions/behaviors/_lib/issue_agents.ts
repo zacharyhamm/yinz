@@ -1,4 +1,5 @@
 import { captureCloseoutOrigin, offerCloseout } from "./issue_closeout.ts";
+import { yinzCommand, type YinzRunner } from "./yinz_agent.ts";
 /** Assign pane work and consume acknowledged Swamp evidence independently of chat. */
 import { join } from "node:path";
 import { z } from "npm:zod@4.6.7";
@@ -220,6 +221,7 @@ export type IssueAgentContext = Context & {
 };
 
 export interface IssueAgentDependencies {
+  notificationRunner: YinzRunner;
   captureCloseoutOrigin?: typeof captureCloseoutOrigin;
   offerCloseout?: typeof offerCloseout;
   withIssue: typeof withIssue;
@@ -257,6 +259,7 @@ export function abortableSleep(ms: number, signal: AbortSignal) {
   });
 }
 export const defaultDependencies: IssueAgentDependencies = {
+  notificationRunner: yinzCommand,
   captureCloseoutOrigin,
   offerCloseout,
   withIssue,

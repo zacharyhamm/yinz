@@ -11,6 +11,7 @@ const TOAST_BOTTOM_LEFT_CORNER: &str = "╰";
 
 fn notify(yinz: &TestSession, text: &str) {
     let exit_code = yinz.run_cli_action(CliAction::Notify {
+        pane_id: None,
         text: text.to_owned(),
     });
     assert_eq!(exit_code, 0, "notify exited cleanly");

@@ -13,7 +13,9 @@ Use Agenda for requirements, Swamp for durable state/evidence, and local Git
 worktrees for development. `@yinz/issue-lifecycle` uses visible Yinz pane workers through
 `@yinz/agent`; direct evidence methods never replace workers with headless or
 inline work. Operator actions belong to the controlling workflow. PR creation,
-fetch/push, remote merge, deployment and notifications need separate instructions.
+fetch/push, remote merge, deployment and notifications to others need separate instructions.
+Human-intervention handoffs automatically send an in-app Yinz notification;
+activating it focuses the saved control pane.
 
 ## Identity and setup
 
@@ -100,6 +102,13 @@ revision authorization is reserved, drive blocks with the changes and the
 approvals a refresh would invalidate. Completed handoffs persist until
 superseded. `agent`/`resume-agent` are diagnostics; use the local Yinz agents
 skill for pane inspection/dialogs.
+
+Every return of `authorize_plan_revision`, `approve_plan`,
+`address_review_findings`, `approve_review_fixes`, `authorize_merge`,
+`authorize_closeout` or `blocked` sends a notification, including repeated
+returns of the same handoff. Delivery failure is logged without changing the
+handoff. Notifications request attention; the controller still presents the
+evidence and records the actual human decision.
 
 | Phase | Next action after pending work is resolved |
 | --- | --- |

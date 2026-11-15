@@ -12,6 +12,48 @@ fn local_paths() -> PathResolution {
 }
 
 #[test]
+fn notify_accepts_an_explicit_terminal_activation_target() {
+    for (arguments, target) in [
+        (vec!["yinz", "action", "notify", "Ready"], None),
+        (
+            vec![
+                "yinz",
+                "action",
+                "notify",
+                "--pane-id",
+                "terminal_7",
+                "--",
+                "Ready",
+            ],
+            Some(7),
+        ),
+        (
+            vec!["yinz", "action", "notify", "Ready", "--pane-id", "7"],
+            Some(7),
+        ),
+    ] {
+        let parsed = parse_remote_cli(arguments).unwrap();
+        let Some(crate::args::Command::Action(action)) = parsed.command else {
+            panic!("expected action")
+        };
+        assert!(
+            matches!(&*action, CliAction::Notify { text, pane_id } if text == "Ready" && *pane_id == target)
+        );
+        assert_eq!(
+            actions_from_cli(*action, local_paths(), None).unwrap(),
+            vec![Action::Notify("Ready".into())]
+        );
+    }
+    for invalid in ["plugin_7", "invalid", "-1"] {
+        assert!(
+            parse_remote_cli(["yinz", "action", "notify", "Ready", "--pane-id", invalid]).is_err()
+        );
+    }
+    let legacy: CliAction = serde_json::from_str(r#"{"Notify":{"text":"Ready"}}"#).unwrap();
+    assert!(matches!(legacy, CliAction::Notify { pane_id: None, .. }));
+}
+
+#[test]
 fn actions_that_leave_a_clipboard_message() {
     assert!(Action::Copy.leaves_clipboard_message());
     assert!(Action::CopyLastCommandOutput.leaves_clipboard_message());
