@@ -84,7 +84,7 @@ fn external_rewrite_permissions_corruption_symlink_fifo_and_missing_fail_closed(
     assert!(a.snapshot(t.path(), &v).unwrap().sessions.is_empty());
 }
 #[test]
-fn dirty_merge_preserves_external_login_logout_fields_and_verifier_rotation() {
+fn persisted_touches_preserve_external_login_logout_fields_and_verifier_rotation() {
     let (t, v) = fixture();
     let (mut a, mut b) = (Store::default(), Store::default());
     let (first, info) = issue(&mut a, t.path(), &v, 1000000, false);
@@ -93,14 +93,13 @@ fn dirty_merge_preserves_external_login_logout_fields_and_verifier_rotation() {
     let mut current = read(t.path(), &v).unwrap();
     current.sessions[0].label = "external label".into();
     write(t.path(), &current).unwrap();
-    a.flush(t.path(), &v, 1000003).unwrap();
+    a.authenticate(t.path(), &v, &first, 1000003).unwrap();
     let rows = read(t.path(), &v).unwrap().sessions;
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].label, "external label");
     a.authenticate(t.path(), &v, &first, 1000004).unwrap();
     b.logout_guarded(t.path(), &info.id, 1000005, || true)
         .unwrap();
-    a.flush(t.path(), &v, 1000006).unwrap();
     assert!(a
         .authenticate(t.path(), &v, &first, 1000007)
         .unwrap()
@@ -110,7 +109,10 @@ fn dirty_merge_preserves_external_login_logout_fields_and_verifier_rotation() {
         .unwrap()
         .is_some());
     password::revoke_sessions(t.path()).unwrap();
-    a.flush(t.path(), &v, 1000010).unwrap();
+    assert!(a
+        .authenticate(t.path(), &v, &second, 1000010)
+        .unwrap()
+        .is_none());
     assert!(!t.path().join("web/sessions.json").exists());
 }
 #[test]
@@ -138,12 +140,12 @@ fn concurrent_stores_do_not_drop_logins_or_restore_revocations() {
 }
 
 #[test]
-fn pending_touch_extends_local_idle_without_restoring_removed_rows() {
+fn touch_is_persisted_despite_recent_other_login() {
     let (t, v) = fixture();
     let mut s = Store::default();
     let (token, _) = issue(&mut s, t.path(), &v, 1000, false);
     let deadline = 1000 + 12 * 3600000;
-    // A different login just flushed the store: this token's next touch stays dirty.
+    // A different login just wrote the store; it must not delay this token's touch.
     issue(&mut s, t.path(), &v, deadline - 120000, false);
     assert!(s
         .authenticate(t.path(), &v, &token, deadline - 60000)
@@ -153,7 +155,6 @@ fn pending_touch_extends_local_idle_without_restoring_removed_rows() {
         .authenticate(t.path(), &v, &token, deadline + 60000)
         .unwrap()
         .is_some());
-    s.flush(t.path(), &v, deadline + 60000).unwrap();
     let row = read(t.path(), &v)
         .unwrap()
         .sessions

@@ -93,7 +93,7 @@ fn unauthenticated() -> Response<Body> {
 fn finish(mut response: Response<Body>, head: bool, api: bool, close: bool) -> Response<Body> {
     let headers = response.headers_mut();
     for (name, value) in [
-        ("content-security-policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
+        ("content-security-policy", "default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
         ("x-content-type-options", "nosniff"), ("referrer-policy", "no-referrer"), ("x-frame-options", "DENY"),
         ("cross-origin-opener-policy", "same-origin"), ("cross-origin-resource-policy", "same-origin"),
         ("permissions-policy", "camera=(), microphone=(), geolocation=()"),
@@ -245,6 +245,7 @@ async fn handle(
     let native = match normalized.path.as_str() {
         "/api/login" | "/api/logout" | "/api/logout-all" => Some("POST"),
         "/api/session" => Some("GET"),
+        "/api/push" => Some(if post { "POST" } else { "GET" }),
         _ => None,
     };
     if let Some(expected) = native
@@ -369,6 +370,20 @@ async fn handle(
     if let Some(session) = session {
         if admission.is_cancelled() || state.backend.quiesced() {
             return (error(StatusCode::SERVICE_UNAVAILABLE, "updating"), true);
+        }
+        if normalized.path == "/api/push" {
+            let data = state.settings.data_dir.clone();
+            let result = file_work(state, move || {
+                crate::push::api(&data, &session, post.then_some(bytes.as_slice()))
+            })
+            .await;
+            return (
+                match result {
+                    Ok(Ok(json)) => response(StatusCode::OK, json.to_string(), "application/json"),
+                    _ => error(StatusCode::BAD_REQUEST, "push_unavailable"),
+                },
+                false,
+            );
         }
         if matches!(
             normalized.path.as_str(),
@@ -512,6 +527,11 @@ async fn handle(
     response
         .headers_mut()
         .insert("cache-control", HeaderValue::from_static("no-cache"));
+    if normalized.path == "/static/sw.js" {
+        response
+            .headers_mut()
+            .insert("service-worker-allowed", HeaderValue::from_static("/"));
+    }
     (response, false)
 }
 

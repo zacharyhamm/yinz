@@ -8,6 +8,7 @@ import { parseHash, entryState } from './app-route.js';
 import { html, render, useState, useEffect, cx } from './views/ui.js';
 import { ListView } from './views/list.js';
 import { DetailView } from './views/detail.js';
+import { createPush, registerWorker } from './push.js';
 
 const config = readBootstrapConfig(document);
 const local = safeStorage(() => window.localStorage);
@@ -31,6 +32,10 @@ const api = createApi({
   config,
   onUnauthenticated: () => toLogin('Your sign-in expired or was revoked. Sign in again.'),
 });
+const registration = navigator.serviceWorker && window.isSecureContext ? registerWorker() : Promise.resolve(null);
+// Keep registration failures handled even before the menu is opened.
+registration.catch(() => {});
+const push = createPush({ api, registration });
 
 const visibilityListeners = new Set();
 document.addEventListener('visibilitychange', () => {
@@ -70,6 +75,7 @@ markEntry();
 window.addEventListener('hashchange', markEntry);
 
 function App({ initialNotice }) {
+  useEffect(() => { push.sync().catch(() => {}); }, []);
   const [route, setRoute] = useState(parseHash(window.location.hash));
   const [toast, setToast] = useState(null);
   const [notice, setNoticeText] = useState(initialNotice);
@@ -84,6 +90,7 @@ function App({ initialNotice }) {
     return () => window.clearTimeout(t);
   }, [toast]);
   const env = {
+    push,
     api,
     config,
     local,

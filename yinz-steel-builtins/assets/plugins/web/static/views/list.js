@@ -3,6 +3,7 @@ import { describeError, freshnessText } from '../api.js';
 import { html, useState, useEffect, usePoller, useNow, ServerHtml, RowBadges, QuickKeys, Banner, Freshness, responseText, cx } from './ui.js';
 import { Sheet, ConfirmSheet } from './sheets.js';
 import { detailHash } from '../app-route.js';
+import { Notifications } from './notifications.js';
 
 const SECTIONS = [
   ['waiting', 'Needs you'],
@@ -95,6 +96,7 @@ export function ListView({ env }) {
     </main>
     ${menu ? html`<${Sheet} id="sheet-menu" title="Menu" onClose=${() => setMenu(false)}>
       <div class="menu-list">
+        <${Notifications} push=${env.push} />
         <button type="button" class="button menu-item" id="logout" onClick=${() => { setMenu(false); env.logout(false); }}>Log out</button>
         <button type="button" class="button menu-item" id="logout-all" onClick=${() => { setMenu(false); setConfirmAll(true); }}>Log out everywhere</button>
       </div>

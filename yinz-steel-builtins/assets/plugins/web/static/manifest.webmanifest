@@ -1,5 +1,6 @@
 {
   "name": "yinz agents",
+  "id": "/",
   "short_name": "yinz",
   "description": "Watch and answer your yinz agents",
   "start_url": "/",

@@ -1118,3 +1118,42 @@ async fn web_transport_active_request_suspends_idle_expiry_then_rearms() {
     assert_eq!(read.await.unwrap_err().kind(), io::ErrorKind::TimedOut);
     drop(client);
 }
+
+#[tokio::test]
+async fn native_push_authentication_subscription_and_worker_scope() {
+    let (temp, backend) = fixture();
+    let worker = StaticFile {
+        bytes: b"// worker".to_vec().into(),
+        content_type: "text/javascript; charset=utf-8",
+        etag: "\"worker\"".into(),
+    };
+    let mut site = Site::default();
+    site.assets
+        .insert("/static/".into(), [("sw.js".into(), worker)].into());
+    *backend.site.write().unwrap() = Some(Arc::new(site));
+    let server = WebServer::start(
+        settings(temp.path()),
+        backend.clone(),
+        &tokio::runtime::Handle::current(),
+    );
+    let addr = serving(&server).await;
+    let denied = api(addr, "GET", "/api/push", None, "").await;
+    assert!(denied.starts_with("HTTP/1.1 401"), "{denied}");
+    let worker = get(addr, "/static/sw.js").await;
+    assert!(worker.contains("service-worker-allowed: /\r\n"), "{worker}");
+    assert!(worker.contains("worker-src 'self'"), "{worker}");
+    let token = login(addr).await;
+    let key = api(addr, "GET", "/api/push", Some(&token), "").await;
+    assert!(key.starts_with("HTTP/1.1 200"), "{key}");
+    assert!(key.contains("public_key"));
+    let body = serde_json::json!({"endpoint":"https://web.push.apple.com/test", "expirationTime":null,
+        "keys":{"p256dh":base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, [4;65]),
+        "auth":base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, [5;16])}}).to_string();
+    let saved = api(addr, "POST", "/api/push", Some(&token), &body).await;
+    assert!(saved.starts_with("HTTP/1.1 200"), "{saved}");
+    assert_eq!(backend.dispatches.load(Ordering::SeqCst), 0);
+    api(addr, "POST", "/api/logout", Some(&token), "{}").await;
+    let denied = api(addr, "GET", "/api/push", Some(&token), "").await;
+    assert!(denied.starts_with("HTTP/1.1 401"), "{denied}");
+    stop(&server).await;
+}

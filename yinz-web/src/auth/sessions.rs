@@ -4,7 +4,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fs::OpenOptions,
     io::Read,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
@@ -13,7 +13,6 @@ use std::{
 use yinz_runtime::errors::prelude::*;
 
 const MAX_BYTES: u64 = 256 * 1024;
-pub(crate) const FLUSH_MS: i64 = 5 * 60 * 1000;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Row {
@@ -180,8 +179,6 @@ pub fn valid_token(token: &str) -> bool {
 #[derive(Default)]
 pub(crate) struct Store {
     cache: Option<(Identity, Snapshot)>,
-    dirty: HashMap<(String, String, String), i64>,
-    last_flush: i64,
 }
 impl Store {
     pub fn snapshot(&mut self, data: &Path, verifier: &str) -> Result<Snapshot> {
@@ -210,17 +207,6 @@ impl Store {
         }
         result
     }
-    fn merge(&mut self, s: &mut Snapshot, now: i64) {
-        for r in &mut s.sessions {
-            if let Some(t) =
-                self.dirty
-                    .get(&(s.verifier_id.clone(), r.id.clone(), r.token_hash.clone()))
-            {
-                r.last_seen_ms = r.last_seen_ms.max(*t);
-            }
-        }
-        s.sessions.retain(|r| r.valid(now));
-    }
     pub fn authenticate(
         &mut self,
         data: &Path,
@@ -228,44 +214,32 @@ impl Store {
         token: &str,
         now: i64,
     ) -> Result<Option<SessionInfo>> {
+        // Push expiry checks and other processes only see persisted timestamps.
+        // Publish the touch before accepting activity, under their same lock, so
+        // pruning cannot race a renewal or mistake buffered activity for expiry.
+        let _lock = password::lock(&data.join("web"))?;
+        if !matches!(password::read_state(data),password::PasswordState::Ready(v) if v.verifier_id==verifier)
+        {
+            self.cache = None;
+            return Ok(None);
+        }
         let mut s = self.snapshot(data, verifier)?;
-        self.merge(&mut s, now);
-        self.dirty.retain(|(v, id, h), _| {
-            v == verifier && s.sessions.iter().any(|r| r.id == *id && r.token_hash == *h)
-        });
         let h = hash(token);
-        let Some(mut row) = s
+        let Some(row) = s
             .sessions
-            .into_iter()
+            .iter_mut()
             .find(|r| r.token_hash == h && r.valid(now))
         else {
             return Ok(None);
         };
-        // Only touches of still-valid disk rows apply; dirty state never restores missing rows.
-        let key = (verifier.into(), row.id.clone(), h);
-        let seen = self.dirty.entry(key).or_insert(row.last_seen_ms);
-        *seen = (*seen).max(now);
-        row.last_seen_ms = *seen;
-        if now.saturating_sub(self.last_flush) >= FLUSH_MS {
-            self.flush(data, verifier, now)?;
-        }
-        Ok(Some(row.info()))
-    }
-    pub fn flush(&mut self, data: &Path, verifier: &str, now: i64) -> Result<()> {
-        let _lock = password::lock(&data.join("web"))?;
-        if !matches!(password::read_state(data),password::PasswordState::Ready(v) if v.verifier_id==verifier)
-        {
-            self.dirty.clear();
+        let changed = now > row.last_seen_ms;
+        row.last_seen_ms = row.last_seen_ms.max(now);
+        let info = row.info();
+        if changed {
+            write(data, &s)?;
             self.cache = None;
-            return Ok(());
         }
-        let mut s = read(data, verifier)?;
-        self.merge(&mut s, now);
-        write(data, &s)?;
-        self.dirty.clear();
-        self.cache = None;
-        self.last_flush = now;
-        Ok(())
+        Ok(Some(info))
     }
     // Caller holds the persistent password lock and has checked the current verifier.
     pub fn issue(
@@ -281,7 +255,7 @@ impl Store {
             bail!("invalid session clock");
         }
         let mut s = read(data, verifier)?;
-        self.merge(&mut s, now);
+        s.sessions.retain(|r| r.valid(now));
         let mut random = [0; 32];
         getrandom::fill(&mut random).map_err(|_| anyhow!("secure randomness unavailable"))?;
         let token = format!("yzw1_{}", URL_SAFE_NO_PAD.encode(random));
@@ -305,9 +279,7 @@ impl Store {
         let info = row.info();
         s.sessions.push(row);
         write(data, &s)?;
-        self.dirty.clear();
         self.cache = None;
-        self.last_flush = now;
         Ok((token, info))
     }
     // Caller still holds the password lock from issuance.
@@ -333,12 +305,10 @@ impl Store {
             bail!("request canceled");
         }
         let mut s = read(data, &v.verifier_id)?;
-        self.merge(&mut s, now);
+        s.sessions.retain(|r| r.valid(now));
         s.sessions.retain(|r| r.id != id);
         write(data, &s)?;
-        self.dirty.clear();
         self.cache = None;
-        self.last_flush = now;
         Ok(())
     }
 }

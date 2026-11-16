@@ -186,9 +186,12 @@ and independent public IDs. It is owned, private (0600), nonsymlink, at most
 sessions survive; login evicts the oldest last-seen session with a stable ID tie
 break. Absolute expiry uses `session_days` (default 30). Idle expiry is twelve
 hours without remember and fourteen days with remember, capped by absolute expiry.
-Equality at either deadline expires the session. Last-seen writes are merged at
-most every five minutes and during mutations, so other processes can observe up
-to five minutes of idle-time lag. Touches cannot restore externally revoked rows.
+Equality at either deadline expires the session. Authentication persists advancing
+last-seen timestamps under the same lock used by session mutations and push expiry
+checks before accepting activity. Independent processes therefore see renewed idle
+deadlines when checking or pruning push subscriptions. This writes the session
+snapshot for each advancing touch; write failures reject authentication. Touches
+cannot restore externally revoked rows.
 Password rotation/revocation works across independent server caches and takeover.
 
 Argon2id runs off the async executor: one active verification and two waiters;
@@ -377,10 +380,37 @@ every other value is rendered as text. Preact 10.29.8 with its hooks and htm
 3.1.1 are vendored as separate modules in `web/static/vendor/`, with licenses
 and provenance in `VENDOR.md`.
 
-`/static/manifest.webmanifest` declares a standalone display, the icons and
-the theme color. Installing the app to a home screen has not been tested on
-any platform. There is no service worker, so the app needs the listener to be
-reachable and does nothing offline.
+`/static/manifest.webmanifest` declares a stable identity, standalone display,
+icons and theme color. The app includes Apple Home Screen metadata, safe-area
+layout, and a service worker. When disconnected, navigation shows a reconnect
+page; authenticated pages, agent output and API responses are never cached.
+
+### Push notifications on iPhone and iPad
+
+Open the HTTPS Serve URL in Safari, choose **Share → Add to Home Screen**, and
+open Yinz from that icon. Sign in, then choose **Menu → Enable notifications**
+and allow the system permission prompt. iOS/iPadOS 16.4 or later is required.
+Other browsers with Web Push support can enable notifications from the same menu.
+Permission is requested only after tapping Enable. The menu also disables pushes
+for this device; logging out revokes delivery for that sign-in.
+
+Every unsuppressed session notification is sent, including toast-only and desktop
+notifications from detached sessions, across all local sessions using the same
+data directory. Notification policies still apply, including replacements. Pushes
+show the originating session, title and body. Tapping opens the agent list.
+The app can be closed and the phone need not keep a polling connection open.
+The originating Yinz session must remain running, and its server needs outbound
+HTTPS access to Apple, Google, Mozilla or Windows push services. The HTTPS web
+URL still needs to be reachable when opening the notification.
+
+Signing keys and subscriptions persist privately in `<data-dir>/web/push.json`,
+shared across local sessions and restarts. No external push relay or manual key
+setup is needed. Subscriptions are bound to web sign-ins: expiration, revocation,
+password rotation and Log out everywhere stop delivery. Expired browser endpoints
+are removed after a 404/410 response. Delivery is best effort with a bounded queue;
+messages expire at the push service after one hour. Device notification settings
+and network availability can affect delivery. Actual Home Screen installation and
+Apple push delivery require verification on a physical iOS device.
 
 ## Local status and optional Serve diagnostics
 

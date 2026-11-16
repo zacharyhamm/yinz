@@ -134,6 +134,10 @@ pub fn plugin_thread_main(
         .context("retain this server's worker executable")?;
     drop(startup_generation);
     let yinz_data_dir = data_dir.clone();
+    let push_notifications = yinz_web::push::Dispatcher::start(
+        data_dir.clone(),
+        yinz_bus::global_async_runtime::get_tokio_runtime().handle(),
+    );
     layout.populate_plugin_aliases_in_layout(&plugin_aliases);
 
     // use this channel to ensure that tasks spawned from this thread terminate before exiting
@@ -392,6 +396,12 @@ pub fn plugin_thread_main(
                 );
             },
             PluginInstruction::Update(mut updates) => {
+                for (_, _, event) in &updates {
+                    if let yinz_types::data::Event::NotificationResolved(notification) = event {
+                        push_notifications
+                            .notify(bus.senders.session.current().to_string(), notification);
+                    }
+                }
                 if update_pause.is_some() {
                     update_reports.retain(&mut updates);
                 }

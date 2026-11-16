@@ -35,7 +35,7 @@ const MAX_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
 /// Module scripts the page templates load.
 const ENTRY_MODULES: &[&str] = &["app.js", "login.js"];
 /// JavaScript files intentionally shipped without being imported from an entry module.
-const UNREACHABLE_MODULES: &[&str] = &[];
+const UNREACHABLE_MODULES: &[&str] = &["sw.js"];
 
 fn static_dir() -> PathBuf {
     asset_dir().join("web/static")
@@ -235,11 +235,14 @@ fn png_dimensions(bytes: &[u8]) -> (u32, u32) {
 }
 
 #[test]
-fn manifest_icons_match_files_and_install_without_a_service_worker() {
+fn manifest_icons_and_ios_installation_metadata_match_files() {
     let manifest: Value = serde_json::from_str(&read_static("manifest.webmanifest")).unwrap();
     assert_eq!(manifest["display"], "standalone");
     assert_eq!(manifest["start_url"], "/");
     assert_eq!(manifest["scope"], "/");
+    assert_eq!(manifest["id"], "/");
+    assert!(web_app_source().contains("apple-mobile-web-app-capable"));
+    assert!(web_app_source().contains("apple-touch-icon"));
     // start_url is the app page the builtin publishes.
     assert!(web_app_source().contains(r#"(yinz-web-page "/" "#));
     assert!(
@@ -272,12 +275,11 @@ fn manifest_icons_match_files_and_install_without_a_service_worker() {
             other => panic!("unexpected icon type {other} for {src}"),
         }
     }
-    for path in script_files() {
-        assert!(
-            !read_static(&path).contains("serviceWorker"),
-            "{path} registers a service worker"
-        );
-    }
+    assert!(read_static("push.js").contains("register('/static/sw.js', { scope: '/'"));
+    assert!(
+        !read_static("sw.js").contains("caches."),
+        "private content must never be cached"
+    );
 }
 
 // --------------------------------------------------------------- import graph

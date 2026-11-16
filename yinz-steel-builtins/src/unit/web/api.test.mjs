@@ -468,16 +468,17 @@ test('static tree stays within served limits and CSP policy', () => {
       assert.equal(icon.sizes, 'any');
     }
   }
-  assert.ok(!files.some((f) => /service-?worker|sw\.js$/.test(f)), 'no service worker');
+  assert.ok(files.some((f) => /sw\.js$/.test(f)), 'push service worker is shipped');
+  assert.equal(manifest.id, '/');
 });
 
 test('view modules import without a DOM; DOM entry points parse as ES modules', async () => {
   const { execFileSync } = await import('node:child_process');
-  for (const m of ['views/ui.js', 'views/sheets.js', 'views/list.js', 'views/detail.js', 'views/composer.js', 'views/keys.js', 'app-route.js']) {
+  for (const m of ['push.js', 'views/notifications.js', 'views/ui.js', 'views/sheets.js', 'views/list.js', 'views/detail.js', 'views/composer.js', 'views/keys.js', 'app-route.js']) {
     const mod = await import(staticUrl(m));
     assert.ok(Object.keys(mod).length > 0, m);
   }
-  for (const entry of ['app.js', 'login.js']) {
+  for (const entry of ['app.js', 'login.js', 'sw.js']) {
     execFileSync(process.execPath, ['--input-type=module', '--check'], { input: fs.readFileSync(path.join(STATIC_DIR, entry)) });
   }
 });
