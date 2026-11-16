@@ -25,6 +25,16 @@ pub struct Context {
     pub current_project: Option<String>,
     #[serde(default)]
     pub timezone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport: Option<ActionViewport>,
+}
+
+/// Provider-local action IDs in the visible nested source view.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionViewport {
+    pub visible_ids: Vec<String>,
+    pub selected_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

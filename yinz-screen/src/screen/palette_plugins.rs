@@ -241,12 +241,37 @@ impl CommandPaletteState {
             view: self.widget.view,
             revision: self.plugins.revision,
         };
+        let viewport = source.as_ref().and_then(|_| {
+            let nested = self.plugins.views.get(&self.widget.view)?;
+            let View::Actions { actions, .. } = &nested.display else {
+                return None;
+            };
+            if nested.provider != provider {
+                return None;
+            }
+            let local_id = |id: &str| {
+                actions
+                    .iter()
+                    .find(|a| entry_id(&provider, &a.id) == id)
+                    .map(|a| a.id.clone())
+            };
+            Some(wire::ActionViewport {
+                visible_ids: self
+                    .widget
+                    .visible_entry_ids()
+                    .into_iter()
+                    .filter_map(local_id)
+                    .collect(),
+                selected_id: self.widget.selected_entry().and_then(|e| local_id(&e.id)),
+            })
+        });
         let context = wire::Context {
             client_id: client.get(),
             pane_id: self.context.pane_id,
             tab_id: self.context.tab_id.get() as u64,
             current_project: self.context.current_project.clone(),
             timezone,
+            viewport,
         };
         let active = Arc::new(AtomicBool::new(true));
         let label = execution

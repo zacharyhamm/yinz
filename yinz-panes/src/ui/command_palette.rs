@@ -516,6 +516,21 @@ impl CommandPalette {
         }
     }
 
+    /// Recompute for the current selection using the last rendered dimensions.
+    /// Wrapped entries contribute only one ID; headings and status rows contribute none.
+    pub fn visible_entry_ids(&self) -> Vec<&str> {
+        let mut ids = Vec::new();
+        for row in self.visible_result_rows(self.page_rows.get(), self.result_width.get()) {
+            if let ResultRow::Entry(index, _) = row {
+                let id = self.entries[self.matches[index]].id.as_str();
+                if ids.last().copied() != Some(id) {
+                    ids.push(id);
+                }
+            }
+        }
+        ids
+    }
+
     pub fn action_label(&self, id: &str) -> String {
         self.form
             .as_ref()

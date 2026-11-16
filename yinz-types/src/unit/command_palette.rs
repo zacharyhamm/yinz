@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn palette_context_viewport_is_optional_and_uses_local_action_ids() {
+    let mut value = serde_json::json!({
+        "clientId": 1, "paneId": {"Terminal": 1}, "tabId": 1,
+        "currentProject": null
+    });
+    let old: Context = serde_json::from_value(value.clone()).unwrap();
+    assert!(old.viewport.is_none());
+    assert!(serde_json::to_value(old).unwrap().get("viewport").is_none());
+    value["viewport"] = serde_json::json!({"visibleIds": ["31", "32"], "selectedId": "32"});
+    let new: Context = serde_json::from_value(value.clone()).unwrap();
+    let viewport = new.viewport.as_ref().unwrap();
+    assert_eq!(viewport.visible_ids, ["31", "32"]);
+    assert_eq!(viewport.selected_id.as_deref(), Some("32"));
+    assert_eq!(
+        serde_json::to_value(new).unwrap()["viewport"],
+        value["viewport"]
+    );
+}
+
+#[test]
 fn palette_display_validation_rejects_ambiguous_controls_and_oversize_payloads() {
     let action = Action {
         aliases: vec![],

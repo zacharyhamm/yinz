@@ -3635,6 +3635,13 @@ fn table_headers_scroll_with_whole_actions_and_original_activation() {
         .any(|r| matches!(r, ResultRow::Entry(i, 0) if *i == palette.selected)));
     assert_eq!(rows.iter().filter(|r| palette.row_selected(r)).count(), 3);
     let selected = palette.selected_entry().unwrap().id.clone();
+    let visible = palette.visible_entry_ids();
+    assert!(visible.contains(&selected.as_str()));
+    assert_eq!(visible.iter().filter(|id| **id == selected).count(), 1);
+    assert!(
+        visible.len() < rows.len(),
+        "headings and wrapped lines are not extra actions"
+    );
     assert_eq!(
         palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
         Outcome::Activate(selected)
@@ -3649,6 +3656,15 @@ fn table_headers_scroll_with_whole_actions_and_original_activation() {
         assert!(rows.len() <= capacity);
         assert!(rows.iter().any(|r| palette.row_selected(r)));
     }
+    let before = palette
+        .visible_entry_ids()
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    palette.scroll(false);
+    assert_ne!(palette.visible_entry_ids(), before);
+    palette.page_rows.set(0);
+    assert!(palette.visible_entry_ids().is_empty());
 }
 
 #[test]

@@ -726,6 +726,17 @@ procedures include `"onCancel"` (register a callback and return its removal
 procedure), `"close"`, `"suspend"` (boolean argument), and `"cancelled"` (query).
 Use cancellation callbacks to release obsolete searches when the query changes.
 
+Nested action source callbacks receive `context.viewport` with `visibleIds`
+(display order, without duplicates for wrapped rows) and nullable `selectedId`.
+These are the provider's original action IDs, not callback handles. Root discovery
+and execution omit this field; older hosts omit it everywhere. Before the first
+render, `visibleIds` can be empty. The visible source is polled every second, so
+keyboard and wheel scrolling are reflected in the next poll. A source can use
+these IDs to fetch adjacent pages and return a bounded window of rows. Keep the
+selected action's ID in the replacement window to preserve keyboard selection.
+Replies still have the 100-action and 256 KiB limits; fetching is cancellable in
+the usual way when the query or view changes.
+
 `GetSessionInventory` takes a request ID and requires `ReadApplicationState`.
 Reuse the ID while the picker is open. A new ID starts discovery on the acting
 client's machine. The reply contains `current_machine` and `entries`. Each entry

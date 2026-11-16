@@ -9585,9 +9585,20 @@ fn plugin_table_refresh_validates_shape_and_preserves_original_handle() {
         client: CLIENT,
         scope
     }));
-    let Message::Discover { scope, .. } = next() else {
+    let Message::Discover { scope, context, .. } = next() else {
         panic!()
     };
+    let viewport = context.viewport.expect("nested source viewport");
+    assert_eq!(viewport.selected_id.as_deref(), Some("original"));
+    assert!(viewport.visible_ids.contains(&"original".to_string()));
+    assert_eq!(
+        viewport
+            .visible_ids
+            .iter()
+            .filter(|id| *id == "original")
+            .count(),
+        1
+    );
     screen.plugin_palette_instruction(command(Command::Reply {
         scope,
         result: Ok(Reply::Actions {
