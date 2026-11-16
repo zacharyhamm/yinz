@@ -647,3 +647,163 @@ fn cell_metrics_retained_clusters_refresh_sprites_and_keep_copy() {
         assert_eq!(selection.text(state.screen()), copied);
     }
 }
+
+#[test]
+fn baseline_offset_retains_kitty_sixel_and_held_image_placements() {
+    use crate::render::scene::CellRect;
+    use crate::testing::painter::{residency, sixel_chunk, Place};
+    use crate::text::font::FontOptions;
+    let options = FontOptions {
+        system_fonts: false,
+        ..Default::default()
+    };
+    let mut cache = GlyphCache::new(options.stack(1.0).unwrap());
+    let state = Painter::state(4, 16, |p| {
+        p.text(0, 0, "Ag -> fi");
+        p.graphics(&[
+            residency(1, 8, 8, [0, 255, 0, 255]),
+            Place::of(1, 8, 8).at(1, 2).cropped(2, 1, 6, 7).record(),
+            residency(2, 8, 8, [0, 0, 255, 255]),
+            Place::of(2, 8, 8).at(2, 10).record(),
+            sixel_chunk(3, 4, 8, 6, "\x1bP0;1;0q\"1;1;8;6#0;2;100;0;0!8~\x1b\\"),
+        ]);
+    });
+    let mut retained = RetainedScene::new();
+    retained.set_held_out(vec![HeldOut {
+        content: CellRect {
+            x: 10,
+            y: 2,
+            cols: 2,
+            rows: 1,
+        },
+        covers: vec![],
+    }]);
+    refreshed(&mut retained, &state, &mut cache);
+    assert_eq!(retained.all_images().len(), 3);
+    assert_eq!(retained.images().len(), 2);
+    let images = retained.all_images().to_vec();
+    let visible = retained.images().to_vec();
+    let resident = retained.resident_images().to_vec();
+    let dimensions = (cache.metrics().width, cache.metrics().height);
+    for offset in [2.0, -2.0, 0.0] {
+        let before = cache.generation();
+        let mut requested = options.clone();
+        requested.cell.baseline_offset = offset;
+        assert!(cache.update_cell(&requested));
+        refreshed(&mut retained, &state, &mut cache);
+        assert_ne!(cache.generation(), before);
+        assert!(retained.rebuilt_everything());
+        assert!(
+            !retained.replaced_images(),
+            "baseline {offset} re-emitted image placements"
+        );
+        assert_eq!(retained.all_images(), images);
+        assert_eq!(retained.images(), visible);
+        assert_eq!(retained.resident_images(), resident);
+        assert_eq!((cache.metrics().width, cache.metrics().height), dimensions);
+        let mut fresh = RetainedScene::new();
+        fresh.set_held_out(retained.held.clone());
+        let mut fresh_cache = GlyphCache::new(requested.stack(1.0).unwrap());
+        refreshed(&mut fresh, &state, &mut fresh_cache);
+        assert_eq!(retained.flatten(), fresh.flatten());
+    }
+}
+
+#[test]
+fn baseline_offset_image_placement_inputs_still_refresh() {
+    use crate::render::scene::CellRect;
+    use crate::testing::painter::{residency, sixel_chunk, Place};
+    use crate::text::font::FontOptions;
+    use yinz_types::structured_render::{GeometryRecord, PaneRect, PANE_SELECTABLE};
+    let mut options = FontOptions {
+        system_fonts: false,
+        ..Default::default()
+    };
+    let mut cache = GlyphCache::new(options.stack(1.0).unwrap());
+    let mut state = Painter::state(4, 16, |p| {
+        p.graphics(&[
+            residency(1, 32, 8, [0, 255, 0, 255]),
+            Place::of(1, 32, 8).at(1, 2).record(),
+            sixel_chunk(3, 4, 8, 6, "\x1bP0;1;0q\"1;1;8;6#0;2;100;0;0!8~\x1b\\"),
+        ])
+    });
+    let mut retained = RetainedScene::new();
+    refreshed(&mut retained, &state, &mut cache);
+    for change in [
+        "width", "height", "move", "revision", "pane", "held", "unheld", "delete",
+    ] {
+        let old = retained.images().to_vec();
+        match change {
+            "width" => {
+                options.cell.cell_width = 1.5;
+                assert!(cache.update_cell(&options));
+            },
+            "height" => {
+                options.cell.line_height = 1.5;
+                assert!(cache.update_cell(&options));
+            },
+            "move" => Painter::apply(&mut state, |p| {
+                p.graphics(&[Place::of(1, 32, 8).at(1, 3).record()])
+            }),
+            "revision" => Painter::apply(&mut state, |p| {
+                p.graphics(&[residency(1, 32, 8, [0, 0, 255, 255])])
+            }),
+            "pane" => Painter::apply(&mut state, |p| {
+                p.geometry(&GeometryRecord {
+                    panes: vec![PaneRect {
+                        x: 0,
+                        y: 0,
+                        cols: 4,
+                        rows: 4,
+                        top: 0,
+                        bottom: 0,
+                        left: 0,
+                        right: 0,
+                        flags: PANE_SELECTABLE,
+                    }],
+                })
+            }),
+            "held" => retained.set_held_out(vec![HeldOut {
+                content: CellRect {
+                    x: 3,
+                    y: 1,
+                    cols: 2,
+                    rows: 1,
+                },
+                covers: vec![],
+            }]),
+            "unheld" => retained.set_held_out(vec![]),
+            "delete" => Painter::apply(&mut state, |p| p.full_repaint()),
+            _ => unreachable!(),
+        }
+        refreshed(&mut retained, &state, &mut cache);
+        assert!(retained.replaced_images(), "{change}");
+        assert_ne!(retained.images(), old, "{change}");
+        let mut fresh = RetainedScene::new();
+        fresh.set_held_out(retained.held.clone());
+        let mut fresh_cache = GlyphCache::new(options.stack(1.0).unwrap());
+        refreshed(&mut fresh, &state, &mut fresh_cache);
+        assert_eq!(retained.all_images(), fresh.all_images(), "{change}");
+        assert_eq!(retained.images(), fresh.images(), "{change}");
+        assert_eq!(
+            retained.resident_images(),
+            fresh.resident_images(),
+            "{change}"
+        );
+        if change == "pane" {
+            assert_eq!(
+                retained
+                    .images()
+                    .iter()
+                    .find(|q| q.key == ImageKey::Kitty(1))
+                    .unwrap()
+                    .width,
+                cache.metrics().width
+            );
+        }
+        if change == "delete" {
+            assert!(retained.images().is_empty());
+            assert!(retained.resident_images().is_empty());
+        }
+    }
+}

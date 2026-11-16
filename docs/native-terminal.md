@@ -179,10 +179,14 @@ and style fitting agree and other rendering inputs are unchanged, equivalent sav
 (including omission versus explicit zero) preserve fonts, atlases, clean retained
 rows and their row buffers. Existing terminal damage still refreshes affected rows;
 combined visual or shaping changes refresh the resources they require, including
-run shaping for ligature or feature changes. Unsaved `action reconfigure` refuses
-an effective offset change atomically; use `--write` or edit the saved file. The
-server compares configured integers with default zero, even when a particular
-window's font/scale would clamp different integers to identical pixels. Explicit
+run shaping for ligature or feature changes. With unchanged image content and
+placements, pane geometry, cell dimensions and held-out regions, baseline-only
+text changes retain inline-image placement and vertex resources. Images refresh
+when their own inputs or the renderer's scene/reset state require it.
+Unsaved `action reconfigure` refuses an effective offset change atomically; use
+`--write` or edit the saved file. The server compares configured integers with
+default zero, even when a particular window's font/scale would clamp different
+integers to identical pixels. Explicit
 zero equals omission only when the effective request is already zero. Saved
 changes reach native windows asynchronously through file reload and the next
 frame. Invalid main-file reloads preserve the active setting until a valid

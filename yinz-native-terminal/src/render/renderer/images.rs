@@ -45,9 +45,16 @@ impl Renderer {
         }
         self.image_batches.clear();
         self.image_vertices.clear();
+        // A refreshed scene may have no new image damage. Reinitialize its
+        // textures and vertices on the next draw after a connection reset.
+        self.retained = None;
     }
 
     pub(super) fn sync_image_vertices(&mut self, images: &[ImageQuad]) {
+        #[cfg(test)]
+        {
+            self.image_syncs += 1;
+        }
         let floats_per_vertex = GLYPH_STRIDE as usize / 4;
         self.image_vertices.clear();
         self.image_batches.clear();
@@ -83,6 +90,10 @@ impl Renderer {
                 bytemuck_cast(&self.image_vertices),
                 glow::DYNAMIC_DRAW,
             );
+            #[cfg(test)]
+            {
+                self.image_uploads += 1;
+            }
         }
     }
 

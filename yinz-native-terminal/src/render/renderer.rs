@@ -63,6 +63,10 @@ pub struct Renderer {
     images: HashMap<ImageKey, ImageTexture>,
     image_vertices: Vec<f32>,
     image_batches: Vec<ImageBatch>,
+    #[cfg(test)]
+    image_syncs: usize,
+    #[cfg(test)]
+    image_uploads: usize,
     solid_rows: RowVertices,
     glyph_rows: RowVertices,
     color_rows: RowVertices,
@@ -174,6 +178,10 @@ impl Renderer {
                 images: HashMap::new(),
                 image_vertices: Vec::new(),
                 image_batches: Vec::new(),
+                #[cfg(test)]
+                image_syncs: 0,
+                #[cfg(test)]
+                image_uploads: 0,
                 solid_rows: RowVertices::new(SOLID_STRIDE),
                 glyph_rows: RowVertices::new(GLYPH_STRIDE),
                 color_rows: RowVertices::new(GLYPH_STRIDE),
@@ -193,9 +201,10 @@ impl Renderer {
         upload_atlas(&self.gl, &mut self.mask_atlas, atlases.mask);
         upload_atlas(&self.gl, &mut self.color_atlas, atlases.color);
 
-        let everything = self.retained != Some(scene.identity()) || scene.rebuilt_everything();
+        let scene_changed = self.retained != Some(scene.identity());
+        let everything = scene_changed || scene.rebuilt_everything();
         self.retained = Some(scene.identity());
-        if everything || scene.replaced_images() {
+        if scene_changed || scene.replaced_images() {
             self.sync_images(scene.all_images(), scene.resident_images());
             self.sync_image_vertices(scene.images());
         }

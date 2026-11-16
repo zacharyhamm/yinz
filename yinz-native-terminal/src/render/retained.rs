@@ -31,7 +31,7 @@ pub struct RetainedScene {
     images: Vec<ImageQuad>,
     held_images: Option<Vec<ImageQuad>>,
     resident_images: Vec<ImageKey>,
-    placed: Option<(GraphicsStamp, CellMetrics)>,
+    placed: Option<(GraphicsStamp, u32, u32)>,
     replaced_images: bool,
     held: Vec<HeldOut>,
     held_changed: bool,
@@ -228,7 +228,12 @@ impl RetainedScene {
         self.rows.resize_with(context.size.rows, RowScene::default);
         self.dirty.resize(context.size.rows, true);
 
-        let placed = (state.graphics_stamp(), context.metrics);
+        // Images use the cell grid, independent of text baseline/decorations.
+        let placed = (
+            state.graphics_stamp(),
+            context.metrics.width,
+            context.metrics.height,
+        );
         self.replaced_images = self.placed != Some(placed);
         if self.replaced_images {
             self.images = scene::images_of(state, context.metrics);

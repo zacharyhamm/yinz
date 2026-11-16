@@ -1254,3 +1254,415 @@ fn baseline_offset_full_apply_equivalent_reloads_keep_rows_and_gpu_uploads() {
         }
     });
 }
+
+fn baseline_offset_image_state() -> crate::emulation::terminal::TerminalState {
+    baseline_offset_image_state_with([0, 255, 0, 255])
+}
+
+fn baseline_offset_image_state_with(color: [u8; 4]) -> crate::emulation::terminal::TerminalState {
+    use crate::testing::painter::{residency, sixel_chunk, Painter, Place};
+    let mut state = font_state();
+    Painter::apply(&mut state, |p| {
+        p.cluster(4, 6, "👩‍💻", 2);
+        p.graphics(&[
+            residency(1, 12, 8, color),
+            Place::of(1, 12, 8).at(1, 20).record(),
+            sixel_chunk(3, 20, 8, 6, "\x1bP0;1;0q\"1;1;8;6#0;2;100;0;0!8~\x1b\\"),
+        ]);
+    });
+    state
+}
+
+#[derive(Debug, PartialEq)]
+struct InlineImageResources {
+    vertices: Vec<f32>,
+    batches: Vec<(ImageKey, ImageDepth, i32, i32)>,
+    textures: HashMap<ImageKey, (glow::Texture, u64)>,
+}
+
+fn baseline_offset_image_resources(renderer: &Renderer) -> InlineImageResources {
+    InlineImageResources {
+        vertices: renderer.image_vertices.clone(),
+        batches: renderer
+            .image_batches
+            .iter()
+            .map(|b| (b.key, b.depth, b.first, b.count))
+            .collect(),
+        textures: renderer
+            .images
+            .iter()
+            .map(|(&k, v)| (k, (v.texture, v.revision)))
+            .collect(),
+    }
+}
+
+#[test]
+fn baseline_offset_full_apply_retains_inline_image_vertices_and_pixels() {
+    use crate::emulation::{color::Paints, selection::Selection};
+    use crate::window::{apply_fonts, apply_settings, effective_font_options, prepare_fonts};
+    use yinz_types::input::native_terminal::TerminalConfig;
+    with_renderer(|renderer| {
+        for (zoom, scale) in [(1.0, 1.0), (1.15, 1.25), (1.0, 2.0)] {
+            let mut settings = TerminalConfig {
+                system_fonts: Some(false),
+                ..Default::default()
+            };
+            let mut paints = Paints::default();
+            let mut active = effective_font_options(&settings, zoom, scale);
+            let mut cache = fixture_cache(&active);
+            let state = baseline_offset_image_state();
+            let selection = Selection::at(0, 3).extended_to(0, 4);
+            let copied = selection.text(state.screen());
+            let mut retained = RetainedScene::new();
+            retained.set_selection(Some(selection));
+            let original = font_pixels(renderer, &mut retained, &state, &mut cache);
+            let metrics = cache.metrics();
+            assert_eq!(retained.images().len(), 2);
+            assert_eq!(renderer.images.len(), 2);
+            assert!(!renderer.image_vertices.is_empty());
+            let quads = retained.images().to_vec();
+            let resident = retained.resident_images().to_vec();
+            let resources = baseline_offset_image_resources(renderer);
+            // These opaque, nonempty image regions contain no text or cursor.
+            let image_pixels = |pixels: &[u8]| {
+                quads
+                    .iter()
+                    .flat_map(|q| {
+                        (q.y..q.y + q.height as i32).flat_map(move |y| {
+                            (q.x..q.x + q.width as i32).map(move |x| {
+                                let at = (((383 - y) * 768 + x) * 4) as usize;
+                                <[u8; 4]>::try_from(&pixels[at..at + 4]).unwrap()
+                            })
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let original_images = image_pixels(&original);
+            assert!(original_images.contains(&[0, 255, 0, 255]));
+            assert!(original_images.contains(&[255, 0, 0, 255]));
+            for offset in [2, -2, 0] {
+                let next = TerminalConfig {
+                    baseline_offset: Some(offset),
+                    ..settings.clone()
+                };
+                let requested = effective_font_options(&next, zoom, scale);
+                let update = prepare_fonts(&active, &requested).unwrap();
+                let before = (renderer.image_syncs, renderer.image_uploads);
+                let rows = [
+                    &renderer.solid_rows,
+                    &renderer.glyph_rows,
+                    &renderer.color_rows,
+                ]
+                .map(|r| r.whole_uploads);
+                apply_fonts(
+                    &mut active,
+                    &mut cache,
+                    &mut retained,
+                    requested.clone(),
+                    update,
+                );
+                let next_paints = paints;
+                apply_settings(
+                    &mut settings,
+                    &mut paints,
+                    &mut retained,
+                    next.clone(),
+                    next_paints,
+                );
+                let live = font_pixels(renderer, &mut retained, &state, &mut cache);
+                // One synchronous live draw only; comparators/switches are outside
+                // this interval, so they cannot manufacture an image upload.
+                assert_eq!(
+                    (renderer.image_syncs, renderer.image_uploads),
+                    before,
+                    "offset={offset}, zoom={zoom}, scale={scale}"
+                );
+                assert!(!retained.replaced_images());
+                assert!(retained.rebuilt_everything());
+                for (r, before) in [
+                    &renderer.solid_rows,
+                    &renderer.glyph_rows,
+                    &renderer.color_rows,
+                ]
+                .into_iter()
+                .zip(rows)
+                {
+                    assert!(r.whole_uploads > before);
+                }
+                assert_eq!(baseline_offset_image_resources(renderer), resources);
+                assert_eq!(retained.images(), quads);
+                assert_eq!(retained.resident_images(), resident);
+                assert_eq!(image_pixels(&live), original_images);
+                assert_eq!(
+                    (cache.metrics().width, cache.metrics().height),
+                    (metrics.width, metrics.height)
+                );
+                assert_eq!(
+                    cache.metrics().baseline as i32,
+                    metrics.baseline as i32 + (offset as f32 * zoom * scale as f32).round() as i32
+                );
+                assert_eq!(selection.text(state.screen()), copied);
+                assert_eq!(settings, next);
+                if offset == 0 {
+                    assert_eq!(live, original);
+                } else {
+                    assert_ne!(live, original);
+                }
+                let mut fresh = RetainedScene::new();
+                fresh.set_selection(Some(selection));
+                let mut fresh_cache = fixture_cache(&requested);
+                assert_eq!(
+                    font_pixels(renderer, &mut fresh, &state, &mut fresh_cache),
+                    live
+                );
+                assert_eq!(
+                    font_pixels(renderer, &mut retained, &state, &mut cache),
+                    live
+                );
+                assert_eq!(baseline_offset_image_resources(renderer), resources);
+            }
+        }
+    });
+}
+
+#[test]
+fn baseline_offset_inline_image_changes_still_sync_and_match_fresh_pixels() {
+    use crate::render::scene::{CellRect, HeldOut};
+    use crate::testing::painter::{residency, Painter, Place};
+    use crate::window::{apply_fonts, effective_font_options, prepare_fonts};
+    use yinz_types::{
+        input::native_terminal::TerminalConfig,
+        structured_render::{GeometryRecord, PaneRect, PANE_SELECTABLE},
+    };
+    with_renderer(|renderer| {
+        let mut settings = TerminalConfig {
+            system_fonts: Some(false),
+            ..Default::default()
+        };
+        let mut active = effective_font_options(&settings, 1.0, 1.0);
+        let mut cache = fixture_cache(&active);
+        let mut state = baseline_offset_image_state();
+        let mut retained = RetainedScene::new();
+        let mut held = vec![];
+        font_pixels(renderer, &mut retained, &state, &mut cache);
+        for change in [
+            "move", "revision", "width", "height", "pane", "held", "unheld", "delete",
+        ] {
+            let old_quads = retained.images().to_vec();
+            match change {
+                "move" => Painter::apply_marking(&mut state, &mut retained, |p| {
+                    p.graphics(&[Place::of(1, 12, 8).at(1, 19).offset(3, 0).record()])
+                }),
+                "revision" => Painter::apply_marking(&mut state, &mut retained, |p| {
+                    p.graphics(&[residency(1, 12, 8, [0, 0, 255, 255])])
+                }),
+                "width" => settings.cell_width = Some(1.5),
+                "height" => settings.line_height = Some(1.5),
+                "pane" => Painter::apply_marking(&mut state, &mut retained, |p| {
+                    p.geometry(&GeometryRecord {
+                        panes: vec![
+                            PaneRect {
+                                x: 0,
+                                y: 0,
+                                cols: 19,
+                                rows: 5,
+                                top: 0,
+                                bottom: 0,
+                                left: 0,
+                                right: 0,
+                                flags: PANE_SELECTABLE,
+                            },
+                            PaneRect {
+                                x: 19,
+                                y: 0,
+                                cols: 1,
+                                rows: 5,
+                                top: 0,
+                                bottom: 0,
+                                left: 0,
+                                right: 0,
+                                flags: PANE_SELECTABLE,
+                            },
+                        ],
+                    })
+                }),
+                "held" => {
+                    held = vec![HeldOut {
+                        content: CellRect {
+                            x: 19,
+                            y: 1,
+                            cols: 2,
+                            rows: 1,
+                        },
+                        covers: vec![],
+                    }]
+                },
+                "unheld" => held.clear(),
+                "delete" => Painter::apply_marking(&mut state, &mut retained, |p| p.full_repaint()),
+                _ => unreachable!(),
+            }
+            retained.set_held_out(held.clone());
+            let requested = effective_font_options(&settings, 1.0, 1.0);
+            let update = prepare_fonts(&active, &requested).unwrap();
+            apply_fonts(
+                &mut active,
+                &mut cache,
+                &mut retained,
+                requested.clone(),
+                update,
+            );
+            let before = (renderer.image_syncs, renderer.image_uploads);
+            let live = font_pixels(renderer, &mut retained, &state, &mut cache);
+            assert!(retained.replaced_images(), "{change}");
+            assert_eq!(renderer.image_syncs, before.0 + 1, "{change}");
+            assert_eq!(
+                renderer.image_uploads,
+                before.1 + usize::from(!retained.images().is_empty()),
+                "{change}"
+            );
+            assert_ne!(retained.images(), old_quads, "{change}");
+            if change == "revision" {
+                assert_eq!(
+                    renderer.images[&ImageKey::Kitty(1)].revision,
+                    retained
+                        .all_images()
+                        .iter()
+                        .find(|q| q.key == ImageKey::Kitty(1))
+                        .unwrap()
+                        .revision
+                );
+            }
+            if change == "delete" {
+                assert!(renderer.image_vertices.is_empty());
+                assert!(renderer.image_batches.is_empty());
+                assert!(renderer.images.is_empty());
+                assert!(retained.resident_images().is_empty());
+            }
+            let mut fresh = RetainedScene::new();
+            fresh.set_held_out(held.clone());
+            let mut fresh_cache = fixture_cache(&requested);
+            assert_eq!(
+                font_pixels(renderer, &mut fresh, &state, &mut fresh_cache),
+                live,
+                "{change}"
+            );
+            assert_eq!(retained.all_images(), fresh.all_images(), "{change}");
+            assert_eq!(retained.images(), fresh.images(), "{change}");
+            assert_eq!(
+                retained.resident_images(),
+                fresh.resident_images(),
+                "{change}"
+            );
+            assert_eq!(
+                font_pixels(renderer, &mut retained, &state, &mut cache),
+                live
+            );
+        }
+    });
+}
+
+#[test]
+fn baseline_offset_inline_images_initialize_on_scene_switch_and_clear() {
+    use crate::emulation::color::Paints;
+    use crate::render::scene::{BlinkPhase, CursorOptions, SceneInputs};
+    use crate::testing::painter::{Painter, Place};
+    use yinz_types::input::native_terminal::TerminalConfig;
+    with_renderer(|renderer| {
+        let options = crate::window::effective_font_options(
+            &TerminalConfig {
+                system_fonts: Some(false),
+                ..Default::default()
+            },
+            1.0,
+            1.0,
+        );
+        let mut cache = fixture_cache(&options);
+        let state_a = baseline_offset_image_state();
+        let mut state_b = baseline_offset_image_state();
+        Painter::apply(&mut state_b, |p| {
+            p.graphics(&[Place::of(1, 12, 8).at(1, 19).record()]);
+        });
+        let mut a = RetainedScene::new();
+        let mut b = RetainedScene::new();
+        // Pre-refresh both scenes to remove their initial change flags before
+        // the renderer ever sees them. Identity must initialize image resources.
+        for (scene, state) in [(&mut a, &state_a), (&mut b, &state_b)] {
+            for _ in 0..2 {
+                scene.refresh(
+                    SceneInputs {
+                        state,
+                        phase: BlinkPhase::On,
+                        paints: &Paints::default(),
+                        cursor: CursorOptions::default(),
+                        hovered_link: None,
+                        preedit: None,
+                    },
+                    &mut cache,
+                );
+            }
+            assert!(!scene.replaced_images());
+            assert!(!scene.rebuilt_everything());
+        }
+        let before = (renderer.image_syncs, renderer.image_uploads);
+        let pixels_a = font_pixels(renderer, &mut a, &state_a, &mut cache);
+        assert_eq!(
+            (renderer.image_syncs, renderer.image_uploads),
+            (before.0 + 1, before.1 + 1)
+        );
+        assert_eq!(renderer.images.len(), 2);
+        let before = (renderer.image_syncs, renderer.image_uploads);
+        let pixels_b = font_pixels(renderer, &mut b, &state_b, &mut cache);
+        assert_eq!(
+            (renderer.image_syncs, renderer.image_uploads),
+            (before.0 + 1, before.1 + 1)
+        );
+        assert!(pixels_a != pixels_b, "the moved image must change pixels");
+        let before = (renderer.image_syncs, renderer.image_uploads);
+        assert_eq!(
+            font_pixels(renderer, &mut a, &state_a, &mut cache),
+            pixels_a
+        );
+        assert_eq!(
+            (renderer.image_syncs, renderer.image_uploads),
+            (before.0 + 1, before.1 + 1)
+        );
+        // Clearing must also reinitialize an unchanged, already refreshed scene.
+        renderer.clear_images();
+        assert!(renderer.images.is_empty());
+        let before = (renderer.image_syncs, renderer.image_uploads);
+        assert_eq!(
+            font_pixels(renderer, &mut a, &state_a, &mut cache),
+            pixels_a
+        );
+        assert_eq!(
+            (renderer.image_syncs, renderer.image_uploads),
+            (before.0 + 1, before.1 + 1)
+        );
+        assert_eq!(renderer.images.len(), 2);
+        let before = (renderer.image_syncs, renderer.image_uploads);
+        assert_eq!(
+            font_pixels(renderer, &mut a, &state_a, &mut cache),
+            pixels_a
+        );
+        assert_eq!((renderer.image_syncs, renderer.image_uploads), before);
+        // A new connection can reuse both ID and revision with different pixels.
+        let reconnected = baseline_offset_image_state_with([0, 0, 255, 255]);
+        renderer.clear_images();
+        let mut fresh = RetainedScene::new();
+        let mut expected = pixels_a.clone();
+        let mut changed = 0;
+        for pixel in expected.as_chunks_mut::<4>().0 {
+            if *pixel == [0, 255, 0, 255] {
+                pixel.copy_from_slice(&[0, 0, 255, 255]);
+                changed += 1;
+            }
+        }
+        assert_eq!(changed, 12 * 8);
+        assert!(
+            font_pixels(renderer, &mut fresh, &reconnected, &mut cache) == expected,
+            "clear must upload new pixels for the reused ID/revision"
+        );
+        assert_eq!(a.all_images()[1].key, fresh.all_images()[1].key);
+        assert_eq!(a.all_images()[1].revision, fresh.all_images()[1].revision);
+    });
+}

@@ -1688,3 +1688,127 @@ fn baseline_offset_clamped_file_reload_preserves_clean_and_damaged_rows() {
         );
     }
 }
+
+#[test]
+fn baseline_offset_saved_file_reload_retains_inline_images_through_full_apply() {
+    use crate::testing::painter::{residency, sixel_chunk, Painter, Place};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.kdl");
+    let dropins = dir.path().join("config.d");
+    std::fs::create_dir(&dropins).unwrap();
+    std::fs::write(&path, "terminal { system_fonts false; }").unwrap();
+    let opts = CliArgs {
+        config: Some(path),
+        config_dir: Some(dir.path().to_owned()),
+        ..Default::default()
+    };
+    let load = || {
+        yinz_cli::setup::Setup::config_without_layout(&opts)
+            .unwrap()
+            .0
+            .terminal
+    };
+    let mut settings = load();
+    let mut paints = Paints::default();
+    let mut active = effective_font_options(&settings, 1.0, 1.0);
+    let mut cache = GlyphCache::new(active.stack(1.0).unwrap());
+    let state = Painter::state(5, 24, |p| {
+        use yinz_types::structured_render::{ATTR_BOLD, ATTR_ITALIC};
+        for (row, attrs) in [0, ATTR_BOLD, ATTR_ITALIC, ATTR_BOLD | ATTR_ITALIC]
+            .into_iter()
+            .enumerate()
+        {
+            p.styled(row, 0, "Ag -> fi", |cell| cell.attrs |= attrs);
+        }
+        p.wide(4, 0, '中');
+        p.wide(4, 3, '😀');
+        p.cluster(4, 6, "e\u{301}", 1);
+        p.cluster(4, 8, "👩‍💻", 2);
+        p.graphics(&[
+            residency(1, 12, 8, [0, 255, 0, 255]),
+            Place::of(1, 12, 8).at(1, 20).record(),
+            sixel_chunk(3, 20, 8, 6, "\x1bP0;1;0q\"1;1;8;6#0;2;100;0;0!8~\x1b\\"),
+        ]);
+    });
+    let selection = Selection::at(0, 0).extended_to(0, 4);
+    let copied = selection.text(state.screen());
+    let cursor = state.cursor_position();
+    let cells: Vec<_> = (0..5)
+        .flat_map(|row| (0..24).map(move |col| (row, col)))
+        .map(|(r, c)| state.screen().cell(r, c))
+        .collect();
+    let mut retained = RetainedScene::new();
+    retained.set_selection(Some(selection));
+    let refresh = |scene: &mut RetainedScene, cache: &mut GlyphCache| {
+        scene.refresh(
+            SceneInputs {
+                state: &state,
+                phase: BlinkPhase::On,
+                paints: &Paints::default(),
+                cursor: CursorOptions::default(),
+                hovered_link: None,
+                preedit: None,
+            },
+            cache,
+        )
+    };
+    refresh(&mut retained, &mut cache);
+    let original = retained.flatten();
+    assert_eq!(original.images.len(), 2);
+    let geometry = Geometry::calculate(400, 200, 0, cache.metrics()).unwrap();
+    let baseline = cache.metrics().baseline;
+    for offset in [2, -2, 0] {
+        std::fs::write(
+            dropins.join("10-baseline.kdl"),
+            format!("terminal {{ baseline_offset {offset}; }}"),
+        )
+        .unwrap();
+        let next = load();
+        let requested = effective_font_options(&next, 1.0, 1.0);
+        let update = prepare_fonts(&active, &requested).unwrap();
+        let generation = cache.generation();
+        apply_fonts(
+            &mut active,
+            &mut cache,
+            &mut retained,
+            requested.clone(),
+            update,
+        );
+        let next_paints = paints;
+        apply_settings(
+            &mut settings,
+            &mut paints,
+            &mut retained,
+            next.clone(),
+            next_paints,
+        );
+        refresh(&mut retained, &mut cache);
+        assert!(retained.rebuilt_everything());
+        assert_ne!(cache.generation(), generation);
+        assert!(!retained.replaced_images());
+        assert_eq!(retained.images(), original.images);
+        assert_eq!(retained.all_images(), original.images);
+        assert_eq!(retained.resident_images(), original.resident_images);
+        assert_eq!(cache.metrics().baseline as i32, baseline as i32 + offset);
+        assert!(Geometry::calculate(400, 200, 0, cache.metrics())
+            .unwrap()
+            .messages(Some(geometry))
+            .is_empty());
+        assert_eq!(settings, next);
+        assert_eq!(selection.text(state.screen()), copied);
+        assert_eq!(state.cursor_position(), cursor);
+        for (i, cell) in cells.iter().enumerate() {
+            assert_eq!(state.screen().cell(i / 24, i % 24), *cell);
+        }
+        let mut fresh = RetainedScene::new();
+        fresh.set_selection(Some(selection));
+        let mut fresh_cache = GlyphCache::new(requested.stack(1.0).unwrap());
+        refresh(&mut fresh, &mut fresh_cache);
+        assert_eq!(retained.flatten(), fresh.flatten());
+        if offset == 0 {
+            assert_eq!(retained.flatten(), original);
+        } else {
+            assert_ne!(retained.flatten(), original);
+        }
+    }
+}
