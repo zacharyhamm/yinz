@@ -2740,6 +2740,17 @@ mod remote_pane_forward_ssh;
 #[path = "../src/unit/session_update_ssh.rs"]
 mod session_update_ssh;
 
+// The transaction fixture stages installations directly; session recovery is
+// owned by the executable rather than this SSH test process.
+mod live_update {
+    pub(crate) fn recover_operation(
+        _data_dir: &std::path::Path,
+        _operation: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("the SSH transaction fixture cannot recover session updates")
+    }
+}
+
 /// Session CLI requests use the far server while their file inputs remain on this machine.
 #[test]
 #[ignore = "requires the Docker SSH fixture"]

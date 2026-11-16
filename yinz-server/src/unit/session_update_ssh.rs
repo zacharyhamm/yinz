@@ -12,6 +12,10 @@ use yinz_types::update_client::{
 // Stage exactly the production transaction without release downloads or a
 // production-only fixture switch. The candidate is this worktree's own binary.
 #[path = "../../../src/update/transaction.rs"]
+#[expect(
+    dead_code,
+    reason = "the SSH fixture only uses transaction staging APIs"
+)]
 mod update_transaction;
 
 struct Peer {
