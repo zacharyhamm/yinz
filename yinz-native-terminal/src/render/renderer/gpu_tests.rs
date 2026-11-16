@@ -1666,3 +1666,299 @@ fn baseline_offset_inline_images_initialize_on_scene_switch_and_clear() {
         assert_eq!(a.all_images()[1].revision, fresh.all_images()[1].revision);
     });
 }
+
+fn baseline_offset_atlas_retry_pressure(
+    cache: &mut crate::render::atlas::GlyphCache,
+    ordinary: bool,
+) {
+    use crate::text::font::FaceStyle;
+    for budget in 1..=32768 {
+        cache.glyph(FaceStyle::Regular, 'A', budget);
+        if cache.exhausted() {
+            break;
+        }
+    }
+    assert!(cache.exhausted());
+    assert!(cache.may_flush(std::time::Instant::now()));
+    if ordinary {
+        assert_eq!(cache.entries(), 32768);
+    } else {
+        assert!(cache.entries() < 32768);
+    }
+}
+
+fn baseline_offset_atlas_retry_pixel(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
+    let at = (((383 - y) * 768 + x) * 4) as usize;
+    pixels[at..at + 4].try_into().unwrap()
+}
+
+fn baseline_offset_atlas_retry_images(renderer: &mut Renderer, change: &str, ordinary: bool) {
+    use crate::emulation::selection::Selection;
+    use crate::render::{
+        atlas::GlyphCache,
+        scene::{CellRect, HeldOut},
+    };
+    use crate::testing::painter::{residency, sixel_chunk, Painter, Place};
+    use crate::text::font::FontOptions;
+    use yinz_types::structured_render::{GeometryRecord, PaneRect, PANE_SELECTABLE};
+    let mut options = FontOptions {
+        system_fonts: false,
+        ..Default::default()
+    };
+    let make_cache = |options: &FontOptions| {
+        let fonts = options.stack(1.0).unwrap();
+        if ordinary {
+            GlyphCache::new(fonts)
+        } else {
+            GlyphCache::tiny(fonts)
+        }
+    };
+    let mut cache = make_cache(&options);
+    let mut state = Painter::state(4, 8, |p| {
+        p.text(0, 0, "A");
+        p.text(0, 5, "A");
+        p.graphics(&[
+            residency(1, 24, 8, [255; 4]),
+            Place::of(1, 24, 8).at(1, 1).record(),
+            sixel_chunk(3, 4, 8, 6, "\x1bP0;1;0q\"1;1;8;6#0;2;100;0;0!8~\x1b\\"),
+        ]);
+    });
+    let held = || {
+        vec![HeldOut {
+            content: CellRect {
+                x: 1,
+                y: 1,
+                cols: 3,
+                rows: 1,
+            },
+            covers: vec![],
+        }]
+    };
+    let mut retained = RetainedScene::new();
+    // Keep selection out of the old image probe when taller cells move that
+    // physical point into text row zero.
+    let selection = Selection::at(0, 5).extended_to(0, 6);
+    let copied = selection.text(state.screen());
+    retained.set_selection(Some(selection));
+    let mut held_regions = if change == "unheld" { held() } else { vec![] };
+    retained.set_held_out(held_regions.clone());
+    // Every scenario has its own cache, scene and connection-owned image state.
+    renderer.clear_images();
+    let original = font_pixels(renderer, &mut retained, &state, &mut cache);
+    assert!(!cache.exhausted(), "initial compact scene must fit");
+    assert_eq!(retained.all_images().len(), 2);
+    assert_eq!(renderer.images.len(), 2);
+    let metrics = cache.metrics();
+    let old_point = (metrics.width, metrics.height);
+    let sixel_point = (4 * metrics.width, 3 * metrics.height);
+    let black = [0, 0, 0, 255];
+    assert_eq!(
+        baseline_offset_atlas_retry_pixel(&original, old_point.0, old_point.1),
+        if change == "unheld" { black } else { [255; 4] }
+    );
+    assert_eq!(
+        baseline_offset_atlas_retry_pixel(&original, sixel_point.0, sixel_point.1),
+        [255, 0, 0, 255]
+    );
+    let identity = retained.identity();
+    let original_resources = baseline_offset_image_resources(renderer);
+    match change {
+        "move" => Painter::apply_marking(&mut state, &mut retained, |p| {
+            p.graphics(&[Place::of(1, 24, 8).at(1, 4).record()]);
+        }),
+        "revision" => Painter::apply_marking(&mut state, &mut retained, |p| {
+            p.graphics(&[residency(1, 24, 8, [0, 0, 255, 255])]);
+        }),
+        "delete" => Painter::apply_marking(&mut state, &mut retained, |p| {
+            p.full_repaint();
+            p.text(0, 0, "A");
+            p.text(0, 5, "A");
+        }),
+        "sixel" => Painter::apply_marking(&mut state, &mut retained, |p| {
+            p.graphics(&[sixel_chunk(
+                3,
+                4,
+                8,
+                6,
+                "\x1bP0;1;0q\"1;1;8;6#0;2;0;0;100!8~\x1b\\",
+            )]);
+        }),
+        "pane" => Painter::apply_marking(&mut state, &mut retained, |p| {
+            p.geometry(&GeometryRecord {
+                panes: vec![PaneRect {
+                    x: 0,
+                    y: 0,
+                    cols: 2,
+                    rows: 4,
+                    top: 0,
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    flags: PANE_SELECTABLE,
+                }],
+            });
+        }),
+        "held" => held_regions = held(),
+        "unheld" => held_regions.clear(),
+        "width" => {
+            options.cell.cell_width = 1.5;
+            assert!(cache.update_cell(&options));
+        },
+        "height" => {
+            options.cell.line_height = 1.5;
+            assert!(cache.update_cell(&options));
+        },
+        "baseline" => {
+            options.cell.baseline_offset = 2.0;
+            assert!(cache.update_cell(&options));
+        },
+        "unchanged" => {},
+        _ => unreachable!(),
+    }
+    retained.set_held_out(held_regions.clone());
+    // update_cell already flushes. Fill afterward to prove an additional,
+    // eligible renewal occurs inside this measured public refresh/draw.
+    let generation = cache.generation();
+    let flushes = cache.flushes();
+    baseline_offset_atlas_retry_pressure(&mut cache, ordinary);
+    let before = (renderer.image_syncs, renderer.image_uploads);
+    let rows_before = renderer.glyph_rows.whole_uploads;
+    // Exactly one synchronous draw, with no comparator/identity switch in this
+    // interval: these call deltas cannot depend on scheduling or render counts.
+    let live = font_pixels(renderer, &mut retained, &state, &mut cache);
+    assert_eq!(cache.flushes(), flushes + 1, "{change}");
+    assert_ne!(cache.generation(), generation);
+    assert_eq!(retained.identity(), identity);
+    assert!(!cache.exhausted(), "post-renewal scene must fit: {change}");
+    assert!(retained.rebuilt_everything());
+    assert!(renderer.glyph_rows.whole_uploads > rows_before);
+    let pixel = |x, y| baseline_offset_atlas_retry_pixel(&live, x, y);
+    // Independent color/location oracles precede fresh-scene comparisons and
+    // notification assertions, exposing actual stale pixels on the old code.
+    match change {
+        "move" => {
+            assert_eq!(
+                pixel(old_point.0, old_point.1),
+                black,
+                "obsolete image position"
+            );
+            assert_eq!(pixel(4 * metrics.width, metrics.height), [255; 4]);
+        },
+        "revision" => assert_eq!(pixel(old_point.0, old_point.1), [0, 0, 255, 255]),
+        "delete" => {
+            assert_eq!(pixel(old_point.0, old_point.1), black);
+            assert_eq!(pixel(sixel_point.0, sixel_point.1), black);
+        },
+        "sixel" => assert_eq!(pixel(sixel_point.0, sixel_point.1), [0, 0, 255, 255]),
+        "held" => assert_eq!(pixel(old_point.0, old_point.1), black),
+        "unheld" => assert_eq!(pixel(old_point.0, old_point.1), [255; 4]),
+        "pane" => {
+            assert_eq!(pixel(old_point.0, old_point.1), [255; 4]);
+            assert_eq!(pixel(2 * metrics.width, metrics.height), black);
+        },
+        "width" | "height" => {
+            assert_eq!(pixel(old_point.0, old_point.1), black);
+            assert_eq!(
+                pixel(cache.metrics().width, cache.metrics().height),
+                [255; 4]
+            );
+        },
+        "unchanged" | "baseline" => {
+            assert_eq!(pixel(old_point.0, old_point.1), [255; 4]);
+            assert_eq!(pixel(sixel_point.0, sixel_point.1), [255, 0, 0, 255]);
+            assert_eq!(
+                baseline_offset_image_resources(renderer),
+                original_resources
+            );
+        },
+        _ => unreachable!(),
+    }
+    let changed = !matches!(change, "baseline" | "unchanged");
+    assert_eq!(retained.replaced_images(), changed, "{change}");
+    assert_eq!(
+        renderer.image_syncs,
+        before.0 + usize::from(changed),
+        "{change}"
+    );
+    assert_eq!(
+        renderer.image_uploads,
+        before.1 + usize::from(changed && !retained.images().is_empty()),
+        "{change}"
+    );
+    let mut expected_vertices = vec![];
+    for image in retained.images() {
+        push_image_vertices(&mut expected_vertices, image);
+    }
+    assert_eq!(renderer.image_vertices, expected_vertices);
+    assert_eq!(
+        renderer
+            .image_batches
+            .iter()
+            .map(|b| b.count as usize)
+            .sum::<usize>(),
+        retained.images().len() * 6
+    );
+    assert_eq!(renderer.images.len(), retained.resident_images().len());
+    for image in retained.all_images() {
+        assert_eq!(renderer.images[&image.key].revision, image.revision);
+    }
+    if change == "delete" {
+        assert!(renderer.image_batches.is_empty());
+        assert!(renderer.images.is_empty());
+    }
+    assert_eq!(selection.text(state.screen()), copied);
+    let mut fresh = RetainedScene::new();
+    fresh.set_selection(Some(selection));
+    fresh.set_held_out(held_regions);
+    let mut fresh_cache = make_cache(&options);
+    assert!(
+        font_pixels(renderer, &mut fresh, &state, &mut fresh_cache) == live,
+        "live/fresh frame mismatch: {change}"
+    );
+    assert!(!fresh_cache.exhausted());
+    assert_eq!(retained.all_images(), fresh.all_images());
+    assert_eq!(retained.images(), fresh.images());
+    assert_eq!(retained.resident_images(), fresh.resident_images());
+    // Restore live resources after the independent comparator before taking
+    // counters for another unchanged public refresh/draw.
+    assert!(font_pixels(renderer, &mut retained, &state, &mut cache) == live);
+    let resources = baseline_offset_image_resources(renderer);
+    let before = (renderer.image_syncs, renderer.image_uploads);
+    assert!(font_pixels(renderer, &mut retained, &state, &mut cache) == live);
+    assert!(!retained.replaced_images());
+    assert!(!retained.rebuilt_everything());
+    assert!(retained.rebuilt_rows().is_empty());
+    assert_eq!((renderer.image_syncs, renderer.image_uploads), before);
+    assert_eq!(baseline_offset_image_resources(renderer), resources);
+    assert_eq!(cache.flushes(), flushes + 1);
+}
+
+#[test]
+fn baseline_offset_atlas_retry_moved_image_matches_independent_pixels() {
+    with_renderer(|renderer| baseline_offset_atlas_retry_images(renderer, "move", false));
+}
+
+#[test]
+fn baseline_offset_atlas_retry_ordinary_entry_limit_moves_image_pixels() {
+    with_renderer(|renderer| baseline_offset_atlas_retry_images(renderer, "move", true));
+}
+
+#[test]
+fn baseline_offset_atlas_retry_image_updates_and_clipping_match_fresh_pixels() {
+    with_renderer(|renderer| {
+        for change in [
+            "revision", "delete", "sixel", "held", "unheld", "pane", "width", "height",
+        ] {
+            baseline_offset_atlas_retry_images(renderer, change, false);
+        }
+    });
+}
+
+#[test]
+fn baseline_offset_atlas_retry_text_only_renewal_retains_image_resources() {
+    with_renderer(|renderer| {
+        for change in ["unchanged", "baseline"] {
+            baseline_offset_atlas_retry_images(renderer, change, false);
+        }
+    });
+}

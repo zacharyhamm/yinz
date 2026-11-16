@@ -197,8 +197,12 @@ impl RetainedScene {
         self.refresh_once(inputs, cache);
         let now = Instant::now();
         if cache.exhausted() && cache.may_flush(now) {
+            // The retry sees the already updated placement/held state. Keep
+            // damage from either pass, scoped to this public refresh only.
+            let replaced_images = self.replaced_images;
             cache.flush();
             self.refresh_once(inputs, cache);
+            self.replaced_images |= replaced_images;
             if cache.exhausted() {
                 cache.note_overflow(now);
             }

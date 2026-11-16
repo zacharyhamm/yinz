@@ -807,3 +807,253 @@ fn baseline_offset_image_placement_inputs_still_refresh() {
         }
     }
 }
+
+fn baseline_offset_atlas_retry_pressure(cache: &mut GlyphCache, ordinary: bool) {
+    use crate::text::font::FaceStyle;
+    // Distinct raster budgets exercise the real insertion path. The ordinary
+    // atlas reaches the production entry ceiling; the tiny one runs out of area.
+    for budget in 1..=32768 {
+        cache.glyph(FaceStyle::Regular, 'A', budget);
+        if cache.exhausted() {
+            break;
+        }
+    }
+    assert!(cache.exhausted());
+    assert!(cache.may_flush(Instant::now()));
+    if ordinary {
+        assert_eq!(cache.entries(), 32768);
+    } else {
+        assert!(cache.entries() < 32768);
+    }
+}
+
+fn baseline_offset_atlas_retry_state() -> TerminalState {
+    use crate::testing::painter::{residency, sixel_chunk, Place};
+    Painter::state(4, 8, |p| {
+        p.text(0, 0, "A");
+        p.graphics(&[
+            residency(1, 24, 8, [255; 4]),
+            Place::of(1, 24, 8).at(1, 1).record(),
+            sixel_chunk(3, 4, 8, 6, "\x1bP0;1;0q\"1;1;8;6#0;2;100;0;0!8~\x1b\\"),
+        ]);
+    })
+}
+
+fn baseline_offset_atlas_retry_held() -> Vec<HeldOut> {
+    vec![HeldOut {
+        content: scene::CellRect {
+            x: 1,
+            y: 1,
+            cols: 3,
+            rows: 1,
+        },
+        covers: vec![],
+    }]
+}
+
+fn baseline_offset_atlas_retry_change(change: &str, ordinary: bool, retry: bool) {
+    use crate::testing::painter::{residency, sixel_chunk, Place};
+    use crate::text::font::FontOptions;
+    use yinz_types::structured_render::{GeometryRecord, PaneRect, PANE_SELECTABLE};
+    let mut options = FontOptions {
+        system_fonts: false,
+        ..Default::default()
+    };
+    let make_cache = |options: &FontOptions| {
+        let fonts = options.stack(1.0).unwrap();
+        if ordinary {
+            GlyphCache::new(fonts)
+        } else {
+            GlyphCache::tiny(fonts)
+        }
+    };
+    let mut cache = make_cache(&options);
+    let mut state = baseline_offset_atlas_retry_state();
+    let mut retained = RetainedScene::new();
+    let selection = Selection::at(0, 0).extended_to(0, 1);
+    retained.set_selection(Some(selection));
+    if change == "unheld" {
+        retained.set_held_out(baseline_offset_atlas_retry_held());
+    }
+    refreshed(&mut retained, &state, &mut cache);
+    assert!(retained.replaced_images(), "first image refresh");
+    assert!(!cache.exhausted(), "visible scene must fit the tiny atlas");
+    refreshed(&mut retained, &state, &mut cache);
+    assert!(!retained.replaced_images());
+    let identity = retained.identity();
+    let placed = retained.placed;
+    let old = retained.flatten();
+    let copied = selection.text(state.screen());
+    let cells: Vec<_> = (0..4)
+        .flat_map(|r| (0..8).map(move |c| (r, c)))
+        .map(|(r, c)| state.screen().cell(r, c))
+        .collect();
+    match change {
+        "move" => Painter::apply_marking(&mut state, &mut retained, |p| {
+            p.graphics(&[Place::of(1, 24, 8).at(1, 4).record()]);
+        }),
+        "revision" => Painter::apply_marking(&mut state, &mut retained, |p| {
+            p.graphics(&[residency(1, 24, 8, [0, 0, 255, 255])]);
+        }),
+        "delete" => Painter::apply_marking(&mut state, &mut retained, |p| {
+            p.full_repaint();
+            p.text(0, 0, "A");
+        }),
+        "add" => Painter::apply_marking(&mut state, &mut retained, |p| {
+            p.graphics(&[
+                residency(2, 4, 4, [0, 255, 0, 255]),
+                Place::of(2, 4, 4).at(2, 6).record(),
+            ]);
+        }),
+        "sixel" => Painter::apply_marking(&mut state, &mut retained, |p| {
+            p.graphics(&[sixel_chunk(
+                3,
+                4,
+                8,
+                6,
+                "\x1bP0;1;0q\"1;1;8;6#0;2;0;0;100!8~\x1b\\",
+            )]);
+        }),
+        "pane" => Painter::apply_marking(&mut state, &mut retained, |p| {
+            p.geometry(&GeometryRecord {
+                panes: vec![PaneRect {
+                    x: 0,
+                    y: 0,
+                    cols: 2,
+                    rows: 4,
+                    top: 0,
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    flags: PANE_SELECTABLE,
+                }],
+            });
+        }),
+        "width" => {
+            options.cell.cell_width = 1.5;
+            assert!(cache.update_cell(&options));
+        },
+        "height" => {
+            options.cell.line_height = 1.5;
+            assert!(cache.update_cell(&options));
+        },
+        "held" => retained.set_held_out(baseline_offset_atlas_retry_held()),
+        "unheld" => retained.set_held_out(vec![]),
+        "baseline" => {
+            options.cell.baseline_offset = 2.0;
+            assert!(cache.update_cell(&options));
+        },
+        "unchanged" => {},
+        _ => unreachable!(),
+    }
+    // Cell changes themselves flush; only pressure after those changes can
+    // establish that this public refresh, rather than update_cell, renews it.
+    let flushes = cache.flushes();
+    let generation = cache.generation();
+    retained.mark_row(2);
+    if retry {
+        baseline_offset_atlas_retry_pressure(&mut cache, ordinary);
+    }
+    refreshed(&mut retained, &state, &mut cache);
+    assert_eq!(cache.flushes(), flushes + u64::from(retry), "{change}");
+    assert_eq!(cache.generation() != generation, retry, "{change}");
+    assert_eq!(retained.identity(), identity);
+    assert!(!cache.exhausted(), "post-renewal scene must fit: {change}");
+    let changed = !matches!(change, "unchanged" | "baseline");
+    assert_eq!(
+        retained.replaced_images(),
+        changed,
+        "{change}: image damage lost during retry"
+    );
+    if matches!(change, "held" | "unheld" | "unchanged" | "baseline") {
+        assert_eq!(
+            retained.placed, placed,
+            "held-only/text-only changes keep placement identity"
+        );
+    }
+    if retry {
+        assert!(retained.rebuilt_everything());
+    } else {
+        assert!(retained.rebuilt_rows().contains(&2));
+    }
+    assert_eq!(selection.text(state.screen()), copied);
+    for (i, cell) in cells.iter().enumerate() {
+        assert_eq!(state.screen().cell(i / 8, i % 8), *cell);
+    }
+    let mut fresh_cache = make_cache(&options);
+    let mut fresh = RetainedScene::new();
+    fresh.set_selection(Some(selection));
+    fresh.set_held_out(retained.held.clone());
+    refreshed(&mut fresh, &state, &mut fresh_cache);
+    assert!(!fresh_cache.exhausted());
+    assert_eq!(retained.flatten(), fresh.flatten(), "{change}");
+    assert_eq!(retained.all_images(), fresh.all_images());
+    if change == "delete" {
+        assert!(retained.images().is_empty());
+        assert!(retained.resident_images().is_empty());
+    } else if change == "pane" {
+        assert_eq!(
+            retained
+                .images()
+                .iter()
+                .find(|q| q.key == ImageKey::Kitty(1))
+                .unwrap()
+                .width,
+            cache.metrics().width
+        );
+    } else if !changed {
+        assert_eq!(retained.images(), old.images);
+        assert_eq!(retained.resident_images(), old.resident_images);
+    }
+    let current = retained.flatten();
+    refreshed(&mut retained, &state, &mut cache);
+    assert!(
+        !retained.replaced_images(),
+        "damage must not persist across public calls"
+    );
+    assert!(!retained.rebuilt_everything());
+    assert!(retained.rebuilt_rows().is_empty());
+    assert_eq!(retained.flatten(), current);
+    assert_eq!(cache.flushes(), flushes + u64::from(retry));
+}
+
+#[test]
+fn baseline_offset_atlas_retry_changed_images_keep_damage() {
+    for change in [
+        "move", "revision", "delete", "add", "sixel", "pane", "width", "height", "held", "unheld",
+    ] {
+        baseline_offset_atlas_retry_change(change, false, true);
+    }
+}
+
+#[test]
+fn baseline_offset_atlas_retry_ordinary_entry_limit_keeps_image_damage() {
+    baseline_offset_atlas_retry_change("move", true, true);
+}
+
+#[test]
+fn baseline_offset_atlas_retry_unchanged_images_remain_clean() {
+    for change in ["unchanged", "baseline"] {
+        baseline_offset_atlas_retry_change(change, false, true);
+    }
+}
+
+#[test]
+fn baseline_offset_atlas_retry_single_pass_keeps_normal_image_damage() {
+    baseline_offset_atlas_retry_change("move", false, false);
+}
+
+#[test]
+fn baseline_offset_atlas_retry_first_refresh_keeps_image_damage() {
+    let mut cache = tiny_cache();
+    let state = baseline_offset_atlas_retry_state();
+    let mut retained = RetainedScene::new();
+    baseline_offset_atlas_retry_pressure(&mut cache, false);
+    refreshed(&mut retained, &state, &mut cache);
+    assert_eq!(cache.flushes(), 1);
+    assert!(!cache.exhausted());
+    assert_eq!(retained.all_images().len(), 2);
+    assert!(retained.replaced_images());
+    refreshed(&mut retained, &state, &mut cache);
+    assert!(!retained.replaced_images());
+}
