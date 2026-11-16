@@ -1958,3 +1958,40 @@ fn issue85_conflicting_interruption_provenance_cannot_complete_a_turn() {
         );
     }
 }
+
+#[test]
+fn web_slash_input_types_arbitrary_tokens_and_pastes_arguments() {
+    for kind in ["claude", "codex", "pi"] {
+        for command in [
+            "/plan",
+            "/review",
+            "/custom:agent-command",
+            "/new",
+            "/clear",
+        ] {
+            let (typed, pasted) = web_slash_input(kind, command).unwrap();
+            assert_eq!(typed, command.as_bytes());
+            assert!(pasted.is_empty());
+            let text = format!("  {command} detailed arguments\nwith a second line\tand tab");
+            let (typed, pasted) = web_slash_input(kind, &text).unwrap();
+            assert_eq!(typed, command.as_bytes());
+            assert_eq!(pasted, b" detailed arguments\nwith a second line\tand tab");
+        }
+    }
+    for (kind, text) in [
+        ("claude", "\u{200b}/plan args"),
+        ("pi", "\u{feff}/plan args"),
+    ] {
+        assert_eq!(
+            web_slash_input(kind, text).unwrap(),
+            (b"/plan".to_vec(), b" args".to_vec())
+        );
+    }
+    for kind in ["opencode", "agy", "muse", "custom"] {
+        assert!(web_slash_input(kind, "/plan")
+            .unwrap_err()
+            .contains("unsupported"));
+    }
+    assert!(web_slash_input("codex", "/").is_err());
+    assert!(web_slash_input("claude", "ordinary text").is_err());
+}

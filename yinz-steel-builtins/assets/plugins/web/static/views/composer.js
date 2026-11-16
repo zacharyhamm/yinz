@@ -101,12 +101,12 @@ export function Composer({ env, live, enabled, onTargetChanged }) {
     setProblem(null);
     const r = await env.submissions.send(target, { canPrompt: canPrompt && enabled, reason });
     if (!r.ok) setProblem(r.reason);
-    else if (r.classification && r.classification.state === 'incompatible') onTargetChanged();
+    else if (r.classification && ['incompatible', 'command_sent'].includes(r.classification.state)) onTargetChanged();
   }
   async function retry() {
     setProblem(null);
     const r = await env.submissions.retry(target);
-    if (r.ok && r.classification && r.classification.state === 'incompatible') onTargetChanged();
+    if (r.ok && r.classification && ['incompatible', 'command_sent'].includes(r.classification.state)) onTargetChanged();
   }
   function pick(text) {
     setPrompts(false);
@@ -138,7 +138,8 @@ export function Composer({ env, live, enabled, onTargetChanged }) {
       <p class="submission-message">${view.message}</p>
       <div class="submission-actions"><button type="button" class="link-button" onClick=${() => env.submissions.dismissFailure(target)}>Dismiss</button></div>
     </div>` : null}
-    ${sending ? html`<p class="submission-panel submission-sending" id="submission-sending" role="status">Sending… waiting for the agent to confirm.</p>` : null}
+    ${view.state === 'command_sent' ? html`<p class="submission-panel" id="submission-command" role="status">${view.message}</p>` : null}
+    ${sending ? html`<p class="submission-panel submission-sending" id="submission-sending" role="status">Sending… waiting for delivery or prompt confirmation.</p>` : null}
     ${reason ? html`<p class="composer-reason" id="composer-reason">${reason}</p>` : null}
     ${problem && problem !== sendProblem ? html`<p class="composer-reason error-text" role="alert">${problem}</p>` : null}
     <div class="composer-row">
@@ -146,7 +147,7 @@ export function Composer({ env, live, enabled, onTargetChanged }) {
         disabled=${blocked} onClick=${() => setPrompts(true)}>☰</button>
       <label class="visually-hidden" for="composer-input">Prompt</label>
       <textarea id="composer-input" class="composer-input" rows=${rowsFor(draft)} value=${draft}
-        placeholder=${blocked ? 'Prompting unavailable' : 'Message the agent'} disabled=${blocked}
+        placeholder=${blocked ? 'Prompting unavailable' : 'Message the agent or enter /command arguments'} disabled=${blocked}
         autocomplete="off" autocapitalize="sentences" spellcheck="true"
         onInput=${(e) => target && env.submissions.setDraft(target, e.currentTarget.value)}></textarea>
       <button type="button" class=${cx('button', 'button-primary', 'composer-send')} id="composer-send"

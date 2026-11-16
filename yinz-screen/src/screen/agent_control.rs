@@ -191,6 +191,8 @@ pub(super) struct Pending {
     pub(super) deadline: Option<Instant>,
     input_revision: u64,
     prompt: Option<PromptObservation>,
+    command: bool,
+    command_enter_sent: bool,
     submission_id: Option<String>,
     clear: bool,
     steering: bool,
@@ -208,6 +210,9 @@ pub(super) struct Pending {
 
 impl Pending {
     fn not_ready_reason(&self) -> Option<NotReadyReason> {
+        if self.command {
+            return Some(NotReadyReason::PendingSubmission);
+        }
         self.prompt.as_ref().and_then(|prompt| {
             if !prompt.acknowledged() || self.delivery.is_some() || self.enter_at.is_some() {
                 Some(NotReadyReason::PendingSubmission)
@@ -249,9 +254,9 @@ impl Screen {
     }
 
     fn record_submission(&mut self, pending: &Pending, result: Option<SubmissionResult>) {
-        let Some(prompt) = &pending.prompt else {
+        if pending.prompt.is_none() && !pending.command {
             return;
-        };
+        }
         let Some(id) = &pending.submission_id else {
             return;
         };
@@ -266,8 +271,10 @@ impl Screen {
         else {
             return;
         };
-        submission.acknowledged = prompt.acknowledged();
-        submission.turn_id = prompt.turn_id().map(str::to_owned);
+        if let Some(prompt) = &pending.prompt {
+            submission.acknowledged = prompt.acknowledged();
+            submission.turn_id = prompt.turn_id().map(str::to_owned);
+        }
         if pending.conversation.is_some() {
             submission.conversation = pending.conversation.clone();
         }
@@ -926,6 +933,12 @@ impl Screen {
         self.claude_permission_waits.remove(&pane);
         let mut keep = Vec::new();
         for pending in std::mem::take(&mut self.agent_controls) {
+            // A command may reset/switch the conversation before its submit-write receipt.
+            // No further input is allowed; retain only the delivery wait across this edge.
+            if pending.pane == pane && pending.command_enter_sent {
+                keep.push(pending);
+                continue;
+            }
             if pending.pane == pane && pending.submission_id.is_some() {
                 self.finish_agent_control(
                     &pending,
@@ -942,7 +955,18 @@ impl Screen {
             }
         }
         self.agent_controls = keep;
-        self.agent_submissions.remove(&pane);
+        if let Some(submissions) = self.agent_submissions.get_mut(&pane) {
+            submissions.retain(|submission| {
+                self.agent_controls.iter().any(|pending| {
+                    pending.pane == pane
+                        && pending.command_enter_sent
+                        && pending.submission_id.as_deref() == Some(submission.id.as_str())
+                })
+            });
+            if submissions.is_empty() {
+                self.agent_submissions.remove(&pane);
+            }
+        }
     }
 
     pub(super) fn apply_agent_report_state(
@@ -1894,6 +1918,7 @@ impl Screen {
         use AgentRequest::*;
         // Check the complete identity in this instruction turn, before lowering to the
         // existing control state machine (which keeps its asynchronous identity fences).
+        let mut web_command = false;
         let request = match request {
             WebGuarded {
                 pane_id,
@@ -1901,6 +1926,9 @@ impl Screen {
                 expected_session_id,
                 action,
             } => {
+                web_command = matches!(&action, yinz_types::agent::control::WebAgentAction::Prompt { text, .. } if text.trim_start().starts_with('/')
+                    || (expected_kind == "claude" && claude_prompt_text(text).trim_start().starts_with('/'))
+                    || (expected_kind == "pi" && pi_prompt_text(text).starts_with('/')));
                 let submission_id = action.submission_id().map(str::to_owned);
                 let valid = yinz_types::agent::control::valid_web_identity(&expected_kind)
                     && yinz_types::agent::control::valid_web_identity(&expected_session_id);
@@ -2187,6 +2215,8 @@ impl Screen {
                         deadline: Some(deadline),
                         input_revision: self.agent_input_revision(pane),
                         prompt: None,
+                        command: false,
+                        command_enter_sent: false,
                         submission_id: None,
                         clear: false,
                         steering: false,
@@ -2324,6 +2354,30 @@ impl Screen {
         let Some(status) = status else {
             return;
         };
+        if web_command
+            && let Prompt {
+                submission_id: Some(submission_id),
+                ..
+            } = &request
+            && let Some(submission) = self.submission(pane, submission_id)
+        {
+            let mut response = self.agent_result(
+                pane,
+                AgentOutcome::TimedOut,
+                Some(
+                    "Command delivery is still uncertain; inspect the pane. No input was resent."
+                        .into(),
+                ),
+            );
+            response.submission_id = Some(submission_id.clone());
+            response.prompt_delivery = submission.prompt_delivery;
+            if let Some(result) = &submission.result {
+                response.outcome = result.outcome;
+                response.message = result.message.clone();
+            }
+            self.agent_reply(&client, response);
+            return;
+        }
         if self.agent_draft_clears.contains_key(&pane)
             && matches!(request, Prompt { .. } | Recover { .. } | ClearDraft { .. })
         {
@@ -2347,7 +2401,7 @@ impl Screen {
                 let state = status.agent.state;
                 let in_flight = self.agent_controls.iter().any(|pending| {
                     pending.pane == pane
-                        && pending.prompt.is_some()
+                        && (pending.prompt.is_some() || pending.command)
                         && (!pending.abandoned || pending.delivery.is_some())
                 });
                 // An empty pin recovers only a pane that reports no session.
@@ -2689,6 +2743,17 @@ impl Screen {
                     self.agent_reply(&client, response);
                     return;
                 }
+                let command_input = if web_command {
+                    match yinz_types::agent::control::web_slash_input(&status.agent.kind, &prompt) {
+                        Ok(input) => Some(input),
+                        Err(message) => {
+                            reject(self, AgentOutcome::Rejected, message);
+                            return;
+                        },
+                    }
+                } else {
+                    None
+                };
                 if let Some(reason) = status
                     .not_ready_reason
                     .filter(|reason| *reason != NotReadyReason::UnconsumedInput)
@@ -2742,10 +2807,12 @@ impl Screen {
                 let input = provider
                     .as_ref()
                     .and_then(|provider| provider.input.as_ref());
-                if input.map_or_else(
-                    || is_command_prompt(&status.agent.kind, &prompt),
-                    |input| input.is_command_prompt(&prompt),
-                ) {
+                if !web_command
+                    && input.map_or_else(
+                        || is_command_prompt(&status.agent.kind, &prompt),
+                        |input| input.is_command_prompt(&prompt),
+                    )
+                {
                     reject(self, AgentOutcome::Rejected, "command input requires agent send-keys; prompt accepts text, exact Claude /clear, and exact Codex/Pi /new");
                     return;
                 }
@@ -2802,7 +2869,7 @@ impl Screen {
                 }
                 let reset =
                     yinz_types::agent::control::is_conversation_reset(&status.agent.kind, &prompt);
-                if reset
+                if (reset || web_command)
                     && (status.agent.state != AgentState::Idle
                         || self.claude_background_pending(pane)
                         || self
@@ -2810,7 +2877,7 @@ impl Screen {
                             .iter()
                             .any(|pending| pending.pane == pane && pending.prompt.is_some()))
                 {
-                    reject(self, AgentOutcome::Rejected, "conversation reset requires an inactive agent with no outstanding submissions");
+                    reject(self, AgentOutcome::Rejected, "commands and conversation resets require an inactive agent with no outstanding submissions");
                     return;
                 }
                 let steering = self.claude_steering(pane, &status.agent);
@@ -2852,12 +2919,15 @@ impl Screen {
                     conversation: status.agent.session_id.clone(),
                     deadline: Some(deadline),
                     input_revision: self.agent_input_revision(pane),
-                    prompt: Some(observation),
+                    prompt: (!web_command).then_some(observation),
+                    command: web_command,
+                    command_enter_sent: false,
                     submission_id: Some(submission_id),
-                    clear: yinz_types::agent::control::is_conversation_reset(
-                        &status.agent.kind,
-                        &prompt,
-                    ),
+                    clear: !web_command
+                        && yinz_types::agent::control::is_conversation_reset(
+                            &status.agent.kind,
+                            &prompt,
+                        ),
                     steering,
                     wait,
                     until: AgentState::Idle,
@@ -2873,7 +2943,9 @@ impl Screen {
                 // Expose Claude's slash command before its arguments can collapse into a chip,
                 // and type Codex's `/new`: a pasted command is draft text, not a command.
                 // Keep whitespace in the paste: typing a newline or tab would send a key.
-                let (prefix, paste) = if let Some(input) = input {
+                let (prefix, paste) = if let Some(command_input) = command_input {
+                    command_input
+                } else if let Some(input) = input {
                     (
                         input.paste_prefix.as_bytes().to_vec(),
                         prompt.replace('\n', &input.newline).into_bytes(),
@@ -2951,6 +3023,8 @@ impl Screen {
                     deadline: Some(deadline),
                     input_revision: self.agent_input_revision(pane),
                     prompt: None,
+                    command: false,
+                    command_enter_sent: false,
                     submission_id: Some(submission_id),
                     clear: false,
                     steering: false,
@@ -2986,6 +3060,8 @@ impl Screen {
                     deadline: Some(deadline),
                     input_revision: self.agent_input_revision(pane),
                     prompt: None,
+                    command: false,
+                    command_enter_sent: false,
                     submission_id: None,
                     clear: false,
                     steering: false,
@@ -3037,12 +3113,25 @@ impl Screen {
         }
         let previous_revision = self.agent_input_revision(pane);
         let kind = pending.kind.clone();
+        let command = pending.command;
         let (tx, rx) = tokio::sync::oneshot::channel();
         pending.delivery = Some(rx);
         self.agent_controls.push(pending);
         // Codex reads quickly typed text followed by a paste as one burst, and an empty
         // paste there discards the typed command, so a bare command is only typed.
-        let result = if paste.is_empty() && matches!(kind.as_str(), "codex" | "pi") {
+        let result = if command {
+            self.tab_containing_pane_mut(pane)
+                .context("agent pane no longer exists")
+                .and_then(|tab| {
+                    tab.write_agent_command_to_pane_id(
+                        pane,
+                        prefix,
+                        paste,
+                        Some(yinz_bus::route::NotificationEnd::new(tx)),
+                    )
+                })
+                .map(|_| ())
+        } else if paste.is_empty() && matches!(kind.as_str(), "codex" | "pi") {
             self.write_to_pane_id(
                 &None,
                 prefix,
@@ -3221,7 +3310,8 @@ impl Screen {
         {
             self.agent_observation_uncertain(pending.pane, pending.submission_id.clone(), outcome);
         }
-        let completed = pending.resolved
+        let completed = pending.command
+            || pending.resolved
             || matches!(
                 outcome,
                 AgentOutcome::TargetChanged | AgentOutcome::TargetClosed
@@ -3416,17 +3506,21 @@ impl Screen {
                 continue;
             }
             let mut delivery_error = None;
+            let mut command_delivered = false;
             if let Some(delivery) = &mut pending.delivery {
                 match delivery.try_recv() {
                     Ok(result) => {
                         pending.delivery = None;
                         delivery_error = result.error_message;
-                        if delivery_error.is_none()
+                        command_delivered = pending.command_enter_sent && delivery_error.is_none();
+                        if !pending.command_enter_sent
+                            && delivery_error.is_none()
                             && !pending.abandoned
-                            && pending
-                                .prompt
-                                .as_ref()
-                                .is_some_and(|prompt| !prompt.acknowledged())
+                            && (pending.command
+                                || pending
+                                    .prompt
+                                    .as_ref()
+                                    .is_some_and(|prompt| !prompt.acknowledged()))
                         {
                             pending.enter_at = Some(now + pending.submit_delay);
                         }
@@ -3453,8 +3547,15 @@ impl Screen {
                 .and_then(|id| self.submission(pending.pane, id))
                 .and_then(|submission| submission.result.as_ref());
             let mut outcome = match &status {
+                _ if command_delivered => {
+                    delivery_error = Some("Command sent to the agent. Acceptance and completion are not verified; check pane output for errors or dialogs. Available commands depend on the provider.".into());
+                    Some(AgentOutcome::CommandSent)
+                },
                 _ if submission_result.is_some() => submission_result.map(|result| result.outcome),
                 _ if delivery_error.is_some() => Some(AgentOutcome::Failed),
+                _ if pending.command_enter_sent && pending.deadline.is_some_and(|d| now < d) => {
+                    None
+                },
                 None if self.tab_containing_pane(pending.pane).is_none() => {
                     Some(AgentOutcome::TargetClosed)
                 },
@@ -3473,13 +3574,13 @@ impl Screen {
                     Some(AgentOutcome::TargetChanged)
                 },
                 Some(_)
-                    if pending.prompt.is_some()
+                    if (pending.command || pending.prompt.is_some())
                         && self.agent_input_revision(pending.pane) != pending.input_revision =>
                 {
                     Some(AgentOutcome::Interrupted)
                 },
                 Some(status)
-                    if pending.prompt.is_some()
+                    if (pending.command || pending.prompt.is_some())
                         && (!status.prompt_supported
                             || !self.agent_process_matches(pending.pane, &pending.kind)) =>
                 {
@@ -3521,6 +3622,7 @@ impl Screen {
                 },
                 Some(status)
                     if pending.prompt.is_none()
+                        && !pending.command
                         && status.status_available
                         && status.agent.is_waiting_on_a_person()
                         && !self
@@ -3556,14 +3658,16 @@ impl Screen {
             }
             if outcome.is_none() && pending.enter_at.is_some_and(|enter| now >= enter) {
                 pending.enter_at = None;
-                if pending
-                    .prompt
-                    .as_ref()
-                    .is_some_and(|prompt| !prompt.acknowledged())
+                if pending.command
+                    || pending
+                        .prompt
+                        .as_ref()
+                        .is_some_and(|prompt| !prompt.acknowledged())
                 {
                     if status.as_ref().is_none_or(|status| {
                         status.agent.state != AgentState::Idle
                             && !(pending.kind == "claude"
+                                && !pending.command
                                 && !pending.clear
                                 && status.agent.state == AgentState::Busy)
                     }) || (pending.kind == "muse"
@@ -3572,7 +3676,23 @@ impl Screen {
                     {
                         outcome = Some(AgentOutcome::Interrupted);
                     } else {
-                        match self.agent_write_key(pending.pane, pending.submit_key.clone()) {
+                        let submit = if pending.command {
+                            let (tx, rx) = tokio::sync::oneshot::channel();
+                            pending.delivery = Some(rx);
+                            pending.command_enter_sent = true;
+                            self.tab_containing_pane_mut(pending.pane)
+                                .context("agent pane no longer exists")
+                                .and_then(|tab| {
+                                    tab.write_key_to_pane_id(
+                                        pending.pane,
+                                        pending.submit_key.clone(),
+                                        Some(yinz_bus::route::NotificationEnd::new(tx)),
+                                    )
+                                })
+                        } else {
+                            self.agent_write_key(pending.pane, pending.submit_key.clone())
+                        };
+                        match submit {
                             Err(error) => {
                                 delivery_error = Some(error.to_string());
                                 outcome = Some(AgentOutcome::Failed);
@@ -4314,7 +4434,7 @@ impl Screen {
         // their submissions before refresh_agent_controls delivers the results.
         let protected = self.protected_submissions();
         for mut pending in std::mem::take(&mut self.agent_controls) {
-            if pending.pane != pane {
+            if pending.pane != pane || pending.command {
                 keep.push(pending);
                 continue;
             }

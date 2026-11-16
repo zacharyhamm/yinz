@@ -366,6 +366,28 @@ impl Tab {
         )
     }
 
+    /// Deliver a typed command token and pasted arguments as one acknowledged PTY write.
+    /// Preprocess the paste markers separately so terminal modes keep their usual behavior.
+    pub fn write_agent_command_to_pane_id(
+        &mut self,
+        pane_id: PaneId,
+        token: Vec<u8>,
+        arguments: Vec<u8>,
+        completion: Option<NotificationEnd>,
+    ) -> Result<bool> {
+        let chunks = if arguments.is_empty() {
+            vec![token]
+        } else {
+            vec![
+                token,
+                b"\x1b[200~".to_vec(),
+                arguments,
+                b"\x1b[201~".to_vec(),
+            ]
+        };
+        self.write_pane_input(&None, chunks, false, pane_id, None, completion, true)
+    }
+
     pub fn paste_from_client(
         &mut self,
         bytes: Vec<u8>,

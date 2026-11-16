@@ -949,3 +949,28 @@ fn web_agents_peer_receive_deadline_bounds_cleanup_without_retrying() {
         std::fs::remove_file(socket).unwrap();
     }
 }
+
+#[test]
+fn web_agents_slash_command_routing_preserves_text_and_complete_target() {
+    for text in ["/plan", "/review argument", "/custom:command first\nsecond"] {
+        let identity = json!({"id":"live:local:7","kind":"codex","session_id":"conversation"});
+        let operation = Operation::parse(
+            &json!({"op":"prompt", "agent":identity,
+            "text":text, "submission_id":"command-route"})
+            .to_string(),
+        )
+        .unwrap();
+        let Operation::Prompt {
+            agent,
+            text: routed,
+            submission_id,
+        } = operation
+        else {
+            panic!("prompt routing")
+        };
+        assert_eq!(agent.kind, "codex");
+        assert_eq!(agent.session_id, "conversation");
+        assert_eq!(routed, text);
+        assert_eq!(submission_id, "command-route");
+    }
+}

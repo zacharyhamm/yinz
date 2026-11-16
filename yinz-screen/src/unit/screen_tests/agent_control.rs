@@ -19170,3 +19170,298 @@ fn background_task_ids_are_listed_in_status_json_while_pending() {
     assert_eq!(json["background"], false);
     assert_eq!(json["background_tasks"], serde_json::json!([]));
 }
+
+#[test]
+fn web_agents_slash_commands_use_command_input_and_never_claim_prompt_completion() {
+    use yinz_types::agent::control::WebAgentAction;
+    for kind in ["codex", "claude", "pi"] {
+        for text in [
+            "/plan",
+            "/review check the diff",
+            "/custom:task argument\nmore",
+            "/new",
+            "/clear",
+            "/unknown-command",
+        ] {
+            let (mut screen, messages, writes) = setup(kind);
+            report_kind(&mut screen, kind, hook("SessionStart"));
+            let request = AgentRequest::WebGuarded {
+                pane_id: PANE,
+                expected_kind: kind.into(),
+                expected_session_id: "conversation".into(),
+                action: WebAgentAction::Prompt {
+                    text: text.into(),
+                    submission_id: "web-command".into(),
+                },
+            };
+            let now = Instant::now();
+            screen.agent_control_at(
+                request.clone(),
+                crate::screen::agent_control::Reply::Client(CLIENT),
+                now,
+            );
+            let marker = finish_paste(&writes);
+            assert!(
+                marker.starts_with(b"\x1b[200~yz"),
+                "{kind}: {text}: {marker:?}"
+            );
+            // Advance the existing draft-clear protocol, acknowledging each queued write.
+            screen.refresh_agent_controls_at(now + Duration::from_millis(1));
+            screen.refresh_agent_controls_at(now + Duration::from_secs(1));
+            assert_eq!(finish_paste(&writes), [3]);
+            screen.refresh_agent_controls_at(now + Duration::from_millis(1001));
+            screen.refresh_agent_controls_at(now + Duration::from_secs(2));
+            screen.refresh_agent_controls_at(now + Duration::from_millis(2001));
+            let input_writes: Vec<_> = writes
+                .try_iter()
+                .filter_map(|(instruction, _)| {
+                    if let PtyWriteInstruction::Write(bytes, _, completion) = instruction {
+                        Some((bytes, completion))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(
+                input_writes.len(),
+                1,
+                "command and arguments share one write receipt"
+            );
+            let (input, mut completion) = input_writes.into_iter().next().unwrap();
+            let input_failed = text.starts_with("/custom:");
+            if input_failed {
+                completion
+                    .as_mut()
+                    .unwrap()
+                    .set_error_message("command input write failed".into());
+            }
+            drop(completion);
+            let (typed, args) = yinz_types::agent::control::web_slash_input(kind, text).unwrap();
+            let expected = if args.is_empty() {
+                typed
+            } else {
+                [typed, b"\x1b[200~".to_vec(), args, b"\x1b[201~".to_vec()].concat()
+            };
+            assert_eq!(input, expected, "{kind}: {text}");
+            assert!(replies(&messages, CLIENT).is_empty());
+            screen.refresh_agent_controls_at(now + Duration::from_millis(2002));
+            if input_failed {
+                let response = replies(&messages, CLIENT).pop().unwrap();
+                assert_eq!(response.outcome, AgentOutcome::Failed);
+                assert!(response
+                    .message
+                    .unwrap()
+                    .contains("command input write failed"));
+                screen.refresh_agent_controls_at(now + Duration::from_secs(3));
+                assert!(
+                    finish_paste(&writes).is_empty(),
+                    "failed input must not be submitted"
+                );
+                screen.agent_control(request, CLIENT);
+                assert_eq!(
+                    replies(&messages, CLIENT).pop().unwrap().outcome,
+                    AgentOutcome::Failed
+                );
+                assert!(finish_paste(&writes).is_empty());
+                continue;
+            }
+            screen.refresh_agent_controls_at(now + Duration::from_secs(3));
+            let write_failed = text == "/unknown-command";
+            if write_failed {
+                for (instruction, _) in writes.try_iter() {
+                    if let PtyWriteInstruction::Write(bytes, _, Some(mut completion)) = instruction
+                    {
+                        assert_eq!(bytes, b"\r");
+                        completion.set_error_message("submit writer failed".into());
+                    }
+                }
+            } else {
+                assert_eq!(finish_paste(&writes), b"\r");
+            }
+            assert!(
+                replies(&messages, CLIENT).is_empty(),
+                "must wait for submit write completion"
+            );
+            // Reset/select commands can change identity before the submit-write receipt.
+            let switches = matches!(text, "/new" | "/clear");
+            if switches {
+                let mut changed = hook("SessionStart");
+                changed.session_id = "replacement".into();
+                report_kind(&mut screen, kind, changed);
+                screen.invalidate_agent_lifecycle(PANE, "conversation_changed");
+            } else {
+                // A dialog/prompt hook must not turn command delivery into Submitted.
+                report_kind(&mut screen, kind, hook("UserPromptSubmit"));
+            }
+            screen.refresh_agent_controls_at(now + Duration::from_millis(3001));
+            let response = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(
+                response.outcome,
+                if write_failed {
+                    AgentOutcome::Failed
+                } else {
+                    AgentOutcome::CommandSent
+                },
+                "{kind}: {text}"
+            );
+            assert!(!response.acknowledged);
+            assert_eq!(response.submission_id.as_deref(), Some("web-command"));
+            assert!(response.message.unwrap().contains(if write_failed {
+                "submit writer failed"
+            } else {
+                "not verified"
+            }));
+            assert!(screen.agent_controls.is_empty());
+            assert!(screen.agent_clear_inputs.is_empty());
+            if !switches {
+                screen.agent_control(request, CLIENT);
+                let retry = replies(&messages, CLIENT).pop().unwrap();
+                assert_eq!(
+                    retry.outcome,
+                    if write_failed {
+                        AgentOutcome::Failed
+                    } else {
+                        AgentOutcome::CommandSent
+                    }
+                );
+                assert!(finish_paste(&writes).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn web_agents_command_delivery_blocks_recovery() {
+    use crate::screen::agent_control::Reply;
+    use yinz_types::agent::control::WebAgentAction;
+
+    for kind in ["codex", "claude", "pi"] {
+        let (mut screen, messages, writes) = setup(kind);
+        report_kind(&mut screen, kind, hook("SessionStart"));
+        let request = AgentRequest::WebGuarded {
+            pane_id: PANE,
+            expected_kind: kind.into(),
+            expected_session_id: "conversation".into(),
+            action: WebAgentAction::Prompt {
+                text: "/plan".into(),
+                submission_id: "web-command".into(),
+            },
+        };
+        let now = Instant::now();
+        screen.agent_control_at(request.clone(), Reply::Client(CLIENT), now);
+        assert!(finish_paste(&writes).starts_with(b"\x1b[200~yz"));
+        // Complete draft clearing before testing the command delivery itself.
+        screen.refresh_agent_controls_at(now + Duration::from_millis(1));
+        screen.refresh_agent_controls_at(now + Duration::from_secs(1));
+        assert_eq!(finish_paste(&writes), [3]);
+        screen.refresh_agent_controls_at(now + Duration::from_millis(1001));
+        screen.refresh_agent_controls_at(now + Duration::from_secs(2));
+        screen.refresh_agent_controls_at(now + Duration::from_millis(2001));
+        let input_writes: Vec<_> = writes
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                PtyWriteInstruction::Write(bytes, _, completion) => Some((bytes, completion)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(input_writes.len(), 1);
+        let (input, completion) = input_writes.into_iter().next().unwrap();
+        assert_eq!(input, b"/plan");
+        assert!(completion.is_some());
+
+        let reject_recovery = |screen: &mut Screen, at| {
+            for recovery in [recover(), interrupted_recover()] {
+                screen.agent_control_at(recovery, Reply::Client(ClientId::new(2)), at);
+                let response = replies(&messages, ClientId::new(2)).pop().unwrap();
+                assert_eq!(response.outcome, AgentOutcome::Rejected, "{kind}");
+                assert!(response.message.unwrap().contains("in flight"));
+            }
+            assert!(replies(&messages, CLIENT).is_empty());
+        };
+        // Keep the input receipt alive so recovery races with a pending write.
+        reject_recovery(&mut screen, now + Duration::from_millis(2001));
+        drop(completion);
+        screen.refresh_agent_controls_at(now + Duration::from_millis(2002));
+        assert!(finish_paste(&writes).is_empty());
+        // The input is written, but the delayed submit key is still pending.
+        reject_recovery(&mut screen, now + Duration::from_millis(2002));
+        screen.refresh_agent_controls_at(now + Duration::from_secs(3));
+        assert_eq!(finish_paste(&writes), b"\r");
+        screen.refresh_agent_controls_at(now + Duration::from_millis(3001));
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(response.outcome, AgentOutcome::CommandSent, "{kind}");
+        assert_eq!(response.submission_id.as_deref(), Some("web-command"));
+        assert!(screen.agent_controls.is_empty());
+
+        // The durable result also remains successful, without resubmitting input.
+        screen.agent_control_at(request, Reply::Client(CLIENT), now + Duration::from_secs(4));
+        assert_eq!(
+            replies(&messages, CLIENT).pop().unwrap().outcome,
+            AgentOutcome::CommandSent
+        );
+        assert!(finish_paste(&writes).is_empty());
+    }
+}
+
+#[test]
+fn web_agents_command_retry_does_not_execute_twice_and_guards_still_apply() {
+    use yinz_types::agent::control::WebAgentAction;
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    let request = AgentRequest::WebGuarded {
+        pane_id: PANE,
+        expected_kind: "codex".into(),
+        expected_session_id: "conversation".into(),
+        action: WebAgentAction::Prompt {
+            text: "/plan".into(),
+            submission_id: "web-command".into(),
+        },
+    };
+    let now = Instant::now();
+    screen.agent_control_at(
+        request.clone(),
+        crate::screen::agent_control::Reply::Client(CLIENT),
+        now,
+    );
+    finish_paste(&writes);
+    screen.agent_control(request.clone(), CLIENT);
+    let retry = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(retry.outcome, AgentOutcome::TimedOut);
+    assert!(finish_paste(&writes).is_empty());
+    // Replacing a target before dispatch is still rejected without input.
+    let mut wrong = request.clone();
+    if let AgentRequest::WebGuarded { expected_kind, .. } = &mut wrong {
+        *expected_kind = "claude".into();
+    }
+    screen.agent_control(wrong, CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::TargetChanged
+    );
+    assert!(finish_paste(&writes).is_empty());
+}
+
+#[test]
+fn web_agents_unsupported_slash_commands_fail_without_writing_input() {
+    use yinz_types::agent::control::WebAgentAction;
+    for kind in ["agy", "muse"] {
+        let (mut screen, messages, writes) = setup(kind);
+        report_kind(&mut screen, kind, hook("SessionStart"));
+        screen.agent_control(
+            AgentRequest::WebGuarded {
+                pane_id: PANE,
+                expected_kind: kind.into(),
+                expected_session_id: "conversation".into(),
+                action: WebAgentAction::Prompt {
+                    text: "/plan something".into(),
+                    submission_id: "unsupported".into(),
+                },
+            },
+            CLIENT,
+        );
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(response.outcome, AgentOutcome::Rejected);
+        assert!(response.message.unwrap().contains("unsupported"));
+        assert!(finish_paste(&writes).is_empty());
+    }
+}

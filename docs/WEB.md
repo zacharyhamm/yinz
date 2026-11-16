@@ -323,6 +323,26 @@ empty `204`, the notice says so. The per-device Screen view choice
 size) is not a credential and survives logout. All keys use the
 `yinz.web.v1.` prefix.
 
+### Slash commands
+
+Enter `/command` or `/command arguments` in the composer and press **Send**.
+Claude, Codex and Pi receive executable input through their interactive command
+parser: the command name is typed and arguments are pasted, including multiline
+arguments. Yinz does not maintain a command whitelist. Available commands and
+argument syntax depend on the target provider and its installed commands.
+Other providers currently reject web slash input with an unsupported message.
+Ordinary messages continue to use prompt submission.
+
+Commands require an idle agent with no outstanding submissions. **Command sent**
+confirms delivery of input and the submit key, not provider acceptance or task
+completion. Check **Screen** for unknown-command errors, argument validation,
+mode changes or dialogs; use the key controls to answer dialogs. Commands such
+as `/new`, `/clear` or conversation selectors may replace the conversation; the
+app refreshes the target and never redirects a saved submission to a replacement.
+A command does not wait for a normal prompt-completion hook. An uncertain retry
+uses the same submission ID and inspects its retained receipt without executing
+it again; nothing retries automatically.
+
 ### Prompt safety
 
 Drafts and submissions are kept per agent identity (`id`, `kind`,
@@ -333,7 +353,8 @@ stores the target, the frozen text and a new submission ID, then reads the
 record back. If that write fails, **Send** is blocked and the draft stays on
 screen for copying.
 
-Only the native `submitted` outcome for the same target and submission ID
+Only native `submitted` (prompt acceptance) or `command_sent` (command delivery)
+for the same target and submission ID
 clears the attempt, and the draft if it was not edited meanwhile. An HTTP `200`
 is not success on its own: native outcomes such as `timed_out` or
 `status_unavailable` arrive inside a `200`. Definite failures, such as

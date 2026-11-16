@@ -392,6 +392,8 @@ pub enum AgentOutcome {
     NotAgent,
     /// The requested agent's process has already exited.
     TargetExited,
+    /// Command input and submit key delivered; provider acceptance/completion is not verified.
+    CommandSent,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1093,6 +1095,35 @@ pub fn is_command_prompt(kind: &str, prompt: &str) -> bool {
         return input.is_command_prompt(text);
     }
     text.starts_with('/') || (matches!(kind, "claude" | "pi") && text.starts_with('!'))
+}
+
+/// Web commands use the interactive command parser, independently of prompt hooks.
+/// Type the command token so paste placeholders cannot hide it; paste arguments verbatim.
+/// Providers without a verified command input path fail closed.
+pub fn web_slash_input(kind: &str, text: &str) -> Result<(Vec<u8>, Vec<u8>), &'static str> {
+    if !matches!(kind, "claude" | "codex" | "pi") {
+        return Err(
+            "slash command input is unsupported for this provider; use its terminal interface",
+        );
+    }
+    let text = if kind == "claude" {
+        claude_prompt_text(text)
+    } else {
+        Cow::Borrowed(text)
+    };
+    let text = if kind == "pi" {
+        pi_prompt_text(&text)
+    } else {
+        text.trim()
+    };
+    let end = text.find(char::is_whitespace).unwrap_or(text.len());
+    if !text.starts_with('/') || end <= 1 {
+        return Err("enter a slash command name, optionally followed by arguments");
+    }
+    Ok((
+        text.as_bytes()[..end].to_vec(),
+        text.as_bytes()[end..].to_vec(),
+    ))
 }
 
 /// Whether a hook submits a turn Claude starts by itself when background work finishes. Its

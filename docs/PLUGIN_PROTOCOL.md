@@ -971,6 +971,16 @@ are excluded from both live lists; their retained run history remains readable.
 `can_prompt` describes complete identity, independently of current input readiness.
 Missing conversation IDs report `Agent has no conversation ID`.
 
+Web `prompt` text beginning with `/` uses command submission for Claude, Codex
+and Pi, with arbitrary command names and arguments. It retains the same complete
+identity guards, limits and submission ID as ordinary prompts. The command token
+is typed and arguments are bracketed-pasted. Other providers reject slash input
+as unsupported. `command_sent` confirms the input and submit-key writes only;
+`acknowledged` remains false, and no prompt turn completion is implied. Inspect
+pane output for provider rejection or dialogs. Retrying the same ID returns its
+retained command delivery result without another write. Conversation changes
+after the submit key do not turn delivery into prompt completion.
+
 History pages contain `run`, `retargeted`, `agent_gone`, `live` (row or null),
 `header` (`name,status,location,started,task,project,branch,session_id,details`),
 `events`, `earlier`, `next_from`, `previous_run`, `origin_run`, `resumable:false`,
