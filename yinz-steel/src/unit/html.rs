@@ -95,3 +95,20 @@ fn bootstrap_unicode_and_closing_script_text_are_inert_and_budgeted() {
         .eval("(yinz-html-json-script \"config\" (make-string 1000000 #\\<))")
         .is_err());
 }
+
+#[test]
+fn apple_touch_icons_require_root_relative_resources() {
+    let mut r = runtime();
+    r.eval(r#"(define icon (yinz-html (yinz-h "link" (hash "rel" "apple-touch-icon" "href" "/static/icon-192.png"))))"#).unwrap();
+    assert_eq!(
+        r.value("icon").unwrap(),
+        r#"<link href="/static/icon-192.png" rel="apple-touch-icon">"#
+    );
+    for expression in [
+        r#"(yinz-h "link" (hash "rel" "apple-touch-icon" "href" "https://example.com/icon.png"))"#,
+        r#"(yinz-h "link" (hash "rel" "apple-touch-icon" "href" "//example.com/icon.png"))"#,
+        r#"(yinz-h "link" (hash "rel" "apple-touch-icon"))"#,
+    ] {
+        assert!(r.eval(expression).is_err(), "accepted {expression}");
+    }
+}

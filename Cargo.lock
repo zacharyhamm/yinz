@@ -7405,7 +7405,6 @@ dependencies = [
  "yinz-tile",
  "yinz-tile-markdown",
  "yinz-types",
- "yinz-web",
 ]
 
 [[package]]

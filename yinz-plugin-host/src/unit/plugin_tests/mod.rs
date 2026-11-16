@@ -714,6 +714,7 @@ fn create_plugin_thread_with_services_and_update(
                 crate::ServerSession::Fixed("yinz-test".into()),
                 update_operation,
                 None, // web
+                &|_, _| {},
             )
             .expect("TEST")
         })
@@ -805,6 +806,7 @@ fn create_plugin_thread_with_server_receiver(
                 crate::ServerSession::Fixed("yinz-test".into()),
                 None,
                 None, // web
+                &|_, _| {},
             )
             .expect("TEST");
         })
@@ -914,6 +916,7 @@ fn create_plugin_thread_with_pty_receiver_and_layout(
                 crate::ServerSession::Fixed("yinz-test".into()),
                 None,
                 None, // web
+                &|_, _| {},
             )
             .expect("TEST")
         })
@@ -1001,6 +1004,7 @@ fn create_plugin_thread_with_background_jobs_receiver(
                 crate::ServerSession::Fixed("yinz-test".into()),
                 None,
                 None, // web
+                &|_, _| {},
             )
             .expect("TEST")
         })

@@ -334,7 +334,7 @@ fn node(args: &[SteelVal], form: bool) -> Result<SteelVal> {
         && (!values.contains_key("href")
             || !matches!(
                 values.get("rel").and_then(|v| v.as_deref()),
-                Some("stylesheet" | "icon" | "manifest")
+                Some("stylesheet" | "icon" | "apple-touch-icon" | "manifest")
             ))
     {
         return Err(error("unsupported link resource"));

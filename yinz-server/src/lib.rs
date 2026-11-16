@@ -3313,6 +3313,10 @@ fn init_session(
         let update_operation = cli_assets.update_target.clone();
         move || {
             let _ownership = ownership;
+            let push_notifications = yinz_web::push::Dispatcher::start(
+                data_dir.clone(),
+                yinz_bus::global_async_runtime::get_tokio_runtime().handle(),
+            );
             plugin_thread_main(
                 plugin_bus,
                 data_dir,
@@ -3336,6 +3340,7 @@ fn init_session(
                 plugin_session,
                 update_operation,
                 web_params,
+                &|session, notification| push_notifications.notify(session, notification),
             )
             .fatal()
         }
