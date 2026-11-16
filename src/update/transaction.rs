@@ -856,20 +856,44 @@ fn exchange(left: &Path, right: &Path) -> Result<()> {
     }
 }
 
+/// Participant retries for the same operation are handled by its coordinator.
+/// A different operation must recover the previous owner before staging.
+pub(crate) fn recover_previous(executable: &Path, data_dir: &Path, operation: &str) -> Result<()> {
+    let location = Location::lock(executable, data_dir)?;
+    let previous = location.read_journal()?;
+    drop(location);
+    if previous.is_some_and(|journal| journal.operation != operation) {
+        recover_standalone(executable, data_dir)?;
+    }
+    Ok(())
+}
+
 /// A standalone update owns no pane migration, so an interrupted installation
 /// can be restored before trying again. Session-owned journals require their
 /// coordinator to decide commit versus recovery from actual pane ownership.
-pub(super) fn recover_standalone(executable: &Path, data_dir: &Path) -> Result<()> {
+pub(crate) fn recover_standalone(executable: &Path, data_dir: &Path) -> Result<()> {
     let location = Location::lock(executable, data_dir)?;
     let Some(journal) = location.read_journal()? else {
         return Ok(());
     };
-    anyhow::ensure!(
-        journal.status.terminal() || journal.operation.starts_with("standalone-"),
-        "unfinished session update {}; resume its coordinator before installing",
-        journal.operation
-    );
-    let mut transaction = Transaction { location, journal };
+    if !journal.status.terminal() && !journal.operation.starts_with("standalone-") {
+        let operation = journal.operation.clone();
+        // The coordinator invokes participant helpers which acquire these locks.
+        drop(location);
+        crate::live_update::recover_operation(data_dir, &operation)
+            .context("recover interrupted session update; retry with `yinz update --recover` (using the original --data-dir)")?;
+        let location = Location::lock(executable, data_dir)?;
+        let Some(journal) = location.read_journal()? else {
+            return Ok(());
+        };
+        anyhow::ensure!(journal.status.terminal(),
+            "session recovery left an unfinished installation; run yinz update --recover with the original --data-dir");
+        return finish_standalone(Transaction { location, journal });
+    }
+    finish_standalone(Transaction { location, journal })
+}
+
+fn finish_standalone(mut transaction: Transaction) -> Result<()> {
     if transaction.status() == Status::Committed {
         transaction.commit()
     } else {

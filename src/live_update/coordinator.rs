@@ -227,9 +227,13 @@ pub(super) fn resume_client(
     result
 }
 
-#[cfg(test)]
 pub fn run(socket: &Path, data_dir: &Path, operation: &str) -> Result<()> {
-    run_store(Store::open(socket, data_dir, operation)?)
+    let store = Store::open(socket, data_dir, operation)?;
+    anyhow::ensure!(
+        store.journal.operation == operation,
+        "another update now owns this session"
+    );
+    run_store(store)
 }
 
 pub fn run_with_channel(
@@ -1061,6 +1065,14 @@ pub(super) fn execute_release(
 }
 
 fn cleanup_remote_helpers(store: &mut Store) -> Result<()> {
+    if store
+        .journal
+        .remote_helpers
+        .iter()
+        .all(|helper| helper.cleaned)
+    {
+        return Ok(());
+    }
     let config = decode_configuration(
         &store
             .journal
@@ -2196,6 +2208,19 @@ fn commit(
         source.kill()?;
     }
     cleanup_remote_helpers(store)?;
+    cleanup_source_build(store)?;
+    store.phase(Phase::Complete)?;
+    let release: update::Release =
+        serde_json::from_value(store.journal.release.clone().context("missing release")?)
+            .context("decode selected release")?;
+    replacement.request(&operation, Command::Notify { text: format!(
+        "Updated to {}. Replaced {} clients; {} disconnected; {} legacy clients need a manual update/restart on their host.",
+        release.tag_name, store.journal.restarted_clients.len(), store.journal.disconnected_clients.len(), store.journal.restart_required.len(),
+    ) }).context("show completed update status")?;
+    Ok(())
+}
+
+fn cleanup_source_build(store: &Store) -> Result<()> {
     if store.journal.source_build {
         for path in [
             store.directory.join("source").join("checkout"),
@@ -2208,14 +2233,6 @@ fn commit(
             }
         }
     }
-    store.phase(Phase::Complete)?;
-    let release: update::Release =
-        serde_json::from_value(store.journal.release.clone().context("missing release")?)
-            .context("decode selected release")?;
-    replacement.request(&operation, Command::Notify { text: format!(
-        "Updated to {}. Replaced {} clients; {} disconnected; {} legacy clients need a manual update/restart on their host.",
-        release.tag_name, store.journal.restarted_clients.len(), store.journal.disconnected_clients.len(), store.journal.restart_required.len(),
-    ) }).context("show completed update status")?;
     Ok(())
 }
 
@@ -2231,6 +2248,62 @@ fn notify_plugin_repair(
     }
 }
 
+/// Once the replacement has exited and the source is retired or exited,
+/// there is no live migration to finish.
+/// Honor the durable handoff decision and release installation claims without
+/// replaying a stale terminal snapshot into a newer session.
+fn finish_retired(store: &mut Store, mut source: Option<&mut Connection>) -> Result<()> {
+    anyhow::ensure!(
+        store.journal.handoff_committed,
+        "session handoff is not committed"
+    );
+    if let Some(source) = source.as_deref_mut() {
+        verify_identity(source, &store.journal.operation, &source_identity(store)?)?;
+        let inventory: Inventory =
+            serde_json::from_value(source.request(&store.journal.operation, Command::Inventory)?)
+                .context("inspect retired source session")?;
+        anyhow::ensure!(
+            inventory.session == format!(".retired-{}", store.journal.operation),
+            "source session is not retired; retain installation backups"
+        );
+    } else {
+        ensure_process_dead(&source_identity(store)?)?;
+    }
+    ensure_process_dead(
+        store
+            .journal
+            .replacement_identity
+            .as_ref()
+            .context("missing replacement incarnation")?,
+    )?;
+    for index in unique_participants(&store.journal) {
+        let participant = &store.journal.participants[index];
+        if participant.state == "committed" {
+            continue;
+        }
+        // Only the server route proves an installation is on this host. A
+        // disconnected client may have an identical path on another machine.
+        anyhow::ensure!(matches!(participant.route, Route::Server),
+            "retired session has an uncommitted remote installation {}; recover that participant on its host; backups retained",
+            participant.installation.executable.display());
+        participate(ParticipantInvocation {
+            executable: participant.installation.executable.clone(),
+            data_dir: Some(participant.installation.data_dir.clone()),
+            request: ParticipantRequest::Commit {
+                operation: store.journal.operation.clone(),
+            },
+        })?;
+        set_installation_state(&mut store.journal, index, "committed");
+        store.save()?;
+    }
+    cleanup_remote_helpers(store)?;
+    if let Some(source) = source {
+        source.kill()?;
+    }
+    cleanup_source_build(store)?;
+    store.phase(Phase::Complete)
+}
+
 fn finish_forward(
     store: &mut Store,
     mut source: Option<&mut Connection>,
@@ -2241,7 +2314,9 @@ fn finish_forward(
     } else {
         None
     };
-    let replacement = replacement.or(found.as_mut()).context("the committed replacement server is unavailable; do not roll back its installation or terminal ownership")?;
+    let Some(replacement) = replacement.or(found.as_mut()) else {
+        return finish_retired(store, source);
+    };
     let operation = store.journal.operation.clone();
     verify_identity(
         replacement,

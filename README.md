@@ -184,6 +184,14 @@ unchanged. For a custom data directory, use `yinz --data-dir /path/to/data updat
 The installation directories must be writable by your account. Existing sessions
 keep running; restart them to use the new binary.
 
+Updates recover an interrupted installation before trying again. To recover without
+fetching another release, run `yinz update --recover`, using the original
+`--data-dir` if customized. Failures before session handoff restore the previous
+installation. After handoff, recovery finishes the committed update to preserve
+work entered in the new session. If the replacement has exited and the source is retired or exited, recovery
+finalizes the local installation without restoring an old session snapshot.
+Disconnected remote participants may still require recovery on their host.
+
 Use `yinz update --prerelease` to select the highest published semantic version,
 including prereleases and stable releases. The Sessions palette offers
 **Update Yinz including prereleases…** for a coordinated update of the running

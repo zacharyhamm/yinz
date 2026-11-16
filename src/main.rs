@@ -194,24 +194,31 @@ fn main() {
     }
     if let Some(Command::Update {
         prerelease,
+        recover,
         resume_client,
         client,
         session,
     }) = &opts.command
     {
-        let result = match (resume_client, client, session) {
-            (Some(original), Some(current), Some(session)) => live_update::resume_client_update(
-                session,
-                opts.data_dir.as_deref(),
-                *original,
-                *current,
-            ),
-            (None, None, None) => {
-                update::run(opts.data_dir.as_deref(), release_channel(*prerelease))
-            },
-            _ => Err(anyhow::anyhow!(
-                "--resume-client, --client, and --session must be supplied together"
-            )),
+        let result = if *recover {
+            update::recover(opts.data_dir.as_deref())
+        } else {
+            match (resume_client, client, session) {
+                (Some(original), Some(current), Some(session)) => {
+                    live_update::resume_client_update(
+                        session,
+                        opts.data_dir.as_deref(),
+                        *original,
+                        *current,
+                    )
+                },
+                (None, None, None) => {
+                    update::run(opts.data_dir.as_deref(), release_channel(*prerelease))
+                },
+                _ => Err(anyhow::anyhow!(
+                    "--resume-client, --client, and --session must be supplied together"
+                )),
+            }
         };
         if let Err(error) = result {
             eprintln!("Error: {error:#}");

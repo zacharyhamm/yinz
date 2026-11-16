@@ -392,6 +392,16 @@ fn installed_version(executable: &Path) -> Result<semver::Version> {
     )
 }
 
+pub(crate) fn recover(data_dir: Option<&Path>) -> Result<()> {
+    let executable = std::env::current_exe().context("locate installed executable")?;
+    let data_dir = data_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(yinz_runtime::home::get_default_data_dir);
+    transaction::recover_standalone(&executable, &data_dir)?;
+    println!("Interrupted update recovered; you can run yinz update again.");
+    Ok(())
+}
+
 fn run_with(
     data_dir: Option<&Path>,
     executable: &Path,

@@ -18,6 +18,32 @@ mod source_build;
 mod transport;
 pub(crate) use coordinator::run_with_channel as coordinator_main;
 
+pub(crate) fn recover_operation(data_dir: &Path, operation: &str) -> Result<()> {
+    uuid::Uuid::parse_str(operation).context("invalid interrupted update identity")?;
+    let path = data_dir
+        .join("updates")
+        .join(operation)
+        .join("journal.json");
+    let journal: journal::Journal =
+        serde_json::from_slice(&std::fs::read(&path).context("read interrupted session update")?)
+            .context("decode interrupted session update")?;
+    anyhow::ensure!(
+        journal.format == 1 && journal.operation == operation,
+        "interrupted update identity or format mismatch"
+    );
+    // Runtime directories can disappear across reboots while the durable
+    // journal and installation claim survive. Restore the private directory
+    // before Store canonicalizes the socket and derives its session lock.
+    yinz_runtime::shared::ensure_secure_dir(
+        journal
+            .source_socket
+            .parent()
+            .context("recorded session socket has no parent")?,
+    )
+    .context("restore interrupted update socket directory")?;
+    coordinator::run(&journal.source_socket, data_dir, operation)
+}
+
 pub(crate) fn resume_client_update(
     session: &str,
     data_dir: Option<&Path>,
@@ -187,6 +213,7 @@ pub(crate) fn participate(invocation: ParticipantInvocation) -> Result<serde_jso
         } => artifacts::receive(&data_dir, &operation, &artifact, offset, &bytes),
         ParticipantRequest::Prepare { operation, release } => {
             uuid::Uuid::parse_str(&operation).context("invalid update operation id")?;
+            update::transaction::recover_previous(&executable, &data_dir, &operation)?;
             transport::preflight_local_sessions()?;
             let canonical_executable = executable
                 .canonicalize()

@@ -15,9 +15,13 @@ fn update_cli_recovery_requires_all_explicit_targets() {
             resume_client: None,
             client: None,
             prerelease: false,
-            session: None
+            session: None,
+            recover: false
         })
     ));
+    let recovered = CliArgs::try_parse_from(["yinz", "update", "--recover"]).unwrap();
+    assert!(matches!(recovered.command, Some(Command::Update { recover: true, .. })));
+    assert!(CliArgs::try_parse_from(["yinz", "update", "--recover", "--prerelease"]).is_err());
     let opted_in = CliArgs::try_parse_from(["yinz", "update", "--prerelease"]).unwrap();
     assert!(matches!(opted_in.command, Some(Command::Update { prerelease: true, .. })));
     assert!(CliArgs::try_parse_from(["yinz", "update", "--prerelease", "--resume-client", "3", "--client", "9", "--session", "work"]).is_err());
@@ -35,7 +39,7 @@ fn update_cli_recovery_requires_all_explicit_targets() {
     ])
     .unwrap();
     assert!(
-        matches!(recovery.command, Some(Command::Update { resume_client: Some(3), client: Some(9), session: Some(ref name), prerelease: false }) if name == "work")
+        matches!(recovery.command, Some(Command::Update { resume_client: Some(3), client: Some(9), session: Some(ref name), prerelease: false, recover: false }) if name == "work")
     );
     for arguments in [
         vec!["yinz", "update", "--resume-client", "3"],
