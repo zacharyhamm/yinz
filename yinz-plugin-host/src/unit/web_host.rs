@@ -156,3 +156,43 @@ fn dropped_executor_delivery_resolves_even_with_an_extra_slot_clone() {
     ));
     assert!(slot.is_closed());
 }
+
+#[test]
+fn web_startup_retirement_refreshes_only_selected_loss_and_preserves_terminal_states() {
+    use yinz_types::web::{ApplicationFailure as Failure, ApplicationPhase as Phase};
+    let (host, site) = host();
+    let id = PluginId::new(1);
+    host.configure(&yinz_bus::web::WebPluginParams {
+        plugin: yinz_types::input::layout::RunPluginOrAlias::RunPlugin(Default::default()),
+        site: site.clone(),
+        application: Default::default(),
+    });
+    host.begin_load(id, 1);
+    register(&host, 10);
+    register(&host, 11);
+    let file = crate::web_assets::freeze(b"complete".to_vec(), "text/plain; charset=utf-8");
+    host.publish_page(id, 10, "/".into(), file.clone()).unwrap();
+    host.loaded(id, 10);
+    host.retire(11);
+    assert!(host.status().unwrap().ready());
+    host.failed(id, Some(1), Some(11), Failure::Initialization);
+    assert!(host.status().unwrap().ready());
+    host.retire(10);
+    assert!(site.current().is_none());
+    assert_eq!(host.status().unwrap().phase, Phase::Retrying);
+    host.reset(id);
+    host.begin_load(id, 2);
+    register(&host, 12);
+    host.publish_page(id, 12, "/".into(), file.clone()).unwrap();
+    host.loaded(id, 12);
+    host.retire(10);
+    host.failed(id, Some(1), Some(10), Failure::Initialization);
+    assert!(host.status().unwrap().ready());
+    assert_eq!(site.current().unwrap().generation, 12);
+    // A genuine selected failure still consumes the normal bounded recovery path.
+    host.failed(id, Some(2), Some(12), Failure::Initialization);
+    assert_eq!(host.status().unwrap().phase, Phase::Retrying);
+    host.stop(id);
+    host.retire_plugin(id);
+    assert_eq!(host.status().unwrap().phase, Phase::Stopped);
+}

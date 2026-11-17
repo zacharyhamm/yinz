@@ -125,6 +125,7 @@ pub struct PluginLoader {
     pick_cancelled: Option<Arc<AtomicBool>>,
     pick_opening: Option<Arc<AtomicBool>>,
     plugin_id: PluginId,
+    load_id: Option<u64>,
     client_id: ClientId,
     plugin_cwd: PathBuf,
     plugin_own_data_dir: PathBuf,
@@ -184,6 +185,7 @@ impl PluginLoader {
             pick_cancelled: loading_context.pick_cancelled,
             pick_opening: loading_context.pick_opening,
             plugin_id: loading_context.plugin_id,
+            load_id: loading_context.pane_ticket.map(|ticket| ticket.load_id),
             client_id: loading_context.client_id,
             plugin_cwd: loading_context.plugin_cwd,
             plugin_own_data_dir: loading_context.plugin_own_data_dir,
@@ -402,11 +404,20 @@ impl PluginLoader {
         if let Some((previous, _)) = previous {
             previous.lock().unwrap().dispose();
         }
-        let loaded = plugin
-            .lock()
-            .unwrap()
-            .load(&self.plugin_config.initial_userspace_configuration)
-            .with_context(err_context);
+        let loaded = {
+            let mut running = plugin.lock().unwrap();
+            let generation = running.generation();
+            let instance = running.instance_id;
+            running
+                .load(&self.plugin_config.initial_userspace_configuration)
+                .with_context(|| {
+                    format!(
+                        "plugin {} client {} generation {generation:?} instance {instance:?}",
+                        self.plugin_id, self.client_id
+                    )
+                })
+                .with_context(err_context)
+        };
         if loaded.is_err()
             || self.cancel.load(Ordering::Acquire)
             || self.script_client_disconnected()
@@ -579,8 +590,10 @@ impl PluginLoader {
         }
         if !connected_clients.is_empty() {
             self.connected_clients = None; // so we don't have infinite loops
+            let primary_client = self.client_id;
+            let mut peer_failure = None;
             for client_id in connected_clients {
-                if client_id == self.client_id {
+                if client_id == primary_client {
                     // don't reload the plugin once more for ourselves
                     continue;
                 }
@@ -595,7 +608,29 @@ impl PluginLoader {
                 };
                 self.client_id = client_id;
                 self.client_cancel = client_cancel;
-                self.start_plugin()?;
+                if let Err(error) = self.start_plugin() {
+                    log::error!(
+                        "plugin {} load {:?} peer client {client_id} failed: {error:#}",
+                        self.plugin_id,
+                        self.load_id,
+                    );
+                    peer_failure.get_or_insert(error);
+                }
+            }
+            if let Some(error) = peer_failure {
+                // Like a failed later attachment, a failed peer must not fail surviving
+                // instances. The outer load/reload completion replays cached work once,
+                // after all peers have been attempted. A deferred primary is still live:
+                // its generation-scoped completion/failure and deadline remain authoritative.
+                let map = self.plugin_map.lock().unwrap();
+                let survives = map.load_is_current(self.plugin_id, &self.cancel)
+                    && map.has_available_instance(self.plugin_id)
+                    && (!self.web.is_target(self.plugin_id)
+                        || self.web.selected(self.plugin_id).is_some());
+                if !survives {
+                    return Err(error)
+                        .context("no available primary or peer survived initialization");
+                }
             }
         }
         Ok(())

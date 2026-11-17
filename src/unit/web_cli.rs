@@ -257,7 +257,10 @@ fn cli_possible_dual_stack_funnel_warns_and_exits_one() {
 #[test]
 fn cli_same_name_stale_policy_is_unverified_against_native_listener() {
     use std::{io::Write, os::unix::fs::OpenOptionsExt, sync::Arc};
-    struct Native(yinz_test_support::Watched<bool>);
+    struct Native(
+        yinz_test_support::Watched<bool>,
+        yinz_types::web::ApplicationPhase,
+    );
     impl yinz_web::Backend for Native {
         fn dispatch(&self, _: yinz_types::web::WebRequest) -> yinz_web::DispatchFuture {
             Box::pin(async { None })
@@ -267,7 +270,7 @@ fn cli_same_name_stale_policy_is_unverified_against_native_listener() {
         }
         fn application(&self) -> Option<yinz_types::web::ApplicationStatus> {
             Some(yinz_types::web::ApplicationStatus {
-                phase: yinz_types::web::ApplicationPhase::Failed,
+                phase: self.1,
                 attempts: 4,
                 failure: Some(yinz_types::web::ApplicationFailure::Initialization),
                 ..Default::default()
@@ -301,11 +304,31 @@ fn cli_same_name_stale_policy_is_unverified_against_native_listener() {
         .build()
         .unwrap();
     let active = yinz_test_support::Watched::new(false);
-    let server =
-        yinz_web::WebServer::start(settings, Arc::new(Native(active.clone())), rt.handle());
+    let server = yinz_web::WebServer::start(
+        settings,
+        Arc::new(Native(
+            active.clone(),
+            yinz_types::web::ApplicationPhase::Failed,
+        )),
+        rt.handle(),
+    );
     active.wait_until("native listener activated", Duration::from_secs(15), |v| {
         v.then_some(())
     });
+    let stopped_active = yinz_test_support::Watched::new(false);
+    let stopped_server = yinz_web::WebServer::start(
+        yinz_web::WebSettings::from_config(&config, t.path()).unwrap(),
+        Arc::new(Native(
+            stopped_active.clone(),
+            yinz_types::web::ApplicationPhase::Stopped,
+        )),
+        rt.handle(),
+    );
+    stopped_active.wait_until(
+        "stopped application's listener activated",
+        Duration::from_secs(15),
+        |v| v.then_some(()),
+    );
     let rows = yinz_web::listener_file::inspect(t.path()).unwrap();
     assert!(rows[0].is_current());
     let mut stale = rows.into_iter().next().unwrap().record;
@@ -341,9 +364,12 @@ fn cli_same_name_stale_policy_is_unverified_against_native_listener() {
             .unwrap();
     // Stop and await all listener work before assertions about command output.
     server.stop();
+    stopped_server.stop();
     rt.block_on(async {
         tokio::time::timeout(Duration::from_secs(15), async {
-            while server.status() != yinz_web::WebStatus::Stopped {
+            while server.status() != yinz_web::WebStatus::Stopped
+                || stopped_server.status() != yinz_web::WebStatus::Stopped
+            {
                 tokio::task::yield_now().await;
             }
         })
@@ -354,18 +380,31 @@ fn cli_same_name_stale_policy_is_unverified_against_native_listener() {
     let text = String::from_utf8(output.stdout).unwrap();
     assert_eq!(
         text.matches("Effective startup config:").count(),
-        1,
+        2,
         "{text}"
     );
     assert!(text.contains("current@example.com"), "{text}");
     assert!(text.contains("Effective policy: unverified"), "{text}");
     assert!(!text.contains("obsolete@example.com"), "{text}");
     assert!(text.contains("Application: failed"), "{text}");
+    assert!(text.contains("Application: stopped"), "{text}");
+    assert_eq!(
+        text.matches("--session SESSION plugins start PLUGIN")
+            .count(),
+        1,
+        "{text}"
+    );
+    assert_eq!(
+        text.matches("--session SESSION plugins reload PLUGIN")
+            .count(),
+        1,
+        "{text}"
+    );
     assert!(text.contains("Application: unknown"), "{text}");
     assert!(!text.contains("Application: ready"), "{text}");
     assert_eq!(
         text.matches("Suggested: tailscale serve").count(),
-        1,
+        2,
         "{text}"
     );
     assert!(!text.contains("configured-only"), "{text}");
@@ -415,5 +454,38 @@ fn web_startup_status_distinguishes_application_from_verified_liveness() {
             describe_application(true, None)
         );
         assert!(describe_application(false, Some(&status)).contains("unknown"));
+    }
+}
+
+#[test]
+fn web_startup_recovery_guidance_selects_start_reload_and_safe_selectors() {
+    use yinz_types::web::{ApplicationPhase as Phase, ApplicationStatus};
+    let opts = CliArgs {
+        config: Some(std::path::PathBuf::from("config with 'quote.kdl")),
+        config_dir: Some(std::path::PathBuf::from("directory with spaces")),
+        ..Default::default()
+    };
+    for (phase, verb) in [(Phase::Stopped, "start"), (Phase::Failed, "reload")] {
+        let status = ApplicationStatus {
+            phase,
+            ..Default::default()
+        };
+        let text = application_recovery(&opts, Path::new("data with 'quote"), true, Some(&status))
+            .unwrap();
+        assert!(
+            text.contains(&format!("--session SESSION plugins {verb} PLUGIN")),
+            "{text}"
+        );
+        assert!(text.contains("--config-dir 'directory with spaces'"));
+        assert!(text.contains("'\\''"), "{text}");
+        assert!(text.contains("effective configured alias/location"));
+        assert!(application_recovery(&opts, Path::new("data"), false, Some(&status)).is_none());
+        assert!(application_recovery(&opts, Path::new("data"), true, None).is_none());
+        let manual =
+            application_recovery(&opts, Path::new("bad\npath"), true, Some(&status)).unwrap();
+        assert!(manual.contains(&format!(
+            "manually run yinz --session SESSION plugins {verb} PLUGIN"
+        )));
+        assert!(!manual.contains('\n'));
     }
 }

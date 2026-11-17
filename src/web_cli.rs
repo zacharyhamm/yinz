@@ -210,6 +210,29 @@ pub(crate) fn suggested_command(opts: &CliArgs, data: &Path, action: &[&str]) ->
     command.push_str(&action.join(" "));
     command
 }
+fn application_recovery(
+    opts: &CliArgs,
+    data: &Path,
+    verified: bool,
+    application: Option<&yinz_types::web::ApplicationStatus>,
+) -> Option<String> {
+    use yinz_types::web::ApplicationPhase;
+    let phase = application.filter(|_| verified)?.phase;
+    let (verb, detail) = match phase {
+        ApplicationPhase::Stopped => ("start", "The app remains stopped until explicitly started"),
+        ApplicationPhase::Failed => (
+            "reload",
+            "After correcting the cause, reload the retained failed app",
+        ),
+        _ => return None,
+    };
+    let command = suggested_command(
+        opts,
+        data,
+        &["--session", "SESSION", "plugins", verb, "PLUGIN"],
+    );
+    Some(format!("{detail}: {command} (replace SESSION with this listener's session and PLUGIN with its effective configured alias/location, normally web)"))
+}
 fn describe_application(
     verified: bool,
     application: Option<&yinz_types::web::ApplicationStatus>,
@@ -314,6 +337,10 @@ pub(crate) fn run(opts: &CliArgs, https_port: Option<u16>) -> Result<i32> {
             "  {}",
             describe_application(verified, r.application.as_ref())
         );
+        if let Some(guidance) = application_recovery(opts, &data, verified, r.application.as_ref())
+        {
+            println!("  {guidance}");
+        }
         if verified {
             if !targets.contains(&r.address) {
                 targets.push(r.address);
@@ -336,7 +363,7 @@ pub(crate) fn run(opts: &CliArgs, https_port: Option<u16>) -> Result<i32> {
             }
         );
     }
-    println!("Recovery after correcting the cause: {} --session SESSION plugins reload web (use the configured plugin for a custom app)", suggested_command(opts, &data, &[]).trim_end());
+    println!("Recovery: use plugins start for a stopped/missing identity, or plugins reload for a retained failed identity after correcting the cause. Keep the original data/config/session selectors and effective configured plugin.");
     let port = https_port
         .or(config.https_port_hint)
         .unwrap_or(DEFAULT_WEB_HTTPS_PORT_HINT);

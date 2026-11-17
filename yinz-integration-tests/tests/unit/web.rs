@@ -1530,3 +1530,123 @@ fn web_startup_recovery_preserves_existing_bearer_and_push_subscription() {
     session.quit();
     records.empty();
 }
+
+fn configured_operation(
+    session: &yinz_integration_tests::TestSession,
+    operation: yinz_types::cli::PluginOperation,
+    target: &str,
+) {
+    yinz_client::store_client::plugin_request(
+        &session.session_name().into(),
+        yinz_types::cli::PluginRequest {
+            operation,
+            target: Some(target.into()),
+            configuration: None,
+            fallback: yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+                target, &None, None, None,
+            )
+            .unwrap()
+            .get_run_plugin(),
+            candidates: vec![],
+            caller: None,
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn web_startup_peer_two_clients_reload_keeps_site_and_bearer() {
+    use yinz_types::cli::PluginOperation;
+    let dir = private_data();
+    set(dir.path());
+    let records = Records::new(dir.path().to_owned());
+    let mut session = TestRunner::new(TERMINAL_SIZE)
+        .with_data_dir(dir.path().to_owned())
+        .with_config("web { enabled true; port 0; plugin \"yinz:web\"; }")
+        .start();
+    let addr = records.serving(session.session_name());
+    wait_public(addr, "/", r#"<div id="app"></div>"#);
+    assert_builtin_site(addr);
+    let token = login(addr);
+    let peer = session.attach_client(TERMINAL_SIZE);
+    peer.wait_until("second terminal client attached", |g| g.tab_bar_appears());
+    let initial = records.values.wait_until(
+        "ready before two-client reload",
+        default_timeout(),
+        |rows| {
+            rows.iter()
+                .find_map(|r| r.application.as_ref().filter(|s| s.ready()).cloned())
+        },
+    );
+    configured_operation(&session, PluginOperation::Reload, "yinz:web");
+    let ready = records.values.wait_until(
+        "two-client reload and rejected peer complete",
+        default_timeout(),
+        |rows| {
+            rows.iter().find_map(|r| {
+                r.application
+                    .as_ref()
+                    .filter(|s| {
+                        s.ready()
+                            && s.generation != initial.generation
+                            && s.publication_rejection.is_some()
+                    })
+                    .cloned()
+            })
+        },
+    );
+    assert_eq!(ready.target, initial.target);
+    assert_eq!(ready.attempts, 1);
+    assert_builtin_site(addr);
+    assert_eq!(
+        call(addr, "GET", "/api/agents", Some(&token), "").status,
+        200
+    );
+    peer.quit();
+    session.quit();
+    records.empty();
+}
+
+#[test]
+fn web_startup_stopped_app_requires_explicit_start_and_preserves_bearer() {
+    use yinz_types::{cli::PluginOperation, web::ApplicationPhase as Phase};
+    let dir = private_data();
+    set(dir.path());
+    let records = Records::new(dir.path().to_owned());
+    let mut session = TestRunner::new(TERMINAL_SIZE)
+        .with_data_dir(dir.path().to_owned())
+        .with_config("web { enabled true; port 0; plugin \"yinz:web\"; }")
+        .start();
+    let addr = records.serving(session.session_name());
+    wait_public(addr, "/", r#"<div id="app"></div>"#);
+    let token = login(addr);
+    configured_operation(&session, PluginOperation::Stop, "yinz:web");
+    let stopped = records
+        .values
+        .wait_until("configured app stopped", default_timeout(), |rows| {
+            rows.iter().find_map(|r| {
+                r.application
+                    .as_ref()
+                    .filter(|s| s.phase == Phase::Stopped)
+                    .cloned()
+            })
+        });
+    for path in ["/", "/login"] {
+        let reply = fetch(addr, "GET", path, "");
+        assert_eq!(reply.status, 503);
+        assert!(!reply.text().contains("http-equiv=\"refresh\""));
+        assert!(reply.text().contains("Yinz web is unavailable"));
+    }
+    // Request completion is a plugin-thread round trip after stop and its cleanup.
+    configured_operation(&session, PluginOperation::List, "yinz:web");
+    assert!(stopped.retry_after_s.is_none());
+    configured_operation(&session, PluginOperation::Start, "yinz:web");
+    wait_public(addr, "/", r#"<div id="app"></div>"#);
+    assert_builtin_site(addr);
+    assert_eq!(
+        call(addr, "GET", "/api/agents", Some(&token), "").status,
+        200
+    );
+    session.quit();
+    records.empty();
+}

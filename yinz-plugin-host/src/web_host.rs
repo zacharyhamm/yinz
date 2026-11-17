@@ -356,9 +356,12 @@ impl WebHost {
         for generation in generations {
             Self::retire_in(&mut state, generation);
         }
+        Self::refresh_in(&mut state, std::time::Instant::now());
     }
     pub fn retire(&self, generation: u64) {
-        Self::retire_in(&mut self.state(), generation);
+        let mut state = self.state();
+        Self::retire_in(&mut state, generation);
+        Self::refresh_in(&mut state, std::time::Instant::now());
     }
     fn retire_in(state: &mut State, generation: u64) {
         if let Some(instance) = state.instances.remove(&generation) {

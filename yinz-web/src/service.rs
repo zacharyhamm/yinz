@@ -474,7 +474,14 @@ async fn handle(
         })
     });
     let Some(site) = site else {
-        let recovering = application.as_ref().is_none_or(|s| s.recovering());
+        // Readiness and publication are independent snapshots. Retirement/reload may
+        // invalidate the site after we read Ready; that navigation must still refresh.
+        // Honor an already visible terminal transition, but keep the fallback because
+        // another transition can race this second read too.
+        let application = state.backend.application().or(application);
+        let recovering = application
+            .as_ref()
+            .is_none_or(|s| s.recovering() || s.ready());
         let retry_after = application
             .as_ref()
             .and_then(|s| s.retry_after_s)

@@ -9492,3 +9492,254 @@ fn web_startup_listener_pins_alias_and_keeps_independent_background_ownership() 
     assert_eq!(test.bridge.web.target(), Some(id));
     assert!(test.bridge.independent_plugin_ids.contains(&id));
 }
+
+#[test]
+fn web_startup_peer_failure_keeps_primary_on_load_reload_and_attach() {
+    let mut test = TestBridge::new();
+    let client = ClientId::new(1);
+    test.connect(&[client, ClientId::new(2)]);
+    let site = yinz_types::web::SiteHandle::default();
+    test.bridge.web = crate::web_host::WebHost::new(Some(site.clone()));
+    let declaration =
+        yinz_runtime::plugin_location::run_plugin_or_alias_from_url("yinz:web", &None, None, None)
+            .unwrap();
+    let mut requests = crate::web_requests::WebRequests::new(
+        Some(yinz_bus::web::WebPluginParams {
+            plugin: declaration.clone(),
+            site: site.clone(),
+            application: Default::default(),
+        }),
+        &test.bridge.web,
+    );
+    let id = test.bridge.next_plugin_id();
+    test.bridge.plugin_executor.register_plugin(id);
+    let release = test.hold_executor(id);
+    test.bridge
+        .start_background_plugin(declaration, client, true)
+        .unwrap();
+    release.send(()).unwrap();
+    let mut previous = None;
+    for stage in 0..3 {
+        if stage == 1 {
+            test.bridge.reload_plugin_with_id(id).unwrap();
+        } else if stage == 2 {
+            test.bridge.add_client(ClientId::new(3)).unwrap();
+        }
+        test.wait_for_executor(id);
+        let instructions: Vec<_> = test.receiver::<PluginInstruction>().try_iter().collect();
+        for (instruction, _) in instructions {
+            if let PluginInstruction::PluginFailed {
+                plugin_id,
+                load_id,
+                generation,
+                instance_id,
+                error,
+                failed_to_load,
+                ..
+            } = instruction
+            {
+                test.bridge
+                    .plugin_failed(
+                        plugin_id,
+                        load_id,
+                        generation,
+                        instance_id,
+                        error,
+                        failed_to_load,
+                    )
+                    .unwrap();
+            }
+        }
+        test.finish_reload(id);
+        let status = test.bridge.web.status().unwrap();
+        assert!(status.ready(), "stage {stage}: {status:?}");
+        let generation = test.bridge.web.selected(id).unwrap();
+        if stage == 1 {
+            assert_ne!(previous, Some(generation));
+        }
+        if stage == 2 {
+            assert_eq!(previous, Some(generation));
+        }
+        previous = Some(generation);
+        assert_eq!(status.attempts, 1);
+        assert_eq!(site.current().unwrap().generation, generation);
+        assert!(site.current().unwrap().lookup("/").is_some());
+        assert!(site.current().unwrap().lookup("/login").is_some());
+        let rejection = status.publication_rejection.unwrap();
+        assert_eq!(rejection.selected_generation, Some(generation));
+        assert_ne!(rejection.attempted_generation, generation);
+        assert_eq!(
+            test.bridge.plugin_map.lock().unwrap().all_plugin_ids(),
+            vec![(id, client)]
+        );
+        // The executor batch and all its failures have drained. These controlled pulses
+        // cross the first retry boundary; a peer must neither schedule nor consume a retry.
+        let starts = test.bridge.next_load_id;
+        for _ in 0..8 {
+            assert_eq!(
+                test.bridge
+                    .web
+                    .pulse(std::time::Instant::now() + Duration::from_secs(2)),
+                crate::web_startup::Action::None
+            );
+            requests.activate(&mut test.bridge, client);
+        }
+        assert_eq!(test.bridge.next_load_id, starts);
+    }
+    test.bridge.unload_plugin(id).unwrap();
+}
+
+#[test]
+fn web_startup_peer_generic_failure_cleanup_and_survivor_requirement() {
+    for (pre_registration, lose_primary) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
+        let mut test = TestBridge::new();
+        let id = PluginId::new(1);
+        test.connect(&[ClientId::new(1), ClientId::new(2), ClientId::new(3)]);
+        let context = test.context(
+            1,
+            1,
+            r#"
+(define (load config)
+  (when (= (hash-ref (yinz-command "GetPluginIds") "client_id") 2)
+    (error "peer two failed")))
+"#,
+        );
+        let path = context.plugin_config.path.clone();
+        let done = yinz_test_support::Watched::new(None);
+        let result = done.clone();
+        test.bridge
+            .plugin_executor
+            .execute_for_plugin(id, move |senders, map, clients| {
+                let mut loader = PluginLoader::new(context, senders, map.clone(), clients);
+                loader.after_peer_snapshot = Some(Box::new(move || {
+                    if lose_primary {
+                        let instance = map
+                            .lock()
+                            .unwrap()
+                            .get_running_plugin(id, Some(ClientId::new(1)))
+                            .unwrap();
+                        instance.lock().unwrap().mark_failed();
+                        instance.lock().unwrap().dispose();
+                        map.lock().unwrap().remove_matching_instance(id, &instance);
+                    }
+                    if pre_registration {
+                        std::fs::remove_file(path).unwrap();
+                    }
+                }));
+                *result.lock() = Some(loader.start_plugin());
+            });
+        done.wait_until(
+            "peer batch completed",
+            yinz_test_support::default_timeout(),
+            |v| v.as_ref().map(|_| ()),
+        );
+        let result = done.lock().take().unwrap();
+        if pre_registration && lose_primary {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("no available primary"));
+        } else {
+            result.unwrap();
+        }
+        let mut actual = test.bridge.all_plugin_ids();
+        actual.sort();
+        let mut expected = vec![];
+        if !lose_primary {
+            expected.push((id, ClientId::new(1)));
+        }
+        if !pre_registration {
+            expected.push((id, ClientId::new(3)));
+        }
+        assert_eq!(actual, expected);
+        test.bridge.unload_plugin(id).unwrap();
+    }
+}
+
+#[test]
+fn web_startup_peer_pending_primary_keeps_deadline_and_later_failure_retries() {
+    use yinz_types::web::ApplicationPhase as Phase;
+    let mut test = TestBridge::new();
+    let client = ClientId::new(1);
+    test.connect(&[client, ClientId::new(2)]);
+    let source = test._dirs[0].path().join("plugins/builtins/web.scm");
+    std::fs::write(&source, r#"
+(define pending (yinz-deferred))
+(define (load config)
+  (yinz-command (hash "HttpPublish" (hash "path" "/" "content_type" "text/plain; charset=utf-8" "body" "partial")))
+  pending)
+(define (pipe message) (yinz-reject! pending "primary deferred failed"))
+"#).unwrap();
+    let declaration =
+        yinz_runtime::plugin_location::run_plugin_or_alias_from_url("yinz:web", &None, None, None)
+            .unwrap();
+    let site = yinz_types::web::SiteHandle::default();
+    test.bridge.web = crate::web_host::WebHost::new(Some(site.clone()));
+    let mut requests = crate::web_requests::WebRequests::new(
+        Some(yinz_bus::web::WebPluginParams {
+            plugin: declaration,
+            site: site.clone(),
+            application: Default::default(),
+        }),
+        &test.bridge.web,
+    );
+    requests.activate(&mut test.bridge, client);
+    let id = test.bridge.web.target().unwrap();
+    test.finish_reload(id);
+    for (i, _) in test.receiver::<PluginInstruction>().try_iter() {
+        if let PluginInstruction::PluginFailed { error, .. } = i {
+            panic!("unexpected initial failure: {error}");
+        }
+    }
+    assert!(site.current().is_some());
+    assert_eq!(test.bridge.web.status().unwrap().phase, Phase::Loading);
+    assert_eq!(test.bridge.web.status().unwrap().attempts, 1);
+    assert_eq!(
+        test.bridge
+            .web
+            .pulse(std::time::Instant::now() + Duration::from_secs(2)),
+        crate::web_startup::Action::None
+    );
+    test.pipe(id, "reject-primary-deferred");
+    test.wait_for_executor(id);
+    let mut failed = false;
+    for (instruction, _) in test.receiver::<PluginInstruction>().try_iter() {
+        if let PluginInstruction::PluginFailed {
+            plugin_id,
+            load_id,
+            generation,
+            instance_id,
+            error,
+            failed_to_load,
+            ..
+        } = instruction
+        {
+            assert!(generation.is_some());
+            test.bridge
+                .plugin_failed(
+                    plugin_id,
+                    load_id,
+                    generation,
+                    instance_id,
+                    error,
+                    failed_to_load,
+                )
+                .unwrap();
+            failed = true;
+        }
+    }
+    assert!(
+        failed,
+        "deferred primary failure must reach the plugin thread"
+    );
+    assert_eq!(test.bridge.web.status().unwrap().phase, Phase::Retrying);
+    assert_eq!(
+        test.bridge
+            .web
+            .pulse(std::time::Instant::now() + Duration::from_secs(3)),
+        crate::web_startup::Action::Start
+    );
+    test.bridge.unload_plugin(id).unwrap();
+}

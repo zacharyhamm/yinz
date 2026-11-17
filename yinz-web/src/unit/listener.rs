@@ -20,6 +20,7 @@ struct Fake {
     dispatches: AtomicUsize,
     site: RwLock<Option<Arc<Site>>>,
     name: RwLock<String>,
+    site_on_read: std::sync::Mutex<Option<Option<Arc<Site>>>>,
     application: RwLock<Option<yinz_types::web::ApplicationStatus>>,
     rename_on_activate: std::sync::Mutex<Option<String>>,
     requests: std::sync::Mutex<Vec<WebRequest>>,
@@ -31,6 +32,9 @@ impl Backend for Fake {
         Box::pin(async { None })
     }
     fn site(&self) -> Option<Arc<Site>> {
+        if let Some(replacement) = self.site_on_read.lock().unwrap().take() {
+            *self.site.write().unwrap() = replacement;
+        }
         self.site.read().unwrap().clone()
     }
     fn application(&self) -> Option<yinz_types::web::ApplicationStatus> {
@@ -1228,4 +1232,101 @@ async fn web_startup_partial_publication_safe_pages_head_pulses_and_terminal_sta
     assert!(backend.activations.load(Ordering::SeqCst) >= 2);
     stop(&server).await;
     assert_no_records(temp.path());
+}
+
+#[tokio::test]
+async fn web_startup_ready_snapshot_retirement_and_mismatch_keep_navigation_refreshing() {
+    use yinz_types::web::{ApplicationPhase as Phase, ApplicationStatus};
+    let (temp, backend) = fixture();
+    let ready = ApplicationStatus {
+        phase: Phase::Ready,
+        target: Some(yinz_types::internal_ids::PluginId::new(1)),
+        generation: Some(10),
+        ..Default::default()
+    };
+    let mut site = Site {
+        plugin_id: ready.target,
+        generation: 10,
+        ..Default::default()
+    };
+    for path in ["/", "/login"] {
+        site.pages.insert(
+            path.into(),
+            StaticFile {
+                bytes: Arc::from(b"current complete app".as_slice()),
+                content_type: "text/html; charset=utf-8",
+                etag: "\"current\"".into(),
+            },
+        );
+    }
+    let site = Arc::new(site);
+    *backend.application.write().unwrap() = Some(ready.clone());
+    let server = WebServer::start(
+        settings(temp.path()),
+        backend.clone(),
+        &tokio::runtime::Handle::current(),
+    );
+    let addr = serving(&server).await;
+    for mismatch in 0..3 {
+        for path in ["/", "/login"] {
+            for method in ["GET", "HEAD"] {
+                *backend.site.write().unwrap() = Some(site.clone());
+                let replacement = if mismatch == 0 {
+                    None
+                } else {
+                    let mut stale = Site::clone(&site);
+                    if mismatch == 1 {
+                        stale.generation += 1;
+                    } else {
+                        stale.plugin_id = None;
+                    }
+                    Some(Arc::new(stale))
+                };
+                // Only site() consumes this transition, after the service read Ready.
+                // Listener status polls cannot consume the controlled interleaving.
+                *backend.site_on_read.lock().unwrap() = Some(replacement);
+                let reply = request(
+                    addr,
+                    &format!(
+                        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+                    ),
+                )
+                .await;
+                assert!(reply.starts_with("HTTP/1.1 503"), "{reply}");
+                assert!(reply.contains("retry-after: 1"));
+                assert!(reply.contains("content-security-policy:"));
+                assert!(reply.contains("x-content-type-options: nosniff"));
+                assert!(!reply.contains("current complete app"));
+                if method == "HEAD" {
+                    assert!(reply.ends_with("\r\n\r\n"));
+                } else {
+                    assert!(
+                        reply.contains("http-equiv=\"refresh\" content=\"1\""),
+                        "{reply}"
+                    );
+                }
+                *backend.site.write().unwrap() = Some(site.clone());
+                let recovered = get(addr, path).await;
+                assert!(recovered.starts_with("HTTP/1.1 200"));
+                assert!(recovered.contains("current complete app"));
+            }
+        }
+    }
+    for phase in [
+        Phase::Failed,
+        Phase::PermissionBlocked,
+        Phase::Stopped,
+        Phase::Disabled,
+    ] {
+        *backend.application.write().unwrap() = Some(ApplicationStatus {
+            phase,
+            ..ready.clone()
+        });
+        let reply = get(addr, "/").await;
+        assert!(reply.starts_with("HTTP/1.1 503"));
+        assert!(!reply.contains("http-equiv=\"refresh\""));
+        assert!(!reply.contains("current complete app"));
+    }
+    assert_eq!(backend.dispatches.load(Ordering::SeqCst), 0);
+    stop(&server).await;
 }

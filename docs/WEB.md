@@ -142,6 +142,19 @@ yinz --data-dir PATH --config CONFIG --session SESSION plugins reload web
 
 Use the effective configured plugin instead of `web` for a custom app. Keep your
 original data/config selectors so the command reaches the intended installation.
+An intentionally stopped app stays stopped: stop removes its loaded identity, so
+use `plugins start` rather than `plugins reload` to bring it back:
+
+```sh
+yinz --data-dir PATH --config CONFIG --session SESSION plugins start web
+```
+
+Retain `--config-dir DIR` if you used it, and substitute the effective configured
+alias/location for a custom app. Status provides `start` guidance for a verified
+stopped app and `reload` guidance for a retained failed app, beside that listener's
+session. Replace its SESSION/PLUGIN placeholders before running the command.
+Legacy or unverified records do not supply a recovery action.
+
 Changing the startup-only `web` block requires a new session, not just a plugin
 reload.
 
@@ -537,6 +550,8 @@ are recorded in the implementation evidence, not here.
 | Production HTTP | `cargo x integration-test -E 'test(web_builtin_production_http)' -j 16` | Listener, password and bearer auth, plugin host, worker and the default builtin from this checkout | Pane OS and processes (TestRunner's fake PTY) |
 | Startup recovery | `cargo x integration-test -E 'test(web_startup_)' -j 16` | Production listener/pulse/host/publication, GET/login/HEAD recovery, finite budget, real 60-second unpublished deadline, native auth/subscriptions | Disposable builtin fault; fake PTY |
 | Live update and rollback | `cargo x test -p yinz -E 'test(web_startup_live_update_)' -j 4` | Real source/destination binaries, headless inventory, paused restoration, pages/assets and existing browser identity | Disposable local installation |
+| Custom app compatibility | `cargo x integration-test -- -E 'test(enabled_health_starting_rename_clear_and_terminal_usable) \| test(missing_invalid_password_then_write_binds_and_config_waits_for_next_start) \| test(web_transport_authenticated_steel_and_native_frozen_site) \| test(web_sdk_authenticated_routes_pages_assets_and_failures)' -j 16` | Existing auth, permission, publication, reload/stop and startup-only configuration callers | Disposable sessions; fake PTY |
+| Deferred load readiness | `cargo x test -- -p yinz-steel -E 'test(web_startup_load_completion_waits_for_its_deferred_and_rejects_failure)'` | Successful and failed deferred load completion consumed by host readiness | Confined runtime |
 | Browser flows | `web_builtin_browser_phone_flows`, see below | Headless Firefox via Playwright, frozen pages, native login | Agent-data API, intercepted with fixed fixtures |
 
 Against the fake PTY, the production test records native behavior rather than
