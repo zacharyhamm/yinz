@@ -225,6 +225,25 @@ pub enum ConfigError {
 }
 
 impl ConfigError {
+    /// A concise diagnostic for logs and stderr, where source-span rendering is unavailable.
+    pub fn diagnostic_message(&self) -> String {
+        match self {
+            Self::KdlError(error) => match &error.src {
+                Some(source) => format!("{}: {}", source.name(), error.error_message),
+                None => error.error_message.clone(),
+            },
+            _ => self.to_string(),
+        }
+    }
+
+    fn diagnostic_message_for_file(&self, path: &Path) -> String {
+        if matches!(self, Self::KdlError(error) if error.src.is_some()) {
+            self.diagnostic_message()
+        } else {
+            format!("{}: {}", path.display(), self.diagnostic_message())
+        }
+    }
+
     pub fn new_kdl_error(error_message: String, offset: usize, len: usize) -> Self {
         ConfigError::KdlError(KdlError {
             error_message,
@@ -470,6 +489,30 @@ fn read_regular_config(path: &Path) -> std::io::Result<String> {
     Ok(text)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConfigRead {
+    Ordinary,
+    Saved,
+}
+
+impl ConfigRead {
+    fn reader(self) -> fn(&Path) -> io::Result<String> {
+        match self {
+            Self::Ordinary => |path| std::fs::read_to_string(path),
+            Self::Saved => read_regular_config,
+        }
+    }
+
+    fn exists(self, path: &Path) -> Result<bool, ConfigError> {
+        match self {
+            Self::Ordinary => Ok(path.exists()),
+            Self::Saved => path
+                .try_exists()
+                .map_err(|error| ConfigError::IoPath(error, path.into())),
+        }
+    }
+}
+
 impl Config {
     pub fn load(
         config_path: Option<&Path>,
@@ -479,20 +522,19 @@ impl Config {
         if clean {
             return Config::from_default_assets();
         }
-        Self::load_layers(config_path, config_dir, |path| {
-            std::fs::read_to_string(path)
-        })
+        Self::load_layers(config_path, config_dir, ConfigRead::Ordinary)
     }
 
-    /// Read the session's saved layers without opening a FIFO in blocking mode.
+    /// Read the saved layers using regular files. I/O errors that could affect the
+    /// winning configuration make the snapshot indeterminate.
     pub fn load_saved(config_path: Option<&Path>, config_dir: Option<&Path>) -> ConfigResult {
-        Self::load_layers(config_path, config_dir, read_regular_config)
+        Self::load_layers(config_path, config_dir, ConfigRead::Saved)
     }
 
     fn load_layers(
         config_path: Option<&Path>,
         config_dir: Option<&Path>,
-        read: fn(&Path) -> std::io::Result<String>,
+        mode: ConfigRead,
     ) -> ConfigResult {
         // The config *directory*, whichever file is read: the drop-ins hang off it, so a
         // one-off `--config /somewhere/else.kdl` still gets the user's `config.d`, and never
@@ -502,29 +544,22 @@ impl Config {
             .or_else(home::find_default_config_dir);
         let overlay_dir = home::get_config_overlay_dir(config_dir.clone());
 
-        if let Some(path) = config_path {
-            let default_config = Config::from_default_assets()?;
-            return Config::from_path_with(path, Some(default_config), read).and_then(|config| {
-                config
-                    .with_overlay_dir_read(overlay_dir.as_deref(), read)
-                    .resolve_plugin_repositories(config_path, config_dir.as_deref())
-            });
-        }
-
-        let config = if let Some(ref config) = config_dir {
-            let path = config.join(DEFAULT_CONFIG_FILE_NAME);
-            if path.exists() {
-                let default_config = Config::from_default_assets()?;
-                Config::from_path_with(&path, Some(default_config), read)?
-            } else {
-                Config::from_default_assets()?
-            }
-        } else {
-            Config::from_default_assets()?
+        let mut config = Config::from_default_assets()?;
+        let default_path;
+        let main = match (config_path, config_dir.as_deref()) {
+            (Some(path), _) => Some(path),
+            (None, Some(dir)) => {
+                default_path = dir.join(DEFAULT_CONFIG_FILE_NAME);
+                mode.exists(&default_path)?
+                    .then_some(default_path.as_path())
+            },
+            (None, None) => None,
         };
-        config
-            .with_overlay_dir_read(overlay_dir.as_deref(), read)
-            .resolve_plugin_repositories(config_path, config_dir.as_deref())
+        if let Some(path) = main {
+            config = Config::from_path_with(path, Some(config), mode.reader())?;
+        }
+        config.load_overlay_dir(overlay_dir.as_deref(), mode)?;
+        config.resolve_plugin_repositories(config_path, config_dir.as_deref())
     }
 }
 
@@ -637,56 +672,93 @@ impl Config {
     /// file is layered over the defaults. A drop-in that does not parse is logged and skipped
     /// rather than failing the whole config: a bad managed write must not brick the session.
     /// `None`, or a folder that is not there, is no overlay.
-    pub fn with_overlay_dir(self, overlay_dir: Option<&Path>) -> Config {
-        self.with_overlay_dir_read(overlay_dir, |path| std::fs::read_to_string(path))
+    pub fn with_overlay_dir(mut self, overlay_dir: Option<&Path>) -> Config {
+        if let Err(error) = self.load_overlay_dir(overlay_dir, ConfigRead::Ordinary) {
+            log::error!(
+                "Failed to load config drop-ins: {}",
+                error.diagnostic_message()
+            );
+        }
+        self
     }
 
-    fn with_overlay_dir_read(
-        self,
+    fn load_overlay_dir(
+        &mut self,
         overlay_dir: Option<&Path>,
-        read: fn(&Path) -> std::io::Result<String>,
-    ) -> Config {
+        mode: ConfigRead,
+    ) -> Result<(), ConfigError> {
         let Some(overlay_dir) = overlay_dir else {
-            return self;
+            return Ok(());
         };
-        let Ok(entries) = std::fs::read_dir(overlay_dir) else {
-            return self;
+        let entries = match std::fs::read_dir(overlay_dir) {
+            Ok(entries) => entries,
+            Err(error) if mode == ConfigRead::Saved && error.kind() != io::ErrorKind::NotFound => {
+                return Err(ConfigError::IoPath(error, overlay_dir.into()));
+            },
+            Err(_) => return Ok(()),
         };
-        let mut paths: Vec<PathBuf> = entries
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("kdl"))
-            .filter(|path| path.is_file())
-            .collect();
+        let mut paths = Vec::new();
+        for entry in entries {
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(error) if mode == ConfigRead::Saved => {
+                    return Err(ConfigError::IoPath(error, overlay_dir.into()));
+                },
+                Err(_) => continue,
+            };
+            if path.extension().and_then(|ext| ext.to_str()) != Some("kdl") {
+                continue;
+            }
+            match path.metadata() {
+                Ok(metadata) if metadata.is_file() => paths.push(path),
+                Err(error) if mode == ConfigRead::Saved => {
+                    return Err(ConfigError::IoPath(error, path));
+                },
+                _ => {},
+            }
+        }
         paths.sort();
-        paths.into_iter().fold(self, |config, path| {
+        let read = mode.reader();
+        for path in paths {
             let text = match read(&path) {
                 Ok(text) => text,
+                Err(error) if mode == ConfigRead::Saved => {
+                    return Err(ConfigError::IoPath(error, path));
+                },
                 Err(e) => {
                     log::error!("Skipping config drop-in {}: {}", path.display(), e);
-                    return config;
+                    continue;
                 },
             };
             // Leaf edits to a directory theme need that definition before overlay parsing.
-            let mut base = config.clone();
+            let mut base = self.clone();
             if crate::editor::edits_themes(&text)
                 && let Err(error) = apply_themes_with(
                     &mut base,
                     None,
                     overlay_dir.parent().map(Path::to_path_buf),
-                    read,
+                    mode,
                 )
             {
-                log::error!("Cannot load themes for {}: {error}", path.display());
-                return config;
+                if mode == ConfigRead::Saved && matches!(error, ConfigError::IoPath(..)) {
+                    return Err(error);
+                }
+                log::error!(
+                    "Cannot load themes for {}: {}",
+                    path.display(),
+                    error.diagnostic_message()
+                );
+                continue;
             }
-            match Config::from_kdl(&text, Some(base)) {
-                Ok(layered) => layered,
-                Err(e) => {
-                    log::error!("Skipping config drop-in {}: {}", path.display(), e);
-                    config
-                },
+            match Config::from_file_text(&path, text, Some(base)) {
+                Ok(layered) => *self = layered,
+                Err(error) => log::error!(
+                    "Skipping config drop-in {}",
+                    error.diagnostic_message_for_file(&path)
+                ),
             }
-        })
+        }
+        Ok(())
     }
 
     /// Persist a KDL `fragment` into `<overlay_dir>/yinz-managed.kdl`, and answer the path.
@@ -833,6 +905,14 @@ impl Config {
             ));
         }
         let kdl_config = read(path).map_err(|error| ConfigError::IoPath(error, path.into()))?;
+        Self::from_file_text(path, kdl_config, default_config)
+    }
+
+    fn from_file_text(
+        path: &Path,
+        kdl_config: String,
+        default_config: Option<Config>,
+    ) -> ConfigResult {
         match Config::from_kdl(&kdl_config, default_config) {
             Ok(config) => Ok(config),
             Err(ConfigError::KdlDeserializationError(kdl_error)) => {
@@ -1231,16 +1311,17 @@ pub async fn watch_config_file_changes<F, Fut>(
     F: Fn(Config) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send,
 {
-    watch_config_file_changes_inner(config_file_path, config_dir, on_config_change, || {}).await;
+    watch_config_file_changes_inner(config_file_path, config_dir, on_config_change, || {}, || {})
+        .await;
 }
 
-// The readiness callback is private: tests acknowledge actual registration before creating
-// optional directories, using exactly the production watcher loop.
+// Tests can observe registration and main-file loss through the production watcher loop.
 async fn watch_config_file_changes_inner<F, Fut>(
     config_file_path: PathBuf,
     config_dir: Option<&Path>,
     on_config_change: F,
     on_ready: impl FnOnce() + Send,
+    on_main_lost: impl Fn() + Send,
 ) where
     F: Fn(Config) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send,
@@ -1248,6 +1329,7 @@ async fn watch_config_file_changes_inner<F, Fut>(
     use yinz_runtime::errors::prelude::*;
 
     let mut on_ready = Some(on_ready);
+    let mut pending_main_recovery = false;
     // in a gist, what we do here is fire the `on_config_change` function whenever there is a
     // change in the config file or the configured theme directory, we do this by:
     // 1. Trying to watch the provided config file for changes
@@ -1267,8 +1349,8 @@ async fn watch_config_file_changes_inner<F, Fut>(
     fn load_config_and_theme_dir(
         config_file_path: &Path,
         config_dir: Option<&Path>,
-    ) -> Option<(Config, Option<PathBuf>)> {
-        let config = Config::load(Some(config_file_path), config_dir, false).ok()?;
+    ) -> Result<(Config, Option<PathBuf>), ConfigError> {
+        let config = Config::load(Some(config_file_path), config_dir, false)?;
         let config_dir = config_dir.map(Path::to_path_buf);
         let (_, mut config) = load_layout_and_config(
             None,
@@ -1278,14 +1360,13 @@ async fn watch_config_file_changes_inner<F, Fut>(
             None,
             None,
             PathBuf::from("."),
-        )
-        .ok()?;
-        let config_options = apply_themes(&mut config, None, config_dir.clone()).ok()?;
+        )?;
+        let config_options = apply_themes(&mut config, None, config_dir.clone())?;
         let theme_dir = config_options.theme_dir.or_else(|| {
             home::get_theme_dir(config_dir.or_else(home::find_default_config_dir))
                 .filter(|dir| dir.exists())
         });
-        Some((config, theme_dir))
+        Ok((config, theme_dir))
     }
 
     fn expected_overlay_dir(config_dir: Option<&Path>) -> Option<PathBuf> {
@@ -1309,12 +1390,18 @@ async fn watch_config_file_changes_inner<F, Fut>(
             .is_some_and(|theme_dir| event.paths.iter().any(|path| path.starts_with(theme_dir)))
     }
 
+    enum Reload {
+        Published { theme_dir_changed: bool },
+        MissingMain,
+        Failed,
+    }
+
     async fn reload_config_after_change<F, Fut>(
         config_file_path: &Path,
         config_dir: Option<&Path>,
         watched_theme_dir: Option<&Path>,
         on_config_change: &F,
-    ) -> Option<bool>
+    ) -> Reload
     where
         F: Fn(Config) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = ()> + Send,
@@ -1322,27 +1409,38 @@ async fn watch_config_file_changes_inner<F, Fut>(
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         if !config_file_path.exists() {
-            return None;
+            return Reload::MissingMain;
         }
 
         let (new_config, new_theme_dir) =
             match load_config_and_theme_dir(config_file_path, config_dir) {
-                Some(loaded) => loaded,
-                None => {
-                    log::error!("Failed to reload config from {:?}", config_file_path);
-                    return None;
+                Ok(loaded) => loaded,
+                Err(ConfigError::IoPath(error, path))
+                    if path == config_file_path && error.kind() == io::ErrorKind::NotFound =>
+                {
+                    return Reload::MissingMain;
+                },
+                Err(error) => {
+                    log::error!(
+                        "Failed to reload config from {}",
+                        error.diagnostic_message_for_file(config_file_path)
+                    );
+                    return Reload::Failed;
                 },
             };
         on_config_change(new_config).await;
         // Overlay topology is reconciled independently by the presence probe, which
         // installs its watch before loading. Keep theme-directory behavior unchanged.
-        Some(new_theme_dir.as_deref() != watched_theme_dir)
+        Reload::Published {
+            theme_dir_changed: new_theme_dir.as_deref() != watched_theme_dir,
+        }
     }
 
     loop {
         if config_file_path.exists() {
             let watched_theme_dir =
                 load_config_and_theme_dir(config_file_path.as_path(), config_dir)
+                    .ok()
                     .and_then(|(_, theme_dir)| theme_dir);
             let mut watched_overlay_dir = existing_overlay_dir(config_dir);
             let (tx, mut rx) = mpsc::unbounded_channel();
@@ -1366,6 +1464,14 @@ async fn watch_config_file_changes_inner<F, Fut>(
             };
 
             if let Err(e) = watcher.watch(&config_file_path, RecursiveMode::NonRecursive) {
+                if !config_file_path.exists() {
+                    pending_main_recovery |= on_ready.is_none();
+                    if pending_main_recovery {
+                        drop(watcher);
+                        on_main_lost();
+                    }
+                    continue;
+                }
                 log::error!("Failed to watch config file {:?}: {}", config_file_path, e);
                 break;
             }
@@ -1394,17 +1500,66 @@ async fn watch_config_file_changes_inner<F, Fut>(
             if let Some(on_ready) = on_ready.take() {
                 on_ready();
             }
+            // PollWatcher seeds its snapshot when it registers. Read the effective layers
+            // afterward so writes during the gap either made it into this load or will be
+            // observed by the new watch.
+            let mut recover_on_registration = pending_main_recovery;
             let mut presence_probe = tokio::time::interval(Duration::from_secs(1));
             presence_probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                let event_result = tokio::select! {
-                    event = rx.recv() => match event {
-                        Some(event) => event,
-                        None => break,
-                    },
-                    _ = presence_probe.tick() => {
-                        let overlay_dir = existing_overlay_dir(config_dir);
-                        if overlay_dir != watched_overlay_dir || overlay_watch_failed {
+            let main_lost = loop {
+                if !std::mem::take(&mut recover_on_registration) {
+                    tokio::select! {
+                        event = rx.recv() => {
+                            match event {
+                                None => break false,
+                                Some(Err(error)) => {
+                                    log::error!("Config watcher event error: {error}");
+                                    let missing_main = error.paths.contains(&config_file_path)
+                                        && match &error.kind {
+                                            notify::ErrorKind::PathNotFound => true,
+                                            notify::ErrorKind::Io(error) => error.kind() == io::ErrorKind::NotFound,
+                                            _ => false,
+                                        };
+                                    if missing_main || !config_file_path.exists() {
+                                        break true;
+                                    }
+                                    if watched_overlay_dir.as_ref().is_some_and(|directory| {
+                                        !directory.is_dir()
+                                            || error.paths.iter().any(|path| path.starts_with(directory))
+                                    }) {
+                                        // Reconcile a removed drop-in directory before discarding
+                                        // its registration, including rapid recreation.
+                                        overlay_watch_failed = true;
+                                        continue;
+                                    }
+                                    break false;
+                                },
+                                Some(Ok(event)) if event_is_for_config_file(&event, &config_file_path) => {
+                                    if event.kind.is_remove() {
+                                        break true;
+                                    }
+                                    if !event.kind.is_create() && !event.kind.is_modify() {
+                                        continue;
+                                    }
+                                },
+                                Some(Ok(event)) => {
+                                    if !(event_is_in_theme_dir(&event, watched_theme_dir.as_deref())
+                                        || event_is_in_theme_dir(&event, watched_overlay_dir.as_deref()))
+                                        || !(event.kind.is_remove() || event.kind.is_create() || event.kind.is_modify())
+                                    {
+                                        continue;
+                                    }
+                                },
+                            }
+                        },
+                        _ = presence_probe.tick() => {
+                            if !config_file_path.exists() {
+                                break true;
+                            }
+                            let overlay_dir = existing_overlay_dir(config_dir);
+                            if overlay_dir == watched_overlay_dir && !overlay_watch_failed {
+                                continue;
+                            }
                             overlay_watch_failed = false;
                             if let Some(previous) = watched_overlay_dir.take() {
                                 watcher.unwatch(&previous).context("unwatch removed config drop-in directory").non_fatal();
@@ -1418,71 +1573,34 @@ async fn watch_config_file_changes_inner<F, Fut>(
                                     },
                                 }
                             }
-                            // Register before loading: writes during discovery must be included
-                            // in this load or arrive through the newly installed watch.
-                            if reload_config_after_change(
-                                config_file_path.as_path(),
-                                config_dir,
-                                watched_theme_dir.as_deref(),
-                                &on_config_change,
-                            ).await.unwrap_or(false) {
-                                break;
-                            }
-                        }
-                        continue;
-                    },
-                };
-                let event = match event_result {
-                    Ok(event) => event,
-                    Err(e) => {
-                        log::error!("Config watcher event error: {}", e);
-                        if watched_overlay_dir.as_ref().is_some_and(|directory| {
-                            !directory.is_dir()
-                                || e.paths.iter().any(|path| path.starts_with(directory))
-                        }) {
-                            // PollWatcher may report a removed directory as an IO error
-                            // before the presence probe sees it. Reconcile that layer before
-                            // discarding its registered state, including rapid recreation.
-                            overlay_watch_failed = true;
-                            continue;
-                        }
-                        break;
-                    },
-                };
-
-                if event_is_for_config_file(&event, config_file_path.as_path()) {
-                    if event.kind.is_remove() {
-                        break;
-                    }
-
-                    if (event.kind.is_create() || event.kind.is_modify())
-                        && reload_config_after_change(
-                            config_file_path.as_path(),
-                            config_dir,
-                            watched_theme_dir.as_deref(),
-                            &on_config_change,
-                        )
-                        .await
-                        .unwrap_or(false)
-                    {
-                        break;
-                    }
-                } else if (event_is_in_theme_dir(&event, watched_theme_dir.as_deref())
-                    || event_is_in_theme_dir(&event, watched_overlay_dir.as_deref()))
-                    && (event.kind.is_remove() || event.kind.is_create() || event.kind.is_modify())
-                {
-                    let should_restart_watcher = reload_config_after_change(
-                        config_file_path.as_path(),
-                        config_dir,
-                        watched_theme_dir.as_deref(),
-                        &on_config_change,
-                    )
-                    .await
-                    .unwrap_or(true);
-                    if should_restart_watcher {
-                        break;
+                            // Register before loading so a racing write is read or observed.
+                        },
                     }
                 }
+                match reload_config_after_change(
+                    &config_file_path,
+                    config_dir,
+                    watched_theme_dir.as_deref(),
+                    &on_config_change,
+                )
+                .await
+                {
+                    Reload::Published { theme_dir_changed } => {
+                        pending_main_recovery = false;
+                        if theme_dir_changed {
+                            break false;
+                        }
+                    },
+                    Reload::MissingMain => break true,
+                    // Keep the registration so an edit that repairs the invalid input
+                    // cannot be absorbed by a new watch's initial snapshot.
+                    Reload::Failed => {},
+                }
+            };
+            if main_lost || !config_file_path.exists() {
+                pending_main_recovery = true;
+                drop(watcher);
+                on_main_lost();
             }
         }
 
@@ -1622,16 +1740,14 @@ pub fn apply_themes(
     cli_config_options: Option<Options>,
     config_dir: Option<PathBuf>,
 ) -> Result<Options, ConfigError> {
-    apply_themes_with(config, cli_config_options, config_dir, |path| {
-        std::fs::read_to_string(path)
-    })
+    apply_themes_with(config, cli_config_options, config_dir, ConfigRead::Ordinary)
 }
 
 fn apply_themes_with(
     config: &mut Config,
     cli_config_options: Option<Options>,
     config_dir: Option<PathBuf>,
-    read: fn(&Path) -> std::io::Result<String>,
+    mode: ConfigRead,
 ) -> Result<Options, ConfigError> {
     let config_options = match cli_config_options {
         Some(cli_config_options) => config.options.merge(cli_config_options),
@@ -1640,16 +1756,49 @@ fn apply_themes_with(
 
     config.themes = crate::assets::get_default_themes().merge(std::mem::take(&mut config.themes));
 
-    let user_theme_dir = config_options.theme_dir.clone().or_else(|| {
-        home::get_theme_dir(config_dir.clone().or_else(home::find_default_config_dir))
-            .filter(|dir| dir.exists())
-    });
+    let user_theme_dir = match config_options.theme_dir.clone() {
+        Some(dir) => Some(dir),
+        None => match home::get_theme_dir(config_dir.or_else(home::find_default_config_dir)) {
+            Some(dir) if mode.exists(&dir)? => Some(dir),
+            _ => None,
+        },
+    };
     if let Some(user_theme_dir) = user_theme_dir {
         config.themes = config
             .themes
-            .merge(Themes::from_dir_with(user_theme_dir, read)?);
+            .merge(Themes::from_dir_with(user_theme_dir, mode.reader())?);
     }
     Ok(config_options)
+}
+
+#[cfg(test)]
+fn captured_config_logs() -> &'static yinz_test_support::Watched<Vec<String>> {
+    use std::sync::LazyLock;
+    use yinz_test_support::Watched;
+
+    struct ConfigLogger;
+    static LOGS: LazyLock<Watched<Vec<String>>> = LazyLock::new(|| Watched::new(Vec::new()));
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+
+    impl log::Log for ConfigLogger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() == log::Level::Error && metadata.target() == module_path!()
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if self.enabled(record.metadata()) {
+                LOGS.lock().push(record.args().to_string());
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    INSTALL.call_once(|| {
+        log::set_logger(&ConfigLogger).unwrap();
+        log::set_max_level(log::LevelFilter::Error);
+    });
+    &LOGS
 }
 
 #[cfg(test)]

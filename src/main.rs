@@ -482,6 +482,15 @@ fn main() {
             remote_commands::config().cloned()
         } else if startup_kind.is_some() {
             startup_stage("cli.initial_config", || yinz_cli::setup::load_config(&opts)).ok()
+        } else if matches!(opts.command.as_ref(), Some(Command::Action(action)) if matches!(action.as_ref(), CliAction::Reconfigure { .. }))
+        {
+            // Preflight the fragment without blocking on a non-regular saved input.
+            // The server handles saved-layer errors for the target session.
+            yinz_config::config::Config::load_saved(
+                opts.config.as_deref(),
+                opts.config_dir.as_deref(),
+            )
+            .ok()
         } else {
             yinz_cli::setup::load_config(&opts).ok()
         };

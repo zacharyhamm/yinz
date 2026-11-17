@@ -9,6 +9,39 @@ use yinz_types::structured_render::decode;
 #[path = "real_fixture.rs"]
 mod real_fixture;
 
+#[cfg(feature = "native-terminal")]
+#[test]
+fn underline_metrics_native_startup_reports_invalid_setting() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.kdl");
+    fs::write(&config, "terminal { underline_thickness 65; }").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_yinz"))
+        .env("HOME", dir.path())
+        .env("TMPDIR", dir.path())
+        .env("YINZ_TEST_CACHE_DIR", dir.path().join("cache"))
+        .env("YINZ_SOCKET_DIR", dir.path())
+        .env_remove("WAYLAND_DISPLAY")
+        .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("DISPLAY")
+        .arg("--config")
+        .arg(&config)
+        .arg("--config-dir")
+        .arg(dir.path())
+        .args(["terminal", "invalid-underline-config"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for expected in [
+        config.to_str().unwrap(),
+        "underline_thickness",
+        "between -64 and 64",
+    ] {
+        assert!(stderr.contains(expected), "{stderr}");
+    }
+}
+
 #[test]
 fn native_headless_creates_and_reattaches_with_structured_content() {
     std::thread::Builder::new()

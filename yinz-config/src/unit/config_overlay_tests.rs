@@ -751,8 +751,9 @@ fn underline_metrics_invalid_drop_in_discards_preloaded_themes() {
     let mut preload = base.clone();
     apply_themes(&mut preload, None, Some(dir.path().to_path_buf())).unwrap();
     assert!(preload.themes.get_theme("underline-fixture").is_some());
+    let invalid = overlays.join("10-invalid.kdl");
     std::fs::write(
-        overlays.join("10-invalid.kdl"),
+        &invalid,
         r#"
         configuration_edits { remove "themes" "unrelated"; }
         terminal { underline_thickness 65; }
@@ -764,14 +765,24 @@ fn underline_metrics_invalid_drop_in_discards_preloaded_themes() {
         "terminal { underline_offset -2; }",
     )
     .unwrap();
+    let logs = captured_config_logs();
     let loaded = base.with_overlay_dir(Some(&overlays));
+    assert!(logs.lock().iter().any(|line| {
+        line.contains("Skipping config drop-in")
+            && line.contains(invalid.to_str().unwrap())
+            && line.contains("underline_thickness")
+            && line.contains("between -64 and 64")
+    }));
     assert!(loaded.themes.get_theme("underline-fixture").is_none());
     assert_eq!(loaded.terminal.underline_offset, Some(-2));
+    let saved = Config::load_saved(None, Some(dir.path())).unwrap();
+    assert_eq!(saved.terminal.underline_offset, Some(-2));
+    assert_eq!(saved.terminal.underline_thickness, None);
 }
 
 #[cfg(unix)]
 #[test]
-fn underline_metrics_saved_comparison_skips_layers_that_reference_a_theme_fifo() {
+fn underline_metrics_saved_comparison_rejects_indeterminate_theme_preload() {
     use std::os::unix::ffi::OsStrExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -805,14 +816,12 @@ fn underline_metrics_saved_comparison_skips_layers_that_reference_a_theme_fifo()
     );
 
     std::fs::remove_file(&theme).unwrap();
-    let theme = std::ffi::CString::new(theme.as_os_str().as_bytes()).unwrap();
-    assert_eq!(unsafe { libc::mkfifo(theme.as_ptr(), 0o600) }, 0);
-    let with_fifo = Config::load_saved(None, Some(dir.path())).unwrap();
-    assert_eq!(
-        (
-            with_fifo.terminal.underline_offset,
-            with_fifo.terminal.underline_thickness
-        ),
-        (Some(-2), None)
+    let fifo = std::ffi::CString::new(theme.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    let error = Config::load_saved(None, Some(dir.path())).unwrap_err();
+    assert!(
+        matches!(&error, ConfigError::IoPath(cause, path)
+            if path == &theme && cause.to_string().contains("not a regular file")),
+        "{error}"
     );
 }

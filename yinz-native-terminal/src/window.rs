@@ -27,10 +27,12 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::raw_window_handle::HasWindowHandle;
 use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
 use yinz_cli::args::{CliArgs, TerminalArgs};
+use yinz_config::config::Config;
 use yinz_ipc::ipc::{ClientToServerMsg, PixelDimensions, ServerToClientMsg};
 use yinz_runtime::errors::prelude::*;
 use yinz_types::input::actions::Action;
 use yinz_types::input::native_terminal::{StartupMode, TerminalConfig};
+use yinz_types::input::options::Options;
 use yinz_types::mouse::{MouseEvent, MouseEventType};
 use yinz_types::pane_size::{Size, SizeInPixels};
 use yinz_types::position::Position;
@@ -121,13 +123,16 @@ struct App {
     error: Option<anyhow::Error>,
 }
 
+fn load_native_config(opts: &CliArgs) -> Result<(Config, Options)> {
+    yinz_cli::setup::Setup::config_without_layout(opts)
+        .map_err(|error| anyhow!("{}", error.diagnostic_message()))
+}
+
 pub fn run(args: TerminalArgs, opts: CliArgs) -> Result<()> {
+    let (config, options) = load_native_config(&opts).context("load native settings")?;
     let event_loop = EventLoop::<()>::with_user_event()
         .build()
         .context("initialize native event loop")?;
-    let (config, options) = yinz_cli::setup::Setup::config_without_layout(&opts)
-        .map_err(|error| anyhow!("{error}"))
-        .context("load native settings")?;
     let recorder = Recorder::new(args.record.as_deref())?;
     let active_fonts = effective_font_options(&config.terminal, 1.0, 1.0);
     let fonts = active_fonts
@@ -353,9 +358,8 @@ impl PreparedReload {
         zoom: f32,
         scale: f64,
     ) -> Result<Self> {
-        let (config, options) = yinz_cli::setup::Setup::config_without_layout(opts)
-            .map_err(|error| anyhow!("{error}"))
-            .context("reload native terminal configuration")?;
+        let (config, options) =
+            load_native_config(opts).context("reload native terminal configuration")?;
         let requested = effective_font_options(&config.terminal, zoom, scale);
         let update = prepare_fonts(active, &requested)?;
         Ok(Self {
@@ -1335,10 +1339,7 @@ impl ApplicationHandler<()> for App {
 fn window_state_path() -> std::path::PathBuf {
     yinz_runtime::consts::YINZ_CACHE_DIR.join("native-terminal-window.json")
 }
-fn paints_for(
-    config: &yinz_config::config::Config,
-    options: &yinz_types::input::options::Options,
-) -> Paints {
+fn paints_for(config: &Config, options: &Options) -> Paints {
     options
         .theme
         .as_deref()

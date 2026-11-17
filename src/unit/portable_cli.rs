@@ -66,6 +66,63 @@ fn failure(out: Output, expected: &str) {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn underline_metrics_reconfigure_reaches_session_lookup_with_a_fifo_main() {
+    use std::os::unix::{ffi::OsStrExt, fs::symlink};
+    use std::time::{Duration, Instant};
+
+    let dir = tempfile::tempdir().unwrap();
+    let regular = dir.path().join("regular.kdl");
+    std::fs::write(&regular, "terminal { underline_offset -2; }").unwrap();
+    let fifo = dir.path().join("fifo.kdl");
+    let fifo_name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { nix::libc::mkfifo(fifo_name.as_ptr(), 0o600) }, 0);
+    let regular_link = dir.path().join("regular-link.kdl");
+    let fifo_link = dir.path().join("fifo-link.kdl");
+    symlink(&regular, &regular_link).unwrap();
+    symlink(&fifo, &fifo_link).unwrap();
+
+    let session = "absent-underline-session";
+    for main in [&regular, &regular_link, &fifo, &fifo_link] {
+        let mut child = command(dir.path())
+            .env("YINZ_TEST_CACHE_DIR", dir.path().join("cache"))
+            .arg("--config-dir")
+            .arg(dir.path())
+            .arg("--config")
+            .arg(main)
+            .args([
+                "--session",
+                session,
+                "action",
+                "reconfigure",
+                "--kdl",
+                "terminal { underline_offset 0; }",
+            ])
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + yinz_test_support::default_timeout();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                },
+                status => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("reconfigure did not reach session lookup with {main:?}: {status:?}");
+                },
+            }
+        }
+        failure(
+            child.wait_with_output().unwrap(),
+            &format!("Session '{session}' not found."),
+        );
+    }
+}
+
 struct Session(tempfile::TempDir, String, Option<AttachedClient>);
 const ATTACH_OUTPUT_LIMIT: usize = 32 * 1024;
 

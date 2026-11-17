@@ -8,6 +8,7 @@ struct Watching {
     runtime: tokio::runtime::Runtime,
     task: tokio::task::JoinHandle<()>,
     changes: Watched<Option<Config>>,
+    main_lost: Watched<bool>,
 }
 
 impl Watching {
@@ -21,6 +22,8 @@ impl Watching {
         let received = changes.clone();
         let ready = Watched::new(false);
         let registered = ready.clone();
+        let main_lost = Watched::new(false);
+        let lost = main_lost.clone();
         let task = runtime.spawn(async move {
             watch_config_file_changes_inner(
                 main,
@@ -30,6 +33,7 @@ impl Watching {
                     async {}
                 },
                 move || *registered.lock() = true,
+                move || *lost.lock() = true,
             )
             .await;
         });
@@ -38,6 +42,7 @@ impl Watching {
             runtime,
             task,
             changes,
+            main_lost,
         };
         ready.wait_until("main-file watch registration", WAIT, |ready| {
             ready.then_some(())
@@ -63,6 +68,19 @@ impl Watching {
 
     fn clear(&self) {
         *self.changes.lock() = None;
+    }
+
+    fn expect_underline(&self, offset: i32, thickness: i32) {
+        self.changes.wait_until(
+            "effective underline metrics after saved reload",
+            WAIT,
+            |loaded| {
+                let terminal = &loaded.as_ref()?.terminal;
+                ((terminal.underline_offset, terminal.underline_thickness)
+                    == (Some(offset), Some(thickness)))
+                    .then_some(())
+            },
+        );
     }
 }
 
@@ -169,27 +187,63 @@ fn underline_metrics_managed_writes_reload_and_recover_after_invalid_main_file()
     std::fs::create_dir(&drop_ins).unwrap();
     let original = "terminal { underline_offset -2; underline_thickness 1; }";
     std::fs::write(&main, original).unwrap();
+    let logs = captured_config_logs();
     let watching = Watching::start(main.clone(), root.clone());
-    let expect = |offset, thickness| {
-        watching.changes.wait_until(
-            "effective underline metrics after saved reload",
-            WAIT,
-            |loaded| {
-                let terminal = &loaded.as_ref()?.terminal;
-                ((terminal.underline_offset, terminal.underline_thickness)
-                    == (Some(offset), Some(thickness)))
-                    .then_some(())
-            },
-        );
-    };
     Config::write_managed_fragment(&drop_ins, "terminal { underline_thickness -2; }").unwrap();
-    expect(-2, -2);
+    watching.expect_underline(-2, -2);
 
     std::fs::write(&main, "terminal { underline_offset 65; }").unwrap();
     Config::write_managed_fragment(&drop_ins, "terminal { underline_offset 0; }").unwrap();
-    assert!(Config::load(Some(&main), Some(&root), false).is_err());
+    logs.wait_until(
+        "watcher diagnostic for invalid underline offset",
+        WAIT,
+        |logs| {
+            logs.iter()
+                .find(|line| {
+                    line.contains("Failed to reload config")
+                        && line.contains(main.to_str().unwrap())
+                        && line.contains("underline_offset")
+                        && line.contains("between -64 and 64")
+                })
+                .map(|_| ())
+        },
+    );
+    assert_eq!(
+        watching
+            .changes
+            .lock()
+            .as_ref()
+            .unwrap()
+            .terminal
+            .underline_offset,
+        Some(-2)
+    );
     std::fs::write(&main, original).unwrap();
-    expect(0, -2);
+    watching.expect_underline(0, -2);
+}
+
+#[test]
+fn underline_metrics_managed_write_is_published_when_missing_main_returns() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let main = root.join("config.kdl");
+    let drop_ins = root.join("config.d");
+    std::fs::create_dir(&drop_ins).unwrap();
+    let original = "terminal { underline_offset -2; underline_thickness 1; }";
+    std::fs::write(&main, original).unwrap();
+    let watching = Watching::start(main.clone(), root);
+    Config::write_managed_fragment(&drop_ins, "terminal { underline_thickness 2; }").unwrap();
+    watching.expect_underline(-2, 2);
+
+    std::fs::remove_file(&main).unwrap();
+    watching
+        .main_lost
+        .wait_until("watcher unregistered the missing main", WAIT, |lost| {
+            lost.then_some(())
+        });
+    Config::write_managed_fragment(&drop_ins, "terminal { underline_thickness 3; }").unwrap();
+    std::fs::write(&main, original).unwrap();
+    watching.expect_underline(-2, 3);
 }
 
 #[test]

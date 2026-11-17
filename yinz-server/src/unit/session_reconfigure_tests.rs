@@ -3002,4 +3002,68 @@ mod underline_metrics_reconfigure {
             fixture.drain_instructions();
         }
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn underline_metrics_refuse_an_unsaved_reset_when_theme_preload_is_indeterminate() {
+        use std::os::unix::ffi::OsStrExt;
+
+        for all in [false, true] {
+            let fixture = Fixture::new(&[CLIENT], None);
+            let root = fixture.dir.path();
+            let main = root.join("config.kdl");
+            let themes = root.join("themes");
+            let overlays = root.join("config.d");
+            std::fs::create_dir(&themes).unwrap();
+            std::fs::create_dir(&overlays).unwrap();
+            let theme = themes.join("fixture.kdl");
+            let theme_text = include_str!("../../../yinz-config/assets/themes/adwaita.kdl");
+            std::fs::write(&theme, theme_text).unwrap();
+            let managed = managed(&fixture);
+            let managed_text = "terminal { padding 4; }";
+            std::fs::write(&managed, managed_text).unwrap();
+            let winning = overlays.join("zz-theme-edit.kdl");
+            let winning_text = r#"
+                configuration_edits { remove "themes" "unrelated"; }
+                terminal { underline_thickness 2; }
+            "#;
+            std::fs::write(&winning, winning_text).unwrap();
+            let main_text = std::fs::read_to_string(&main).unwrap();
+            let saved = load(&fixture);
+            assert_eq!(saved.terminal.underline_thickness, Some(2));
+            fixture.with(|session| {
+                session
+                    .session_configuration
+                    .set_client_runtime_configuration(CLIENT, saved);
+            });
+
+            std::fs::remove_file(&theme).unwrap();
+            let fifo = std::ffi::CString::new(theme.as_os_str().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+            assert_refused(
+                &fixture,
+                all,
+                "terminal { underline_thickness 0; }\nmouse_mode false",
+                &[
+                    "underline_thickness",
+                    "Repair or restore",
+                    theme.to_str().unwrap(),
+                ],
+            );
+            assert_eq!(std::fs::read_to_string(&main).unwrap(), main_text);
+            assert_eq!(std::fs::read_to_string(&managed).unwrap(), managed_text);
+            assert_eq!(std::fs::read_to_string(&winning).unwrap(), winning_text);
+
+            std::fs::remove_file(&theme).unwrap();
+            std::fs::write(&theme, theme_text).unwrap();
+            request(
+                &fixture,
+                CLIENT,
+                all,
+                "terminal { underline_thickness 2; }\nmouse_mode false",
+                false,
+            )
+            .unwrap();
+        }
+    }
 }

@@ -2056,7 +2056,17 @@ fn underline_metrics_saved_reload_scales_once_and_keeps_cells_and_copy() {
     let live_options = active.clone();
     let live_rects = retained.flatten().rects;
     write("underline_offset 65;");
-    assert!(PreparedReload::load(&opts, &active, zoom, scale).is_err());
+    let Err(error) = PreparedReload::load(&opts, &active, zoom, scale) else {
+        panic!("invalid underline offset was accepted");
+    };
+    let diagnostic = format!("{error:#}");
+    for expected in [
+        path.to_str().unwrap(),
+        "underline_offset",
+        "between -64 and 64",
+    ] {
+        assert!(diagnostic.contains(expected), "{diagnostic}");
+    }
     assert_eq!(settings, live_settings);
     assert_eq!(active, live_options);
     assert_eq!(retained.flatten().rects, live_rects);
