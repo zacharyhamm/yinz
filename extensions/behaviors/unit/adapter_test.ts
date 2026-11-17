@@ -322,6 +322,7 @@ print(json.dumps(result))
       kind: "task",
       text: issue.text,
       note: issue.note,
+      status: "done",
       completed: true,
       blocked: false,
       discarded_at: null,
@@ -334,7 +335,7 @@ print(json.dumps(result))
 import json, sys
 assert sys.argv[1:6] in (["--workspace", "default", "--json", "item", "show"], ["--workspace", "default", "--json", "item", "done"])
 item = json.loads(${JSON.stringify(JSON.stringify(agendaItem))})
-result = {"schema_version": 0, "item": item} if sys.argv[5] == "show" else {"schema_version": 0, "items": [item], "completion": {"completed": 1, "reopened": 0, "created": 0, "created_items": []}}
+result = {"schema_version": 1, "item": item} if sys.argv[5] == "show" else {"schema_version": 1, "items": [item], "completion": {"completed": 1, "reopened": 0, "created": 0, "created_items": []}}
 print(json.dumps(result))
 `,
     );
@@ -436,12 +437,13 @@ Deno.test("lifecycle origin and implementation adoption canonicalize aliases and
     await Deno.mkdir(bin);
     const agenda = join(bin, "agenda");
     const envelope = {
-      schema_version: 0,
+      schema_version: 1,
       item: {
         id: issue.itemId,
         kind: "task",
         text: issue.text,
         note: issue.note,
+        status: "pending",
         completed: false,
         blocked: false,
         discarded_at: null,
@@ -668,12 +670,13 @@ async function stubAgenda(repo: string, completed = false): Promise<string> {
   const bin = join(repo, "agenda-bin");
   await Deno.mkdir(bin, { recursive: true });
   const envelope = {
-    schema_version: 0,
+    schema_version: 1,
     item: {
       id: issue.itemId,
       kind: "task",
       text: issue.text,
       note: issue.note,
+      status: completed ? "done" : "pending",
       completed,
       blocked: false,
       discarded_at: null,
@@ -805,12 +808,13 @@ Deno.test("implement with no arguments adopts the recorded worker worktree and i
     await Deno.mkdir(bin);
     const agenda = join(bin, "agenda");
     const envelope = {
-      schema_version: 0,
+      schema_version: 1,
       item: {
         id: issue.itemId,
         kind: "task",
         text: issue.text,
         note: issue.note,
+        status: "pending",
         completed: false,
         blocked: false,
         discarded_at: null,
@@ -905,12 +909,13 @@ Deno.test("verify runs approved checks at the reviewed commit and refuses a move
     await Deno.mkdir(bin);
     const agenda = join(bin, "agenda");
     const envelope = {
-      schema_version: 0,
+      schema_version: 1,
       item: {
         id: issue.itemId,
         kind: "task",
         text: issue.text,
         note: issue.note,
+        status: "pending",
         completed: false,
         blocked: false,
         discarded_at: null,
@@ -1077,12 +1082,13 @@ Deno.test("decision methods bind to the current handoff and derive recorded valu
     await Deno.mkdir(bin);
     const agenda = join(bin, "agenda");
     const envelope = {
-      schema_version: 0,
+      schema_version: 1,
       item: {
         id: issue.itemId,
         kind: "task",
         text: issue.text,
         note: issue.note,
+        status: "pending",
         completed: false,
         blocked: false,
         discarded_at: null,
@@ -1267,12 +1273,13 @@ Deno.test("a failed merge gate is recorded with its log, survives repair and app
     await Deno.mkdir(bin);
     await Deno.mkdir(join(repo, "cargo-home"));
     const envelope = {
-      schema_version: 0,
+      schema_version: 1,
       item: {
         id: issue.itemId,
         kind: "task",
         text: issue.text,
         note: issue.note,
+        status: "pending",
         completed: false,
         blocked: false,
         discarded_at: null,
@@ -1797,12 +1804,13 @@ Deno.test("controller plan methods reject policy-violating checks before recordi
     await Deno.mkdir(bin);
     const agenda = join(bin, "agenda");
     const envelope = {
-      schema_version: 0,
+      schema_version: 1,
       item: {
         id: issue.itemId,
         kind: "task",
         text: issue.text,
         note: issue.note,
+        status: "pending",
         completed: false,
         blocked: false,
         discarded_at: null,

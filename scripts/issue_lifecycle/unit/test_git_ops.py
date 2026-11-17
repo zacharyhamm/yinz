@@ -36,10 +36,10 @@ class GitIntegrationTests(unittest.TestCase):
         self.agenda = self.root / "agenda.json"
         self.item = {
             "id": 7, "kind": "task", "text": "Fix café rendering", "note": "Preserve tabs.\nTest widths.",
-            "completed": False, "blocked": False, "discarded_at": None,
+            "status": "pending", "completed": False, "blocked": False, "discarded_at": None,
             "assignments": [{"category": 30, "item": 7, "source": "explicit", "value": "standard"}],
         }
-        self.agenda.write_text(json.dumps({"schema_version": 0, "item": self.item}))
+        self.agenda.write_text(json.dumps({"schema_version": 1, "item": self.item}))
         self.env = {
             **os.environ,
             "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
@@ -579,14 +579,45 @@ raise SystemExit(subprocess.run([{real_git!r}, *args]).returncode)
         result = self.run_request({**request, "skipCiRequest": "A different request"}, success=False)
         self.assertIn("skip request changed", result["error"])
 
+    def test_agenda_schema_and_status_are_checked_before_integration(self):
+        request = {
+            "agendaWorkspace": "default", "agendaItemId": 7,
+            "issueDigest": git_ops.digest_issue("default", self.item),
+        }
+        with mock.patch.object(git_ops, "agenda_workspace", return_value="default"), \
+                mock.patch.object(git_ops, "command") as command:
+            for status in ("pending", "in-progress", "waiting"):
+                with self.subTest(status=status):
+                    command.return_value = (0, json.dumps({
+                        "schema_version": 1, "item": {**self.item, "status": status},
+                    }), "")
+                    git_ops.check_issue(request, self.repo)
+            for version in (0, 2, "1", True, None):
+                with self.subTest(version=version):
+                    command.return_value = (0, json.dumps({"schema_version": version, "item": self.item}), "")
+                    with self.assertRaisesRegex(git_ops.LifecycleError, "unsupported schema"):
+                        git_ops.check_issue(request, self.repo)
+            for patch in (
+                {"status": "cancelled"}, {"status": "unknown"}, {"status": None},
+                {"status": "done"}, {"completed": True},
+                {"status": "done", "completed": True},
+            ):
+                with self.subTest(patch=patch):
+                    command.return_value = (0, json.dumps({
+                        "schema_version": 1, "item": {**self.item, **patch},
+                    }), "")
+                    with self.assertRaises(git_ops.LifecycleError):
+                        git_ops.check_issue(request, self.repo)
+        self.assertFalse(self.events.exists())
+
     def test_recurring_or_malformed_live_agenda_item_is_rejected(self):
         worktree = self.branch("issue-a")
         item = {**self.item, "assignments": [{"value": {"date": {"recurrence": "daily"}}}]}
-        self.agenda.write_text(json.dumps({"schema_version": 0, "item": item}))
+        self.agenda.write_text(json.dumps({"schema_version": 1, "item": item}))
         result = self.run_request(self.request(worktree), success=False)
         self.assertIn("Recurring", result["error"])
         item = {**self.item, "completed": "false"}
-        self.agenda.write_text(json.dumps({"schema_version": 0, "item": item}))
+        self.agenda.write_text(json.dumps({"schema_version": 1, "item": item}))
         result = self.run_request(self.request(worktree), success=False)
         self.assertIn("invalid task fields", result["error"])
         self.assertFalse(self.events.exists())

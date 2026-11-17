@@ -119,6 +119,12 @@ are available through `agenda --workspace <workspace> --json info` and
 `agenda --workspace <workspace> --json item show <id>`; configured workspace and
 returned item ID identify the issue.
 
+Agenda JSON schema version 1 is required. Pending, in-progress and waiting tasks
+can enter or resume the lifecycle when their prerequisites are satisfied.
+Cancelled tasks must be reopened first; completed tasks are accepted only by
+operations that explicitly handle completion or rollback. Unsupported schema
+versions and inconsistent task status/completion fields are rejected.
+
 Installed Swamp loads `@yinz/issue-lifecycle` and `@yinz/agent`. Python 3.11+,
 Agenda and Git must be on `PATH`; verification needs normal Yinz build
 prerequisites. Pane tasks need installed `yinz`, a running local session and the

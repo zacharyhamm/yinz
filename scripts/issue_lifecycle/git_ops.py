@@ -822,10 +822,14 @@ def check_issue(request, repo):
     try:
         document = json.loads(output)
         item = document["item"]
-        if type(document["schema_version"]) is not int or document["schema_version"] != 0 or type(item["id"]) is not int or item["id"] != item_id:
+        if type(document["schema_version"]) is not int or document["schema_version"] != 1 or type(item["id"]) is not int or item["id"] != item_id:
             raise LifecycleError("Agenda returned a different item or unsupported schema")
         if type(item["completed"]) is not bool or type(item["blocked"]) is not bool or not isinstance(item["text"], str) or not isinstance(item["note"], str) or not isinstance(item["assignments"], list):
             raise LifecycleError("Agenda returned invalid task fields")
+        if item["status"] not in ("pending", "in-progress", "waiting", "done", "cancelled") or item["completed"] != (item["status"] == "done"):
+            raise LifecycleError("Agenda returned invalid task status or completion state")
+        if item["status"] == "cancelled":
+            raise LifecycleError("Agenda issue is cancelled; reopen it before continuing")
         if item["kind"] != "task" or item["completed"] or item["discarded_at"] is not None or item["blocked"]:
             raise LifecycleError("Agenda issue must be a pending, unblocked task outside Trash")
         for assignment in item["assignments"]:

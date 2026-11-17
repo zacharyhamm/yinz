@@ -286,11 +286,12 @@ Deno.test("rollback reopens a completed Agenda task idempotently and verifies it
       return Promise.resolve({});
     }
     return Promise.resolve({
-      schema_version: 0,
+      schema_version: 1,
       item: {
         ...agendaItem(),
         text: issue.text,
         note: issue.note,
+        status: completed ? "done" : "pending",
         completed,
       },
     });
@@ -1207,6 +1208,7 @@ function agendaItem() {
     kind: "task",
     text: "Fix issue",
     note: "Acceptance criteria",
+    status: "pending",
     completed: false,
     blocked: false,
     discarded_at: null,
@@ -1218,7 +1220,13 @@ Deno.test("Agenda reads reject unsupported schemas and ineligible issue records"
   const cases: [Record<string, unknown>, string][] = [
     [{ kind: "note" }, "reference notes"],
     [{ discarded_at: 1 }, "trashed"],
-    [{ completed: true }, "completed"],
+    [{ completed: true, status: "done" }, "completed"],
+    [{ status: "cancelled" }, "cancelled"],
+    [{ status: null }, "status"],
+    [{ status: "done" }, "completion state"],
+    [{ status: "pending", completed: true }, "completion state"],
+    [{ status: "unknown" }, "status"],
+    [{ status: undefined }, "status"],
     [{ blocked: true }, "prerequisites"],
     [{ id: 86 }, "different item ID"],
     [{
@@ -1244,30 +1252,91 @@ Deno.test("Agenda reads reject unsupported schemas and ineligible issue records"
           false,
           () =>
             Promise.resolve({
-              schema_version: 0,
+              schema_version: 1,
               item: { ...agendaItem(), ...patch },
             }),
         ),
       message,
     );
   }
-  await rejectsAsync(
-    () =>
-      readAgenda(
-        "default",
-        85,
-        false,
-        () => Promise.resolve({ schema_version: 1, item: agendaItem() }),
-      ),
-    "0",
-  );
+  for (const schema_version of [0, 2, "1", true, null, undefined]) {
+    await rejectsAsync(
+      () =>
+        readAgenda(
+          "default",
+          85,
+          false,
+          () => Promise.resolve({ schema_version, item: agendaItem() }),
+        ),
+      "schema_version",
+    );
+  }
   const observed: string[][] = [];
   const value = await readAgenda("default", 85, false, (args) => {
     observed.push(args);
-    return Promise.resolve({ schema_version: 0, item: agendaItem() });
+    return Promise.resolve({ schema_version: 1, item: agendaItem() });
   });
   equal(observed, [["--workspace", "default", "--json", "item", "show", "85"]]);
   equal(value.digest, await digestIssue(value));
+  for (const status of ["pending", "in-progress", "waiting"]) {
+    equal(
+      await readAgenda(
+        "default",
+        85,
+        false,
+        () =>
+          Promise.resolve({
+            schema_version: 1,
+            item: { ...agendaItem(), status },
+          }),
+      ),
+      value,
+    );
+  }
+  equal(
+    await readAgenda("default", 85, true, () =>
+      Promise.resolve({
+        schema_version: 1,
+        item: { ...agendaItem(), status: "done", completed: true },
+      })),
+    value,
+  );
+  await rejectsAsync(
+    () =>
+      readAgenda("default", 85, true, () =>
+        Promise.resolve({
+          schema_version: 1,
+          item: { ...agendaItem(), status: "cancelled" },
+        })),
+    "cancelled",
+  );
+});
+
+Deno.test("Agenda completion rejects unsupported envelopes and non-done confirmations", async () => {
+  const captured = { ...issue, digest: await digestIssue(issue) };
+  for (
+    const [schema_version, status, message] of [
+      [0, "done", "schema_version"],
+      [2, "done", "schema_version"],
+      [1, "pending", "confirm issue completion"],
+      [1, "cancelled", "confirm issue completion"],
+    ] as const
+  ) {
+    await rejectsAsync(() =>
+      completeAgenda(captured, (args) =>
+        Promise.resolve(
+          args[4] === "show" ? { schema_version: 1, item: agendaItem() } : {
+            schema_version,
+            items: [{ ...agendaItem(), status, completed: true }],
+            completion: {
+              completed: 1,
+              reopened: 0,
+              created: 0,
+              created_items: [],
+            },
+          },
+        )), message);
+  }
 });
 
 Deno.test("Agenda completion is idempotent, checks the description, and never rewrites it", async () => {
@@ -1276,12 +1345,16 @@ Deno.test("Agenda completion is idempotent, checks the description, and never re
   const calls: string[][] = [];
   const command = (args: string[]): Promise<unknown> => {
     calls.push(args);
-    const item = { ...agendaItem(), completed };
+    const item = {
+      ...agendaItem(),
+      status: completed ? "done" : "pending",
+      completed,
+    };
     if (args[4] === "done") {
       completed = true;
       return Promise.resolve({
-        schema_version: 0,
-        items: [{ ...item, completed }],
+        schema_version: 1,
+        items: [{ ...item, status: "done", completed }],
         completion: {
           completed: item.completed ? 0 : 1,
           reopened: 0,
@@ -1290,7 +1363,7 @@ Deno.test("Agenda completion is idempotent, checks the description, and never re
         },
       });
     }
-    return Promise.resolve({ schema_version: 0, item });
+    return Promise.resolve({ schema_version: 1, item });
   };
   equal(await completeAgenda(captured, command), captured);
   equal(await completeAgenda(captured, command), captured);
@@ -1300,7 +1373,7 @@ Deno.test("Agenda completion is idempotent, checks the description, and never re
     completeAgenda(captured, (args) => {
       if (args[4] === "done") writes += 1;
       return Promise.resolve({
-        schema_version: 0,
+        schema_version: 1,
         item: { ...agendaItem(), note: "New requirements" },
       });
     }), "description changed");

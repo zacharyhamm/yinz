@@ -2167,13 +2167,15 @@ const AgendaItemSchema = z.object({
   kind: z.enum(["task", "note"]),
   text: z.string().min(1),
   note: z.string(),
+  status: z.enum(["pending", "in-progress", "waiting", "done", "cancelled"])
+    .nullable(),
   completed: z.boolean(),
   blocked: z.boolean(),
   discarded_at: z.number().int().nullable(),
   assignments: z.array(AssignmentSchema),
 });
 const AgendaEnvelopeSchema = z.object({
-  schema_version: z.literal(0),
+  schema_version: z.literal(1),
   item: AgendaItemSchema,
 });
 
@@ -2206,6 +2208,12 @@ function validateAgendaItem(
 ): void {
   if (item.kind !== "task") {
     throw new Error("Agenda issues must be tasks, not reference notes");
+  }
+  if (item.status === null || item.completed !== (item.status === "done")) {
+    throw new Error("Agenda task status does not match its completion state");
+  }
+  if (item.status === "cancelled") {
+    throw new Error("Agenda issue is cancelled; reopen it before continuing");
   }
   if (item.discarded_at !== null) throw new Error("Agenda issue is trashed");
   if (item.completed && !allowCompleted) {
@@ -2303,7 +2311,7 @@ export async function completeAgenda(
     throw new Error("Agenda description changed before completion");
   }
   const completion = z.object({
-    schema_version: z.literal(0),
+    schema_version: z.literal(1),
     items: z.array(AgendaItemSchema),
     completion: z.object({
       completed: z.number().int().nonnegative(),
@@ -2324,7 +2332,7 @@ export async function completeAgenda(
   if (
     completion.items.length !== 1 ||
     completion.items[0].id !== expected.itemId ||
-    !completion.items[0].completed
+    !completion.items[0].completed || completion.items[0].status !== "done"
   ) throw new Error("Agenda did not confirm issue completion");
   const after = await agendaRecord(
     expected.workspace,
