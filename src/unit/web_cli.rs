@@ -265,6 +265,14 @@ fn cli_same_name_stale_policy_is_unverified_against_native_listener() {
         fn site(&self) -> Option<Arc<yinz_types::web::Site>> {
             None
         }
+        fn application(&self) -> Option<yinz_types::web::ApplicationStatus> {
+            Some(yinz_types::web::ApplicationStatus {
+                phase: yinz_types::web::ApplicationPhase::Failed,
+                attempts: 4,
+                failure: Some(yinz_types::web::ApplicationFailure::Initialization),
+                ..Default::default()
+            })
+        }
         fn quiesced(&self) -> bool {
             false
         }
@@ -307,6 +315,7 @@ fn cli_same_name_stale_policy_is_unverified_against_native_listener() {
         "a".repeat(32)
     };
     stale.pid = u32::MAX;
+    stale.application.as_mut().unwrap().phase = yinz_types::web::ApplicationPhase::Ready;
     stale.startup_config.as_mut().unwrap().tailscale_users = vec!["obsolete@example.com".into()];
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -351,6 +360,9 @@ fn cli_same_name_stale_policy_is_unverified_against_native_listener() {
     assert!(text.contains("current@example.com"), "{text}");
     assert!(text.contains("Effective policy: unverified"), "{text}");
     assert!(!text.contains("obsolete@example.com"), "{text}");
+    assert!(text.contains("Application: failed"), "{text}");
+    assert!(text.contains("Application: unknown"), "{text}");
+    assert!(!text.contains("Application: ready"), "{text}");
     assert_eq!(
         text.matches("Suggested: tailscale serve").count(),
         1,
@@ -375,4 +387,33 @@ fn local_guidance_preserves_paths_and_rejects_unrepresentable_commands() {
         suggested_command(&opts, Path::new("/tmp/data\nnext"), &["set-password"])
             .starts_with("manually run")
     );
+}
+
+#[test]
+fn web_startup_status_distinguishes_application_from_verified_liveness() {
+    use yinz_types::web::{ApplicationFailure, ApplicationPhase as Phase, ApplicationStatus};
+    for phase in [
+        Phase::Loading,
+        Phase::Ready,
+        Phase::Failed,
+        Phase::Retrying,
+        Phase::PermissionBlocked,
+        Phase::Stopped,
+    ] {
+        let status = ApplicationStatus {
+            phase,
+            attempts: 2,
+            failure: Some(ApplicationFailure::Initialization),
+            retry_after_s: Some(5),
+            ..Default::default()
+        };
+        let text = describe_application(true, Some(&status));
+        assert!(text.contains("attempts=2/4"));
+        assert!(text.contains(ApplicationFailure::Initialization.summary()));
+        assert_eq!(
+            describe_application(false, Some(&status)),
+            describe_application(true, None)
+        );
+        assert!(describe_application(false, Some(&status)).contains("unknown"));
+    }
 }

@@ -9,3 +9,14 @@ pub(crate) fn escape(text: &str) -> String {
 pub(crate) fn page(title: &str, detail: &str) -> String {
     format!("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{}</title><h1>{}</h1><p>{}</p></html>", escape(title), escape(title), escape(detail))
 }
+
+pub(crate) fn recovering(title: &str, detail: &str, retry: u32) -> String {
+    page(title, detail).replacen(
+        "<title>",
+        &format!(
+            "<meta http-equiv=\"refresh\" content=\"{}\"><title>",
+            retry.max(1)
+        ),
+        1,
+    )
+}

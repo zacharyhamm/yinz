@@ -18,6 +18,8 @@ pub struct ListenerRecord {
     pub session: String,
     #[serde(default)]
     pub startup_config: Option<yinz_types::input::web::WebConfig>,
+    #[serde(default)]
+    pub application: Option<yinz_types::web::ApplicationStatus>,
 }
 pub(crate) struct OwnedRecord {
     dir: PathBuf,
@@ -28,11 +30,21 @@ pub(crate) struct OwnedRecord {
     startup_config: Option<yinz_types::input::web::WebConfig>,
 }
 impl OwnedRecord {
+    #[cfg(test)]
     pub(crate) fn create(
         data_dir: &std::path::Path,
         address: SocketAddr,
         session: String,
         startup_config: Option<yinz_types::input::web::WebConfig>,
+    ) -> Result<Self> {
+        Self::create_with_application(data_dir, address, session, startup_config, None)
+    }
+    pub(crate) fn create_with_application(
+        data_dir: &std::path::Path,
+        address: SocketAddr,
+        session: String,
+        startup_config: Option<yinz_types::input::web::WebConfig>,
+        application: Option<yinz_types::web::ApplicationStatus>,
     ) -> Result<Self> {
         let web = private_dir(data_dir)?;
         let _lock = lock(&web)?;
@@ -61,7 +73,7 @@ impl OwnedRecord {
             reservation,
             startup_config,
         };
-        let published = owned.refresh_locked(session);
+        let published = owned.refresh_locked(session, application);
         drop(_lock);
         published?;
         Ok(owned)
@@ -69,15 +81,27 @@ impl OwnedRecord {
     pub(crate) fn instance(&self) -> &str {
         &self.instance
     }
+    #[cfg(test)]
     pub(crate) fn refresh(&self, session: String) -> Result<()> {
+        self.refresh_application(session, None)
+    }
+    pub(crate) fn refresh_application(
+        &self,
+        session: String,
+        application: Option<yinz_types::web::ApplicationStatus>,
+    ) -> Result<()> {
         let _lock = lock(
             self.dir
                 .parent()
                 .ok_or_else(|| anyhow!("missing web directory"))?,
         )?;
-        self.refresh_locked(session)
+        self.refresh_locked(session, application)
     }
-    fn refresh_locked(&self, session: String) -> Result<()> {
+    fn refresh_locked(
+        &self,
+        session: String,
+        application: Option<yinz_types::web::ApplicationStatus>,
+    ) -> Result<()> {
         let path = self.dir.join(&self.name);
         let metadata = std::fs::symlink_metadata(&path).context("inspect listener ownership")?;
         if (metadata.dev(), metadata.ino()) != self.reservation {
@@ -93,6 +117,7 @@ impl OwnedRecord {
             address: self.address,
             session,
             startup_config: self.startup_config.clone(),
+            application,
         };
         let bytes = serde_json::to_vec(&record).context("encode listener record")?;
         if bytes.len() > 65536 {

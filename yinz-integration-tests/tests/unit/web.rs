@@ -153,7 +153,10 @@ fn enabled_health_starting_rename_clear_and_terminal_usable() {
     assert!(reply.contains("x-content-type-options: nosniff"));
     let reply = get(addr, "/");
     assert!(reply.starts_with("HTTP/1.1 503"));
-    assert!(reply.contains("Yinz web is starting"));
+    assert!(
+        reply.contains("Yinz web is starting") || reply.contains("Yinz web is unavailable"),
+        "{reply}"
+    );
     terminal.output(b"WEB TERMINAL STILL USABLE\r\n");
     session.wait_until("terminal usable without web app", |g| {
         g.contains("WEB TERMINAL STILL USABLE")
@@ -850,93 +853,17 @@ document.querySelector('form').addEventListener('submit', async (event) => {
     records.empty();
 }
 
-/// A whole HTTP/1.1 reply read as bytes, because PNG bodies are not UTF-8.
-struct Reply {
-    status: u16,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
-}
+#[path = "web_http.rs"]
+mod http;
+use http::*;
 impl Reply {
-    fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(name))
-            .map(|(_, value)| value.as_str())
-    }
-    fn text(&self) -> &str {
-        std::str::from_utf8(&self.body).unwrap()
-    }
-    #[track_caller]
-    fn json(&self) -> serde_json::Value {
-        serde_json::from_slice(&self.body).unwrap_or_else(|e| panic!("{e}: {self}"))
-    }
     #[track_caller]
     fn error_code(&self, status: u16) -> String {
         assert_eq!(self.status, status, "{self}");
         self.json()["error"]["code"].as_str().unwrap().into()
     }
 }
-impl std::fmt::Display for Reply {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} {:?} ", self.status, self.headers)?;
-        f.write_str(&String::from_utf8_lossy(&self.body))
-    }
-}
-fn exchange(addr: SocketAddr, head: &str, body: &str) -> Reply {
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(25)))
-        .unwrap();
-    stream
-        .set_write_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    write!(stream, "{head}Connection: close\r\n\r\n{body}").unwrap();
-    let mut reply = Vec::new();
-    stream.read_to_end(&mut reply).unwrap();
-    let split = reply
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .expect("complete reply head");
-    let head = std::str::from_utf8(&reply[..split]).unwrap();
-    let mut lines = head.split("\r\n");
-    let status = lines.next().unwrap()["HTTP/1.1 ".len()..][..3]
-        .parse()
-        .unwrap();
-    let headers = lines
-        .map(|line| {
-            let (key, value) = line.split_once(':').unwrap();
-            (key.trim().to_owned(), value.trim().to_owned())
-        })
-        .collect();
-    Reply {
-        status,
-        headers,
-        body: reply[split + 4..].to_vec(),
-    }
-}
-/// A browser navigation or subresource load: no bearer, no JSON content type.
-fn fetch(addr: SocketAddr, method: &str, path: &str, extra: &str) -> Reply {
-    exchange(
-        addr,
-        &format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\n{extra}"),
-        "",
-    )
-}
-/// A same-origin `fetch` from the frontend's API client.
-fn call(addr: SocketAddr, method: &str, path: &str, token: Option<&str>, body: &str) -> Reply {
-    let authorization = token
-        .map(|t| format!("Authorization: Bearer {t}\r\n"))
-        .unwrap_or_default();
-    exchange(
-        addr,
-        &format!(
-            "{method} {path} HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost\r\n\
-             Content-Type: application/json\r\n{authorization}Content-Length: {}\r\n",
-            body.len()
-        ),
-        body,
-    )
-}
+
 #[track_caller]
 fn call_ok(
     addr: SocketAddr,
@@ -959,64 +886,6 @@ fn query(path: &str, pairs: &[(&str, &str)]) -> String {
         .extend_pairs(pairs)
         .finish();
     format!("{path}?{encoded}")
-}
-#[track_caller]
-fn assert_page(reply: &Reply) {
-    assert_eq!(reply.status, 200, "{reply}");
-    assert_eq!(
-        reply.header("content-type"),
-        Some("text/html; charset=utf-8")
-    );
-    let policy = reply.header("content-security-policy").expect("page CSP");
-    assert!(policy.contains("script-src 'self'"), "{policy}");
-    assert!(!policy.contains("unsafe-inline"), "{policy}");
-    assert!(!policy.contains("unsafe-eval"), "{policy}");
-}
-/// The bootstrap JSON carries only the public whitelist.
-#[track_caller]
-fn assert_bootstrap(page: &str) {
-    let start = page
-        .find(r#"<script type="application/json" id="yinz-config">"#)
-        .expect("bootstrap JSON script")
-        + r#"<script type="application/json" id="yinz-config">"#.len();
-    let end = start + page[start..].find("</script>").unwrap();
-    let config: serde_json::Value = serde_json::from_str(&page[start..end]).unwrap();
-    let mut keys: Vec<_> = config.as_object().unwrap().keys().cloned().collect();
-    keys.sort();
-    assert_eq!(keys, ["poll", "quick_keys", "timeouts", "title"]);
-    assert_eq!(config["title"], "yinz");
-}
-/// Follow the frontend's static ES module graph from its entry points, fetching each module
-/// once. Every specifier must be local and relative: no bare names, import maps or CDNs.
-fn fetch_module_graph(addr: SocketAddr, entries: &[&str]) -> Vec<String> {
-    let specifier = regex::Regex::new(r#"(?:\bfrom|\bimport)\s*\(?\s*["']([^"']+)["']"#).unwrap();
-    let origin = url::Url::parse("http://localhost/").unwrap();
-    let mut pending: Vec<url::Url> = entries.iter().map(|e| origin.join(e).unwrap()).collect();
-    let mut seen = std::collections::BTreeSet::new();
-    while let Some(module) = pending.pop() {
-        if !seen.insert(module.path().to_owned()) {
-            continue;
-        }
-        let reply = fetch(addr, "GET", module.path(), "");
-        assert_eq!(reply.status, 200, "{module}: {reply}");
-        assert_eq!(
-            reply.header("content-type"),
-            Some("text/javascript; charset=utf-8"),
-            "{module}"
-        );
-        for import in specifier.captures_iter(reply.text()) {
-            let import = &import[1];
-            assert!(
-                import.starts_with("./") || import.starts_with("../"),
-                "{module} imports non-relative {import:?}"
-            );
-            let resolved = module.join(import).unwrap();
-            assert_eq!(resolved.origin(), origin.origin(), "{import}");
-            assert!(resolved.path().starts_with("/static/"), "{resolved}");
-            pending.push(resolved);
-        }
-    }
-    seen.into_iter().collect()
 }
 
 #[test]
@@ -1432,4 +1301,232 @@ fn web_builtin_browser_phone_flows() {
         "browser phone flows failed ({}):\n{stdout}\n{stderr}",
         output.status
     );
+}
+
+fn startup_recovery(method: &str, path: &str, unpublished: bool) {
+    use yinz_types::web::ApplicationPhase as Phase;
+    yinz_integration_tests::test_env::init();
+    let dir = private_data();
+    set(dir.path());
+    let entry = dir.path().join("plugins/builtins/web.scm");
+    let healthy = std::fs::read(&entry).unwrap();
+    std::fs::write(&entry, if unpublished { "(define (load config) #f)" } else { r#"(define (load config) (yinz-command (hash "HttpPublish" (hash "path" "/api/private" "content_type" "text/plain; charset=utf-8" "body" "private startup fixture /secret/path token"))))"# }).unwrap();
+    let records = Records::new(dir.path().to_owned());
+    let mut session = TestRunner::new(TERMINAL_SIZE)
+        .with_data_dir(dir.path().to_owned())
+        .with_config("web { enabled true; port 0; }")
+        .start();
+    let addr = records.serving(session.session_name());
+    records.values.wait_until(
+        "first configured application failure",
+        Duration::from_secs(90),
+        |rows| {
+            rows.iter().find_map(|r| {
+                r.application
+                    .as_ref()
+                    .filter(|s| s.phase == Phase::Retrying)
+                    .cloned()
+            })
+        },
+    );
+    let first = fetch(addr, method, path, "");
+    assert_eq!(first.status, 503, "{first}");
+    assert!(first.header("retry-after").is_some());
+    if method == "HEAD" {
+        assert!(first.body.is_empty());
+    } else {
+        assert!(first.text().contains("http-equiv=\"refresh\""));
+        assert!(!first.text().contains("secret"));
+    }
+    std::fs::write(&entry, healthy).unwrap();
+    // Recovery traffic is deliberately only this public navigation method/path. No login,
+    // authenticated API, plugin reload, or direct activation supplies the retry signal.
+    let done = Watched::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let deadline = std::time::Instant::now() + default_timeout();
+            while std::time::Instant::now() < deadline {
+                let reply = fetch(addr, method, path, "");
+                if reply.status == 200 {
+                    *done.lock() = true;
+                    return;
+                }
+                assert_eq!(reply.status, 503, "{reply}");
+                std::thread::park_timeout(Duration::from_millis(20));
+            }
+        });
+        done.wait_until(
+            "public-only configured app recovery",
+            default_timeout(),
+            |done| done.then_some(()),
+        );
+    });
+    assert_builtin_site(addr);
+    let status = records.values.wait_until(
+        "recovered application readiness",
+        default_timeout(),
+        |rows| {
+            rows.iter()
+                .find_map(|r| r.application.as_ref().filter(|s| s.ready()).cloned())
+        },
+    );
+    assert!((2..=4).contains(&status.attempts), "{status:?}");
+    assert!(status.failure.is_none());
+    assert_eq!(call(addr, "GET", "/api/agents", None, "").status, 401);
+    let token = login(addr);
+    assert_eq!(
+        call(addr, "GET", "/api/agents", Some(&token), "").status,
+        200
+    );
+    session.quit();
+    records.empty();
+}
+#[test]
+fn web_startup_get_root_recovers() {
+    startup_recovery("GET", "/", false);
+}
+#[test]
+fn web_startup_get_login_recovers() {
+    startup_recovery("GET", "/login", false);
+}
+#[test]
+fn web_startup_head_only_recovers() {
+    startup_recovery("HEAD", "/", false);
+}
+#[test]
+fn web_startup_unpublished_deadline_recovers() {
+    startup_recovery("GET", "/login", true);
+}
+
+#[test]
+fn web_startup_exhaustion_stays_terminal_under_public_polling() {
+    use yinz_types::web::ApplicationPhase as Phase;
+    let dir = private_data();
+    set(dir.path());
+    std::fs::write(
+        dir.path().join("plugins/builtins/web.scm"),
+        "(define (load config) (error \"permanent private fixture\"))",
+    )
+    .unwrap();
+    let records = Records::new(dir.path().to_owned());
+    let mut session = TestRunner::new(TERMINAL_SIZE)
+        .with_data_dir(dir.path().to_owned())
+        .with_config("web { enabled true; port 0; }")
+        .start();
+    let addr = records.serving(session.session_name());
+    let failed = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(50);
+            while std::time::Instant::now() < deadline {
+                assert_eq!(fetch(addr, "HEAD", "/login", "").status, 503);
+                if records.values.lock().iter().any(|r| {
+                    r.application
+                        .as_ref()
+                        .is_some_and(|s| s.phase == Phase::Failed)
+                }) {
+                    return;
+                }
+                std::thread::park_timeout(Duration::from_millis(20));
+            }
+        });
+        records.values.wait_until(
+            "finite automatic retry budget exhausted",
+            Duration::from_secs(50),
+            |rows| {
+                rows.iter().find_map(|r| {
+                    r.application
+                        .as_ref()
+                        .filter(|s| s.phase == Phase::Failed)
+                        .cloned()
+                })
+            },
+        )
+    });
+    assert_eq!(failed.attempts, 4);
+    assert!(failed.retry_after_s.is_none());
+    for _ in 0..20 {
+        let reply = fetch(addr, "GET", "/", "");
+        assert_eq!(reply.status, 503);
+        assert!(reply.text().contains("Yinz web is unavailable"));
+        assert!(!reply.text().contains("http-equiv=\"refresh\""));
+        assert!(!reply.text().contains("private"));
+    }
+    assert_eq!(fetch(addr, "GET", "/healthz", "").status, 200);
+    session.quit();
+    records.empty();
+}
+
+#[test]
+fn web_startup_recovery_preserves_existing_bearer_and_push_subscription() {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use yinz_types::{
+        cli::{PluginOperation, PluginRequest},
+        web::ApplicationPhase as Phase,
+    };
+    let dir = private_data();
+    set(dir.path());
+    let entry = dir.path().join("plugins/builtins/web.scm");
+    let healthy = std::fs::read(&entry).unwrap();
+    let records = Records::new(dir.path().to_owned());
+    let mut session = TestRunner::new(TERMINAL_SIZE)
+        .with_data_dir(dir.path().to_owned())
+        .with_config("web { enabled true; port 0; }")
+        .start();
+    let addr = records.serving(session.session_name());
+    wait_public(addr, "/", r#"<div id="app"></div>"#);
+    let ready = records
+        .values
+        .wait_until("initial ready application", default_timeout(), |rows| {
+            rows.iter()
+                .find_map(|r| r.application.as_ref().filter(|s| s.ready()).cloned())
+        });
+    let token = login(addr);
+    let mut key = [0; 65];
+    key[0] = 4;
+    let push = serde_json::json!({"endpoint":"https://fcm.googleapis.com/yinz-141", "keys":{"p256dh":URL_SAFE_NO_PAD.encode(key), "auth":URL_SAFE_NO_PAD.encode([0;16])}}).to_string();
+    assert_eq!(
+        call(addr, "POST", "/api/push", Some(&token), &push).status,
+        200
+    );
+    let before = std::fs::read(dir.path().join("web/push.json")).unwrap();
+    std::fs::write(&entry, r#"(define (load config) (yinz-command (hash "HttpPublish" (hash "path" "/api/private" "content_type" "text/plain; charset=utf-8" "body" "private fixture"))))"#).unwrap();
+    // Explicit reload induces the failure, after creating the sign-in. It does not repair it.
+    yinz_client::store_client::plugin_request(
+        &session.session_name().into(),
+        PluginRequest {
+            operation: PluginOperation::Reload,
+            target: Some(format!("plugin_{}", ready.target.unwrap())),
+            configuration: None,
+            fallback: None,
+            candidates: vec![],
+            caller: None,
+        },
+    )
+    .unwrap();
+    records.values.wait_until(
+        "publication failure after reload",
+        default_timeout(),
+        |rows| {
+            rows.iter()
+                .any(|r| {
+                    r.application
+                        .as_ref()
+                        .is_some_and(|s| s.phase == Phase::Retrying)
+                })
+                .then_some(())
+        },
+    );
+    std::fs::write(&entry, healthy).unwrap();
+    wait_public(addr, "/", r#"<div id="app"></div>"#);
+    assert_builtin_site(addr);
+    assert_eq!(
+        call(addr, "GET", "/api/agents", Some(&token), "").status,
+        200
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("web/push.json")).unwrap(),
+        before
+    );
+    session.quit();
+    records.empty();
 }

@@ -14,6 +14,8 @@
 (define %async-current-error #f)
 (define %async-unloading #f)
 (define %async-unloaded #f)
+;; Host readiness waits for the load deferred itself, including its failure path.
+(define %async-loaded #f)
 (define %async-frames (hash))
 (define %async-render-context #f)
 ;; Private opt-in request ownership; deferred vectors retain their public shape.
@@ -492,7 +494,9 @@
     (else
      (unless %async-unloading
        (%async-track (if hook (apply hook arguments) json-null)
-         (lambda (changed) (when (or (equal? kind "load") (eq? changed #t)) (%async-invalidate)))
+         (lambda (changed)
+           (when (equal? kind "load") (set! %async-loaded #t))
+           (when (or (equal? kind "load") (eq? changed #t)) (%async-invalidate)))
          %async-fail))
      (cond
        ((equal? kind "update")

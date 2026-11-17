@@ -72,3 +72,9 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 [[profile.unit.overrides]]
 filter = 'test(same_version_source_update_streams_to_client_and_preserves_processes)'
 slow-timeout = { period = "60s", terminate-after = 5 }
+
+# The real listener/host regression crosses the production 60-second unpublished deadline
+# before the first backoff and replacement. Its condition wait is explicitly 90 seconds.
+[[profile.default.overrides]]
+filter = 'test(web_startup_unpublished_deadline_recovers)'
+slow-timeout = { period = "60s", terminate-after = 3 }

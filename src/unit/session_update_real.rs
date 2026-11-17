@@ -12,6 +12,9 @@ mod control;
 #[path = "update_previous_release.rs"]
 mod previous_release;
 
+#[path = "../../yinz-integration-tests/tests/unit/web_http.rs"]
+mod web_http;
+
 struct Peer {
     receiver: IpcReceiverWithContext<ServerToClientMsg>,
     sender: IpcSenderWithContext<ClientToServerMsg>,
@@ -121,12 +124,25 @@ pub(super) fn setup() -> (Session, Vec<i32>) {
 }
 
 fn setup_with_configuration(configuration: &str) -> (Session, Vec<i32>) {
+    setup_with_web(configuration, false)
+}
+fn setup_with_web(configuration: &str, web: bool) -> (Session, Vec<i32>) {
     let session = Session::new();
     yinz_steel_builtins::install(
         &yinz_steel_builtins::asset_dir(),
         &session.0.path().join("data/yinz"),
     )
     .unwrap();
+    let configuration = if web {
+        yinz_web::auth::password::write(
+            &session.0.path().join("data/yinz"),
+            &"migration password".to_owned().into(),
+        )
+        .unwrap();
+        format!("{configuration}\nweb {{ enabled true; port 0; }}\n")
+    } else {
+        configuration.to_owned()
+    };
     fs::write(session.0.path().join("config.kdl"), configuration).unwrap();
     let script = session.0.path().join("terminal");
     yinz_test_support::write_warm_script(&script,"#!/bin/sh\n[ \"$1\" = run ] || exit 0\necho $$ > \"$2\"\nprintf '\\033[?2004hMIGRATION-CONTENT\\n'\nexec /bin/cat\n");
@@ -422,8 +438,11 @@ fn assert_terminal_output(session: &Session, pane: yinz_types::pane_id::PaneId, 
 }
 
 fn migration(rollback: bool) {
-    let (session, pids) = setup_with_configuration(
-        "detachable_panes true\nplugins { project-store location=\"yinz:project-store\" { shared true; }; agent-service location=\"yinz:agent-service\" { shared true; }; }\nload_plugins clear-defaults=true { project-store; agent-service; }\n"
+    migration_with_web(rollback, false);
+}
+fn migration_with_web(rollback: bool, web: bool) {
+    let (session, pids) = setup_with_web(
+        "detachable_panes true\nplugins { project-store location=\"yinz:project-store\" { shared true; }; agent-service location=\"yinz:agent-service\" { shared true; }; }\nload_plugins clear-defaults=true { project-store; agent-service; }\n", web
     );
     let bindings = PersistentBindings::seed(&session);
     let operation = uuid::Uuid::new_v4().to_string();
@@ -434,6 +453,7 @@ fn migration(rollback: bool) {
             .unwrap(),
     )
     .unwrap();
+    let web = web.then(|| WebMigration::new(&session, inventory.server_pid));
     // This follows a normal scroll/drain cycle, then leaves the pane scrolled
     // with more output buffered when preparation begins.
     session.success(&[
@@ -455,6 +475,9 @@ fn migration(rollback: bool) {
     ]);
     let before = source.prepare_update(&operation);
     assert_eq!(before.tabs.len(), 2);
+    if web.is_some() {
+        assert!(before.paneless_plugins.iter().any(|p| p.get_run_plugin().is_some_and(|run| matches!(run.location, yinz_types::input::layout::RunPluginLocation::Yinz(tag) if tag.to_string() == "web"))), "healthy web publisher missing from migration inventory: {:?}", before.paneless_plugins);
+    }
     let snapshot = session.0.path().join("snapshot.json");
     source
         .request(
@@ -500,6 +523,9 @@ fn migration(rollback: bool) {
         source
             .request(&operation, UpdateCommand::FinishMigration)
             .unwrap();
+        if let Some(web) = &web {
+            web.verify_after(&session, inventory.server_pid);
+        }
         bindings.assert_preserved(&session);
         assert_alive(&pids);
         let pane = restored_mapping.panes[0].1;
@@ -552,6 +578,14 @@ fn migration(rollback: bool) {
         destination
             .request(&operation, UpdateCommand::FinishMigration)
             .unwrap();
+        if let Some(web) = &web {
+            let pid = destination
+                .request(&operation, UpdateCommand::Inventory)
+                .unwrap()["server_pid"]
+                .as_u64()
+                .unwrap() as u32;
+            web.verify_after(&session, pid);
+        }
         bindings.assert_preserved(&session);
         assert_alive(&pids);
         assert_terminal_output(&session, mapping.panes[0].1, "ordered-update-tail");
@@ -1395,4 +1429,98 @@ fn fixture_unwind_stops_retired_source_private_destination_and_adopted_panes() {
             "pane {pid} survived fixture unwind"
         );
     }
+}
+
+struct WebMigration {
+    token: String,
+    push: Vec<u8>,
+}
+impl WebMigration {
+    fn address(session: &Session, pid: u32) -> std::net::SocketAddr {
+        let observed = yinz_test_support::Watched::new(None);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                loop {
+                    let record =
+                        yinz_web::listener_file::inspect(&session.0.path().join("data/yinz"))
+                            .unwrap()
+                            .into_iter()
+                            .find(|observed| {
+                                observed.is_current()
+                                    && observed.record.pid == pid
+                                    && observed.record.session == NAME
+                                    && observed
+                                        .record
+                                        .application
+                                        .as_ref()
+                                        .is_some_and(|status| status.ready())
+                            })
+                            .map(|observed| observed.record);
+                    if let Some(record) = record {
+                        *observed.lock() = Some(record.address);
+                        return;
+                    }
+                    if Instant::now() >= deadline {
+                        return;
+                    }
+                    std::thread::park_timeout(Duration::from_millis(20));
+                }
+            });
+            observed.wait_until(
+                "current migration server's ready web publication",
+                Duration::from_secs(35),
+                |addr| *addr,
+            )
+        })
+    }
+    fn new(session: &Session, pid: u32) -> Self {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        let addr = Self::address(session, pid);
+        web_http::assert_builtin_site(addr);
+        let login = web_http::call(
+            addr,
+            "POST",
+            "/api/login",
+            None,
+            r#"{"password":"migration password","label":"Migration phone"}"#,
+        );
+        assert_eq!(login.status, 200);
+        let token = login.json()["token"].as_str().unwrap().to_owned();
+        let mut key = [0; 65];
+        key[0] = 4;
+        let body = serde_json::json!({"endpoint":"https://fcm.googleapis.com/yinz-141", "keys":{"p256dh":URL_SAFE_NO_PAD.encode(key),"auth":URL_SAFE_NO_PAD.encode([0;16])}}).to_string();
+        assert_eq!(
+            web_http::call(addr, "POST", "/api/push", Some(&token), &body).status,
+            200
+        );
+        let push = fs::read(session.0.path().join("data/yinz/web/push.json")).unwrap();
+        Self { token, push }
+    }
+    fn verify_after(&self, session: &Session, pid: u32) {
+        let addr = Self::address(session, pid);
+        // Only unauthenticated pages/assets establish destination readiness. Authentication
+        // assertions follow so they cannot accidentally trigger recovery.
+        web_http::assert_builtin_site(addr);
+        assert_eq!(
+            web_http::call(addr, "GET", "/api/agents", None, "").status,
+            401
+        );
+        assert_eq!(
+            web_http::call(addr, "GET", "/api/agents", Some(&self.token), "").status,
+            200
+        );
+        assert_eq!(
+            fs::read(session.0.path().join("data/yinz/web/push.json")).unwrap(),
+            self.push
+        );
+    }
+}
+#[test]
+fn web_startup_live_update_restores_headless_builtin_and_browser_identity() {
+    migration_with_web(false, true);
+}
+#[test]
+fn web_startup_live_update_rollback_preserves_publication_and_browser_identity() {
+    migration_with_web(true, true);
 }

@@ -98,6 +98,7 @@ pub struct WebPluginParams {
     pub plugin: RunPluginOrAlias,
     /// Shared with the HTTP server, which serves whatever the plugin froze into it.
     pub site: SiteHandle,
+    pub application: yinz_types::web::ApplicationHandle,
 }
 
 /// One live agent as the palette shows it, computed on the screen thread.

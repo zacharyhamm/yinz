@@ -31,9 +31,13 @@ pub trait Backend: Send + Sync + 'static {
     /// `None`: the reply slot was dropped (plugin thread exited or instance disposed), 503.
     fn dispatch(&self, request: WebRequest) -> DispatchFuture;
     fn site(&self) -> Option<Arc<Site>>;
+    /// Private configured-app readiness. Older/custom backends can omit it.
+    fn application(&self) -> Option<yinz_types::web::ApplicationStatus> {
+        None
+    }
     /// Whether a live update has quiesced the session (`senders.session_update_quiesced`).
     fn quiesced(&self) -> bool;
-    /// Sent once per successful bind: load the web plugin.
+    /// Idempotent pulse at bind and on the bounded listener poll.
     fn activate(&self);
     /// Read per call; sessions can be renamed.
     fn session_name(&self) -> String;

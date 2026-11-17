@@ -43,10 +43,13 @@ struct Instance {
     id: PluginId,
     pending: Arc<Mutex<WebPending>>,
     unavailable: Arc<AtomicBool>,
+    loaded: bool,
 }
 #[derive(Default, Debug)]
 struct State {
     target: Option<PluginId>,
+    configured: Option<yinz_types::input::layout::RunPlugin>,
+    startup: Option<super::web_startup::Startup>,
     site: Option<SiteHandle>,
     instances: BTreeMap<u64, Instance>,
 }
@@ -59,6 +62,121 @@ impl WebHost {
     }
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    pub fn configure(&self, params: &yinz_bus::web::WebPluginParams) {
+        let mut state = self.state();
+        state.configured = params.plugin.get_run_plugin();
+        state.startup = Some(super::web_startup::Startup::new(params.application.clone()));
+    }
+    pub fn configured(&self) -> Option<yinz_types::input::layout::RunPlugin> {
+        self.state().configured.clone()
+    }
+    pub fn target(&self) -> Option<PluginId> {
+        self.state().target
+    }
+    pub fn reserve(&self, id: PluginId) {
+        let mut state = self.state();
+        if state.target.is_none() && !state.startup.as_ref().is_some_and(|s| s.stopped()) {
+            state.target = Some(id);
+            if let Some(startup) = &mut state.startup {
+                startup.reserve(id);
+            }
+        }
+    }
+    pub fn begin_load(&self, id: PluginId, load: u64) {
+        let mut state = self.state();
+        if state.target == Some(id)
+            && let Some(startup) = &mut state.startup
+        {
+            startup.begin(id, load, std::time::Instant::now());
+        }
+    }
+    pub fn loaded(&self, id: PluginId, generation: u64) {
+        let mut state = self.state();
+        if state.target == Some(id)
+            && let Some(instance) = state.instances.get_mut(&generation)
+        {
+            instance.loaded = true;
+        }
+        Self::refresh_in(&mut state, std::time::Instant::now());
+    }
+    fn refresh_in(state: &mut State, now: std::time::Instant) {
+        let generation = state.target.and_then(|id| Self::selected_in(state, id));
+        let published = generation.is_some_and(|generation| {
+            state.instances.get(&generation).is_some_and(|i| i.loaded)
+                && state
+                    .site
+                    .as_ref()
+                    .and_then(SiteHandle::current)
+                    .is_some_and(|site| {
+                        site.generation == generation
+                            && (!site.pages.is_empty()
+                                || site.assets.values().any(|files| !files.is_empty()))
+                    })
+        });
+        if let Some(startup) = &mut state.startup {
+            startup.refresh(generation, published, now);
+        }
+    }
+    pub fn pulse(&self, now: std::time::Instant) -> super::web_startup::Action {
+        let mut state = self.state();
+        Self::refresh_in(&mut state, now);
+        state
+            .startup
+            .as_mut()
+            .map_or(super::web_startup::Action::None, |s| s.pulse(now))
+    }
+    pub fn failed(
+        &self,
+        id: PluginId,
+        load: Option<u64>,
+        generation: Option<u64>,
+        failure: yinz_types::web::ApplicationFailure,
+    ) {
+        let mut state = self.state();
+        if state.target == Some(id)
+            && let Some(startup) = &mut state.startup
+        {
+            startup.fail(load, generation, failure, std::time::Instant::now());
+        }
+    }
+    pub fn start_failed(&self, failure: yinz_types::web::ApplicationFailure) {
+        let mut state = self.state();
+        if let Some(startup) = &mut state.startup {
+            startup.start_failed(failure, std::time::Instant::now());
+        }
+    }
+    pub fn paused(&self, paused: bool) {
+        if let Some(startup) = &mut self.state().startup {
+            startup.pause(paused, std::time::Instant::now());
+        }
+    }
+    pub fn permission(&self, id: PluginId, waiting: bool) {
+        let mut state = self.state();
+        if state.target == Some(id)
+            && let Some(startup) = &mut state.startup
+        {
+            startup.permission(waiting, std::time::Instant::now());
+        }
+    }
+    pub fn reset(&self, id: PluginId) {
+        let mut state = self.state();
+        if state.target == Some(id)
+            && let Some(startup) = &mut state.startup
+        {
+            startup.reset();
+        }
+    }
+    pub fn stop(&self, id: PluginId) {
+        let mut state = self.state();
+        if state.target == Some(id)
+            && let Some(startup) = &mut state.startup
+        {
+            startup.stop();
+        }
+    }
+    pub fn status(&self) -> Option<yinz_types::web::ApplicationStatus> {
+        self.state().startup.as_ref().map(|s| s.status())
     }
     pub fn set_target(&self, id: Option<PluginId>) {
         let mut state = self.state();
@@ -85,8 +203,10 @@ impl WebHost {
                 id,
                 pending,
                 unavailable,
+                loaded: false,
             },
         );
+        Self::refresh_in(&mut self.state(), std::time::Instant::now());
     }
     /// First live parent instance; workers never register publication or reply authority.
     pub fn selected(&self, id: PluginId) -> Option<u64> {
@@ -135,11 +255,34 @@ impl WebHost {
         generation: u64,
         edit: impl FnOnce(&mut Site) -> Result<()>,
     ) -> Result<()> {
-        let state = self.state();
-        anyhow::ensure!(
-            state.target == Some(id) && Self::selected_in(&state, id) == Some(generation),
-            "only the live configured web plugin can publish the site"
-        );
+        let mut state = self.state();
+        use yinz_types::web::{PublicationRejection, PublicationRejectionReason as Reason};
+        let selected = state
+            .target
+            .and_then(|target| Self::selected_in(&state, target));
+        let reason = if state.target.is_none() {
+            Reason::UnsetTarget
+        } else if state.target != Some(id) {
+            Reason::DifferentTarget
+        } else {
+            Reason::UnavailableOrNonselectedGeneration
+        };
+        if state.target != Some(id) || selected != Some(generation) {
+            let rejection = PublicationRejection {
+                reason,
+                target: state.target,
+                attempted_plugin: id,
+                attempted_generation: generation,
+                selected_generation: selected,
+            };
+            // Other plugins' rejected commands cannot alter configured-app readiness/failure.
+            if state.target == Some(id)
+                && let Some(startup) = &mut state.startup
+            {
+                startup.publication_rejected(rejection.clone());
+            }
+            bail!("only the live configured web plugin can publish the site: {rejection:?}; load={:?}", state.startup.as_ref().and_then(|s| s.status().load));
+        }
         let handle = state
             .site
             .as_ref()
@@ -156,6 +299,7 @@ impl WebHost {
         };
         edit(&mut site)?;
         handle.set(Some(Arc::new(site)));
+        Self::refresh_in(&mut state, std::time::Instant::now());
         Ok(())
     }
     pub fn publish_assets(

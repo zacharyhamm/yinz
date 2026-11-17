@@ -9,113 +9,111 @@ use crate::plugin_bridge::PluginBridge;
 use crate::web_host::WebHost;
 use yinz_bus::web::{ReplySlot, WebPluginParams};
 use yinz_runtime::errors::prelude::*;
-use yinz_types::internal_ids::{ClientId, PluginId};
-use yinz_types::web::{WebReply, WebRequest};
+use yinz_types::internal_ids::ClientId;
+use yinz_types::web::WebRequest;
 
 pub(crate) struct WebRequests {
     params: Option<WebPluginParams>,
     host: WebHost,
-    target: Option<PluginId>,
-    last_start: Option<Instant>,
 }
 
 impl WebRequests {
-    pub fn new(params: Option<WebPluginParams>, host: &WebHost) -> Self {
-        WebRequests {
+    pub fn new(mut params: Option<WebPluginParams>, host: &WebHost) -> Self {
+        if let Some(params) = &mut params {
+            if let Some(run) = params.plugin.get_run_plugin() {
+                params.plugin = yinz_types::input::layout::RunPluginOrAlias::RunPlugin(run);
+            }
+            host.configure(params);
+        }
+        Self {
             params,
             host: host.clone(),
-            target: None,
-            last_start: None,
         }
     }
 
-    /// Load the configured web plugin; nothing when the session's web interface is off.
+    /// One bounded listener pulse. Binding and polling share one host budget.
     pub fn activate(&mut self, bridge: &mut PluginBridge, client: ClientId) {
+        self.activate_at(bridge, client, Instant::now());
+    }
+    fn activate_at(&mut self, bridge: &mut PluginBridge, client: ClientId, now: Instant) {
+        use crate::web_startup::Action;
+        use yinz_types::web::ApplicationFailure as Failure;
         let Some(params) = &self.params else {
             return;
         };
-        if self
-            .target
-            .is_some_and(|id| self.host.selected(id).is_some() || bridge.web_loading(id))
-            || !self.start_due()
-        {
+        if let Some(id) = self.host.target() {
+            self.host.permission(id, bridge.web_permission_pending(id));
+        }
+        match self.host.pulse(now) {
+            Action::None => return,
+            Action::Expire => {
+                if let Some(id) = self.host.target() {
+                    self.host.retire_plugin(id);
+                    bridge.cancel_web_load(id);
+                }
+                return;
+            },
+            Action::Start => {},
+        }
+        if params.plugin.get_run_plugin().is_none() {
+            self.host.start_failed(Failure::Configuration);
             return;
         }
-        if let Some(id) = self.target.take()
-            && let Err(error) = bridge.unload_plugin(id)
-        {
-            self.target = Some(id);
-            Err::<(), _>(error)
-                .context("unload unavailable web plugin before restart")
-                .non_fatal();
-            return;
+        if let Some(id) = self.host.target() {
+            // A restored healthy/loading identity already owns its admission. Do not initialize
+            // it again just because listener binding happened later.
+            if (self.host.selected(id).is_some() || bridge.web_loading(id))
+                && self.host.status().is_some_and(|s| s.attempts == 0)
+            {
+                return;
+            }
+            if let Err(error) = bridge.unload_plugin_for_web_retry(id) {
+                self.host.start_failed(Failure::Restart);
+                Err::<(), _>(error)
+                    .context("unload unavailable web plugin before restart")
+                    .non_fatal();
+                return;
+            }
+            self.host.set_target(None);
         }
         let client = bridge.get_first_client_id().unwrap_or(client);
-        self.last_start = Some(Instant::now());
-        // The target is recorded before the guest initializes, so the web plugin can publish
-        // its site from `load`.
-        let host = &self.host;
-        let started = bridge
-            .start_background_plugin_then(params.plugin.clone(), client, true, |id| {
-                host.set_target(Some(id));
-            })
-            .context("start the web plugin");
-        match started {
-            Ok((id, _owner)) => self.target = Some(id),
+        let attempts = self.host.status().map_or(0, |s| s.attempts);
+        match bridge
+            .start_background_plugin(params.plugin.clone(), client, true)
+            .context("start the web plugin")
+        {
+            Ok((id, _)) => {
+                // Retained failed metadata is an identity, not a live initializer. Its first
+                // activation enters recovery; a subsequent eligible pulse unloads it normally.
+                if !bridge.web_loading(id) && self.host.selected(id).is_none() {
+                    self.host.start_failed(Failure::Initialization);
+                }
+            },
             Err(error) => {
-                self.target = None;
-                self.host.set_target(None);
+                if self.host.status().is_some_and(|s| s.attempts == attempts) {
+                    self.host.start_failed(Failure::Configuration);
+                } else if let Some(id) = self.host.target() {
+                    self.host.failed(id, None, None, Failure::Initialization);
+                }
                 Err::<(), _>(error).non_fatal();
             },
         }
     }
 
-    fn start_due(&self) -> bool {
-        self.last_start
-            .is_none_or(|started| started.elapsed() >= std::time::Duration::from_secs(30))
-    }
-
-    /// Hand one request to the web plugin, or answer it as unavailable.
     pub fn request(
         &mut self,
         bridge: &mut PluginBridge,
         request: Box<WebRequest>,
         reply: ReplySlot,
-        client: ClientId,
+        _client: ClientId,
         shutdown: tokio::sync::mpsc::Sender<()>,
     ) {
-        if self.params.is_none() {
-            drop(request);
-            reply.send(WebReply::Unavailable {
-                reason: "web plugin unavailable".into(),
-                retry_after_s: 5,
-            });
-            return;
-        }
-        if self.target.is_none() {
-            if !self.start_due() {
-                reply.send(crate::web_host::unavailable());
-                return;
-            }
-            self.activate(bridge, client);
-            reply.send(WebReply::Unavailable {
-                reason: "starting".into(),
-                retry_after_s: 1,
-            });
-            return;
-        }
-        let id = self.target.expect("target checked above");
-        if let Some(generation) = self.host.selected(id) {
+        if let Some(id) = self.host.target()
+            && self.host.status().is_some_and(|s| s.ready())
+            && let Some(generation) = self.host.selected(id)
+        {
             bridge.plugin_web(id, generation, request, reply, shutdown);
-        } else if bridge.web_loading(id) {
-            reply.send(WebReply::Unavailable {
-                reason: "starting".into(),
-                retry_after_s: 1,
-            });
         } else {
-            if self.start_due() {
-                self.activate(bridge, client);
-            }
             reply.send(crate::web_host::unavailable());
         }
     }

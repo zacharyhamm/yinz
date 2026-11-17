@@ -293,10 +293,7 @@ impl KeyWithModifier {
                 return false;
             }
         }
-        if self.key_modifiers.len() != modifiers.len() {
-            return false;
-        }
-        true
+        self.key_modifiers.len() == modifiers.len()
     }
 }
 

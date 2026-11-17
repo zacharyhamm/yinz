@@ -632,3 +632,27 @@ fn custom_cancel_waits_for_its_reply_but_teardown_always_releases_the_operation(
         ["#false"]
     );
 }
+
+#[test]
+fn web_startup_load_completion_waits_for_its_deferred_and_rejects_failure() {
+    for reject in [false, true] {
+        let (mut runtime, _) =
+            runtime("(define pending (yinz-deferred)) (define (load config) pending)");
+        runtime.load(json!({})).unwrap();
+        assert_eq!(runtime.value("%async-loaded").unwrap(), false);
+        runtime
+            .eval(if reject {
+                "(yinz-reject! pending \"private fixture failure\")"
+            } else {
+                "(yinz-resolve! pending json-null)"
+            })
+            .unwrap();
+        let polled = runtime.invoke("yinz-async-poll", vec![]);
+        if reject {
+            assert!(polled.is_err());
+        } else {
+            polled.unwrap();
+            assert_eq!(runtime.value("%async-loaded").unwrap(), true);
+        }
+    }
+}

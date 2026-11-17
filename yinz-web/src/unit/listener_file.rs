@@ -182,3 +182,46 @@ fn probe_generation_requires_valid_matching_instance_and_session() {
     }
     .is_current());
 }
+
+#[test]
+fn web_startup_private_readiness_roundtrip_legacy_and_replacement_guard() {
+    use yinz_types::web::{ApplicationFailure, ApplicationPhase as Phase, ApplicationStatus};
+    let temp = tempfile::tempdir().unwrap();
+    let status = ApplicationStatus {
+        phase: Phase::Retrying,
+        failure: Some(ApplicationFailure::Initialization),
+        attempts: 2,
+        retry_after_s: Some(5),
+        ..Default::default()
+    };
+    let record = OwnedRecord::create_with_application(
+        temp.path(),
+        "127.0.0.1:1".parse().unwrap(),
+        "session".into(),
+        None,
+        Some(status.clone()),
+    )
+    .unwrap();
+    let path = record.dir.join(&record.name);
+    let (observed, _) = read_record(&path).unwrap();
+    assert_eq!(observed.application, Some(status.clone()));
+    let mut legacy = serde_json::to_value(observed).unwrap();
+    legacy.as_object_mut().unwrap().remove("application");
+    assert!(serde_json::from_value::<ListenerRecord>(legacy)
+        .unwrap()
+        .application
+        .is_none());
+    let mut value: ListenerRecord = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    value.instance = "a".repeat(32);
+    atomic_write(
+        &record.dir,
+        &record.name,
+        &serde_json::to_vec(&value).unwrap(),
+    )
+    .unwrap();
+    assert!(record
+        .refresh_application("changed".into(), Some(status))
+        .is_err());
+    drop(record);
+    assert!(path.exists());
+}

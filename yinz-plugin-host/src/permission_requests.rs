@@ -90,6 +90,7 @@ impl PluginBridge {
                 decided: false,
             },
         );
+        self.web.permission(plugin_id, true);
         self.cache_plugin_events(plugin_id);
         let caller = self.plugin_callers.remove(&plugin_id);
         let cache_path = request_permission_cache_path();
@@ -222,6 +223,15 @@ impl PluginBridge {
             // and the worker coordinator are shared with the runtime and change here at once,
             // ahead of the callbacks queued below.
             if answered.insert((plugin_id, instance_id)) {
+                if status == PermissionStatus::Denied {
+                    self.web.failed(
+                        plugin_id,
+                        None,
+                        None,
+                        yinz_types::web::ApplicationFailure::PermissionDenied,
+                    );
+                }
+                self.web.permission(plugin_id, false);
                 // Denial answers the FIFO head, preserving all earlier grants.
                 let mut permissions = host.permissions().unwrap_or_default();
                 if status == PermissionStatus::Granted {

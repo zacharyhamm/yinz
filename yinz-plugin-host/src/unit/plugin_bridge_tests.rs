@@ -9350,3 +9350,145 @@ fn web_sdk_timer_failure_keeps_generation_publication_and_concurrent_requests_al
     assert_eq!(current.lock().unwrap().generation(), Some(generation));
     test.bridge.unload_plugin(plugin).unwrap();
 }
+
+#[test]
+fn web_startup_restored_background_publishes_before_listener_activation() {
+    web_restoration(false);
+}
+#[test]
+fn web_startup_update_gate_reserves_before_resume_and_defers_activation() {
+    web_restoration(true);
+}
+fn web_restoration(paused: bool) {
+    use yinz_bus::web::WebPluginParams;
+    use yinz_types::web::SiteHandle;
+    let mut test = TestBridge::new();
+    let client = ClientId::new(1);
+    test.connect(&[client]);
+    let site = SiteHandle::default();
+    test.bridge.web = crate::web_host::WebHost::new(Some(site.clone()));
+    let declaration =
+        yinz_runtime::plugin_location::run_plugin_or_alias_from_url("yinz:web", &None, None, None)
+            .unwrap();
+    let mut requests = crate::web_requests::WebRequests::new(
+        Some(WebPluginParams {
+            plugin: declaration.clone(),
+            site: site.clone(),
+            application: Default::default(),
+        }),
+        &test.bridge.web,
+    );
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    let clipboard = crate::clipboard_history::start_worker(
+        Arc::new(yinz_storage::plugin_data_store::PluginDataStore::new(
+            test._dirs[0].path(),
+        )),
+        test.bridge.senders.clone(),
+        shutdown,
+    );
+    let pause = paused.then(|| {
+        crate::update_quiescence::Quiescence::initial(
+            "web restoration".into(),
+            &test.bridge,
+            &clipboard,
+        )
+        .unwrap()
+    });
+    test.bridge.web.paused(paused);
+    let id = test.bridge.next_plugin_id();
+    test.bridge.plugin_executor.register_plugin(id);
+    let release = (!paused).then(|| test.hold_executor(id));
+    // This is the generic LoadBackgroundPlugin/reconciliation path used by migration,
+    // deliberately without Activate or a before_load callback from the listener.
+    let (restored, _) = test
+        .bridge
+        .start_background_plugin(declaration.clone(), client, true)
+        .unwrap();
+    assert_eq!(restored, id);
+    assert_eq!(
+        test.bridge
+            .start_background_plugin(declaration, client, true)
+            .unwrap()
+            .0,
+        id
+    );
+    assert!(test.bridge.web.is_target(id));
+    if let Some(pause) = pause {
+        requests.activate(&mut test.bridge, client);
+        assert_eq!(
+            test.bridge.web.status().unwrap().phase,
+            yinz_types::web::ApplicationPhase::Paused
+        );
+        assert!(site.current().is_none());
+        test.bridge.web.paused(false);
+        pause.resume();
+        requests.activate(&mut test.bridge, client);
+    }
+    if let Some(release) = release {
+        release.send(()).unwrap();
+    }
+    test.wait_for_executor(id);
+    let publication = site.current();
+    assert!(
+        publication
+            .as_ref()
+            .is_some_and(|site| site.lookup("/").is_some() && site.lookup("/login").is_some()),
+        "restored configured publisher did not publish: {:?}",
+        test.bridge.web
+    );
+    // Both calls above are a fixed batch behind the executor barrier. Reuse must not
+    // allocate another identity, regardless of how long initialization takes.
+    assert_eq!(test.bridge.next_plugin_id, 1);
+}
+
+#[test]
+fn web_startup_listener_pins_alias_and_keeps_independent_background_ownership() {
+    let mut test = TestBridge::new();
+    let client = ClientId::new(1);
+    test.connect(&[client]);
+    let run =
+        yinz_runtime::plugin_location::run_plugin_or_alias_from_url("yinz:web", &None, None, None)
+            .unwrap()
+            .get_run_plugin()
+            .unwrap();
+    test.bridge
+        .plugin_aliases
+        .lock()
+        .unwrap()
+        .aliases
+        .insert("web".into(), run);
+    let alias = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "web",
+        &None,
+        Some(&test.bridge.plugin_aliases.lock().unwrap()),
+        None,
+    )
+    .unwrap();
+    let site = yinz_types::web::SiteHandle::default();
+    test.bridge.web = crate::web_host::WebHost::new(Some(site.clone()));
+    let mut requests = crate::web_requests::WebRequests::new(
+        Some(yinz_bus::web::WebPluginParams {
+            plugin: alias,
+            site: site.clone(),
+            application: Default::default(),
+        }),
+        &test.bridge.web,
+    );
+    test.bridge.plugin_aliases.lock().unwrap().aliases.insert(
+        "web".into(),
+        RunPlugin {
+            location: RunPluginLocation::File("/missing-reconfigured-web.scm".into()),
+            ..Default::default()
+        },
+    );
+    requests.activate(&mut test.bridge, client);
+    let id = test.bridge.web.target().unwrap();
+    test.finish_reload(id);
+    assert!(site.current().unwrap().lookup("/").is_some());
+    assert!(test.bridge.web.status().unwrap().ready());
+    test.bridge
+        .reconcile_background_plugins(Default::default(), client)
+        .unwrap();
+    assert_eq!(test.bridge.web.target(), Some(id));
+    assert!(test.bridge.independent_plugin_ids.contains(&id));
+}

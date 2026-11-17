@@ -1349,8 +1349,9 @@ fn newline_past_the_viewport_takes_no_background() {
 
     feed_bytes(&mut grid, b"\x1b[48;5;4m\n\n\n");
 
-    for y in 1..=3 {
-        assert_eq!(grid.viewport[y].bg_color, None, "row {y}");
+    for (offset, row) in grid.viewport.range(1..=3).enumerate() {
+        let y = offset + 1;
+        assert_eq!(row.bg_color, None, "row {y}");
     }
     let (chunks, _, _) = grid.read_changes(0, 0);
     for y in 1..=3 {
@@ -1406,12 +1407,9 @@ fn erase_below_with_a_background_paints_rows_the_viewport_does_not_hold() {
     feed_bytes(&mut grid, b"\x1b[48;5;4m\x1b[J");
 
     assert_eq!(grid.viewport.len(), 5);
-    for y in 1..=4 {
-        assert_eq!(
-            grid.viewport[y].bg_color,
-            Some(AnsiCode::ColorIndex(4)),
-            "row {y}"
-        );
+    for (offset, row) in grid.viewport.range(1..=4).enumerate() {
+        let y = offset + 1;
+        assert_eq!(row.bg_color, Some(AnsiCode::ColorIndex(4)), "row {y}");
     }
     let (chunks, _, _) = grid.read_changes(0, 0);
     for y in 1..=4 {
@@ -1450,20 +1448,18 @@ fn a_colourless_erase_below_takes_an_earlier_background_away() {
     grid.read_changes(0, 0);
 
     feed_bytes(&mut grid, b"\x1b[48;5;4m\x1b[J");
-    for y in 1..=4 {
+    for (offset, row) in grid.viewport.range(1..=4).enumerate() {
+        let y = offset + 1;
         assert_eq!(
-            grid.viewport[y].bg_color,
+            row.bg_color,
             Some(AnsiCode::ColorIndex(4)),
             "row {y} after the coloured erase"
         );
     }
 
     feed_bytes(&mut grid, b"\x1b[0m\x1b[J");
-    for y in 0..=4 {
-        assert_eq!(
-            grid.viewport[y].bg_color, None,
-            "row {y} after the colourless erase"
-        );
+    for (y, row) in grid.viewport.range(..=4).enumerate() {
+        assert_eq!(row.bg_color, None, "row {y} after the colourless erase");
     }
 
     // The cursor row takes the colour too: its padding beyond the erase is the erase's.
@@ -1650,7 +1646,7 @@ fn terminal_theme_colors_overrides_resets_and_queries() {
         grid.pending_messages_to_pty.remove(0),
         b"\x1b]11;rgb:0404/0505/0606\x1b\\"
     );
-    for i in 0..16 {
+    for (i, color) in theme.ansi.iter().enumerate() {
         parser.advance(&mut grid, format!("\x1b]4;{i};?\x07").as_bytes());
         assert_eq!(
             grid.pending_messages_to_pty.remove(0),
@@ -1658,7 +1654,7 @@ fn terminal_theme_colors_overrides_resets_and_queries() {
         );
         assert_eq!(
             grid.effective_colors().unwrap()[i],
-            Some(AnsiCode::RgbCode(theme.ansi[i]))
+            Some(AnsiCode::RgbCode(*color))
         );
     }
     assert!(grid.pending_forwarded_queries.is_empty());

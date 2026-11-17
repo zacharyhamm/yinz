@@ -3114,7 +3114,9 @@ fn init_session(
         .as_ref()
         .map(|(settings, _)| settings.clone());
     let web_params = web_configuration.map(|(_, params)| params);
-    let web_site = web_params.as_ref().map(|params| params.site.clone());
+    let web_site = web_params
+        .as_ref()
+        .map(|params| (params.site.clone(), params.application.clone()));
     let session_update_quiesced = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let session = starting_session.insert(SessionMetaData {
         shutdown: shutdown.clone(),
@@ -3394,10 +3396,14 @@ fn init_session(
             .fatal()
         }
     })?);
-    if let Some((settings, site)) = web_settings.zip(web_site) {
+    if let Some((settings, (site, application))) = web_settings.zip(web_site) {
         session.web_server = Some(yinz_web::WebServer::start(
             settings,
-            Arc::new(web::PluginBackend::new(session.senders.clone(), site)),
+            Arc::new(web::PluginBackend::new(
+                session.senders.clone(),
+                site,
+                application,
+            )),
             global_async_runtime::get_tokio_runtime().handle(),
         ));
     }

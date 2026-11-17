@@ -210,6 +210,35 @@ pub(crate) fn suggested_command(opts: &CliArgs, data: &Path, action: &[&str]) ->
     command.push_str(&action.join(" "));
     command
 }
+fn describe_application(
+    verified: bool,
+    application: Option<&yinz_types::web::ApplicationStatus>,
+) -> String {
+    let Some(app) = application.filter(|_| verified) else {
+        return "Application: unknown (legacy or unverified listener record)".into();
+    };
+    let phase = serde_json::to_value(app.phase)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into());
+    let mut text = format!(
+        "Application: {phase}; target={:?} load={:?} generation={:?}; attempts={}/4",
+        app.target, app.load, app.generation, app.attempts
+    );
+    if let Some(delay) = app.retry_after_s {
+        text.push_str(&format!("; retry delay={delay}s"));
+    }
+    if let Some(at) = app.retry_not_before_ms {
+        text.push_str(&format!("; retry eligible at unix_ms={at}"));
+    }
+    if let Some(rejection) = &app.publication_rejection {
+        text.push_str(&format!("; publication ownership: {rejection:?}"));
+    }
+    if let Some(failure) = app.failure {
+        text.push_str(&format!("; latest failure: {}", failure.summary()));
+    }
+    text
+}
 pub(crate) fn run(opts: &CliArgs, https_port: Option<u16>) -> Result<i32> {
     let data = opts
         .data_dir
@@ -273,6 +302,18 @@ pub(crate) fn run(opts: &CliArgs, https_port: Option<u16>) -> Result<i32> {
             "Listener {}: recorded session {:?}; responding session {:?}",
             r.address, r.session, observed.responding_session
         );
+        println!(
+            "  Listener liveness: {}",
+            if verified {
+                "responding (identity verified)"
+            } else {
+                "unverified"
+            }
+        );
+        println!(
+            "  {}",
+            describe_application(verified, r.application.as_ref())
+        );
         if verified {
             if !targets.contains(&r.address) {
                 targets.push(r.address);
@@ -295,6 +336,7 @@ pub(crate) fn run(opts: &CliArgs, https_port: Option<u16>) -> Result<i32> {
             }
         );
     }
+    println!("Recovery after correcting the cause: {} --session SESSION plugins reload web (use the configured plugin for a custom app)", suggested_command(opts, &data, &[]).trim_end());
     let port = https_port
         .or(config.https_port_hint)
         .unwrap_or(DEFAULT_WEB_HTTPS_PORT_HINT);

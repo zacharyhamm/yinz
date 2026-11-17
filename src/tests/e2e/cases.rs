@@ -4,7 +4,7 @@
  * end-to-end. Avoid adding new ones, preferring instead to use the yinz-integration-tests module
  * it tests the app as a whole, only mocking the OS interaction parts
  *
-*/
+ */
 #![allow(unused)]
 
 use insta::assert_snapshot;

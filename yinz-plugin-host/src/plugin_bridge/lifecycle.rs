@@ -512,6 +512,7 @@ impl PluginBridge {
         self.latest_plugin_errors.remove(&plugin_id);
         self.next_load_id += 1;
         self.load_ids.insert(plugin_id, self.next_load_id);
+        self.web.begin_load(plugin_id, self.next_load_id);
         self.next_load_id
     }
 
@@ -641,6 +642,7 @@ impl PluginBridge {
                 let yinz_cwd = cwd.unwrap_or_else(|| self.yinz_cwd.clone());
                 let unloaded_while_loading = self.unloaded_while_loading.clone();
 
+                self.reserve_configured_web(plugin_id, &run);
                 let load_id = self.begin_plugin_load(plugin_id);
                 // Recorded before the load is prepared, which is where the ledger learns the
                 // declaration and answers it.
@@ -758,6 +760,11 @@ impl PluginBridge {
         Ok((plugin_id, client_id))
     }
     pub fn unload_plugin(&mut self, pid: PluginId) -> Result<()> {
+        self.web.stop(pid);
+        self.unload_plugin_for_web_retry(pid)
+    }
+
+    pub(crate) fn unload_plugin_for_web_retry(&mut self, pid: PluginId) -> Result<()> {
         self.unload_plugin_with_deadline(pid, None)
     }
 
@@ -1060,6 +1067,12 @@ impl PluginBridge {
                 log::error!("{} {}", identity, line);
             }
         }
+        self.web.failed(
+            plugin_id,
+            load_id,
+            generation,
+            yinz_types::web::ApplicationFailure::Initialization,
+        );
         self.cancel_permission_requests(plugin_id, instance_id);
         self.latest_plugin_errors.insert(plugin_id, error);
         self.finish_pipe_requests();
@@ -1133,6 +1146,7 @@ impl PluginBridge {
         };
         let cwd = self.cwd_of_plugin_id(plugin_id);
 
+        self.web.reset(plugin_id);
         self.web.retire_plugin(plugin_id);
         // Retire queued callbacks before the reload notification can release an active host call.
         let cancel = self.cancel_token(plugin_id);
@@ -1765,6 +1779,9 @@ impl PluginBridge {
     /// plugin thread has `PLUGIN_THREAD_EXIT_TIMEOUT` in all before its join is abandoned, and
     /// a budget that re-armed per lock added up to more than that.
     pub fn cleanup(&mut self, deadline: Instant) {
+        if let Some(id) = self.web.target() {
+            self.web.stop(id);
+        }
         // Already done by the shutdown sequence if a job overran its grace; for every other
         // guest this is the first it hears of it, and for a caller that skipped the wait
         // (a test) it is the only cancel there is.

@@ -20,6 +20,7 @@ struct Fake {
     dispatches: AtomicUsize,
     site: RwLock<Option<Arc<Site>>>,
     name: RwLock<String>,
+    application: RwLock<Option<yinz_types::web::ApplicationStatus>>,
     rename_on_activate: std::sync::Mutex<Option<String>>,
     requests: std::sync::Mutex<Vec<WebRequest>>,
 }
@@ -31,6 +32,9 @@ impl Backend for Fake {
     }
     fn site(&self) -> Option<Arc<Site>> {
         self.site.read().unwrap().clone()
+    }
+    fn application(&self) -> Option<yinz_types::web::ApplicationStatus> {
+        self.application.read().unwrap().clone()
     }
     fn quiesced(&self) -> bool {
         self.quiesced.load(Ordering::Acquire)
@@ -239,6 +243,7 @@ fn observation_fixture() -> (tempfile::TempDir, ListenerRecord, PathBuf) {
     std::fs::create_dir_all(&directory).unwrap();
     let record = ListenerRecord {
         startup_config: None,
+        application: None,
         version: 1,
         pid: 123,
         instance: "instance".into(),
@@ -1156,4 +1161,71 @@ async fn native_push_authentication_subscription_and_worker_scope() {
     let denied = api(addr, "GET", "/api/push", Some(&token), "").await;
     assert!(denied.starts_with("HTTP/1.1 401"), "{denied}");
     stop(&server).await;
+}
+
+#[tokio::test]
+async fn web_startup_partial_publication_safe_pages_head_pulses_and_terminal_state() {
+    use yinz_types::web::{ApplicationFailure, ApplicationPhase as Phase, ApplicationStatus};
+    let (temp, backend) = fixture();
+    *backend.application.write().unwrap() = Some(ApplicationStatus {
+        phase: Phase::Retrying,
+        attempts: 1,
+        retry_after_s: Some(5),
+        failure: Some(ApplicationFailure::Initialization),
+        ..Default::default()
+    });
+    let mut site = Site::default();
+    site.pages.insert(
+        "/".into(),
+        StaticFile {
+            bytes: Arc::from(b"partial private publication".as_slice()),
+            content_type: "text/plain",
+            etag: "\"partial\"".into(),
+        },
+    );
+    *backend.site.write().unwrap() = Some(Arc::new(site));
+    let server = WebServer::start(
+        settings(temp.path()),
+        backend.clone(),
+        &tokio::runtime::Handle::current(),
+    );
+    let addr = serving(&server).await;
+    let response = get(addr, "/").await;
+    assert!(response.starts_with("HTTP/1.1 503"));
+    assert!(response.contains("retry-after: 5"));
+    assert!(response.contains("http-equiv=\"refresh\" content=\"5\""));
+    assert!(!response.contains("private publication"));
+    assert!(!response.contains("initialization"));
+    let head = request(
+        addr,
+        "HEAD /login HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(head.starts_with("HTTP/1.1 503"));
+    assert!(head.ends_with("\r\n\r\n"));
+    backend.application.write().unwrap().as_mut().unwrap().phase = Phase::Failed;
+    let failed = get(addr, "/login").await;
+    assert!(failed.contains("Yinz web is unavailable"));
+    assert!(!failed.contains("http-equiv=\"refresh\""));
+    assert!(get(addr, "/healthz").await.starts_with("HTTP/1.1 200"));
+    assert_eq!(backend.dispatches.load(Ordering::SeqCst), 0);
+    // Wait for a poll to persist the transition, independently of HTTP dispatch.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut tick = tokio::time::interval(Duration::from_millis(10));
+        loop {
+            tick.tick().await;
+            if records(temp.path()).unwrap().records.iter().any(|r| {
+                r.application
+                    .as_ref()
+                    .is_some_and(|s| s.phase == Phase::Failed)
+            }) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(backend.activations.load(Ordering::SeqCst) >= 2);
+    stop(&server).await;
+    assert_no_records(temp.path());
 }

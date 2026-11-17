@@ -1558,8 +1558,8 @@ impl PaneContents {
             result.push('\n');
 
             // Middle lines - complete lines
-            for i in (start_line + 1)..end_line {
-                result.push_str(&self.viewport[i]);
+            for line in self.viewport.iter().take(end_line).skip(start_line + 1) {
+                result.push_str(line);
                 result.push('\n');
             }
 

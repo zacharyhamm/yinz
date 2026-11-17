@@ -11,7 +11,13 @@ fn web_backend_shares_site_identity_quiesce_activation_and_reply() {
         ..Default::default()
     };
     let site = SiteHandle::default();
-    let backend = PluginBackend::new(senders.clone(), site.clone());
+    let application = yinz_types::web::ApplicationHandle::default();
+    let backend = PluginBackend::new(senders.clone(), site.clone(), application.clone());
+    application.set(yinz_types::web::ApplicationStatus {
+        phase: yinz_types::web::ApplicationPhase::Loading,
+        ..Default::default()
+    });
+    assert_eq!(backend.application(), Some(application.current()));
     assert!(backend.site().is_none());
     site.set(Some(Arc::new(Site {
         generation: 9,
@@ -81,6 +87,10 @@ fn web_configuration_is_disabled_by_default_and_invalid_is_nonfatal() {
     config.web.enabled = Some(true);
     let (settings, params) = configure(&config, dir.path()).unwrap().unwrap();
     assert!(params.site.current().is_none());
+    assert_eq!(
+        params.application.current().phase,
+        yinz_types::web::ApplicationPhase::Loading
+    );
     config.web.port = Some(0);
     assert_eq!(settings.bind.port(), 7419); // snapshot remains independent of later edits
     config.web.address = Some("not-an-address".into());
@@ -105,7 +115,11 @@ fn web_listener_releases_port_before_session_worker_joins() {
     session.senders.to_screen = Some(session.shutdown.sender(screen_tx));
     let server = yinz_web::WebServer::start(
         settings,
-        Arc::new(PluginBackend::new(session.senders.clone(), params.site)),
+        Arc::new(PluginBackend::new(
+            session.senders.clone(),
+            params.site,
+            params.application,
+        )),
         crate::global_async_runtime::get_tokio_runtime().handle(),
     );
     assert!(matches!(

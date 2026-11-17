@@ -12,10 +12,19 @@ use yinz_web::{Backend, DispatchFuture, WebSettings};
 pub(crate) struct PluginBackend {
     senders: ThreadSenders,
     site: SiteHandle,
+    application: yinz_types::web::ApplicationHandle,
 }
 impl PluginBackend {
-    pub(crate) fn new(senders: ThreadSenders, site: SiteHandle) -> Self {
-        Self { senders, site }
+    pub(crate) fn new(
+        senders: ThreadSenders,
+        site: SiteHandle,
+        application: yinz_types::web::ApplicationHandle,
+    ) -> Self {
+        Self {
+            senders,
+            site,
+            application,
+        }
     }
 }
 impl Backend for PluginBackend {
@@ -38,6 +47,9 @@ impl Backend for PluginBackend {
     }
     fn site(&self) -> Option<Arc<Site>> {
         self.site.current()
+    }
+    fn application(&self) -> Option<yinz_types::web::ApplicationStatus> {
+        Some(self.application.current())
     }
     fn quiesced(&self) -> bool {
         self.senders.session_update_quiesced.load(Ordering::Acquire)
@@ -69,11 +81,17 @@ pub(crate) fn configure(
     )
     .map_err(|e| anyhow!(e))
     .context("resolve web plugin")?;
+    let application = yinz_types::web::ApplicationHandle::default();
+    application.set(yinz_types::web::ApplicationStatus {
+        phase: yinz_types::web::ApplicationPhase::Loading,
+        ..Default::default()
+    });
     Ok(Some((
         settings,
         WebPluginParams {
             plugin,
             site: SiteHandle::default(),
+            application,
         },
     )))
 }

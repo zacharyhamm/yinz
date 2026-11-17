@@ -467,14 +467,37 @@ async fn handle(
             false,
         );
     }
-    let Some(site) = state.backend.site() else {
-        let body = pages::page(
-            "Yinz web is starting",
-            &format!(
+    let application = state.backend.application();
+    let site = state.backend.site().filter(|site| {
+        application.as_ref().is_none_or(|s| {
+            s.ready() && s.target == site.plugin_id && s.generation == Some(site.generation)
+        })
+    });
+    let Some(site) = site else {
+        let recovering = application.as_ref().is_none_or(|s| s.recovering());
+        let retry_after = application
+            .as_ref()
+            .and_then(|s| s.retry_after_s)
+            .unwrap_or(1)
+            .max(1);
+        let title = if recovering {
+            "Yinz web is starting"
+        } else {
+            "Yinz web is unavailable"
+        };
+        let detail = if recovering {
+            format!(
                 "Session {} is waiting for its web application.",
                 state.backend.session_name()
-            ),
-        );
+            )
+        } else {
+            "The web application is unavailable. Contact the session owner.".into()
+        };
+        let body = if recovering {
+            pages::recovering(title, &detail, retry_after)
+        } else {
+            pages::page(title, &detail)
+        };
         return (
             retry(
                 response(
@@ -482,7 +505,7 @@ async fn handle(
                     body,
                     "text/html; charset=utf-8",
                 ),
-                1,
+                u64::from(retry_after),
             ),
             false,
         );

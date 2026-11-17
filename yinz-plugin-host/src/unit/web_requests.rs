@@ -1,4 +1,5 @@
 use super::*;
+use yinz_types::internal_ids::PluginId;
 #[test]
 fn guest_hash_last_query_value_and_header_secrecy() {
     let request = WebRequest {
@@ -32,17 +33,6 @@ fn guest_hash_last_query_value_and_header_secrecy() {
         guest_request(&request, Some(ClientId::new(3)), &session)["client"],
         3
     );
-}
-
-#[test]
-fn restart_interval_is_controlled_without_waiting() {
-    let host = WebHost::default();
-    let mut requests = WebRequests::new(None, &host);
-    assert!(requests.start_due());
-    requests.last_start = Some(Instant::now());
-    assert!(!requests.start_due());
-    requests.last_start = Some(Instant::now() - std::time::Duration::from_secs(31));
-    assert!(requests.start_due());
 }
 
 #[test]
@@ -82,6 +72,7 @@ fn unavailable_target_is_throttled_then_actually_unloaded_before_restart() {
                 ..Default::default()
             }),
             site,
+            application: Default::default(),
         }),
         &host,
     );
@@ -107,7 +98,7 @@ fn unavailable_target_is_throttled_then_actually_unloaded_before_restart() {
         }
     }
     requests.activate(&mut bridge, ClientId::new(1));
-    let old = requests.target.unwrap();
+    let old = host.target().unwrap();
     settled(&mut bridge, old);
     let previous_generation = host.selected(old).unwrap();
     let instance = bridge
@@ -118,10 +109,19 @@ fn unavailable_target_is_throttled_then_actually_unloaded_before_restart() {
         .unwrap();
     instance.lock().unwrap().mark_failed();
     requests.activate(&mut bridge, ClientId::new(1));
-    assert_eq!(requests.target, Some(old));
-    requests.last_start = Some(Instant::now() - Duration::from_secs(31));
-    requests.activate(&mut bridge, ClientId::new(1));
-    let new = requests.target.unwrap();
+    assert_eq!(host.target(), Some(old));
+    host.failed(
+        old,
+        None,
+        None,
+        yinz_types::web::ApplicationFailure::Initialization,
+    );
+    requests.activate_at(
+        &mut bridge,
+        ClientId::new(1),
+        Instant::now() + Duration::from_secs(1),
+    );
+    let new = host.target().unwrap();
     assert_ne!(old, new);
     settled(&mut bridge, new);
     assert_ne!(host.selected(new).unwrap(), previous_generation);

@@ -20,10 +20,6 @@ pub trait AsyncReader: Send + Sync {
         None
     }
 
-    #[expect(
-        clippy::double_must_use,
-        reason = "async_trait adds must_use to an already must-use future"
-    )]
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error>;
 }
 

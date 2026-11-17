@@ -24,19 +24,31 @@ time_unit!(
     /// use yinz_types::units::{UnixMillis, ElapsedMillis};
     /// let _: UnixMillis = ElapsedMillis::new(1);
     /// ```
-    UnixMillis(u64), Eq, Ord, Hash
+    UnixMillis(u64),
+    Eq,
+    Ord,
+    Hash
 );
 time_unit!(
     /// Signed Unix milliseconds, including instants before the Unix epoch.
-    SignedUnixMillis(i64), Eq, Ord, Hash
+    SignedUnixMillis(i64),
+    Eq,
+    Ord,
+    Hash
 );
 time_unit!(
     /// Absolute Unix seconds.
-    UnixSeconds(u64), Eq, Ord, Hash
+    UnixSeconds(u64),
+    Eq,
+    Ord,
+    Hash
 );
 time_unit!(
     /// An elapsed number of milliseconds, including zero-disable settings.
-    ElapsedMillis(u64), Eq, Ord, Hash
+    ElapsedMillis(u64),
+    Eq,
+    Ord,
+    Hash
 );
 time_unit!(
     /// An elapsed number of seconds, including zero-disable settings.
@@ -44,7 +56,10 @@ time_unit!(
     /// use yinz_types::units::{ElapsedSeconds, ElapsedMillis};
     /// let _: ElapsedSeconds = ElapsedMillis::new(1);
     /// ```
-    ElapsedSeconds(u64), Eq, Ord, Hash
+    ElapsedSeconds(u64),
+    Eq,
+    Ord,
+    Hash
 );
 time_unit!(
     /// Fractional seconds. Validation stays with the timer or protocol adapter.

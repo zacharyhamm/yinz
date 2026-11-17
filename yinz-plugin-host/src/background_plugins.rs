@@ -105,6 +105,30 @@ impl PluginBridge {
                 == right.configuration.without_caller_context()
     }
 
+    pub(crate) fn web_permission_pending(&self, id: PluginId) -> bool {
+        self.permission_requests
+            .values()
+            .any(|pending| pending.contains_plugin(id))
+    }
+    pub(crate) fn cancel_web_load(&self, id: PluginId) {
+        if let Some(cancel) = self.cancel_tokens.get(&id) {
+            cancel.store(true, Ordering::Release);
+        }
+    }
+
+    pub(super) fn reserve_configured_web(&mut self, id: PluginId, run: &RunPlugin) {
+        if let Some(target) = self.web.configured()
+            && self.matches_location(id, run, &target)
+            && run.configuration.without_caller_context()
+                == target.configuration.without_caller_context()
+        {
+            self.web.reserve(id);
+            if self.web.is_target(id) {
+                self.independent_plugin_ids.insert(id);
+            }
+        }
+    }
+
     pub(crate) fn start_background_plugin(
         &mut self,
         declaration: RunPluginOrAlias,
@@ -138,6 +162,7 @@ impl PluginBridge {
                     == run.configuration.without_caller_context()
         });
         let (id, owner) = if let Some((id, _)) = existing {
+            self.reserve_configured_web(id, &run);
             before_load(id);
             (id, self.get_first_client_id().unwrap_or(client))
         } else {
@@ -160,7 +185,7 @@ impl PluginBridge {
                 },
             )?;
             debug_assert_eq!(id, announced, "load_plugin used another plugin id");
-            if !independent {
+            if !independent && !self.web.is_target(id) {
                 self.independent_plugin_ids.remove(&id);
             }
             (id, owner)
@@ -241,7 +266,26 @@ impl PluginBridge {
             .unwrap()
             .owner_client_ids_of_plugin_id(id);
         clients.sort();
-        let latest_error = self.latest_plugin_errors.get(&id).cloned();
+        let latest_error = self.latest_plugin_errors.get(&id).map(|error| {
+            if self.web.is_target(id) {
+                self.web
+                    .status()
+                    .and_then(|s| {
+                        s.failure.map(|f| {
+                            format!(
+                                "{}; target={:?} load={:?} generation={:?}",
+                                f.summary(),
+                                s.target,
+                                s.load,
+                                s.generation
+                            )
+                        })
+                    })
+                    .unwrap_or_else(|| "configured application initialization failed".into())
+            } else {
+                error.clone()
+            }
+        });
         let state = if latest_error.is_some() {
             PluginState::Failed
         } else if self.plugin_ids_waiting_for_permission_request.contains(&id) {
@@ -383,6 +427,19 @@ impl PluginBridge {
         let ids: Vec<_> = matches.iter().map(|(id, _)| **id).collect();
         let mut statuses = vec![];
         if request.operation == PluginOperation::Start {
+            if let Some(target) = self.web.target()
+                && self
+                    .web
+                    .configured()
+                    .is_some_and(|configured| self.same_identity(&configured, &run))
+                && self
+                    .web
+                    .status()
+                    .is_some_and(|s| matches!(s.phase, yinz_types::web::ApplicationPhase::Stopped))
+            {
+                self.web.reset(target);
+                self.web.set_target(None);
+            }
             let (id, _) = self.start_background_plugin(
                 RunPluginOrAlias::RunPlugin(run.clone()),
                 client,

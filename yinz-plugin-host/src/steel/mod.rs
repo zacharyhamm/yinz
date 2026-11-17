@@ -278,6 +278,14 @@ impl SteelPlugin {
             }
             *active = true;
         }
+        let publication =
+            (allow_host && self.env().web.is_target(self.env().plugin_id)).then(|| {
+                (
+                    self.env().web.clone(),
+                    self.env().plugin_id,
+                    self.generation,
+                )
+            });
         let mut local_env = None;
         let env = if allow_host {
             &mut self.env
@@ -311,6 +319,14 @@ impl SteelPlugin {
             let result = result?;
             output.context("reading Steel plugin output")?;
             logs.context("reading Steel plugin diagnostics")?;
+            if let Some((web, id, generation)) = publication
+                && runtime
+                    .value("%async-loaded")
+                    .context("read web load completion")?
+                    == Value::Bool(true)
+            {
+                web.loaded(id, generation);
+            }
             Ok(result)
         })
     }

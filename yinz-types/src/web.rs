@@ -160,3 +160,95 @@ impl std::fmt::Debug for SiteHandle {
 #[cfg(test)]
 #[path = "unit/web_tests.rs"]
 mod tests;
+
+/// Private application readiness, independent of the HTTP listener's liveness.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplicationPhase {
+    #[default]
+    Disabled,
+    Loading,
+    Ready,
+    Retrying,
+    Failed,
+    PermissionBlocked,
+    Paused,
+    Stopped,
+}
+
+/// Finite diagnostic vocabulary: arbitrary guest errors never enter listener records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplicationFailure {
+    Configuration,
+    Initialization,
+    PublicationDeadline,
+    PermissionDenied,
+    Restart,
+}
+impl ApplicationFailure {
+    pub fn summary(self) -> &'static str {
+        match self {
+            Self::Configuration => "invalid configured application declaration",
+            Self::Initialization => "configured application initialization or execution failed",
+            Self::PublicationDeadline => {
+                "configured application did not publish within 60 active seconds"
+            },
+            Self::PermissionDenied => "configured application permission denied",
+            Self::Restart => "configured application restart preparation failed",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct ApplicationStatus {
+    pub phase: ApplicationPhase,
+    pub target: Option<crate::internal_ids::PluginId>,
+    pub load: Option<u64>,
+    pub generation: Option<u64>,
+    pub attempts: u32,
+    pub failure: Option<ApplicationFailure>,
+    /// Delay assigned at the failure transition, not a changing countdown.
+    pub retry_after_s: Option<u32>,
+    pub retry_not_before_ms: Option<u64>,
+    pub publication_rejection: Option<PublicationRejection>,
+}
+impl ApplicationStatus {
+    pub fn ready(&self) -> bool {
+        self.phase == ApplicationPhase::Ready
+    }
+    pub fn recovering(&self) -> bool {
+        matches!(
+            self.phase,
+            ApplicationPhase::Loading | ApplicationPhase::Retrying
+        )
+    }
+}
+
+/// Numeric, bounded ownership evidence for local diagnostics only.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct PublicationRejection {
+    pub reason: PublicationRejectionReason,
+    pub target: Option<crate::internal_ids::PluginId>,
+    pub attempted_plugin: crate::internal_ids::PluginId,
+    pub attempted_generation: u64,
+    pub selected_generation: Option<u64>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicationRejectionReason {
+    UnsetTarget,
+    DifferentTarget,
+    UnavailableOrNonselectedGeneration,
+}
+/// Host-written snapshot shared with the native listener. No guest command exposes it.
+#[derive(Clone, Default, Debug)]
+pub struct ApplicationHandle(Arc<RwLock<ApplicationStatus>>);
+impl ApplicationHandle {
+    pub fn current(&self) -> ApplicationStatus {
+        self.0.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    pub fn set(&self, status: ApplicationStatus) {
+        *self.0.write().unwrap_or_else(|e| e.into_inner()) = status;
+    }
+}

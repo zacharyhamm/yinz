@@ -73,3 +73,26 @@ fn web_request_debug_omits_body_and_query() {
     assert_eq!(json["method"], "POST");
     assert_eq!(json["query"][0][1], "query");
 }
+
+#[test]
+fn web_startup_status_is_shared_bounded_and_roundtrips_without_guest_text() {
+    let status = ApplicationStatus {
+        phase: ApplicationPhase::Retrying,
+        failure: Some(ApplicationFailure::PublicationDeadline),
+        attempts: 3,
+        retry_after_s: Some(30),
+        ..Default::default()
+    };
+    let handle = ApplicationHandle::default();
+    let reader = handle.clone();
+    handle.set(status.clone());
+    assert_eq!(reader.current(), status);
+    let bytes = serde_json::to_vec(&status).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<ApplicationStatus>(&bytes).unwrap(),
+        status
+    );
+    assert!(bytes.len() < 1024);
+    assert!(!status.ready());
+    assert!(status.recovering());
+}

@@ -56,12 +56,16 @@ curl -i http://127.0.0.1:7419/
 
 Health returns `200` JSON containing `"ok":true`; a direct loopback probe also
 includes the current session name. Once the builtin app has published its pages,
-`/` returns the app shell and `/login` the sign-in form. Until then (or if the
-installed builtins are missing or fail to load), `/` returns `503`, an escaped
-**Yinz web is starting** page and `Retry-After: 1`. The terminal session remains
-usable even if the builtin web application is missing. Frozen public pages/assets
-support `HEAD`, strong ETags and conditional `304` retrieval. Open
-`http://127.0.0.1:7419/` in a desktop browser to sign in with the password.
+`/` returns the app shell and `/login` the sign-in form. Readiness requires both
+successful completion of the configured plugin's load hook (including deferred
+work) and a nonempty publication from its selected live parent generation. Partial
+publications are hidden. Until ready, public GET and HEAD return a generic `503`;
+loading/retrying pages include `Retry-After` and an HTML refresh so an already-open
+browser/PWA can recover without signing in. Terminal failure and permission-blocked
+pages say **Yinz web is unavailable** and do not refresh endlessly. Internal errors
+and paths never appear in these pages. The terminal session remains usable.
+Frozen ready pages/assets support `HEAD`, strong ETags and conditional `304`.
+Open `http://127.0.0.1:7419/` in a desktop browser to sign in with the password.
 
 Every setting in `web { ... }` takes effect at the **next session start**, including
 enabled/disabled, port, plugin and host/origin/identity allowlists. Reloading config
@@ -95,7 +99,10 @@ password/session symlink.
 Each bound session writes its own private
 `web/listeners/<pid>-<random-number>.json`, version 1, containing PID, unique
 instance ID, effective socket address, current session name and optional immutable
-startup configuration (records are limited to 64 KiB). Port 0 is supported
+startup configuration and optional application readiness (records are limited to
+64 KiB). The readiness snapshot includes phase, target/load/generation, attempts,
+retry eligibility and finite sanitized failure/ownership categories. It is updated
+on transitions, without writing a changing countdown. Port 0 is supported
 for tests: read the effective address from this record. The record follows session
 rename and is removed after its listening socket closes. `yinz web status` probes
 local `/healthz` to identify the responding session and binding instance. Only a
@@ -104,12 +111,39 @@ names alone cannot verify crash leftovers or legacy health responses. Direct
 loopback GETs without forwarded or Tailscale headers include the public instance
 identifier, which stays stable across rename and changes on a new binding. Status
 distinguishes startup policy from current disk configuration. Legacy records
-report unknown policy.
+report unknown policy; records without application fields report readiness unknown.
 Failed probes never prove staleness: cleanup requires a dead PID and a locked
 identity recheck. Unsafe, malformed, replaced and ambiguous records are preserved.
 Cleanup failures are logged
 and do not hold the port. Failure to safely publish a record releases the listener
 and retries; it never reports the listener as serving.
+
+The configured publisher is reserved before initialization, including headless
+restoration during live update. A bound listener's regular poll drives recovery;
+public navigation does not dispatch application API requests. After an initial
+initialization/publication failure, the host permits at most three automatic
+retries, delayed 1, 5 and 30 seconds after each preceding failure. A load that
+never publishes has a 60-second active readiness deadline. Waiting for a permission
+decision blocks recovery without cancelling its prompt; explicit denial and invalid
+plugin declarations are terminal. Update pause freezes deadline, backoff and
+stability clocks. Stop/shutdown suppress further starts.
+
+Brief success does not replenish the retry budget: the app must stay ready for 60
+active seconds. Explicit configured-plugin reload/restart resets it immediately.
+Exhaustion requires local correction and reload; a permanently broken installation
+is not promised eventual recovery. Existing browser sign-ins and push subscriptions
+remain native state and survive guest recovery. After correcting missing builtin
+files, permissions or plugin code, the existing workaround is:
+
+```sh
+yinz --data-dir PATH --config CONFIG --session SESSION plugins reload web
+# Or retain --config-dir DIR when that selects your configuration.
+```
+
+Use the effective configured plugin instead of `web` for a custom app. Keep your
+original data/config selectors so the command reaches the intended installation.
+Changing the startup-only `web` block requires a new session, not just a plugin
+reload.
 
 An occupied port leaves an eligible session waiting. It retries after three
 seconds plus up to one second of jitter; other bind/publication errors back off
@@ -450,6 +484,11 @@ addresses and recorded startup policy, plus password state/update time and publi
 active-session summaries. Port 0 remains configured port 0 while the listener
 reports its actual bound port. No verified listener means runtime state is unknown,
 not proof that a configured server is running. Multiple listeners are reported.
+Listener liveness and application readiness are separate: health can return `200`
+while `Application: retrying` or `Application: failed` explains the unavailable
+app. Only instance-and-session-verified records supply readiness; unverified and
+legacy records show unknown. Configured-plugin diagnostics also use bounded safe
+failure summaries; detailed errors remain in the local log.
 
 The HTTPS port is the override, then `https_port_hint`, then 7443. Suggestions use
 a verified backend when available, otherwise an explicitly configured-only target:
@@ -496,6 +535,8 @@ are recorded in the implementation evidence, not here.
 | Retained builtin assets | `cargo x test -p yinz-runtime -E 'test(nested_static_assets_survive_exchange_without_unserved_records)'` | Nested `web/static` files across installation exchange | Temporary data directory |
 | Frontend logic | `node --test yinz-steel-builtins/src/unit/web/{api,timeline,submission}.test.mjs` | `api.js`, `timeline.js`, `submission.js` | Injected fetch, storage, clocks and timers |
 | Production HTTP | `cargo x integration-test -E 'test(web_builtin_production_http)' -j 16` | Listener, password and bearer auth, plugin host, worker and the default builtin from this checkout | Pane OS and processes (TestRunner's fake PTY) |
+| Startup recovery | `cargo x integration-test -E 'test(web_startup_)' -j 16` | Production listener/pulse/host/publication, GET/login/HEAD recovery, finite budget, real 60-second unpublished deadline, native auth/subscriptions | Disposable builtin fault; fake PTY |
+| Live update and rollback | `cargo x test -p yinz -E 'test(web_startup_live_update_)' -j 4` | Real source/destination binaries, headless inventory, paused restoration, pages/assets and existing browser identity | Disposable local installation |
 | Browser flows | `web_builtin_browser_phone_flows`, see below | Headless Firefox via Playwright, frozen pages, native login | Agent-data API, intercepted with fixed fixtures |
 
 Against the fake PTY, the production test records native behavior rather than

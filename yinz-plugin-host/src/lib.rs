@@ -29,6 +29,7 @@ mod web_agent_tasks;
 mod web_assets;
 mod web_host;
 mod web_requests;
+mod web_startup;
 mod yinz_exports;
 use log::info;
 pub use yinz_bus::plugins::*;
@@ -181,6 +182,7 @@ pub fn plugin_thread_main(
             update_quiescence::Quiescence::initial(operation, &plugin_bridge, &clipboard_writer)
         })
         .transpose()?;
+    web_host.paused(update_pause.is_some());
     let native_tasks = update_quiescence::NativeTasks::default();
     let mut update_readiness: Option<update_quiescence::Readiness> = None;
     let mut update_reports = update_quiescence::DeferredReports::default();
@@ -432,6 +434,7 @@ pub fn plugin_thread_main(
                     ) {
                         Ok(pause) => {
                             pause.reply_when_ready(reply);
+                            web_host.paused(true);
                             update_pause = Some(pause);
                         },
                         Err(error) => {
@@ -460,9 +463,11 @@ pub fn plugin_thread_main(
                         &plugin_bridge,
                         reply,
                     ));
+                    web_host.paused(false);
                     if let Some(pause) = update_pause.take() {
                         pause.resume();
                     }
+                    web_requests.activate(&mut plugin_bridge, initiating_client_id);
                     let senders = bus.senders.clone();
                     yinz_bus::global_async_runtime::get_tokio_runtime().spawn(async move {
                         tokio::time::sleep(Duration::from_secs(60)).await;
@@ -490,7 +495,7 @@ pub fn plugin_thread_main(
                 });
             },
             PluginInstruction::Web(yinz_bus::web::WebInstruction::Activate) => {
-                // Not during live-update quiescence; the next request after resume activates.
+                // Paused clocks and starts resume once through ResumeAfterUpdate.
                 if update_pause.is_none() {
                     web_requests.activate(&mut plugin_bridge, initiating_client_id);
                 }

@@ -119,8 +119,10 @@ pub(crate) async fn run(
         let name = state.backend.session_name();
         let mut current_name = name.clone();
         let startup_config = state.settings.startup_config.clone();
+        let mut current_application = state.backend.application();
+        let application = current_application.clone();
         let mut publication = tokio::task::spawn_blocking(move || {
-            OwnedRecord::create(&dir, addr, name, startup_config)
+            OwnedRecord::create_with_application(&dir, addr, name, startup_config, application)
         });
         let record = tokio::select! {
             biased;
@@ -172,11 +174,14 @@ pub(crate) async fn run(
                 _ = interval.tick() => {
                     let is_ready = tokio::select! { biased; _ = cancel.cancelled() => break, value = ready(&state, &mut password_warning) => value };
                     if state.backend.quiesced() || !is_ready { break; }
+                    state.backend.activate();
                     let name = state.backend.session_name();
-                    if current_name != name {
+                    let application = state.backend.application();
+                    if current_name != name || current_application != application {
+                        current_application = application.clone();
                         current_name = name.clone();
                         let record = record.clone();
-                        let mut refresh = tokio::task::spawn_blocking(move || record.refresh(name));
+                        let mut refresh = tokio::task::spawn_blocking(move || record.refresh_application(name, application));
                         let result = tokio::select! {
                             biased;
                             _ = cancel.cancelled() => {
