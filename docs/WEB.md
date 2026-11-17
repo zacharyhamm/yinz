@@ -124,9 +124,11 @@ public navigation does not dispatch application API requests. After an initial
 initialization/publication failure, the host permits at most three automatic
 retries, delayed 1, 5 and 30 seconds after each preceding failure. A load that
 never publishes has a 60-second active readiness deadline. Waiting for a permission
-decision blocks recovery without cancelling its prompt; explicit denial and invalid
-plugin declarations are terminal. Update pause freezes deadline, backoff and
-stability clocks. Stop/shutdown suppress further starts.
+decision for the selected publisher blocks recovery without cancelling its prompt;
+explicit denial for that publisher and invalid plugin declarations are terminal.
+A permission prompt or denial belonging only to another client’s nonselected
+plugin instance leaves the working web app available. Update pause freezes
+deadline, backoff and stability clocks. Stop/shutdown suppress further starts.
 
 Brief success does not replenish the retry budget: the app must stay ready for 60
 active seconds. Explicit configured-plugin reload/restart resets it immediately.

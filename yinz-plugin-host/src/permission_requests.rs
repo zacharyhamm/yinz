@@ -44,6 +44,29 @@ impl PendingPermission {
 }
 
 impl PluginBridge {
+    /// Snapshot recipients without a guest lock; WebHost revalidates the load and live
+    /// selected parent under its state lock. Decided but undelivered answers still count.
+    pub(crate) fn reconcile_web_permissions(&self) {
+        let Some(id) = self.web.target() else { return };
+        let Some(load) = self.load_ids.get(&id).copied() else {
+            return;
+        };
+        let generations = {
+            let map = self.plugin_map.lock().unwrap();
+            self.permission_requests
+                .values()
+                .flat_map(|pending| &pending.recipients)
+                .filter(|(plugin, _, _)| *plugin == id)
+                .filter_map(|(_, instance, _)| {
+                    map.permission_instance(id, *instance)?
+                        .workers
+                        .map(|workers| workers.parent_generation)
+                })
+                .collect::<HashSet<_>>()
+        };
+        self.web.permissions_pending(id, load, &generations);
+    }
+
     pub(crate) fn request_permissions(
         &mut self,
         plugin_id: PluginId,
@@ -77,6 +100,7 @@ impl PluginBridge {
                 .insert((plugin_id, instance_id, client_id));
             self.plugin_callers.remove(&plugin_id);
             self.cache_plugin_events(plugin_id);
+            self.reconcile_web_permissions();
             return Ok(());
         }
         self.next_permission_request += 1;
@@ -90,7 +114,7 @@ impl PluginBridge {
                 decided: false,
             },
         );
-        self.web.permission(plugin_id, true);
+        self.reconcile_web_permissions();
         self.cache_plugin_events(plugin_id);
         let caller = self.plugin_callers.remove(&plugin_id);
         let cache_path = request_permission_cache_path();
@@ -133,6 +157,7 @@ impl PluginBridge {
                 true
             }
         });
+        self.reconcile_web_permissions();
         for token in cancelled {
             self.senders
                 .send_to_screen(ScreenInstruction::CancelPluginPermission(token))
@@ -223,15 +248,14 @@ impl PluginBridge {
             // and the worker coordinator are shared with the runtime and change here at once,
             // ahead of the callbacks queued below.
             if answered.insert((plugin_id, instance_id)) {
-                if status == PermissionStatus::Denied {
-                    self.web.failed(
-                        plugin_id,
-                        None,
-                        None,
-                        yinz_types::web::ApplicationFailure::PermissionDenied,
-                    );
+                if status == PermissionStatus::Denied
+                    && let Some(workers) = &workers
+                    && let Some(load) = self.load_ids.get(&plugin_id)
+                {
+                    self.web
+                        .permission_denied(plugin_id, *load, workers.parent_generation);
                 }
-                self.web.permission(plugin_id, false);
+
                 // Denial answers the FIFO head, preserving all earlier grants.
                 let mut permissions = host.permissions().unwrap_or_default();
                 if status == PermissionStatus::Granted {
@@ -313,6 +337,7 @@ impl PluginBridge {
                 },
             );
         }
+        self.reconcile_web_permissions();
         let ready = plugins
             .into_iter()
             .filter(|plugin| {

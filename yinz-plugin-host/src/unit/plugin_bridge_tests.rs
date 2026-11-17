@@ -9743,3 +9743,511 @@ fn web_startup_peer_pending_primary_keeps_deadline_and_later_failure_retries() {
     );
     test.bridge.unload_plugin(id).unwrap();
 }
+
+/// Real supervised parents share a declaration, but only client 1 publishes. Every request
+/// below goes through Steel's permission FIFO and the plugin-thread coordinator.
+fn permission_web_fixture() -> (TestBridge, PluginId, crate::web_requests::WebRequests) {
+    permission_web_fixture_with_prerequisites(true)
+}
+fn permission_web_fixture_with_prerequisites(
+    granted: bool,
+) -> (TestBridge, PluginId, crate::web_requests::WebRequests) {
+    let mut test = TestBridge::new();
+    test.connect(&[ClientId::new(1), ClientId::new(2)]);
+    let source = test._dirs[0].path().join("permission-web.scm");
+    std::fs::write(&source, r#"
+(yinz-declare-pane)
+(define answers 0)
+(yinz-register-workers (hash "probe" (lambda (name payload)
+  (define (done _) (yinz-command (hash "SetTimeout" 0)))
+  (yinz-catch (yinz-then (yinz-wait-for-permissions '("ReadFiles")) done) done))))
+(define (load config)
+  (yinz-then (yinz-wait-for-permissions '("RunCommands")) (lambda (_)
+    (when (= (hash-ref (yinz-command "GetPluginIds") "client_id") 1)
+      (yinz-command (hash "HttpPublish" (hash "path" "/" "content_type" "text/plain; charset=utf-8" "body" "selected publication")))))))
+(define (pipe message)
+  (define (done _) (set! answers (+ answers 1)) #t)
+  (yinz-catch (yinz-then (yinz-wait-for-permissions '("ReadFiles")) done) done))
+(define (render rows cols) (string-append "size answers=" (number->string answers) ";"))
+"#).unwrap();
+    let mut cache = PermissionCache::from_path_or_default(None);
+    if granted {
+        cache.grant(
+            source.to_string_lossy().into_owned(),
+            vec![PermissionType::RunCommands],
+        );
+        cache.write_to_file().unwrap();
+    }
+    let site = yinz_types::web::SiteHandle::default();
+    test.bridge.web = crate::web_host::WebHost::new(Some(site.clone()));
+    let declaration = RunPluginOrAlias::RunPlugin(RunPlugin {
+        location: RunPluginLocation::File(source),
+        ..Default::default()
+    });
+    let mut requests = crate::web_requests::WebRequests::new(
+        Some(yinz_bus::web::WebPluginParams {
+            plugin: declaration,
+            site,
+            application: Default::default(),
+        }),
+        &test.bridge.web,
+    );
+    requests.activate(&mut test.bridge, ClientId::new(1));
+    let id = test.bridge.web.target().unwrap();
+    test.finish_reload(id);
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    for (instruction, _) in test.receiver::<PluginInstruction>().try_iter() {
+        match instruction {
+            PluginInstruction::RequestPermissions {
+                plugin_id,
+                instance_id,
+                client_id,
+                permissions,
+            } => {
+                test.bridge
+                    .request_permissions(
+                        plugin_id,
+                        instance_id,
+                        client_id,
+                        permissions,
+                        shutdown.clone(),
+                    )
+                    .unwrap();
+            },
+            PluginInstruction::PluginFailed { error, .. } => panic!("fixture load failed: {error}"),
+            _ => {},
+        }
+    }
+    test.wait_for_executor(id);
+    if granted {
+        assert!(
+            test.bridge.web.status().unwrap().ready(),
+            "{:?}",
+            test.bridge.web.status()
+        );
+    }
+    assert_eq!(test.bridge.all_plugin_ids().len(), 2);
+    test.bridge.resize_plugin(id, 40, 5, shutdown).unwrap();
+    test.wait_for_executor(id);
+    (test, id, requests)
+}
+
+fn permission_web_send(test: &mut TestBridge, id: PluginId, client: ClientId) {
+    test.bridge
+        .pipe_messages(
+            vec![(
+                Some(id),
+                Some(client),
+                PipeMessage::new(
+                    PipeSource::Cli(format!("permission-{client}")),
+                    "permission",
+                    &None,
+                    &None,
+                    true,
+                ),
+            )],
+            tokio::sync::mpsc::channel(1).0,
+            None,
+        )
+        .unwrap();
+}
+fn permission_web_request(test: &mut TestBridge, id: PluginId, client: ClientId) -> u64 {
+    permission_web_send(test, id, client);
+    permission_web_admit(test, id, client)
+}
+fn permission_web_admit(test: &mut TestBridge, id: PluginId, client: ClientId) -> u64 {
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    let receiver = test.receiver::<PluginInstruction>();
+    loop {
+        let (instruction, _) = receiver
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap();
+        match instruction {
+            PluginInstruction::RequestPermissions {
+                plugin_id,
+                instance_id,
+                client_id,
+                permissions,
+            } => {
+                assert_eq!((plugin_id, client_id), (id, client));
+                assert_eq!(instance_id, test.instance_id(id, client));
+                test.bridge
+                    .request_permissions(plugin_id, instance_id, client_id, permissions, shutdown)
+                    .unwrap();
+                break;
+            },
+            PluginInstruction::PluginFailed { error, .. } => panic!("unexpected failure: {error}"),
+            _ => {},
+        }
+    }
+    test.wait_for_executor(id);
+    *test.bridge.permission_requests.keys().max().unwrap()
+}
+
+#[test]
+fn web_startup_permission_peer_pending_preserves_ready_publication() {
+    let (mut test, id, mut requests) = permission_web_fixture();
+    let before = test.bridge.web.status().unwrap();
+    permission_web_request(&mut test, id, ClientId::new(2));
+    assert_eq!(test.bridge.web.status().unwrap(), before);
+    requests.activate(&mut test.bridge, ClientId::new(1));
+    assert_eq!(test.bridge.web.status().unwrap(), before);
+    let peer = test.instance_id(id, ClientId::new(2));
+    test.bridge.remove_client(ClientId::new(2));
+    test.wait_for_executor(id);
+    test.bridge.cancel_permission_requests(id, Some(peer));
+    assert!(test.bridge.permission_requests.is_empty());
+    assert_eq!(test.bridge.web.status().unwrap(), before);
+    test.bridge.unload_plugin(id).unwrap();
+}
+
+#[test]
+fn web_startup_permission_peer_denial_preserves_ready_publication() {
+    let (mut test, id, mut requests) = permission_web_fixture();
+    let before = test.bridge.web.status().unwrap();
+    let token = permission_web_request(&mut test, id, ClientId::new(2));
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    test.bridge
+        .answer_permissions(token, PermissionStatus::Denied, None, shutdown)
+        .unwrap();
+    test.wait_for_executor(id);
+    assert_eq!(test.bridge.web.status().unwrap(), before);
+    // Both request and answer batches have completed; pulses cannot consume a retry.
+    let starts = test.bridge.next_load_id;
+    for _ in 0..8 {
+        requests.activate(&mut test.bridge, ClientId::new(1));
+        assert_eq!(
+            test.bridge
+                .web
+                .pulse(std::time::Instant::now() + Duration::from_secs(2)),
+            crate::web_startup::Action::None
+        );
+    }
+    assert_eq!(test.bridge.next_load_id, starts);
+    permission_web_completion(&mut test, id, ClientId::new(2), 1);
+    test.bridge.unload_plugin(id).unwrap();
+}
+
+fn permission_web_completion(test: &mut TestBridge, id: PluginId, client: ClientId, count: usize) {
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    loop {
+        test.wait_for_executor(id);
+        let drawn = frames_by_client(test, id);
+        if drawn
+            .iter()
+            .any(|(owner, f)| *owner == client && f == &format!("size answers={count}"))
+        {
+            break;
+        }
+        let (instruction, _) = test
+            .receiver::<PluginInstruction>()
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap();
+        match instruction {
+            PluginInstruction::PluginTick(plugin, _, generation) => {
+                test.bridge
+                    .plugin_tick(plugin, generation, shutdown.clone())
+            },
+            PluginInstruction::PluginFailed { error, .. } => panic!("unexpected failure: {error}"),
+            _ => {},
+        }
+    }
+}
+
+#[test]
+fn web_startup_permission_coalesced_parents_in_both_orders_and_selected_denial() {
+    use yinz_types::web::{ApplicationFailure as Failure, ApplicationPhase as Phase};
+    for order in [[2, 1], [1, 2]] {
+        for answer in [PermissionStatus::Granted, PermissionStatus::Denied] {
+            let (mut test, id, mut requests) = permission_web_fixture();
+            let before = test.bridge.web.status().unwrap();
+            // Queue both guest calls before admitting either host request: once admitted,
+            // the coordinator intentionally caches later ordinary events for the plugin ID.
+            for client in order {
+                permission_web_send(&mut test, id, ClientId::new(client));
+            }
+            test.wait_for_executor(id);
+            let mut token = 0;
+            for client in order {
+                token = permission_web_admit(&mut test, id, ClientId::new(client));
+            }
+            assert_eq!(test.bridge.permission_requests.len(), 1);
+            assert_eq!(
+                test.bridge.web.status().unwrap().phase,
+                Phase::PermissionBlocked
+            );
+            let starts = test.bridge.next_load_id;
+            // The request batch is drained. Active-time pulses while blocked cannot expire or
+            // restart it, even beyond the production unpublished deadline.
+            for _ in 0..4 {
+                requests.activate(&mut test.bridge, ClientId::new(1));
+                assert_eq!(
+                    test.bridge
+                        .web
+                        .pulse(std::time::Instant::now() + Duration::from_secs(120)),
+                    crate::web_startup::Action::None
+                );
+            }
+            let (shutdown, _) = tokio::sync::mpsc::channel(1);
+            test.bridge
+                .answer_permissions(token, answer, None, shutdown)
+                .unwrap();
+            permission_web_completion(&mut test, id, ClientId::new(1), 1);
+            // Ask the runtime to draw both parents after both private FIFO completions.
+            test.bridge
+                .resize_plugin(id, 41, 5, tokio::sync::mpsc::channel(1).0)
+                .unwrap();
+            permission_web_completion(&mut test, id, ClientId::new(2), 1);
+            requests.activate(&mut test.bridge, ClientId::new(1));
+            let status = test.bridge.web.status().unwrap();
+            assert_eq!(
+                (
+                    status.target,
+                    status.load,
+                    status.generation,
+                    status.attempts
+                ),
+                (
+                    before.target,
+                    before.load,
+                    before.generation,
+                    before.attempts
+                )
+            );
+            if answer == PermissionStatus::Denied {
+                assert_eq!(status.phase, Phase::Failed);
+                assert_eq!(status.failure, Some(Failure::PermissionDenied));
+                assert_eq!(status.retry_after_s, None);
+            } else {
+                assert!(status.ready());
+            }
+            assert_eq!(test.bridge.next_load_id, starts);
+            for client in [1, 2] {
+                let instance = test.instance_id(id, ClientId::new(client));
+                let target = test
+                    .bridge
+                    .plugin_map
+                    .lock()
+                    .unwrap()
+                    .permission_instance(id, instance)
+                    .unwrap();
+                let permissions = target.host.permissions().unwrap();
+                assert!(permissions.contains(&PermissionType::RunCommands));
+                assert_eq!(
+                    permissions.contains(&PermissionType::ReadFiles),
+                    answer == PermissionStatus::Granted
+                );
+            }
+            test.bridge.unload_plugin(id).unwrap();
+        }
+    }
+}
+
+#[test]
+fn web_startup_permission_distinct_peer_answer_and_cancellation_keep_selected_wait() {
+    use yinz_types::web::ApplicationPhase as Phase;
+    for cancel in [false, true] {
+        let (mut test, id, mut requests) = permission_web_fixture();
+        let selected = permission_web_request(&mut test, id, ClientId::new(1));
+        let peer = test.instance_id(id, ClientId::new(2));
+        let (shutdown, _) = tokio::sync::mpsc::channel(1);
+        // Distinct sets cannot coalesce; this also exercises ID-wide callers that are not
+        // Steel FIFO requests, without changing generic permission/cache semantics.
+        test.bridge
+            .request_permissions(
+                id,
+                peer,
+                ClientId::new(2),
+                vec![PermissionType::PluginData],
+                shutdown.clone(),
+            )
+            .unwrap();
+        let other = *test
+            .bridge
+            .permission_requests
+            .keys()
+            .find(|token| **token != selected)
+            .unwrap();
+        if cancel {
+            test.bridge.remove_client(ClientId::new(2));
+            test.wait_for_executor(id);
+            test.bridge.cancel_permission_requests(id, Some(peer));
+        } else {
+            test.bridge
+                .answer_permissions(other, PermissionStatus::Denied, None, shutdown.clone())
+                .unwrap();
+        }
+        requests.activate(&mut test.bridge, ClientId::new(1));
+        assert_eq!(
+            test.bridge.web.status().unwrap().phase,
+            Phase::PermissionBlocked
+        );
+        assert_eq!(test.bridge.permission_requests.len(), 1);
+        assert!(test.bridge.permission_requests.contains_key(&selected));
+        test.bridge
+            .answer_permissions(selected, PermissionStatus::Granted, None, shutdown)
+            .unwrap();
+        permission_web_completion(&mut test, id, ClientId::new(1), 1);
+        requests.activate(&mut test.bridge, ClientId::new(1));
+        assert!(test.bridge.web.status().unwrap().ready());
+        test.bridge.unload_plugin(id).unwrap();
+    }
+}
+
+#[test]
+fn web_startup_permission_retired_answer_cannot_change_replacement_or_stop() {
+    for stop in [false, true] {
+        let (mut test, id, mut requests) = permission_web_fixture();
+        let token = permission_web_request(&mut test, id, ClientId::new(2));
+        let old = test.bridge.web.status().unwrap();
+        if stop {
+            test.bridge.unload_plugin(id).unwrap();
+        } else {
+            test.bridge.reload_plugin_with_id(id).unwrap();
+            test.finish_reload(id);
+            // Cached prerequisite grants still travel through the same coordinator.
+            let (shutdown, _) = tokio::sync::mpsc::channel(1);
+            for (instruction, _) in test.receiver::<PluginInstruction>().try_iter() {
+                if let PluginInstruction::RequestPermissions {
+                    plugin_id,
+                    instance_id,
+                    client_id,
+                    permissions,
+                } = instruction
+                {
+                    test.bridge
+                        .request_permissions(
+                            plugin_id,
+                            instance_id,
+                            client_id,
+                            permissions,
+                            shutdown.clone(),
+                        )
+                        .unwrap();
+                }
+            }
+            test.wait_for_executor(id);
+            assert!(test.bridge.web.status().unwrap().ready());
+            assert_ne!(test.bridge.web.status().unwrap().generation, old.generation);
+        }
+        let before = test.bridge.web.status().unwrap();
+        for answer in [PermissionStatus::Denied, PermissionStatus::Granted] {
+            test.bridge
+                .answer_permissions(token, answer, None, tokio::sync::mpsc::channel(1).0)
+                .unwrap();
+            requests.activate(&mut test.bridge, ClientId::new(1));
+            assert_eq!(test.bridge.web.status().unwrap(), before);
+        }
+        test.bridge.unload_plugin(id).unwrap();
+    }
+}
+
+#[test]
+fn web_startup_permission_peer_worker_uses_parent_and_cached_grant_stays_ready() {
+    let (mut test, id, mut requests) = permission_web_fixture();
+    let before = test.bridge.web.status().unwrap();
+    test.bridge
+        .post_messages_to_plugin_worker(
+            id,
+            ClientId::new(2),
+            "probe".into(),
+            vec![("request".into(), "".into())],
+        )
+        .unwrap();
+    let token = permission_web_admit(&mut test, id, ClientId::new(2));
+    assert_eq!(test.bridge.web.status().unwrap(), before);
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    test.bridge
+        .answer_permissions(token, PermissionStatus::Granted, None, shutdown.clone())
+        .unwrap();
+    let instructions = test.receiver::<PluginInstruction>();
+    let worker_generation = loop {
+        let (instruction, _) = instructions
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap();
+        match instruction {
+            PluginInstruction::PluginTick(plugin, _, generation) => {
+                test.bridge
+                    .plugin_tick(plugin, generation, shutdown.clone())
+            },
+            PluginInstruction::PluginReply(_, client, generation, Event::Timer(_), _) => {
+                assert_eq!(client, ClientId::new(2));
+                break generation;
+            },
+            PluginInstruction::PluginFailed { error, .. } => panic!("worker failed: {error}"),
+            _ => {},
+        }
+    };
+    assert_ne!(Some(worker_generation), before.generation);
+    // A cached parent request must still complete through the FIFO, without becoming an
+    // application permission block or changing this healthy parent's previous grants.
+    permission_web_send(&mut test, id, ClientId::new(2));
+    test.wait_for_executor(id);
+    loop {
+        let (instruction, _) = instructions
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap();
+        if let PluginInstruction::RequestPermissions {
+            plugin_id,
+            instance_id,
+            client_id,
+            permissions,
+        } = instruction
+        {
+            test.bridge
+                .request_permissions(
+                    plugin_id,
+                    instance_id,
+                    client_id,
+                    permissions,
+                    shutdown.clone(),
+                )
+                .unwrap();
+            break;
+        }
+    }
+    assert!(test.bridge.permission_requests.is_empty());
+    permission_web_completion(&mut test, id, ClientId::new(2), 1);
+    requests.activate(&mut test.bridge, ClientId::new(1));
+    assert_eq!(test.bridge.web.status().unwrap(), before);
+    test.bridge.unload_plugin(id).unwrap();
+}
+
+#[test]
+fn web_startup_permission_selected_initializer_wait_freezes_deadline_and_grant_publishes() {
+    use yinz_types::web::ApplicationPhase as Phase;
+    let (mut test, id, mut requests) = permission_web_fixture_with_prerequisites(false);
+    assert_eq!(
+        test.bridge.web.status().unwrap().phase,
+        Phase::PermissionBlocked
+    );
+    assert!(test.bridge.web.selected(id).is_some());
+    assert_eq!(test.bridge.permission_requests.len(), 1);
+    let starts = test.bridge.next_load_id;
+    test.bridge.web.paused(true);
+    requests.activate(&mut test.bridge, ClientId::new(1));
+    test.bridge.web.paused(false);
+    // Both real initializing recipients have joined. Crossing deadlines with the controlled
+    // monotonic input cannot cancel their undecided permission obligation or add a load.
+    assert_eq!(
+        test.bridge
+            .web
+            .pulse(std::time::Instant::now() + Duration::from_secs(120)),
+        crate::web_startup::Action::None
+    );
+    let token = *test.bridge.permission_requests.keys().next().unwrap();
+    test.bridge
+        .answer_permissions(
+            token,
+            PermissionStatus::Granted,
+            None,
+            tokio::sync::mpsc::channel(1).0,
+        )
+        .unwrap();
+    test.wait_for_executor(id);
+    requests.activate(&mut test.bridge, ClientId::new(1));
+    assert!(test.bridge.web.status().unwrap().ready());
+    assert_eq!(test.bridge.next_load_id, starts);
+    assert_eq!(test.bridge.web.status().unwrap().attempts, 1);
+    test.bridge.unload_plugin(id).unwrap();
+}

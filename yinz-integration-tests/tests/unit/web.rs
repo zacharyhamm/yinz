@@ -1650,3 +1650,206 @@ fn web_startup_stopped_app_requires_explicit_start_and_preserves_bearer() {
     session.quit();
     records.empty();
 }
+
+/// A disposable nonshared app. The second client identifies itself by its own timezone,
+/// avoiding assumptions about numeric client IDs allocated to native CLI connections.
+fn permission_app(dir: &Path, selected_denial: bool) -> String {
+    yinz_integration_tests::test_env::init();
+    let root = dir.join("permission-app");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(root.join("static")).unwrap();
+    std::fs::write(
+        root.join("static/app.js"),
+        "export const selected = 'permission-app';",
+    )
+    .unwrap();
+    let source = root.join("app.scm");
+    let body = r#"
+(define (publish)
+  (yinz-command (hash "HttpAssets" (hash "prefix" "/static/" "directory" "static")))
+  (yinz-command (hash "HttpPublish" (hash "path" "/" "content_type" "text/html; charset=utf-8" "body" "<main>selected permission app</main><script type=\"module\" src=\"/static/app.js\"></script>")))
+  (yinz-command (hash "HttpPublish" (hash "path" "/login" "content_type" "text/html; charset=utf-8" "body" "<main>selected permission login</main>"))))
+(define (load config)
+  (yinz-then (yinz-wait-for-permissions '("RunCommands" "ChangeApplicationState")) (lambda (_)
+    (if PEER
+      (yinz-catch (yinz-then (yinz-wait-for-permissions '("ReadFiles"))
+        (lambda (_) (yinz-command (hash "RenameTab" '(0 "permission-granted")))))
+        (lambda (_) (yinz-command (hash "RenameTab" '(0 "permission-denied")))))
+      (publish)))))
+(define (yinz-web-dispatch request)
+  (yinz-command (hash "HttpRespond" (hash "request_id" (hash-ref request "id")
+    "response" (yinz-json-string (hash "status" 200 "headers" (hash "content-type" "text/plain") "body" "selected authenticated app"))))))
+"#;
+    std::fs::write(
+        &source,
+        body.replace(
+            "PEER",
+            if selected_denial {
+                "#t"
+            } else {
+                "(equal? (yinz-client-timezone) \"Asia/Kolkata\")"
+            },
+        ),
+    )
+    .unwrap();
+    let url = format!("file:{}", source.display());
+    // This process's xtask test environment owns its cache. Only prerequisites are granted;
+    // ReadFiles is deliberately absent for this unique source identity.
+    let cache_path = yinz_runtime::consts::YINZ_PLUGIN_PERMISSIONS_CACHE.clone();
+    std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+    let mut cache =
+        yinz_config::permission::PermissionCache::from_path_or_default(Some(cache_path));
+    cache.cache(
+        yinz_runtime::plugin_location::parse_plugin_location(&url, None)
+            .unwrap()
+            .to_string(),
+        vec![
+            yinz_types::data::PermissionType::RunCommands,
+            yinz_types::data::PermissionType::ChangeApplicationState,
+        ],
+    );
+    cache.write_to_file().unwrap();
+    url
+}
+
+fn assert_permission_site(addr: SocketAddr) {
+    for (path, marker) in [
+        ("/", "selected permission app"),
+        ("/login", "selected permission login"),
+    ] {
+        let reply = fetch(addr, "GET", path, "");
+        assert_page(&reply);
+        assert!(reply.text().contains(marker), "{reply}");
+        assert_eq!(reply.header("x-content-type-options"), Some("nosniff"));
+        let head = fetch(addr, "HEAD", path, "");
+        assert_page(&head);
+        assert!(head.body.is_empty());
+    }
+    let asset = fetch(addr, "GET", "/static/app.js", "");
+    assert_eq!(asset.status, 200);
+    assert_eq!(asset.text(), "export const selected = 'permission-app';");
+}
+
+#[test]
+fn web_startup_permission_peer_modal_denial_keeps_public_site_bearer_and_push() {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    let dir = private_data();
+    set(dir.path());
+    let url = permission_app(dir.path(), false);
+    let records = Records::new(dir.path().to_owned());
+    let mut session = TestRunner::new(TERMINAL_SIZE)
+        .with_data_dir(dir.path().to_owned())
+        .with_timezone(Some("America/Chicago"))
+        .with_config(&format!(
+            "mirror_session false\nweb {{ enabled true; port 0; plugin {url:?}; }}"
+        ))
+        .start();
+    let addr = records.serving(session.session_name());
+    wait_public(addr, "/", "selected permission app");
+    assert_permission_site(addr);
+    let initial = records
+        .values
+        .wait_until("selected app ready", default_timeout(), |rows| {
+            rows.iter()
+                .find_map(|r| r.application.as_ref().filter(|s| s.ready()).cloned())
+        });
+    let token = login(addr);
+    let mut key = [0; 65];
+    key[0] = 4;
+    let push = serde_json::json!({"endpoint":"https://fcm.googleapis.com/yinz-141-permission", "keys":{"p256dh":URL_SAFE_NO_PAD.encode(key), "auth":URL_SAFE_NO_PAD.encode([0;16])}}).to_string();
+    assert_eq!(
+        call(addr, "POST", "/api/push", Some(&token), &push).status,
+        200
+    );
+    let subscription = std::fs::read(dir.path().join("web/push.json")).unwrap();
+    let peer = session.attach_client_with_timezone(TERMINAL_SIZE, Some("Asia/Kolkata"));
+    peer.wait_until("peer-only extra permission modal", |g| {
+        g.contains("Plugin permissions") && g.contains("ReadFiles")
+    });
+    // Public-only observations while the genuine peer prompt remains unanswered.
+    assert_permission_site(addr);
+    peer.send_stdin(b"\x1b");
+    peer.wait_until("peer deferred handled denial", |g| {
+        g.contains("permission-denied") && !g.contains("Plugin permissions")
+    });
+    assert_permission_site(addr);
+    let after = records.values.wait_until(
+        "same selected publication after peer denial",
+        default_timeout(),
+        |rows| {
+            rows.iter().find_map(|r| {
+                r.application
+                    .as_ref()
+                    .filter(|s| s.ready() && s.generation == initial.generation)
+                    .cloned()
+            })
+        },
+    );
+    assert_eq!(
+        (after.target, after.load, after.attempts, after.failure),
+        (initial.target, initial.load, initial.attempts, None)
+    );
+    assert_eq!(
+        call(addr, "GET", "/api/session", Some(&token), "").status,
+        200
+    );
+    let authenticated = call(addr, "GET", "/api/probe", Some(&token), "");
+    assert_eq!(authenticated.status, 200);
+    assert_eq!(authenticated.text(), "selected authenticated app");
+    assert_eq!(
+        std::fs::read(dir.path().join("web/push.json")).unwrap(),
+        subscription
+    );
+    peer.quit();
+    session.quit();
+    records.empty();
+}
+
+#[test]
+fn web_startup_permission_selected_modal_denial_remains_terminal_and_private() {
+    use yinz_types::web::{ApplicationFailure, ApplicationPhase};
+    let dir = private_data();
+    set(dir.path());
+    let url = permission_app(dir.path(), true);
+    let records = Records::new(dir.path().to_owned());
+    let mut session = TestRunner::new(TERMINAL_SIZE)
+        .with_data_dir(dir.path().to_owned())
+        .with_config(&format!("web {{ enabled true; port 0; plugin {url:?}; }}"))
+        .start();
+    let addr = records.serving(session.session_name());
+    session.wait_until("selected owner permission modal", |g| {
+        g.contains("Plugin permissions") && g.contains("ReadFiles")
+    });
+    session.send_stdin(b"\x1b");
+    session.wait_until("selected initializer caught denial", |g| {
+        g.contains("permission-denied")
+    });
+    let failed =
+        records
+            .values
+            .wait_until("selected permission failure", default_timeout(), |rows| {
+                rows.iter().find_map(|r| {
+                    r.application
+                        .as_ref()
+                        .filter(|s| s.phase == ApplicationPhase::Failed)
+                        .cloned()
+                })
+            });
+    assert_eq!(failed.failure, Some(ApplicationFailure::PermissionDenied));
+    assert_eq!(failed.retry_after_s, None);
+    assert_eq!(failed.attempts, 1);
+    for method in ["GET", "HEAD"] {
+        for path in ["/", "/login"] {
+            let reply = fetch(addr, method, path, "");
+            assert_eq!(reply.status, 503);
+            assert!(!reply.text().contains("http-equiv=\"refresh\""));
+            assert!(!reply.text().contains("ReadFiles"));
+            assert!(!reply.text().contains(&dir.path().display().to_string()));
+            if method == "HEAD" {
+                assert!(reply.body.is_empty());
+            }
+        }
+    }
+    session.quit();
+    records.empty();
+}

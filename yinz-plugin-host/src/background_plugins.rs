@@ -105,11 +105,6 @@ impl PluginBridge {
                 == right.configuration.without_caller_context()
     }
 
-    pub(crate) fn web_permission_pending(&self, id: PluginId) -> bool {
-        self.permission_requests
-            .values()
-            .any(|pending| pending.contains_plugin(id))
-    }
     pub(crate) fn cancel_web_load(&self, id: PluginId) {
         if let Some(cancel) = self.cancel_tokens.get(&id) {
             cancel.store(true, Ordering::Release);

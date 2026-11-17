@@ -41,9 +41,7 @@ impl WebRequests {
         let Some(params) = &self.params else {
             return;
         };
-        if let Some(id) = self.host.target() {
-            self.host.permission(id, bridge.web_permission_pending(id));
-        }
+        bridge.reconcile_web_permissions();
         match self.host.pulse(now) {
             Action::None => return,
             Action::Expire => {

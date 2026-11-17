@@ -248,6 +248,16 @@ impl Startup {
     }
     pub fn permission(&mut self, waiting: bool, now: Instant) {
         self.clock(now);
+        // Inspect the underlying phase: the public snapshot may currently be Paused.
+        // A remaining prompt must not mask a terminal denial after update resume.
+        if waiting
+            && matches!(
+                self.status.phase,
+                Phase::Stopped | Phase::Failed | Phase::Retrying
+            )
+        {
+            return;
+        }
         if waiting {
             self.permission.get_or_insert(now);
         } else {

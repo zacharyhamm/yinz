@@ -50,6 +50,7 @@ struct State {
     target: Option<PluginId>,
     configured: Option<yinz_types::input::layout::RunPlugin>,
     startup: Option<super::web_startup::Startup>,
+    permission_generation: Option<u64>,
     site: Option<SiteHandle>,
     instances: BTreeMap<u64, Instance>,
 }
@@ -102,6 +103,14 @@ impl WebHost {
     }
     fn refresh_in(state: &mut State, now: std::time::Instant) {
         let generation = state.target.and_then(|id| Self::selected_in(state, id));
+        // A selected parent can disappear on an executor before its cancellation message
+        // arrives. Its permission clock must never remain attached to the next parent.
+        if state.permission_generation.is_some() && state.permission_generation != generation {
+            state.permission_generation = None;
+            if let Some(startup) = &mut state.startup {
+                startup.permission(false, now);
+            }
+        }
         let published = generation.is_some_and(|generation| {
             state.instances.get(&generation).is_some_and(|i| i.loaded)
                 && state
@@ -151,16 +160,49 @@ impl WebHost {
             startup.pause(paused, std::time::Instant::now());
         }
     }
-    pub fn permission(&self, id: PluginId, waiting: bool) {
+    /// Permission recipients identify their parent even for worker requests. Validate both
+    /// incarnation and load here, atomically with publication/retirement, never by plugin ID alone.
+    pub fn permissions_pending(
+        &self,
+        id: PluginId,
+        load: u64,
+        generations: &std::collections::HashSet<u64>,
+    ) {
         let mut state = self.state();
-        if state.target == Some(id)
-            && let Some(startup) = &mut state.startup
+        if state.target != Some(id)
+            || !state
+                .startup
+                .as_ref()
+                .is_some_and(|s| s.status().load == Some(load) && !s.stopped())
         {
-            startup.permission(waiting, std::time::Instant::now());
+            return;
+        }
+        let selected = Self::selected_in(&state, id);
+        let waiting = selected.filter(|generation| generations.contains(generation));
+        state.permission_generation = waiting;
+        if let Some(startup) = &mut state.startup {
+            startup.permission(waiting.is_some(), std::time::Instant::now());
+        }
+    }
+    pub fn permission_denied(&self, id: PluginId, load: u64, generation: u64) {
+        let mut state = self.state();
+        if state.target != Some(id) || Self::selected_in(&state, id) != Some(generation) {
+            return;
+        }
+        if let Some(startup) = &mut state.startup {
+            startup.fail(
+                Some(load),
+                Some(generation),
+                yinz_types::web::ApplicationFailure::PermissionDenied,
+                std::time::Instant::now(),
+            );
         }
     }
     pub fn reset(&self, id: PluginId) {
         let mut state = self.state();
+        if state.target == Some(id) {
+            state.permission_generation = None;
+        }
         if state.target == Some(id)
             && let Some(startup) = &mut state.startup
         {
@@ -169,6 +211,9 @@ impl WebHost {
     }
     pub fn stop(&self, id: PluginId) {
         let mut state = self.state();
+        if state.target == Some(id) {
+            state.permission_generation = None;
+        }
         if state.target == Some(id)
             && let Some(startup) = &mut state.startup
         {

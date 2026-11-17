@@ -196,3 +196,74 @@ fn web_startup_retirement_refreshes_only_selected_loss_and_preserves_terminal_st
     host.retire_plugin(id);
     assert_eq!(host.status().unwrap().phase, Phase::Stopped);
 }
+
+#[test]
+fn web_startup_permission_generation_load_and_retirement_guards() {
+    use std::collections::HashSet;
+    use yinz_types::web::{ApplicationFailure as Failure, ApplicationPhase as Phase};
+    let (host, site) = host();
+    let id = PluginId::new(1);
+    host.configure(&yinz_bus::web::WebPluginParams {
+        plugin: yinz_types::input::layout::RunPluginOrAlias::RunPlugin(Default::default()),
+        site: site.clone(),
+        application: Default::default(),
+    });
+    host.begin_load(id, 1);
+    register(&host, 10);
+    register(&host, 11);
+    host.publish_page(
+        id,
+        10,
+        "/".into(),
+        crate::web_assets::freeze(b"selected".to_vec(), "text/plain; charset=utf-8"),
+    )
+    .unwrap();
+    host.loaded(id, 10);
+    let before = host.status().unwrap();
+    host.permissions_pending(id, 1, &HashSet::from([11]));
+    host.permission_denied(id, 1, 11);
+    assert_eq!(host.status().unwrap(), before);
+    host.permissions_pending(id, 1, &HashSet::from([10]));
+    assert_eq!(host.status().unwrap().phase, Phase::PermissionBlocked);
+    host.paused(true);
+    assert_eq!(host.status().unwrap().phase, Phase::Paused);
+    host.paused(false);
+    assert_eq!(host.status().unwrap().phase, Phase::PermissionBlocked);
+    host.retire(10);
+    assert_ne!(host.status().unwrap().phase, Phase::PermissionBlocked);
+    host.reset(id);
+    host.begin_load(id, 2);
+    host.publish_page(
+        id,
+        11,
+        "/".into(),
+        crate::web_assets::freeze(b"replacement".to_vec(), "text/plain; charset=utf-8"),
+    )
+    .unwrap();
+    host.loaded(id, 11);
+    let replacement = host.status().unwrap();
+    host.permissions_pending(id, 1, &HashSet::from([11]));
+    host.permission_denied(id, 1, 11);
+    host.permissions_pending(id, 2, &HashSet::from([10]));
+    host.permission_denied(id, 2, 10);
+    assert_eq!(host.status().unwrap(), replacement);
+    host.permissions_pending(id, 2, &HashSet::from([11]));
+    host.paused(true);
+    host.permission_denied(id, 2, 11);
+    // Another selected request can still be queued when a coalesced denial is delivered.
+    host.permissions_pending(id, 2, &HashSet::from([11]));
+    host.paused(false);
+    assert_eq!(host.status().unwrap().phase, Phase::Failed);
+    assert_eq!(
+        host.status().unwrap().failure,
+        Some(Failure::PermissionDenied)
+    );
+    assert_eq!(
+        host.pulse(std::time::Instant::now() + std::time::Duration::from_secs(120)),
+        crate::web_startup::Action::None
+    );
+    host.stop(id);
+    host.permissions_pending(id, 2, &HashSet::from([11]));
+    assert_eq!(host.status().unwrap().phase, Phase::Stopped);
+    assert_eq!(site.current().unwrap().generation, 11);
+}
