@@ -453,6 +453,23 @@ pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDoc
     managed.fmt();
 }
 
+fn read_regular_config(path: &Path) -> std::io::Result<String> {
+    let mut options = File::options();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let mut file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("configuration is not a regular file"));
+    }
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
+    Ok(text)
+}
+
 impl Config {
     pub fn load(
         config_path: Option<&Path>,
@@ -462,7 +479,21 @@ impl Config {
         if clean {
             return Config::from_default_assets();
         }
+        Self::load_layers(config_path, config_dir, |path| {
+            std::fs::read_to_string(path)
+        })
+    }
 
+    /// Read the session's saved layers without opening a FIFO in blocking mode.
+    pub fn load_saved(config_path: Option<&Path>, config_dir: Option<&Path>) -> ConfigResult {
+        Self::load_layers(config_path, config_dir, read_regular_config)
+    }
+
+    fn load_layers(
+        config_path: Option<&Path>,
+        config_dir: Option<&Path>,
+        read: fn(&Path) -> std::io::Result<String>,
+    ) -> ConfigResult {
         // The config *directory*, whichever file is read: the drop-ins hang off it, so a
         // one-off `--config /somewhere/else.kdl` still gets the user's `config.d`, and never
         // `/somewhere/config.d`.
@@ -473,20 +504,18 @@ impl Config {
 
         if let Some(path) = config_path {
             let default_config = Config::from_default_assets()?;
-            return Config::from_path(&path.to_path_buf(), Some(default_config)).and_then(
-                |config| {
-                    config
-                        .with_overlay_dir(overlay_dir.as_deref())
-                        .resolve_plugin_repositories(config_path, config_dir.as_deref())
-                },
-            );
+            return Config::from_path_with(path, Some(default_config), read).and_then(|config| {
+                config
+                    .with_overlay_dir_read(overlay_dir.as_deref(), read)
+                    .resolve_plugin_repositories(config_path, config_dir.as_deref())
+            });
         }
 
         let config = if let Some(ref config) = config_dir {
             let path = config.join(DEFAULT_CONFIG_FILE_NAME);
             if path.exists() {
                 let default_config = Config::from_default_assets()?;
-                Config::from_path(&path, Some(default_config))?
+                Config::from_path_with(&path, Some(default_config), read)?
             } else {
                 Config::from_default_assets()?
             }
@@ -494,7 +523,7 @@ impl Config {
             Config::from_default_assets()?
         };
         config
-            .with_overlay_dir(overlay_dir.as_deref())
+            .with_overlay_dir_read(overlay_dir.as_deref(), read)
             .resolve_plugin_repositories(config_path, config_dir.as_deref())
     }
 }
@@ -609,6 +638,14 @@ impl Config {
     /// rather than failing the whole config: a bad managed write must not brick the session.
     /// `None`, or a folder that is not there, is no overlay.
     pub fn with_overlay_dir(self, overlay_dir: Option<&Path>) -> Config {
+        self.with_overlay_dir_read(overlay_dir, |path| std::fs::read_to_string(path))
+    }
+
+    fn with_overlay_dir_read(
+        self,
+        overlay_dir: Option<&Path>,
+        read: fn(&Path) -> std::io::Result<String>,
+    ) -> Config {
         let Some(overlay_dir) = overlay_dir else {
             return self;
         };
@@ -621,8 +658,8 @@ impl Config {
             .filter(|path| path.is_file())
             .collect();
         paths.sort();
-        paths.into_iter().fold(self, |mut config, path| {
-            let text = match std::fs::read_to_string(&path) {
+        paths.into_iter().fold(self, |config, path| {
+            let text = match read(&path) {
                 Ok(text) => text,
                 Err(e) => {
                     log::error!("Skipping config drop-in {}: {}", path.display(), e);
@@ -630,17 +667,19 @@ impl Config {
                 },
             };
             // Leaf edits to a directory theme need that definition before overlay parsing.
+            let mut base = config.clone();
             if crate::editor::edits_themes(&text)
-                && let Err(error) = apply_themes(
-                    &mut config,
+                && let Err(error) = apply_themes_with(
+                    &mut base,
                     None,
                     overlay_dir.parent().map(Path::to_path_buf),
+                    read,
                 )
             {
                 log::error!("Cannot load themes for {}: {error}", path.display());
                 return config;
             }
-            match Config::from_kdl(&text, Some(config.clone())) {
+            match Config::from_kdl(&text, Some(base)) {
                 Ok(layered) => layered,
                 Err(e) => {
                     log::error!("Skipping config drop-in {}: {}", path.display(), e);
@@ -780,53 +819,49 @@ impl Config {
         }
     }
     pub fn from_path(path: &PathBuf, default_config: Option<Config>) -> ConfigResult {
+        Self::from_path_with(path, default_config, |path| std::fs::read_to_string(path))
+    }
+
+    fn from_path_with(
+        path: &Path,
+        default_config: Option<Config>,
+        read: fn(&Path) -> std::io::Result<String>,
+    ) -> ConfigResult {
         if path.extension().and_then(|extension| extension.to_str()) == Some("lua") {
             return Err(ConfigError::UnsupportedFormat(
                 "Lua configuration is no longer supported".into(),
             ));
         }
-        match File::open(path) {
-            Ok(mut file) => {
-                let mut kdl_config = String::new();
-                file.read_to_string(&mut kdl_config)
-                    .map_err(|e| ConfigError::IoPath(e, path.to_path_buf()))?;
-                match Config::from_kdl(&kdl_config, default_config) {
-                    Ok(config) => Ok(config),
-                    Err(ConfigError::KdlDeserializationError(kdl_error)) => {
-                        let error_message = match kdl_error.kind {
-                            kdl::KdlErrorKind::Context("valid node terminator") => {
-                                format!("Failed to deserialize KDL node. \nPossible reasons:\n{}\n{}\n{}\n{}",
-                                "- Missing `;` after a node name, eg. { node; another_node; }",
-                                "- Missing quotations (\") around an argument node eg. { first_node \"argument_node\"; }",
-                                "- Missing an equal sign (=) between node arguments on a title line. eg. argument=\"value\"",
-                                "- Found an extraneous equal sign (=) between node child arguments and their values. eg. { argument=\"value\" }")
-                            },
-                            _ => {
-                                String::from(kdl_error.help.unwrap_or("Kdl Deserialization Error"))
-                            },
-                        };
-                        let kdl_error = KdlError {
-                            error_message,
-                            src: Some(NamedSource::new(
-                                path.as_path().as_os_str().to_string_lossy(),
-                                kdl_config,
-                            )),
-                            offset: Some(kdl_error.span.offset()),
-                            len: Some(kdl_error.span.len()),
-                            help_message: None,
-                        };
-                        Err(ConfigError::KdlError(kdl_error))
+        let kdl_config = read(path).map_err(|error| ConfigError::IoPath(error, path.into()))?;
+        match Config::from_kdl(&kdl_config, default_config) {
+            Ok(config) => Ok(config),
+            Err(ConfigError::KdlDeserializationError(kdl_error)) => {
+                let error_message = match kdl_error.kind {
+                    kdl::KdlErrorKind::Context("valid node terminator") => {
+                        format!("Failed to deserialize KDL node. \nPossible reasons:\n{}\n{}\n{}\n{}",
+                        "- Missing `;` after a node name, eg. { node; another_node; }",
+                        "- Missing quotations (\") around an argument node eg. { first_node \"argument_node\"; }",
+                        "- Missing an equal sign (=) between node arguments on a title line. eg. argument=\"value\"",
+                        "- Found an extraneous equal sign (=) between node child arguments and their values. eg. { argument=\"value\" }")
                     },
-                    Err(ConfigError::KdlError(kdl_error)) => {
-                        Err(ConfigError::KdlError(kdl_error.add_src(
-                            path.as_path().as_os_str().to_string_lossy().to_string(),
-                            kdl_config,
-                        )))
-                    },
-                    Err(e) => Err(e),
-                }
+                    _ => String::from(kdl_error.help.unwrap_or("Kdl Deserialization Error")),
+                };
+                let kdl_error = KdlError {
+                    error_message,
+                    src: Some(NamedSource::new(
+                        path.as_os_str().to_string_lossy(),
+                        kdl_config,
+                    )),
+                    offset: Some(kdl_error.span.offset()),
+                    len: Some(kdl_error.span.len()),
+                    help_message: None,
+                };
+                Err(ConfigError::KdlError(kdl_error))
             },
-            Err(e) => Err(ConfigError::IoPath(e, path.into())),
+            Err(ConfigError::KdlError(kdl_error)) => Err(ConfigError::KdlError(
+                kdl_error.add_src(path.as_os_str().to_string_lossy().to_string(), kdl_config),
+            )),
+            Err(e) => Err(e),
         }
     }
     pub fn config_file_path(
@@ -1587,6 +1622,17 @@ pub fn apply_themes(
     cli_config_options: Option<Options>,
     config_dir: Option<PathBuf>,
 ) -> Result<Options, ConfigError> {
+    apply_themes_with(config, cli_config_options, config_dir, |path| {
+        std::fs::read_to_string(path)
+    })
+}
+
+fn apply_themes_with(
+    config: &mut Config,
+    cli_config_options: Option<Options>,
+    config_dir: Option<PathBuf>,
+    read: fn(&Path) -> std::io::Result<String>,
+) -> Result<Options, ConfigError> {
     let config_options = match cli_config_options {
         Some(cli_config_options) => config.options.merge(cli_config_options),
         None => config.options.clone(),
@@ -1599,7 +1645,9 @@ pub fn apply_themes(
             .filter(|dir| dir.exists())
     });
     if let Some(user_theme_dir) = user_theme_dir {
-        config.themes = config.themes.merge(Themes::from_dir(user_theme_dir)?);
+        config.themes = config
+            .themes
+            .merge(Themes::from_dir_with(user_theme_dir, read)?);
     }
     Ok(config_options)
 }

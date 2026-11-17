@@ -1440,6 +1440,21 @@ fn reconfigure_takes_a_fragment_and_refuses_one_that_does_not_parse() {
         }]
     );
     for write in [false, true] {
+        let fragment = "terminal { underline_offset -2; underline_thickness 1; }";
+        assert_eq!(
+            reconfigure(fragment, write).unwrap(),
+            vec![Action::Reconfigure {
+                config: fragment.to_owned(),
+                write_to_disk: write,
+            }]
+        );
+        for name in ["underline_offset", "underline_thickness"] {
+            let refused = reconfigure(&format!("terminal {{ {name} 2.0; }}"), write).unwrap_err();
+            assert!(
+                refused.contains(name) && refused.contains("-64 and 64"),
+                "{refused}"
+            );
+        }
         for offset in [-64, -2, 0, 2, 64] {
             let fragment = format!("terminal {{ baseline_offset {offset}; }}");
             assert_eq!(

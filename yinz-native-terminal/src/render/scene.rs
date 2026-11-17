@@ -25,7 +25,8 @@ mod margins;
 mod runs;
 mod units;
 
-use decorations::{push_cursor, push_decorations, push_hollow_cursor, push_hover_underline};
+use decorations::{push_cursor, push_decorations, push_hollow_cursor, Underline};
+pub(crate) use decorations::{refresh_underlines, UnderlineSpan};
 use glyphs::{push_glyphs, spill_room};
 use runs::{next_run, push_run, run_key, ShapedRun};
 use units::{mark_units, push_unit, UnitCols};
@@ -587,7 +588,21 @@ pub fn build_row(
     scratch: &mut RowScratch,
     out: &mut RowScene,
 ) {
+    build_row_with_underlines(context, cache, row, scratch, out, None);
+}
+
+pub(crate) fn build_row_with_underlines(
+    context: &RowContext<'_>,
+    cache: &mut GlyphCache,
+    row: usize,
+    scratch: &mut RowScratch,
+    out: &mut RowScene,
+    mut underlines: Option<&mut Vec<UnderlineSpan>>,
+) {
     out.clear();
+    if let Some(spans) = underlines.as_deref_mut() {
+        spans.clear();
+    }
     if row >= context.size.rows {
         return;
     }
@@ -761,17 +776,23 @@ pub fn build_row(
             }
         }
 
-        push_decorations(out, context, cell, &paint, (origin_x, origin_y), inkless);
+        push_decorations(
+            out,
+            context,
+            cell,
+            &paint,
+            (origin_x, origin_y),
+            inkless,
+            underlines.as_deref_mut(),
+        );
 
         if !composing && !inkless && context.hovered_link.is_some_and(|run| run.covers(row, col)) {
-            push_hover_underline(
-                out,
-                &paint,
-                origin_x,
-                origin_y,
-                metrics,
-                context.underline_stroke,
-            );
+            Underline {
+                origin: (origin_x, origin_y),
+                color: paint.foreground,
+                style: UNDERLINE_STRAIGHT,
+            }
+            .push(out, context, underlines.as_deref_mut());
         }
 
         if on_cursor && context.cursor_hollow {

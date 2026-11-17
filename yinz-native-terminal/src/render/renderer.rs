@@ -223,7 +223,10 @@ impl Renderer {
             &self.solid,
             &mut self.solid_rows,
             &mut self.row_scratch,
-            changes,
+            RowChanges {
+                rebuilt: scene.rebuilt_solid_rows(),
+                ..changes
+            },
             (0, 0),
             |row, out| push_solid_vertices(out, &row.rects),
         );

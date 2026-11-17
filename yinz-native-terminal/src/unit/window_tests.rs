@@ -1812,3 +1812,351 @@ fn baseline_offset_saved_file_reload_retains_inline_images_through_full_apply() 
         }
     }
 }
+
+#[test]
+fn underline_metrics_saved_reload_scales_once_and_keeps_cells_and_copy() {
+    use crate::emulation::screen_buffer::CursorShape;
+    use crate::input::composition::Preedit;
+    use crate::input::links::LinkRun;
+    use crate::testing::painter::Painter;
+    use crate::text::font::CellMetrics;
+    use yinz_types::structured_render::{
+        WireColor, ATTR_STRIKE, UNDERLINE_CURLY, UNDERLINE_DASHED, UNDERLINE_DOTTED,
+        UNDERLINE_DOUBLE, UNDERLINE_SHIFT, UNDERLINE_STRAIGHT,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.kdl");
+    let base = "system_fonts false; font_size 36; line_height 1.5;";
+    let write = |settings: &str| {
+        std::fs::write(&path, format!("terminal {{ {base} {settings} }}")).unwrap();
+    };
+    write("");
+    let opts = CliArgs {
+        config: Some(path.clone()),
+        config_dir: Some(dir.path().to_path_buf()),
+        ..Default::default()
+    };
+    let (config, options) = yinz_cli::setup::Setup::config_without_layout(&opts).unwrap();
+    let mut paints = paints_for(&config, &options);
+    let mut settings = config.terminal;
+    let (zoom, scale) = (1.1, 1.5);
+    let mut active = effective_font_options(&settings, zoom, scale);
+    let mut cache = GlyphCache::new(active.stack(1.0).unwrap());
+    let mut retained = RetainedScene::new();
+    let underline_color = [230, 15, 71];
+    let state = Painter::state(2, 12, |p| {
+        for (col, style) in [
+            UNDERLINE_STRAIGHT,
+            UNDERLINE_DOUBLE,
+            UNDERLINE_DOTTED,
+            UNDERLINE_DASHED,
+            UNDERLINE_CURLY,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            p.styled(0, col, "a", |cell| {
+                cell.attrs |= style << UNDERLINE_SHIFT;
+                cell.underline_color =
+                    WireColor::Rgb(underline_color[0], underline_color[1], underline_color[2])
+                        .pack();
+            });
+        }
+        p.wide_styled(0, 6, '😀', |cell| {
+            cell.attrs |= UNDERLINE_STRAIGHT << UNDERLINE_SHIFT
+        });
+        p.styled(0, 9, "S", |cell| cell.attrs |= ATTR_STRIKE);
+        p.links(&[(1, "https://example.com")]);
+        p.linked(1, 0, "link", 1);
+        p.cursor(1, 6, CursorShape::Underline);
+    });
+    let mut selection = LocalSelection::default();
+    selection.start(0, 5);
+    selection.extend(0, 7);
+    let range = selection.range();
+    retained.set_selection(range);
+    let expected_copy = selection.text(state.screen());
+    assert!(expected_copy
+        .as_deref()
+        .is_some_and(|text| text.contains('😀')));
+    let hover = LinkRun {
+        id: 1,
+        uri: "https://example.com".into(),
+        spans: vec![(1, 0, 3)],
+    };
+    let refresh = |retained: &mut RetainedScene,
+                   cache: &mut GlyphCache,
+                   paints: &Paints,
+                   preedit: Option<&Preedit>| {
+        retained.refresh(
+            SceneInputs {
+                state: &state,
+                phase: BlinkPhase::On,
+                paints,
+                cursor: CursorOptions::default(),
+                hovered_link: Some(&hover),
+                preedit,
+            },
+            cache,
+        )
+    };
+    refresh(&mut retained, &mut cache, &paints, None);
+    let zero = cache.metrics();
+    let zero_stroke = cache.underline_stroke();
+    assert!(
+        zero_stroke > 2,
+        "fixture must exercise unclamped negative thickness"
+    );
+    let geometry = Geometry::calculate(940, 440, 4, zero).unwrap();
+    let unadjusted = retained.flatten();
+    let generation = cache.generation();
+    let stamps = (cache.atlases().mask.stamp(), cache.atlases().color.stamp());
+    let cursor_x = (zero.width * 6) as i32;
+    let strike_x = (zero.width * 9) as i32;
+    let rects_at = |scene: &RetainedScene, row: usize, x| {
+        scene.rows()[row]
+            .rects
+            .iter()
+            .filter(|rect| rect.x == x)
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    let cursor_rects = rects_at(&retained, 1, cursor_x);
+    let strike_rects = rects_at(&retained, 0, strike_x);
+    assert!(cursor_rects.iter().any(|rect| rect.height == zero.stroke));
+    assert!(strike_rects.iter().any(|rect| rect.height == zero.stroke));
+    for (offset, thickness, delta, stroke_delta) in [
+        (-4_i32, -1, -7, -2),
+        (4, 1, 7, 2),
+        (64, 64, 106, 106),
+        (-64, -64, -106, -106),
+    ] {
+        write(&format!(
+            "underline_offset {offset}; underline_thickness {thickness};"
+        ));
+        let reload = PreparedReload::load(&opts, &active, zoom, scale).unwrap();
+        reload.apply(
+            &mut active,
+            &mut cache,
+            &mut retained,
+            &mut settings,
+            &mut paints,
+        );
+        assert_eq!(
+            (settings.underline_offset, settings.underline_thickness),
+            (Some(offset), Some(thickness))
+        );
+        let metrics = cache.metrics();
+        let expected_stroke =
+            (zero_stroke as i32 + stroke_delta).clamp(1, zero.height as i32) as u32;
+        let expected_top = (zero.underline_top as i32 + delta)
+            .clamp(0, (zero.height - expected_stroke) as i32) as u32;
+        if offset.abs() == 4 {
+            assert_eq!(
+                expected_top as i32,
+                zero.underline_top as i32 + delta,
+                "fixture must leave room for movement"
+            );
+            assert_eq!(expected_stroke as i32, zero_stroke as i32 + stroke_delta);
+        }
+        assert_eq!(
+            (metrics.underline_top, cache.underline_stroke()),
+            (expected_top, expected_stroke)
+        );
+        assert_eq!(
+            CellMetrics {
+                underline_top: zero.underline_top,
+                ..metrics
+            },
+            zero
+        );
+        let changed = Geometry::calculate(940, 440, 4, metrics).unwrap();
+        assert_eq!(changed, geometry);
+        assert!(changed.messages(Some(geometry)).is_empty());
+        assert_eq!(
+            pointer_cell((52.0, 87.0), 4, zero, state.size()),
+            pointer_cell((52.0, 87.0), 4, metrics, state.size())
+        );
+        for query in [b"\x1b[16t".as_slice(), b"\x1b[14t"] {
+            let reply = |geometry, metrics| {
+                crate::host_reply::answer(
+                    query,
+                    host_query_geometry(Some(geometry), changed.grid, metrics),
+                    &paints,
+                    None,
+                )
+            };
+            assert_eq!(reply(geometry, zero), reply(changed, metrics));
+        }
+
+        refresh(&mut retained, &mut cache, &paints, None);
+        assert!(!retained.rebuilt_everything());
+        assert!(retained.rebuilt_rows().is_empty());
+        assert_eq!(retained.rebuilt_solid_rows(), &[0, 1]);
+        let rects = &retained.rows()[0].rects;
+        for col in 0..5 {
+            let left = (col * metrics.width) as i32;
+            let strokes: Vec<_> = rects
+                .iter()
+                .filter(|rect| {
+                    rect.color == underline_color
+                        && rect.x >= left
+                        && rect.x < left + metrics.width as i32
+                })
+                .collect();
+            assert!(!strokes.is_empty(), "underline style at column {col}");
+            for rect in &strokes {
+                assert_eq!(rect.height, expected_stroke);
+                assert!(rect.y >= 0 && rect.y + rect.height as i32 <= metrics.height as i32);
+            }
+            if col == 0 {
+                assert_eq!(
+                    (strokes[0].y, strokes[0].width),
+                    (expected_top as i32, metrics.width)
+                );
+            }
+        }
+        assert!(rects.iter().any(|rect| rect.x == (6 * metrics.width) as i32
+            && rect.height == expected_stroke
+            && rect.y == expected_top as i32));
+        assert!(retained.rows()[1].rects.iter().any(|rect| rect.x == 0
+            && rect.y == (metrics.height + expected_top) as i32
+            && rect.height == expected_stroke));
+        assert_eq!(rects_at(&retained, 1, cursor_x), cursor_rects);
+        assert_eq!(rects_at(&retained, 0, strike_x), strike_rects);
+        let current = retained.flatten();
+        assert_eq!(current.glyphs, unadjusted.glyphs);
+        assert_eq!(current.color_glyphs, unadjusted.color_glyphs);
+        assert_eq!(selection.text(state.screen()), expected_copy);
+        assert_eq!(cache.generation(), generation);
+        assert_eq!(
+            (cache.atlases().mask.stamp(), cache.atlases().color.stamp()),
+            stamps
+        );
+    }
+
+    let clamped = retained.flatten().rects;
+    retained.mark_row(1);
+    write("underline_offset -64; underline_thickness -63;");
+    PreparedReload::load(&opts, &active, zoom, scale)
+        .unwrap()
+        .apply(
+            &mut active,
+            &mut cache,
+            &mut retained,
+            &mut settings,
+            &mut paints,
+        );
+    refresh(&mut retained, &mut cache, &paints, None);
+    assert_eq!(retained.rebuilt_rows(), &[1]);
+    assert_eq!(retained.rebuilt_solid_rows(), &[1]);
+    assert_eq!(retained.flatten().rects, clamped);
+
+    let live_settings = settings.clone();
+    let live_options = active.clone();
+    let live_rects = retained.flatten().rects;
+    write("underline_offset 65;");
+    assert!(PreparedReload::load(&opts, &active, zoom, scale).is_err());
+    assert_eq!(settings, live_settings);
+    assert_eq!(active, live_options);
+    assert_eq!(retained.flatten().rects, live_rects);
+
+    let overlays = dir.path().join("config.d");
+    write("underline_offset -2; underline_thickness 2;");
+    yinz_config::config::Config::write_managed_fragment(
+        &overlays,
+        "terminal { underline_offset 0; underline_thickness 0; }",
+    )
+    .unwrap();
+    PreparedReload::load(&opts, &active, zoom, scale)
+        .unwrap()
+        .apply(
+            &mut active,
+            &mut cache,
+            &mut retained,
+            &mut settings,
+            &mut paints,
+        );
+    refresh(&mut retained, &mut cache, &paints, None);
+    assert_eq!(cache.metrics(), zero);
+    assert_eq!(cache.underline_stroke(), zero_stroke);
+    assert_eq!(retained.flatten().rects, unadjusted.rects);
+    // Explicit zero and omission are equivalent, with unrelated damage already queued.
+    write("");
+    std::fs::remove_dir_all(&overlays).unwrap();
+    retained.mark_row(1);
+    PreparedReload::load(&opts, &active, zoom, scale)
+        .unwrap()
+        .apply(
+            &mut active,
+            &mut cache,
+            &mut retained,
+            &mut settings,
+            &mut paints,
+        );
+    refresh(&mut retained, &mut cache, &paints, None);
+    assert_eq!(retained.rebuilt_rows(), &[1]);
+    assert_eq!(retained.rebuilt_solid_rows(), &[1]);
+    assert_eq!(
+        (settings.underline_offset, settings.underline_thickness),
+        (None, None)
+    );
+
+    write("underline_offset -2; underline_thickness 1; baseline_offset 2; cell_width 1.5; ligatures false;");
+    PreparedReload::load(&opts, &active, zoom, scale)
+        .unwrap()
+        .apply(
+            &mut active,
+            &mut cache,
+            &mut retained,
+            &mut settings,
+            &mut paints,
+        );
+    let adjusted = cache.metrics();
+    assert_ne!(cache.generation(), generation);
+    assert!(!cache.shapes_runs());
+    assert_ne!(adjusted.baseline, zero.baseline);
+    let changed = Geometry::calculate(940, 440, 4, adjusted).unwrap();
+    assert!(changed
+        .messages(Some(geometry))
+        .iter()
+        .any(|message| matches!(message, ClientToServerMsg::TerminalResize { .. })));
+
+    let composed = Preedit::new("ni", Some((2, 2)));
+    refresh(&mut retained, &mut cache, &paints, Some(&composed));
+    assert!(retained.rebuilt_everything());
+    assert!(retained.rows()[1]
+        .rects
+        .iter()
+        .any(|rect| rect.x == (adjusted.width * 6) as i32
+            && rect.y == (adjusted.height + adjusted.underline_top) as i32
+            && rect.height == cache.underline_stroke()));
+    assert_eq!(selection.text(state.screen()), expected_copy);
+}
+
+#[test]
+fn underline_metrics_pending_redraw_waits_for_a_drawable_before_pacing() {
+    let mut pacer = Pacer::new(None);
+    let now = Instant::now();
+    let due = now + pacer.interval();
+    let usable = Some((320, 200));
+    pacer.drawn(now);
+    pacer.schedule();
+    assert_eq!(redraw_decision(&pacer, usable, now), Decision::At(due));
+    for missing in [None, Some((0, 200)), Some((320, 0))] {
+        assert_eq!(redraw_decision(&pacer, missing, now), Decision::Idle);
+        assert_eq!(redraw_decision(&pacer, missing, due), Decision::Idle);
+        pacer.schedule();
+        assert_eq!(redraw_decision(&pacer, missing, due), Decision::Idle);
+    }
+    // Restoration schedules through the same pacer as geometry refresh.
+    assert_eq!(redraw_decision(&pacer, usable, due), Decision::Now);
+    pacer.schedule();
+    pacer.drawn(due);
+    assert_eq!(redraw_decision(&pacer, usable, due), Decision::Idle);
+    pacer.schedule();
+    assert_eq!(
+        redraw_decision(&pacer, usable, due),
+        Decision::At(due + pacer.interval())
+    );
+}

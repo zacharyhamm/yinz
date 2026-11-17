@@ -12,6 +12,7 @@ use yinz_types::geometry::PercentOrFixed;
 use yinz_types::geometry::{Direction, FloatingPaneCoordinates, Resize};
 use yinz_types::input::context_menu::ContextMenu;
 use yinz_types::input::keybinds::Keybinds;
+use yinz_types::input::native_terminal::TerminalConfig;
 use yinz_types::input::plugins::PluginAliases;
 use yinz_types::keys::KeyWithModifier;
 use yinz_types::style::{
@@ -50,7 +51,7 @@ use miette::NamedSource;
 
 use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use yinz_types::command::PaneTarget;
@@ -1114,7 +1115,20 @@ fn single_top_level_block<'a>(
     Ok(first)
 }
 
+fn terminal_settings(document: &KdlDocument) -> Result<Option<TerminalConfig>, ConfigError> {
+    single_top_level_block(document, "terminal")?
+        .map(native_terminal::from_kdl)
+        .transpose()
+}
+
 impl Config {
+    /// Read the terminal settings explicitly present in a fragment, before merging.
+    pub fn terminal_settings_from_kdl(
+        fragment: &str,
+    ) -> Result<Option<TerminalConfig>, ConfigError> {
+        terminal_settings(&fragment.parse()?)
+    }
+
     pub fn from_kdl(kdl_config: &str, base_config: Option<Config>) -> Result<Config, ConfigError> {
         let mut config = base_config.unwrap_or_default();
         let kdl_config: KdlDocument = kdl_config.parse()?;
@@ -1163,9 +1177,8 @@ impl Config {
             let config_ui = UiConfig::from_kdl(kdl_ui_config)?;
             config.ui = config.ui.merge(config_ui);
         }
-        if let Some(block) = single_top_level_block(&kdl_config, "terminal")? {
-            config.terminal =
-                native_terminal::merge(&config.terminal, native_terminal::from_kdl(block)?)?;
+        if let Some(terminal) = terminal_settings(&kdl_config)? {
+            config.terminal = native_terminal::merge(&config.terminal, terminal)?;
         }
         if let Some(kdl_web) = single_top_level_block(&kdl_config, "web")? {
             let parsed_web = web::from_kdl(kdl_web)?;
@@ -1795,8 +1808,14 @@ impl Themes {
         Ok(all_themes_in_file)
     }
     pub fn from_path(path_to_theme_file: PathBuf) -> Result<Self, ConfigError> {
-        // String is the theme name
-        let kdl_config = std::fs::read_to_string(&path_to_theme_file)
+        Self::from_path_with(path_to_theme_file, |path| std::fs::read_to_string(path))
+    }
+
+    fn from_path_with(
+        path_to_theme_file: PathBuf,
+        read: fn(&Path) -> std::io::Result<String>,
+    ) -> Result<Self, ConfigError> {
+        let kdl_config = read(&path_to_theme_file)
             .map_err(|e| ConfigError::IoPath(e, path_to_theme_file.clone()))?;
         let sourced_from_external_file = true;
         Themes::from_string(&kdl_config, sourced_from_external_file).map_err(|e| match e {
@@ -1807,6 +1826,13 @@ impl Themes {
         })
     }
     pub fn from_dir(path_to_theme_dir: PathBuf) -> Result<Self, ConfigError> {
+        Self::from_dir_with(path_to_theme_dir, |path| std::fs::read_to_string(path))
+    }
+
+    pub(crate) fn from_dir_with(
+        path_to_theme_dir: PathBuf,
+        read: fn(&Path) -> std::io::Result<String>,
+    ) -> Result<Self, ConfigError> {
         let mut themes = Themes::default();
         for entry in std::fs::read_dir(&path_to_theme_dir)
             .map_err(|e| ConfigError::IoPath(e, path_to_theme_dir.clone()))?
@@ -1816,7 +1842,7 @@ impl Themes {
             if let Some(extension) = path.extension()
                 && extension == "kdl"
             {
-                themes = themes.merge(Themes::from_path(path)?);
+                themes = themes.merge(Themes::from_path_with(path, read)?);
             }
         }
         Ok(themes)

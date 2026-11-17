@@ -215,3 +215,44 @@ fn baseline_offset_optional_integer_roundtrips_without_losing_zero() {
         );
     }
 }
+
+#[test]
+fn underline_metrics_optional_integers_roundtrip_independently() {
+    let omitted: TerminalConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(
+        (omitted.underline_offset, omitted.underline_thickness),
+        (None, None)
+    );
+    for (offset, thickness) in [
+        (Some(0), None),
+        (None, Some(0)),
+        (Some(-64), Some(64)),
+        (Some(64), Some(-64)),
+    ] {
+        let config: TerminalConfig = serde_json::from_value(serde_json::json!({
+            "underline_offset": offset, "underline_thickness": thickness,
+        }))
+        .unwrap();
+        assert_eq!(
+            (config.underline_offset, config.underline_thickness),
+            (offset, thickness)
+        );
+        let serialized = serde_json::to_value(&config).unwrap();
+        assert_eq!(serialized["underline_offset"], serde_json::json!(offset));
+        assert_eq!(
+            serialized["underline_thickness"],
+            serde_json::json!(thickness)
+        );
+        assert_eq!(
+            serde_json::from_value::<TerminalConfig>(serialized).unwrap(),
+            config
+        );
+    }
+    for name in ["underline_offset", "underline_thickness"] {
+        for value in ["2.0", "true", "\"2\"", "2147483648"] {
+            assert!(
+                serde_json::from_str::<TerminalConfig>(&format!("{{{name:?}:{value}}}")).is_err()
+            );
+        }
+    }
+}

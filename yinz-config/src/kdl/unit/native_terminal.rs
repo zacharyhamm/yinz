@@ -477,3 +477,85 @@ fn baseline_offset_validation_points_at_the_setting_node() {
         );
     }
 }
+
+#[test]
+fn underline_metrics_validate_and_roundtrip_as_independent_plain_integers() {
+    assert_eq!(
+        Config::terminal_settings_from_kdl("mouse_mode false").unwrap(),
+        None
+    );
+    let empty = Config::terminal_settings_from_kdl("terminal {}")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (empty.underline_offset, empty.underline_thickness),
+        (None, None)
+    );
+    for name in ["underline_offset", "underline_thickness"] {
+        for value in [-64, -2, 0, 2, 64] {
+            let input = format!("terminal {{ {name} {value}; }}");
+            let supplied = Config::terminal_settings_from_kdl(&input).unwrap().unwrap();
+            let expected = if name == "underline_offset" {
+                (Some(value), None)
+            } else {
+                (None, Some(value))
+            };
+            assert_eq!(
+                (supplied.underline_offset, supplied.underline_thickness),
+                expected
+            );
+            let config = Config::from_kdl(&input, None).unwrap();
+            assert_eq!(config.terminal, supplied);
+            let serialized = config.to_string(false).unwrap();
+            assert_eq!(
+                Config::from_kdl(&serialized, None).unwrap().terminal,
+                supplied
+            );
+        }
+        for setting in [
+            "",
+            "-65",
+            "65",
+            "2147483648",
+            "2.5",
+            "2.0",
+            "\"2\"",
+            "true",
+            "null",
+            "2 3",
+            "value=2",
+            "(int)2",
+            "2 {}",
+            &format!("2; {name} 2"),
+        ]
+        .map(|value| format!("{name} {value}"))
+        .into_iter()
+        .chain([format!("(int){name} 2")])
+        {
+            let input = format!("terminal {{ padding 4; {setting}; opacity 0.5; }}");
+            let error = Config::from_kdl(&input, None).unwrap_err();
+            let ConfigError::KdlError(error) = error else {
+                panic!("{input}: {error:?}");
+            };
+            assert!(error.error_message.contains(name), "{input}: {error:?}");
+            let offset = error.offset.unwrap();
+            let source = &input[offset..offset + error.len.unwrap()];
+            assert!(
+                source.contains(name) && !source.contains("padding") && !source.contains("opacity"),
+                "{source:?}"
+            );
+            assert!(Config::terminal_settings_from_kdl(&input).is_err());
+        }
+    }
+    let combined = Config::terminal_settings_from_kdl(
+        "terminal { underline_offset -2; underline_thickness 1; }",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        (combined.underline_offset, combined.underline_thickness),
+        (Some(-2), Some(1))
+    );
+    assert!(Config::terminal_settings_from_kdl("terminal {}\nterminal {}").is_err());
+    assert!(Config::terminal_settings_from_kdl("terminal { underline_offset").is_err());
+}

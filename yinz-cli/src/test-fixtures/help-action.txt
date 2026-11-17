@@ -131,14 +131,16 @@ Commands:
   reconfigure                       Apply a KDL config fragment to the running session (options,
                                     keybinds, hooks, plugins). Give it as --kdl, --file, or on
                                     stdin. Changing effective native terminal cell_width,
-                                    line_height, baseline_offset, ligatures/font_ligatures or
-                                    font_features requires --write or editing the saved
-                                    configuration/drop-in for automatic file reload. An unsupported
-                                    unsaved change refuses the entire fragment, including sibling
-                                    settings. Omissions and equivalent values remain valid runtime
-                                    requests. Invalid fragments and write failures are errors. With
-                                    --write the fragment is also persisted; native windows apply it
-                                    through file reload
+                                    line_height, baseline_offset, underline_offset,
+                                    underline_thickness, ligatures/font_ligatures or font_features
+                                    requires --write or editing the saved configuration/drop-in for
+                                    file reload. An unsupported unsaved change refuses the entire
+                                    fragment, including sibling settings. Omissions and equivalent
+                                    values remain valid runtime requests. Underline values are
+                                    compared with the session's effective saved files. Invalid
+                                    fragments and write failures are errors. Native windows apply a
+                                    saved change when their file reload succeeds and the edited
+                                    layer wins
   set-hook                          Bind a hook point (agent_exit, agent_start, agent_waiting,
                                     pane_exit, session_start, context_menu) to a plugin, or unbind
                                     it with an empty url. The plugin is a url as the config spells

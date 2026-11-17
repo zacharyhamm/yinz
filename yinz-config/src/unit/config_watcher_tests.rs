@@ -161,6 +161,38 @@ fn immediately_populated_first_drop_in_is_loaded_after_watch_registration() {
 }
 
 #[test]
+fn underline_metrics_managed_writes_reload_and_recover_after_invalid_main_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let main = root.join("config.kdl");
+    let drop_ins = root.join("config.d");
+    std::fs::create_dir(&drop_ins).unwrap();
+    let original = "terminal { underline_offset -2; underline_thickness 1; }";
+    std::fs::write(&main, original).unwrap();
+    let watching = Watching::start(main.clone(), root.clone());
+    let expect = |offset, thickness| {
+        watching.changes.wait_until(
+            "effective underline metrics after saved reload",
+            WAIT,
+            |loaded| {
+                let terminal = &loaded.as_ref()?.terminal;
+                ((terminal.underline_offset, terminal.underline_thickness)
+                    == (Some(offset), Some(thickness)))
+                    .then_some(())
+            },
+        );
+    };
+    Config::write_managed_fragment(&drop_ins, "terminal { underline_thickness -2; }").unwrap();
+    expect(-2, -2);
+
+    std::fs::write(&main, "terminal { underline_offset 65; }").unwrap();
+    Config::write_managed_fragment(&drop_ins, "terminal { underline_offset 0; }").unwrap();
+    assert!(Config::load(Some(&main), Some(&root), false).is_err());
+    std::fs::write(&main, original).unwrap();
+    expect(0, -2);
+}
+
+#[test]
 fn empty_first_drop_in_directory_is_watched_before_a_later_file_write() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();

@@ -545,6 +545,8 @@ fn reconfigure_help_explains_saved_native_settings_and_atomic_refusal() {
         "cell_width",
         "line_height",
         "baseline_offset",
+        "underline_offset",
+        "underline_thickness",
         "ligatures/font_ligatures",
         "font_features",
         "requires --write",
@@ -552,7 +554,9 @@ fn reconfigure_help_explains_saved_native_settings_and_atomic_refusal() {
         "entire fragment",
         "including sibling settings",
         "Omissions and equivalent values remain valid runtime requests",
-        "native windows apply it through file reload",
+        "session's effective saved files",
+        "when their file reload succeeds and the edited layer wins",
+        "Writes the session's managed drop-in",
         "write failures are errors",
     ] {
         assert!(help.contains(guidance), "missing {guidance}: {help}");

@@ -2,6 +2,7 @@
 use super::*;
 use crate::render::atlas::GlyphAtlas;
 use crate::render::scene::test_helpers::Scene;
+use crate::text::font::CellChange;
 use glutin::prelude::*;
 use std::num::NonZeroU32;
 
@@ -176,7 +177,16 @@ fn font_pixels(
         },
         cache,
     );
-    renderer.draw_retained(retained, cache.atlases(), (768, 384), Frame::default());
+    draw_and_read(renderer, retained, cache.atlases(), (768, 384))
+}
+
+fn draw_and_read(
+    renderer: &mut Renderer,
+    retained: &RetainedScene,
+    atlases: Atlases<'_>,
+    target: (u32, u32),
+) -> Vec<u8> {
+    renderer.draw_retained(retained, atlases, target, Frame::default());
     let mut pixels = vec![0; 768 * 384 * 4];
     unsafe {
         renderer.gl.read_pixels(
@@ -1181,7 +1191,10 @@ fn baseline_offset_full_apply_equivalent_reloads_keep_rows_and_gpu_uploads() {
                     // Verify equivalence includes placement and distinct style
                     // fitting, independently of the regular metric comparison.
                     let mut probe = fixture_cache(&active);
-                    assert_eq!(!probe.update_cell(&requested), equivalent);
+                    assert_eq!(
+                        probe.update_cell(&requested) == CellChange::Equivalent,
+                        equivalent
+                    );
                     let before = uploads(renderer);
                     let generation = cache.generation();
                     let stamps = (cache.atlases().mask.stamp(), cache.atlases().color.stamp());
@@ -1802,15 +1815,15 @@ fn baseline_offset_atlas_retry_images(renderer: &mut Renderer, change: &str, ord
         "unheld" => held_regions.clear(),
         "width" => {
             options.cell.cell_width = 1.5;
-            assert!(cache.update_cell(&options));
+            assert_eq!(cache.update_cell(&options), CellChange::GlyphPlacement);
         },
         "height" => {
             options.cell.line_height = 1.5;
-            assert!(cache.update_cell(&options));
+            assert_eq!(cache.update_cell(&options), CellChange::GlyphPlacement);
         },
         "baseline" => {
             options.cell.baseline_offset = 2.0;
-            assert!(cache.update_cell(&options));
+            assert_eq!(cache.update_cell(&options), CellChange::GlyphPlacement);
         },
         "unchanged" => {},
         _ => unreachable!(),
@@ -1959,6 +1972,308 @@ fn baseline_offset_atlas_retry_text_only_renewal_retains_image_resources() {
     with_renderer(|renderer| {
         for change in ["unchanged", "baseline"] {
             baseline_offset_atlas_retry_images(renderer, change, false);
+        }
+    });
+}
+
+#[test]
+fn underline_metrics_saved_reload_updates_only_solids_and_survives_skipped_draws() {
+    use crate::emulation::{color::Paints, selection::Selection, terminal::TerminalState};
+    use crate::render::scene::{BlinkPhase, CursorOptions, SceneInputs};
+    use crate::testing::painter::Painter;
+    use crate::window::{effective_font_options, refresh_drawable, PreparedReload};
+    use yinz_cli::args::CliArgs;
+    use yinz_types::structured_render::{WireColor, UNDERLINE_SHIFT, UNDERLINE_STRAIGHT};
+
+    with_renderer(|renderer| {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.kdl");
+        let write = |settings: &str| {
+            std::fs::write(
+                &path,
+                format!("terminal {{ system_fonts false; {settings} }}"),
+            )
+            .unwrap();
+        };
+        write("");
+        let opts = CliArgs {
+            config: Some(path.clone()),
+            config_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        let mut settings = yinz_cli::setup::Setup::config_without_layout(&opts)
+            .unwrap()
+            .0
+            .terminal;
+        let mut paints = Paints::default();
+        let (zoom, scale) = (1.15, 1.25);
+        let mut active = effective_font_options(&settings, zoom, scale);
+        let mut cache = fixture_cache(&active);
+        let mut state = baseline_offset_image_state();
+        let red = [245, 37, 81, 255];
+        Painter::apply(&mut state, |p| {
+            p.styled(0, 8, " ", |cell| {
+                cell.attrs |= UNDERLINE_STRAIGHT << UNDERLINE_SHIFT;
+                cell.underline_color = WireColor::Rgb(red[0], red[1], red[2]).pack();
+            });
+        });
+        let selection = Selection::at(0, 3).extended_to(0, 4);
+        let copied = selection.text(state.screen());
+        let mut retained = RetainedScene::new();
+        retained.set_selection(Some(selection));
+        let target = (768, 384);
+        let refresh = |size,
+                       scene: &mut RetainedScene,
+                       state: &TerminalState,
+                       paints: &Paints,
+                       cache: &mut crate::render::atlas::GlyphCache| {
+            refresh_drawable(
+                size,
+                scene,
+                SceneInputs {
+                    state,
+                    phase: BlinkPhase::On,
+                    paints,
+                    cursor: CursorOptions::default(),
+                    hovered_link: None,
+                    preedit: None,
+                },
+                cache,
+            )
+        };
+        let uploads = |renderer: &Renderer| {
+            [
+                &renderer.solid_rows,
+                &renderer.glyph_rows,
+                &renderer.color_rows,
+            ]
+            .map(|rows| (rows.whole_uploads, rows.sub_uploads))
+        };
+        let atlas_stamps = |cache: &crate::render::atlas::GlyphCache| {
+            (cache.atlases().mask.stamp(), cache.atlases().color.stamp())
+        };
+        let image_resources = baseline_offset_image_resources;
+
+        assert_eq!(
+            refresh(Some(target), &mut retained, &state, &paints, &mut cache),
+            Some(target)
+        );
+        let original = draw_and_read(renderer, &retained, cache.atlases(), target);
+        let metrics = cache.metrics();
+        let x = 8 * metrics.width + metrics.width / 2;
+        assert_eq!(
+            baseline_offset_atlas_retry_pixel(&original, x, metrics.underline_top),
+            red
+        );
+        let original_uploads = uploads(renderer);
+        let generation = cache.generation();
+        let font = cache.primary_of(crate::text::font::FaceStyle::Regular);
+        let entries = cache.entries();
+        let runs = cache.shaped_runs();
+        let stamps = atlas_stamps(&cache);
+        let images = image_resources(renderer);
+        assert!(!images.vertices.is_empty());
+        let row = retained.rows()[0].glyphs.clone();
+        for (fragment, offset) in [
+            ("underline_offset 0; underline_thickness 0;", 0),
+            ("underline_offset -4; underline_thickness 1;", -4),
+        ] {
+            write(fragment);
+            PreparedReload::load(&opts, &active, zoom, scale)
+                .unwrap()
+                .apply(
+                    &mut active,
+                    &mut cache,
+                    &mut retained,
+                    &mut settings,
+                    &mut paints,
+                );
+            refresh(Some(target), &mut retained, &state, &paints, &mut cache).unwrap();
+            let live = draw_and_read(renderer, &retained, cache.atlases(), target);
+            let uploaded = uploads(renderer);
+            assert!(!retained.rebuilt_everything());
+            assert!(retained.rebuilt_rows().is_empty());
+            assert_eq!(cache.generation(), generation);
+            assert_eq!(
+                cache.primary_of(crate::text::font::FaceStyle::Regular),
+                font
+            );
+            assert_eq!((cache.entries(), cache.shaped_runs()), (entries, runs));
+            assert_eq!(atlas_stamps(&cache), stamps);
+            assert_eq!(image_resources(renderer), images);
+            assert_eq!(uploaded[1..], original_uploads[1..]);
+            assert_eq!(retained.rows()[0].glyphs, row);
+            if offset == 0 {
+                assert_eq!(uploaded[0], original_uploads[0]);
+                assert!(retained.rebuilt_solid_rows().is_empty());
+                assert_eq!(live, original);
+            } else {
+                assert_ne!(uploaded[0], original_uploads[0]);
+                assert_eq!(retained.rebuilt_solid_rows(), &[0]);
+                let top = metrics.underline_top - 6;
+                assert_eq!(cache.metrics().underline_top, top);
+                assert_eq!(baseline_offset_atlas_retry_pixel(&live, x, top), red);
+                assert_ne!(baseline_offset_atlas_retry_pixel(&original, x, top), red);
+            }
+        }
+
+        let prior = draw_and_read(renderer, &retained, cache.atlases(), target);
+        let prior_uploads = uploads(renderer);
+        let prior_row = retained.rows()[0].rects.clone();
+        let dirty_color = [17, 232, 177, 255];
+        let damage = Painter::applied(&mut state, |p| {
+            p.styled(2, 7, " ", |cell| {
+                cell.bg = WireColor::Rgb(dirty_color[0], dirty_color[1], dirty_color[2]).pack()
+            });
+        })
+        .damage;
+        retained.mark(&damage);
+        write("underline_offset -7; underline_thickness 2;");
+        PreparedReload::load(&opts, &active, zoom, scale)
+            .unwrap()
+            .apply(
+                &mut active,
+                &mut cache,
+                &mut retained,
+                &mut settings,
+                &mut paints,
+            );
+        for skipped in [None, Some((0, target.1)), Some((target.0, 0))] {
+            assert_eq!(
+                refresh(skipped, &mut retained, &state, &paints, &mut cache),
+                None
+            );
+            assert_eq!(retained.rows()[0].rects, prior_row);
+            assert_eq!(uploads(renderer), prior_uploads);
+        }
+        assert_eq!(
+            refresh(Some(target), &mut retained, &state, &paints, &mut cache),
+            Some(target)
+        );
+        assert!(!retained.rebuilt_everything());
+        assert_eq!(retained.rebuilt_solid_rows(), &[0, 2]);
+        assert_eq!(retained.rebuilt_rows(), &[2]);
+        let live = draw_and_read(renderer, &retained, cache.atlases(), target);
+        let spot = (7 * metrics.width + 1, 2 * metrics.height + 1);
+        let top = metrics.underline_top - 10;
+        assert_eq!(cache.metrics().underline_top, top);
+        for (point, color) in [((x, top), red), (spot, dirty_color)] {
+            assert_ne!(
+                baseline_offset_atlas_retry_pixel(&prior, point.0, point.1),
+                color
+            );
+            assert_eq!(
+                baseline_offset_atlas_retry_pixel(&live, point.0, point.1),
+                color
+            );
+        }
+        assert_eq!(atlas_stamps(&cache), stamps);
+        assert_eq!(image_resources(renderer), images);
+        assert_eq!(selection.text(state.screen()), copied);
+
+        let mut fresh = RetainedScene::new();
+        fresh.set_selection(Some(selection));
+        let mut fresh_cache = fixture_cache(&active);
+        refresh(Some(target), &mut fresh, &state, &paints, &mut fresh_cache).unwrap();
+        assert_eq!(
+            live,
+            draw_and_read(renderer, &fresh, fresh_cache.atlases(), target)
+        );
+    });
+}
+
+#[test]
+fn underline_metrics_repeated_updates_preserve_order_over_missing_glyph_boxes() {
+    use crate::testing::painter::Painter;
+    use crate::window::{apply_fonts, effective_font_options, prepare_fonts};
+    use yinz_config::config::Config;
+    use yinz_types::structured_render::{
+        WireColor, UNDERLINE_DOTTED, UNDERLINE_SHIFT, UNDERLINE_STRAIGHT,
+    };
+    with_renderer(|renderer| {
+        let settings = |suffix: &str| {
+            Config::from_kdl(
+                &format!("terminal {{ system_fonts false; {suffix} }}"),
+                None,
+            )
+            .unwrap()
+            .terminal
+        };
+        let mut active = effective_font_options(&settings(""), 1.0, 1.0);
+        let mut cache = fixture_cache(&active);
+        let mut retained = RetainedScene::new();
+        let line_color = [158, 28, 233, 255];
+        let box_color = [242, 151, 77, 255];
+        let dotted_color = [6, 248, 113];
+        let missing_style = |cell: &mut yinz_types::structured_render::WireCell| {
+            cell.attrs |= UNDERLINE_STRAIGHT << UNDERLINE_SHIFT;
+            cell.fg = WireColor::Rgb(box_color[0], box_color[1], box_color[2]).pack();
+            cell.underline_color =
+                WireColor::Rgb(line_color[0], line_color[1], line_color[2]).pack();
+        };
+        let state = Painter::state(4, 12, |p| {
+            p.styled(0, 0, "\u{10fffd}", missing_style);
+            p.styled(0, 1, " ", |cell| {
+                cell.attrs |= UNDERLINE_DOTTED << UNDERLINE_SHIFT;
+                cell.underline_color =
+                    WireColor::Rgb(dotted_color[0], dotted_color[1], dotted_color[2]).pack();
+            });
+            p.group_styled(0, 4, &[("a", 1), ("\u{10fffd}", 1)], missing_style);
+        });
+        let mut previous = font_pixels(renderer, &mut retained, &state, &mut cache);
+        let metrics = cache.metrics();
+        let middle = metrics.height / 2;
+        let box_top = metrics.height / 8 + metrics.stroke;
+        let dotted_count = |retained: &RetainedScene| {
+            retained.rows()[0]
+                .rects
+                .iter()
+                .filter(|rect| rect.color == dotted_color)
+                .count()
+        };
+        let mut counts = vec![dotted_count(&retained)];
+        let mut expected_frames = Vec::new();
+        for (y, thickness) in [(middle, 2), (middle - 2, -3), (middle + 2, 3)] {
+            let offset = y as i32 - metrics.underline_top as i32;
+            let requested = effective_font_options(
+                &settings(&format!(
+                    "underline_offset {offset}; underline_thickness {thickness};"
+                )),
+                1.0,
+                1.0,
+            );
+            let update = prepare_fonts(&active, &requested).unwrap();
+            apply_fonts(&mut active, &mut cache, &mut retained, requested, update);
+            let live = font_pixels(renderer, &mut retained, &state, &mut cache);
+            assert!(retained.rebuilt_rows().is_empty());
+            assert_eq!(retained.rebuilt_solid_rows(), &[0]);
+            counts.push(dotted_count(&retained));
+            for column in [0, 5] {
+                let x = column * metrics.width + metrics.stroke;
+                assert_eq!(
+                    baseline_offset_atlas_retry_pixel(&live, x, box_top),
+                    box_color
+                );
+                assert_eq!(baseline_offset_atlas_retry_pixel(&live, x, y), line_color);
+            }
+            assert_ne!(live, previous);
+            previous = live.clone();
+            expected_frames.push((active.clone(), live));
+        }
+        assert!(
+            counts.windows(2).any(|pair| pair[0] != pair[1]),
+            "{counts:?}"
+        );
+        for (options, warm) in expected_frames {
+            assert_eq!(
+                warm,
+                font_pixels(
+                    renderer,
+                    &mut RetainedScene::new(),
+                    &state,
+                    &mut fixture_cache(&options)
+                )
+            );
         }
     });
 }

@@ -4,6 +4,7 @@ use crate::render::scene::test_helpers::Scene;
 use crate::render::scene::BlinkPhase;
 use crate::render::scene::SceneInputs;
 use crate::testing::painter::Painter;
+use crate::text::font::CellChange;
 use crate::text::font::{FontStack, DEFAULT_FONT_SIZE};
 use yinz_types::structured_render::{
     FrameBuilder, GraphicsMedium, GraphicsRecord, GRAPHICS_FORMAT_RGBA8,
@@ -557,7 +558,7 @@ fn cell_metrics_generation_refreshes_retained_rows_and_selection_rectangles() {
             },
             ..options.clone()
         };
-        assert!(cache.update_cell(&options));
+        assert_eq!(cache.update_cell(&options), CellChange::GlyphPlacement);
         // No explicit damage: the renewed cache generation must invalidate retained rows.
         refreshed(&mut retained, &state, &mut cache);
         assert!(retained.rebuilt_everything());
@@ -619,7 +620,10 @@ fn cell_metrics_retained_clusters_refresh_sprites_and_keep_copy() {
         };
         let changed = cache.update_cell(&requested);
         refreshed(&mut retained, &state, &mut cache);
-        assert_eq!(retained.rebuilt_everything(), changed);
+        assert_eq!(
+            retained.rebuilt_everything(),
+            changed == CellChange::GlyphPlacement
+        );
         let live = retained.flatten();
         for (text, budget) in [("e\u{301}", 1), ("👩‍💻", 2), ("👍🏽", 2)] {
             let ClusterLookup::Sprite(sprite) =
@@ -689,7 +693,7 @@ fn baseline_offset_retains_kitty_sixel_and_held_image_placements() {
         let before = cache.generation();
         let mut requested = options.clone();
         requested.cell.baseline_offset = offset;
-        assert!(cache.update_cell(&requested));
+        assert_eq!(cache.update_cell(&requested), CellChange::GlyphPlacement);
         refreshed(&mut retained, &state, &mut cache);
         assert_ne!(cache.generation(), before);
         assert!(retained.rebuilt_everything());
@@ -736,11 +740,11 @@ fn baseline_offset_image_placement_inputs_still_refresh() {
         match change {
             "width" => {
                 options.cell.cell_width = 1.5;
-                assert!(cache.update_cell(&options));
+                assert_eq!(cache.update_cell(&options), CellChange::GlyphPlacement);
             },
             "height" => {
                 options.cell.line_height = 1.5;
-                assert!(cache.update_cell(&options));
+                assert_eq!(cache.update_cell(&options), CellChange::GlyphPlacement);
             },
             "move" => Painter::apply(&mut state, |p| {
                 p.graphics(&[Place::of(1, 32, 8).at(1, 3).record()])
@@ -931,17 +935,17 @@ fn baseline_offset_atlas_retry_change(change: &str, ordinary: bool, retry: bool)
         }),
         "width" => {
             options.cell.cell_width = 1.5;
-            assert!(cache.update_cell(&options));
+            assert_eq!(cache.update_cell(&options), CellChange::GlyphPlacement);
         },
         "height" => {
             options.cell.line_height = 1.5;
-            assert!(cache.update_cell(&options));
+            assert_eq!(cache.update_cell(&options), CellChange::GlyphPlacement);
         },
         "held" => retained.set_held_out(baseline_offset_atlas_retry_held()),
         "unheld" => retained.set_held_out(vec![]),
         "baseline" => {
             options.cell.baseline_offset = 2.0;
-            assert!(cache.update_cell(&options));
+            assert_eq!(cache.update_cell(&options), CellChange::GlyphPlacement);
         },
         "unchanged" => {},
         _ => unreachable!(),

@@ -589,7 +589,7 @@ fn baseline_offset_and_cell_metrics_invalidate_rasters_clusters_sprites_and_both
             },
             ..options.clone()
         };
-        assert!(cache.update_cell(&options));
+        assert_eq!(cache.update_cell(&options), CellChange::GlyphPlacement);
         assert_ne!(cache.generation(), generation);
         assert_ne!(cache.mask.stamp().identity, stamps.0.identity);
         assert_ne!(cache.color.stamp().identity, stamps.1.identity);
@@ -618,14 +618,17 @@ fn baseline_offset_and_cell_metrics_invalidate_rasters_clusters_sprites_and_both
     }
     let generation = cache.generation();
     let stamps = (cache.mask.stamp(), cache.color.stamp());
-    assert!(!cache.update_cell(&FontOptions {
-        cell: CellAdjust {
-            cell_width: 1.001,
-            line_height: 1.001,
-            ..Default::default()
-        },
-        ..options
-    }));
+    assert_eq!(
+        cache.update_cell(&FontOptions {
+            cell: CellAdjust {
+                cell_width: 1.001,
+                line_height: 1.001,
+                ..Default::default()
+            },
+            ..options
+        }),
+        CellChange::Equivalent
+    );
     assert_eq!(cache.generation(), generation);
     assert_eq!((cache.mask.stamp(), cache.color.stamp()), stamps);
 }
@@ -732,7 +735,7 @@ fn baseline_offset_clamped_equivalent_changes_retain_warmed_resources() {
         cache.shaped_clusters(),
     );
     options.cell.baseline_offset = 63.0;
-    assert!(!cache.update_cell(&options));
+    assert_eq!(cache.update_cell(&options), CellChange::Equivalent);
     assert_eq!(
         (
             cache.generation(),

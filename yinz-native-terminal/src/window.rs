@@ -11,7 +11,7 @@ use crate::render::renderer::{Frame, Renderer};
 use crate::render::retained::RetainedScene;
 use crate::render::scene::{BlinkPhase, CursorOptions, SceneInputs};
 use crate::session::{self, Recorder, Sender};
-use crate::text::font::{points_to_pixels, FontOptions};
+use crate::text::font::{points_to_pixels, CellChange, FontOptions};
 use glutin::config::ConfigTemplateBuilder;
 use glutin::context::PossiblyCurrentContext;
 use glutin::display::GetGlDisplay;
@@ -78,6 +78,14 @@ struct Surfaces {
     surface: Surface<WindowSurface>,
     window: Window,
 }
+
+impl Surfaces {
+    fn size(&self) -> (u32, u32) {
+        let size = self.window.inner_size();
+        (size.width, size.height)
+    }
+}
+
 struct App {
     surfaces: Option<Surfaces>,
     proxy: winit::event_loop::EventLoopProxy<()>,
@@ -201,7 +209,8 @@ pub(crate) fn font_options(settings: &TerminalConfig, zoom: f32) -> FontOptions 
             line_height: settings.line_height.unwrap_or(1.0),
             cell_width: settings.cell_width.unwrap_or(1.0),
             baseline_offset: settings.baseline_offset.unwrap_or(0) as f32 * zoom,
-            ..Default::default()
+            underline_offset: settings.underline_offset.unwrap_or(0) as f32 * zoom,
+            underline_thickness: settings.underline_thickness.unwrap_or(0) as f32 * zoom,
         },
         features: font_features(settings),
     }
@@ -297,7 +306,7 @@ pub(crate) fn apply_fonts(
             if shaping_changed {
                 cache.update_shaping(&requested);
             }
-            if !changed && !shaping_changed {
+            if changed != CellChange::GlyphPlacement && !shaping_changed {
                 *active = requested;
                 return;
             }
@@ -317,16 +326,80 @@ pub(crate) fn apply_settings(
     next_settings: TerminalConfig,
     next_paints: Paints,
 ) {
-    // apply_fonts owns baseline invalidation, including clamping and style
-    // fitting. Preserve its no-op decision without ignoring other settings or
-    // clearing damage already queued by fonts/terminal content.
+    // Font metrics determine baseline and underline damage, including clamping.
+    // Keep other settings and queued font/terminal damage in the comparison.
     let mut comparison = settings.clone();
     comparison.baseline_offset = next_settings.baseline_offset;
+    comparison.underline_offset = next_settings.underline_offset;
+    comparison.underline_thickness = next_settings.underline_thickness;
     if comparison != next_settings || *paints != next_paints {
         retained.mark_everything();
     }
     *settings = next_settings;
     *paints = next_paints;
+}
+
+pub(crate) struct PreparedReload {
+    settings: TerminalConfig,
+    paints: Paints,
+    requested: FontOptions,
+    update: FontUpdate,
+}
+
+impl PreparedReload {
+    pub(crate) fn load(
+        opts: &CliArgs,
+        active: &FontOptions,
+        zoom: f32,
+        scale: f64,
+    ) -> Result<Self> {
+        let (config, options) = yinz_cli::setup::Setup::config_without_layout(opts)
+            .map_err(|error| anyhow!("{error}"))
+            .context("reload native terminal configuration")?;
+        let requested = effective_font_options(&config.terminal, zoom, scale);
+        let update = prepare_fonts(active, &requested)?;
+        Ok(Self {
+            paints: paints_for(&config, &options),
+            settings: config.terminal,
+            requested,
+            update,
+        })
+    }
+
+    pub(crate) fn apply(
+        self,
+        active: &mut FontOptions,
+        cache: &mut GlyphCache,
+        retained: &mut RetainedScene,
+        settings: &mut TerminalConfig,
+        paints: &mut Paints,
+    ) {
+        apply_fonts(active, cache, retained, self.requested, self.update);
+        apply_settings(settings, paints, retained, self.settings, self.paints);
+    }
+}
+
+fn drawable_size(size: Option<(u32, u32)>) -> Option<(u32, u32)> {
+    size.filter(|&(width, height)| width > 0 && height > 0)
+}
+
+pub(crate) fn refresh_drawable(
+    size: Option<(u32, u32)>,
+    retained: &mut RetainedScene,
+    inputs: SceneInputs<'_>,
+    cache: &mut GlyphCache,
+) -> Option<(u32, u32)> {
+    let size = drawable_size(size)?;
+    retained.refresh(inputs, cache);
+    Some(size)
+}
+
+fn redraw_decision(pacer: &Pacer, size: Option<(u32, u32)>, now: Instant) -> Decision {
+    if drawable_size(size).is_some() {
+        pacer.decide(now)
+    } else {
+        Decision::Idle
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -684,38 +757,20 @@ impl App {
         })
     }
     fn reload(&mut self) -> Result<()> {
-        let loaded = yinz_cli::setup::Setup::config_without_layout(&self.opts)
-            .map_err(|error| anyhow!("{error}"))
-            .context("reload native terminal configuration");
-        let (config, options) = match loaded {
-            Ok(loaded) => loaded,
-            Err(error) => {
-                log::error!("retaining working native configuration: {error:#}");
-                return Ok(());
-            },
-        };
-        let requested = effective_font_options(&config.terminal, self.zoom, self.scale);
-        let replacement = match prepare_fonts(&self.active_fonts, &requested) {
-            Ok(replacement) => replacement,
-            Err(error) => {
-                log::error!("retaining working native configuration: {error:#}");
-                return Ok(());
-            },
-        };
-        let paints = paints_for(&config, &options);
-        apply_fonts(
+        let reload =
+            match PreparedReload::load(&self.opts, &self.active_fonts, self.zoom, self.scale) {
+                Ok(reload) => reload,
+                Err(error) => {
+                    log::error!("retaining working native configuration: {error:#}");
+                    return Ok(());
+                },
+            };
+        reload.apply(
             &mut self.active_fonts,
             &mut self.cache,
             &mut self.retained,
-            requested,
-            replacement,
-        );
-        apply_settings(
             &mut self.settings,
             &mut self.paints,
-            &mut self.retained,
-            config.terminal,
-            paints,
         );
         if let Some(surfaces) = &self.surfaces {
             surfaces
@@ -863,7 +918,10 @@ impl App {
                 opacity: self.settings.opacity.unwrap_or(1.0),
                 mode: yinz_types::input::native_terminal::OpacityMode::Background,
             });
-        self.retained.refresh(
+        let size = self.surfaces.as_ref().map(Surfaces::size);
+        let Some(size) = refresh_drawable(
+            size,
+            &mut self.retained,
             SceneInputs {
                 state: &self.state,
                 phase: self.blink,
@@ -887,17 +945,15 @@ impl App {
                 preedit: preedit.as_ref(),
             },
             &mut self.cache,
-        );
+        ) else {
+            return Ok(());
+        };
         let padding = self.padding() as i32;
         if let Some(surfaces) = &mut self.surfaces {
-            let size = surfaces.window.inner_size();
-            if size.width == 0 || size.height == 0 {
-                return Ok(());
-            }
             surfaces.renderer.draw_retained(
                 &self.retained,
                 self.cache.atlases(),
-                (size.width, size.height),
+                size,
                 Frame {
                     origin: (padding, padding),
                     ..Default::default()
@@ -917,8 +973,8 @@ impl App {
                 .surface
                 .swap_buffers(&surfaces.context)
                 .context("present native terminal frame")?;
+            self.pacer.drawn(Instant::now());
         }
-        self.pacer.drawn(Instant::now());
         Ok(())
     }
     fn event(&mut self, event: WindowEvent, event_loop: &ActiveEventLoop) -> Result<()> {
@@ -1264,7 +1320,7 @@ impl ApplicationHandler<()> for App {
             self.pacer.schedule();
         }
         let mut wake = self.next_blink;
-        match self.pacer.decide(now) {
+        match redraw_decision(&self.pacer, self.surfaces.as_ref().map(Surfaces::size), now) {
             Decision::Now => {
                 if let Some(surfaces) = &self.surfaces {
                     surfaces.window.request_redraw();

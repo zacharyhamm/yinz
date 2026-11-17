@@ -50,6 +50,10 @@ pub struct TerminalConfig {
     pub cell_width: Option<f32>,
     /// Logical pixels, positive downwards; KDL accepts -64..=64.
     pub baseline_offset: Option<i32>,
+    /// Logical pixels, positive downwards; KDL accepts -64..=64.
+    pub underline_offset: Option<i32>,
+    /// Logical pixels added to the font stroke; KDL accepts -64..=64.
+    pub underline_thickness: Option<i32>,
     pub padding: Option<f32>,
     pub opacity: Option<f32>,
     pub blur: Option<bool>,

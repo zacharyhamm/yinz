@@ -6,8 +6,8 @@ use crate::input::links::LinkRun;
 use crate::render::atlas::GlyphCache;
 use crate::render::scene::SceneInputs;
 use crate::render::scene::{
-    self, CursorOptions, HeldOut, ImageKey, ImageQuad, PixelRect, RowContext, RowScene, RowScratch,
-    Transparency,
+    self, CursorOptions, HeldOut, ImageKey, ImageQuad, PixelRect, Rect, RowContext, RowScene,
+    RowScratch, Transparency, UnderlineSpan,
 };
 use crate::text::font::CellMetrics;
 use std::time::Instant;
@@ -26,6 +26,9 @@ pub struct RetainedScene {
     transparency: Transparency,
     contrast: Contrast,
     rows: Vec<RowScene>,
+    underline_spans: Vec<Vec<UnderlineSpan>>,
+    underline_metrics: Option<(u32, u32)>,
+    rect_scratch: Vec<Rect>,
     dirty: Vec<bool>,
     everything: bool,
     images: Vec<ImageQuad>,
@@ -40,6 +43,7 @@ pub struct RetainedScene {
     scratch: RowScratch,
     rebuilt_everything: bool,
     rebuilt_rows: Vec<usize>,
+    rebuilt_solid_rows: Vec<usize>,
 }
 
 impl Default for RetainedScene {
@@ -58,6 +62,9 @@ impl RetainedScene {
             transparency: Transparency::OPAQUE,
             contrast: Contrast::new(1.0),
             rows: Vec::new(),
+            underline_spans: Vec::new(),
+            underline_metrics: None,
+            rect_scratch: Vec::new(),
             dirty: Vec::new(),
             everything: true,
             images: Vec::new(),
@@ -72,6 +79,7 @@ impl RetainedScene {
             scratch: RowScratch::default(),
             rebuilt_everything: true,
             rebuilt_rows: Vec::new(),
+            rebuilt_solid_rows: Vec::new(),
         }
     }
 
@@ -172,6 +180,10 @@ impl RetainedScene {
         &self.rebuilt_rows
     }
 
+    pub(crate) fn rebuilt_solid_rows(&self) -> &[usize] {
+        &self.rebuilt_solid_rows
+    }
+
     pub fn mark_everything(&mut self) {
         self.everything = true;
     }
@@ -230,7 +242,13 @@ impl RetainedScene {
         self.height = height;
         self.clear = context.clear;
         self.rows.resize_with(context.size.rows, RowScene::default);
+        self.underline_spans
+            .resize_with(context.size.rows, Vec::new);
         self.dirty.resize(context.size.rows, true);
+        let stroke = cache.underline_stroke();
+        let underline_metrics = (context.metrics.underline_top, stroke);
+        let underline_changed =
+            self.underline_metrics.replace(underline_metrics) != Some(underline_metrics);
 
         // Images use the cell grid, independent of text baseline/decorations.
         let placed = (
@@ -251,15 +269,35 @@ impl RetainedScene {
         }
 
         self.rebuilt_rows.clear();
+        self.rebuilt_solid_rows.clear();
         self.rebuilt_everything = self.everything;
         for row in 0..self.rows.len() {
             if !(self.everything || self.dirty[row]) {
+                if underline_changed
+                    && scene::refresh_underlines(
+                        &mut self.rows[row].rects,
+                        &mut self.underline_spans[row],
+                        context.metrics,
+                        stroke,
+                        &mut self.rect_scratch,
+                    )
+                {
+                    self.rebuilt_solid_rows.push(row);
+                }
                 continue;
             }
-            scene::build_row(&context, cache, row, &mut self.scratch, &mut self.rows[row]);
+            scene::build_row_with_underlines(
+                &context,
+                cache,
+                row,
+                &mut self.scratch,
+                &mut self.rows[row],
+                Some(&mut self.underline_spans[row]),
+            );
             self.dirty[row] = false;
             if !self.everything {
                 self.rebuilt_rows.push(row);
+                self.rebuilt_solid_rows.push(row);
             }
         }
         self.everything = false;

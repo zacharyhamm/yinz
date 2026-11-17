@@ -680,3 +680,139 @@ fn native_terminal_baseline_offset_layers_reset_zero_and_invalid_managed_writes_
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
     }
 }
+
+#[test]
+fn underline_metrics_use_independent_layer_winners_and_atomic_managed_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = Config::from_kdl(
+        "terminal { underline_offset -2; underline_thickness 1; padding 3; }",
+        None,
+    )
+    .unwrap();
+    for (name, text) in [
+        ("20-thickness.kdl", "terminal { underline_thickness -3; }"),
+        ("10-offset.kdl", "terminal { underline_offset 2; }"),
+        ("30-reset.kdl", "terminal { underline_offset 0; }"),
+        (
+            "40-invalid.kdl",
+            "terminal { underline_thickness 65; underline_offset 9; padding 99; }",
+        ),
+    ] {
+        std::fs::write(dir.path().join(name), text).unwrap();
+    }
+    let config = base.with_overlay_dir(Some(dir.path()));
+    assert_eq!(
+        (
+            config.terminal.underline_offset,
+            config.terminal.underline_thickness,
+            config.terminal.padding
+        ),
+        (Some(0), Some(-3), Some(3.0))
+    );
+    let path = Config::write_managed_fragment(
+        dir.path(),
+        "terminal { underline_offset -2; underline_thickness 2; padding 4; }",
+    )
+    .unwrap();
+    Config::write_managed_fragment(dir.path(), "terminal { underline_offset 0; }").unwrap();
+    let before = std::fs::read_to_string(&path).unwrap();
+    let saved = Config::from_kdl(&before, None).unwrap().terminal;
+    assert_eq!(
+        (
+            saved.underline_offset,
+            saved.underline_thickness,
+            saved.padding
+        ),
+        (Some(0), Some(2), Some(4.0))
+    );
+    for name in ["underline_offset", "underline_thickness"] {
+        for bad in ["65", "2.0", "true", "(int)2", &format!("2; {name} 2")] {
+            let fragment = format!("terminal {{ {name} {bad}; padding 99; }}");
+            assert!(
+                Config::write_managed_fragment(dir.path(), &fragment).is_err(),
+                "{fragment}"
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        }
+    }
+}
+
+#[test]
+fn underline_metrics_invalid_drop_in_discards_preloaded_themes() {
+    let dir = tempfile::tempdir().unwrap();
+    let themes = dir.path().join("themes");
+    let overlays = dir.path().join("config.d");
+    std::fs::create_dir(&themes).unwrap();
+    std::fs::create_dir(&overlays).unwrap();
+    let source =
+        include_str!("../../assets/themes/adwaita.kdl").replacen("adwaita", "underline-fixture", 1);
+    std::fs::write(themes.join("fixture.kdl"), source).unwrap();
+    let base = Config::default();
+    let mut preload = base.clone();
+    apply_themes(&mut preload, None, Some(dir.path().to_path_buf())).unwrap();
+    assert!(preload.themes.get_theme("underline-fixture").is_some());
+    std::fs::write(
+        overlays.join("10-invalid.kdl"),
+        r#"
+        configuration_edits { remove "themes" "unrelated"; }
+        terminal { underline_thickness 65; }
+    "#,
+    )
+    .unwrap();
+    std::fs::write(
+        overlays.join("20-valid.kdl"),
+        "terminal { underline_offset -2; }",
+    )
+    .unwrap();
+    let loaded = base.with_overlay_dir(Some(&overlays));
+    assert!(loaded.themes.get_theme("underline-fixture").is_none());
+    assert_eq!(loaded.terminal.underline_offset, Some(-2));
+}
+
+#[cfg(unix)]
+#[test]
+fn underline_metrics_saved_comparison_skips_layers_that_reference_a_theme_fifo() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let themes = dir.path().join("themes");
+    let overlays = dir.path().join("config.d");
+    std::fs::create_dir(&themes).unwrap();
+    std::fs::create_dir(&overlays).unwrap();
+    let theme = themes.join("fixture.kdl");
+    let source = include_str!("../../assets/themes/adwaita.kdl");
+    std::fs::write(&theme, source).unwrap();
+    std::fs::write(
+        overlays.join("10-theme-edit.kdl"),
+        r#"
+        configuration_edits { remove "themes" "unrelated"; }
+        terminal { underline_thickness 2; }
+    "#,
+    )
+    .unwrap();
+    std::fs::write(
+        overlays.join("20-valid.kdl"),
+        "terminal { underline_offset -2; }",
+    )
+    .unwrap();
+    let regular = Config::load_saved(None, Some(dir.path())).unwrap();
+    assert_eq!(
+        (
+            regular.terminal.underline_offset,
+            regular.terminal.underline_thickness
+        ),
+        (Some(-2), Some(2))
+    );
+
+    std::fs::remove_file(&theme).unwrap();
+    let theme = std::ffi::CString::new(theme.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(theme.as_ptr(), 0o600) }, 0);
+    let with_fifo = Config::load_saved(None, Some(dir.path())).unwrap();
+    assert_eq!(
+        (
+            with_fifo.terminal.underline_offset,
+            with_fifo.terminal.underline_thickness
+        ),
+        (Some(-2), None)
+    );
+}

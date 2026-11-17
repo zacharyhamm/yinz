@@ -45,6 +45,8 @@ terminal {
     line_height 1.0
     cell_width 1.0
     baseline_offset 2
+    underline_offset -2
+    underline_thickness 1
     padding 4.0
     opacity 1.0
     blur false
@@ -171,6 +173,30 @@ from Latin, so extreme offsets need not translate every glyph's ink equally.
 Offset alone preserves physical cell dimensions, grid, hit testing, cursor and
 selection ownership, Copy text and cell/text-area pixel reports.
 
+`underline_offset` moves text underlines down with positive values and up with
+negative values. `underline_thickness` adds to the font's stroke with positive
+values and thins it with negative values. Each accepts one plain integer from
+`-64` through `64` inclusive, using the same syntax as `baseline_offset`. With
+`terminal { underline_offset -2; underline_thickness 1; }`, the underline moves
+up two logical pixels and thickens by one. Omission inherits the setting from the
+earlier layers. Explicit `0` restores the font-derived value, which is also the
+default when no layer supplies the setting. Drop-ins load in lexical order and
+each key takes its value from the last valid layer that supplies it.
+
+The terminal multiplies each adjustment by zoom and monitor scale, including
+fractional values, then rounds the result once to the nearest physical pixel.
+The stroke clamps to at least one pixel and at most the cell height. The position
+and each pattern stroke stay inside the row. Straight, double, dotted, dashed and
+curly underlines, as well as the IME preedit underline, use the regular face's
+metrics, including over fallback glyphs and selected text. Strikeout and the
+underline cursor have separate geometry.
+
+Startup and saved reload use the same underline settings. An underline-only
+reload updates the affected solid geometry and retains the loaded fonts, glyph
+and image resources. Cell dimensions, the grid, hit testing, pixel-size reports,
+selection and copied text stay the same. Combined changes to baseline, spacing,
+or shaping also refresh the resources those settings affect.
+
 Startup and saved file/drop-in reload use the same offset. Baseline-only reloads
 reuse the metric path described below: faces, discovery and independent cluster
 shaping survive; effective baseline/decoration or style-fit changes invalidate
@@ -209,8 +235,9 @@ Font settings reload automatically with the session's configuration updates,
 including drop-ins. A `config.d` directory first created while the session is
 running is discovered during the normal polling/debounce cycle.
 
-Changing `cell_width`, `line_height`, `baseline_offset`, `ligatures`, `font_ligatures` or
-`font_features` with `action reconfigure` requires
+Changing `cell_width`, `line_height`, `baseline_offset`, `underline_offset`,
+`underline_thickness`, `ligatures`, `font_ligatures` or `font_features` with
+`action reconfigure` requires
 `--write`, or an edit to the session's saved configuration/drop-in. An unsaved
 change to any effective value refuses the entire fragment, including sibling
 settings, for all requested clients, with save guidance. Equivalent values and
@@ -227,9 +254,28 @@ yinz --session work action reconfigure --write --kdl 'terminal { ligatures false
 yinz --session work action reconfigure --write --kdl 'terminal { ligatures true; }'
 ```
 
-`--write` persists into the session's managed drop-in. Write failures are errors.
-Attached native windows update through file reload; successful command completion
-does not mean the next native frame has already been drawn.
+For each explicitly requested underline key, the server compares the logical
+value with the winning value in the session's saved main file and drop-ins. A
+missing saved key counts as zero. Only the winning saved file value establishes
+equivalence. CLI refusals return a nonzero
+status with save guidance. Attached plugins get enqueue success and the session
+server log records any subsequent refusal. The plugin config write-failure event
+reports persistence failures.
+
+The session watches the main file and config directory it started with. `--write`
+persists to that directory's `config.d/yinz-managed.kdl`. If a lexically later
+drop-in supplies a key, change the winning drop-in to apply the desired value.
+If an underline change requires a managed write and that write fails, the entire
+fragment stays unapplied. An invalid main file leaves the current native settings
+in use, and invalid drop-ins are skipped as whole layers. A managed save can
+succeed while the main file is invalid or missing. Repair or restore that file to
+resume automatic reload.
+
+On a session file-update notification, each native window rereads its own
+`--config` and `--config-dir` layers. Use shared watched paths for automatic
+updates. A window with private config paths can load edits to them when reopened.
+Successful `--write` completion confirms persistence. Reload and redraw follow
+asynchronously when the window can load the files and the edited values win.
 
 Startup applies the effective ligature setting; a live
 ligature-only change clears cached shaped runs and redraws retained text rows.

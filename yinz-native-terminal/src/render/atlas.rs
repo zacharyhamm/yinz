@@ -7,8 +7,8 @@ use anyhow::{anyhow, Result};
 
 use crate::render::sprites;
 use crate::text::font::{
-    CellMetrics, ClusterRaster, FaceStyle, FontId, FontStack, Glyph, GlyphBitmap, GlyphContent,
-    GlyphId, ShapedGlyph,
+    CellChange, CellMetrics, ClusterRaster, FaceStyle, FontId, FontStack, Glyph, GlyphBitmap,
+    GlyphContent, GlyphId, ShapedGlyph,
 };
 
 const ATLAS_WIDTH: u32 = 4096;
@@ -350,9 +350,9 @@ impl GlyphCache {
         self.fonts.update_shaping(options);
     }
 
-    pub(crate) fn update_cell(&mut self, options: &crate::text::font::FontOptions) -> bool {
+    pub(crate) fn update_cell(&mut self, options: &crate::text::font::FontOptions) -> CellChange {
         let changed = self.fonts.update_cell(&options.cell);
-        if changed {
+        if changed == CellChange::GlyphPlacement {
             // Raster keys omit metrics, and cluster fitting/sprites use physical cells.
             // Renew both atlas identities so retained vertices and GPU uploads refresh.
             self.flush();

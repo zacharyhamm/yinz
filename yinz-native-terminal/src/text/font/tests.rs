@@ -1874,7 +1874,7 @@ fn baseline_offset_and_cell_metrics_updates_preserve_faces_discovery_coverage_an
         let old_width = stack.metrics().width;
         let old_styled = stack.styled;
         let run = stack.shape(regular, "-> fi");
-        assert!(stack.update_cell(&cell));
+        assert_eq!(stack.update_cell(&cell), CellChange::GlyphPlacement);
         assert!(Rc::ptr_eq(
             &cluster,
             &stack.shape_cluster(regular, "e\u{301}")
@@ -1915,11 +1915,14 @@ fn baseline_offset_and_cell_metrics_updates_preserve_faces_discovery_coverage_an
     }
     assert_eq!(stack.metrics(), original);
     let run = stack.shape(regular, "-> fi");
-    assert!(!stack.update_cell(&CellAdjust {
-        cell_width: 1.001,
-        line_height: 1.001,
-        ..Default::default()
-    }));
+    assert_eq!(
+        stack.update_cell(&CellAdjust {
+            cell_width: 1.001,
+            line_height: 1.001,
+            ..Default::default()
+        }),
+        CellChange::Equivalent
+    );
     assert!(Rc::ptr_eq(&run, &stack.shape(regular, "-> fi")));
 }
 
@@ -1963,7 +1966,7 @@ fn cell_metrics_reclassify_style_fitting_when_fractional_rounding_changes_cell_m
         line_height: 0.5,
         ..cell
     };
-    assert!(stack.update_cell(&adjusted));
+    assert_eq!(stack.update_cell(&adjusted), CellChange::GlyphPlacement);
     assert!(
         stack.is_primary(style_font),
         "{:?} {:?}",
@@ -1976,7 +1979,7 @@ fn cell_metrics_reclassify_style_fitting_when_fractional_rounding_changes_cell_m
         &cluster,
         &stack.shape_cluster(style_font, "e\u{301}")
     ));
-    assert!(stack.update_cell(&cell));
+    assert_eq!(stack.update_cell(&cell), CellChange::GlyphPlacement);
     assert_eq!(stack.primary_of(FaceStyle::Bold), main);
 }
 
@@ -2142,7 +2145,7 @@ fn baseline_offset_reclassifies_style_even_when_regular_metrics_are_clamped_equa
             ..Default::default()
         });
         if stack.metrics() == previous_metrics && stack.styled != previous_style {
-            assert!(changed);
+            assert_eq!(changed, CellChange::GlyphPlacement);
             assert_eq!(stack.shaped_runs(), 0);
             witnessed = true;
         }

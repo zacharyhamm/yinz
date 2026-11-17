@@ -9216,6 +9216,8 @@ Config {
         line_height: None,
         cell_width: None,
         baseline_offset: None,
+        underline_offset: None,
+        underline_thickness: None,
         padding: None,
         opacity: None,
         blur: None,

@@ -422,6 +422,7 @@ fn a_config_change_reconfigures_every_thread_with_plugin_default_keybinds() {
                 changed,
                 &session,
                 CLIENT,
+                None,
             )
             .unwrap();
             assert!(screen_rx.try_iter().any(|(message, _)| matches!(
@@ -1655,10 +1656,30 @@ mod ligature_reconfigure {
         }
 
         pub(super) fn assert_no_propagation(&self) {
+            self.assert_no_instructions();
+            assert!(!self.dir.path().join("config.d").exists());
+        }
+
+        pub(super) fn assert_no_instructions(&self) {
             assert!(self.screen.is_empty());
             assert!(self.plugin.is_empty());
             assert!(self.pty.is_empty());
-            assert!(!self.dir.path().join("config.d").exists());
+        }
+
+        pub(super) fn drain_instructions(
+            &self,
+        ) -> (Vec<ScreenInstruction>, Vec<PluginInstruction>) {
+            self.pty.try_iter().for_each(drop);
+            (
+                self.screen
+                    .try_iter()
+                    .map(|(instruction, _)| instruction)
+                    .collect(),
+                self.plugin
+                    .try_iter()
+                    .map(|(instruction, _)| instruction)
+                    .collect(),
+            )
         }
     }
 
@@ -2640,5 +2661,345 @@ mod application_theme {
         assert_eq!(result.exit_status, Some(1));
         assert!(fixture.published().is_empty());
         assert_eq!(fixture.source(), before);
+    }
+
+    #[test]
+    fn underline_metrics_deferred_save_publishes_theme_only_after_success() {
+        for all in [false, true] {
+            let fixture = Fixture::new(&[CLIENT]);
+            let saved = load(fixture.dir.path());
+            let before = fixture.source();
+            let drop_ins = fixture.dir.path().join("config.d");
+            std::fs::write(&drop_ins, "blocked").unwrap();
+            let fragment = "theme \"dayfox\"\nterminal { underline_offset -2; }";
+            let try_save = || {
+                if all {
+                    fixture.all(fragment, true).exit_status.is_none()
+                } else {
+                    reconfigure_client(CLIENT, fragment.into(), true, &fixture.state, &fixture.data)
+                        .is_ok()
+                }
+            };
+            assert!(!try_save());
+            assert_eq!(fixture.source(), before);
+            assert!(fixture.instructions().is_empty());
+            std::fs::remove_file(drop_ins).unwrap();
+            assert!(try_save());
+            fixture.assert_published_once_ahead_of_reconfigure(&theme(&saved, "theme \"dayfox\""));
+        }
+    }
+}
+
+mod underline_metrics_reconfigure {
+    use super::ligature_reconfigure::Fixture;
+    use super::*;
+    use yinz_types::data::LayoutInfo;
+
+    fn request(
+        fixture: &Fixture,
+        client: ClientId,
+        all: bool,
+        fragment: &str,
+        write: bool,
+    ) -> std::result::Result<(), String> {
+        if all {
+            let result = fixture.all(fragment, write);
+            match result.exit_status {
+                None => Ok(()),
+                Some(1) => Err(result.error_message.unwrap()),
+                status => panic!("unexpected exit status {status:?}"),
+            }
+        } else {
+            reconfigure_client(
+                client,
+                fragment.into(),
+                write,
+                &fixture.state,
+                &fixture.data,
+            )
+            .map_err(|error| format!("{error:#}"))
+        }
+    }
+
+    fn load(fixture: &Fixture) -> Config {
+        Config::load(
+            Some(&fixture.dir.path().join("config.kdl")),
+            Some(fixture.dir.path()),
+            false,
+        )
+        .unwrap()
+    }
+
+    fn managed(fixture: &Fixture) -> PathBuf {
+        fixture.dir.path().join("config.d/yinz-managed.kdl")
+    }
+
+    fn assert_refused(fixture: &Fixture, all: bool, fragment: &str, names: &[&str]) {
+        let before = fixture.snapshot();
+        let error = request(fixture, CLIENT, all, fragment, false).unwrap_err();
+        for word in names.iter().copied().chain(["--write", "entire fragment"]) {
+            assert!(error.contains(word), "{error}");
+        }
+        assert_eq!(fixture.snapshot(), before);
+        fixture.assert_no_instructions();
+    }
+
+    #[test]
+    fn layout_values_cannot_authorize_unsaved_underline_metrics_at_either_entry_point() {
+        let fixture = Fixture::new(&[CLIENT, ClientId::new(2)], None);
+        let saved = load(&fixture);
+        let (_, layout) = yinz_config::layout::from_layout_info_with_config(
+            &None,
+            &LayoutInfo::Stringified(
+                "layout { pane; }\nterminal { underline_offset -2; underline_thickness 3; }".into(),
+            ),
+            Some(saved.clone()),
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                saved.terminal.underline_offset,
+                saved.terminal.underline_thickness
+            ),
+            (None, None)
+        );
+        assert_eq!(
+            (
+                layout.terminal.underline_offset,
+                layout.terminal.underline_thickness
+            ),
+            (Some(-2), Some(3))
+        );
+        fixture.with(|session| {
+            session
+                .session_configuration
+                .set_saved_configuration(layout.clone());
+            for client in [CLIENT, ClientId::new(2)] {
+                session
+                    .session_configuration
+                    .set_client_runtime_configuration(client, layout.clone());
+            }
+        });
+        for all in [false, true] {
+            for (settings, names) in [
+                ("underline_offset -2;", &["underline_offset"][..]),
+                ("underline_thickness 3;", &["underline_thickness"][..]),
+                (
+                    "underline_offset -2; underline_thickness 3;",
+                    &["underline_offset", "underline_thickness"][..],
+                ),
+            ] {
+                assert_refused(&fixture, all, &format!(
+                    "terminal {{ {settings} }}\nmouse_mode false\nkeybinds {{ normal {{ bind \"Ctrl y\" {{ NewPane; }}; }}; }}\nplugins {{ background location=\"file:/background.scm\"; }}\nload_plugins {{ background; }}"
+                ), names);
+            }
+        }
+        assert!(!managed(&fixture).exists());
+        // A successful saved comparison authorizes the explicitly supplied zero only.
+        request(
+            &fixture,
+            CLIENT,
+            true,
+            "terminal { underline_offset 0; }\nmouse_mode false",
+            false,
+        )
+        .unwrap();
+        fixture.with(|session| {
+            for client in [CLIENT, ClientId::new(2)] {
+                let terminal = session
+                    .session_configuration
+                    .get_client_configuration(&client)
+                    .terminal;
+                assert_eq!(
+                    (terminal.underline_offset, terminal.underline_thickness),
+                    (Some(0), Some(3))
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn masked_managed_underline_metrics_compare_against_winning_disk_values() {
+        for all in [false, true] {
+            let fixture = Fixture::new(&[CLIENT], None);
+            let overlays = fixture.dir.path().join("config.d");
+            std::fs::create_dir(&overlays).unwrap();
+            std::fs::write(
+                overlays.join("zz-winning.kdl"),
+                "terminal { underline_offset -64; underline_thickness 0; }",
+            )
+            .unwrap();
+            let fragment = "terminal { underline_offset -63; underline_thickness 1; }";
+            request(&fixture, CLIENT, all, fragment, true).unwrap();
+            let before = std::fs::read_to_string(managed(&fixture)).unwrap();
+            let managed_terminal = Config::from_kdl(&before, None).unwrap().terminal;
+            assert_eq!(
+                (
+                    managed_terminal.underline_offset,
+                    managed_terminal.underline_thickness
+                ),
+                (Some(-63), Some(1))
+            );
+            let disk = load(&fixture).terminal;
+            assert_eq!(
+                (disk.underline_offset, disk.underline_thickness),
+                (Some(-64), Some(0))
+            );
+            fixture.with(|session| {
+                let runtime = session
+                    .session_configuration
+                    .get_client_configuration(&CLIENT);
+                assert_eq!(runtime.terminal, managed_terminal);
+            });
+            fixture.drain_instructions();
+            assert_refused(
+                &fixture,
+                all,
+                &format!("{fragment}\nmouse_mode false"),
+                &["underline_offset", "underline_thickness"],
+            );
+            assert_refused(
+                &fixture,
+                all,
+                "terminal { underline_offset 0; }",
+                &["underline_offset"],
+            );
+            assert_eq!(std::fs::read_to_string(managed(&fixture)).unwrap(), before);
+            request(
+                &fixture,
+                CLIENT,
+                all,
+                "terminal { underline_offset -64; }\nmouse_mode false",
+                false,
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn failed_underline_metrics_save_is_atomic_even_when_runtime_already_matches() {
+        for all in [false, true] {
+            for existing_runtime in [false, true] {
+                let fixture = Fixture::new(&[CLIENT], None);
+                let fragment = "terminal { underline_thickness 2; }\nmouse_mode false";
+                if existing_runtime {
+                    fixture.with(|session| {
+                        let mut config = session
+                            .session_configuration
+                            .get_client_configuration(&CLIENT);
+                        config.terminal.underline_thickness = Some(2);
+                        session
+                            .session_configuration
+                            .set_client_runtime_configuration(CLIENT, config);
+                    });
+                }
+                let path = fixture.dir.path().join("config.d");
+                std::fs::write(&path, "not a directory").unwrap();
+                let before = fixture.snapshot();
+                request(&fixture, CLIENT, all, fragment, true).unwrap_err();
+                assert_eq!(fixture.snapshot(), before);
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), "not a directory");
+                let (screen, plugin) = fixture.drain_instructions();
+                assert!(screen.is_empty());
+                assert!(matches!(
+                    plugin.as_slice(),
+                    [PluginInstruction::FailedToWriteConfigToDisk {
+                        reason: Some(_),
+                        ..
+                    }]
+                ));
+                assert_refused(&fixture, all, fragment, &["underline_thickness"]);
+
+                std::fs::remove_file(path).unwrap();
+                request(&fixture, CLIENT, all, fragment, true).unwrap();
+                assert_eq!(load(&fixture).terminal.underline_thickness, Some(2));
+                let (screen, _) = fixture.drain_instructions();
+                assert!(screen.iter().any(|instruction| matches!(instruction, ScreenInstruction::Reconfigure { client_id, .. } if *client_id == CLIENT)));
+                request(&fixture, CLIENT, all, fragment, false).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn underline_metrics_saved_layer_errors_and_invalid_fragments_preserve_working_state() {
+        for all in [false, true] {
+            let fixture = Fixture::new(&[], None);
+            let main = fixture.dir.path().join("config.kdl");
+            std::fs::write(&main, "terminal { underline_offset 65; }").unwrap();
+            let before = fixture.snapshot();
+            let good = "terminal { underline_thickness 1; }";
+            let error = request(&fixture, CLIENT, all, good, false).unwrap_err();
+            for expected in [
+                "underline_thickness",
+                "underline_offset",
+                "Repair or restore",
+                "--write",
+                "entire fragment",
+            ] {
+                assert!(error.contains(expected), "{error}");
+            }
+            let invalid = "terminal { underline_thickness 2.0; }\nmouse_mode false";
+            for write in [false, true] {
+                assert!(request(&fixture, CLIENT, all, invalid, write)
+                    .unwrap_err()
+                    .contains("underline_thickness"));
+                assert_eq!(fixture.snapshot(), before);
+                fixture.assert_no_propagation();
+            }
+            // Requests with no underline keys don't consult the broken file.
+            request(&fixture, CLIENT, all, "mouse_mode false", false).unwrap();
+            request(&fixture, CLIENT, all, good, true).unwrap();
+            assert!(managed(&fixture).exists());
+            assert!(Config::load(Some(&main), Some(fixture.dir.path()), false).is_err());
+            std::fs::write(&main, "// restored").unwrap();
+            assert_eq!(load(&fixture).terminal.underline_thickness, Some(1));
+            request(&fixture, CLIENT, all, good, false).unwrap();
+        }
+    }
+
+    #[test]
+    fn departed_client_underline_metrics_can_only_be_saved() {
+        let fixture = Fixture::new(&[CLIENT], None);
+        let before = fixture.snapshot();
+        let fragment = "terminal { underline_offset -2; }\nmouse_mode false";
+        let departed = ClientId::new(9);
+        request(&fixture, departed, false, fragment, false).unwrap();
+        assert_eq!(fixture.snapshot(), before);
+        fixture.assert_no_propagation();
+        request(&fixture, departed, false, fragment, true).unwrap();
+        assert_eq!(load(&fixture).terminal.underline_offset, Some(-2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn underline_metrics_reject_a_saved_main_replaced_by_a_symlink_to_a_fifo() {
+        use std::os::unix::{ffi::OsStrExt, fs::symlink};
+        let fixture = Fixture::new(&[CLIENT], None);
+        let dir = fixture.dir.path();
+        let fifo = dir.join("pipe");
+        let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let main = dir.join("config.kdl");
+        std::fs::remove_file(&main).unwrap();
+        symlink(&fifo, &main).unwrap();
+        for all in [false, true] {
+            let before = fixture.snapshot();
+            let error = request(
+                &fixture,
+                CLIENT,
+                all,
+                "terminal { underline_offset 0; }",
+                false,
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("not a regular file") && error.contains("--write"),
+                "{error}"
+            );
+            assert_eq!(fixture.snapshot(), before);
+            fixture.assert_no_propagation();
+            request(&fixture, CLIENT, all, "mouse_mode false", false).unwrap();
+            fixture.drain_instructions();
+        }
     }
 }

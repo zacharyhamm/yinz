@@ -253,6 +253,13 @@ pub struct CellPlacement {
     pub underline_stroke: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CellChange {
+    Equivalent,
+    UnderlineOnly,
+    GlyphPlacement,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FontOptions {
     pub family: Option<String>,
@@ -544,7 +551,7 @@ impl FontStack {
 
     /// Spacing changes keep face/coverage discovery and independent cluster shaping.
     /// This is infallible: it uses only faces and normalized coordinates already loaded.
-    pub(crate) fn update_cell(&mut self, cell: &CellAdjust) -> bool {
+    pub(crate) fn update_cell(&mut self, cell: &CellAdjust) -> CellChange {
         let regular = self.primary[0].0;
         let (metrics, placement) =
             derive_metrics(&self.faces[regular], &self.coords[regular], self.size, cell);
@@ -565,7 +572,21 @@ impl FontStack {
             self.shaped
                 .retain(|(_, shaping), _| *shaping == Shaping::Cluster);
         }
-        old_metrics != metrics || old_placement != placement || style_changed
+        let old_glyph_metrics = CellMetrics {
+            underline_top: metrics.underline_top,
+            ..old_metrics
+        };
+        let old_glyph_placement = CellPlacement {
+            underline_stroke: placement.underline_stroke,
+            ..old_placement
+        };
+        if style_changed || old_glyph_metrics != metrics || old_glyph_placement != placement {
+            CellChange::GlyphPlacement
+        } else if old_metrics != metrics || old_placement != placement {
+            CellChange::UnderlineOnly
+        } else {
+            CellChange::Equivalent
+        }
     }
 
     pub fn metrics(&self) -> CellMetrics {

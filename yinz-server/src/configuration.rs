@@ -2,13 +2,18 @@
 use super::*;
 use yinz_config::config::watch_config_file_changes;
 use yinz_config::screen_config::ApplicationThemeConfig;
+use yinz_types::input::native_terminal::TerminalConfig;
 use yinz_types::keys::KeyWithModifier;
 
 #[path = "configuration_editor.rs"]
 mod configuration_editor;
 
-fn validate_unsaved_native_settings(current: &Config, requested: &Config) -> Result<()> {
-    let mut changed = vec![];
+fn validate_unsaved_native_settings(
+    current: &Config,
+    requested: &Config,
+    saved_underline_changes: &[&str],
+) -> Result<()> {
+    let mut changed = saved_underline_changes.to_vec();
     if current.terminal.font_ligatures.unwrap_or(true)
         != requested.terminal.font_ligatures.unwrap_or(true)
     {
@@ -38,6 +43,75 @@ fn validate_unsaved_native_settings(current: &Config, requested: &Config) -> Res
         ));
     }
     Ok(())
+}
+
+fn changed_underline_settings(
+    requested: &TerminalConfig,
+    current: &TerminalConfig,
+) -> impl Iterator<Item = &'static str> {
+    [
+        (
+            "underline_offset",
+            requested.underline_offset,
+            current.underline_offset,
+        ),
+        (
+            "underline_thickness",
+            requested.underline_thickness,
+            current.underline_thickness,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(name, requested, current)| {
+        requested
+            .filter(|value| *value != current.unwrap_or(0))
+            .map(|_| name)
+    })
+}
+
+struct UnderlineReconfigure {
+    requested: TerminalConfig,
+    saved_changes: Result<Vec<&'static str>>,
+}
+
+impl UnderlineReconfigure {
+    fn read(config: &str, session_data: &Arc<RwLock<Option<SessionMetaData>>>) -> Result<Self> {
+        let requested = Config::terminal_settings_from_kdl(config)
+            .map_err(|error| anyhow!(yinz_config::editor::validation_error(error)))?
+            .unwrap_or_default();
+        let names = [
+            requested.underline_offset.map(|_| "underline_offset"),
+            requested.underline_thickness.map(|_| "underline_thickness"),
+        ];
+        let saved_changes = if names.iter().any(Option::is_some) {
+            let (file, dir) = with_session(session_data, |session| {
+                (session.config_file_path.clone(), session.config_dir.clone())
+            })?
+            .context("session is unavailable")?;
+            Config::load_saved(file.as_deref(), dir.as_deref())
+                .map(|saved| changed_underline_settings(&requested, &saved.terminal).collect())
+                .map_err(|error| anyhow!(yinz_config::editor::validation_error(error)))
+                .with_context(|| format!(
+                    "cannot compare terminal {} with the saved configuration; the entire fragment was refused. \
+                     Repair or restore the saved configuration for file reload. \
+                     Use --write to persist the fragment in the session's drop-in",
+                    names.into_iter().flatten().collect::<Vec<_>>().join(", ")
+                ))
+        } else {
+            Ok(vec![])
+        };
+        Ok(Self {
+            requested,
+            saved_changes,
+        })
+    }
+
+    fn defer_save(&self, current: &TerminalConfig) -> bool {
+        !self.saved_changes.as_ref().is_ok_and(Vec::is_empty)
+            || changed_underline_settings(&self.requested, current)
+                .next()
+                .is_some()
+    }
 }
 
 /// The feature list as the shaper sees it: omission and an empty list both mean
@@ -597,6 +671,19 @@ pub(super) fn reconfigure_client(
     else {
         return Ok(());
     };
+    reconfigure_target(target, config, write_config_to_disk, session_data)?;
+    // A session theme change can come without a per-client difference.
+    with_session_mut(session_data, |session| session.publish_application_theme())?;
+    Ok(())
+}
+
+fn reconfigure_target(
+    target: ConfigurationTarget,
+    config: String,
+    write_config_to_disk: bool,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+) -> Result<Option<()>> {
+    let underline = UnderlineReconfigure::read(&config, session_data)?;
     let Some(result) = with_session_mut(session_data, |session| {
         // Unsaved changes must be validated before any live state (including editor and
         // background-plugin state) changes. Save-only requests retain their existing policy.
@@ -607,12 +694,15 @@ pub(super) fn reconfigure_client(
             session.config_file_path.as_deref(),
             session.config_dir.as_deref(),
         )?;
+        let current = session
+            .session_configuration
+            .get_client_configuration(&target.client_id);
+        let defer = write_config_to_disk && underline.defer_save(&current.terminal);
         if !write_config_to_disk {
             validate_unsaved_native_settings(
-                &session
-                    .session_configuration
-                    .get_client_configuration(&target.client_id),
+                &current,
                 &staged.get_client_configuration(&target.client_id),
+                &underline.saved_changes?,
             )?;
             // With nobody attached the change is session-wide, so it is the session's
             // theme too. A saved change reaches the source once it is written.
@@ -621,15 +711,20 @@ pub(super) fn reconfigure_client(
                 staged.set_application_theme_source(source);
             }
         }
-        if !target.save_only {
+        let deferred = if target.save_only {
+            None
+        } else if defer {
+            Some(staged)
+        } else {
             session.session_configuration = staged;
-        }
-        Ok::<_, anyhow::Error>(result)
+            None
+        };
+        Ok::<_, anyhow::Error>((result, deferred))
     })?
     else {
-        return Ok(());
+        return Ok(None);
     };
-    let (new_config, changed) = result.context("failed to reconfigure")?;
+    let ((new_config, changed), deferred) = result.context("failed to reconfigure")?;
     let persistence = match write_config_to_disk {
         true => ConfigPersistence::Fragment(config),
         false => ConfigPersistence::None,
@@ -640,10 +735,9 @@ pub(super) fn reconfigure_client(
         changed && !target.save_only,
         session_data,
         target.client_id,
+        deferred,
     )?;
-    // A session theme change can come without a per-client difference.
-    with_session_mut(session_data, |session| session.publish_application_theme())?;
-    Ok(())
+    Ok(Some(()))
 }
 
 pub(super) fn reconfigure_all_clients(
@@ -667,24 +761,18 @@ pub(super) fn reconfigure_all_clients(
             client_ids
         };
         if write_config_to_disk {
-            let client_id = client_ids[0];
-            let (new_config, changed) = with_session_mut(session_data, |session| {
-                session.session_configuration.reconfigure_runtime_config(
-                    &client_id,
-                    config.clone(),
-                    session.config_file_path.as_deref(),
-                    session.config_dir.as_deref(),
-                )
-            })?
-            .context("session is unavailable")??;
-            update_new_saved_config(
-                new_config,
-                ConfigPersistence::Fragment(config.clone()),
-                changed,
+            reconfigure_target(
+                ConfigurationTarget {
+                    client_id: client_ids[0],
+                    save_only: false,
+                },
+                config.clone(),
+                true,
                 session_data,
-                client_id,
-            )?;
+            )?
+            .context("session is unavailable")?;
         } else {
+            let underline = UnderlineReconfigure::read(&config, session_data)?;
             with_session_mut(session_data, |session| -> Result<()> {
                 let mut staged = session.session_configuration.clone();
                 // `yinz action reconfigure` is session-wide, so it is the session's theme too.
@@ -703,6 +791,10 @@ pub(super) fn reconfigure_all_clients(
                             .session_configuration
                             .get_client_configuration(&client_id),
                         &staged.get_client_configuration(&client_id),
+                        underline
+                            .saved_changes
+                            .as_deref()
+                            .map_err(|error| anyhow!("{error:#}"))?,
                     )?;
                     if let (Some(new_config), true) = (new_config, changed) {
                         changes.push((client_id, new_config));
@@ -822,6 +914,7 @@ pub(super) fn rebind_client_keys(
         changed,
         session_data,
         target.client_id,
+        None,
     )
 }
 
@@ -1075,6 +1168,7 @@ fn update_new_saved_config(
     runtime_config_changed: bool,
     session_data: &Arc<RwLock<Option<SessionMetaData>>>,
     client_id: ClientId,
+    deferred: Option<SessionConfiguration>,
 ) -> Result<()> {
     if let Some(new_config) = new_config {
         let propagate_saved = |session: &mut SessionMetaData, config: Config| {
@@ -1104,6 +1198,9 @@ fn update_new_saved_config(
                     // The session's saved config is the running one now, and every client
                     // hears that it was written.
                     with_session_mut(session_data, |session| {
+                        if let Some(staged) = deferred {
+                            session.session_configuration = staged;
+                        }
                         session
                             .session_configuration
                             .set_application_theme_source(source);
@@ -1114,7 +1211,7 @@ fn update_new_saved_config(
                     with_session(session_data, |session| {
                         session.report_config_write_failure(file_path, Some(reason.clone()))
                     })?;
-                    if runtime_config_changed {
+                    if runtime_config_changed && deferred.is_none() {
                         with_session_mut(session_data, |session| {
                             session.propagate_configuration_changes(
                                 vec![(client_id, new_config)],
