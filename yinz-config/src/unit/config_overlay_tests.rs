@@ -782,6 +782,100 @@ fn underline_metrics_invalid_drop_in_discards_preloaded_themes() {
 
 #[cfg(unix)]
 #[test]
+fn underline_metrics_managed_save_rejects_nonregular_validation_inputs() {
+    use std::os::unix::{
+        ffi::OsStrExt,
+        fs::{symlink, FileTypeExt},
+    };
+    use yinz_types::{data::InputMode, input::actions::Action};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let overlay = root.join("config.d");
+    let themes = root.join("themes");
+    let layouts = root.join("layouts");
+    for directory in [&overlay, &themes, &layouts] {
+        std::fs::create_dir(directory).unwrap();
+    }
+    let fifo = root.join("pipe");
+    let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let managed = overlay.join(MANAGED_CONFIG_FILE_NAME);
+    let fragment = "terminal { underline_offset -2; }\nmouse_mode false";
+    let assert_refused = |path: &Path| {
+        let error = Config::write_managed_fragment(&overlay, fragment).unwrap_err();
+        for expected in [path.to_str().unwrap(), "not a regular file", "then retry"] {
+            assert!(error.contains(expected), "{error}");
+        }
+    };
+
+    std::fs::rename(&fifo, &managed).unwrap();
+    assert_refused(&managed);
+    assert!(std::fs::symlink_metadata(&managed)
+        .unwrap()
+        .file_type()
+        .is_fifo());
+    std::fs::rename(&managed, &fifo).unwrap();
+
+    let main = root.join("config.kdl");
+    let theme = themes.join("fixture.kdl");
+    let layout = layouts.join("default.kdl");
+    let swap = layouts.join("default.swap.kdl");
+    let contents = layouts.join("preview.txt");
+    let action_layout = layouts.join("new-tab.kdl");
+    let main_text = format!(
+        "keybinds {{ normal {{ bind \"Ctrl u\" {{ NewTab {{ layout \"{}\"; }}; }}; }}; }}",
+        action_layout.display()
+    );
+    let original = r#"
+        configuration_edits {
+            set "keybinds" "normal" "bind:[\"Ctrl Alt y\"]" {
+                bind "Ctrl Alt y" { Quit; }
+            }
+        }
+        terminal { underline_thickness 3; padding 4; }
+    "#;
+    std::fs::write(&managed, original).unwrap();
+    let files = [
+        (&main, main_text.as_str()),
+        (&theme, include_str!("../../assets/themes/adwaita.kdl")),
+        (&layout, "layout { pane contents_file=\"preview.txt\"; }"),
+        (&swap, include_str!("../../assets/layouts/default.swap.kdl")),
+        (&contents, "initial contents"),
+        (&action_layout, "layout { pane; }"),
+    ];
+    for (path, content) in files {
+        std::fs::write(path, content).unwrap();
+    }
+    for (path, content) in files {
+        std::fs::remove_file(path).unwrap();
+        symlink(&fifo, path).unwrap();
+        assert_refused(path);
+        assert_eq!(std::fs::read_link(path).unwrap(), fifo);
+        assert_eq!(std::fs::read_to_string(&managed).unwrap(), original);
+        std::fs::remove_file(path).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    // A symlink to a regular input is still readable by the managed writer.
+    let regular = root.join("regular.kdl");
+    std::fs::rename(&managed, &regular).unwrap();
+    symlink(&regular, &managed).unwrap();
+    Config::try_write_managed_fragment_guarded(&overlay, fragment, || Ok(())).unwrap();
+    let loaded = Config::load(None, Some(root), false).unwrap();
+    assert_eq!(loaded.terminal.underline_offset, Some(-2));
+    assert_eq!(loaded.terminal.underline_thickness, Some(3));
+    assert_eq!(loaded.terminal.padding, Some(4.0));
+    assert_eq!(loaded.options.mouse_mode, Some(false));
+    assert_eq!(
+        loaded.keybinds.0[&InputMode::Normal][&"Ctrl Alt y".parse().unwrap()],
+        [Action::Quit]
+    );
+    assert_eq!(std::fs::read_to_string(regular).unwrap(), original);
+}
+
+#[cfg(unix)]
+#[test]
 fn underline_metrics_saved_comparison_rejects_indeterminate_theme_preload() {
     use std::os::unix::ffi::OsStrExt;
 

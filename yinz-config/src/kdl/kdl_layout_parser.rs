@@ -3,11 +3,15 @@ use yinz_types::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use yinz_types::input::layout::RunPluginOrAlias;
 use yinz_types::internal_ids::TabPosition;
 use {
-    crate::config::ConfigError, yinz_types::input::command::RunCommand,
-    yinz_types::input::layout::FloatingPaneLayout, yinz_types::input::layout::Layout,
+    crate::config::{ConfigError, ConfigRead},
+    yinz_types::input::command::RunCommand,
+    yinz_types::input::layout::FloatingPaneLayout,
+    yinz_types::input::layout::Layout,
     yinz_types::input::layout::LayoutConstraint,
-    yinz_types::input::layout::PluginUserConfiguration, yinz_types::input::layout::Run,
-    yinz_types::input::layout::SwapFloatingLayout, yinz_types::input::layout::SwapTiledLayout,
+    yinz_types::input::layout::PluginUserConfiguration,
+    yinz_types::input::layout::Run,
+    yinz_types::input::layout::SwapFloatingLayout,
+    yinz_types::input::layout::SwapTiledLayout,
     yinz_types::input::layout::TiledPaneLayout,
 };
 
@@ -44,6 +48,7 @@ pub struct KdlLayoutParser<'a> {
     default_tab_template: Option<(TiledPaneLayout, Vec<FloatingPaneLayout>, KdlNode)>,
     new_tab_template: Option<(TiledPaneLayout, Vec<FloatingPaneLayout>)>,
     file_name: Option<PathBuf>,
+    mode: ConfigRead,
 }
 
 impl<'a> KdlLayoutParser<'a> {
@@ -51,6 +56,7 @@ impl<'a> KdlLayoutParser<'a> {
         raw_layout: &'a str,
         global_cwd: Option<PathBuf>,
         file_name: Option<String>,
+        mode: ConfigRead,
     ) -> Self {
         KdlLayoutParser {
             raw_layout,
@@ -60,8 +66,34 @@ impl<'a> KdlLayoutParser<'a> {
             new_tab_template: None,
             global_cwd,
             file_name: file_name.map(PathBuf::from),
+            mode,
         }
     }
+    fn read_pane_contents(
+        &self,
+        contents_file: Option<&str>,
+    ) -> Result<Option<String>, ConfigError> {
+        let Some(path) = self
+            .file_name
+            .as_deref()
+            .and_then(|file| file.parent())
+            .zip(contents_file)
+            .map(|(parent, file)| parent.join(file))
+        else {
+            return Ok(None);
+        };
+        match self.mode.reader()(&path) {
+            Ok(contents) => Ok(Some(contents)),
+            Err(error)
+                if self.mode == ConfigRead::Saved
+                    && error.kind() != std::io::ErrorKind::NotFound =>
+            {
+                Err(ConfigError::IoPath(error, path))
+            },
+            Err(_) => Ok(None),
+        }
+    }
+
     fn is_a_reserved_word(&self, word: &str) -> bool {
         // note that it's important that none of these words happens to also be a config property,
         // otherwise they might collide
@@ -839,14 +871,7 @@ impl<'a> KdlLayoutParser<'a> {
         let default_bg = kdl_get_string_property_or_child_value_with_error!(kdl_node, "default_bg")
             .map(|s| s.to_string());
         self.assert_no_mixed_children_and_properties(kdl_node)?;
-        let pane_initial_contents = contents_file.and_then(|contents_file| {
-            self.file_name
-                .as_ref()
-                .and_then(|f| f.parent())
-                .and_then(|parent_folder| {
-                    std::fs::read_to_string(parent_folder.join(contents_file)).ok()
-                })
-        });
+        let pane_initial_contents = self.read_pane_contents(contents_file)?;
         let mut pane = TiledPaneLayout {
             borderless,
             focus,
@@ -915,14 +940,7 @@ impl<'a> KdlLayoutParser<'a> {
         let default_bg = kdl_get_string_property_or_child_value_with_error!(kdl_node, "default_bg")
             .map(|s| s.to_string());
         self.assert_no_mixed_children_and_properties(kdl_node)?;
-        let pane_initial_contents = contents_file.and_then(|contents_file| {
-            self.file_name
-                .as_ref()
-                .and_then(|f| f.parent())
-                .and_then(|parent_folder| {
-                    std::fs::read_to_string(parent_folder.join(contents_file)).ok()
-                })
-        });
+        let pane_initial_contents = self.read_pane_contents(contents_file)?;
         Ok(FloatingPaneLayout {
             pane_tabs: tabbed.pane_tabs,
             name,

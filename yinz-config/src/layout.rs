@@ -1,9 +1,13 @@
 //! Layout loading and parsing. Pure layout models live in yinz-types.
 use {
-    crate::config::Config, crate::config::ConfigError, yinz_runtime::home::default_layout_dir,
-    yinz_runtime::home::find_default_config_dir, yinz_types::data::LayoutInfo,
-    yinz_types::data::LayoutMetadata, yinz_types::data::LayoutParsingError,
-    yinz_types::data::LayoutWithError, yinz_types::data::TabMetadata,
+    crate::config::{Config, ConfigError, ConfigRead},
+    yinz_runtime::home::default_layout_dir,
+    yinz_runtime::home::find_default_config_dir,
+    yinz_types::data::LayoutInfo,
+    yinz_types::data::LayoutMetadata,
+    yinz_types::data::LayoutParsingError,
+    yinz_types::data::LayoutWithError,
+    yinz_types::data::TabMetadata,
 };
 
 use std::cmp::Ordering;
@@ -165,6 +169,14 @@ pub fn stringified_from_path_or_default(
     layout_path: Option<&PathBuf>,
     layout_dir: Option<PathBuf>,
 ) -> Result<StringifiedLayout, ConfigError> {
+    stringified_from_path_or_default_with(layout_path, layout_dir, ConfigRead::Ordinary)
+}
+
+pub(crate) fn stringified_from_path_or_default_with(
+    layout_path: Option<&PathBuf>,
+    layout_dir: Option<PathBuf>,
+    mode: ConfigRead,
+) -> Result<StringifiedLayout, ConfigError> {
     match layout_path {
         Some(layout_path) => {
             // The way we determine where to look for the layout is similar to
@@ -172,15 +184,16 @@ pub fn stringified_from_path_or_default(
             // See the gh issue for more: https://github.com/zellij-org/zellij/issues/1412#issuecomment-1131559720
             if layout_path.extension().is_some() || layout_path.components().count() > 1 {
                 // We look localy!
-                crate::layout::stringified_from_path(layout_path)
+                stringified_from_path_with(layout_path, mode)
             } else {
                 // We look in the default dir
-                crate::layout::stringified_from_dir(layout_path, layout_dir.as_ref())
+                stringified_from_dir_with(layout_path, layout_dir.as_ref(), mode)
             }
         },
-        None => crate::layout::stringified_from_dir(
+        None => stringified_from_dir_with(
             &std::path::PathBuf::from("default"),
             layout_dir.as_ref(),
+            mode,
         ),
     }
 }
@@ -202,17 +215,36 @@ pub fn from_path_or_default(
     layout_dir: Option<PathBuf>,
     config: Config,
 ) -> Result<(Layout, Config), ConfigError> {
+    from_path_or_default_with(layout_path, layout_dir, config, ConfigRead::Ordinary)
+}
+
+pub(crate) fn from_path_or_default_with(
+    layout_path: Option<&PathBuf>,
+    layout_dir: Option<PathBuf>,
+    config: Config,
+    mode: ConfigRead,
+) -> Result<(Layout, Config), ConfigError> {
     let (path_to_raw_layout, raw_layout, raw_swap_layouts) =
-        crate::layout::stringified_from_path_or_default(layout_path, layout_dir)?;
-    let layout = crate::kdl::layout::from_kdl(
+        stringified_from_path_or_default_with(layout_path, layout_dir, mode)?;
+    let layout = crate::kdl::layout::from_kdl_with(
         &raw_layout,
-        Some(path_to_raw_layout),
+        Some(path_to_raw_layout.clone()),
         raw_swap_layouts
             .as_ref()
             .map(|(r, f)| (r.as_str(), f.as_str())),
         None,
+        mode,
     )?;
-    let config = Config::from_kdl(&raw_layout, Some(config))?; // this merges the two config, with
+    let config = if mode == ConfigRead::Saved {
+        Config::from_file_text(
+            Path::new(&path_to_raw_layout),
+            raw_layout,
+            Some(config),
+            mode,
+        )?
+    } else {
+        Config::from_kdl(&raw_layout, Some(config))?
+    };
     Ok((layout, config))
 }
 pub fn from_stringified_layout(
@@ -283,17 +315,25 @@ pub fn stringified_from_dir(
     layout: &PathBuf,
     layout_dir: Option<&PathBuf>,
 ) -> Result<StringifiedLayout, ConfigError> {
+    stringified_from_dir_with(layout, layout_dir, ConfigRead::Ordinary)
+}
+
+fn stringified_from_dir_with(
+    layout: &Path,
+    layout_dir: Option<&PathBuf>,
+    mode: ConfigRead,
+) -> Result<StringifiedLayout, ConfigError> {
     reject_remote_layout(layout)?;
     // Absolute files do not need a configured layouts directory. A first native
     // session can start before the user's config directory exists.
     if layout.is_absolute() {
-        return stringified_from_path(layout);
+        return stringified_from_path_with(layout, mode);
     }
     match layout_dir {
         Some(dir) => {
             let layout_path = &dir.join(layout);
-            if layout_path.with_extension("kdl").exists() {
-                crate::layout::stringified_from_path(layout_path)
+            if mode.exists(&layout_path.with_extension("kdl"))? {
+                stringified_from_path_with(layout_path, mode)
             } else {
                 crate::layout::stringified_from_default_assets(layout)
             }
@@ -305,7 +345,7 @@ pub fn stringified_from_dir(
             };
 
             let layout_path = &home.join(layout);
-            crate::layout::stringified_from_path(layout_path)
+            stringified_from_path_with(layout_path, mode)
         },
     }
 }
@@ -345,6 +385,33 @@ pub fn stringified_from_path(layout_path: &Path) -> Result<StringifiedLayout, Co
         kdl_layout,
         swap_layout_and_path,
     ))
+}
+
+fn stringified_from_path_with(
+    layout_path: &Path,
+    mode: ConfigRead,
+) -> Result<StringifiedLayout, ConfigError> {
+    if mode == ConfigRead::Ordinary {
+        return stringified_from_path(layout_path);
+    }
+    reject_remote_layout(layout_path)?;
+    let read =
+        |path: &Path| mode.reader()(path).map_err(|error| ConfigError::IoPath(error, path.into()));
+    let (path, raw) = match read(layout_path) {
+        Err(ConfigError::IoPath(error, _)) if error.kind() == std::io::ErrorKind::NotFound => {
+            let path = layout_path.with_extension("kdl");
+            let raw = read(&path)?;
+            (path, raw)
+        },
+        result => (layout_path.to_path_buf(), result?),
+    };
+    let swap_path = layout_path.with_extension("swap.kdl");
+    let swap = match read(&swap_path) {
+        Ok(raw) => Some((swap_path.display().to_string(), raw)),
+        Err(ConfigError::IoPath(error, _)) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    Ok((path.display().to_string(), raw, swap))
 }
 pub fn stringified_from_default_assets(path: &Path) -> Result<StringifiedLayout, ConfigError> {
     // These names identify compiled-in assets. User layouts are loaded from the layout directory.
@@ -579,6 +646,16 @@ pub fn layout_info_from_config(
     layout_dir: &Option<PathBuf>,
     maybe_layout_path: &Option<PathBuf>,
 ) -> Option<LayoutInfo> {
+    layout_info_from_config_with(layout_dir, maybe_layout_path, ConfigRead::Ordinary)
+        .ok()
+        .flatten()
+}
+
+pub(crate) fn layout_info_from_config_with(
+    layout_dir: &Option<PathBuf>,
+    maybe_layout_path: &Option<PathBuf>,
+    mode: ConfigRead,
+) -> Result<Option<LayoutInfo>, ConfigError> {
     // If we're not given a layout path, fall back to "default". Since we cannot tell ahead of
     // time whether the user has a layout named "default.kdl" in their layout directory, we
     // cannot blindly assume that this is indeed the builtin default layout. The layout
@@ -587,35 +664,35 @@ pub fn layout_info_from_config(
         .clone()
         .unwrap_or(PathBuf::from("default"));
 
+    let file_info = |path: PathBuf| {
+        // Saved validation needs the layout identity only. SwitchSession resolves it at use.
+        let metadata = if mode == ConfigRead::Ordinary {
+            metadata_from_path(&path)
+        } else {
+            LayoutMetadata::default()
+        };
+        Some(LayoutInfo::File(path.display().to_string(), metadata))
+    };
     if layout_path.extension().is_some() || layout_path.components().count() > 1 {
-        let layout_dir = layout_dir.clone().or_else(default_layout_dir)?;
-        let file_path = layout_dir.join(layout_path);
-        Some(LayoutInfo::File(
-            // layout_dir.join(layout_path).display().to_string(),
-            file_path.display().to_string(),
-            crate::layout::metadata_from_path(&file_path),
-        ))
+        Ok(layout_dir
+            .clone()
+            .or_else(default_layout_dir)
+            .and_then(|dir| file_info(dir.join(layout_path))))
     } else {
         // Attempt to interpret the layout as bare layout name from the layout application
         // directory.
         if let Some(layout_dir) = layout_dir.clone().or_else(default_layout_dir) {
             let file_path = layout_dir.join(&layout_path);
-            if file_path.exists() {
-                return Some(LayoutInfo::File(
-                    file_path.display().to_string(),
-                    crate::layout::metadata_from_path(&file_path),
-                ));
+            if mode.exists(&file_path)? {
+                return Ok(file_info(file_path));
             }
             let file_path_with_ext = file_path.with_extension("kdl");
-            if file_path_with_ext.exists() {
-                return Some(LayoutInfo::File(
-                    file_path_with_ext.display().to_string(),
-                    crate::layout::metadata_from_path(&file_path_with_ext),
-                ));
+            if mode.exists(&file_path_with_ext)? {
+                return Ok(file_info(file_path_with_ext));
             }
         }
         // Assume a builtin layout by default
-        Some(LayoutInfo::BuiltIn(layout_path.display().to_string()))
+        Ok(Some(LayoutInfo::BuiltIn(layout_path.display().to_string())))
     }
 }
 // The unit test location.

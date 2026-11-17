@@ -5,7 +5,23 @@ pub fn from_kdl(
     raw_swap_layouts: Option<(&str, &str)>, // raw_swap_layouts swap_layouts_file_name
     cwd: Option<PathBuf>,
 ) -> Result<Layout, ConfigError> {
-    let mut kdl_layout_parser = KdlLayoutParser::new(raw_layout, cwd, file_name.clone());
+    from_kdl_with(
+        raw_layout,
+        file_name,
+        raw_swap_layouts,
+        cwd,
+        ConfigRead::Ordinary,
+    )
+}
+
+pub(crate) fn from_kdl_with(
+    raw_layout: &str,
+    file_name: Option<String>,
+    raw_swap_layouts: Option<(&str, &str)>,
+    cwd: Option<PathBuf>,
+    mode: ConfigRead,
+) -> Result<Layout, ConfigError> {
+    let mut kdl_layout_parser = KdlLayoutParser::new(raw_layout, cwd, file_name.clone(), mode);
     let layout = kdl_layout_parser.parse().map_err(|e| match e {
         ConfigError::KdlError(kdl_error) => ConfigError::KdlError(kdl_error.add_src(
             file_name.unwrap_or_else(|| "N/A".to_owned()),

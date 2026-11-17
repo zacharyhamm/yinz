@@ -90,11 +90,11 @@ impl UnderlineReconfigure {
             .context("session is unavailable")?;
             Config::load_saved(file.as_deref(), dir.as_deref())
                 .map(|saved| changed_underline_settings(&requested, &saved.terminal).collect())
-                .map_err(|error| anyhow!(yinz_config::editor::validation_error(error)))
+                .map_err(|error| anyhow!(error.diagnostic_message()))
                 .with_context(|| format!(
                     "cannot compare terminal {} with the saved configuration; the entire fragment was refused. \
-                     Repair or restore the saved configuration for file reload. \
-                     Use --write to persist the fragment in the session's drop-in",
+                     Repair or restore the reported file for automatic reload. \
+                     Use --write to attempt to save the fragment in the session's managed drop-in",
                     names.into_iter().flatten().collect::<Vec<_>>().join(", ")
                 ))
         } else {

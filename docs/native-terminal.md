@@ -266,10 +266,12 @@ The session watches the main file and config directory it started with. `--write
 persists to that directory's `config.d/yinz-managed.kdl`. If a lexically later
 drop-in supplies a key, change the winning drop-in to apply the desired value.
 If an underline change requires a managed write and that write fails, the entire
-fragment stays unapplied. An invalid main file leaves the current native settings
-in use, and invalid drop-ins are skipped as whole layers. A managed save can
-succeed while the main file is invalid or missing. Repair or restore that file to
-resume automatic reload.
+fragment stays unapplied. Correct the reported setting or restore readable,
+regular KDL at the reported path, then retry. An invalid main file leaves the
+current native settings in use, and invalid drop-ins are skipped as whole
+layers. A managed save can succeed while the main file is invalid or missing
+when the fragment can be validated against the built-in defaults. Repair or
+restore the main file to resume automatic reload.
 
 On a session file-update notification, each native window rereads its own
 `--config` and `--config-dir` layers. Use shared watched paths for automatic

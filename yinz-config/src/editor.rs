@@ -1,5 +1,5 @@
 //! Configuration palette catalog and targeted overlays. The normal KDL parser validates edits.
-use crate::config::{Config, ConfigError};
+use crate::config::{Config, ConfigError, ConfigRead};
 use kdl::{KdlDocument, KdlNode, KdlValue};
 use serde::Serialize;
 use serde_json::Value;
@@ -785,12 +785,29 @@ pub fn validation_error(error: ConfigError) -> String {
 }
 
 pub fn apply(config: &Config, patches: &[Patch]) -> Result<Config, String> {
-    let patches = normalize_patches(patches)?;
+    apply_with(config, patches, ConfigRead::Ordinary, |message| {
+        ConfigError::new_kdl_error(message, 0, 0)
+    })
+    .map_err(validation_error)
+}
+
+pub(crate) fn apply_with(
+    config: &Config,
+    patches: &[Patch],
+    mode: ConfigRead,
+    invalid: impl Fn(String) -> ConfigError,
+) -> Result<Config, ConfigError> {
+    let patches = normalize_patches(patches).map_err(&invalid)?;
     let catalog = catalog();
     let mut result = config.clone();
     let roots: std::collections::BTreeSet<_> = patches
         .iter()
-        .map(|p| p.path.first().cloned().ok_or("Missing edit target"))
+        .map(|p| {
+            p.path
+                .first()
+                .cloned()
+                .ok_or_else(|| invalid("Missing edit target".into()))
+        })
         .collect::<Result<_, _>>()?;
     let mut roots: Vec<_> = roots.into_iter().collect();
     roots.sort_by_key(|root| root != "plugins");
@@ -817,7 +834,7 @@ pub fn apply(config: &Config, patches: &[Patch]) -> Result<Config, String> {
             "ui" => section.ui = config.ui,
             "web" => section.web = config.web.clone(),
             _ if catalog.iter().any(|s| s.name == root) => {},
-            _ => return Err(format!("Unknown configuration section: {root}")),
+            _ => return Err(invalid(format!("Unknown configuration section: {root}"))),
         }
         if root == "themes" {
             let all = patches.iter().any(|p| p.path == [root.clone()]);
@@ -842,7 +859,7 @@ pub fn apply(config: &Config, patches: &[Patch]) -> Result<Config, String> {
                 );
             }
         }
-        let original = document(&section)?;
+        let original = document(&section).map_err(&invalid)?;
         let mut nodes = original.clone();
         for patch in patches.iter().filter(|p| p.path.first() == Some(&root)) {
             if patch.reset {
@@ -851,9 +868,9 @@ pub fn apply(config: &Config, patches: &[Patch]) -> Result<Config, String> {
                     node: find_node(&original, &patch.path).cloned(),
                     reset: false,
                 };
-                patch_document(&mut nodes, &restored)?;
+                patch_document(&mut nodes, &restored).map_err(&invalid)?;
             } else {
-                patch_document(&mut nodes, patch)?;
+                patch_document(&mut nodes, patch).map_err(&invalid)?;
             }
         }
         let mut document = KdlDocument::new();
@@ -861,14 +878,22 @@ pub fn apply(config: &Config, patches: &[Patch]) -> Result<Config, String> {
             if root != "overlay_tab_plugins" && node.name == "overlay_tab_plugins" {
                 continue;
             }
-            document.nodes_mut().push(to_kdl(node, 0, None)?);
+            document
+                .nodes_mut()
+                .push(to_kdl(node, 0, None).map_err(&invalid)?);
         }
         // Validate overlay aliases against the completed batch, after all sections have applied.
         let base = (root != "overlay_tab_plugins").then(|| Config {
             overlay_tab_plugins: Some(vec![]),
             ..Default::default()
         });
-        let parsed = Config::from_kdl(&document.to_string(), base).map_err(validation_error)?;
+        let parsed = Config::from_kdl_with(&document.to_string(), base, mode).map_err(|error| {
+            if mode == ConfigRead::Saved && matches!(error, ConfigError::IoPath(..)) {
+                error
+            } else {
+                invalid(validation_error(error))
+            }
+        })?;
         match root.as_str() {
             "themes" => {
                 if patches.iter().any(|p| p.path == [root.clone()]) {
@@ -901,7 +926,7 @@ pub fn apply(config: &Config, patches: &[Patch]) -> Result<Config, String> {
             _ => result.options = parsed.options,
         }
     }
-    result.resolved_overlay_tab_plugins()?;
+    result.resolved_overlay_tab_plugins().map_err(invalid)?;
     Ok(result)
 }
 
@@ -1229,6 +1254,15 @@ impl Disk {
         config_path: Option<&std::path::Path>,
         config_dir: Option<&std::path::Path>,
     ) -> Result<Self, String> {
+        Self::read_with(config_path, config_dir, ConfigRead::Ordinary)
+    }
+
+    pub(crate) fn read_with(
+        config_path: Option<&std::path::Path>,
+        config_dir: Option<&std::path::Path>,
+        mode: ConfigRead,
+    ) -> Result<Self, String> {
+        let read = mode.reader();
         let dir = config_dir
             .map(std::path::Path::to_path_buf)
             .or_else(yinz_runtime::home::find_default_config_dir)
@@ -1247,7 +1281,9 @@ impl Disk {
         match std::fs::read_dir(&overlay) {
             Ok(entries) => {
                 for entry in entries {
-                    let path = entry.map_err(|e| e.to_string())?.path();
+                    let path = entry
+                        .map_err(|e| format!("Cannot read {}: {e}", overlay.display()))?
+                        .path();
                     if path.extension().and_then(|v| v.to_str()) == Some("kdl") {
                         paths.push(path);
                     }
@@ -1258,14 +1294,20 @@ impl Disk {
         }
         let mut files = std::collections::BTreeMap::new();
         for path in paths {
-            let text = match std::fs::read_to_string(&path) {
+            let text = match read(&path) {
                 Ok(text) => Some(text),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
                 Err(e) => return Err(format!("Cannot read {}: {e}", path.display())),
             };
             files.insert(path, text);
         }
-        let configured = Config::load(config_path, Some(&dir), false).map_err(validation_error)?;
+        let configured = match mode {
+            ConfigRead::Ordinary => {
+                Config::load(config_path, Some(&dir), false).map_err(validation_error)
+            },
+            ConfigRead::Saved => Config::load_saved(config_path, Some(&dir))
+                .map_err(|error| error.diagnostic_message()),
+        }?;
         let theme_dir = configured
             .options
             .theme_dir
@@ -1278,7 +1320,7 @@ impl Disk {
                         .map_err(|e| format!("Cannot read {}: {e}", theme_dir.display()))?
                         .path();
                     if path.extension().and_then(|v| v.to_str()) == Some("kdl") {
-                        let source = std::fs::read_to_string(&path)
+                        let source = read(&path)
                             .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
                         theme_files.insert(path, source);
                     }
@@ -1300,6 +1342,15 @@ impl Disk {
         patches: &[Patch],
         reset: &[Vec<String>],
     ) -> Result<(String, Config, Config), String> {
+        self.preview_with(patches, reset, ConfigRead::Ordinary)
+    }
+
+    pub(crate) fn preview_with(
+        &self,
+        patches: &[Patch],
+        reset: &[Vec<String>],
+        mode: ConfigRead,
+    ) -> Result<(String, Config, Config), String> {
         let managed_path = self.overlay.join(crate::config::MANAGED_CONFIG_FILE_NAME);
         let mut managed: KdlDocument = self
             .files
@@ -1307,7 +1358,7 @@ impl Disk {
             .and_then(|s| s.as_deref())
             .unwrap_or("")
             .parse()
-            .map_err(|e: kdl::KdlError| e.to_string())?;
+            .map_err(|e: kdl::KdlError| format!("{}: {e}", managed_path.display()))?;
         let mut fragment = KdlDocument::new();
         let mut edits = patches_to_kdl(patches)?;
         for path in reset {
@@ -1325,20 +1376,18 @@ impl Disk {
         fragment.nodes_mut().push(edits);
         crate::config::merge_kdl_fragment(&mut managed, &fragment);
         let mut config = Config::from_default_assets().map_err(|e| e.to_string())?;
-        if let Some(source) = self
-            .primary
-            .as_ref()
-            .and_then(|p| self.files.get(p))
-            .and_then(|s| s.as_ref())
+        if let Some(path) = &self.primary
+            && let Some(Some(source)) = self.files.get(path)
         {
-            config = Config::from_kdl(source, Some(config)).map_err(validation_error)?;
+            config =
+                Config::from_kdl_with(source, Some(config), mode).map_err(|error| match mode {
+                    ConfigRead::Ordinary => validation_error(error),
+                    ConfigRead::Saved => error.diagnostic_message_for_file(path),
+                })?;
         }
-        crate::config::apply_themes(
-            &mut config,
-            None,
-            self.overlay.parent().map(std::path::Path::to_path_buf),
-        )
-        .map_err(|e| e.to_string())?;
+        let config_dir = self.overlay.parent().map(std::path::Path::to_path_buf);
+        crate::config::apply_themes_with(&mut config, None, config_dir.clone(), mode)
+            .map_err(|error| error.diagnostic_message())?;
         let mut underlay = config.clone();
         for (path, source) in &self.files {
             if self.primary.as_ref() == Some(path) {
@@ -1353,26 +1402,35 @@ impl Disk {
                 source.as_ref()
             };
             if let Some(source) = source {
-                config = Config::from_kdl(source, Some(config))
-                    .map_err(|e| format!("{}: {}", path.display(), validation_error(e)))?;
+                config = Config::from_kdl_with(source, Some(config), mode)
+                    .map_err(|error| error.diagnostic_message_for_file(path))?;
             }
         }
-        let (_, mut config) = crate::config::load_layout_and_config(
-            None,
-            config,
-            self.overlay.parent().map(std::path::Path::to_path_buf),
-            self.primary.as_deref(),
-            None,
-            None,
-            std::path::PathBuf::from("."),
-        )
-        .map_err(validation_error)?;
-        crate::config::apply_themes(
-            &mut config,
-            None,
-            self.overlay.parent().map(std::path::Path::to_path_buf),
-        )
-        .map_err(validation_error)?;
+        let mut config = match mode {
+            ConfigRead::Ordinary => crate::config::load_layout_and_config(
+                None,
+                config,
+                config_dir.clone(),
+                self.primary.as_deref(),
+                None,
+                None,
+                std::path::PathBuf::from("."),
+            )
+            .map(|(_, config)| config)
+            .map_err(validation_error),
+            ConfigRead::Saved => crate::config::load_saved_layout_config(
+                config,
+                config_dir.clone(),
+                self.primary.as_deref(),
+            )
+            .map_err(|error| error.diagnostic_message()),
+        }?;
+        crate::config::apply_themes_with(&mut config, None, config_dir, mode).map_err(|error| {
+            match mode {
+                ConfigRead::Ordinary => validation_error(error),
+                ConfigRead::Saved => error.diagnostic_message(),
+            }
+        })?;
         Ok((fragment.to_string(), config, underlay))
     }
 }

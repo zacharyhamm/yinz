@@ -236,8 +236,10 @@ impl ConfigError {
         }
     }
 
-    fn diagnostic_message_for_file(&self, path: &Path) -> String {
-        if matches!(self, Self::KdlError(error) if error.src.is_some()) {
+    pub(crate) fn diagnostic_message_for_file(&self, path: &Path) -> String {
+        if matches!(self, Self::KdlError(error) if error.src.is_some())
+            || matches!(self, Self::IoPath(..))
+        {
             self.diagnostic_message()
         } else {
             format!("{}: {}", path.display(), self.diagnostic_message())
@@ -489,21 +491,25 @@ fn read_regular_config(path: &Path) -> std::io::Result<String> {
     Ok(text)
 }
 
+fn managed_recovery(error: String) -> String {
+    format!("{error}. Correct the reported setting or restore readable regular KDL at the reported path, then retry.")
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ConfigRead {
+pub(crate) enum ConfigRead {
     Ordinary,
     Saved,
 }
 
 impl ConfigRead {
-    fn reader(self) -> fn(&Path) -> io::Result<String> {
+    pub(crate) fn reader(self) -> fn(&Path) -> io::Result<String> {
         match self {
             Self::Ordinary => |path| std::fs::read_to_string(path),
             Self::Saved => read_regular_config,
         }
     }
 
-    fn exists(self, path: &Path) -> Result<bool, ConfigError> {
+    pub(crate) fn exists(self, path: &Path) -> Result<bool, ConfigError> {
         match self {
             Self::Ordinary => Ok(path.exists()),
             Self::Saved => path
@@ -556,7 +562,7 @@ impl Config {
             (None, None) => None,
         };
         if let Some(path) = main {
-            config = Config::from_path_with(path, Some(config), mode.reader())?;
+            config = Config::from_path_with(path, Some(config), mode)?;
         }
         config.load_overlay_dir(overlay_dir.as_deref(), mode)?;
         config.resolve_plugin_repositories(config_path, config_dir.as_deref())
@@ -750,8 +756,11 @@ impl Config {
                 );
                 continue;
             }
-            match Config::from_file_text(&path, text, Some(base)) {
+            match Config::from_file_text(&path, text, Some(base), mode) {
                 Ok(layered) => *self = layered,
+                Err(error @ ConfigError::IoPath(..)) if mode == ConfigRead::Saved => {
+                    return Err(error);
+                },
                 Err(error) => log::error!(
                     "Skipping config drop-in {}",
                     error.diagnostic_message_for_file(&path)
@@ -830,7 +839,8 @@ impl Config {
                 },
             })?;
         }
-        let mut managed: KdlDocument = match std::fs::read_to_string(&path) {
+        let mode = ConfigRead::Saved;
+        let mut managed: KdlDocument = match mode.reader()(&path) {
             Ok(text) => text.parse().map_err(|e: kdl::KdlError| {
                 format!(
                     "{} is not valid KDL; fix or remove it before yinz can write to it: {e}",
@@ -838,21 +848,31 @@ impl Config {
                 )
             })?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => KdlDocument::new(),
-            Err(e) => return Err(format!("failed to read {}: {e}", path.display())),
+            Err(e) => {
+                return Err(managed_recovery(format!(
+                    "Cannot read {}: {e}",
+                    path.display()
+                )));
+            },
         };
         merge_kdl_fragment(&mut managed, &fragment);
         let text = managed.to_string();
         let defaults = match base {
             Some(base) => base,
             None if managed.get(crate::editor::EDITS_BLOCK).is_some() => {
-                crate::editor::Disk::read(None, overlay_dir.parent())?
-                    .preview(&[], &[])?
+                crate::editor::Disk::read_with(None, overlay_dir.parent(), mode)
+                    .and_then(|disk| disk.preview_with(&[], &[], mode))
+                    .map_err(managed_recovery)?
                     .2
             },
             None => Config::from_default_assets().map_err(|e| e.to_string())?,
         };
-        Config::from_kdl(&text, Some(defaults))
-            .map_err(|e| format!("the merged {} would not load: {e}", path.display()))?;
+        Config::from_kdl_with(&text, Some(defaults), mode).map_err(|error| {
+            managed_recovery(format!(
+                "The merged configuration would not load. {}",
+                error.diagnostic_message_for_file(&path)
+            ))
+        })?;
         let mut tmp = tempfile::NamedTempFile::new_in(overlay_dir)
             .map_err(|e| format!("failed to stage {}: {e}", path.display()))?;
         tmp.write_all(text.as_bytes())
@@ -891,29 +911,31 @@ impl Config {
         }
     }
     pub fn from_path(path: &PathBuf, default_config: Option<Config>) -> ConfigResult {
-        Self::from_path_with(path, default_config, |path| std::fs::read_to_string(path))
+        Self::from_path_with(path, default_config, ConfigRead::Ordinary)
     }
 
     fn from_path_with(
         path: &Path,
         default_config: Option<Config>,
-        read: fn(&Path) -> std::io::Result<String>,
+        mode: ConfigRead,
     ) -> ConfigResult {
         if path.extension().and_then(|extension| extension.to_str()) == Some("lua") {
             return Err(ConfigError::UnsupportedFormat(
                 "Lua configuration is no longer supported".into(),
             ));
         }
-        let kdl_config = read(path).map_err(|error| ConfigError::IoPath(error, path.into()))?;
-        Self::from_file_text(path, kdl_config, default_config)
+        let kdl_config =
+            mode.reader()(path).map_err(|error| ConfigError::IoPath(error, path.into()))?;
+        Self::from_file_text(path, kdl_config, default_config, mode)
     }
 
-    fn from_file_text(
+    pub(crate) fn from_file_text(
         path: &Path,
         kdl_config: String,
         default_config: Option<Config>,
+        mode: ConfigRead,
     ) -> ConfigResult {
-        match Config::from_kdl(&kdl_config, default_config) {
+        match Config::from_kdl_with(&kdl_config, default_config, mode) {
             Ok(config) => Ok(config),
             Err(ConfigError::KdlDeserializationError(kdl_error)) => {
                 let error_message = match kdl_error.kind {
@@ -1681,6 +1703,37 @@ pub async fn watch_layout_dir_changes<F, Fut>(
         }
     }
 }
+fn configured_layout_dir(
+    cli_config_options: Option<&Options>,
+    config: &Config,
+    config_dir: Option<PathBuf>,
+) -> Option<PathBuf> {
+    cli_config_options
+        .as_ref()
+        .and_then(|cli_options| cli_options.layout_dir.clone())
+        .or_else(|| config.options.layout_dir.clone())
+        .or_else(|| home::get_layout_dir(config_dir))
+        .or_else(|| home::get_layout_dir(home::find_default_config_dir()))
+        // Try to get an absolute path, else let the resolution code figure this out.
+        .map(|d| d.canonicalize().unwrap_or(d))
+}
+
+pub(crate) fn load_saved_layout_config(
+    config: Config,
+    config_dir: Option<PathBuf>,
+    config_path: Option<&Path>,
+) -> ConfigResult {
+    let layout_dir = configured_layout_dir(None, &config, config_dir.clone());
+    let layout_path = config.options.default_layout.clone();
+    let (_, config) = crate::layout::from_path_or_default_with(
+        layout_path.as_ref(),
+        layout_dir,
+        config,
+        ConfigRead::Saved,
+    )?;
+    config.resolve_plugin_repositories(config_path, config_dir.as_deref())
+}
+
 pub fn load_layout_and_config(
     cli_config_options: Option<&Options>,
     config: Config,
@@ -1690,15 +1743,7 @@ pub fn load_layout_and_config(
     layout_path: Option<&std::path::Path>,
     cwd: PathBuf,
 ) -> Result<(Option<yinz_types::data::LayoutInfo>, Config), ConfigError> {
-    // find the layout folder relative to which we'll look for our layout
-    let layout_dir = cli_config_options
-        .as_ref()
-        .and_then(|cli_options| cli_options.layout_dir.clone())
-        .or_else(|| config.options.layout_dir.clone())
-        .or_else(|| home::get_layout_dir(config_dir.clone()))
-        .or_else(|| home::get_layout_dir(home::find_default_config_dir()))
-        // Try to get an absolute path, else let the resolution code figure this out.
-        .map(|d| d.canonicalize().unwrap_or(d));
+    let layout_dir = configured_layout_dir(cli_config_options, &config, config_dir.clone());
     // Choose the layout source here; the shared layout loader resolves files and builtins.
     let (layout_info, chosen_layout) = if let Some(ref layout_string) = layout_string {
         (
@@ -1743,7 +1788,7 @@ pub fn apply_themes(
     apply_themes_with(config, cli_config_options, config_dir, ConfigRead::Ordinary)
 }
 
-fn apply_themes_with(
+pub(crate) fn apply_themes_with(
     config: &mut Config,
     cli_config_options: Option<Options>,
     config_dir: Option<PathBuf>,

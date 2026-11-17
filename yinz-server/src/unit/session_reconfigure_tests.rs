@@ -1666,6 +1666,27 @@ mod ligature_reconfigure {
             assert!(self.pty.is_empty());
         }
 
+        pub(super) fn assert_only_write_failure(&self, managed: &Path, error: &str) {
+            assert!(self.screen.is_empty());
+            assert!(self.pty.is_empty());
+            let plugin: Vec<_> = self
+                .plugin
+                .try_iter()
+                .map(|(instruction, _)| instruction)
+                .collect();
+            assert!(
+                matches!(
+                    plugin.as_slice(),
+                    [PluginInstruction::FailedToWriteConfigToDisk {
+                        file_path: Some(path),
+                        reason: Some(reason),
+                        ..
+                    }] if path == managed && error.contains(reason)
+                ),
+                "{plugin:?}"
+            );
+        }
+
         pub(super) fn drain_instructions(
             &self,
         ) -> (Vec<ScreenInstruction>, Vec<PluginInstruction>) {
@@ -2954,6 +2975,98 @@ mod underline_metrics_reconfigure {
             std::fs::write(&main, "// restored").unwrap();
             assert_eq!(load(&fixture).terminal.underline_thickness, Some(1));
             request(&fixture, CLIENT, all, good, false).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn underline_metrics_managed_save_rejects_fifo_atomically() {
+        use std::os::unix::{ffi::OsStrExt, fs::FileTypeExt};
+
+        for all in [false, true] {
+            let fixture = Fixture::new(&[CLIENT, ClientId::new(2)], None);
+            let path = managed(&fixture);
+            let main = fixture.dir.path().join("config.kdl");
+            let main_before = std::fs::read(&main).unwrap();
+            std::fs::create_dir(path.parent().unwrap()).unwrap();
+            let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            let before = fixture.snapshot();
+            let fragment = "terminal { underline_offset -2; }\nmouse_mode false";
+            let error = request(&fixture, CLIENT, all, fragment, true).unwrap_err();
+            for expected in [path.to_str().unwrap(), "not a regular file", "then retry"] {
+                assert!(error.contains(expected), "{error}");
+            }
+            assert_eq!(fixture.snapshot(), before);
+            assert_eq!(std::fs::read(&main).unwrap(), main_before);
+            assert!(std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_fifo());
+            fixture.assert_only_write_failure(&path, &error);
+
+            std::fs::remove_file(&path).unwrap();
+            std::fs::write(&path, "terminal { underline_thickness 3; }").unwrap();
+            request(&fixture, CLIENT, all, fragment, true).unwrap();
+            let saved = load(&fixture);
+            assert_eq!(saved.terminal.underline_offset, Some(-2));
+            assert_eq!(saved.terminal.underline_thickness, Some(3));
+            assert_eq!(saved.options.mouse_mode, Some(false));
+        }
+    }
+
+    #[test]
+    fn underline_metrics_saved_reconfigure_identifies_invalid_saved_file_and_key() {
+        let fragment = "terminal { underline_offset -2; }\nmouse_mode false";
+        for all in [false, true] {
+            for (write, edits) in [(false, false), (true, false), (true, true)] {
+                let fixture = Fixture::new(&[CLIENT], None);
+                let main = fixture.dir.path().join("config.kdl");
+                let managed = managed(&fixture);
+                let bad_path = if write { &managed } else { &main };
+                if write {
+                    std::fs::create_dir(managed.parent().unwrap()).unwrap();
+                }
+                let mut bad = "terminal { underline_thickness 65; padding 4; }\n".to_owned();
+                if edits {
+                    bad.push_str(r#"configuration_edits { remove "themes" "unused"; }"#);
+                }
+                std::fs::write(bad_path, &bad).unwrap();
+                let before = fixture.snapshot();
+                let error = request(&fixture, CLIENT, all, fragment, write).unwrap_err();
+                for expected in [
+                    bad_path.to_str().unwrap(),
+                    "underline_thickness",
+                    "between -64 and 64",
+                ] {
+                    assert!(error.contains(expected), "{error}");
+                }
+                assert_eq!(fixture.snapshot(), before);
+                assert_eq!(std::fs::read_to_string(bad_path).unwrap(), bad);
+                if write {
+                    assert!(error.contains("then retry"), "{error}");
+                    fixture.assert_only_write_failure(&managed, &error);
+                } else {
+                    for expected in [
+                        "underline_offset",
+                        "Repair or restore",
+                        "--write",
+                        "attempt",
+                        "entire fragment",
+                    ] {
+                        assert!(error.contains(expected), "{error}");
+                    }
+                    fixture.assert_no_propagation();
+                }
+
+                std::fs::write(bad_path, bad.replace("65", "3")).unwrap();
+                request(&fixture, CLIENT, all, fragment, true).unwrap();
+                let saved = load(&fixture);
+                assert_eq!(saved.terminal.underline_offset, Some(-2));
+                assert_eq!(saved.terminal.underline_thickness, Some(3));
+                assert_eq!(saved.terminal.padding, Some(4.0));
+                assert_eq!(saved.options.mouse_mode, Some(false));
+            }
         }
     }
 

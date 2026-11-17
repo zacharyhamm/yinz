@@ -4,6 +4,7 @@ fn bind_keys_in_block(
     block: &KdlNode,
     input_mode_keybinds: &mut HashMap<KeyWithModifier, Vec<Action>>,
     config_options: &Options,
+    mode: ConfigRead,
 ) -> Result<(), ConfigError> {
     let all_nodes = kdl_children_nodes_or_error!(block, "no keybinding block for mode");
     let bind_nodes = all_nodes.iter().filter(|n| kdl_name!(n) == "bind");
@@ -13,6 +14,7 @@ fn bind_keys_in_block(
             key_block,
             input_mode_keybinds,
             config_options,
+            mode,
         )?;
     }
     // we loop a second time so that the unbinds always happen after the binds
@@ -34,6 +36,20 @@ pub fn from_kdl(
     kdl_keybinds: &KdlNode,
     base_keybinds: Keybinds,
     config_options: &Options,
+) -> Result<Keybinds, ConfigError> {
+    from_kdl_with(
+        kdl_keybinds,
+        base_keybinds,
+        config_options,
+        ConfigRead::Ordinary,
+    )
+}
+
+pub(crate) fn from_kdl_with(
+    kdl_keybinds: &KdlNode,
+    base_keybinds: Keybinds,
+    config_options: &Options,
+    read_mode: ConfigRead,
 ) -> Result<Keybinds, ConfigError> {
     let clear_defaults = kdl_arg_is_truthy!(kdl_keybinds, "clear-defaults");
     let mut keybinds_from_config = if clear_defaults {
@@ -85,6 +101,7 @@ pub fn from_kdl(
                     block,
                     input_mode_keybinds,
                     config_options,
+                    read_mode,
                 )?;
             }
         }
@@ -102,6 +119,7 @@ pub fn from_kdl(
                     block,
                     input_mode_keybinds,
                     config_options,
+                    read_mode,
                 )?;
             }
         }
@@ -117,12 +135,22 @@ pub fn from_kdl(
         }
         let input_mode_keybinds =
             crate::kdl::keybinds::input_mode_keybindings(mode, &mut keybinds_from_config)?;
-        crate::kdl::keybinds::bind_keys_in_block(mode, input_mode_keybinds, config_options)?;
+        crate::kdl::keybinds::bind_keys_in_block(
+            mode,
+            input_mode_keybinds,
+            config_options,
+            read_mode,
+        )?;
     }
     for block in global_unbind_blocks {
         let input_mode_keybinds =
             crate::kdl::keybinds::input_mode_keybindings(block, &mut keybinds_from_config)?;
-        crate::kdl::keybinds::bind_keys_in_block(block, input_mode_keybinds, config_options)?;
+        crate::kdl::keybinds::bind_keys_in_block(
+            block,
+            input_mode_keybinds,
+            config_options,
+            read_mode,
+        )?;
     }
     if let Some(global_unbind) = kdl_keybinds.children().and_then(|c| c.get("unbind")) {
         crate::kdl::keybinds::unbind_keys_in_all_modes(global_unbind, &mut keybinds_from_config)?;
@@ -133,9 +161,13 @@ fn bind_actions_for_each_key(
     key_block: &KdlNode,
     input_mode_keybinds: &mut HashMap<KeyWithModifier, Vec<Action>>,
     config_options: &Options,
+    mode: ConfigRead,
 ) -> Result<(), ConfigError> {
     let keys: Vec<KeyWithModifier> = keys_from_kdl!(key_block);
-    let actions: Vec<Action> = actions_from_kdl!(key_block, config_options);
+    let actions = kdl_children_nodes_or_error!(key_block, "no actions found for key_block")
+        .iter()
+        .map(|node| action::from_kdl_with(node, config_options, mode))
+        .collect::<Result<Vec<_>, _>>()?;
     for key in keys {
         input_mode_keybinds.insert(key, actions.clone());
     }

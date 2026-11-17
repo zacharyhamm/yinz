@@ -1172,9 +1172,31 @@ fn spell(value: &Action) -> Result<KdlNode, NotWritable> {
     }
 }
 pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Action, ConfigError> {
+    from_kdl_with(kdl_action, config_options, ConfigRead::Ordinary)
+}
+
+pub(crate) fn from_kdl_with(
+    kdl_action: &KdlNode,
+    config_options: &Options,
+    mode: ConfigRead,
+) -> Result<Action, ConfigError> {
     let action_name = kdl_name!(kdl_action);
     let action_arguments: Vec<&KdlEntry> = kdl_argument_values!(kdl_action);
     let action_children: Vec<&KdlDocument> = kdl_children!(kdl_action);
+    let layout_error = |error: ConfigError| {
+        if mode == ConfigRead::Saved && matches!(error, ConfigError::IoPath(..)) {
+            return error;
+        }
+        let message = match mode {
+            ConfigRead::Ordinary => error.to_string(),
+            ConfigRead::Saved => error.diagnostic_message(),
+        };
+        ConfigError::new_kdl_error(
+            format!("Failed to load layout: {message}"),
+            kdl_action.span().offset(),
+            kdl_action.span().len(),
+        )
+    };
     match action_name {
         // Expand the argument parser once; repeated expansions exhaust debug-build stacks.
         "Quit"
@@ -1315,7 +1337,7 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                     .layout_dir
                     .clone()
                     .or_else(|| get_layout_dir(find_default_config_dir()));
-                crate::layout::layout_info_from_config(&layout_dir, &Some(layout_path))
+                crate::layout::layout_info_from_config_with(&layout_dir, &Some(layout_path), mode)?
             } else {
                 None
             };
@@ -1430,28 +1452,21 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                 .clone()
                 .or_else(|| get_layout_dir(find_default_config_dir()));
             let (path_to_raw_layout, raw_layout, swap_layouts) =
-                crate::layout::stringified_from_path_or_default(layout.as_ref(), layout_dir)
-                    .map_err(|e| {
-                        ConfigError::new_kdl_error(
-                            format!("Failed to load layout: {}", e),
-                            kdl_action.span().offset(),
-                            kdl_action.span().len(),
-                        )
-                    })?;
+                crate::layout::stringified_from_path_or_default_with(
+                    layout.as_ref(),
+                    layout_dir,
+                    mode,
+                )
+                .map_err(layout_error)?;
 
-            let layout = crate::layout::from_str(
+            let layout = crate::kdl::layout::from_kdl_with(
                 &raw_layout,
-                path_to_raw_layout,
+                Some(path_to_raw_layout),
                 swap_layouts.as_ref().map(|(f, p)| (f.as_str(), p.as_str())),
                 cwd.clone(),
+                mode,
             )
-            .map_err(|e| {
-                ConfigError::new_kdl_error(
-                    format!("Failed to load layout: {}", e),
-                    kdl_action.span().offset(),
-                    kdl_action.span().len(),
-                )
-            })?;
+            .map_err(layout_error)?;
 
             let swap_tiled_layouts = Some(layout.swap_tiled_layouts.clone());
             let swap_floating_layouts = Some(layout.swap_floating_layouts.clone());
@@ -1545,28 +1560,21 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                 .clone()
                 .or_else(|| get_layout_dir(find_default_config_dir()));
             let (path_to_raw_layout, raw_layout, swap_layouts) =
-                crate::layout::stringified_from_path_or_default(layout.as_ref(), layout_dir)
-                    .map_err(|e| {
-                        ConfigError::new_kdl_error(
-                            format!("Failed to load layout: {}", e),
-                            kdl_action.span().offset(),
-                            kdl_action.span().len(),
-                        )
-                    })?;
+                crate::layout::stringified_from_path_or_default_with(
+                    layout.as_ref(),
+                    layout_dir,
+                    mode,
+                )
+                .map_err(layout_error)?;
 
-            let layout = crate::layout::from_str(
+            let layout = crate::kdl::layout::from_kdl_with(
                 &raw_layout,
-                path_to_raw_layout,
+                Some(path_to_raw_layout),
                 swap_layouts.as_ref().map(|(f, p)| (f.as_str(), p.as_str())),
                 cwd.clone(),
+                mode,
             )
-            .map_err(|e| {
-                ConfigError::new_kdl_error(
-                    format!("Failed to load layout: {}", e),
-                    kdl_action.span().offset(),
-                    kdl_action.span().len(),
-                )
-            })?;
+            .map_err(layout_error)?;
 
             let swap_tiled_layouts = Some(layout.swap_tiled_layouts.clone());
             let swap_floating_layouts = Some(layout.swap_floating_layouts.clone());

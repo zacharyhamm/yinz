@@ -43,6 +43,135 @@ fn underline_metrics_native_startup_reports_invalid_setting() {
 }
 
 #[test]
+fn underline_metrics_saved_reconfigure_keeps_the_session_responsive_after_fifo_refusal() {
+    use std::{
+        os::unix::{
+            ffi::OsStrExt,
+            fs::{FileTypeExt, OpenOptionsExt},
+        },
+        process::Output,
+        time::{Duration, Instant},
+    };
+    use yinz_config::config::{Config, MANAGED_CONFIG_FILE_NAME};
+
+    let fixture = real_fixture::RealFixture::new("underline-");
+    let root = fixture.path();
+    for directory in ["home", "tmp", "config.d"] {
+        fs::create_dir(root.join(directory)).unwrap();
+    }
+    let main = root.join("config.kdl");
+    fs::write(
+        &main,
+        "detachable_panes false\nload_plugins clear-defaults=true\n",
+    )
+    .unwrap();
+    let layout = root.join("layout.kdl");
+    fs::write(&layout, "layout { pane command=\"/bin/sh\"; }").unwrap();
+    let managed = root.join("config.d").join(MANAGED_CONFIG_FILE_NAME);
+    let run = |args: &[&str]| -> Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_yinz"));
+        fixture.inherit(&mut command);
+        for key in ["YINZ", "YINZ_SESSION_NAME", "YINZ_PANE_ID", "YINZ_PANE_REF"] {
+            command.env_remove(key);
+        }
+        let mut child = command
+            .env("HOME", root.join("home"))
+            .env("TMPDIR", root.join("tmp"))
+            .env("YINZ_SOCKET_DIR", fixture.socket_dir())
+            .env("YINZ_TEST_CACHE_DIR", root.join("cache"))
+            .env("SHELL", "/bin/sh")
+            .current_dir(root)
+            .arg("--config-dir")
+            .arg(root)
+            .arg("--config")
+            .arg(&main)
+            .arg("--data-dir")
+            .arg(root.join("data"))
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + yinz_test_support::default_timeout();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return child.wait_with_output().unwrap(),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                },
+                status => {
+                    eprintln!("CLI failed to complete {args:?}: {status:?}");
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    // Release a regressed server read only after recording the failure,
+                    // so the owned fixture guard can still shut the session down.
+                    if managed.metadata().is_ok_and(|m| m.file_type().is_fifo()) {
+                        let _ = fs::OpenOptions::new()
+                            .write(true)
+                            .custom_flags(nix::libc::O_NONBLOCK)
+                            .open(&managed);
+                    }
+                    panic!("CLI failed to complete {args:?}: {status:?}");
+                },
+            }
+        }
+    };
+    let started = run(&[
+        "--layout",
+        layout.to_str().unwrap(),
+        "attach",
+        "--create-background",
+        "underline-test",
+    ]);
+    assert!(started.status.success(), "{started:?}");
+
+    let reconfigure = |fragment: &str, write: bool| {
+        let mut args = vec![
+            "--session",
+            "underline-test",
+            "action",
+            "reconfigure",
+            "--kdl",
+            fragment,
+        ];
+        if write {
+            args.push("--write");
+        }
+        run(&args)
+    };
+    // A completed reconfigure establishes readiness on the same instruction loop.
+    let ready = reconfigure("pane_frames true", false);
+    assert!(ready.status.success(), "{ready:?}");
+    let name = std::ffi::CString::new(managed.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { nix::libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let fragment = "terminal { underline_offset -2; }\nmouse_mode false";
+    let refused = reconfigure(fragment, true);
+    // The CLI maps a server action error with a message to exit status 2.
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    for expected in [
+        managed.to_str().unwrap(),
+        "not a regular file",
+        "then retry",
+    ] {
+        assert!(stderr.contains(expected), "{stderr}");
+    }
+    let later = reconfigure("pane_frames false", false);
+    assert!(later.status.success(), "{later:?}");
+    assert!(managed.symlink_metadata().unwrap().file_type().is_fifo());
+
+    fs::remove_file(&managed).unwrap();
+    fs::write(&managed, "terminal { underline_thickness 3; }").unwrap();
+    let saved = reconfigure(fragment, true);
+    assert!(saved.status.success(), "{saved:?}");
+    let saved = Config::from_kdl(&fs::read_to_string(&managed).unwrap(), None).unwrap();
+    assert_eq!(saved.terminal.underline_offset, Some(-2));
+    assert_eq!(saved.terminal.underline_thickness, Some(3));
+    assert_eq!(saved.options.mouse_mode, Some(false));
+}
+
+#[test]
 fn native_headless_creates_and_reattaches_with_structured_content() {
     std::thread::Builder::new()
         .stack_size(32 * 1024 * 1024)

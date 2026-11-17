@@ -19,8 +19,8 @@ use yinz_types::style::{
     MultiplayerColors, Palette, StyleDeclaration, Styling, ThemeHue, DEFAULT_STYLES,
 };
 use {
-    crate::config::Config, crate::config::ConfigError, crate::config::KdlError,
-    crate::config::NotWritableIn,
+    crate::config::Config, crate::config::ConfigError, crate::config::ConfigRead,
+    crate::config::KdlError, crate::config::NotWritableIn,
 };
 use {crate::permission::GrantedPermission, crate::permission::PermissionCache};
 use {
@@ -1130,6 +1130,14 @@ impl Config {
     }
 
     pub fn from_kdl(kdl_config: &str, base_config: Option<Config>) -> Result<Config, ConfigError> {
+        Self::from_kdl_with(kdl_config, base_config, ConfigRead::Ordinary)
+    }
+
+    pub(crate) fn from_kdl_with(
+        kdl_config: &str,
+        base_config: Option<Config>,
+        mode: ConfigRead,
+    ) -> Result<Config, ConfigError> {
         let mut config = base_config.unwrap_or_default();
         let kdl_config: KdlDocument = kdl_config.parse()?;
 
@@ -1137,8 +1145,12 @@ impl Config {
         config.options = config.options.merge(config_options);
 
         if let Some(kdl_keybinds) = single_top_level_block(&kdl_config, "keybinds")? {
-            config.keybinds =
-                crate::kdl::keybinds::from_kdl(kdl_keybinds, config.keybinds, &config.options)?;
+            config.keybinds = crate::kdl::keybinds::from_kdl_with(
+                kdl_keybinds,
+                config.keybinds,
+                &config.options,
+                mode,
+            )?;
         }
         if let Some(kdl_themes) = single_top_level_block(&kdl_config, "themes")? {
             let sourced_from_external_file = false;
@@ -1167,7 +1179,7 @@ impl Config {
                 .extend(load_plugins_from_kdl(kdl_load_plugins)?);
         }
         if let Some(kdl_context_menu) = single_top_level_block(&kdl_config, "context_menu")? {
-            config.context_menu = context_menu_from_kdl(kdl_context_menu, &config.options)?;
+            config.context_menu = context_menu_from_kdl(kdl_context_menu, &config.options, mode)?;
         }
         if let Some(kdl_hooks) = single_top_level_block(&kdl_config, "hooks")? {
             let parsed_hooks = hooks_from_kdl(kdl_hooks, &mut config.hooks)?;
@@ -1194,7 +1206,7 @@ impl Config {
         }
         if let Some(edits) = single_top_level_block(&kdl_config, crate::editor::EDITS_BLOCK)? {
             let patches = crate::editor::patches_from_kdl(edits)?;
-            config = crate::editor::apply(&config, &patches).map_err(|error| {
+            config = crate::editor::apply_with(&config, &patches, mode, |error| {
                 ConfigError::new_kdl_error(error, edits.span().offset(), edits.span().len())
             })?;
         }
@@ -1408,6 +1420,7 @@ fn hooks_from_kdl(kdl_hooks: &KdlNode, config_hooks: &mut Hooks) -> Result<Hooks
 fn context_menu_from_kdl(
     kdl_context_menu: &KdlNode,
     config_options: &Options,
+    mode: ConfigRead,
 ) -> Result<ContextMenu, ConfigError> {
     let mut items = vec![];
     if let Some(item_nodes) = kdl_children_nodes!(kdl_context_menu) {
@@ -1432,7 +1445,7 @@ fn context_menu_from_kdl(
                     action_nodes
                         .iter()
                         .map(|action_node| {
-                            crate::kdl::action::from_kdl((action_node, config_options))
+                            crate::kdl::action::from_kdl_with(action_node, config_options, mode)
                         })
                         .collect::<Result<Vec<_>, _>>()
                 })
