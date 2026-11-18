@@ -1075,6 +1075,7 @@ fn web_builtin_production_http() {
     );
     let reference = agent["ref"].clone();
     let agent_id = agent["id"].as_str().unwrap().to_owned();
+    assert_eq!(agent["tab_group_session"], session.session_name());
     assert_eq!(
         agent["tab_group"],
         json!({"id":0,"name":"Default"}),
@@ -1093,6 +1094,7 @@ fn web_builtin_production_http() {
         .iter()
         .find(|row| row["id"] == agent_id)
         .unwrap_or_else(|| panic!("{renamed}"));
+    assert_eq!(agent["tab_group_session"], session.session_name());
     assert_eq!(
         agent["tab_group"],
         json!({"id":0,"name":"Release Review"}),
@@ -1114,6 +1116,10 @@ fn web_builtin_production_http() {
     assert_eq!(history["retargeted"], false, "{history}");
     assert_eq!(history["live"]["ref"], reference, "{history}");
     assert!(history["live"].get("tab_group").is_none(), "{history}");
+    assert!(
+        history["live"].get("tab_group_session").is_none(),
+        "{history}"
+    );
     let event = &history["events"][0];
     assert_eq!(
         event["markdown"], "Native web retained conversation",

@@ -297,14 +297,18 @@ plugin configuration or secrets.
   sessions, grouped by their pane's Yinz tab group. Each heading shows the group
   name, agent count, and owning session, including when only one group has
   agents. If headings in one session share a group name, each matching group
-  also shows its stable group ID. Sections appear
-  in the order their first agent appears in the list returned by the hooks,
+  also shows its stable group ID. If distinct session names differ only in
+  whitespace, their headings preserve the original spelling and show an
+  ordinal such as **1 of 2**. Sections appear in the order their first
+  agent appears in the list returned by the hooks,
   and cards in each section keep their relative order. A card without usable
   group information appears under **Tab group unavailable** for its session.
   If the owning session is also missing, the heading says **Session unavailable**.
   Stored membership still applies when `tab_groups` is off in the terminal.
   Local moves and renames appear on the next successful list update, and peer
-  changes appear after the serving session's peer cache refreshes. Each card
+  changes appear after the serving session's peer cache refreshes. For peers,
+  headings and session badges use the scanned socket name, even while the cached
+  checkpoint still contains an older name. Each card
   shows its state and any custom status text. The header's attention count
   includes all waiting agents in the snapshot, even when a hook hides some
   cards. Task titles use the theme's accent color and

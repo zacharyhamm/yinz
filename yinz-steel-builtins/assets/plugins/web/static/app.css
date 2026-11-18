@@ -148,6 +148,7 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 .section-title { font-size: 15px; font-weight: 700; color: var(--text); margin: 0 4px 8px; overflow-wrap: anywhere; }
 .section-count { font-weight: 600; color: var(--muted); }
 .section-session { display: block; font-size: 13px; font-weight: 400; color: var(--muted); }
+.section-session-spelling { white-space: break-spaces; }
 .agent-cards { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .agent-card {
   background: var(--surface); border: 1px solid var(--border); border-left: 5px solid var(--idle);

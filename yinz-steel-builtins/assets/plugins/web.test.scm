@@ -58,8 +58,9 @@
     "title" hostile "activity" "" "project" "yinz" "branch" "main" "last_reply" (hash "text" "<b>hi</b>" "truncated" #f)
     "last_hook_at_ms" 5 "focused" #f "selectable" #t "suppressed" #f "directory" "/w" "run" "R" "wait_needs_a_person" #t
     "source" json-null "can_prompt" #t "prompt_unavailable" json-null "usage_unavailable" json-null))
-(define grouped-row (hash-insert (hash-insert row "tab_group" (hash "id" 0 "name" "Default")) "status" "needs input"))
-(define ungrouped-row (hash-insert (hash-insert row "id" "live:main:8") "tab_group" json-null))
+(define grouped-row (t-merge row (hash "tab_group" (hash "id" 0 "name" "Default")
+      "tab_group_session" "renamed-peer" "status" "needs input")))
+(define ungrouped-row (t-merge row (hash "id" "live:main:8" "tab_group" json-null "tab_group_session" "main")))
 (define listing (hash "session" "main" "now_ms" 99 "counts" (hash "waiting" 2 "busy" 0 "idle" 0)
     "agents" (list grouped-row ungrouped-row)))
 (define header (hash "name" "<agent>" "status" "Waiting" "location" "/w" "started" "now" "task" "<task>"

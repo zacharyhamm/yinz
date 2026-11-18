@@ -37,6 +37,7 @@ fn live(session: &str, state: AgentState, current_session: bool) -> WebLiveAgent
         ..Default::default()
     };
     WebLiveAgent {
+        tab_group_session: session.into(),
         tab_group: Some(yinz_types::tab_bar::TabGroupInfo {
             id: 0,
             name: format!("Group for {session}"),
@@ -156,27 +157,34 @@ fn web_agents_validation_rejects_bad_operations_and_bounds_without_dispatch() {
 #[test]
 fn web_agents_list_uses_shared_order_and_peer_usage_without_local_collection() {
     let (_dir, data) = data();
+    let mut peer = live("peer", AgentState::Waiting, false);
+    peer.tab_group_session = "renamed-peer".into();
     let mut ungrouped = live("busy", AgentState::Busy, true);
     ungrouped.tab_group = None;
-    let agents = vec![
-        live("local", AgentState::Idle, true),
-        live("peer", AgentState::Waiting, false),
-        ungrouped,
-    ];
+    let agents = vec![live("local", AgentState::Idle, true), peer, ungrouped];
     let response = with_snapshot(json!({"op":"list"}), agents.clone(), &data);
     assert_eq!(
         response["ok"]["counts"],
         json!({"waiting":1,"busy":1,"idle":1})
     );
-    assert_eq!(response["ok"]["agents"][0]["session"], "peer");
-    assert_eq!(response["ok"]["agents"][1]["session"], "busy");
-    assert_eq!(response["ok"]["agents"][2]["session"], "local");
-    for (index, session, group) in [
-        (0, "peer", json!({"id":0,"name":"Group for peer"})),
-        (1, "busy", Value::Null),
-        (2, "local", json!({"id":0,"name":"Group for local"})),
+    for (index, session, owner, group) in [
+        (
+            0,
+            "peer",
+            "renamed-peer",
+            json!({"id":0,"name":"Group for peer"}),
+        ),
+        (1, "busy", "busy", Value::Null),
+        (
+            2,
+            "local",
+            "local",
+            json!({"id":0,"name":"Group for local"}),
+        ),
     ] {
         let row = &response["ok"]["agents"][index];
+        assert_eq!(row["session"], session);
+        assert_eq!(row["tab_group_session"], owner);
         assert_eq!(row.get("tab_group"), Some(&group));
         assert_eq!(
             row["ref"],
@@ -508,6 +516,7 @@ fn web_agents_history_navigation_refresh_tracks_live_gone_and_returned_agents() 
     assert_eq!(unchanged["header"]["name"], "updated live header");
     assert_eq!(unchanged["live"]["id"], agent.id);
     assert!(unchanged["live"].get("tab_group").is_none());
+    assert!(unchanged["live"].get("tab_group_session").is_none());
     assert_eq!(
         unchanged["navigation"]["received"],
         page["navigation"]["received"]

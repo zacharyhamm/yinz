@@ -1907,7 +1907,7 @@ async function groupedAgentList(open) {
   const invalid = row(fx, 'live:dev:11', 'idle', { tab_group: { id: 0x100000000, name: 'Invalid' } });
   const fallbackName = row(fx, 'live:dev:16', 'idle', { tab_group: { id: 3, name: 'Tab group unavailable' } });
   const peerMissing = row(fx, 'live:peer:10', 'idle', {
-    session: 'peer', current_session: false, tab_group: undefined,
+    session: 'peer', tab_group_session: ' ', current_session: false, tab_group: undefined,
   });
   const ownerless = row(fx, 'live:unknown:12', 'idle', { session: undefined, tab_group: { id: 0, name } });
   const alsoOwnerless = row(fx, 'live:unknown:13', 'idle', { session: ' ', tab_group: { id: 0, name } });
@@ -1968,6 +1968,105 @@ async function groupedAgentList(open) {
   const moved = [expected[2], [renamedGroup.name, 'Session browser-check', local.map((r) => r.id)], expected[3]];
   await domClick(page, '#list-refresh');
   await until('poll shows renamed group and moved card', async () => JSON.stringify(await sections()) === JSON.stringify(moved));
+}
+
+async function peerGroupOwnership(open) {
+  const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
+  const source = row(fx, 'live:old-name:7', 'waiting', {
+    title: 'Original peer', session: 'old-name', tab_group_session: 'old-name', current_session: false,
+    tab_group: { id: 0, name: 'Source default' },
+  });
+  const replacement = row(fx, source.id, 'waiting', {
+    title: 'Replacement peer', session: 'old-name', tab_group_session: 'old-name', current_session: false,
+    tab_group: { id: 0, name: 'Replacement default' },
+    ref: { ...source.ref, session_id: 'replacement-conversation' },
+  });
+  const missing = row(fx, 'live:old-name:8', 'idle', {
+    title: 'Original ungrouped', session: 'old-name', tab_group_session: 'old-name', current_session: false,
+    tab_group: null,
+  });
+  const replacementMissing = row(fx, missing.id, 'idle', {
+    title: 'Replacement ungrouped', session: 'old-name', tab_group_session: 'old-name', current_session: false,
+    tab_group: null, ref: { ...missing.ref, session_id: 'another-conversation' },
+  });
+  fx.rows = [source, missing];
+  await openList(page);
+
+  const region = (group, session) => page.getByRole('region', {
+    name: `${group} · 1 agent Session ${session}`, exact: true,
+  });
+  const oldKey = region('Source default', 'old-name').getByRole('button', { name: 'Key 1', exact: true });
+  await oldKey.focus();
+  const oldNode = await oldKey.elementHandle();
+  const renamed = { ...source, tab_group_session: 'new-name' };
+  const renamedMissing = { ...missing, tab_group_session: 'new-name' };
+  fx.rows = [renamed, replacement, renamedMissing, replacementMissing];
+
+  const sections = () => page.locator('.agent-section').evaluateAll((nodes) => nodes.map((section) => [
+    section.querySelector('.section-name').textContent,
+    section.querySelector('.section-session').textContent,
+    [...section.querySelectorAll('.agent-card')].map((card) => [
+      card.dataset.agentId, card.querySelector('.agent-title').textContent, card.querySelector('.badge-peer').textContent,
+    ]),
+  ]));
+  const expected = [
+    ['Source default', 'Session new-name', [[source.id, source.title, 'session new-name']]],
+    ['Replacement default', 'Session old-name', [[replacement.id, replacement.title, 'session old-name']]],
+    ['Tab group unavailable', 'Session new-name', [[missing.id, missing.title, 'session new-name']]],
+    ['Tab group unavailable', 'Session old-name', [[replacementMissing.id, replacementMissing.title, 'session old-name']]],
+  ];
+  await until('poll separates the renamed peer and the reused name', async () => JSON.stringify(await sections()) === JSON.stringify(expected));
+  const sourceRegion = region('Source default', 'new-name');
+  const currentKey = sourceRegion.getByRole('button', { name: 'Key 1', exact: true });
+  check(await oldNode.evaluate((el) => !el.isConnected), 'cache owner change did not replace the original quick key');
+  check(await currentKey.evaluate((el) => document.activeElement === el), 'focus did not follow the original peer conversation');
+
+  const sourceSection = await sourceRegion.elementHandle();
+  // Enter posts the old guarded identity even though the visible owner is the new name.
+  await page.keyboard.press('Enter');
+  await until('renamed peer quick key posts', () => fx.count('/api/agent/keys', 'POST') === 1);
+  await until('renamed peer quick key completes', () => currentKey.isEnabled());
+  check(JSON.stringify(fx.bodies('/api/agent/keys')) === JSON.stringify([{ agent: source.ref, keys: ['1'] }]),
+    'Enter changed the guarded ref or sent more than one request');
+
+  const publishedId = 'live:new-name:7';
+  const published = { ...renamed, id: publishedId, session: 'new-name', ref: { ...renamed.ref, id: publishedId } };
+  const publishedMissingId = 'live:new-name:8';
+  const publishedMissing = {
+    ...renamedMissing, id: publishedMissingId, session: 'new-name', ref: { ...renamedMissing.ref, id: publishedMissingId },
+  };
+  fx.rows = [published, replacement, publishedMissing, replacementMissing];
+  await until('poll publishes the renamed checkpoint', () => exists(page, cardSelector(publishedId)));
+  check(await sourceSection.evaluate((el, id) => el.isConnected && el.querySelector('.agent-card')?.dataset.agentId === id, publishedId),
+    'republishing the checkpoint replaced the section for the same cache owner');
+}
+
+async function whitespaceSessionHeadings(open) {
+  const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
+  const first = row(fx, 'live:build team:7', 'idle', { session: 'build team', current_session: false });
+  const second = row(fx, 'live:build  team:7', 'idle', { session: 'build  team', current_session: false });
+  fx.rows = [first, second];
+  await openList(page);
+
+  const headings = page.locator('.section-title');
+  const assertHeadings = async (expected) => {
+    const visible = await headings.allInnerTexts();
+    check(new Set(visible).size === 2, 'the two headings look identical');
+    for (const [index, [marker, session]] of expected.entries()) {
+      const accessible = `Default · 1 agent ${marker} · Session build team`;
+      check(await page.getByRole('heading', { name: accessible, exact: true }).count() === 1, `wrong accessible heading: ${accessible}`);
+      check(await page.getByRole('region', { name: accessible, exact: true }).count() === 1, `wrong accessible region: ${accessible}`);
+      check(visible[index].includes(`${marker} · Session ${session}`), `visible heading lost its marker or literal spacing: ${JSON.stringify(visible[index])}`);
+      check(await headings.nth(index).locator('.section-session-spelling').textContent() === session, 'the literal session name changed');
+    }
+    await noHorizontalOverflow(page, 'whitespace-colliding session headings at 320px');
+  };
+  const expected = [['2 of 2', first.session], ['1 of 2', second.session]];
+  await assertHeadings(expected);
+  fx.rows = [second, first];
+  await until('poll reverses the section order', async () =>
+    await page.locator('.agent-card').first().getAttribute('data-agent-id') === second.id);
+  await assertHeadings(expected.slice().reverse());
 }
 
 async function agentListPollFocus(open) {
@@ -2809,6 +2908,8 @@ async function main() {
   }
   await scenario('compact agent list 1024px desktop', (open) => compactAgentList(open, 1024, 'light'));
   await scenario('Agents group membership, fallback and poll updates', groupedAgentList);
+  await scenario('Agents peer group ownership during session name reuse', peerGroupOwnership);
+  await scenario('Agents headings for whitespace-colliding session names', whitespaceSessionHeadings);
   await scenario('Agents keyboard focus through automatic group moves and reorders', agentListPollFocus);
   await scenario('Agents keyboard focus guards during automatic updates', agentListPollFocusGuards);
   await scenario('Agents polls respect keyboard focus outside built-in card controls', agentListPollFocusOutsideCards);

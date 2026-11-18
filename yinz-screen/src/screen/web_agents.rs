@@ -14,19 +14,29 @@ impl Screen {
             .into_iter()
             .filter_map(|(live, tab)| {
                 let presentation = live.presentation()?;
-                let tab_group = match tab {
-                    LiveAgentTab::Local(tab) => self.tab_group_ids.get(&tab).and_then(|&id| {
-                        local_groups
-                            .entry(id)
-                            .or_insert_with(|| self.tab_group_info(tab))
-                            .clone()
-                    }),
+                let (tab_group_session, tab_group) = match tab {
+                    LiveAgentTab::Local(tab) => (
+                        &self.session_name,
+                        self.tab_group_ids.get(&tab).and_then(|&id| {
+                            local_groups
+                                .entry(id)
+                                .or_insert_with(|| self.tab_group_info(tab))
+                                .clone()
+                        }),
+                    ),
                     // A renamed socket can be discovered before the checkpoint name changes.
-                    LiveAgentTab::Peer(session, position) => session
-                        .tabs
-                        .iter()
-                        .find(|tab| tab.position == position)
-                        .and_then(|tab| tab.group.clone()),
+                    LiveAgentTab::Peer {
+                        socket_name,
+                        session,
+                        position,
+                    } => (
+                        socket_name,
+                        session
+                            .tabs
+                            .iter()
+                            .find(|tab| tab.position == position)
+                            .and_then(|tab| tab.group.clone()),
+                    ),
                 };
                 let (glyph, status, _) = yinz_panes::ui::agent_title::status(presentation.state);
                 let mut header = HistoryHeader::default();
@@ -34,6 +44,7 @@ impl Screen {
                 Some(WebLiveAgent {
                     id: live.id(),
                     session: live.session.clone(),
+                    tab_group_session: tab_group_session.clone(),
                     tab_group,
                     current_session: live.session == self.session_name,
                     run: live.run(),

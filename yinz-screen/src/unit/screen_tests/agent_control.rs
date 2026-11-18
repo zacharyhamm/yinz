@@ -16860,30 +16860,39 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
     screen
         .peer_sessions_cache
         .insert(peer.name.clone(), peer.clone());
-    let original = web_agents_snapshot(&mut screen);
-    let original_ref = web_agents_reference(
-        original
-            .iter()
-            .find(|row| !row.current_session && row.pane.id == PANE)
-            .unwrap(),
-    );
+    let before = web_agents_snapshot(&mut screen);
+    let original = before
+        .iter()
+        .find(|row| !row.current_session && row.pane.id == PANE)
+        .unwrap();
+    let original_ref = web_agents_reference(original);
+    assert_eq!(original.tab_group_session, peer.name);
+    assert_eq!(original.tab_group, peer.tabs[1].group);
 
     // The scan finds the renamed socket before a checkpoint updates the embedded name.
-    // A record under the old key can even have a different group at the same position.
+    // Another live session has already published under the original socket name.
     let renamed_key = SessionName::new("renamed-web-peer");
-    let mut decoy = peer.clone();
-    decoy.panes.panes.clear();
-    decoy.tabs[1].group = Some(TabGroupInfo {
-        id: 17,
-        name: "Wrong peer group".into(),
+    let mut replacement = peer.clone();
+    let mut reused_pane = peer.panes.panes[&position][0].clone();
+    let replacement_ref = yinz_bus::web::WebAgentRef {
+        session_id: "replacement-conversation".into(),
+        ..original_ref.clone()
+    };
+    reused_pane.agent.as_mut().unwrap().session_id = Some(replacement_ref.session_id.clone());
+    replacement.panes.panes = HashMap::from([(position, vec![reused_pane])]);
+    replacement.tabs[1].group = Some(TabGroupInfo {
+        id: 0,
+        name: "Replacement Default".into(),
     });
-    screen.peer_sessions_cache.insert(peer.name.clone(), decoy);
+    screen
+        .peer_sessions_cache
+        .insert(peer.name.clone(), replacement.clone());
     screen
         .peer_sessions_cache
         .insert(renamed_key.clone(), peer.clone());
     let live = web_agents_snapshot(&mut screen);
     let palette = screen.live_palette_agents();
-    assert_eq!(live.len(), 4);
+    assert_eq!(live.len(), 5);
     assert_eq!(live.len(), palette.len());
     for (row, same) in live.iter().zip(&palette) {
         assert_eq!(row.id, same.id());
@@ -16906,10 +16915,7 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
         );
     }
     let local = live.iter().find(|a| a.current_session).unwrap();
-    let remote = live
-        .iter()
-        .find(|a| !a.current_session && a.pane.id == PANE)
-        .unwrap();
+    let remote = live.iter().find(|row| row.matches(&original_ref)).unwrap();
     assert_ne!(
         local.id, remote.id,
         "same pane number is qualified by owning session"
@@ -16921,39 +16927,59 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
             name: "Default".into()
         })
     );
-    assert!(remote.matches(&original_ref));
-    assert_eq!(
-        remote.tab_group,
-        original
-            .iter()
-            .find(|row| row.matches(&original_ref))
-            .unwrap()
-            .tab_group
-    );
-    assert_eq!(remote.tab_group, peer.tabs[1].group);
-    assert!(live
+    assert_eq!(local.tab_group_session, screen.session_name);
+    assert_eq!(remote.session, original.session);
+    assert_eq!(remote.id, original.id);
+    assert_eq!(remote.tab_group, original.tab_group);
+    assert_eq!(remote.tab_group_session, renamed_key);
+    let reused = live
         .iter()
-        .filter(|a| a.pane.id != PANE)
-        .all(|a| a.tab_group.is_none()));
+        .find(|row| row.matches(&replacement_ref))
+        .unwrap();
+    assert_eq!(reused.session, original.session);
+    assert_eq!(reused.tab_group_session, peer.name);
+    assert_eq!(reused.tab_group, replacement.tabs[1].group);
+    for id in [8, 9] {
+        let missing = live
+            .iter()
+            .find(|row| row.pane.id == PaneId::Terminal(TerminalId::new(id)))
+            .unwrap();
+        assert_eq!(missing.tab_group_session, renamed_key);
+        assert!(missing.tab_group.is_none());
+    }
 
     let moved = TabGroupInfo {
         id: 12,
         name: "Peer Release".into(),
     };
     peer.tabs[1].group = Some(moved.clone());
-    screen.peer_sessions_cache.insert(renamed_key, peer);
+    screen
+        .peer_sessions_cache
+        .insert(renamed_key.clone(), peer.clone());
     screen.active_tab_ids.clear();
     let detached = web_agents_snapshot(&mut screen);
-    assert_eq!(detached.len(), 4);
+    assert_eq!(detached.len(), 5);
     assert!(detached.iter().all(|a| !a.focused));
     assert_eq!(
         detached
             .iter()
             .find(|a| a.matches(&original_ref))
             .unwrap()
-            .tab_group,
-        Some(moved)
+            .tab_group
+            .as_ref(),
+        Some(&moved)
     );
+    peer.name = renamed_key.clone();
+    screen.peer_sessions_cache.insert(renamed_key.clone(), peer);
+    let republished = web_agents_snapshot(&mut screen);
+    let converged = republished
+        .iter()
+        .find(|row| row.session == renamed_key && row.pane.id == PANE)
+        .unwrap();
+    assert_eq!(converged.tab_group_session, renamed_key);
+    assert_eq!(converged.tab_group, Some(moved));
+    assert!(!republished.iter().any(|row| row.matches(&original_ref)));
+    assert!(republished.iter().any(|row| row.matches(&replacement_ref)));
     let reference = web_agents_reference(detached.iter().find(|a| a.current_session).unwrap());
     let (tx, rx) = channels::bounded(1);
     screen.web_focus_agent(reference, tx);
@@ -16967,7 +16993,7 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
         pane.set_agent_info(Some(a));
     });
     let remaining = web_agents_snapshot(&mut screen);
-    assert_eq!(remaining.len(), 3);
+    assert_eq!(remaining.len(), 4);
     assert!(remaining.iter().all(|a| !a.current_session));
 }
 

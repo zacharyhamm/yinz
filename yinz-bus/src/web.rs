@@ -108,7 +108,9 @@ pub struct WebLiveAgent {
     /// `LiveAgent::id()`.
     pub id: String,
     pub session: SessionName,
-    /// Group identity and display name within the owning session.
+    /// List grouping owner, which can differ from a peer's checkpoint name.
+    pub tab_group_session: SessionName,
+    /// Group identity and display name within `tab_group_session`.
     pub tab_group: Option<TabGroupInfo>,
     pub current_session: bool,
     pub pane: PaneInfo,

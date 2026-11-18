@@ -529,6 +529,7 @@ fn execute(
                 .iter()
                 .map(|a| {
                     let mut row = row(a, labels.get(&a.id));
+                    row["tab_group_session"] = json!(a.tab_group_session);
                     row["tab_group"] = json!(a.tab_group);
                     row
                 })

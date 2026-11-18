@@ -9,10 +9,15 @@ function nonblank(value) {
   return typeof value === 'string' && value.trim() !== '';
 }
 
+function normalizeLabel(name) {
+  return name.trim().replace(/\s+/g, ' ');
+}
+
 function groupAgents(agents) {
   const groups = new Map();
   for (const row of agents) {
-    const session = nonblank(row.session) ? row.session : null;
+    const session = nonblank(row.tab_group_session) ? row.tab_group_session
+      : nonblank(row.session) ? row.session : null;
     const id = row.tab_group?.id;
     const hasGroup = session !== null && Number.isInteger(id) && id >= 0 && id <= 0xffffffff;
     const key = JSON.stringify([session, hasGroup ? id : null]);
@@ -26,7 +31,7 @@ function groupAgents(agents) {
   }
   const labels = new Map();
   for (const group of groups.values()) {
-    const label = JSON.stringify([group.session, group.name.trim().replace(/\s+/g, ' ')]);
+    const label = JSON.stringify([group.session, normalizeLabel(group.name)]);
     const sameLabel = labels.get(label);
     if (sameLabel) {
       sameLabel.showId = sameLabel.id !== null;
@@ -36,6 +41,22 @@ function groupAgents(agents) {
     }
   }
   return [...groups.values()];
+}
+
+function sessionMarkers(groups) {
+  const ownersByLabel = new Map();
+  for (const { session } of groups) {
+    if (session === null) continue;
+    const label = normalizeLabel(session);
+    if (!ownersByLabel.has(label)) ownersByLabel.set(label, new Set());
+    ownersByLabel.get(label).add(session);
+  }
+  const markers = new Map();
+  for (const owners of ownersByLabel.values()) {
+    if (owners.size < 2) continue;
+    [...owners].sort().forEach((owner, index) => markers.set(owner, `${index + 1} of ${owners.size}`));
+  }
+  return markers;
 }
 
 function cardKeys(config) {
@@ -102,7 +123,7 @@ function restoreCardFocus(main, header, focus) {
   }
 }
 
-function AgentCard({ row, env, onKeys, busy }) {
+function AgentCard({ row, session, env, onKeys, busy }) {
   const waiting = row.state === 'waiting';
   // Replacing the conversation also replaces its quick keys, even in the same group.
   const identity = waiting ? quickKeyIdentity(row.ref) : null;
@@ -110,7 +131,7 @@ function AgentCard({ row, env, onKeys, busy }) {
   return html`<li class=${cx('agent-card', `card-${row.state || 'unknown'}`, row.wait_needs_a_person && 'card-needs-person')} data-agent-id=${row.id} data-quick-key-ref=${identity}>
     <a class="card-main agent-open-area" href=${href} aria-label=${`Open ${row.title || row.id}, ${stateLabel(row.state)}`}>
       <${ServerHtml} html=${row.html} class="card-html" />
-      <${RowBadges} row=${row} />
+      <${RowBadges} row=${row} peerSession=${session ?? 'unavailable'} />
     </a>
     ${waiting ? html`<div class="card-actions">
       <${QuickKeys} key=${identity} keys=${cardKeys(env.config)} disabled=${busy || !row.ref} label=${`Quick keys for ${row.title || 'agent'}`}
@@ -138,6 +159,7 @@ export function ListView({ env }) {
   const agents = data ? data.agents.filter((a) => a && typeof a.id === 'string') : [];
   const waiting = data && data.counts && Number.isInteger(data.counts.waiting) ? data.counts.waiting : agents.filter((a) => a.state === 'waiting').length;
   const groups = groupAgents(agents);
+  const markers = sessionMarkers(groups);
   const header = useRef(null);
   const main = useRef(null);
   const previousData = useRef(null);
@@ -184,16 +206,21 @@ export function ListView({ env }) {
       ${state && state.error && ['offline', 'retrying', 'error'].includes(state.status) ? html`<${Banner} id="banner-offline" tone="warn">${freshnessText(state, now)}<//>` : null}
       ${!data && (!state || state.loading) ? html`<p class="empty">Loading agents…</p>` : null}
       ${data && !agents.length ? html`<p class="empty" id="list-empty">No agents are running.</p>` : null}
-      ${groups.map(({ key, name, session, id, showId, rows }, index) => html`<section key=${key} class="agent-section" aria-labelledby=${`agent-group-${index}`}>
-        <h2 class="section-title" id=${`agent-group-${index}`}>
-          <span class="section-name">${name}</span>
-          <span class="section-count">${` · ${rows.length} ${rows.length === 1 ? 'agent' : 'agents'}`}</span>
-          <span class="section-session">${session === null ? 'Session unavailable' : `Session ${session}${showId ? ` · Group ${id}` : ''}`}</span>
-        </h2>
-        <ul class="agent-cards">
-          ${rows.map((row) => html`<${AgentCard} key=${row.id} row=${row} env=${env} onKeys=${sendKey} busy=${!!busyKeys[row.id]} />`)}
-        </ul>
-      </section>`)}
+      ${groups.map(({ key, name, session, id, showId, rows }, index) => {
+        const marker = markers.get(session);
+        const sessionLabel = session === null ? 'Session unavailable'
+          : html`${marker ? `${marker} · ` : ''}Session <span class=${marker ? 'section-session-spelling' : null}>${session}</span>${showId ? ` · Group ${id}` : ''}`;
+        return html`<section key=${key} class="agent-section" aria-labelledby=${`agent-group-${index}`}>
+          <h2 class="section-title" id=${`agent-group-${index}`}>
+            <span class="section-name">${name}</span>
+            <span class="section-count">${` · ${rows.length} ${rows.length === 1 ? 'agent' : 'agents'}`}</span>
+            <span class="section-session">${sessionLabel}</span>
+          </h2>
+          <ul class="agent-cards">
+            ${rows.map((row) => html`<${AgentCard} key=${row.id} row=${row} session=${session} env=${env} onKeys=${sendKey} busy=${!!busyKeys[row.id]} />`)}
+          </ul>
+        </section>`;
+      })}
     </main>
     ${menu ? html`<${Sheet} id="sheet-menu" title="Menu" onClose=${() => setMenu(false)}>
       <div class="menu-list">

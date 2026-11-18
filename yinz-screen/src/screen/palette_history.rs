@@ -17,7 +17,11 @@ use yinz_types::{
 
 pub(in crate::screen) enum LiveAgentTab<'a> {
     Local(TabId),
-    Peer(&'a SessionInfo, TabPosition),
+    Peer {
+        socket_name: &'a SessionName,
+        session: &'a SessionInfo,
+        position: TabPosition,
+    },
 }
 
 #[derive(Clone)]
@@ -388,17 +392,21 @@ impl Screen {
                 add(&self.session_name, pane, LiveAgentTab::Local(tab.id));
             }
         }
-        for session in self
+        for (socket_name, session) in self
             .peer_sessions_cache
-            .values()
-            .filter(|s| s.name != self.session_name)
+            .iter()
+            .filter(|(_, session)| session.name != self.session_name)
         {
             for (&position, panes) in &session.panes.panes {
                 for pane in panes {
                     add(
                         &session.name,
                         pane.clone(),
-                        LiveAgentTab::Peer(session, position),
+                        LiveAgentTab::Peer {
+                            socket_name,
+                            session,
+                            position,
+                        },
                     );
                 }
             }

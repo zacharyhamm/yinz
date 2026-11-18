@@ -1282,13 +1282,16 @@ receives `(next . args)`.
 The frontend's `login.js` and `app.js` rely on the IDs above and on the
 `yinz-config` script; a replacement `login` or `shell` hook must keep them.
 
-List rows include `session`, the owning Yinz session, and `tab_group`, a
-hash with a numeric `id` and display `name`, or `json-null`. Group IDs are
-local to a session and can be zero. The view groups the rows returned by
-`agent-list` in order of first appearance and retains row order within each
-group. Preserve both fields when rebuilding a row to keep its group association.
-Rows missing group metadata get a per-session fallback. The attention count
-still describes the native snapshot before the hook runs.
+List rows include `tab_group_session`, the session used for grouping and
+display, and `tab_group`, a hash with a numeric `id` and display `name`, or
+`json-null`. For a cached peer, `tab_group_session` is the scanned socket
+name and `session` is the last published checkpoint name. These can differ
+briefly after a rename. Preserve both grouping fields when rebuilding a row.
+Rows without a usable `tab_group_session` fall back to `session` for grouping.
+Group IDs are local to a session and can be zero. The view groups the rows
+returned by `agent-list` in order of first appearance and retains row order
+within each group. Rows missing group metadata get a per-session fallback.
+The attention count still describes the native snapshot before the hook runs.
 
 The Screen tab's **Wrap** and text-size controls style `pre.screen` elements
 in the hook's output. A replacement `screen` hook should keep a `pre.screen`
