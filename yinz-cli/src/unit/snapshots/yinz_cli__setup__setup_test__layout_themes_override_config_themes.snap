@@ -10999,6 +10999,8 @@ Config {
         opacity: None,
         blur: None,
         startup_mode: None,
+        initial_columns: None,
+        initial_rows: None,
         cursor_style: None,
         macos_option_as_alt: None,
         cursor_blink: None,
