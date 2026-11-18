@@ -231,7 +231,6 @@
       (yinz-h "meta" (hash "name" "viewport" "content" "width=device-width, initial-scale=1, viewport-fit=cover"))
       (yinz-h "meta" (hash "name" "theme-color" "content" "#16181d"))
       (yinz-h "meta" (hash "name" "apple-mobile-web-app-capable" "content" "yes"))
-      (yinz-h "meta" (hash "name" "apple-mobile-web-app-status-bar-style" "content" "black-translucent"))
       (yinz-h "link" (hash "rel" "apple-touch-icon" "href" "/static/icon-192.png"))
       (yinz-h "meta" (hash "name" "color-scheme" "content" "light dark"))
       (yinz-h "title" (hash) (hash-ref context "title"))

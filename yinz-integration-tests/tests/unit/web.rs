@@ -926,6 +926,12 @@ fn web_builtin_production_http() {
     let login_page = fetch(addr, "GET", "/login", "");
     assert_page(&login_page);
     let login_html = login_page.text();
+    for (path, html) in [("/", page), ("/login", login_html)] {
+        assert!(
+            !html.contains("apple-mobile-web-app-status-bar-style"),
+            "{path} should let iOS choose the default status bar style"
+        );
+    }
     for id in [
         "login-form",
         "password",
