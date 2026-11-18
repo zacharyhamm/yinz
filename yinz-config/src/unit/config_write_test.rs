@@ -125,6 +125,125 @@ fn managed_fragment_contention_returns_without_waiting_and_allows_retry() {
         .contains("mouse_mode true"));
 }
 
+#[cfg(unix)]
+#[test]
+fn underline_metrics_managed_save_rejects_nonregular_lock() {
+    use std::os::unix::{
+        ffi::OsStrExt,
+        fs::{symlink, FileTypeExt, OpenOptionsExt},
+    };
+    use std::sync::mpsc;
+
+    #[derive(Debug)]
+    enum Writer {
+        Waiting,
+        Guarded,
+        Editor,
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let overlay = dir.path().join(super::CONFIG_OVERLAY_DIR_NAME);
+    let lock_path = overlay.join(".yinz-managed.kdl.lock");
+    let managed =
+        Config::write_managed_fragment(&overlay, "terminal { underline_thickness 3; }").unwrap();
+    assert!(lock_path.symlink_metadata().unwrap().is_file());
+    let original = fs::read(&managed).unwrap();
+    fs::remove_file(&lock_path).unwrap();
+
+    for linked in [false, true] {
+        let fifo = if linked {
+            overlay.join("lock-pipe")
+        } else {
+            lock_path.clone()
+        };
+        let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        if linked {
+            symlink(&fifo, &lock_path).unwrap();
+        }
+        let fragment = "terminal { underline_offset -2; }";
+        for writer in [Writer::Waiting, Writer::Guarded, Writer::Editor] {
+            let overlay = &overlay;
+            let mode = &writer;
+            let error = std::thread::scope(|scope| {
+                let (send, result) = mpsc::channel();
+                let worker = scope.spawn(move || {
+                    let outcome = match mode {
+                        Writer::Waiting => Config::write_managed_fragment(overlay, fragment),
+                        Writer::Guarded => {
+                            Config::try_write_managed_fragment_guarded(overlay, fragment, || {
+                                panic!("guard must not run for a FIFO lock")
+                            })
+                        },
+                        Writer::Editor => Config::try_write_editor_fragment(
+                            overlay,
+                            fragment,
+                            Config::default(),
+                            || panic!("guard must not run for a FIFO lock"),
+                        ),
+                    };
+                    send.send(outcome).unwrap();
+                });
+                let outcome = result.recv_timeout(yinz_test_support::default_timeout());
+                // Keep the reader alive through join if a regression blocks in open.
+                let _reader = matches!(outcome, Err(mpsc::RecvTimeoutError::Timeout)).then(|| {
+                    eprintln!("{mode:?} managed writer blocked opening {fifo:?}");
+                    fs::OpenOptions::new()
+                        .read(true)
+                        .custom_flags(libc::O_NONBLOCK)
+                        .open(&fifo)
+                        .unwrap()
+                });
+                worker.join().unwrap();
+                outcome
+                    .expect("managed writer must return promptly")
+                    .unwrap_err()
+            });
+            for expected in [
+                lock_path.to_str().unwrap(),
+                "regular lock file",
+                "then retry",
+            ] {
+                assert!(error.contains(expected), "{error}");
+            }
+            assert_eq!(fs::read(&managed).unwrap(), original);
+            assert!(fifo.symlink_metadata().unwrap().file_type().is_fifo());
+            if linked {
+                assert_eq!(fs::read_link(&lock_path).unwrap(), fifo);
+            }
+        }
+        // With a reader present, open succeeds and the descriptor check must refuse the FIFO.
+        {
+            let _reader = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&fifo)
+                .unwrap();
+            let error = Config::write_managed_fragment(&overlay, fragment).unwrap_err();
+            assert!(error.contains(lock_path.to_str().unwrap()), "{error}");
+            assert!(error.contains("not a regular file"), "{error}");
+            assert_eq!(fs::read(&managed).unwrap(), original);
+        }
+        fs::remove_file(&lock_path).unwrap();
+        if linked {
+            fs::remove_file(fifo).unwrap();
+        }
+    }
+
+    let regular_lock = overlay.join("regular-lock");
+    fs::write(&regular_lock, "keep this lock file").unwrap();
+    symlink(&regular_lock, &lock_path).unwrap();
+    Config::write_managed_fragment(&overlay, "terminal { underline_offset -2; }").unwrap();
+    assert_eq!(fs::read_link(lock_path).unwrap(), regular_lock);
+    assert_eq!(
+        fs::read_to_string(regular_lock).unwrap(),
+        "keep this lock file"
+    );
+    let loaded = Config::load(None, Some(dir.path()), false).unwrap();
+    assert_eq!(loaded.terminal.underline_offset, Some(-2));
+    assert_eq!(loaded.terminal.underline_thickness, Some(3));
+}
+
 #[test]
 fn config_save_atomically_replaces_the_file_and_keeps_its_backup() {
     let dir = tempfile::tempdir().unwrap();

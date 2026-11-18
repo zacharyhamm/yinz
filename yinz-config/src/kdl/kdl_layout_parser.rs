@@ -82,16 +82,7 @@ impl<'a> KdlLayoutParser<'a> {
         else {
             return Ok(None);
         };
-        match self.mode.reader()(&path) {
-            Ok(contents) => Ok(Some(contents)),
-            Err(error)
-                if self.mode == ConfigRead::Saved
-                    && error.kind() != std::io::ErrorKind::NotFound =>
-            {
-                Err(ConfigError::IoPath(error, path))
-            },
-            Err(_) => Ok(None),
-        }
+        self.mode.optional_layout_text(&path)
     }
 
     fn is_a_reserved_word(&self, word: &str) -> bool {

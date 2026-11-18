@@ -67,6 +67,55 @@ fn failure(out: Output, expected: &str) {
     );
 }
 
+#[test]
+fn underline_metrics_setup_validation_points_to_a_copyable_example() {
+    use yinz_config::config::Config;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("invalid.kdl");
+    for key in ["underline_offset", "underline_thickness"] {
+        let setting = format!("{key} -1.5");
+        std::fs::write(&path, format!("terminal {{ {setting}; }}")).unwrap();
+        let output = command(dir.path())
+            .arg("--config")
+            .arg(&path)
+            .args(["setup", "--check"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        for expected in [
+            path.to_str().unwrap(),
+            key,
+            setting.as_str(),
+            "between -64 and 64",
+            "yinz setup --dump-config",
+        ] {
+            assert!(stderr.contains(expected), "{stderr}");
+        }
+    }
+
+    let output = command(dir.path())
+        .args(["setup", "--dump-config"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let dump = String::from_utf8(output.stdout).unwrap();
+    let defaults = Config::from_kdl(&dump, None).unwrap();
+    assert_eq!(defaults.terminal.underline_offset, None);
+    assert_eq!(defaults.terminal.underline_thickness, None);
+
+    let example = dump
+        .lines()
+        .skip_while(|line| *line != "// terminal {")
+        .map_while(|line| line.strip_prefix("// "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let example = Config::from_kdl(&example, None).unwrap();
+    assert_eq!(example.terminal.underline_offset, Some(-2));
+    assert_eq!(example.terminal.underline_thickness, Some(1));
+}
+
 #[cfg(unix)]
 #[test]
 fn underline_metrics_reconfigure_reaches_session_lookup_with_a_fifo_main() {

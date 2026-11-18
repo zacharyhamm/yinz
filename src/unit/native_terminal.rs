@@ -45,6 +45,7 @@ fn underline_metrics_native_startup_reports_invalid_setting() {
 #[test]
 fn underline_metrics_saved_reconfigure_keeps_the_session_responsive_after_fifo_refusal() {
     use std::{
+        cell::RefCell,
         os::unix::{
             ffi::OsStrExt,
             fs::{FileTypeExt, OpenOptionsExt},
@@ -54,6 +55,8 @@ fn underline_metrics_saved_reconfigure_keeps_the_session_responsive_after_fifo_r
     };
     use yinz_config::config::{Config, MANAGED_CONFIG_FILE_NAME};
 
+    // Drop the reader after the fixture so a regressed server can finish opening the lock.
+    let lock_reader = RefCell::new(None);
     let fixture = real_fixture::RealFixture::new("underline-");
     let root = fixture.path();
     for directory in ["home", "tmp", "config.d"] {
@@ -68,6 +71,7 @@ fn underline_metrics_saved_reconfigure_keeps_the_session_responsive_after_fifo_r
     let layout = root.join("layout.kdl");
     fs::write(&layout, "layout { pane command=\"/bin/sh\"; }").unwrap();
     let managed = root.join("config.d").join(MANAGED_CONFIG_FILE_NAME);
+    let lock = managed.with_file_name(".yinz-managed.kdl.lock");
     let run = |args: &[&str]| -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_yinz"));
         fixture.inherit(&mut command);
@@ -104,13 +108,20 @@ fn underline_metrics_saved_reconfigure_keeps_the_session_responsive_after_fifo_r
                     eprintln!("CLI failed to complete {args:?}: {status:?}");
                     let _ = child.kill();
                     let _ = child.wait();
-                    // Release a regressed server read only after recording the failure,
-                    // so the owned fixture guard can still shut the session down.
+                    // Pair only after recording the failure, so the owned fixture
+                    // guard can still shut the session down.
                     if managed.metadata().is_ok_and(|m| m.file_type().is_fifo()) {
                         let _ = fs::OpenOptions::new()
                             .write(true)
                             .custom_flags(nix::libc::O_NONBLOCK)
                             .open(&managed);
+                    }
+                    if lock.metadata().is_ok_and(|m| m.file_type().is_fifo()) {
+                        *lock_reader.borrow_mut() = fs::OpenOptions::new()
+                            .read(true)
+                            .custom_flags(nix::libc::O_NONBLOCK)
+                            .open(&lock)
+                            .ok();
                     }
                     panic!("CLI failed to complete {args:?}: {status:?}");
                 },
@@ -143,32 +154,45 @@ fn underline_metrics_saved_reconfigure_keeps_the_session_responsive_after_fifo_r
     // A completed reconfigure establishes readiness on the same instruction loop.
     let ready = reconfigure("pane_frames true", false);
     assert!(ready.status.success(), "{ready:?}");
-    let name = std::ffi::CString::new(managed.as_os_str().as_bytes()).unwrap();
-    assert_eq!(unsafe { nix::libc::mkfifo(name.as_ptr(), 0o600) }, 0);
     let fragment = "terminal { underline_offset -2; }\nmouse_mode false";
-    let refused = reconfigure(fragment, true);
-    // The CLI maps a server action error with a message to exit status 2.
-    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
-    let stderr = String::from_utf8_lossy(&refused.stderr);
-    for expected in [
-        managed.to_str().unwrap(),
-        "not a regular file",
-        "then retry",
+    let original = "terminal { underline_thickness 3; }";
+    for (fifo, detail, later_fragment) in [
+        (&managed, "not a regular file", "pane_frames false"),
+        (&lock, "regular lock file", "pane_frames true"),
     ] {
-        assert!(stderr.contains(expected), "{stderr}");
-    }
-    let later = reconfigure("pane_frames false", false);
-    assert!(later.status.success(), "{later:?}");
-    assert!(managed.symlink_metadata().unwrap().file_type().is_fifo());
+        if fifo == &lock {
+            fs::remove_file(&lock).unwrap();
+            fs::write(&managed, original).unwrap();
+        }
+        let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { nix::libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let refused = reconfigure(fragment, true);
+        // The CLI maps a server action error with a message to exit status 2.
+        assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        for expected in [fifo.to_str().unwrap(), detail, "then retry"] {
+            assert!(stderr.contains(expected), "{stderr}");
+        }
+        assert!(fifo.symlink_metadata().unwrap().file_type().is_fifo());
+        if fifo == &lock {
+            assert_eq!(fs::read_to_string(&managed).unwrap(), original);
+        }
+        let later = reconfigure(later_fragment, false);
+        assert!(later.status.success(), "{later:?}");
+        assert!(fifo.symlink_metadata().unwrap().file_type().is_fifo());
 
-    fs::remove_file(&managed).unwrap();
-    fs::write(&managed, "terminal { underline_thickness 3; }").unwrap();
-    let saved = reconfigure(fragment, true);
-    assert!(saved.status.success(), "{saved:?}");
-    let saved = Config::from_kdl(&fs::read_to_string(&managed).unwrap(), None).unwrap();
-    assert_eq!(saved.terminal.underline_offset, Some(-2));
-    assert_eq!(saved.terminal.underline_thickness, Some(3));
-    assert_eq!(saved.options.mouse_mode, Some(false));
+        fs::remove_file(fifo).unwrap();
+        if fifo == &managed {
+            fs::write(&managed, original).unwrap();
+        }
+        let saved = reconfigure(fragment, true);
+        assert!(saved.status.success(), "{saved:?}");
+        let saved = Config::from_kdl(&fs::read_to_string(&managed).unwrap(), None).unwrap();
+        assert_eq!(saved.terminal.underline_offset, Some(-2));
+        assert_eq!(saved.terminal.underline_thickness, Some(3));
+        assert_eq!(saved.options.mouse_mode, Some(false));
+        assert!(lock.symlink_metadata().unwrap().is_file());
+    }
 }
 
 #[test]

@@ -6,8 +6,8 @@ use {yinz_types::data::LayoutInfo, yinz_types::data::LayoutWithError};
 use miette::{Diagnostic, LabeledSpan, NamedSource, SourceCode};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use std::fs::File;
-use std::io::{self, Read};
+use std::fs::{File, OpenOptions};
+use std::io;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -474,25 +474,34 @@ pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDoc
     managed.fmt();
 }
 
-fn read_regular_config(path: &Path) -> std::io::Result<String> {
-    let mut options = File::options();
-    options.read(true);
+fn nonblocking_open_options() -> OpenOptions {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
+        let mut options = File::options();
         options.custom_flags(libc::O_NONBLOCK);
+        options
     }
-    let mut file = options.open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(std::io::Error::other("configuration is not a regular file"));
+    #[cfg(not(unix))]
+    File::options()
+}
+
+fn require_regular_file(file: &File) -> io::Result<()> {
+    if file.metadata()?.is_file() {
+        Ok(())
+    } else {
+        Err(io::Error::other("not a regular file"))
     }
-    let mut text = String::new();
-    file.read_to_string(&mut text)?;
-    Ok(text)
+}
+
+fn read_regular_config(path: &Path) -> io::Result<String> {
+    let file = nonblocking_open_options().read(true).open(path)?;
+    require_regular_file(&file)?;
+    io::read_to_string(file)
 }
 
 fn managed_recovery(error: String) -> String {
-    format!("{error}. Correct the reported setting or restore readable regular KDL at the reported path, then retry.")
+    format!("{error}. Correct the reported setting or restore a readable regular file at the reported path, then retry.")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -507,6 +516,26 @@ impl ConfigRead {
             Self::Ordinary => |path| std::fs::read_to_string(path),
             Self::Saved => read_regular_config,
         }
+    }
+
+    pub(crate) fn optional_layout_text(self, path: &Path) -> Result<Option<String>, ConfigError> {
+        if self == Self::Ordinary {
+            return Ok(std::fs::read_to_string(path).ok());
+        }
+
+        let path_error = |error| ConfigError::IoPath(error, path.into());
+        let file = match nonblocking_open_options().read(true).open(path) {
+            Ok(file) => file,
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    || path.metadata().is_ok_and(|metadata| metadata.is_file()) =>
+            {
+                return Ok(None);
+            },
+            Err(error) => return Err(path_error(error)),
+        };
+        require_regular_file(&file).map_err(path_error)?;
+        Ok(io::read_to_string(file).ok())
     }
 
     pub(crate) fn exists(self, path: &Path) -> Result<bool, ConfigError> {
@@ -820,23 +849,28 @@ impl Config {
         std::fs::create_dir_all(overlay_dir)
             .map_err(|e| format!("failed to create {}: {e}", overlay_dir.display()))?;
         // Serialize the read/merge/write across sessions. Keep the lock inode after use.
-        let lock = std::fs::OpenOptions::new()
+        let lock_path = overlay_dir.join(format!(".{MANAGED_CONFIG_FILE_NAME}.lock"));
+        let lock_error = |error| {
+            format!(
+                "Cannot use managed configuration lock {}: {error}. Restore a usable regular lock file at that path, then retry.",
+                lock_path.display()
+            )
+        };
+        let lock = nonblocking_open_options()
             .write(true)
             .create(true)
             .truncate(false)
-            .open(overlay_dir.join(format!(".{MANAGED_CONFIG_FILE_NAME}.lock")))
-            .map_err(|e| format!("failed to open lock for {}: {e}", path.display()))?;
+            .open(&lock_path)
+            .map_err(lock_error)?;
+        require_regular_file(&lock).map_err(lock_error)?;
         if wait_for_lock {
-            lock.lock()
-                .map_err(|e| format!("failed to lock {}: {e}", path.display()))?;
+            lock.lock().map_err(lock_error)?;
         } else {
             lock.try_lock().map_err(|e| match e {
                 std::fs::TryLockError::WouldBlock => {
                     "Configuration is busy; try saving again".to_owned()
                 },
-                std::fs::TryLockError::Error(e) => {
-                    format!("failed to lock {}: {e}", path.display())
-                },
+                std::fs::TryLockError::Error(e) => lock_error(e),
             })?;
         }
         let mode = ConfigRead::Saved;

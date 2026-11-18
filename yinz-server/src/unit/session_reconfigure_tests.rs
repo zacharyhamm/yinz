@@ -2981,37 +2981,86 @@ mod underline_metrics_reconfigure {
     #[cfg(unix)]
     #[test]
     fn underline_metrics_managed_save_rejects_fifo_atomically() {
-        use std::os::unix::{ffi::OsStrExt, fs::FileTypeExt};
+        use std::os::unix::{
+            ffi::OsStrExt,
+            fs::{FileTypeExt, OpenOptionsExt},
+        };
+        use std::sync::mpsc;
 
         for all in [false, true] {
-            let fixture = Fixture::new(&[CLIENT, ClientId::new(2)], None);
-            let path = managed(&fixture);
-            let main = fixture.dir.path().join("config.kdl");
-            let main_before = std::fs::read(&main).unwrap();
-            std::fs::create_dir(path.parent().unwrap()).unwrap();
-            let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
-            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-            let before = fixture.snapshot();
-            let fragment = "terminal { underline_offset -2; }\nmouse_mode false";
-            let error = request(&fixture, CLIENT, all, fragment, true).unwrap_err();
-            for expected in [path.to_str().unwrap(), "not a regular file", "then retry"] {
-                assert!(error.contains(expected), "{error}");
-            }
-            assert_eq!(fixture.snapshot(), before);
-            assert_eq!(std::fs::read(&main).unwrap(), main_before);
-            assert!(std::fs::symlink_metadata(&path)
-                .unwrap()
-                .file_type()
-                .is_fifo());
-            fixture.assert_only_write_failure(&path, &error);
+            for fifo_lock in [false, true] {
+                let fixture = Fixture::new(&[CLIENT, ClientId::new(2)], None);
+                let managed = managed(&fixture);
+                let lock = managed.with_file_name(".yinz-managed.kdl.lock");
+                let fifo = if fifo_lock { &lock } else { &managed };
+                let main = fixture.dir.path().join("config.kdl");
+                let main_before = std::fs::read(&main).unwrap();
+                let original = "terminal { underline_thickness 3; }";
+                std::fs::create_dir(managed.parent().unwrap()).unwrap();
+                if fifo_lock {
+                    std::fs::write(&managed, original).unwrap();
+                }
+                let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+                assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+                let before = fixture.snapshot();
+                let fragment =
+                    "theme \"dayfox\"\nterminal { underline_offset -2; }\nmouse_mode false";
+                let fixture_ref = &fixture;
+                let error = std::thread::scope(|scope| {
+                    let (send, result) = mpsc::channel();
+                    let worker = scope.spawn(move || {
+                        send.send(request(fixture_ref, CLIENT, all, fragment, true))
+                            .unwrap();
+                    });
+                    let outcome = result.recv_timeout(yinz_test_support::default_timeout());
+                    let mut lock_reader = None;
+                    if matches!(outcome, Err(mpsc::RecvTimeoutError::Timeout)) {
+                        eprintln!("saved reconfigure blocked on {fifo:?}, all clients: {all}");
+                        let mut options = std::fs::OpenOptions::new();
+                        options.custom_flags(libc::O_NONBLOCK);
+                        if fifo_lock {
+                            // Keep the reader through join, including if the worker
+                            // has yet to enter the write-only open.
+                            lock_reader = Some(options.read(true).open(fifo).unwrap());
+                        } else {
+                            // A blocked read needs a writer that immediately sends EOF.
+                            let _ = options.write(true).open(fifo);
+                        }
+                    }
+                    worker.join().unwrap();
+                    drop(lock_reader);
+                    outcome
+                        .expect("saved reconfigure must return promptly")
+                        .unwrap_err()
+                });
+                let detail = if fifo_lock {
+                    "regular lock file"
+                } else {
+                    "not a regular file"
+                };
+                for expected in [fifo.to_str().unwrap(), detail, "then retry"] {
+                    assert!(error.contains(expected), "{error}");
+                }
+                assert_eq!(fixture.snapshot(), before);
+                assert_eq!(std::fs::read(&main).unwrap(), main_before);
+                assert!(fifo.symlink_metadata().unwrap().file_type().is_fifo());
+                if fifo_lock {
+                    assert_eq!(std::fs::read_to_string(&managed).unwrap(), original);
+                }
+                fixture.assert_only_write_failure(&managed, &error);
 
-            std::fs::remove_file(&path).unwrap();
-            std::fs::write(&path, "terminal { underline_thickness 3; }").unwrap();
-            request(&fixture, CLIENT, all, fragment, true).unwrap();
-            let saved = load(&fixture);
-            assert_eq!(saved.terminal.underline_offset, Some(-2));
-            assert_eq!(saved.terminal.underline_thickness, Some(3));
-            assert_eq!(saved.options.mouse_mode, Some(false));
+                std::fs::remove_file(fifo).unwrap();
+                if !fifo_lock {
+                    std::fs::write(&managed, original).unwrap();
+                }
+                request(&fixture, CLIENT, all, fragment, true).unwrap();
+                let saved = load(&fixture);
+                assert_eq!(saved.terminal.underline_offset, Some(-2));
+                assert_eq!(saved.terminal.underline_thickness, Some(3));
+                assert_eq!(saved.options.mouse_mode, Some(false));
+                assert_eq!(saved.options.theme.as_deref(), Some("dayfox"));
+                assert!(lock.symlink_metadata().unwrap().is_file());
+            }
         }
     }
 

@@ -406,11 +406,9 @@ fn stringified_from_path_with(
         result => (layout_path.to_path_buf(), result?),
     };
     let swap_path = layout_path.with_extension("swap.kdl");
-    let swap = match read(&swap_path) {
-        Ok(raw) => Some((swap_path.display().to_string(), raw)),
-        Err(ConfigError::IoPath(error, _)) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error),
-    };
+    let swap = mode
+        .optional_layout_text(&swap_path)?
+        .map(|raw| (swap_path.display().to_string(), raw));
     Ok((path.display().to_string(), raw, swap))
 }
 pub fn stringified_from_default_assets(path: &Path) -> Result<StringifiedLayout, ConfigError> {

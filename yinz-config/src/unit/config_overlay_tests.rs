@@ -780,6 +780,86 @@ fn underline_metrics_invalid_drop_in_discards_preloaded_themes() {
     assert_eq!(saved.terminal.underline_thickness, None);
 }
 
+const MANAGED_LAYOUT_EDITS: &str = r#"
+        configuration_edits {
+            set "keybinds" "normal" "bind:[\"Ctrl Alt y\"]" {
+                bind "Ctrl Alt y" { Quit; }
+            }
+        }
+        terminal { underline_thickness 3; padding 4; }
+    "#;
+
+#[test]
+fn underline_metrics_managed_save_accepts_optional_layout_text_fallbacks() {
+    use crate::editor::Disk;
+    use std::fs;
+    use yinz_types::{data::InputMode, input::actions::Action};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let overlay = root.join("config.d");
+    let layouts = root.join("layouts");
+    fs::create_dir(&overlay).unwrap();
+    fs::create_dir(&layouts).unwrap();
+    fs::write(
+        layouts.join("default.kdl"),
+        "layout { pane contents_file=\"preview.txt\"; }",
+    )
+    .unwrap();
+    let managed = overlay.join(MANAGED_CONFIG_FILE_NAME);
+    let swap = layouts.join("default.swap.kdl");
+    let contents = layouts.join("preview.txt");
+    let valid_swap = include_bytes!("../../assets/layouts/default.swap.kdl").as_slice();
+    let valid_contents = b"initial contents".as_slice();
+    let invalid_text = b"invalid UTF-8: \xff".as_slice();
+    let fragment = "terminal { underline_offset -2; }";
+
+    for files in [
+        [Some(valid_swap), Some(valid_contents)],
+        [Some(invalid_text), Some(valid_contents)],
+        [Some(valid_swap), Some(invalid_text)],
+        [None, None],
+    ] {
+        fs::write(&managed, MANAGED_LAYOUT_EDITS).unwrap();
+        for (path, bytes) in [&swap, &contents].into_iter().zip(files) {
+            if let Some(bytes) = bytes {
+                fs::write(path, bytes).unwrap();
+            } else {
+                fs::remove_file(path).unwrap();
+            }
+        }
+        let preview = || Disk::read(None, Some(root)).unwrap().preview(&[], &[]);
+        let (_, before, _) = preview().unwrap();
+        assert_eq!(before.terminal.underline_offset, None);
+        Config::write_managed_fragment(&overlay, fragment).unwrap();
+        let (_, ordinary, _) = preview().unwrap();
+        let effective = Config::load_saved(None, Some(root)).unwrap();
+        for config in [ordinary, effective] {
+            assert_eq!(config.terminal.underline_offset, Some(-2));
+            assert_eq!(config.terminal.underline_thickness, Some(3));
+            assert_eq!(config.terminal.padding, Some(4.0));
+            assert_eq!(
+                config.keybinds.0[&InputMode::Normal][&"Ctrl Alt y".parse().unwrap()],
+                [Action::Quit]
+            );
+        }
+        for (path, bytes) in [&swap, &contents].into_iter().zip(files) {
+            if let Some(bytes) = bytes {
+                assert_eq!(fs::read(path).unwrap(), bytes);
+            } else {
+                assert!(!path.exists());
+            }
+        }
+    }
+
+    fs::write(&managed, MANAGED_LAYOUT_EDITS).unwrap();
+    fs::write(&swap, "swap_tiled_layout {").unwrap();
+    let error = Config::write_managed_fragment(&overlay, fragment).unwrap_err();
+    assert!(error.contains(swap.to_str().unwrap()), "{error}");
+    assert_eq!(fs::read_to_string(&managed).unwrap(), MANAGED_LAYOUT_EDITS);
+    assert_eq!(fs::read_to_string(&swap).unwrap(), "swap_tiled_layout {");
+}
+
 #[cfg(unix)]
 #[test]
 fn underline_metrics_managed_save_rejects_nonregular_validation_inputs() {
@@ -827,14 +907,7 @@ fn underline_metrics_managed_save_rejects_nonregular_validation_inputs() {
         "keybinds {{ normal {{ bind \"Ctrl u\" {{ NewTab {{ layout \"{}\"; }}; }}; }}; }}",
         action_layout.display()
     );
-    let original = r#"
-        configuration_edits {
-            set "keybinds" "normal" "bind:[\"Ctrl Alt y\"]" {
-                bind "Ctrl Alt y" { Quit; }
-            }
-        }
-        terminal { underline_thickness 3; padding 4; }
-    "#;
+    let original = MANAGED_LAYOUT_EDITS;
     std::fs::write(&managed, original).unwrap();
     let files = [
         (&main, main_text.as_str()),
