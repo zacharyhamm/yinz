@@ -166,7 +166,7 @@ keybinds clear-defaults=true {
         bind "Ctrl Alt p" { ToggleCommandPalette; }
     }
     shared_except "locked" "select" "notifications" {
-        bind "Alt u" { ReturnFromNotification; }
+        bind "Alt Shift F12" { ReturnFromNotification; }
     }
     shared_except "locked" "select" {
         bind "Alt left" { MoveFocusOrTab "left"; }

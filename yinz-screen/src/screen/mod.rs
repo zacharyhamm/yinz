@@ -778,6 +778,7 @@ pub(crate) struct Screen {
     /// add a configurable cap only if long-lived sessions show meaningful memory pressure.
     notification_history: Vec<NotificationRecord>,
     notification_return_panes: HashMap<ClientId, PaneId>,
+    notification_return_retry_until: HashMap<ClientId, Instant>,
     notification_policy: notification_policy::NotificationPolicy,
     /// Toasts committed before any client was ever connected, in arrival order: the session's
     /// first layout can raise one while its first client is still being registered. They are
@@ -1074,7 +1075,11 @@ impl Screen {
                 })
         {
             Some(Duration::from_millis(50))
-        } else if !self.animating_plugin_loads.is_empty()
+        } else if self
+            .notification_return_retry_until
+            .values()
+            .any(|until| now < *until)
+            || !self.animating_plugin_loads.is_empty()
             || self
                 .tabs
                 .values()
@@ -1571,6 +1576,7 @@ impl Screen {
             context_menu,
             notification_history: vec![],
             notification_return_panes: HashMap::new(),
+            notification_return_retry_until: HashMap::new(),
             notification_policy: Default::default(),
             toasts_before_first_client: Some(vec![]),
             notification_browsers: HashMap::new(),

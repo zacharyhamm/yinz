@@ -1,11 +1,12 @@
 #![cfg(unix)]
 
 use insta::assert_snapshot;
+use yinz_cli::args::CliAction;
 use yinz_integration_tests::{
     col, composite_contains_settled_guest_grid, guest_ascended_bar_settled,
     host_descended_bar_settled, host_descended_bar_with_ascend_keys_settled, keys, normalized,
-    tab_bar_shows_no_lone_pane_id, test_env, wait_for_settled_composite, GridSnapshot,
-    NestedDepthThreeHarness, NestedHarness, PROMPT, TERMINAL_SIZE,
+    tab_bar_shows_no_lone_pane_id, test_env, wait_for_settled_composite, FakePtyHandle,
+    GridSnapshot, NestedDepthThreeHarness, NestedHarness, PROMPT, TERMINAL_SIZE,
 };
 use yinz_ipc::nested_session::NestedSessionMessage;
 use yinz_types::geometry::Direction;
@@ -203,7 +204,7 @@ fn ascend_via_focus_host_binding(nested: &NestedHarness) {
     nested.wait_for_host_to_ascend_from_guest_after(ascended);
 }
 
-fn split_host_sibling(nested: &NestedHarness) {
+fn split_host_sibling(nested: &NestedHarness) -> FakePtyHandle {
     nested.host.send_stdin(&keys::ctrl('p'));
     nested.host.wait_until(
         "host entered pane mode before the split key",
@@ -216,6 +217,7 @@ fn split_host_sibling(nested: &NestedHarness) {
         "host returned to normal mode after the split key",
         |host_grid| normal_mode_bar_settled(host_grid) && prompt_count(host_grid) >= 1,
     );
+    sibling
 }
 
 fn descend_into_guest_on_the_left(nested: &NestedHarness) {
@@ -455,6 +457,86 @@ fn clicking_a_host_pane_while_descended_refocuses_and_ascends() {
         "host_acts_on_key_after_mouse_ascend",
         normalized(&host_after_new_pane)
     );
+
+    nested.guest.quit();
+    nested.host.quit();
+}
+
+#[test]
+fn notification_return_restores_nested_key_ownership() {
+    let mut nested = NestedHarness::start_with_host_config(
+        TERMINAL_SIZE,
+        "mouse_mode true\nnotification_timeout 30\nnotification_position \"top-left\"",
+    );
+    boot_and_descend_on_first_load(&nested);
+    ascend_via_focus_host_binding(&nested);
+    let sibling = split_host_sibling(&nested);
+    sibling.output(b"\x1b[6;1HHost notification target");
+    descend_into_guest_on_the_left(&nested);
+    let list_host_panes = |nested: &NestedHarness| {
+        let (status, panes) = nested.host.run_cli_action_reporting(CliAction::ListPanes {
+            tab: false,
+            command: false,
+            state: false,
+            geometry: false,
+            all: false,
+            json: true,
+        });
+        assert_eq!(status, 0);
+        panes
+    };
+    let host_panes = list_host_panes(&nested);
+    let text = "Open host task";
+    assert_eq!(
+        nested.host.run_cli_action(CliAction::Notify {
+            pane_id: Some(sibling.terminal_id().get()),
+            text: text.into(),
+        }),
+        0
+    );
+    let toast = nested
+        .host
+        .wait_until("the host's targeted toast is fully visible", |grid| {
+            grid.contains(text)
+                && grid.contains("╭")
+                && grid.contains("╮")
+                && host_descended_bar_settled(grid)
+        });
+    let lines = toast.lines();
+    let (row, line) = lines
+        .iter()
+        .enumerate()
+        .find(|(_, line)| line.contains(text))
+        .unwrap();
+    let column = display_column_of(line, text).unwrap();
+    let ascended = nested.mark_host_to_guest();
+    nested.host.send_stdin(&sgr_left_click(column + 1, row + 1));
+    nested.wait_for_host_to_ascend_from_guest_after(ascended);
+    nested
+        .host
+        .wait_until("the host terminal has keyboard focus", |grid| {
+            normal_mode_bar_settled(grid)
+                && grid.lines().iter().enumerate().any(|(row, line)| {
+                    let label = "Host notification target";
+                    display_column_of(line, label)
+                        .is_some_and(|column| grid.cursor_is_at(col(column + label.len()).row(row)))
+                })
+        });
+
+    let descended = nested.mark_host_to_guest();
+    nested.host.send_stdin(b"\x1b[24;4~"); // xterm Alt+Shift+F12
+    nested.wait_for_host_to_descend_into_guest_after(descended);
+    nested
+        .guest
+        .wait_until("guest resumes Normal input", guest_ui_settled);
+    nested.host.send_stdin(&keys::alt('n'));
+    let guest_new_pane = nested.guest.expect_pty_spawn();
+    guest_new_pane.output(PROMPT);
+    nested.guest.wait_until(
+        "Alt+n opened the new pane in the guest",
+        two_pane_guest_settled,
+    );
+    assert_eq!(list_host_panes(&nested), host_panes);
 
     nested.guest.quit();
     nested.host.quit();

@@ -231,6 +231,8 @@ impl Screen {
         // whoever scheduled it - moves the animation to where the wall clock says it should be.
         let now = self.frame_now();
         self.reap_settled_notifications(now);
+        self.notification_return_retry_until
+            .retain(|_, until| now < *until);
         self.advance_frame_color_fades(now);
         self.advance_plugin_loading_animations();
 
@@ -374,6 +376,7 @@ impl Screen {
             // walking the client list to find out.
             let has_overlays = !self.notifications.is_empty()
                 || !self.notification_browsers.is_empty()
+                || !self.notification_return_retry_until.is_empty()
                 || !self.context_menus.is_empty();
             let regular_client_ids: Vec<ClientId> = if has_overlays {
                 self.connected_clients

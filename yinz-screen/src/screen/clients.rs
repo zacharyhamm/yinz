@@ -223,6 +223,7 @@ impl Screen {
         clean_panes: bool,
     ) -> Result<()> {
         self.notification_return_panes.remove(&client_id);
+        self.notification_return_retry_until.remove(&client_id);
         let err_context = || format!("failed to remove client {client_id}");
         // `and` evaluates every cleanup step while retaining the first error.
         let mut result = Ok(());
@@ -407,6 +408,7 @@ impl Screen {
 
     pub fn add_watcher_client(&mut self, client_id: ClientId) -> Result<()> {
         self.notification_return_panes.remove(&client_id);
+        self.notification_return_retry_until.remove(&client_id);
         // Initialize with a default size - will be updated when we receive the actual size
         let default_size = Size { rows: 24, cols: 80 }; // Reasonable default
         self.watcher_clients
@@ -421,6 +423,7 @@ impl Screen {
 
     pub fn remove_watcher_client(&mut self, client_id: ClientId) {
         self.notification_return_panes.remove(&client_id);
+        self.notification_return_retry_until.remove(&client_id);
         self.watcher_clients.remove(&client_id);
         self.client_pixel_dimensions.remove(&client_id);
         self.client_cell_pixel_sizes.remove(&client_id);

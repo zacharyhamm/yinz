@@ -359,6 +359,7 @@ fn every_preset_parses_with_palette_agent_selection_and_notifications() {
         ("", "", false),
         ("Ctrl", "Ctrl", false),
         ("Ctrl Shift", "Alt Super", false),
+        ("Ctrl", "Alt Shift", false),
     ] {
         let source = plugin
             .runtime
@@ -378,6 +379,14 @@ fn every_preset_parses_with_palette_agent_selection_and_notifications() {
         let config = Config::from_kdl(source, None).unwrap();
         let saved = Config::from_kdl(&config.to_string(false).unwrap(), None).unwrap();
         let key = |s: &str| -> KeyWithModifier { s.parse().unwrap() };
+        let return_key = if secondary
+            .split_whitespace()
+            .any(|modifier| modifier == "Shift")
+        {
+            key(&format!("{secondary} F12"))
+        } else {
+            key(&format!("{secondary} Shift F12"))
+        };
         for config in [&config, &saved] {
             for binding in ["w", "p", "l"] {
                 assert_eq!(
@@ -428,7 +437,7 @@ fn every_preset_parses_with_palette_agent_selection_and_notifications() {
                 }
                 let return_actions = config
                     .keybinds
-                    .get_actions_for_key_in_mode(&mode, &key(&format!("{secondary} u")));
+                    .get_actions_for_key_in_mode(&mode, &return_key);
                 if secondary.is_empty()
                     || matches!(
                         mode,
@@ -436,9 +445,9 @@ fn every_preset_parses_with_palette_agent_selection_and_notifications() {
                     )
                 {
                     assert!(
-                        !return_actions.is_some_and(|actions| {
-                            actions.contains(&Action::ReturnFromNotification)
-                        }),
+                        config.keybinds.0[&mode]
+                            .values()
+                            .all(|actions| !actions.contains(&Action::ReturnFromNotification)),
                         "{mode:?}"
                     );
                 } else {

@@ -527,7 +527,7 @@ impl Screen {
                             None,
                             true,
                             client,
-                            Some(pane),
+                            Some(super::tabs::TabSwitchPaneFocus::GroupMove(pane)),
                         )
                         .context("follow pane to adjacent group")?;
                         None

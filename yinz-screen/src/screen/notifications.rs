@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use yinz_types::internal_ids::NotificationId;
 use yinz_types::internal_ids::TabId;
 
 use yinz_runtime::errors::prelude::*;
 
+use super::tabs::TabSwitchPaneFocus;
 use super::{NotificationClick, NotificationLayout, NotificationRecord, Screen};
 use crate::output::Output;
 use crate::panes::PaneId;
@@ -18,9 +19,13 @@ use crate::ui::notification::{
 use crate::ClientId;
 use yinz_types::animation::scaled_duration;
 use yinz_types::input::actions::Action;
+use yinz_types::input::options::NotificationPosition;
 use yinz_types::mouse::{MouseEvent, MouseEventType};
 use yinz_types::pane_size::{Size, Viewport};
 use yinz_types::position::Position;
+
+const RETURN_RETRY_MESSAGE: &str = "Layout loading. Try the return shortcut again.";
+const RETURN_RETRY_DURATION: Duration = Duration::from_secs(2);
 
 impl Screen {
     fn notification_is_actionable(&self, record: &NotificationRecord) -> bool {
@@ -311,6 +316,7 @@ impl Screen {
         // toasts either - the frame after the final one still has damage to repair.
         if self.notifications.is_empty()
             && self.notification_browsers.is_empty()
+            && self.notification_return_retry_until.is_empty()
             && self.last_notification_fill.is_empty()
         {
             return vec![];
@@ -347,13 +353,7 @@ impl Screen {
                 });
             let mut damage: Vec<CellRect> = vec![];
             for client_id in &client_ids {
-                // a browsing client is shown its browser instead of the toasts, so that is what
-                // its cells are diffed against
-                let painted = if self.notification_browser_is_visible(*client_id) {
-                    self.notification_browser_rects(*client_id, viewport)
-                } else {
-                    self.notification_cell_rects(viewport, now, *client_id)
-                };
+                let painted = self.notification_occlusion_rects(viewport, now, *client_id);
                 // remove rather than insert an empty vec when nothing is painted, so the map
                 // empties out again once the last toast is gone and the early-out above can fire
                 let previous = if painted.is_empty() {
@@ -393,11 +393,39 @@ impl Screen {
         now: Instant,
         client_id: ClientId,
     ) -> Vec<CellRect> {
-        if self.notification_browser_is_visible(client_id) {
+        let mut rects = if self.notification_browser_is_visible(client_id) {
             self.notification_browser_rects(client_id, viewport)
         } else {
             self.notification_cell_rects(viewport, now, client_id)
+        };
+        rects.extend(
+            self.notification_return_retry_layout(viewport, now, client_id)
+                .map(|(rect, _)| rect),
+        );
+        rects
+    }
+
+    fn notification_return_retry_layout(
+        &self,
+        viewport: Viewport,
+        now: Instant,
+        client_id: ClientId,
+    ) -> Option<(CellRect, Vec<String>)> {
+        if now >= *self.notification_return_retry_until.get(&client_id)? {
+            return None;
         }
+        // Leave the toast stack at its usual edge.
+        let position = match self.notification_position {
+            NotificationPosition::TopLeft => NotificationPosition::BottomLeft,
+            NotificationPosition::TopRight => NotificationPosition::BottomRight,
+            NotificationPosition::BottomLeft => NotificationPosition::TopLeft,
+            NotificationPosition::BottomRight => NotificationPosition::TopRight,
+        };
+        let cols = notification_width(RETURN_RETRY_MESSAGE, viewport.cols)?;
+        let lines = notification_lines(RETURN_RETRY_MESSAGE, cols);
+        let rows = notification_height(lines.len());
+        let (x, y) = notification_origins(viewport, position, &[rows], cols).pop()?;
+        Some((CellRect { x, y, cols, rows }, lines))
     }
 
     pub(super) fn render_notifications(
@@ -407,31 +435,43 @@ impl Screen {
         client_id: ClientId,
         now: Instant,
     ) -> Result<()> {
-        if self.notifications.is_empty() && self.notification_browsers.is_empty() {
+        let retry = self.notification_return_retry_layout(viewport, now, client_id);
+        if self.notifications.is_empty() && self.notification_browsers.is_empty() && retry.is_none()
+        {
             return Ok(());
         }
         let previous_stack = output.set_floating_panes_stack(None);
         let result = (|| -> Result<()> {
             if self.notification_browser_is_visible(client_id) {
-                return self.render_notification_browser(output, viewport, client_id);
+                self.render_notification_browser(output, viewport, client_id)?;
+            } else {
+                for layout in self.notification_layout(viewport, now, client_id) {
+                    let chunks = notification_chunks(
+                        &layout.lines,
+                        layout.footer.as_deref(),
+                        layout.x,
+                        layout.y,
+                        layout.width,
+                        &self.style,
+                        layout.reveal,
+                    );
+                    let (chunks, _) = notification_reveal(
+                        &chunks,
+                        layout.x,
+                        layout.width,
+                        self.notification_position,
+                        layout.reveal,
+                    );
+                    output.add_character_chunks_to_multiple_clients(
+                        chunks,
+                        std::iter::once(client_id),
+                        None,
+                    )?;
+                }
             }
-            for layout in self.notification_layout(viewport, now, client_id) {
-                let chunks = notification_chunks(
-                    &layout.lines,
-                    layout.footer.as_deref(),
-                    layout.x,
-                    layout.y,
-                    layout.width,
-                    &self.style,
-                    layout.reveal,
-                );
-                let (chunks, _) = notification_reveal(
-                    &chunks,
-                    layout.x,
-                    layout.width,
-                    self.notification_position,
-                    layout.reveal,
-                );
+            if let Some((rect, lines)) = retry {
+                let chunks =
+                    notification_chunks(&lines, None, rect.x, rect.y, rect.cols, &self.style, 1.0);
                 output.add_character_chunks_to_multiple_clients(
                     chunks,
                     std::iter::once(client_id),
@@ -458,6 +498,12 @@ impl Screen {
         client_id: ClientId,
     ) -> Option<(NotificationId, Option<PaneId>, Option<NotificationClick>)> {
         let line = usize::try_from(position.line()).ok()?;
+        if self
+            .notification_return_retry_layout(viewport, now, client_id)
+            .is_some_and(|(rect, _)| rect.contains(position.column(), line))
+        {
+            return None;
+        }
         self.notification_layout(viewport, now, client_id)
             .into_iter()
             .rev()
@@ -556,9 +602,10 @@ impl Screen {
             if self.get_active_pane_id(&client_id) != Some(pane_id) {
                 self.focus_notification_pane(pane_id, true, client_id)
                     .non_fatal();
+            } else {
+                self.sync_scroll_mode_on_focus(client_id).non_fatal();
             }
             self.clear_bell_for_pane_id(pane_id, client_id);
-            self.sync_scroll_mode_on_focus(client_id).non_fatal();
             self.log_and_report_session_state().non_fatal();
         }
         // After the focus, so a plugin that acts on the click is acting on a pane the server has
@@ -592,7 +639,7 @@ impl Screen {
         client_id: ClientId,
     ) -> Result<()> {
         let previous = self.active_pane_id(client_id);
-        let result = self.focus_pane_with_id(pane_id, should_float_if_hidden, false, client_id);
+        let result = self.focus_notification_target(pane_id, should_float_if_hidden, client_id);
         if !self.watcher_clients.contains_key(&client_id)
             && let (Some(previous), Some(current)) = (previous, self.active_pane_id(client_id))
             && previous != current
@@ -602,28 +649,125 @@ impl Screen {
         result
     }
 
+    fn focus_notification_target(
+        &mut self,
+        pane_id: PaneId,
+        float_if_hidden: bool,
+        client_id: ClientId,
+    ) -> Result<()> {
+        let Some(tab) = self.tab_containing_pane(pane_id) else {
+            log::error!("Could not find pane with id: {pane_id:?}");
+            return Ok(());
+        };
+        let tab_id = tab.id;
+        if self
+            .get_active_tab(client_id)
+            .is_ok_and(|active| active.id != tab_id)
+        {
+            // The tab's remembered pane may have a different scroll position or key owner.
+            // Select the named pane before the transition publishes either.
+            return self.switch_active_tab_with_pane_focus(
+                tab.position,
+                None,
+                true,
+                client_id,
+                Some(TabSwitchPaneFocus::Notification {
+                    pane_id,
+                    float_if_hidden,
+                }),
+            );
+        }
+        let previous_focus = self.notification_tab_focus(tab_id);
+        self.focus_notification_target_in_tab(tab_id, pane_id, float_if_hidden, client_id);
+        self.publish_notification_focus_changes(previous_focus);
+        Ok(())
+    }
+
+    pub(super) fn focus_notification_target_in_tab(
+        &mut self,
+        tab_id: TabId,
+        pane_id: PaneId,
+        float_if_hidden: bool,
+        client_id: ClientId,
+    ) {
+        self.tabs
+            .get_mut(&tab_id)
+            .context("notification focus destination tab disappeared")
+            .and_then(|tab| tab.focus_pane_with_id(pane_id, float_if_hidden, false, client_id))
+            .with_context(|| format!("failed to focus pane {pane_id:?}"))
+            .non_fatal();
+    }
+
+    pub(super) fn notification_tab_focus(&self, tab: TabId) -> Vec<(ClientId, Option<PaneId>)> {
+        self.active_tab_ids
+            .iter()
+            .filter(|(client, active)| {
+                **active == tab && !self.watcher_clients.contains_key(client)
+            })
+            .map(|(&client, _)| (client, self.active_pane_id(client)))
+            .collect()
+    }
+
+    pub(super) fn publish_notification_focus_changes(
+        &mut self,
+        previous_focus: Vec<(ClientId, Option<PaneId>)>,
+    ) {
+        for (client, previous) in previous_focus {
+            let current = self.active_pane_id(client);
+            if previous != current {
+                if let (Some(previous), Some(current)) = (previous, current) {
+                    self.report_key_passthrough_state(client, previous, current);
+                }
+                self.sync_scroll_mode_on_focus(client).non_fatal();
+            }
+        }
+    }
+
     pub(super) fn return_from_notification(&mut self, client_id: ClientId) -> Result<()> {
         let Some(&pane_id) = self.notification_return_panes.get(&client_id) else {
             return Ok(());
         };
         if self.get_active_tab(client_id).is_err()
             || self.watcher_clients.contains_key(&client_id)
-            || self.has_pending_tabs()
+            || self.active_pane_id(client_id) == Some(pane_id)
         {
             return Ok(());
         }
+        let layouts_pending = self.has_pending_tabs();
         let Some(tab) = self.tab_containing_pane(pane_id) else {
-            self.notification_return_panes.remove(&client_id);
+            if !layouts_pending {
+                self.notification_return_panes.remove(&client_id);
+            }
             return Ok(());
         };
         // Named focus can extract a suppressed pane even with both placement flags false.
-        if tab
+        if !tab
             .rendered_pane(pane_id)
             .is_some_and(|pane| pane.selectable())
         {
-            self.focus_existing_pane_now(pane_id, false, false, client_id)?;
+            return Ok(());
         }
-        Ok(())
+        if layouts_pending {
+            let now = self.frame_now();
+            self.notification_return_retry_until
+                .insert(client_id, now + RETURN_RETRY_DURATION);
+            self.sync_animation_clock(now)?;
+            return self.render();
+        }
+
+        self.focus_notification_target(pane_id, false, client_id)?;
+        if self.active_pane_id(client_id) == Some(pane_id)
+            && self
+                .notification_return_retry_until
+                .remove(&client_id)
+                .is_some()
+        {
+            self.sync_animation_clock(self.frame_now())?;
+        }
+        self.clear_bell_for_pane_id(pane_id, client_id);
+        self.log_and_report_session_state()?;
+        // Quiet panes need a frame even when there is no subsequent PTY activity.
+        self.render()
     }
 
     /// Drop any toast that has finished sliding out, gliding the survivors into the gap it leaves.

@@ -47,6 +47,17 @@ Config {
                 },
             ],
             KeyWithModifier {
+                bare_key: F(
+                    12,
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                ReturnFromNotification,
+            ],
+            KeyWithModifier {
                 bare_key: Char(
                     '+',
                 ),
@@ -414,16 +425,6 @@ Config {
                     input_mode: Tab,
                 },
             ],
-            KeyWithModifier {
-                bare_key: Char(
-                    'u',
-                ),
-                key_modifiers: {
-                    Alt,
-                },
-            }: [
-                ReturnFromNotification,
-            ],
         },
         Locked: {
             KeyWithModifier {
@@ -534,6 +535,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: F(
+                    12,
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -1041,16 +1053,6 @@ Config {
                 },
             ],
             KeyWithModifier {
-                bare_key: Char(
-                    'u',
-                ),
-                key_modifiers: {
-                    Alt,
-                },
-            }: [
-                ReturnFromNotification,
-            ],
-            KeyWithModifier {
                 bare_key: Esc,
                 key_modifiers: {},
             }: [
@@ -1139,6 +1141,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: F(
+                    12,
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -1693,16 +1706,6 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
-                    'u',
-                ),
-                key_modifiers: {
-                    Alt,
-                },
-            }: [
-                ReturnFromNotification,
-            ],
-            KeyWithModifier {
-                bare_key: Char(
                     'v',
                 ),
                 key_modifiers: {},
@@ -1825,6 +1828,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: F(
+                    12,
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -2466,16 +2480,6 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
-                    'u',
-                ),
-                key_modifiers: {
-                    Alt,
-                },
-            }: [
-                ReturnFromNotification,
-            ],
-            KeyWithModifier {
-                bare_key: Char(
                     'x',
                 ),
                 key_modifiers: {},
@@ -2606,6 +2610,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: F(
+                    12,
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -3108,16 +3123,6 @@ Config {
                 HalfPageScrollUp,
             ],
             KeyWithModifier {
-                bare_key: Char(
-                    'u',
-                ),
-                key_modifiers: {
-                    Alt,
-                },
-            }: [
-                ReturnFromNotification,
-            ],
-            KeyWithModifier {
                 bare_key: Esc,
                 key_modifiers: {},
             }: [
@@ -3174,6 +3179,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: F(
+                    12,
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -3556,16 +3572,6 @@ Config {
                 },
             ],
             KeyWithModifier {
-                bare_key: Char(
-                    'u',
-                ),
-                key_modifiers: {
-                    Alt,
-                },
-            }: [
-                ReturnFromNotification,
-            ],
-            KeyWithModifier {
                 bare_key: Esc,
                 key_modifiers: {},
             }: [
@@ -3658,6 +3664,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: F(
+                    12,
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -4162,16 +4179,6 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
-                    'u',
-                ),
-                key_modifiers: {
-                    Alt,
-                },
-            }: [
-                ReturnFromNotification,
-            ],
-            KeyWithModifier {
-                bare_key: Char(
                     'w',
                 ),
                 key_modifiers: {},
@@ -4239,6 +4246,17 @@ Config {
                 },
             ],
             KeyWithModifier {
+                bare_key: F(
+                    12,
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                ReturnFromNotification,
+            ],
+            KeyWithModifier {
                 bare_key: Char(
                     '+',
                 ),
@@ -4617,16 +4635,6 @@ Config {
                 SwitchToMode {
                     input_mode: Tab,
                 },
-            ],
-            KeyWithModifier {
-                bare_key: Char(
-                    'u',
-                ),
-                key_modifiers: {
-                    Alt,
-                },
-            }: [
-                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Esc,
@@ -4688,6 +4696,17 @@ Config {
                 },
             ],
             KeyWithModifier {
+                bare_key: F(
+                    12,
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                ReturnFromNotification,
+            ],
+            KeyWithModifier {
                 bare_key: Char(
                     '+',
                 ),
@@ -5068,16 +5087,6 @@ Config {
                 },
             ],
             KeyWithModifier {
-                bare_key: Char(
-                    'u',
-                ),
-                key_modifiers: {
-                    Alt,
-                },
-            }: [
-                ReturnFromNotification,
-            ],
-            KeyWithModifier {
                 bare_key: Esc,
                 key_modifiers: {},
             }: [
@@ -5135,6 +5144,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: F(
+                    12,
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -5609,16 +5629,6 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
-                    'u',
-                ),
-                key_modifiers: {
-                    Alt,
-                },
-            }: [
-                ReturnFromNotification,
-            ],
-            KeyWithModifier {
-                bare_key: Char(
                     'w',
                 ),
                 key_modifiers: {},
@@ -5725,6 +5735,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: F(
+                    12,
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -6161,16 +6182,6 @@ Config {
                 },
             ],
             KeyWithModifier {
-                bare_key: Char(
-                    'u',
-                ),
-                key_modifiers: {
-                    Alt,
-                },
-            }: [
-                ReturnFromNotification,
-            ],
-            KeyWithModifier {
                 bare_key: Tab,
                 key_modifiers: {},
             }: [
@@ -6235,6 +6246,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: F(
+                    12,
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -6605,16 +6627,6 @@ Config {
                 },
             ],
             KeyWithModifier {
-                bare_key: Char(
-                    'u',
-                ),
-                key_modifiers: {
-                    Alt,
-                },
-            }: [
-                ReturnFromNotification,
-            ],
-            KeyWithModifier {
                 bare_key: Esc,
                 key_modifiers: {},
             }: [
@@ -6715,6 +6727,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: F(
+                    12,
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -7267,16 +7290,6 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
-                    'u',
-                ),
-                key_modifiers: {
-                    Alt,
-                },
-            }: [
-                ReturnFromNotification,
-            ],
-            KeyWithModifier {
-                bare_key: Char(
                     'x',
                 ),
                 key_modifiers: {},
@@ -7354,6 +7367,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: F(
+                    12,
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -7833,16 +7857,6 @@ Config {
                 SwitchToMode {
                     input_mode: Tab,
                 },
-            ],
-            KeyWithModifier {
-                bare_key: Char(
-                    'u',
-                ),
-                key_modifiers: {
-                    Alt,
-                },
-            }: [
-                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Esc,

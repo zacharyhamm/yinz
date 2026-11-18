@@ -84,6 +84,110 @@ fn activate_target(screen: &mut Screen, client: ClientId, target: PaneId, now: I
 }
 
 #[test]
+fn notification_return_cross_tab_publishes_final_scroll_mode() {
+    for origin_scrolled in [false, true] {
+        for initial_mode in [InputMode::Normal, InputMode::Scroll, InputMode::Tab] {
+            let (mut screen, client, _, now) = setup();
+            let origin_tab = TabId::new(0);
+            let origin = PaneId::Terminal(TerminalId::new(1));
+            let remembered = PaneId::Terminal(TerminalId::new(2));
+            let target = PaneId::Terminal(TerminalId::new(3));
+            add_pane_to_tab(&mut screen, origin_tab, remembered, false);
+            new_tab(&mut screen, 3, TabId::new(1));
+            screen
+                .focus_pane_with_id(origin, false, false, client)
+                .unwrap();
+            activate_target(&mut screen, client, target, now);
+            screen
+                .focus_pane_with_id(remembered, false, false, client)
+                .unwrap();
+            screen
+                .focus_pane_with_id(target, false, false, client)
+                .unwrap();
+
+            for (pane_id, scrolled) in [(origin, origin_scrolled), (remembered, !origin_scrolled)] {
+                let pane = screen
+                    .tabs
+                    .get_mut(&origin_tab)
+                    .unwrap()
+                    .get_pane_with_id_mut(pane_id)
+                    .unwrap();
+                pane.handle_pty_bytes(b"scrollback\r\n".repeat(100));
+                if scrolled {
+                    pane.scroll_up(5, Some(client));
+                }
+            }
+            screen.change_mode(initial_mode, None, client).unwrap();
+            let server = screen_wired_to_server(&mut screen);
+
+            screen.return_from_notification(client).unwrap();
+
+            assert_eq!(screen.active_pane_id(client), Some(origin));
+            let expected_mode = match (initial_mode, origin_scrolled) {
+                (InputMode::Tab, _) => InputMode::Tab,
+                (_, true) => InputMode::Scroll,
+                (_, false) => InputMode::Normal,
+            };
+            let mode_requests: Vec<_> = server
+                .try_iter()
+                .filter_map(|(instruction, _)| match instruction {
+                    ServerInstruction::ChangeMode(client, mode, _) => Some((client, mode)),
+                    _ => None,
+                })
+                .collect();
+            // Inspect the requests before simulating any server reply.
+            assert_eq!(
+                mode_requests,
+                if expected_mode != initial_mode {
+                    vec![(client, expected_mode)]
+                } else {
+                    vec![]
+                },
+                "origin scrolled: {origin_scrolled}, initial mode: {initial_mode:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn cross_tab_notification_focus_publishes_shared_layer_changes_for_a_destination_viewer() {
+    let (mut screen, client, _, now) = setup();
+    let other = ClientId::new(2);
+    let origin = PaneId::Terminal(TerminalId::new(1));
+    let target = PaneId::Terminal(TerminalId::new(2));
+    let floating = PaneId::Terminal(TerminalId::new(3));
+    let target_tab = TabId::new(1);
+    new_tab(&mut screen, 2, target_tab);
+    screen.add_client(other).unwrap();
+    screen
+        .focus_pane_with_id(origin, false, false, client)
+        .unwrap();
+    add_pane_to_tab(&mut screen, target_tab, floating, true);
+    screen
+        .focus_pane_with_id(floating, false, false, other)
+        .unwrap();
+    assert_eq!(screen.active_pane_id(other), Some(floating));
+    let server = screen_wired_to_server(&mut screen);
+
+    activate_target(&mut screen, client, target, now);
+
+    assert_eq!(screen.active_pane_id(client), Some(target));
+    assert_eq!(screen.active_pane_id(other), Some(target));
+    let peer_updates: Vec<_> = server
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            ServerInstruction::KeyPassthroughChanged(id, old, new, route, _, _) if id == other => {
+                Some((old, new, route))
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(peer_updates, [(floating, target, false)]);
+    assert_eq!(screen.notification_return_panes.get(&client), Some(&origin));
+    assert!(!screen.notification_return_panes.contains_key(&other));
+}
+
+#[test]
 fn notification_return_uses_actual_focus_when_the_target_cannot_take_it() {
     let (mut screen, client, _, now) = setup();
     let first = PaneId::Terminal(TerminalId::new(1));
@@ -296,6 +400,97 @@ fn assert_mock_focus(mock: &MockScreen, tab_id: TabId, pane_id: PaneId) {
 }
 
 #[test]
+fn notification_return_renders_quiet_same_tab_origin() {
+    let size = Size { cols: 80, rows: 24 };
+    let mut mock = MockScreen::new(size);
+    let (jobs_tx, jobs) = channels::unbounded();
+    mock.to_background_jobs = SenderWithContext::new(jobs_tx);
+    let server = mock.server_receiver.take().unwrap();
+    let screen_thread = mock.run(None, vec![]);
+    let client = mock.main_client_id;
+    let tab = TabId::new(0);
+    let target_terminal = TerminalId::new(0);
+    let origin_terminal = TerminalId::new(1);
+    let target = PaneId::Terminal(target_terminal);
+    let origin = PaneId::Terminal(origin_terminal);
+    let send = |instruction| mock.to_screen.send(instruction).unwrap();
+
+    send(ScreenInstruction::NewPane(
+        origin,
+        None,
+        None,
+        None,
+        NewPanePlacement::default(),
+        false,
+        ClientTabIndexOrPaneId::ClientId(client),
+        None,
+        false,
+    ));
+    send(ScreenInstruction::PtyBytes(
+        origin_terminal,
+        b"origin prompt".to_vec(),
+    ));
+    send(ScreenInstruction::PtyBytes(
+        target_terminal,
+        b"target prompt".to_vec(),
+    ));
+    send(ScreenInstruction::RenderToClients);
+    assert_mock_focus(&mock, tab, origin);
+    let mut render_events: Vec<_> = server
+        .try_iter()
+        .map(|(instruction, _)| instruction)
+        .collect();
+    let origin_cursor =
+        take_snapshots_and_cursor_coordinates_from_render_events(render_events.iter(), size)
+            .into_iter()
+            .find(|(cursor, frame)| {
+                cursor.is_some()
+                    && frame.contains("origin prompt")
+                    && frame.contains("target prompt")
+            })
+            .expect("origin baseline renders both quiet panes")
+            .0;
+
+    send(ScreenInstruction::Notify(
+        "targeted".into(),
+        Some(target),
+        None,
+        None,
+    ));
+    send(ScreenInstruction::ActivateLastNotification(client, None));
+    send(ScreenInstruction::RenderToClients);
+    assert_mock_focus(&mock, tab, target);
+    render_events.extend(server.try_iter().map(|(instruction, _)| instruction));
+    let baseline =
+        take_snapshots_and_cursor_coordinates_from_render_events(render_events.iter(), size);
+    assert!(baseline.iter().any(|(cursor, frame)| {
+        cursor.is_some() && *cursor != origin_cursor && frame.contains("target prompt")
+    }));
+    let _ = jobs.try_iter().count();
+
+    send(ScreenInstruction::ReturnFromNotification(client, None));
+    assert_mock_focus(&mock, tab, origin);
+    // Only the return's render request is serviced. No animation ticks or PTY bytes can help.
+    for (job, _) in jobs.try_iter() {
+        if matches!(job, BackgroundJob::RenderToClients) {
+            send(ScreenInstruction::RenderToClients);
+        }
+    }
+    assert_mock_focus(&mock, tab, origin);
+    render_events.extend(server.try_iter().map(|(instruction, _)| instruction));
+    let snapshots =
+        take_snapshots_and_cursor_coordinates_from_render_events(render_events.iter(), size);
+    assert!(
+        snapshots
+            .iter()
+            .skip(baseline.len())
+            .any(|(cursor, frame)| { *cursor == origin_cursor && frame.contains("origin prompt") }),
+        "the return must schedule a fresh frame with the origin cursor"
+    );
+    mock.teardown(vec![screen_thread]);
+}
+
+#[test]
 fn forwarded_desktop_clicks_save_focus_with_and_without_a_report() {
     for (response, expected_report) in [
         (
@@ -383,9 +578,18 @@ fn assert_forwarded_desktop_return(response: &[u8], expected_report: Option<&[u8
 
 #[test]
 fn notification_return_waits_for_a_fresh_press_after_a_pending_layout() {
+    for cancel_layout in [false, true] {
+        assert_return_after_pending_layout(cancel_layout);
+    }
+}
+
+fn assert_return_after_pending_layout(cancel_layout: bool) {
     let mut mock = MockScreen::new(Size { cols: 80, rows: 24 });
+    mock.config.options.pane_frames = Some(false);
+    let server = mock.server_receiver.take().unwrap();
     let screen_thread = mock.run(None, vec![]);
     let client = mock.main_client_id;
+    let other = ClientId::new(2);
     let active_tab = TabId::new(0);
     let pending_tab = TabId::new(1);
     let target = PaneId::Terminal(TerminalId::new(0));
@@ -403,6 +607,12 @@ fn notification_return_waits_for_a_fresh_press_after_a_pending_layout() {
         false,
     ));
     assert_mock_focus(&mock, active_tab, origin);
+    send(ScreenInstruction::AddClient(
+        other,
+        Size { cols: 80, rows: 24 },
+        None,
+        None,
+    ));
     send(ScreenInstruction::Notify(
         "targeted".into(),
         Some(target),
@@ -426,24 +636,103 @@ fn notification_return_waits_for_a_fresh_press_after_a_pending_layout() {
         None,
     ));
     send(ScreenInstruction::ReturnFromNotification(client, None));
+    send(ScreenInstruction::RenderToClients);
     assert_mock_focus(&mock, active_tab, target);
-    send(ScreenInstruction::ApplyLayout(
-        TiledPaneLayout::default(),
-        vec![],
-        vec![(TerminalId::new(2), None)],
-        vec![],
-        vec![],
-        HashMap::new(),
-        pending_tab,
-        false,
-        client,
-        None,
-        None,
-    ));
+    let cue = "Layout loading. Try the return shortcut again.";
+    let mut seen_by_client = false;
+    for (instruction, _) in server.try_iter() {
+        if let ServerInstruction::Render(Some(clients)) = instruction {
+            seen_by_client |= clients
+                .get(&client)
+                .is_some_and(|output| output.contains(cue));
+            assert!(!clients
+                .get(&other)
+                .is_some_and(|output| output.contains(cue)));
+        }
+    }
+    assert!(
+        seen_by_client,
+        "the invoking client sees the cue without pane frames"
+    );
+    let (response_channel, response) = channels::bounded(1);
+    send(ScreenInstruction::ListNotifications { response_channel });
+    let history = response.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(history.len(), 1);
+    if cancel_layout {
+        send(ScreenInstruction::CloseTabWithId(pending_tab, None));
+    } else {
+        send(ScreenInstruction::ApplyLayout(
+            TiledPaneLayout::default(),
+            vec![],
+            vec![(TerminalId::new(2), None)],
+            vec![],
+            vec![],
+            HashMap::new(),
+            pending_tab,
+            false,
+            client,
+            None,
+            None,
+        ));
+    }
     assert_mock_focus(&mock, active_tab, target);
     send(ScreenInstruction::ReturnFromNotification(client, None));
     assert_mock_focus(&mock, active_tab, origin);
     mock.teardown(vec![screen_thread]);
+}
+
+#[test]
+fn notification_return_retry_cue_refreshes_expires_and_clears_after_success() {
+    let (mut screen, client, _, now) = setup();
+    let tab = TabId::new(0);
+    let pending = TabId::new(1);
+    let origin = PaneId::Terminal(TerminalId::new(1));
+    let target = PaneId::Terminal(TerminalId::new(2));
+    add_pane_to_tab(&mut screen, tab, target, false);
+    activate_target(&mut screen, client, target, now);
+    screen
+        .new_tab(pending, (vec![], vec![]), None, None)
+        .unwrap();
+    screen
+        .change_mode(InputMode::Notifications, None, client)
+        .unwrap();
+    assert!(screen.notification_browser_is_visible(client));
+
+    let server = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(Size { cols: 80, rows: 30 });
+    let cue = "Layout loading. Try the return shortcut again.";
+    screen.return_from_notification(client).unwrap();
+    let first_deadline = screen.notification_return_retry_until[&client];
+    assert!(render_frame_into(&mut screen, &server, client, &mut grid).contains(cue));
+
+    screen.pinned_now = Some(now + Duration::from_secs(1));
+    screen.return_from_notification(client).unwrap();
+    let refreshed_deadline = screen.notification_return_retry_until[&client];
+    assert!(refreshed_deadline > first_deadline);
+    screen.pinned_now = Some(first_deadline);
+    assert!(render_frame_into(&mut screen, &server, client, &mut grid).contains(cue));
+    screen.pinned_now = Some(refreshed_deadline);
+    screen.on_animation_tick(refreshed_deadline).unwrap();
+    let expired = render_frame_into(&mut screen, &server, client, &mut grid);
+    assert!(
+        !expired.is_empty() && !expired.contains(cue),
+        "cue cells must repaint on expiry"
+    );
+    assert!(!screen.notification_return_retry_until.contains_key(&client));
+    assert_eq!(screen.active_pane_id(client), Some(target));
+
+    screen.return_from_notification(client).unwrap();
+    assert!(render_frame_into(&mut screen, &server, client, &mut grid).contains(cue));
+    screen.close_tab_by_id(pending).unwrap();
+    assert_eq!(screen.active_pane_id(client), Some(target));
+    screen.return_from_notification(client).unwrap();
+    let returned = render_frame_into(&mut screen, &server, client, &mut grid);
+    assert!(
+        !returned.is_empty() && !returned.contains(cue),
+        "retry clears the cue cells"
+    );
+    assert_eq!(screen.active_pane_id(client), Some(origin));
+    assert!(screen.notification_browser_is_visible(client));
 }
 
 #[test]

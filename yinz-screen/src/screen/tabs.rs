@@ -27,6 +27,14 @@ pub(super) struct TabTransition {
     pub old_focus: Vec<(ClientId, Option<PaneId>)>,
 }
 
+pub(super) enum TabSwitchPaneFocus {
+    GroupMove(PaneId),
+    Notification {
+        pane_id: PaneId,
+        float_if_hidden: bool,
+    },
+}
+
 impl Screen {
     /// Switches the client to the tab called `tab_name`, creating it first when `create` is set
     /// and no tab has that name. A client that is not connected falls back to the first one.
@@ -773,7 +781,7 @@ impl Screen {
         should_change_pane_focus: Option<Direction>,
         update_mode_infos: bool,
         client_id: ClientId,
-        pane_to_focus: Option<PaneId>,
+        pane_to_focus: Option<TabSwitchPaneFocus>,
     ) -> Result<()> {
         let err_context = || {
             format!(
@@ -791,14 +799,33 @@ impl Screen {
 
                     let current_tab_index = current_tab.id;
                     let new_tab_index = new_tab.id;
+                    let destination_focus =
+                        if matches!(pane_to_focus, Some(TabSwitchPaneFocus::Notification { .. }))
+                            && !self.session_is_mirrored
+                        {
+                            self.notification_tab_focus(new_tab_index)
+                        } else {
+                            vec![]
+                        };
                     let mut transition = self.begin_tab_transition(client_id, new_tab_index);
                     self.finish_tab_transition(&mut transition, should_change_pane_focus)
                         .with_context(err_context)?;
-                    if let Some(pane) = pane_to_focus {
-                        self.get_active_tab_mut(client_id)
+                    match pane_to_focus {
+                        Some(TabSwitchPaneFocus::GroupMove(pane)) => self
+                            .get_active_tab_mut(client_id)
                             .with_context(err_context)?
                             .focus_pane_with_id(pane, false, false, client_id)
-                            .context("focus pane after switching tabs")?;
+                            .context("focus pane after switching tabs")?,
+                        Some(TabSwitchPaneFocus::Notification {
+                            pane_id,
+                            float_if_hidden,
+                        }) => self.focus_notification_target_in_tab(
+                            new_tab_index,
+                            pane_id,
+                            float_if_hidden,
+                            client_id,
+                        ),
+                        None => {},
                     }
                     if update_mode_infos && let Some(tab) = self.tabs.get_mut(&new_tab_index) {
                         tab.update_input_modes().with_context(err_context)?;
@@ -834,6 +861,7 @@ impl Screen {
                         self.sync_scroll_mode_on_focus(affected_client_id)
                             .non_fatal();
                     }
+                    self.publish_notification_focus_changes(destination_focus);
                     return self.render().with_context(err_context);
                 },
                 Err(err) => Err::<(), _>(err).with_context(err_context).non_fatal(),
