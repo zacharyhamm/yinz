@@ -39,6 +39,7 @@ import {
   requireCurrentReviews,
   requireReviewAcceptance,
   reviewFingerprint,
+  selectableFollowUp,
   StateSchema,
   transition,
   UserRequestSchema,
@@ -326,11 +327,15 @@ function present(
       } severity, not repaired${
         handoff.decision === "summarize"
           ? "; summarize files each as a separate Agenda item"
-          : "; select one with --repair to fix it now"
+          : "; select one of the current reviews with --repair to fix it now"
       }):`,
       ...followUps.map((f) =>
         `- ${f.finding.role}/${f.finding.findingId}: ${f.detail.description}${
           f.agendaItem?.itemId ? ` (Agenda item ${f.agendaItem.itemId})` : ""
+        }${
+          handoff.decision === "summarize" || selectableFollowUp(state, f)
+            ? ""
+            : ` (from an earlier review at ${f.commit}; not selectable)`
         }`
       ),
     );
@@ -1442,6 +1447,8 @@ async function drive(
           } else if (pendingReviewFindings(state).length) {
             const auto = autoRepairDecision(state);
             if (auto.decision) {
+              // Validate before spending a round of the authorization.
+              const decided = transition(state, "decide_review", auto.decision);
               driver = {
                 ...driver,
                 autoRepair: {
@@ -1453,11 +1460,8 @@ async function drive(
                 await context.writeResource("driver", "driver", driver),
               );
               handles.push(
-                ...(await saveState(
-                  context,
-                  "decide_review",
-                  transition(state, "decide_review", auto.decision),
-                )).dataHandles,
+                ...(await saveState(context, "decide_review", decided))
+                  .dataHandles,
               );
               continue;
             }

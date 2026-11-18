@@ -20,6 +20,7 @@ import {
   validatePlanReview,
   validateRepairMappings,
   validateRepairResponses,
+  validateRepairResult,
 } from "./lifecycle.ts";
 import {
   ContinuityContext,
@@ -438,6 +439,8 @@ export function validateEvidence(assignment: Assignment, raw: unknown) {
       validateRepairMappings(state, payload.evidence, true);
     }
     if (payload.role === "implement_review_fixes") {
+      // Reject at submission what the transition would reject at import.
+      validateRepairResult(state, payload.evidence);
       validateRepairResponses(state, payload.evidence, true);
     }
     if (payload.role === "review_code" || payload.role === "review_ux") {

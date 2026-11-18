@@ -1934,6 +1934,10 @@ Deno.test("low findings become follow-ups that need no decision and stay unresol
     },
   );
   equal(activeFollowUps(selected), []);
+  // A review after that repair that reports it again defers it again.
+  const reported = structuredClone(selected);
+  reported.reviewFollowUps![0].commit = "f".repeat(40);
+  equal(activeFollowUps(reported).map((f) => f.finding.findingId), ["nit"]);
 });
 Deno.test("explicit merge sign-off accepts remaining legacy review findings but never failed checks", () => {
   const state = legacy(findingsState());
@@ -2274,6 +2278,17 @@ Deno.test("re-reviews after a repair pass are delta-scoped to the repair diff", 
     }],
   });
   equal(regressed.codeReview!.scope, scope);
+  // Reviewers' "./path" and "path:line" forms name the same changed path.
+  transition(repaired, "review_code", {
+    ...deltaReview,
+    findings: [{
+      id: "regression",
+      severity: "high",
+      description: "The repair drops the trailing newline",
+      evidence: ["src/lib.rs:12"],
+      affectedPaths: ["./src/lib.rs:12"],
+    }],
+  });
   equal(pendingReviewFindings(regressed).map((f) => f.findingId), [
     "regression",
   ]);

@@ -4,8 +4,9 @@
  */
 import {
   activeFollowUps,
-  blockingReviewFindings,
   type LifecycleState,
+  pendingReviewFindings,
+  selectableFollowUp,
 } from "./lifecycle.ts";
 
 export function nextStep(h: {
@@ -32,12 +33,14 @@ export function nextStep(h: {
       }
       return `Next: ${run} implement ${worktreeInput} (legacy issue without a recorded worker worktree), then ${run} drive`;
     case "address_review_findings": {
-      const findings = blockingReviewFindings(state).map((f) =>
+      // Findings the user already ignored, directly or carried, need no choice.
+      const findings = pendingReviewFindings(state).map((f) =>
         `${f.role}/${f.findingId}`
       );
-      const followUps = activeFollowUps(state).map((f) =>
-        `${f.finding.role}/${f.finding.findingId}`
-      );
+      // Only follow-ups in the current reviews are valid --repair selections.
+      const followUps = activeFollowUps(state).filter((f) =>
+        selectableFollowUp(state, f)
+      ).map((f) => `${f.finding.role}/${f.finding.findingId}`);
       return `Next: ${run} decide-review --handoff ${h.id} --request '<the user direction>' with --repair <role/id> and --ignore <role/id> for each finding the user chose (--ignore-remaining when the user ignores all others); selected repairs go straight to a repair worker. Findings: ${
         findings.join(", ") || "none"
       }${

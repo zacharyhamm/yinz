@@ -943,10 +943,13 @@ export function validateImplementationReview(
   const scope = review.scope;
   if (scope?.kind === "delta") {
     const paths = new Set(scope.paths);
+    // Reviewers often cite "./path" or "path:line"; compare the repository path.
+    const repositoryPath = (path: string) =>
+      path.trim().replace(/^\.\//, "").replace(/:\d+(?:[-:]\d+)?$/, "");
     for (const finding of review.findings) {
       if (
         !finding.origin &&
-        !finding.affectedPaths?.some((path) => paths.has(path))
+        !finding.affectedPaths?.some((path) => paths.has(repositoryPath(path)))
       ) {
         throw new Error(
           `Delta re-review reports only regressions in the repair diff: ${finding.id} names no path the repair changed (${
@@ -1571,13 +1574,32 @@ export function requireReviewAcceptance(state: LifecycleState) {
 }
 /** Follow-ups of the current requirements that remain deferred at low severity. */
 export function activeFollowUps(state: LifecycleState) {
-  const repaired = (state.reviewDecisions ?? []).flatMap((d) => d.repair);
-  return (state.reviewFollowUps ?? []).filter((f) =>
+  const follow = state.reviewFollowUps ?? [];
+  if (!follow.length) return [];
+  // A repair selected against the review that reported this form defers it to
+  // that repair; a later review that reports it again makes it a follow-up again.
+  const repaired = (state.reviewDecisions ?? []).flatMap((d) =>
+    d.repair.map((r) => ({ ...r, commit: d.commit }))
+  );
+  const fixed = new Set(
+    priorImplementationFindings(state).filter((r) => r.fixed).map((r) =>
+      identityKey(r.ref)
+    ),
+  );
+  return follow.filter((f) =>
     f.issueDigest === state.issue.digest &&
     isFollowUpSeverity(f.detail.severity) && !f.detail.resolution &&
+    !fixed.has(identityKey(f.finding)) &&
     !repaired.some((r) =>
-      r.role === f.finding.role && r.findingId === f.finding.findingId
+      r.role === f.finding.role && r.findingId === f.finding.findingId &&
+      r.commit === f.commit
     )
+  );
+}
+/** Whether a follow-up is a finding of the current reviews that decide-review accepts. */
+export function selectableFollowUp(state: LifecycleState, f: ReviewFollowUp) {
+  return outstandingReviewFindings(state).some((o) =>
+    o.role === f.finding.role && o.findingId === f.finding.findingId
   );
 }
 /**

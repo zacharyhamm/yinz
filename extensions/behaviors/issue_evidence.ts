@@ -169,15 +169,12 @@ export function createEvidenceMethods(dependencies = evidenceDependencies) {
         }
         // New acceptances only: accepted receipts replay above without policy.
         if (
-          validated.payload.role === "plan" ||
-          validated.payload.role === "plan_review_fixes"
-        ) {
-          assertCheckPolicy(validated.payload.evidence.checks);
-        }
-        if (
-          validated.payload.role === "implement_review_fixes" &&
+          (validated.payload.role === "plan" ||
+            validated.payload.role === "plan_review_fixes" ||
+            validated.payload.role === "implement_review_fixes") &&
           validated.payload.evidence.checks
         ) {
+          // A repair result's checks are optional; plans always carry them.
           assertCheckPolicy(validated.payload.evidence.checks);
         }
         const task = await checkTask(context, assignment);

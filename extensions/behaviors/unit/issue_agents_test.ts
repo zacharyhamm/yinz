@@ -3361,7 +3361,7 @@ Deno.test("low-severity findings start no round and are listed as follow-ups at 
   assert(!dispatchedRoles(h).includes("implement_review_fixes"));
   for (
     const text of [
-      "Follow-ups (low severity, not repaired; select one with --repair to fix it now):",
+      "Follow-ups (low severity, not repaired; select one of the current reviews with --repair to fix it now):",
       "- review_code/nit: Helper name is unclear",
     ]
   ) assert(result(h).presentation.includes(text), text);
