@@ -303,7 +303,7 @@ plugin configuration or secrets.
   agent appears in the list returned by the hooks,
   and cards in each section keep their relative order. A card without usable
   group information appears under **Tab group unavailable** for its session.
-  If the owning session is also missing, the heading says **Session unavailable**.
+  If the owning session is also missing, the heading says **Owning session unknown**.
   Stored membership still applies when `tab_groups` is off in the terminal.
   Local moves and renames appear on the next successful list update, and peer
   changes appear after the serving session's peer cache refreshes. For peers,
@@ -311,7 +311,8 @@ plugin configuration or secrets.
   checkpoint still contains an older name. Each card
   shows its state and any custom status text. The header's attention count
   includes all waiting agents in the snapshot, even when a hook hides some
-  cards. Task titles use the theme's accent color and
+  cards. **Next waiting agent** focuses and reveals the next waiting card with
+  an Open link in displayed order, wrapping back to the first. Task titles use the theme's accent color and
   replies use the main text color. Default reply previews retain up to 160 Unicode
   characters, with an ellipsis for locally or upstream truncated text, and display
   at most three lines. Blank replies take no space. Open the agent's timeline and
@@ -325,6 +326,10 @@ plugin configuration or secrets.
   actions and three tabs. Agent information starts collapsed on phones and
   desktop. Open it for the full title, complete server header (including custom
   hook output), host/session/focus badges and provider quota or usage errors.
+  Peer links identify the conversation within its scanned session. A peer
+  bookmark may lose its live binding after a session rename or conversation
+  change. Its retained run remains readable when available. Return to Agents
+  and reopen the card for the current binding.
   This labelled region scrolls when its content is long. Its open/closed choice
   survives polling, tab changes and a live agent moving to a new run; leaving
   or reloading the detail view resets it. Expanding it preserves the draft and
@@ -359,6 +364,12 @@ plugin configuration or secrets.
   peers), **Interrupt**, which sends `Esc` after you confirm, and **Send keys…**
   for up to eight of the native keys. Native code exposes no restart, close or
   spawn action.
+
+Peer Screen, keys, and prompts use the scanned session socket and recheck the
+conversation at the destination. During a rename, **Focus on desktop** becomes
+available once the peer cache contains the newly published session name. If a
+key reports that the agent changed or disappeared, refresh Agents and reopen
+its card. If delivery is uncertain, inspect the agent before retrying.
 
 There is no search UI. Archived-agent search and resume are not part of this
 app.

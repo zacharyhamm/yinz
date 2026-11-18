@@ -59,7 +59,8 @@
     "last_hook_at_ms" 5 "focused" #f "selectable" #t "suppressed" #f "directory" "/w" "run" "R" "wait_needs_a_person" #t
     "source" json-null "can_prompt" #t "prompt_unavailable" json-null "usage_unavailable" json-null))
 (define grouped-row (t-merge row (hash "tab_group" (hash "id" 0 "name" "Default")
-      "tab_group_session" "renamed-peer" "status" "needs input")))
+      "tab_group_session" "renamed-peer" "status" "needs input"
+      "detail_id" (string-append "peer-detail:" (make-string 64 #\a)))))
 (define ungrouped-row (t-merge row (hash "id" "live:main:8" "tab_group" json-null "tab_group_session" "main")))
 (define listing (hash "session" "main" "now_ms" 99 "counts" (hash "waiting" 2 "busy" 0 "idle" 0)
     "agents" (list grouped-row ungrouped-row)))

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use yinz_bus::command_palette::HistoryHeader;
 use yinz_bus::web::{WebAgentRef, WebFocusError, WebLiveAgent, WebLiveHeader};
 use yinz_runtime::errors::prelude::*;
+use yinz_types::internal_ids::SessionName;
 
 impl Screen {
     pub(super) fn web_live_agents(&mut self, reply: crossbeam::channel::Sender<Vec<WebLiveAgent>>) {
@@ -89,6 +90,7 @@ impl Screen {
     pub(super) fn web_focus_agent(
         &mut self,
         agent: WebAgentRef,
+        owner: SessionName,
         reply: crossbeam::channel::Sender<Result<(), WebFocusError>>,
     ) {
         let result = (|| {
@@ -99,17 +101,34 @@ impl Screen {
             {
                 return Err(WebFocusError::TargetChanged);
             }
-            let live = self
-                .live_palette_agents()
+            let mut matches = self
+                .live_agents_with_tabs()
                 .into_iter()
-                .find(|live| {
-                    live.id() == agent.id
+                .filter(|(live, _)| {
+                    live.presentation().is_some()
+                        && live.id() == agent.id
                         && live.pane.agent.as_ref().is_some_and(|a| {
                             a.kind == agent.kind
                                 && a.session_id.as_deref() == Some(agent.session_id.as_str())
                         })
-                })
-                .ok_or(WebFocusError::TargetChanged)?;
+                });
+            let (live, tab) = matches.next().ok_or(WebFocusError::TargetChanged)?;
+            if matches.next().is_some() {
+                return Err(WebFocusError::TargetChanged);
+            }
+            drop(matches);
+            let socket_name = match tab {
+                LiveAgentTab::Local(_) => &self.session_name,
+                LiveAgentTab::Peer { socket_name, .. } => socket_name,
+            };
+            if *socket_name != owner {
+                return Err(WebFocusError::TargetChanged);
+            }
+            if *socket_name != live.session {
+                return Err(WebFocusError::Unavailable(
+                    "Focus is temporarily unavailable while the peer publishes its renamed session. Refresh Agents and reopen the card.".into(),
+                ));
+            }
             let action = self
                 .live_agent_focus_action(&live)
                 .map_err(|_| WebFocusError::TargetChanged)?;

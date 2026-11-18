@@ -16939,6 +16939,12 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
     assert_eq!(reused.session, original.session);
     assert_eq!(reused.tab_group_session, peer.name);
     assert_eq!(reused.tab_group, replacement.tabs[1].group);
+    let (tx, rx) = channels::bounded(1);
+    screen.web_focus_agent(original_ref.clone(), renamed_key.clone(), tx);
+    assert!(matches!(
+        rx.recv().unwrap(),
+        Err(yinz_bus::web::WebFocusError::Unavailable(message)) if message.contains("renamed session")
+    ));
     for id in [8, 9] {
         let missing = live
             .iter()
@@ -16980,9 +16986,21 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
     assert_eq!(converged.tab_group, Some(moved));
     assert!(!republished.iter().any(|row| row.matches(&original_ref)));
     assert!(republished.iter().any(|row| row.matches(&replacement_ref)));
+    let (tx, rx) = channels::bounded(1);
+    screen.web_focus_agent(web_agents_reference(converged), replacement.name, tx);
+    assert_eq!(
+        rx.recv().unwrap(),
+        Err(yinz_bus::web::WebFocusError::TargetChanged)
+    );
+    let (tx, rx) = channels::bounded(1);
+    screen.web_focus_agent(web_agents_reference(converged), renamed_key, tx);
+    assert_eq!(
+        rx.recv().unwrap(),
+        Err(yinz_bus::web::WebFocusError::NoTerminal)
+    );
     let reference = web_agents_reference(detached.iter().find(|a| a.current_session).unwrap());
     let (tx, rx) = channels::bounded(1);
-    screen.web_focus_agent(reference, tx);
+    screen.web_focus_agent(reference, screen.session_name.clone(), tx);
     assert_eq!(
         rx.recv().unwrap(),
         Err(yinz_bus::web::WebFocusError::NoTerminal)
@@ -17037,7 +17055,7 @@ fn web_agents_focus_revalidates_provider_conversation_selectability_and_peer_mem
             _ => reference.id = "live-agent:unknown-peer:7".into(),
         }
         let (tx, rx) = channels::bounded(1);
-        screen.web_focus_agent(reference, tx);
+        screen.web_focus_agent(reference, screen.session_name.clone(), tx);
         assert_eq!(
             rx.recv().unwrap(),
             Err(WebFocusError::TargetChanged),
@@ -17186,7 +17204,7 @@ fn web_agents_local_focus_finishes_before_reply_in_the_validated_screen_turn() {
         .focus_pane_with_id(PaneId::Terminal(TerminalId::new(1)), true, false, CLIENT)
         .unwrap();
     let (reply, rx) = channels::bounded(1);
-    screen.web_focus_agent(reference, reply);
+    screen.web_focus_agent(reference, screen.session_name.clone(), reply);
     assert_eq!(rx.recv().unwrap(), Ok(()));
     assert_eq!(
         screen.get_active_pane_id(&CLIENT),

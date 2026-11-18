@@ -497,6 +497,135 @@ fn history_navigation_page(
 }
 
 #[test]
+fn web_agents_peer_detail_selector_keeps_aliased_rows_and_history_separate() {
+    let (_directory, data) = history_navigation_data();
+    let mut renamed = live("old-name", AgentState::Waiting, false);
+    renamed.tab_group_session = "new-name".into();
+    let mut replacement = live("old-name", AgentState::Waiting, false);
+    replacement.pane.agent.as_mut().unwrap().session_id = Some("other-conversation".into());
+    replacement.run = Some("replacement".into());
+    assert_eq!(renamed.id, replacement.id);
+    let original_id = peer_detail_id(&renamed).unwrap();
+    let other_id = peer_detail_id(&replacement).unwrap();
+    assert_ne!(original_id, other_id);
+    assert!(!original_id.contains("conversation"));
+    let forward = vec![renamed.clone(), replacement.clone()];
+    let reverse = vec![replacement.clone(), renamed.clone()];
+    for agents in [&forward, &reverse] {
+        let list = with_snapshot(json!({"op":"list"}), agents.clone(), &data);
+        for (id, name) in [(&original_id, "new-name"), (&other_id, "old-name")] {
+            let rows = list["ok"]["agents"].as_array().unwrap();
+            assert_eq!(rows.iter().filter(|row| row["detail_id"] == *id).count(), 1);
+            assert!(rows
+                .iter()
+                .any(|row| row["detail_id"] == *id && row["tab_group_session"] == name));
+        }
+        for (id, run, conversation) in [
+            (&original_id, "run", "conversation"),
+            (&other_id, "replacement", "other-conversation"),
+        ] {
+            let page = history_navigation_page(
+                json!({"op":"history","agent":id,"run":run}),
+                Some(agents.clone()),
+                &data,
+            );
+            assert_eq!(page["run"], run);
+            assert_eq!(page["retargeted"], false);
+            assert_eq!(page["live"]["ref"]["session_id"], conversation);
+            assert!(page["live"].get("detail_id").is_none());
+            assert_eq!(page["navigation"]["received"]["agent"], *id);
+            assert!(page["navigation"]
+                .get("previous")
+                .is_none_or(|r| r.get("agent").is_none()));
+            assert!(page["navigation"]
+                .get("origin")
+                .is_none_or(|r| r.get("agent").is_none()));
+        }
+    }
+    for (id, agents) in [
+        (renamed.id.clone(), reverse.clone()),
+        (
+            original_id.clone(),
+            vec![renamed.clone(), renamed.clone(), replacement.clone()],
+        ),
+        (original_id.clone(), vec![replacement.clone()]),
+    ] {
+        let page = history_navigation_page(
+            json!({"op":"history","agent":id,"run":"run"}),
+            Some(agents.clone()),
+            &data,
+        );
+        assert_eq!(page["run"], "run");
+        assert_eq!(page["agent_gone"], true);
+        assert!(page["live"].is_null());
+        assert!(page["events"].to_string().contains("needle run"));
+        assert_eq!(
+            with_snapshot(json!({"op":"usage","agent":id}), agents, &data)["error"]["code"],
+            "not_found"
+        );
+    }
+    let usage = with_snapshot(json!({"op":"usage","agent":original_id}), reverse, &data);
+    assert_eq!(
+        usage["ok"]["usage"]["message"],
+        "Quota unavailable for peer-session agents"
+    );
+    let mut ambiguous_ref = replacement.clone();
+    ambiguous_ref.pane.agent.as_mut().unwrap().session_id = Some("conversation".into());
+    let ambiguous_agents = vec![renamed.clone(), ambiguous_ref];
+    let list = with_snapshot(json!({"op":"list"}), ambiguous_agents.clone(), &data);
+    let rows = list["ok"]["agents"].as_array().unwrap();
+    assert_ne!(rows[0]["detail_id"], rows[1]["detail_id"]);
+    assert!(rows
+        .iter()
+        .all(|row| row["ref"]["session_id"] == "" && row["can_prompt"] == false));
+    let ambiguous = history_navigation_page(
+        json!({"op":"history","agent":original_id,"run":"run"}),
+        Some(ambiguous_agents),
+        &data,
+    );
+    assert_eq!(ambiguous["agent_gone"], true);
+    assert!(ambiguous["live"].is_null());
+
+    renamed.run = None;
+    assert_eq!(
+        peer_detail_id(&renamed).as_deref(),
+        Some(original_id.as_str())
+    );
+    let before = history_navigation_page(
+        json!({"op":"history","agent":original_id,"run":"run"}),
+        Some(vec![renamed.clone()]),
+        &data,
+    );
+    renamed.session = renamed.tab_group_session.clone();
+    renamed.id = "live:new-name:7".into();
+    renamed.run = Some("replacement".into());
+    assert_eq!(
+        peer_detail_id(&renamed).as_deref(),
+        Some(original_id.as_str())
+    );
+    let after = history_navigation_page(
+        before["navigation"]["received"].clone(),
+        Some(vec![replacement.clone(), renamed.clone()]),
+        &data,
+    );
+    assert_eq!(after["run"], "replacement");
+    assert_eq!(after["retargeted"], true);
+    assert_eq!(after["live"]["ref"]["id"], renamed.id);
+    assert_eq!(after["live"]["ref"]["session_id"], "conversation");
+    assert!(after["events"].to_string().contains("needle replacement 1"));
+    renamed.pane.agent.as_mut().unwrap().session_id = None;
+    let runless_id = peer_detail_id(&renamed).unwrap();
+    assert_ne!(runless_id, original_id);
+    let page = history_navigation_page(
+        after["navigation"]["received"].clone(),
+        Some(vec![renamed]),
+        &data,
+    );
+    assert_eq!(page["agent_gone"], true);
+    assert!(page["live"].is_null());
+}
+
+#[test]
 fn web_agents_history_navigation_refresh_tracks_live_gone_and_returned_agents() {
     let (_directory, data) = history_navigation_data();
     let agent = live("local", AgentState::Idle, true);
@@ -691,17 +820,32 @@ fn web_agents_history_navigation_excludes_self_lineage_and_other_run_links() {
 
 #[test]
 fn web_agents_peer_controls_keep_wire_guard_and_retry_id_on_disconnect() {
-    use interprocess::local_socket::prelude::*;
+    use nix::poll::{poll, PollFd, PollFlags};
+    use std::os::{fd::AsFd, unix::net::UnixListener};
     use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
     let (_dir, data) = data();
     let dir = tempfile::tempdir().unwrap();
     let session = format!("web-{}", dir.path().file_name().unwrap().to_str().unwrap());
+    let renamed_session = format!("{session}-new");
     std::fs::create_dir_all(&*yinz_runtime::consts::YINZ_SOCK_DIR).unwrap();
     let socket = yinz_runtime::consts::YINZ_SOCK_DIR.join(&session);
-    let listener = yinz_ipc::consts::ipc_bind(&socket).unwrap();
-    for op in ["screen", "keys", "prompt"] {
-        let peer = live(&session, AgentState::Idle, false);
-        let reference = json!({"id":peer.id,"kind":"codex","session_id":"conversation"});
+    let renamed_socket = yinz_runtime::consts::YINZ_SOCK_DIR.join(&renamed_session);
+    let listener = UnixListener::bind(&socket).unwrap();
+    let renamed_listener = UnixListener::bind(&renamed_socket).unwrap();
+    let mut original = live(&session, AgentState::Idle, false);
+    original.tab_group_session = renamed_session.clone().into();
+    let mut replacement = live(&session, AgentState::Idle, false);
+    replacement.pane.agent.as_mut().unwrap().session_id = Some("other-conversation".into());
+    let agents = vec![replacement.clone(), original.clone()];
+    let id = original.id.clone();
+    let reference = |conversation| json!({"id":id,"kind":"codex","session_id":conversation});
+    for (op, conversation, destination, other) in [
+        ("screen", "conversation", &renamed_listener, &listener),
+        ("keys", "conversation", &renamed_listener, &listener),
+        ("prompt", "conversation", &renamed_listener, &listener),
+        ("keys", "other-conversation", &listener, &renamed_listener),
+    ] {
+        let reference = reference(conversation);
         let mut request = json!({"op":op,"agent":reference});
         if op == "keys" {
             request["keys"] = json!(["y"]);
@@ -715,31 +859,49 @@ fn web_agents_peer_controls_keep_wire_guard_and_retry_id_on_disconnect() {
             to_screen: Some(SenderWithContext::new(tx)),
             ..Default::default()
         };
+        let snapshot = agents.clone();
         thread::scope(|scope| {
             scope.spawn(move || {
-                let (ScreenInstruction::WebLiveAgents { reply }, _) = rx.recv().unwrap() else {
+                let (ScreenInstruction::WebLiveAgents { reply }, _) =
+                    rx.recv_timeout(Duration::from_secs(5)).unwrap()
+                else {
                     panic!("snapshot")
                 };
-                reply.send(vec![peer]).unwrap();
+                reply.send(snapshot).unwrap();
             });
             scope.spawn(|| {
-                let connection = listener.accept().unwrap();
+                let mut sockets = [
+                    PollFd::new(destination.as_fd(), PollFlags::POLLIN),
+                    PollFd::new(other.as_fd(), PollFlags::POLLIN),
+                ];
+                assert_eq!(poll(&mut sockets, 5000u16).unwrap(), 1);
+                if sockets[1].revents().unwrap().contains(PollFlags::POLLIN) {
+                    drop(other.accept().unwrap());
+                    panic!("guarded request went to the wrong owner");
+                }
+                let (connection, _) = destination.accept().unwrap();
+                let connection =
+                    interprocess::os::unix::uds_local_socket::Stream::from(connection).into();
                 let mut sender = IpcSenderWithContext::<ServerToClientMsg>::new(connection);
                 let mut receiver = sender.get_receiver::<ClientToServerMsg>().unwrap();
+                receiver
+                    .set_recv_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
                 let IpcRecv::Msg(
                     ClientToServerMsg::AgentControl(AgentRequest::WebGuarded {
+                        pane_id,
                         expected_kind,
                         expected_session_id,
                         action,
-                        ..
                     }),
                     _,
                 ) = receiver.recv_client_msg()
                 else {
                     panic!("guarded wire request")
                 };
+                assert_eq!(pane_id, original.pane.id);
                 assert_eq!(expected_kind, "codex");
-                assert_eq!(expected_session_id, "conversation");
+                assert_eq!(expected_session_id, conversation);
                 if op == "prompt" {
                     assert_eq!(action.submission_id(), Some("peer-retry"));
                     return;
@@ -766,10 +928,31 @@ fn web_agents_peer_controls_keep_wire_guard_and_retry_id_on_disconnect() {
             }
         });
     }
+    let keys = |conversation| json!({"op":"keys","agent":reference(conversation),"keys":["y"]});
+    assert_eq!(
+        with_snapshot(keys("missing"), agents.clone(), &data)["error"]["code"],
+        "target_changed",
+    );
+    let mut ambiguous = replacement;
+    ambiguous.pane.agent.as_mut().unwrap().session_id = Some("conversation".into());
+    assert_eq!(
+        with_snapshot(keys("conversation"), vec![original, ambiguous], &data)["error"]["code"],
+        "target_changed",
+    );
+    drop(renamed_listener);
+    std::fs::remove_file(renamed_socket).unwrap();
+    let disconnected = with_snapshot(keys("conversation"), agents, &data);
+    assert!(disconnected["ok"]["response"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Cannot connect to agent session"));
+    listener.set_nonblocking(true).unwrap();
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
     drop(listener);
-    if socket.exists() {
-        std::fs::remove_file(socket).unwrap();
-    }
+    std::fs::remove_file(socket).unwrap();
 }
 
 #[test]

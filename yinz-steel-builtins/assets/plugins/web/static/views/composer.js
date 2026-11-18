@@ -57,9 +57,12 @@ function PromptsSheet({ env, onPick, onClose }) {
 }
 
 /** Records written for an earlier identity of this pane: explicit adopt or discard. */
-export function StaleSubmissions({ env, agentId, current, canPrompt, dock = false }) {
+export function StaleSubmissions({ env, agentId, current, canPrompt, verifiedTarget, dock = false }) {
   useSubmissions(env);
-  const records = env.submissions.staleRecords(agentId, current);
+  const exact = verifiedTarget ? env.submissions.get(verifiedTarget) : null;
+  const records = verifiedTarget
+    ? (exact && (exact.pending || exact.draft.trim() || exact.incompatible) ? [exact] : [])
+    : env.submissions.staleRecords(agentId, current);
   if (!records.length) return null;
   return html`<div class=${cx('stale-submissions', dock && 'composer-dock')}>
     ${records.map((rec) => {

@@ -88,6 +88,7 @@ const INTERCEPTED = new Set(['/api/agents', '/api/history', '/api/hit', '/api/ev
 const intercepted = (pathname) => INTERCEPTED.has(pathname) || pathname.startsWith('/api/agent/');
 const AGENT_ID = 'live:dev:7';
 const cardSelector = (id) => `.agent-card[data-agent-id="${id}"]`;
+const peerSelector = (digit) => `peer-detail:${digit.repeat(64)}`;
 const REF7 = { id: AGENT_ID, kind: 'codex', session_id: 'conv-1' };
 const REF7B = { id: AGENT_ID, kind: 'codex', session_id: 'conv-2' };
 const XSS = (n) => `<img src=x onerror="window.__yinzXss=${n}">`;
@@ -220,11 +221,21 @@ function headerHtml(fx, header) {
 function history(fx, q) {
   const requested = q.get('run');
   const agent = q.get('agent');
-  const live = agent && !fx.gone ? row(fx, agent, 'waiting', { title: fx.header === 'long' ? headerFields(fx, requested).name : `Fix flaky test ${XSS(1)}`, ...fx.live }) : null;
-  const retargeted = !!agent && fx.retarget && requested === 'run-7';
-  const run = retargeted ? 'run-7b' : requested;
-  const before = q.get('before') ? JSON.parse(q.get('before')) : null;
-  const after = q.has('after_revision') ? Number(q.get('after_revision')) : null;
+  const scoped = agent?.startsWith('peer-detail:');
+  const matches = scoped ? agents(fx).agents.filter((row) => row.detail_id === agent) : [];
+  let live = null;
+  if (agent && !fx.gone) {
+    if (scoped && matches.length === 1) {
+      const { detail_id, tab_group, tab_group_session, ...selected } = matches[0];
+      live = selected;
+    } else if (!scoped) {
+      live = row(fx, agent, 'waiting', { title: fx.header === 'long' ? headerFields(fx, requested).name : `Fix flaky test ${XSS(1)}`, ...fx.live });
+    }
+  }
+  const run = scoped ? live?.run || requested : agent && fx.retarget && requested === 'run-7' ? 'run-7b' : requested;
+  const retargeted = run !== requested;
+  const before = !retargeted && q.get('before') ? JSON.parse(q.get('before')) : null;
+  const after = !retargeted && q.has('after_revision') ? Number(q.get('after_revision')) : null;
   let events;
   let earlier = false;
   let latest = fx.latest;
@@ -257,7 +268,7 @@ function history(fx, q) {
     if (fx.code && e.revision === fx.latest) e.html += `<pre><code>${esc('const complete = '+ 'long_code_token'.repeat(30) + ';\nreturn complete;')}</code></pre>`;
   }
   return {
-    run, retargeted, agent_gone: !!agent && fx.gone, live,
+    run, retargeted, agent_gone: !!agent && !live, live,
     header: headerFields(fx, run),
     events, earlier, next_from: null, previous_run: run === 'run-7' ? 'run-6' : null, origin_run: null, resumable: false,
     activity_ranges: [], navigation, status: '',
@@ -1827,6 +1838,8 @@ async function compactAgentList(open, width, scheme) {
   // Keyboard focus must remain visible and Enter must activate the card itself.
   await page.focus('#list-refresh');
   await page.keyboard.press('Tab');
+  check(await activeId(page) === 'list-next-waiting', 'waiting shortcut missing from tab order');
+  await page.keyboard.press('Tab');
   check(await page.evaluate(() => document.activeElement.matches('.agent-open-area') && parseFloat(getComputedStyle(document.activeElement).outlineWidth) >= 2), 'card keyboard focus indication missing');
   await page.keyboard.press('Enter');
   await until('card opens waiting screen', async () => hashOf(page) === detailHash('run-7', 'screen') && exists(page, '#screen pre.screen'));
@@ -1911,9 +1924,12 @@ async function groupedAgentList(open) {
   });
   const ownerless = row(fx, 'live:unknown:12', 'idle', { session: undefined, tab_group: { id: 0, name } });
   const alsoOwnerless = row(fx, 'live:unknown:13', 'idle', { session: ' ', tab_group: { id: 0, name } });
+  const unavailable = row(fx, 'live:unavailable:12', 'idle', { session: 'unavailable', current_session: false, tab_group: null });
+  const alsoUnavailable = row(fx, 'live:unavailable:13', 'idle', { session: 'unavailable', current_session: false, tab_group: null });
   const unnamed = row(fx, 'live:dev:14', 'idle', { tab_group: { id: 2, name: ' ' } });
   second.html = second.html.replace(' data-redundant-state="idle"', '').replace('>idle</span>', '>Awaiting a deploy</span>');
-  fx.rows = [first, second, peer, busy, secondBusy, peerLong, missing, fallbackName, peerMissing, ownerless, invalid, alsoOwnerless, unnamed];
+  fx.rows = [first, second, peer, busy, secondBusy, peerLong, missing, fallbackName, peerMissing,
+    ownerless, invalid, alsoOwnerless, unnamed, unavailable, alsoUnavailable];
   fx.counts = { waiting: 4, busy: 2, idle: 10 };
   await openList(page);
   const sections = () => page.locator('.agent-section').evaluateAll((nodes) => nodes.map((node) => {
@@ -1933,8 +1949,9 @@ async function groupedAgentList(open) {
     ['Tab group unavailable', 'Session browser-check', [missing.id, invalid.id]],
     ['Tab group unavailable', 'Session browser-check · Group 3', [fallbackName.id]],
     ['Tab group unavailable', 'Session peer', [peerMissing.id]],
-    ['Tab group unavailable', 'Session unavailable', [ownerless.id, alsoOwnerless.id]],
+    ['Tab group unavailable', 'Owning session unknown', [ownerless.id, alsoOwnerless.id]],
     ['Unnamed tab group', 'Session browser-check', [unnamed.id]],
+    ['Tab group unavailable', 'Session unavailable', [unavailable.id, alsoUnavailable.id]],
   ];
   check(JSON.stringify(await sections()) === JSON.stringify(expected), 'incorrect ordered group membership');
   for (const label of [
@@ -1944,6 +1961,8 @@ async function groupedAgentList(open) {
     'Tab group unavailable · 2 agents Session browser-check',
     'Tab group unavailable · 1 agent Session browser-check · Group 3',
     'Tab group unavailable · 1 agent Session peer',
+    'Tab group unavailable · 2 agents Owning session unknown',
+    'Tab group unavailable · 2 agents Session unavailable',
   ]) {
     check(await page.getByRole('heading', { name: label, exact: true }).count() === 1, `wrong accessible heading: ${label}`);
     check(await page.getByRole('region', { name: label, exact: true }).count() === 1, `wrong accessible region: ${label}`);
@@ -1974,11 +1993,11 @@ async function peerGroupOwnership(open) {
   const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
   const source = row(fx, 'live:old-name:7', 'waiting', {
     title: 'Original peer', session: 'old-name', tab_group_session: 'old-name', current_session: false,
-    tab_group: { id: 0, name: 'Source default' },
+    tab_group: { id: 0, name: 'Source default' }, detail_id: peerSelector('a'),
   });
   const replacement = row(fx, source.id, 'waiting', {
     title: 'Replacement peer', session: 'old-name', tab_group_session: 'old-name', current_session: false,
-    tab_group: { id: 0, name: 'Replacement default' },
+    tab_group: { id: 0, name: 'Replacement default' }, detail_id: peerSelector('b'),
     ref: { ...source.ref, session_id: 'replacement-conversation' },
   });
   const missing = row(fx, 'live:old-name:8', 'idle', {
@@ -1998,7 +2017,7 @@ async function peerGroupOwnership(open) {
   const oldKey = region('Source default', 'old-name').getByRole('button', { name: 'Key 1', exact: true });
   await oldKey.focus();
   const oldNode = await oldKey.elementHandle();
-  const renamed = { ...source, tab_group_session: 'new-name' };
+  const renamed = { ...source, tab_group_session: 'new-name', detail_id: peerSelector('c') };
   const renamedMissing = { ...missing, tab_group_session: 'new-name' };
   fx.rows = [renamed, replacement, renamedMissing, replacementMissing];
 
@@ -2028,6 +2047,18 @@ async function peerGroupOwnership(open) {
   await until('renamed peer quick key completes', () => currentKey.isEnabled());
   check(JSON.stringify(fx.bodies('/api/agent/keys')) === JSON.stringify([{ agent: source.ref, keys: ['1'] }]),
     'Enter changed the guarded ref or sent more than one request');
+  for (const status of [409, 200]) {
+    const changed = { outcome: 'target_changed', message: 'Agent disappeared or changed identity' };
+    fx.fail.set('/api/agent/keys', { mode: 'reply', times: 1, status,
+      body: status === 200 ? { response: changed } : { error: { ...changed, code: 'target_changed' } } });
+    await currentKey.click();
+    await textUntil(page, '#toast', 'Refresh Agents and reopen the card', `HTTP ${status} retry guidance`);
+    await until('key is re-enabled', () => currentKey.isEnabled());
+  }
+  fx.fail.set('/api/agent/keys', { mode: 'reply', times: 1, status: 200,
+    body: { response: { outcome: 'failed', message: 'Agent request outcome unknown; inspect agent before retrying' } } });
+  await currentKey.click();
+  await textUntil(page, '#toast', 'inspect agent before retrying', 'uncertain key outcome');
 
   const publishedId = 'live:new-name:7';
   const published = { ...renamed, id: publishedId, session: 'new-name', ref: { ...renamed.ref, id: publishedId } };
@@ -2039,6 +2070,134 @@ async function peerGroupOwnership(open) {
   await until('poll publishes the renamed checkpoint', () => exists(page, cardSelector(publishedId)));
   check(await sourceSection.evaluate((el, id) => el.isConnected && el.querySelector('.agent-card')?.dataset.agentId === id, publishedId),
     'republishing the checkpoint replaced the section for the same cache owner');
+  await currentKey.click();
+  await until('published peer key uses its new ref', () => fx.bodies('/api/agent/keys').some((body) => body.agent.id === publishedId));
+}
+
+function peerDetailRows(fx) {
+  const source = row(fx, 'live:old-peer:7', 'waiting', {
+    title: 'Original peer', session: 'old-peer', tab_group_session: 'old-peer', current_session: false,
+    detail_id: peerSelector('a'), run: '', tab_group: { id: 0, name: 'Source' },
+  });
+  const renamed = { ...source, tab_group_session: 'new-peer', detail_id: peerSelector('b') };
+  const replacement = row(fx, source.id, 'waiting', {
+    title: 'Replacement peer', session: 'old-peer', tab_group_session: 'old-peer', current_session: false,
+    detail_id: peerSelector('c'), run: '', ref: { ...source.ref, session_id: 'other-conversation' },
+    tab_group: { id: 0, name: 'Replacement' },
+  });
+  return { source, renamed, replacement };
+}
+
+const peerRegion = (page, name, owner) => page.getByRole('region', {
+  name: `${name} · 1 agent Session ${owner}`, exact: true,
+});
+
+async function peerOpenFocus(open, control) {
+  const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
+  const { source, renamed, replacement } = peerDetailRows(fx);
+  fx.rows = [source];
+  await openList(page);
+  const before = peerRegion(page, 'Source', 'old-peer').locator(control);
+  await before.focus();
+  const oldNode = await before.elementHandle();
+  fx.rows = [replacement, renamed];
+  const after = peerRegion(page, 'Source', 'new-peer').locator(control);
+  await until('focus follows renamed peer', async () =>
+    !!(await after.count()) && await after.evaluate((el) => document.activeElement === el));
+  check(await oldNode.evaluate((el) => !el.isConnected), 'aliased row kept the original focused link');
+  await page.keyboard.press('Enter');
+  await textUntil(page, '#detail-header .header-title', renamed.title, 'Enter opens the original peer');
+  check(decodeURIComponent(await hashOf(page)).startsWith(`#/a/${renamed.detail_id}?`), 'opened the wrong selector');
+  await until('Screen uses the original ref', () => fx.bodies('/api/agent/screen').some((body) => body.agent.session_id === source.ref.session_id));
+  await domClick(page, '#detail-back');
+  await until('return to the separate peer cards', () => after.count());
+  await after.focus();
+  fx.rows = [replacement];
+  await until('the original peer disappears', async () => !(await after.count()));
+  const beforeEnter = await hashOf(page);
+  await page.keyboard.press('Enter');
+  check(await hashOf(page) === beforeEnter && await exists(page, '.list-main'), 'Enter reached the replacement after the original disappeared');
+}
+
+async function scopedPeerDetails(open) {
+  const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
+  const { renamed, replacement } = peerDetailRows(fx);
+  fx.rows = [replacement, renamed];
+  await openList(page);
+  const openCard = (name, owner) => peerRegion(page, name, owner).getByRole('link', { name: 'Open', exact: true }).click();
+  await openCard('Source', 'new-peer');
+  await textUntil(page, '#detail-header .header-title', renamed.title, 'runless source title');
+  await page.locator('#composer-input').fill('Original draft');
+  await domClick(page, '#detail-back');
+  await openCard('Replacement', 'old-peer');
+  await textUntil(page, '#detail-header .header-title', replacement.title, 'runless replacement title');
+  check(await page.locator('#composer-input').inputValue() === '', 'aliased peer opened the original draft');
+  check(!(await exists(page, '.stale-submissions')), 'aliased peer exposed the original draft');
+  await page.locator('#composer-input').fill('Replacement draft');
+  const recorded = { ...replacement, run: 'replacement-first' };
+  fx.rows = [renamed, recorded];
+  await until('runless peer acquires a bound Timeline', async () =>
+    (await hashOf(page)).includes('run=replacement-first') &&
+    fx.log.some((e) => e.path === '/api/history' && e.query.get('agent') === replacement.detail_id));
+  await until('exact draft survives acquiring a run', () => page.locator('#composer-input').evaluate((el) => el.value === 'Replacement draft'));
+  await page.click('#tab-timeline');
+  await textUntil(page, '#timeline', 'Stored replacement-first message', 'replacement history');
+  fx.rows = [{ ...recorded, run: 'replacement-next' }, renamed];
+  await until('same peer changes run', async () => (await hashOf(page)).includes('run=replacement-next'));
+  await textUntil(page, '#timeline', 'Stored replacement-next message', 'replacement rollover history');
+  check(await page.locator('#composer-input').inputValue() === 'Replacement draft', 'same-ref rollover altered the draft');
+  check(fx.log.some((e) => e.path === '/api/usage' && e.query.get('agent') === replacement.detail_id), 'Usage lost the scoped selector');
+  fx.rows = [renamed];
+  await textUntil(page, '#banner-agent-gone', 'history stays readable', 'scoped peer disappears');
+  await textUntil(page, '.stale-submissions', 'Replacement draft', 'only the verified draft is available');
+  check(!(await textOf(page, '.stale-submissions')).includes('Original draft'), 'scoped stale panel exposed a different peer draft');
+  check(!(await exists(page, '#composer-input')), 'missing peer retained live composer');
+  await domClick(page, '#detail-back');
+  await openCard('Source', 'new-peer');
+  await textUntil(page, '#detail-header .header-title', renamed.title, 'original remains independently navigable');
+  check(await page.locator('#composer-input').inputValue() === 'Original draft', 'original draft changed while browsing the replacement');
+  const republished = { ...renamed, id: 'live:new-peer:7', session: 'new-peer', run: 'run-after-publication',
+    ref: { ...renamed.ref, id: 'live:new-peer:7' } };
+  fx.rows = [replacement, republished];
+  await until('republished peer keeps its selector and gains a run', async () =>
+    decodeURIComponent(await hashOf(page)).includes(`${renamed.detail_id}?run=run-after-publication`));
+  await until('changed ref cannot transfer the draft', () => page.locator('#composer-input').evaluate((el) => el.value === ''));
+  check(!(await exists(page, '.stale-submissions')), 'scoped peer exposed a draft for its old guarded ref');
+  check(fx.count('/api/agent/prompt', 'POST') === 0, 'navigation or republishing submitted a draft');
+}
+
+async function nextWaitingAgent(open) {
+  const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
+  const firstGroup = { id: 0, name: 'First' };
+  const first = row(fx, AGENT_ID, 'waiting', { tab_group: firstGroup });
+  const second = row(fx, 'live:dev:8', 'waiting', { tab_group: { id: 1, name: 'Second' } });
+  const idle = Array.from({ length: 15 }, (_, i) => row(fx, `live:dev:${20 + i}`, 'idle', { tab_group: firstGroup }));
+  fx.rows = [first, second, ...idle];
+  fx.counts = { waiting: 5, busy: 0, idle: idle.length };
+  await openList(page);
+  const shortcut = page.getByRole('button', { name: 'Next waiting agent', exact: true });
+  const jump = async (row) => {
+    await shortcut.focus();
+    await page.keyboard.press('Enter');
+    const link = page.locator(`${cardSelector(row.id)} .agent-open-area`);
+    check(await link.evaluate((el) => {
+      const rect = el.getBoundingClientRect();
+      return document.activeElement === el && rect.top >= document.querySelector('#list-header').getBoundingClientRect().bottom - 1 &&
+        rect.bottom <= innerHeight + 1;
+    }), `jump did not focus and reveal ${row.id}`);
+  };
+  check(await textOf(page, '.need-count') === '5 need you', 'shortcut replaced the native count');
+  await jump(first);
+  await jump(second);
+  await jump(first);
+  await jump(second);
+  fx.rows = [first, ...idle];
+  await until('poll removes the previously reached card', async () => !(await exists(page, cardSelector(second.id))));
+  await jump(first);
+  fx.rows = idle;
+  await until('shortcut hides when no rendered waiting card remains', async () => !(await shortcut.count()));
+  check(await textOf(page, '.need-count') === '5 need you', 'hook-hidden waiting cards changed the native count');
+  check(fx.count('/api/agent/keys', 'POST') === 0, 'shortcut sent a key');
 }
 
 async function whitespaceSessionHeadings(open) {
@@ -2909,6 +3068,10 @@ async function main() {
   await scenario('compact agent list 1024px desktop', (open) => compactAgentList(open, 1024, 'light'));
   await scenario('Agents group membership, fallback and poll updates', groupedAgentList);
   await scenario('Agents peer group ownership during session name reuse', peerGroupOwnership);
+  await scenario('Agents card-area Open focus follows the peer conversation', (open) => peerOpenFocus(open, '.agent-open-area'));
+  await scenario('Agents separate Open focus follows the peer conversation', (open) => peerOpenFocus(open, '.agent-open'));
+  await scenario('Agents peer Detail routing and draft isolation', scopedPeerDetails);
+  await scenario('Agents Next waiting agent navigation', nextWaitingAgent);
   await scenario('Agents headings for whitespace-colliding session names', whitespaceSessionHeadings);
   await scenario('Agents keyboard focus through automatic group moves and reorders', agentListPollFocus);
   await scenario('Agents keyboard focus guards during automatic updates', agentListPollFocusGuards);

@@ -6,6 +6,34 @@
 
 export const TABS = ['timeline', 'screen', 'details'];
 
+const PEER_DETAIL_PREFIX = 'peer-detail:';
+
+export function isPeerDetail(id) {
+  return typeof id === 'string' && id.startsWith(PEER_DETAIL_PREFIX);
+}
+
+export function cardDetail(row, servingSession) {
+  const scoped = isPeerDetail(row.detail_id) && /^peer-detail:[0-9a-f]{64}$/.test(row.detail_id);
+  const owner = typeof row.tab_group_session === 'string' && row.tab_group_session.trim() !== ''
+    ? row.tab_group_session : row.session;
+  const peer = row.current_session === false ||
+    (typeof servingSession === 'string' && typeof owner === 'string' && owner.trim() !== '' &&
+      owner !== servingSession);
+  if (peer && !scoped && !row.run) return null;
+  return {
+    id: scoped ? row.detail_id : row.id,
+    run: row.run,
+    tab: row.run && row.state !== 'waiting' ? 'timeline' : 'screen',
+    bind: scoped || !peer,
+  };
+}
+
+export function detailListRow(rows, id) {
+  const scoped = isPeerDetail(id);
+  const matches = rows.filter((row) => row && (scoped ? row.detail_id : row.id) === id);
+  return matches.length === 1 ? matches[0] : null;
+}
+
 export function parseHash(hash) {
   const text = typeof hash === 'string' ? hash : '';
   const m = /^#\/a\/([^?]+)(?:\?(.*))?$/.exec(text);

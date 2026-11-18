@@ -4,8 +4,9 @@ use super::{agent_control, palette_agents};
 use palette_agents::history;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     sync::{atomic::AtomicBool, Arc},
     time::{Duration, Instant},
 };
@@ -330,10 +331,80 @@ fn row(live: &WebLiveAgent, label: Option<&palette::AgentLabels>) -> Value {
         "prompt_unavailable":(!valid_web_identity(session_id)).then_some("Agent has no conversation ID"),
         "usage_unavailable":live.usage_unavailable})
 }
-fn target(senders: &ThreadSenders, agent: &WebAgentRef) -> Result<WebLiveAgent> {
-    snapshot(senders)?
+const PEER_DETAIL_PREFIX: &str = "peer-detail:";
+
+fn peer_detail_id(live: &WebLiveAgent) -> Option<String> {
+    if live.current_session {
+        return None;
+    }
+    let agent = live.pane.agent.as_ref()?;
+    let pane = live.pane.id.to_string();
+    let mut hash = Sha256::new();
+    // Length-prefix each tuple member and distinguish an absent conversation from a string.
+    for member in [
+        Some(live.tab_group_session.as_str()),
+        Some(pane.as_str()),
+        Some(agent.kind.as_str()),
+        agent.session_id.as_deref(),
+    ] {
+        match member {
+            Some(value) => {
+                hash.update([1]);
+                hash.update((value.len() as u64).to_be_bytes());
+                hash.update(value.as_bytes());
+            },
+            None => hash.update([0]),
+        }
+    }
+    let hex: String = hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Some(format!("{PEER_DETAIL_PREFIX}{hex}"))
+}
+
+fn complete_ref(live: &WebLiveAgent) -> Option<(&str, &str, &str)> {
+    let agent = live.pane.agent.as_ref()?;
+    let key = (
+        live.id.as_str(),
+        agent.kind.as_str(),
+        agent.session_id.as_deref()?,
+    );
+    [key.0, key.1, key.2]
         .into_iter()
-        .find(|a| a.matches(agent))
+        .all(valid_web_identity)
+        .then_some(key)
+}
+
+fn unique_live<T>(mut matches: impl Iterator<Item = T>) -> Option<T> {
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+fn detail_target(mut live: Vec<WebLiveAgent>, id: &str) -> Option<WebLiveAgent> {
+    let (index, selected) = unique_live(live.iter().enumerate().filter(|(_, row)| {
+        if id.starts_with(PEER_DETAIL_PREFIX) {
+            peer_detail_id(row).as_deref() == Some(id)
+        } else {
+            row.id == id
+        }
+    }))?;
+    // Detail also uses this ref to open any locally saved draft for the conversation.
+    if let Some(key) = complete_ref(selected)
+        && live
+            .iter()
+            .filter(|row| complete_ref(row) == Some(key))
+            .nth(1)
+            .is_some()
+    {
+        return None;
+    }
+    Some(live.swap_remove(index))
+}
+
+fn target(senders: &ThreadSenders, agent: &WebAgentRef) -> Result<WebLiveAgent> {
+    unique_live(snapshot(senders)?.into_iter().filter(|a| a.matches(agent)))
         .ok_or_else(|| error("target_changed", "Agent disappeared or changed identity"))
 }
 fn control(
@@ -356,7 +427,7 @@ fn control(
     } else {
         // Only a session obtained from this fresh snapshot can become a route.
         palette_agents::control_peer(
-            &live.session,
+            &live.tab_group_session,
             request,
             Instant::now() + Duration::from_secs(32),
         )
@@ -525,12 +596,28 @@ fn execute(
                     .filter(|a| a.metadata.get("state").is_some_and(|s| s == state))
                     .count()
             };
+            let mut seen = HashSet::new();
+            let ambiguous_refs: HashSet<_> = live
+                .iter()
+                .filter_map(complete_ref)
+                .filter(|&key| !seen.insert(key))
+                .collect();
             let agents: Vec<_> = live
                 .iter()
                 .map(|a| {
                     let mut row = row(a, labels.get(&a.id));
                     row["tab_group_session"] = json!(a.tab_group_session);
                     row["tab_group"] = json!(a.tab_group);
+                    if let Some(id) = peer_detail_id(a) {
+                        row["detail_id"] = json!(id);
+                    }
+                    if complete_ref(a).is_some_and(|key| ambiguous_refs.contains(&key)) {
+                        row["ref"]["session_id"] = json!("");
+                        row["can_prompt"] = json!(false);
+                        row["prompt_unavailable"] = json!(
+                            "Agent identity is ambiguous. Refresh Agents and reopen the card."
+                        );
+                    }
                     row
                 })
                 .collect();
@@ -545,9 +632,7 @@ fn execute(
             .into_iter().take(500).map(|p| json!({"text":p.text,"description":p.description})).collect::<Vec<_>>()}),
         ),
         Operation::Usage { agent } => {
-            let live = snapshot(senders)?
-                .into_iter()
-                .find(|a| a.id == agent)
+            let live = detail_target(snapshot(senders)?, &agent)
                 .ok_or_else(|| error("not_found", "Agent not found"))?;
             let provider = live
                 .pane
@@ -570,10 +655,14 @@ fn execute(
             Ok(json!({"usage":usage}))
         },
         Operation::Focus { agent } => {
-            target(senders, &agent)?;
+            let owner = target(senders, &agent)?.tab_group_session;
             let (reply, rx) = crossbeam::channel::bounded(1);
             senders
-                .send_to_screen(ScreenInstruction::WebFocusAgent { agent, reply })
+                .send_to_screen(ScreenInstruction::WebFocusAgent {
+                    agent,
+                    owner,
+                    reply,
+                })
                 .map_err(|e| error("failed", e.to_string()))?;
             rx.recv_timeout(Duration::from_secs(5))
                 .map_err(|_| error("unavailable", "Focus unavailable"))?
@@ -655,7 +744,7 @@ fn execute(
             mut after_revision,
         } => {
             let live = if let Some(id) = &agent {
-                snapshot(senders)?.into_iter().find(|a| &a.id == id)
+                detail_target(snapshot(senders)?, id)
             } else {
                 None
             };

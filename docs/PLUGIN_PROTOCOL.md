@@ -938,11 +938,11 @@ handler that survives terminal detach. Operations reject unknown fields. No nati
 | `op` | Fields | `ok` payload |
 | --- | --- | --- |
 | `list` | none | `{session, now_ms, counts:{waiting,busy,idle}, agents:[row]}` |
-| `history` | `run`, optional `agent` (live ID), `query` (default empty), `from`, `worker`, `before`, `after_revision`, `tz` | History page below |
+| `history` | `run`, optional `agent` (live lookup), `query` (default empty), `from`, `worker`, `before`, `after_revision`, `tz` | History page below |
 | `hit` | `run`, `revision`, optional `tz` | History page with context/latest navigation |
 | `event` | `run`, `revision`, optional `tz` | `{header:string, markdown:string, tool:string}` |
 | `tools` | `run`, either `revisions` (1–30) or `range` with optional `before`, optional `tz` | Reader; range mode also includes `page` |
-| `usage` | `agent` (live ID) | `{usage:ProviderUsage}` |
+| `usage` | `agent` (live lookup) | `{usage:ProviderUsage}` |
 | `prompts` | none | `{prompts:[{text,description}]}` (at most 500) |
 | `prompt` | `agent:AgentRef`, `submission_id`, `text` | `{response:AgentResponse}` |
 | `screen` | `agent:AgentRef`, `lines` (1–200, default 80) | `{response:AgentResponse}` |
@@ -950,15 +950,18 @@ handler that survives terminal detach. Operations reject unknown fields. No nati
 | `focus` | `agent:AgentRef` | `true` |
 
 `AgentRef` is `{id, kind, session_id}`. All identity strings must be nonblank
-and contain no control characters. Actions take a fresh snapshot and require the
-complete identity. Only peers represented in that snapshot can be routed.
+and contain no control characters. Actions take a fresh snapshot and require a
+unique match for the complete identity.
 Prompt, screen and keys also recheck kind and conversation on the owning screen
-using the distinct `WebGuarded` IPC variant; unsupported peers fail closed.
+using the distinct `WebGuarded` IPC variant. For peers the destination is the
+snapshot's scanned socket owner, with one dispatch attempt and no fallback
+to the checkpoint name.
 Focus revalidates selectability and suppression and uses the first attached
 terminal. Local focus executes in that same screen turn through the palette's
 focus core; a pending terminal layout returns recoverable `unavailable` for retry.
-Peers use the palette's session-switch behavior.
-Peer focus uses the current session cache, without an atomic cross-server handoff.
+Peer focus revalidates the owner in the screen's current cache and uses the
+palette's session switch once the scanned socket and published session names
+agree. A rename awaiting publication returns recoverable `unavailable`.
 
 Rows contain `id`, `ref`, `session`, `current_session`, `pane_id` (canonical),
 `pane` (display number), `provider`, `state`, `glyph`, `status`, `host`, `title`,
@@ -970,6 +973,16 @@ quota reasons reuse the terminal palette. Exited panes and Exited agent records
 are excluded from both live lists; their retained run history remains readable.
 `can_prompt` describes complete identity, independently of current input readiness.
 Missing conversation IDs report `Agent has no conversation ID`.
+
+Native peer List rows additionally carry `detail_id`, an opaque selector
+derived from the scanned session owner, canonical pane ID, provider kind,
+and optional conversation ID. Its value is stable through checkpoint
+republication under the same scanned owner and through run discovery.
+History and Usage accept the selector in the existing `agent` field and
+require a unique match for it or for a legacy row ID. A complete action ref
+shared by multiple rows is unavailable for binding and is sent as incomplete
+in List. Usage returns `not_found` without a unique binding. History's live row keeps the shared
+row schema, and action requests continue to carry `AgentRef`.
 
 Web `prompt` text beginning with `/` uses command submission for Claude, Codex
 and Pi, with arbitrary command names and arguments. It retains the same complete
@@ -985,8 +998,8 @@ History pages contain `run`, `retargeted`, `agent_gone`, `live` (row or null),
 `header` (`name,status,location,started,task,project,branch,session_id,details`),
 `events`, `earlier`, `next_from`, `previous_run`, `origin_run`, `resumable:false`,
 `status`, `navigation` and `activity_ranges`. Run-only reads need no live snapshot.
-A missing live ID sets `agent_gone` and still reads the supplied run. A live ID
-whose current run changed sets `retargeted`, returns the new run and clears old
+A missing or ambiguous live lookup sets `agent_gone` and still reads the supplied
+run. A unique match whose current run changed sets `retargeted`, returns the new run and clears old
 worker/page/delivery cursors. Clients must replace their cached run on retarget.
 `tz` uses the palette's requesting-client timezone rules; omitted/invalid zones
 use its explicit unavailable-zone behavior, never the server's local timezone.

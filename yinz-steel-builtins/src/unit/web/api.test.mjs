@@ -6,11 +6,33 @@ import path from 'node:path';
 import { FakeClock, FakeFetch, LogStorage, STATIC_DIR, flush, response, staticUrl } from './fakes.mjs';
 
 const api = await import(staticUrl('api.js'));
+const { cardDetail, detailHash, detailListRow, parseHash } = await import(staticUrl('app-route.js'));
 const {
   KEYS, createApi, createPoller, createTokenStore, safeStorage, requestUrl, parseRetryAfter,
   describeError, normalizeConfig, saveReturn, takeReturn, logoutNotice, freshnessText,
   SCREEN_TEXT_SIZES, normalizeScreenView, readScreenView, writeScreenView,
 } = api;
+
+test('peer cards use a scoped selection and a stripped selector allows only stored history', () => {
+  const detailId = `peer-detail:${'a'.repeat(64)}`;
+  const otherId = `peer-detail:${'b'.repeat(64)}`;
+  const peer = { id: 'live-agent:4:host:old:terminal_7', detail_id: detailId,
+    current_session: false, state: 'waiting' };
+  const other = { ...peer, detail_id: otherId, run: 'other-run' };
+  const route = parseHash(detailHash(cardDetail(peer, 'local')));
+  assert.deepEqual(route, { view: 'detail', id: detailId, run: '', tab: 'screen', bind: true });
+  assert.equal(detailListRow([other, peer], route.id), peer);
+  assert.equal(detailListRow([peer, other], otherId), other);
+  assert.equal(detailListRow([other], route.id), null);
+  assert.equal(detailListRow([peer, peer], route.id), null);
+  assert.equal(detailListRow([peer, other], peer.id), null);
+  assert.equal(detailListRow([peer], peer.id), peer);
+  assert.equal(cardDetail({ ...peer, detail_id: null }, 'local'), null);
+  assert.equal(cardDetail({ ...peer, detail_id: undefined, current_session: undefined,
+    tab_group_session: 'peer' }, 'local'), null);
+  assert.deepEqual(parseHash(detailHash(cardDetail({ ...other, detail_id: null }, 'local'))),
+    { view: 'detail', id: other.id, run: 'other-run', tab: 'screen', bind: false });
+});
 
 function setup({ token = 'yzw1_token', remember = false, fail = null } = {}) {
   const log = [];

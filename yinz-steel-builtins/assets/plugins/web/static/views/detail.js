@@ -4,7 +4,7 @@ import {
 } from '../api.js';
 import { TimelineStore, ToolsReader } from '../timeline.js';
 import { sameTarget, targetOf, validTarget } from '../submission.js';
-import { detailHash } from '../app-route.js';
+import { detailHash, detailListRow, isPeerDetail } from '../app-route.js';
 import {
   html, useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, usePoller, useNow,
   ServerHtml, StateBadge, RowBadges, QuickKeys, QuotaBar, Banner, responseText, keyName, cx,
@@ -311,11 +311,8 @@ function chooseTab(route, live) {
   return live && live.state === 'waiting' ? 'screen' : 'timeline';
 }
 
-function listedAgent(data, id) {
-  return Array.isArray(data?.agents) ? data.agents.find((row) => row?.id === id) || null : null;
-}
-
 export function DetailView({ env, route }) {
+  const scoped = isPeerDetail(route.id);
   const identity = route.bind ? `a:${route.id}:${route.run ? 'run' : 'none'}` : `r:${route.run}`;
   const store = useMemo(() => (route.run ? new TimelineStore({ run: route.run, agent: route.bind ? route.id : null }) : null), [identity]);
   const [version, setVersion] = useState(0);
@@ -397,21 +394,23 @@ export function DetailView({ env, route }) {
     env,
     run: async ({ signal }) => {
       const r = await env.api.get('/api/agents', { signal });
-      const row = r.ok && !env.api.stale(r) ? listedAgent(r.data, route.id) : null;
+      const row = r.ok && !env.api.stale(r) && Array.isArray(r.data?.agents)
+        ? detailListRow(r.data.agents, route.id) : null;
       finishStatusPoll(signal, r, row);
       return r;
     },
   });
-  const listRow = route.run ? null : listedAgent(list?.data, route.id);
+  const listRows = !route.run && list?.data?.agents;
+  const listRow = Array.isArray(listRows) ? detailListRow(listRows, route.id) : null;
   useEffect(() => {
     if (listRow && listRow.run) env.replaceHash(detailHash({ id: route.id, run: listRow.run, tab: tab || undefined }));
   }, [listRow && listRow.run]);
 
-  const meta = store ? store.meta : { live: listRow, agent_gone: false };
+  const meta = store ? store.meta : { live: listRow, agent_gone: Array.isArray(listRows) && !listRow };
   const live = route.bind ? meta.live : null;
   liveRow.current = live;
-  const actions = route.bind && !!live && !meta.agent_gone;
   const currentRef = live && live.ref && validTarget(live.ref) ? targetOf(live.ref) : null;
+  const actions = route.bind && !!currentRef && !meta.agent_gone;
   const refreshLive = store ? refreshTail : refreshList;
   const scope = useMemo(() => actions && currentRef ? { target: currentRef } : null,
     [actions, store?.run, currentRef?.id, currentRef?.kind, currentRef?.session_id]);
@@ -443,14 +442,14 @@ export function DetailView({ env, route }) {
   }, [awaitingStatus, scope, clearAwaitingStatus]);
 
   useEffect(() => {
-    if (awaitingStatus?.scope === scope && !env.visibility.isHidden()) refreshLive();
+    if (awaitingStatus && awaitingStatus.scope === scope && !env.visibility.isHidden()) refreshLive();
   }, [awaitingStatus, scope, refreshLive, env.visibility]);
 
   function onRetarget(previousRef) {
     setRetargetNotice(true);
     memory.atBottom = true;
     memory.anchor = null;
-    if (previousRef && validTarget(previousRef)) {
+    if (!scoped && previousRef && validTarget(previousRef)) {
       env.submissions.markIncompatible(targetOf(previousRef), { reason: 'The agent moved to a new run. This prompt was not sent to it.' });
     }
     if (earlierController.current) earlierController.current.abort();
@@ -461,14 +460,16 @@ export function DetailView({ env, route }) {
   useEffect(() => {
     if (!currentRef) return;
     const previous = lastRef.current;
-    if (previous && !sameTarget(previous, currentRef)) {
-      env.submissions.markIncompatible(previous, { replacement: currentRef, reason: 'The agent identity changed. This prompt was not sent to the replacement.' });
-    }
-    for (const rec of env.submissions.staleRecords(route.id, currentRef)) {
-      if (!rec.incompatible) env.submissions.markIncompatible(rec.target, { replacement: currentRef, reason: 'This draft was written for an earlier conversation of this agent.' });
+    if (!scoped) {
+      if (previous && !sameTarget(previous, currentRef)) {
+        env.submissions.markIncompatible(previous, { replacement: currentRef, reason: 'The agent identity changed. This prompt was not sent to the replacement.' });
+      }
+      for (const rec of env.submissions.staleRecords(route.id, currentRef)) {
+        if (!rec.incompatible) env.submissions.markIncompatible(rec.target, { replacement: currentRef, reason: 'This draft was written for an earlier conversation of this agent.' });
+      }
     }
     lastRef.current = currentRef;
-  }, [currentRef && `${currentRef.kind}|${currentRef.session_id}`]);
+  }, [currentRef?.id, currentRef?.kind, currentRef?.session_id]);
 
   // Default tab once, when the agent state is first known (waiting -> Screen).
   const known = store ? store.loaded : !!listRow;
@@ -547,7 +548,8 @@ export function DetailView({ env, route }) {
   const stale = liveStatus && ['offline', 'retrying', 'error'].includes(liveStatus.status);
   const waitingForAgent = actions && ((scope !== null && sending === scope)
     || (!stale && (live.state === 'busy' || awaitingStatus?.scope === scope)));
-  const title = live && live.title ? String(live.title) : store && store.meta.header && store.meta.header.name ? String(store.meta.header.name) : route.id;
+  const title = live && live.title ? String(live.title) : store && store.meta.header && store.meta.header.name ? String(store.meta.header.name)
+    : scoped ? 'Peer agent' : route.id;
   useEffect(() => {
     document.title = `${title} · ${env.config.title}`;
   }, [title]);
@@ -592,7 +594,9 @@ export function DetailView({ env, route }) {
     </header>
     <div class="banners">
       ${!route.bind ? html`<${Banner} id="banner-stored" tone="info">Viewing a stored run, not the live agent.<//>` : null}
-      ${route.bind && meta.agent_gone ? html`<${Banner} id="banner-agent-gone" tone="warn">This agent is gone. Its history stays readable and actions are disabled. Checking for its return…<//>` : null}
+      ${route.bind && meta.agent_gone ? html`<${Banner} id="banner-agent-gone" tone="warn">${store
+        ? 'This agent is gone. Its history stays readable and actions are disabled. Checking for its return…'
+        : 'This agent is unavailable. Return to Agents and reopen its card.'}<//>` : null}
       ${retargetNotice ? html`<${Banner} id="banner-retargeted" tone="info"
         actions=${html`<button type="button" class="link-button" onClick=${() => setRetargetNotice(false)}>Dismiss</button>`}>
         The agent moved to a new run; the timeline was reset.<//>` : null}
@@ -618,10 +622,12 @@ export function DetailView({ env, route }) {
       </div>
     </main>
     ${route.bind && live ? html`<footer class="composer-dock">
-      <${StaleSubmissions} env=${env} agentId=${route.id} current=${currentRef} canPrompt=${actions && !!live.can_prompt} />
+      ${!scoped ? html`<${StaleSubmissions} env=${env} agentId=${route.id} current=${currentRef} canPrompt=${actions && !!live.can_prompt} />`
+        : !currentRef && lastRef.current ? html`<${StaleSubmissions} env=${env} verifiedTarget=${lastRef.current} />` : null}
       <${Composer} env=${env} live=${live} enabled=${actions} onTargetChanged=${refreshLive} />
     </footer>` : null}
-    ${route.bind && !live ? html`<${StaleSubmissions} env=${env} agentId=${route.id} current=${null} canPrompt=${false} dock=${true} />` : null}
+    ${route.bind && !live && (!scoped || lastRef.current) ? html`<${StaleSubmissions} env=${env} agentId=${route.id}
+      verifiedTarget=${scoped ? lastRef.current : null} dock=${true} />` : null}
     ${sheet && sheet.type === 'overflow' && live && currentRef ? html`<${OverflowSheet} env=${env} live=${live} onClose=${() => setSheet(null)}
       onInterrupt=${() => setSheet({ type: 'interrupt' })} onKeys=${() => setSheet({ type: 'keys' })} onTargetGone=${() => refreshTail()} />` : null}
     ${sheet && sheet.type === 'interrupt' ? html`<${ConfirmSheet} id="sheet-interrupt-confirm" title="Interrupt the agent?" danger=${true}

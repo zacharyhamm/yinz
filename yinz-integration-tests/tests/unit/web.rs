@@ -1101,6 +1101,7 @@ fn web_builtin_production_http() {
         "{agent}"
     );
     assert_eq!(agent["ref"], reference);
+    assert!(agent.get("detail_id").is_none(), "{agent}");
 
     let history = call_ok(
         addr,
@@ -1120,6 +1121,34 @@ fn web_builtin_production_http() {
         history["live"].get("tab_group_session").is_none(),
         "{history}"
     );
+    assert!(history["live"].get("detail_id").is_none(), "{history}");
+    let unknown_peer = format!("peer-detail:{}", "0".repeat(64));
+    let unbound = call_ok(
+        addr,
+        "GET",
+        &query(
+            "/api/history",
+            &[("run", &run.id), ("agent", &unknown_peer)],
+        ),
+        &token,
+        "",
+    );
+    assert_eq!(unbound["run"], run.id, "{unbound}");
+    assert_eq!(unbound["agent_gone"], true, "{unbound}");
+    assert!(unbound["live"].is_null(), "{unbound}");
+    assert_eq!(
+        unbound["events"][0]["markdown"],
+        "Native web retained conversation"
+    );
+    let unavailable = call(
+        addr,
+        "GET",
+        &query("/api/usage", &[("agent", &unknown_peer)]),
+        Some(&token),
+        "",
+    );
+    assert_eq!(unavailable.error_code(404), "not_found");
+
     let event = &history["events"][0];
     assert_eq!(
         event["markdown"], "Native web retained conversation",
