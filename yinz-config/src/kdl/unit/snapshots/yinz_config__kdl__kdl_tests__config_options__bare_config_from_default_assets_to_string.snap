@@ -165,9 +165,6 @@ keybinds clear-defaults=true {
     shared {
         bind "Ctrl Alt p" { ToggleCommandPalette; }
     }
-    shared_except "locked" "select" "notifications" {
-        bind "Alt u" { ReturnFromNotification; }
-    }
     shared_except "locked" "select" {
         bind "Alt left" { MoveFocusOrTab "left"; }
         bind "Alt down" { MoveFocus "down"; }
@@ -209,6 +206,9 @@ keybinds clear-defaults=true {
     }
     shared_except "locked" "session" {
         bind "Ctrl o" { SwitchToMode "session"; }
+    }
+    shared_except "locked" "renametab" "renamepane" "select" "notifications" {
+        bind "Alt u" { ReturnFromNotification; }
     }
     shared_except "locked" "scroll" "search" {
         bind "Ctrl s" { SwitchToMode "scroll"; }
@@ -262,6 +262,9 @@ keybinds clear-defaults=true {
     }
     renametab {
         bind "esc" { UndoRenameTab; SwitchToMode "tab"; }
+    }
+    shared_among "renametab" "renamepane" {
+        bind "Alt u" { NoOp; }
     }
     shared_among "renametab" "renamepane" "select" {
         bind "Ctrl c" { SwitchToMode "normal"; }

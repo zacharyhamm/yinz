@@ -405,7 +405,7 @@ impl Screen {
         rects
     }
 
-    fn notification_return_retry_layout(
+    pub(super) fn notification_return_retry_layout(
         &self,
         viewport: Viewport,
         now: Instant,

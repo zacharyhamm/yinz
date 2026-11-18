@@ -214,8 +214,11 @@ keybinds {
         bind "Space" { NextSwapLayout; }
         bind "x" { CloseFocus; SwitchToMode "Normal"; }
     }
-    shared_except "locked" "select" "notifications" {
+    shared_except "locked" "select" "notifications" "renametab" "renamepane" {
         bind "Alt u" { ReturnFromNotification; }
+    }
+    shared_among "renametab" "renamepane" {
+        bind "Alt u" { NoOp; }
     }
     shared_except "locked" "select" {
         bind "Alt a" { ActivateLastNotification; }

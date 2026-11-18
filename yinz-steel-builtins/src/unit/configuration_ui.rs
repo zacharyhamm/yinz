@@ -354,6 +354,7 @@ fn every_preset_parses_with_palette_agent_selection_and_notifications() {
     for (primary, secondary, locked) in [
         ("Ctrl", "Alt", false),
         ("Ctrl", "Alt", true),
+        ("Alt", "Ctrl", true),
         ("", "Alt", false),
         ("Ctrl", "", false),
         ("", "", false),
@@ -381,6 +382,29 @@ fn every_preset_parses_with_palette_agent_selection_and_notifications() {
         let key = |s: &str| -> KeyWithModifier { s.parse().unwrap() };
         let return_key = key(&format!("{secondary} u"));
         for config in [&config, &saved] {
+            if locked {
+                assert_eq!(config.options.default_mode, Some(InputMode::Locked));
+                assert_eq!(
+                    config.keybinds.0[&InputMode::Notifications][&key("Esc")],
+                    vec![Action::SwitchToMode {
+                        input_mode: InputMode::Locked
+                    }]
+                );
+                assert_eq!(
+                    config.keybinds.0[&InputMode::Locked][&key(&format!("{primary} g"))],
+                    vec![Action::SwitchToMode {
+                        input_mode: InputMode::Normal
+                    }]
+                );
+                assert!(config
+                    .keybinds
+                    .get_actions_for_key_in_mode(&InputMode::Locked, &return_key)
+                    .is_none());
+                assert_eq!(
+                    config.keybinds.0[&InputMode::Normal][&return_key],
+                    vec![Action::ReturnFromNotification]
+                );
+            }
             for binding in ["w", "p", "l"] {
                 assert_eq!(
                     config.keybinds.0[&InputMode::Session][&key(binding)],
@@ -443,6 +467,8 @@ fn every_preset_parses_with_palette_agent_selection_and_notifications() {
                             .all(|actions| !actions.contains(&Action::ReturnFromNotification)),
                         "{mode:?}"
                     );
+                } else if matches!(mode, InputMode::RenameTab | InputMode::RenamePane) {
+                    assert_eq!(return_actions, Some(&vec![Action::NoOp]), "{mode:?}");
                 } else {
                     assert_eq!(
                         return_actions,

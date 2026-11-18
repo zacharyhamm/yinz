@@ -245,6 +245,7 @@ impl Screen {
         base_mode: Option<InputMode>,
         client_id: ClientId,
     ) -> Result<()> {
+        let browser_owned_input = self.notification_browser_owns_input(client_id);
         let new_mode = if self.command_palette_is_open(client_id) {
             InputMode::Locked
         } else {
@@ -338,6 +339,15 @@ impl Screen {
                 .senders
                 .send_to_plugin(PluginInstruction::Update(bg_updates))
                 .context("failed to update background plugins with mode info")?;
+        }
+        // Passthrough updates the dimming and shortcut hints in the new mode. Publish it
+        // after the mode update so the original ModeInfo cannot overwrite those hints.
+        if browser_owned_input != self.notification_browser_owns_input(client_id)
+            && let Some(pane_id) = self.get_active_pane_id(&client_id)
+            && self.dimmed_clients.contains(&client_id)
+                != self.should_route_keys_to_pane(client_id, pane_id)
+        {
+            self.report_key_passthrough_state(client_id, pane_id, pane_id);
         }
         Ok(())
     }

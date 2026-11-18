@@ -79,8 +79,11 @@
     shared_except \"locked\" \"select\" {
         bind \"" secondary-modifier " a\" { ActivateLastNotification; }
     }
-    shared_except \"locked\" \"select\" \"notifications\" {
+    shared_except \"locked\" \"select\" \"notifications\" \"renametab\" \"renamepane\" {
         bind \"" secondary-modifier " u\" { ReturnFromNotification; }
+    }
+    shared_among \"renametab\" \"renamepane\" {
+        bind \"" secondary-modifier " u\" { NoOp; }
     }
 "))
     "

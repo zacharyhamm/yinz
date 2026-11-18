@@ -437,7 +437,20 @@ impl Screen {
         }
     }
 
+    pub(super) fn notification_browser_owns_input(&self, client_id: ClientId) -> bool {
+        // Activation hides the browser before the server acknowledges its exit. A palette
+        // can also cover the browser and temporarily change the mode to Locked.
+        self.notification_browsers.contains_key(&client_id)
+            || self
+                .mode_info
+                .get(&client_id)
+                .is_some_and(|mode| mode.mode == InputMode::Notifications)
+    }
+
     pub(super) fn should_route_keys_to_pane(&self, client_id: ClientId, pane_id: PaneId) -> bool {
+        if self.notification_browser_owns_input(client_id) {
+            return false;
+        }
         let Some(tab) = self.tab_containing_pane(pane_id) else {
             return false;
         };

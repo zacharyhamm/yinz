@@ -5,7 +5,9 @@ use yinz_integration_tests::{
     claim_first_terminal_and_wait_for_prompt, col, keys, start_yinz, FakePtyHandle, GridSnapshot,
     LayoutInfo, TestRunner, TestSession, TERMINAL_SIZE,
 };
+use yinz_types::data::ListPanesResponse;
 use yinz_types::internal_ids::TerminalId;
+use yinz_types::pane_id::PaneId;
 
 const TOAST_TOP_LEFT_CORNER: &str = "╭";
 const TOAST_BOTTOM_LEFT_CORNER: &str = "╰";
@@ -98,6 +100,111 @@ fn notification_return_same_tab() {
         cursor_follows_label(snapshot, "Destination prompt")
     });
     return_and_check_input(&yinz, &keys::alt('z'), &origin, "Origin prompt");
+    yinz.quit();
+}
+
+#[test]
+fn notification_return_leaves_rename_target_in_place() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("notification_timeout 30\npane_frames true")
+        .with_layout(LayoutInfo::Stringified(
+            r#"
+            layout {
+                default_tab_template {
+                    pane size=1 borderless=true { plugin location="tab-bar"; }
+                    children
+                    pane size=1 borderless=true { plugin location="status-bar"; }
+                }
+                tab name="Origin Tab" focus=true split_direction="vertical" {
+                    pane name="Origin Pane" focus=true
+                    pane
+                }
+                tab name="Destination Tab" split_direction="vertical" {
+                    pane name="Destination Pane" focus=true
+                    pane
+                }
+            }
+            "#
+            .into(),
+        ))
+        .start();
+    let origin = label_terminal(&yinz, 0, "Origin prompt");
+    let destination = label_terminal(&yinz, 2, "Destination prompt");
+    let pane_names = |pane_id| {
+        let (status, json) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+            tab: true,
+            command: false,
+            state: true,
+            geometry: false,
+            all: false,
+            json: true,
+        });
+        assert_eq!(status, 0, "{json}");
+        let entry = serde_json::from_str::<ListPanesResponse>(&json)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.pane_info.id == PaneId::Terminal(pane_id))
+            .unwrap();
+        (entry.tab_name, entry.pane_info.title)
+    };
+    let origin_names = pane_names(origin.terminal_id());
+    let destination_names = pane_names(destination.terminal_id());
+    assert_eq!(origin_names, ("Origin Tab".into(), "Origin Pane".into()));
+    assert_eq!(
+        destination_names,
+        ("Destination Tab".into(), "Destination Pane".into())
+    );
+
+    for tab_rename in [true, false] {
+        yinz.wait_until("the origin is focused", |grid| {
+            cursor_follows_label(grid, "Origin prompt")
+        });
+        notify_target(&yinz, &destination);
+        yinz.wait_until("the new notification can be activated", |grid| {
+            grid.contains("Targeted notification") && grid.contains("Alt+a to activate")
+        });
+        yinz.send_stdin(&keys::alt('a'));
+        yinz.wait_until("the destination is focused", |grid| {
+            cursor_follows_label(grid, "Destination prompt")
+        });
+        let (mode, rename) = if tab_rename { ('t', b"r") } else { ('p', b"c") };
+        yinz.send_stdin(&keys::ctrl(mode));
+        yinz.send_stdin(rename);
+        yinz.send_stdin(b"Temporary");
+        let mode_label = if tab_rename {
+            "RENAMING TAB"
+        } else {
+            "RENAMING PANE"
+        };
+        yinz.wait_until("the new name is being edited", |grid| {
+            grid.contains("Temporary") && grid.contains(mode_label)
+        });
+        yinz.send_stdin(&keys::alt('u'));
+        yinz.send_stdin(b"append");
+        yinz.wait_until("the edit renders its suffix", |grid| {
+            grid.contains("append")
+        });
+        let (tab, pane) = pane_names(destination.terminal_id());
+        if tab_rename {
+            assert_eq!(tab, "Temporaryappend");
+            assert_eq!(pane, "Destination Pane");
+        } else {
+            assert_eq!(tab, destination_names.0);
+            assert_eq!(pane, "Temporaryappend");
+        }
+        yinz.send_stdin(&keys::ESC);
+        yinz.wait_until("Escape restores the destination name and focus", |grid| {
+            !grid.contains("Temporary") && cursor_follows_label(grid, "Destination prompt")
+        });
+        assert_eq!(pane_names(destination.terminal_id()), destination_names);
+        assert_eq!(pane_names(origin.terminal_id()), origin_names);
+        yinz.send_stdin(&keys::alt('u'));
+        yinz.wait_until("the return chord still finds the saved origin", |grid| {
+            cursor_follows_label(grid, "Origin prompt")
+        });
+        // Esc canceled the edit back to Tab or Pane mode. Restore Normal for the next edit.
+        yinz.send_stdin(&keys::ctrl(mode));
+    }
     yinz.quit();
 }
 

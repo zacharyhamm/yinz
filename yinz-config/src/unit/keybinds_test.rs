@@ -35,10 +35,12 @@ fn notification_return_defaults_and_custom_binding_roundtrip() {
     let default_key = "Alt u".parse().unwrap();
     let custom_key = "Alt Shift u".parse().unwrap();
     let action = vec![Action::ReturnFromNotification];
+    let noop = vec![Action::NoOp];
     for config in [&shipped, &example] {
         for mode in InputMode::iter() {
             let expected = match mode {
                 InputMode::Locked | InputMode::Select | InputMode::Notifications => None,
+                InputMode::RenameTab | InputMode::RenamePane => Some(&noop),
                 _ => Some(&action),
             };
             assert_eq!(

@@ -341,6 +341,12 @@ impl Screen {
             return false;
         };
         let column = event.position.column();
+        if self
+            .notification_return_retry_layout(viewport, now, client_id)
+            .is_some_and(|(rect, _)| rect.contains(column, line))
+        {
+            return true;
+        }
         let Some(hit) = frame.layout.entries.iter().find(|entry| {
             (entry.x..entry.x + frame.layout.width).contains(&column)
                 && (entry.y..entry.y + notification_height(entry.lines.len())).contains(&line)

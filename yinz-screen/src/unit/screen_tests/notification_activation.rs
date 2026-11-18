@@ -1,5 +1,6 @@
 use super::*;
 use crate::output::Output;
+use crate::screen::NotificationClick;
 use crate::ui::notification::{notification_chunks, MAX_NOTIFICATION_TEXT_ROWS};
 use std::time::{Duration, Instant};
 use yinz_types::animation::Tween;
@@ -81,6 +82,101 @@ fn activate_target(screen: &mut Screen, client: ClientId, target: PaneId, now: I
         .receive_toast("targeted".into(), Some(target), None, None, None)
         .unwrap();
     screen.activate_last_notification(client, now);
+}
+
+#[test]
+fn notification_activation_reflows_before_restoring_a_parked_pane() {
+    assert_parked_notification_activation(24);
+}
+
+#[test]
+fn notification_activation_keeps_a_parked_pane_when_no_float_fits() {
+    assert_parked_notification_activation(9);
+}
+
+fn assert_parked_notification_activation(arriving_rows: usize) {
+    let small = Size { cols: 100, rows: 9 };
+    let arrival_size = Size {
+        rows: arriving_rows,
+        ..small
+    };
+    let mut screen = create_non_mirrored_screen(small);
+    let client = ClientId::new(1);
+    let target_tab = TabId::new(0);
+    let parked = PaneId::Terminal(TerminalId::new(1));
+    let fallback = PaneId::Terminal(TerminalId::new(2));
+    let origin = PaneId::Terminal(TerminalId::new(3));
+    new_tab(&mut screen, 1, target_tab);
+    let tab = screen.tabs.get_mut(&target_tab).unwrap();
+    tab.rename_pane(b"Parked".to_vec(), parked).unwrap();
+    tab.new_pane(
+        fallback,
+        Some("Stand-in".into()),
+        None,
+        false,
+        true,
+        NewPanePlacement::InPlace {
+            pane_id_to_replace: Some(parked),
+            close_replaced_pane: false,
+            borderless: None,
+        },
+        Some(client),
+        None,
+    )
+    .unwrap();
+    let stand_in = tab
+        .get_suppressed_panes()
+        .find(|(id, _)| **id == parked)
+        .unwrap()
+        .1
+        .restored_by
+        .unwrap();
+    assert_eq!(stand_in.pane_id, fallback);
+    assert_eq!(screen.active_pane_id(client), Some(fallback));
+    new_tab(&mut screen, 3, TabId::new(1));
+    assert_eq!(screen.active_pane_id(client), Some(origin));
+    screen.set_client_size(client, arrival_size).unwrap();
+    screen.resize_to_clients().unwrap();
+    assert_eq!(screen.tabs[&target_tab].size, small);
+    let server = screen_wired_to_server(&mut screen);
+
+    let now = Instant::now();
+    screen.pinned_now = Some(now);
+    activate_target(&mut screen, client, parked, now);
+
+    let tab = &screen.tabs[&target_tab];
+    assert_eq!(tab.size, arrival_size);
+    assert_eq!(tab.get_viewport().rows, arriving_rows);
+    assert_eq!(tab.get_viewport().cols, arrival_size.cols);
+    assert!(tab.get_pane_with_id(parked).is_some());
+    let final_focus = if arriving_rows == small.rows {
+        let retained = tab
+            .get_suppressed_panes()
+            .find(|(id, _)| **id == parked)
+            .unwrap()
+            .1;
+        assert_eq!(retained.restored_by, Some(stand_in));
+        assert!(tab.rendered_pane(parked).is_none());
+        assert!(!tab.are_floating_panes_visible());
+        fallback
+    } else {
+        assert!(tab.rendered_pane(parked).is_some());
+        assert!(tab.get_suppressed_panes().all(|(id, _)| *id != parked));
+        assert!(tab.are_floating_panes_visible());
+        parked
+    };
+    assert_eq!(screen.active_pane_id(client), Some(final_focus));
+    assert_eq!(screen.notification_return_panes.get(&client), Some(&origin));
+    let published: Vec<_> = server
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            ServerInstruction::KeyPassthroughChanged(id, old, new, false, _, _) if id == client => {
+                Some((old, new))
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(published, [(origin, final_focus)]);
 }
 
 #[test]
@@ -733,6 +829,98 @@ fn notification_return_retry_cue_refreshes_expires_and_clears_after_success() {
     );
     assert_eq!(screen.active_pane_id(client), Some(origin));
     assert!(screen.notification_browser_is_visible(client));
+}
+
+#[test]
+fn notification_return_retry_cue_blocks_covered_history_input() {
+    let size = Size { cols: 80, rows: 24 };
+    let mut screen = create_non_mirrored_screen(size);
+    screen.notification_position = NotificationPosition::TopRight;
+    let client = ClientId::new(1);
+    let tab = TabId::new(0);
+    let pending_tab = TabId::new(1);
+    let origin = PaneId::Terminal(TerminalId::new(1));
+    let target = PaneId::Terminal(TerminalId::new(2));
+    new_tab(&mut screen, 1, tab);
+    add_pane_to_tab(&mut screen, tab, target, false);
+    let now = Instant::now() + Duration::from_secs(1);
+    screen.pinned_now = Some(now);
+    activate_target(&mut screen, client, target, now);
+    screen
+        .new_tab(pending_tab, (vec![], vec![]), None, None)
+        .unwrap();
+
+    let (plugin_tx, plugin_rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    screen
+        .receive_toast(
+            "expanded history ".repeat(120),
+            Some(origin),
+            Some(NotificationClick {
+                plugin_id: crate::PluginId::new(7),
+                client_id: client,
+                message: "notification_click".into(),
+                payload: "covered entry".into(),
+            }),
+            None,
+            None,
+        )
+        .unwrap();
+    let id = screen.pending_notification().unwrap().info.id;
+    screen
+        .change_mode(InputMode::Notifications, Some(InputMode::Normal), client)
+        .unwrap();
+    assert!(screen.toggle_notification_detail(client));
+    let server = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(size);
+    screen.return_from_notification(client).unwrap();
+    let snapshot = render_frame_into(&mut screen, &server, client, &mut grid);
+    assert!(snapshot.contains("Layout loading. Try the return shortcut again."));
+
+    let viewport = screen.notification_browser_viewport(client).unwrap();
+    let (cue, cue_lines) = screen
+        .notification_return_retry_layout(viewport, now, client)
+        .unwrap();
+    let frame = screen.notification_browser_frame(client, viewport).unwrap();
+    let selected = &frame.layout.entries[0];
+    assert_eq!(frame.ids[selected.index], id);
+    let row = cue.y + 1;
+    let col = (cue.x + 2).max(selected.x + 2);
+    assert!(col < cue.x + 2 + cue_lines[0].len());
+    assert!(row > selected.y);
+    assert!(col < selected.x + 2 + selected.lines[row - selected.y - 1].len());
+    let cell = Position::new(row as i32, col as u16);
+    let payloads = || {
+        plugin_rx
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                PluginInstruction::NotificationClicked { payload, .. } => Some(payload),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(cell), client);
+    assert!(screen.notification_mouse_captures.contains(&client));
+    let deadline = screen.notification_return_retry_until[&client];
+    screen.pinned_now = Some(deadline);
+    screen.on_animation_tick(deadline).unwrap();
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(cell), client);
+    assert!(!screen.notification_mouse_captures.contains(&client));
+    assert!(screen.notification_browser_is_visible(client));
+    let frame = screen.notification_browser_frame(client, viewport).unwrap();
+    assert_eq!(frame.ids[frame.selected], id);
+    assert_eq!(screen.active_pane_id(client), Some(target));
+    assert_eq!(screen.notification_return_panes.get(&client), Some(&origin));
+    assert_eq!(screen.pending_notification().unwrap().info.id, id);
+    assert!(payloads().is_empty());
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(cell), client);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(cell), client);
+    assert!(!screen.notification_browser_is_visible(client));
+    assert_eq!(screen.active_pane_id(client), Some(origin));
+    assert!(screen.pending_notification().is_none());
+    assert_eq!(payloads(), ["covered entry"]);
 }
 
 #[test]

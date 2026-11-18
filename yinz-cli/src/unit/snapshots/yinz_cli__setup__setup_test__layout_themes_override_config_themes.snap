@@ -4626,7 +4626,7 @@ Config {
                     Alt,
                 },
             }: [
-                ReturnFromNotification,
+                NoOp,
             ],
             KeyWithModifier {
                 bare_key: Esc,
@@ -5075,7 +5075,7 @@ Config {
                     Alt,
                 },
             }: [
-                ReturnFromNotification,
+                NoOp,
             ],
             KeyWithModifier {
                 bare_key: Esc,

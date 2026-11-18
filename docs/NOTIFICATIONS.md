@@ -16,8 +16,9 @@ Try the return shortcut again.”, press the shortcut again after the layout
 finishes. You can also retry when a temporarily hidden or unselectable pane
 becomes available.
 
-The default return shortcut is available outside Locked, Select and
-Notifications modes. Press Esc to leave the notification browser first.
+The default return shortcut is available outside Locked, Select,
+Notifications, RenameTab and RenamePane modes. Press Esc to leave the
+notification browser first. Finish or cancel a rename before returning.
 If your input is routed into a nested session, return to host input before
 using the host's shortcut. Yinz uses **Alt+u** for this action in Normal mode,
 where it takes precedence over Readline's uppercase-word shortcut. To use
@@ -35,6 +36,10 @@ keybinds {
 
 Presets with a secondary modifier bind that modifier plus **u**. For example,
 if your secondary modifier is Ctrl, use `unbind "Ctrl u"` in the remap.
+In the Unlock First preset, pressing Enter on a history entry or leaving
+history with Esc takes you to Locked mode. Press your primary modifier plus
+**g** to enter Normal, then your secondary modifier plus **u** to return
+to the saved pane. With the default modifiers, that's **Ctrl+g**, then **Alt+u**.
 
 Bind one policy plugin in your session configuration:
 

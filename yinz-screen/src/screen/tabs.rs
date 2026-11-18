@@ -819,12 +819,18 @@ impl Screen {
                         Some(TabSwitchPaneFocus::Notification {
                             pane_id,
                             float_if_hidden,
-                        }) => self.focus_notification_target_in_tab(
-                            new_tab_index,
-                            pane_id,
-                            float_if_hidden,
-                            client_id,
-                        ),
+                        }) => {
+                            // A parked target needs room in the arriving client's viewport.
+                            self.recompute_tab_size(new_tab_index)
+                                .with_context(err_context)
+                                .non_fatal();
+                            self.focus_notification_target_in_tab(
+                                new_tab_index,
+                                pane_id,
+                                float_if_hidden,
+                                client_id,
+                            );
+                        },
                         None => {},
                     }
                     if update_mode_infos && let Some(tab) = self.tabs.get_mut(&new_tab_index) {
@@ -847,9 +853,11 @@ impl Screen {
                     self.recompute_tab_size(current_tab_index)
                         .with_context(err_context)
                         .non_fatal();
-                    self.recompute_tab_size(new_tab_index)
-                        .with_context(err_context)
-                        .non_fatal();
+                    if !matches!(pane_to_focus, Some(TabSwitchPaneFocus::Notification { .. })) {
+                        self.recompute_tab_size(new_tab_index)
+                            .with_context(err_context)
+                            .non_fatal();
+                    }
 
                     self.log_and_report_session_state()
                         .with_context(err_context)?;

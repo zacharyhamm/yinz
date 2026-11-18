@@ -3572,6 +3572,19 @@ impl Tab {
                 focused_floating_pane
             })
             .or_else(|_| {
+                if should_float
+                    && self
+                        .suppressed_panes
+                        .get(&pane_id)
+                        .is_some_and(|suppressed| {
+                            overlay_placement_for(&None, suppressed.pane.invoked_with()).is_none()
+                        })
+                    && self.room_for_floating_pane().is_none()
+                {
+                    return Err(anyhow!(
+                        "No room to float pane {pane_id:?}; leaving it suppressed"
+                    ));
+                }
                 match self
                     .suppressed_panes
                     .remove(&pane_id)

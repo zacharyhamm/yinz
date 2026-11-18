@@ -426,6 +426,27 @@ fn activating_a_notification_with_no_target_keeps_it_and_leaves_the_mode() {
 }
 
 #[test]
+fn activating_a_history_entry_requests_the_clients_locked_base_mode() {
+    let target = PaneId::Terminal(TerminalId::new(1));
+    let (mut screen, client) = browsing(vec![record(0, "targeted", Some(target), None)]);
+    new_tab(&mut screen, 2, TabId::new(1));
+    let origin = PaneId::Terminal(TerminalId::new(2));
+    assert_eq!(screen.active_pane_id(client), Some(origin));
+    screen
+        .change_mode(InputMode::Notifications, Some(InputMode::Locked), client)
+        .unwrap();
+    let server = screen_wired_to_server(&mut screen);
+
+    screen.activate_selected_notification(client, Instant::now());
+
+    assert_eq!(mode_changes(&server), [InputMode::Locked]);
+    assert!(!screen.notification_browser_is_visible(client));
+    assert!(screen.pending_notification().is_none());
+    assert_eq!(screen.active_pane_id(client), Some(target));
+    assert_eq!(screen.notification_return_panes.get(&client), Some(&origin));
+}
+
+#[test]
 fn pending_notification_survives_expiry_and_is_consumed_once() {
     let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
     let (server_tx, server_rx) = channels::unbounded::<(ServerInstruction, ErrorContext)>();

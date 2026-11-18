@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use yinz_runtime::errors::prelude::*;
 
 use super::Screen;
@@ -85,7 +83,7 @@ impl Screen {
         }
         // sampled here rather than taken from the last painted frame: a click should resolve
         // against where the toast is now, which is at most one frame ahead of what was drawn
-        let now = Instant::now();
+        let now = self.frame_now();
         // A browsing client sees the browser in place of its toasts, so the browser is what gets
         // hit-tested - never the toasts it is covering.
         if self.notification_browser_is_visible(client_id) {

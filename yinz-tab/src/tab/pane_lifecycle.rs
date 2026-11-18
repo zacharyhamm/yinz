@@ -841,6 +841,14 @@ impl Tab {
         self.set_force_render();
         Ok(())
     }
+    /// Check placement using the geometry that remains after leaving floating fullscreen.
+    pub(super) fn room_for_floating_pane(&mut self) -> Option<PaneGeom> {
+        if self.floating_panes.fullscreen_is_active() {
+            self.floating_panes.unset_fullscreen();
+        }
+        self.floating_panes.find_room_for_new_pane()
+    }
+
     pub fn add_floating_pane(
         &mut self,
         mut pane: Box<dyn Pane>,
@@ -875,10 +883,7 @@ impl Tab {
                 client_id,
             );
         }
-        if self.floating_panes.fullscreen_is_active() {
-            self.floating_panes.unset_fullscreen();
-        }
-        if let Some(mut new_pane_geom) = self.floating_panes.find_room_for_new_pane() {
+        if let Some(mut new_pane_geom) = self.room_for_floating_pane() {
             if let Some(floating_pane_coordinates) = &floating_pane_coordinates {
                 if let Some(pinned) = floating_pane_coordinates.pinned.as_ref() {
                     pane.set_pinned(*pinned);

@@ -9,7 +9,9 @@ use yinz_integration_tests::{
     GridSnapshot, NestedDepthThreeHarness, NestedHarness, PROMPT, TERMINAL_SIZE,
 };
 use yinz_ipc::nested_session::NestedSessionMessage;
+use yinz_types::data::ListPanesResponse;
 use yinz_types::geometry::Direction;
+use yinz_types::pane_id::PaneId;
 
 const ARROW_UP: &[u8] = b"\x1b[A";
 const ARROW_LEFT: &[u8] = b"\x1b[D";
@@ -473,27 +475,48 @@ fn notification_return_restores_nested_key_ownership() {
     let sibling = split_host_sibling(&nested);
     sibling.output(b"\x1b[6;1HHost notification target");
     descend_into_guest_on_the_left(&nested);
-    let list_host_panes = |nested: &NestedHarness| {
-        let (status, panes) = nested.host.run_cli_action_reporting(CliAction::ListPanes {
-            tab: false,
-            command: false,
-            state: false,
-            geometry: false,
-            all: false,
-            json: true,
-        });
-        assert_eq!(status, 0);
-        panes
-    };
     let host_panes = list_host_panes(&nested);
-    let text = "Open host task";
+    click_host_notification(&nested, &sibling);
+
+    let descended = nested.mark_host_to_guest();
+    nested.host.send_stdin(&keys::alt('u'));
+    nested.wait_for_host_to_descend_into_guest_after(descended);
+    assert_guest_opens_pane(&nested, &host_panes);
+
+    nested.guest.quit();
+    nested.host.quit();
+}
+
+fn list_host_panes(nested: &NestedHarness) -> Vec<PaneId> {
+    let (status, panes) = nested.host.run_cli_action_reporting(CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: false,
+        geometry: false,
+        all: false,
+        json: true,
+    });
+    assert_eq!(status, 0, "{panes}");
+    serde_json::from_str::<ListPanesResponse>(&panes)
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.pane_info.id)
+        .collect()
+}
+
+fn notify_host(nested: &NestedHarness, target: Option<&FakePtyHandle>, text: &str) {
     assert_eq!(
         nested.host.run_cli_action(CliAction::Notify {
-            pane_id: Some(sibling.terminal_id().get()),
+            pane_id: target.map(|pane| pane.terminal_id().get()),
             text: text.into(),
         }),
         0
     );
+}
+
+fn click_host_notification(nested: &NestedHarness, sibling: &FakePtyHandle) {
+    let text = "Open host task";
+    notify_host(nested, Some(sibling), text);
     let toast = nested
         .host
         .wait_until("the host's targeted toast is fully visible", |grid| {
@@ -522,10 +545,9 @@ fn notification_return_restores_nested_key_ownership() {
                         .is_some_and(|column| grid.cursor_is_at(col(column + label.len()).row(row)))
                 })
         });
+}
 
-    let descended = nested.mark_host_to_guest();
-    nested.host.send_stdin(&keys::alt('u'));
-    nested.wait_for_host_to_descend_into_guest_after(descended);
+fn assert_guest_opens_pane(nested: &NestedHarness, host_panes: &[PaneId]) {
     nested
         .guest
         .wait_until("guest resumes Normal input", guest_ui_settled);
@@ -536,7 +558,93 @@ fn notification_return_restores_nested_key_ownership() {
         "Alt+n opened the new pane in the guest",
         two_pane_guest_settled,
     );
-    assert_eq!(list_host_panes(&nested), host_panes);
+    assert_eq!(list_host_panes(nested), host_panes);
+}
+
+#[test]
+fn notification_return_browser_keeps_host_keys() {
+    let mut nested = NestedHarness::start_with_host_config(
+        TERMINAL_SIZE,
+        r#"
+        mouse_mode true
+        notification_timeout 30
+        notification_position "top-left"
+        keybinds {
+            notifications { bind "Alt z" { ReturnFromNotification; }; }
+        }
+        "#,
+    );
+    boot_and_descend_on_first_load(&nested);
+    let guest_terminal = nested.guest.expect_pty_spawn();
+    // Keep the guest cursor below the history overlay so it can witness pane focus.
+    guest_terminal.output(b"\x1b[13;1HGuest history origin");
+    ascend_via_focus_host_binding(&nested);
+    let sibling = split_host_sibling(&nested);
+    sibling.output(b"\x1b[6;1HHost notification target");
+    descend_into_guest_on_the_left(&nested);
+    let host_panes = list_host_panes(&nested);
+    click_host_notification(&nested, &sibling);
+
+    let detail = "host action detail";
+    let older = format!("{} {detail}", "Activate host row. ".repeat(8));
+    notify_host(&nested, Some(&sibling), &older);
+    notify_host(&nested, None, "Latest history marker");
+    let open_and_return = |nested: &NestedHarness| {
+        nested.host.send_stdin(&keys::ctrl('o'));
+        nested.host.send_stdin(b"n");
+        nested
+            .host
+            .wait_until("host history lists both rows", |grid| {
+                grid.contains("Latest history marker")
+                    && grid.contains("Activate host row.")
+                    && last_line_contains(grid, "Full text")
+            });
+        nested.host.send_stdin(&keys::alt('z'));
+        nested
+            .host
+            .wait_until("visible host history over the focused guest", |grid| {
+                grid.contains("Latest history marker")
+                    && grid.contains("Activate host row.")
+                    && grid
+                        .cursor
+                        .is_some_and(|cursor| cursor.x < TERMINAL_SIZE.cols / 2 && cursor.y >= 12)
+                    && !host_descended_bar_settled(grid)
+            });
+    };
+    let guest_start = guest_terminal.stdin_bytes().len();
+    open_and_return(&nested);
+    nested.host.send_stdin(b"j");
+    nested.host.send_stdin(&keys::SPACE);
+    nested
+        .host
+        .wait_until("host navigation expands the older row", |grid| {
+            grid.contains(detail)
+        });
+    nested.host.send_stdin(&keys::ENTER);
+    nested
+        .host
+        .wait_until("host Enter opens the sibling and exits history", |grid| {
+            normal_mode_bar_settled(grid)
+                && !grid.contains(detail)
+                && grid
+                    .cursor
+                    .is_some_and(|cursor| cursor.x >= TERMINAL_SIZE.cols / 2)
+        });
+
+    open_and_return(&nested);
+    let descended = nested.mark_host_to_guest();
+    nested.host.send_stdin(&keys::ESC);
+    nested.wait_for_host_to_descend_into_guest_after(descended);
+    nested
+        .host
+        .wait_until("Escape closes host history", |grid| {
+            host_descended_bar_settled(grid) && !grid.contains("Activate host row.")
+        });
+    assert_guest_opens_pane(&nested, &host_panes);
+    assert!(
+        !guest_terminal.stdin_bytes()[guest_start..].contains(&b'\r'),
+        "Enter in host history must not reach the guest terminal"
+    );
 
     nested.guest.quit();
     nested.host.quit();

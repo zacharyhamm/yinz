@@ -237,8 +237,11 @@ keybinds {
     shared {
         bind "Ctrl Alt p" { ToggleCommandPalette; }
     }
-    shared_except "locked" "select" "notifications" {
+    shared_except "locked" "select" "notifications" "renametab" "renamepane" {
         bind "Alt u" { ReturnFromNotification; }
+    }
+    shared_among "renametab" "renamepane" {
+        bind "Alt u" { NoOp; }
     }
     shared_except "locked" "select" {
         bind "Alt a" { ActivateLastNotification; }
