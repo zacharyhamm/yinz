@@ -680,6 +680,92 @@ keybinds {{ normal {{ bind "Ctrl Alt y" {{ SwitchSession {{ name "other"; layout
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn underline_metrics_watcher_recovers_after_intermediate_layout_parse_error() {
+    use std::{fs, os::unix::ffi::OsStrExt};
+
+    for restore_swap in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let main = root.join("config.kdl");
+        let drop_ins = root.join("config.d");
+        let layouts = root.join("layouts");
+        fs::create_dir(&drop_ins).unwrap();
+        fs::create_dir(&layouts).unwrap();
+        fs::write(&main, "terminal { underline_offset -2; }").unwrap();
+        fs::write(
+            layouts.join("default.kdl"),
+            "layout { pane; }\nterminal { padding 5; }\nmouse_mode false",
+        )
+        .unwrap();
+        let swap = layouts.join("default.swap.kdl");
+        let save = |thickness| {
+            Config::write_managed_fragment(
+                &drop_ins,
+                &format!("terminal {{ underline_thickness {thickness}; }}"),
+            )
+            .unwrap();
+        };
+        let logs = captured_config_logs();
+        let wait_for_diagnostic = |detail: &str| {
+            logs.wait_until_described(
+                detail,
+                WAIT,
+                |logs| {
+                    logs.iter()
+                        .any(|line| {
+                            line.contains("Failed to reload config")
+                                && line.contains(swap.to_str().unwrap())
+                                && line.contains(detail)
+                        })
+                        .then_some(())
+                },
+                |logs| format!("{logs:?}"),
+            );
+        };
+        let watching = Watching::start(main.clone(), root.clone());
+        save(2);
+        watching.expect_underline(-2, 2);
+        watching.clear();
+
+        let name = std::ffi::CString::new(swap.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        save(4);
+        wait_for_diagnostic("not a regular file");
+        // Rename over the FIFO atomically so the watcher cannot publish in a
+        // gap between removing the pipe and installing the malformed swap.
+        let replacement = layouts.join("replacement.kdl");
+        fs::write(&replacement, "layout { pane; }").unwrap();
+        fs::rename(replacement, &swap).unwrap();
+        wait_for_diagnostic("Swap layouts should not have their own layout node");
+        assert_eq!(
+            Config::load_checked(Some(&main), Some(&root), false)
+                .unwrap()
+                .terminal
+                .underline_thickness,
+            Some(4)
+        );
+        assert!(watching.changes.lock().is_empty());
+
+        if restore_swap {
+            fs::write(
+                &swap,
+                "swap_tiled_layout name=\"usable\" { tab { pane; pane; }; }",
+            )
+            .unwrap();
+        } else {
+            fs::remove_file(&swap).unwrap();
+        }
+        watching.expect_underline(-2, 4);
+        for change in watching.changes.lock().iter() {
+            assert_eq!(change.config.terminal.underline_thickness, Some(4));
+            assert_eq!(change.config.terminal.padding, Some(5.0));
+            assert_eq!(change.config.options.mouse_mode, Some(false));
+        }
+    }
+}
+
 #[test]
 fn empty_first_drop_in_directory_is_watched_before_a_later_file_write() {
     let dir = tempfile::tempdir().unwrap();

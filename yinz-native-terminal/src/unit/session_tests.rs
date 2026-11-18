@@ -294,3 +294,178 @@ fn unnamed_switches_start_fresh_and_ignore_startup_names_layouts_and_checkpoints
     };
     assert_eq!(cli_assets.layout, target.layout);
 }
+
+#[cfg(unix)]
+#[test]
+fn underline_metrics_native_connection_prepares_with_unused_switch_swap() {
+    use std::{fs, process::Command};
+    use yinz_types::internal_ids::{TabNumber, TerminalId};
+    use yinz_types::pane_id::PaneId;
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let config = root.join("config.kdl");
+    let startup_layout = root.join("startup.kdl");
+    let target_layout = root.join("target.kdl");
+    let binding_layout = root.join("binding.kdl");
+    let unused_swap = binding_layout.with_extension("swap.kdl");
+    fs::write(
+        &config,
+        format!(
+            "layout_dir {:?}\nmouse_mode false\nterminal {{ underline_offset -2; }}\n\
+             keybinds {{ normal {{ bind \"Ctrl y\" {{ SwitchSession {{ name \"other\"; layout \"binding\"; }}; }}; }}; }}",
+            root.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    fs::write(&startup_layout, "layout { pane; }\npane_frames false").unwrap();
+    fs::write(&target_layout, "layout { pane; }\npane_frames true").unwrap();
+    fs::write(
+        &binding_layout,
+        r#"layout { tab name="Binding" { pane; }; }"#,
+    )
+    .unwrap();
+    fs::write(&unused_swap, "swap_tiled_layout { tab { pane; }; }").unwrap();
+    // Request a qualifying missing path to also exercise the .kdl fallback.
+    let startup_path = startup_layout.with_extension("layout");
+    let opts = CliArgs {
+        config: Some(config),
+        config_dir: Some(root.clone()),
+        layout: Some(startup_path.clone()),
+        ..Default::default()
+    };
+    let args = TerminalArgs {
+        session_name: Some("startup".into()),
+        ..Default::default()
+    };
+    let target = SessionConnection {
+        name: Some("target".into()),
+        tab_position: Some(TabNumber::new(2)),
+        pane_id: Some(PaneId::Terminal(TerminalId::new(3))),
+        layout: Some(LayoutInfo::File(
+            target_layout.display().to_string(),
+            Default::default(),
+        )),
+        cwd: Some(root.clone()),
+    };
+    let sessions = sessions(&["startup", "target"]);
+
+    for input in ["regular", "absent", "fifo"] {
+        match input {
+            "absent" => fs::remove_file(&unused_swap).unwrap(),
+            "fifo" => assert!(Command::new("mkfifo")
+                .arg(&unused_swap)
+                .status()
+                .unwrap()
+                .success()),
+            _ => {},
+        }
+        for (switch, name, expected_layout) in [
+            (None, "startup", &startup_path),
+            (Some(&target), "target", &target_layout),
+        ] {
+            let prepared = prepare_connection(&args, &opts, SIZE, switch, &sessions).unwrap();
+            assert_eq!(prepared.name, name);
+            assert!(!prepared.new);
+            let ClientToServerMsg::AttachClient {
+                cli_assets,
+                tab_number_to_focus,
+                pane_to_focus,
+            } = prepared.opening
+            else {
+                panic!("expected attach handshake for {name}");
+            };
+            let Some(LayoutInfo::File(path, metadata)) = cli_assets.layout else {
+                panic!("expected a file layout in the {name} handshake");
+            };
+            assert_eq!(Path::new(&path), expected_layout);
+            assert_eq!(metadata.tabs.len(), 1);
+            assert_eq!(
+                tab_number_to_focus,
+                switch.and_then(|target| target.tab_position)
+            );
+            assert_eq!(pane_to_focus, switch.and_then(|target| target.pane_id));
+            assert_eq!(
+                cli_assets.cwd.as_ref(),
+                switch.and_then(|target| target.cwd.as_ref())
+            );
+            assert_eq!(cli_assets.terminal_window_size, SIZE);
+            let options = cli_assets.configuration_options.unwrap();
+            assert_eq!(options.pane_frames, Some(switch.is_some()));
+            assert_eq!(options.mouse_mode, Some(false));
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn underline_metrics_native_connection_refuses_unusable_selected_layout_inputs() {
+    use std::{fs, os::unix::fs::symlink, process::Command};
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let config = root.join("config.kdl");
+    let selected = root.join("selected.kdl");
+    let swap = selected.with_extension("swap.kdl");
+    let contents = root.join("preview.txt");
+    let pipe = root.join("pipe");
+    assert!(Command::new("mkfifo")
+        .arg(&pipe)
+        .status()
+        .unwrap()
+        .success());
+    fs::write(
+        &config,
+        format!(
+            "layout_dir {:?}\nterminal {{ underline_thickness 3; }}",
+            root.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let opts = CliArgs {
+        config: Some(config),
+        config_dir: Some(root),
+        layout: Some(selected.clone()),
+        ..Default::default()
+    };
+    let args = TerminalArgs {
+        session_name: Some("selected".into()),
+        ..Default::default()
+    };
+    let sessions = sessions(&["selected"]);
+    let prepare = |opts: &CliArgs| prepare_connection(&args, opts, SIZE, None, &sessions);
+    let assert_refused = |opts: &CliArgs, path: &Path| {
+        let Err(error) = prepare(opts) else {
+            panic!("expected preparation to refuse {}", path.display());
+        };
+        let error = format!("{error:#}");
+        for expected in [
+            path.to_str().unwrap(),
+            "not a regular file",
+            "Restore a readable regular file",
+        ] {
+            assert!(error.contains(expected), "{error}");
+        }
+    };
+
+    symlink(&pipe, &selected).unwrap();
+    assert_refused(&opts, &selected);
+    fs::remove_file(&selected).unwrap();
+    fs::write(&selected, "layout { pane; }").unwrap();
+    assert!(prepare(&opts).is_ok());
+    assert!(Command::new("mkfifo")
+        .arg(&swap)
+        .status()
+        .unwrap()
+        .success());
+    assert_refused(&opts, &swap);
+    fs::remove_file(&swap).unwrap();
+    assert!(prepare(&opts).is_ok());
+
+    fs::write(&selected, "layout { pane contents_file=\"preview.txt\"; }").unwrap();
+    symlink(&pipe, &contents).unwrap();
+    assert_refused(&opts, &contents);
+    fs::remove_file(&contents).unwrap();
+    fs::write(&contents, "preview").unwrap();
+    assert!(prepare(&opts).is_ok());
+}

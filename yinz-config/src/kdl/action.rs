@@ -1337,7 +1337,15 @@ pub(crate) fn from_kdl_with(
                     .layout_dir
                     .clone()
                     .or_else(|| get_layout_dir(find_default_config_dir()));
-                crate::layout::layout_info_from_config_with(&layout_dir, &Some(layout_path), mode)?
+                let metadata_mode = match mode {
+                    ConfigRead::Ordinary | ConfigRead::Checked => ConfigRead::Checked,
+                    ConfigRead::Saved => ConfigRead::Saved,
+                };
+                crate::layout::layout_info_from_config_with(
+                    &layout_dir,
+                    &Some(layout_path),
+                    metadata_mode,
+                )?
             } else {
                 None
             };

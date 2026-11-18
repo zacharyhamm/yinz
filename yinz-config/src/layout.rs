@@ -254,8 +254,16 @@ pub fn from_stringified_layout(
     stringified_layout: &str,
     config: Config,
 ) -> Result<(Layout, Config), ConfigError> {
-    let layout = crate::kdl::layout::from_kdl(stringified_layout, None, None, None)?;
-    let config = Config::from_kdl(stringified_layout, Some(config))?; // this merges the two config, with
+    from_stringified_layout_with(stringified_layout, config, ConfigRead::Ordinary)
+}
+
+pub(crate) fn from_stringified_layout_with(
+    stringified_layout: &str,
+    config: Config,
+    mode: ConfigRead,
+) -> Result<(Layout, Config), ConfigError> {
+    let layout = crate::kdl::layout::from_kdl_with(stringified_layout, None, None, None, mode)?;
+    let config = Config::from_kdl_with(stringified_layout, Some(config), mode)?;
     Ok((layout, config))
 }
 pub fn from_path_or_default_without_config(
@@ -547,7 +555,8 @@ fn metadata_from_path_with(path: &Path, mode: ConfigRead) -> LayoutMetadata {
     let primary = if mode == ConfigRead::Ordinary {
         stringified_from_path(path).map(|(path, raw, _)| (path, raw))
     } else {
-        // SwitchSession metadata only describes the primary layout.
+        // Checked metadata only describes the primary layout. Setup validates
+        // the swap separately if it selects this layout.
         reject_remote_layout(path)
             .and_then(|()| read_saved_layout(path, open_config_input(path)))
             .map(|(selected, raw)| (selected.display().to_string(), raw))
@@ -636,6 +645,15 @@ pub fn layout_info_from_cli(
     maybe_layout_path: &Option<PathBuf>,
     cwd: PathBuf,
 ) -> Option<LayoutInfo> {
+    layout_info_from_cli_with(layout_dir, maybe_layout_path, cwd, ConfigRead::Ordinary)
+}
+
+pub(crate) fn layout_info_from_cli_with(
+    layout_dir: &Option<PathBuf>,
+    maybe_layout_path: &Option<PathBuf>,
+    cwd: PathBuf,
+    mode: ConfigRead,
+) -> Option<LayoutInfo> {
     // If we're not given a layout path, fall back to "default". Since we cannot tell ahead of
     // time whether the user has a layout named "default.kdl" in their layout directory, we
     // cannot blindly assume that this is indeed the builtin default layout. The layout
@@ -650,7 +668,7 @@ pub fn layout_info_from_cli(
         Some(LayoutInfo::File(
             // layout_dir.join(layout_path).display().to_string(),
             file_path.display().to_string(),
-            crate::layout::metadata_from_path(&file_path),
+            metadata_from_path_with(&file_path, mode),
         ))
     } else {
         // Attempt to interpret the layout as bare layout name from the layout application
@@ -660,14 +678,14 @@ pub fn layout_info_from_cli(
             if file_path.exists() {
                 return Some(LayoutInfo::File(
                     file_path.display().to_string(),
-                    crate::layout::metadata_from_path(&file_path),
+                    metadata_from_path_with(&file_path, mode),
                 ));
             }
             let file_path_with_ext = file_path.with_extension("kdl");
             if file_path_with_ext.exists() {
                 return Some(LayoutInfo::File(
                     file_path_with_ext.display().to_string(),
-                    crate::layout::metadata_from_path(&file_path_with_ext),
+                    metadata_from_path_with(&file_path_with_ext, mode),
                 ));
             }
         }

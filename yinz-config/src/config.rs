@@ -1483,7 +1483,8 @@ async fn watch_config_file_changes_inner<F, Fut>(
 
     let mut on_ready = Some(on_ready);
     let mut last_main = None;
-    let mut last_dependency_error = None;
+    let mut dependency_retry_pending = false;
+    let mut last_retry_diagnostic = None;
     let mut recover_on_registration = false;
     loop {
         // Wait on the main path alone when it is missing. An unusable path still
@@ -1502,7 +1503,10 @@ async fn watch_config_file_changes_inner<F, Fut>(
                 Err(error) => {
                     // A theme directory cannot be discovered when a dependency is
                     // unusable. Retry through the same publication path.
-                    recover_on_registration |= matches!(error, ConfigError::IoPath(..));
+                    if matches!(error, ConfigError::IoPath(..)) {
+                        dependency_retry_pending = true;
+                        recover_on_registration = true;
+                    }
                     None
                 },
             }
@@ -1603,7 +1607,7 @@ async fn watch_config_file_changes_inner<F, Fut>(
                             }
                             // Register before loading so a racing write is read or observed.
                         }
-                        (changed && !overlay_watch_failed) || last_dependency_error.is_some()
+                        (changed && !overlay_watch_failed) || dependency_retry_pending
                     },
                     _ = tokio::time::sleep_until(settle_at.unwrap_or_else(Instant::now)),
                         if settle_at.is_some() => false,
@@ -1645,26 +1649,30 @@ async fn watch_config_file_changes_inner<F, Fut>(
                 &main.text,
             ) {
                 Ok(loaded) => loaded,
-                Err(error @ ConfigError::IoPath(..)) => {
-                    let diagnostic = error.diagnostic_message();
-                    if last_dependency_error.as_ref() != Some(&diagnostic) {
-                        log::error!(
-                            "Failed to reload config: {diagnostic}. Restore a readable regular file at the reported path."
-                        );
-                        last_dependency_error = Some(diagnostic);
+                Err(error) => {
+                    let diagnostic = if matches!(error, ConfigError::IoPath(..)) {
+                        dependency_retry_pending = true;
+                        format!(
+                            "Failed to reload config: {}. Restore a readable regular file at the reported path.",
+                            error.diagnostic_message()
+                        )
+                    } else {
+                        format!(
+                            "Failed to reload config from {}",
+                            error.diagnostic_message_for_file(&config_file_path)
+                        )
+                    };
+                    if last_retry_diagnostic.as_ref() != Some(&diagnostic) {
+                        log::error!("{diagnostic}");
+                        if dependency_retry_pending {
+                            last_retry_diagnostic = Some(diagnostic);
+                        }
                     }
                     continue;
                 },
-                Err(error) => {
-                    last_dependency_error = None;
-                    log::error!(
-                        "Failed to reload config from {}",
-                        error.diagnostic_message_for_file(&config_file_path)
-                    );
-                    continue;
-                },
             };
-            last_dependency_error = None;
+            dependency_retry_pending = false;
+            last_retry_diagnostic = None;
             on_config_change(config).await;
             if theme_dir != watched_theme_dir {
                 break false;
@@ -1789,6 +1797,50 @@ pub fn load_layout_and_config(
     layout_path: Option<&std::path::Path>,
     cwd: PathBuf,
 ) -> Result<(Option<yinz_types::data::LayoutInfo>, Config), ConfigError> {
+    load_layout_and_config_with(
+        cli_config_options,
+        config,
+        config_dir,
+        config_path,
+        layout_string,
+        layout_path,
+        cwd,
+        ConfigRead::Ordinary,
+    )
+}
+
+/// Load the selected layout and its nested inputs through checked runtime reads.
+pub fn load_checked_layout_and_config(
+    cli_config_options: Option<&Options>,
+    config: Config,
+    config_dir: Option<PathBuf>,
+    config_path: Option<&Path>,
+    layout_string: Option<&str>,
+    layout_path: Option<&Path>,
+    cwd: PathBuf,
+) -> Result<(Option<LayoutInfo>, Config), ConfigError> {
+    load_layout_and_config_with(
+        cli_config_options,
+        config,
+        config_dir,
+        config_path,
+        layout_string,
+        layout_path,
+        cwd,
+        ConfigRead::Checked,
+    )
+}
+
+fn load_layout_and_config_with(
+    cli_config_options: Option<&Options>,
+    config: Config,
+    config_dir: Option<PathBuf>,
+    config_path: Option<&Path>,
+    layout_string: Option<&str>,
+    layout_path: Option<&Path>,
+    cwd: PathBuf,
+    mode: ConfigRead,
+) -> Result<(Option<LayoutInfo>, Config), ConfigError> {
     let layout_dir = configured_layout_dir(cli_config_options, &config, config_dir.clone());
     // Choose the layout source here; the shared layout loader resolves files and builtins.
     let (layout_info, chosen_layout) = if let Some(ref layout_string) = layout_string {
@@ -1799,26 +1851,34 @@ pub fn load_layout_and_config(
             None,
         )
     } else if let Some(chosen_layout) = layout_path.map(std::path::Path::to_path_buf) {
-        let layout_info =
-            crate::layout::layout_info_from_cli(&layout_dir, &Some(chosen_layout.clone()), cwd);
+        let layout_info = crate::layout::layout_info_from_cli_with(
+            &layout_dir,
+            &Some(chosen_layout.clone()),
+            cwd,
+            mode,
+        );
         (layout_info, Some(chosen_layout))
     } else {
         let chosen_layout = cli_config_options
             .as_ref()
             .and_then(|cli_options| cli_options.default_layout.clone())
             .or_else(|| config.options.default_layout.clone());
-        let layout_info = crate::layout::layout_info_from_config(&layout_dir, &chosen_layout);
+        let layout_info =
+            crate::layout::layout_info_from_config_with(&layout_dir, &chosen_layout, mode)?;
         (layout_info, chosen_layout)
     };
     match layout_info {
         Some(yinz_types::data::LayoutInfo::Stringified(ref raw_layout)) => {
-            crate::layout::from_stringified_layout(raw_layout, config)
+            crate::layout::from_stringified_layout_with(raw_layout, config, mode)
                 .map(|(_layout, config)| (layout_info, config))
         },
-        _ => {
-            crate::layout::from_path_or_default(chosen_layout.as_ref(), layout_dir.clone(), config)
-                .map(|(_layout, config)| (layout_info, config))
-        },
+        _ => crate::layout::from_path_or_default_with(
+            chosen_layout.as_ref(),
+            layout_dir,
+            config,
+            mode,
+        )
+        .map(|(_layout, config)| (layout_info, config)),
     }
     .and_then(|(layout_info, config)| {
         config

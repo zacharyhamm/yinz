@@ -2765,6 +2765,70 @@ mod underline_metrics_reconfigure {
         fixture.assert_no_instructions();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn underline_metrics_reconfigure_ignores_unused_switch_swap() {
+        use std::{fs, process::Command};
+
+        let clients = [CLIENT, ClientId::new(2)];
+        for all in [false, true] {
+            for input in ["regular", "absent", "fifo"] {
+                let fixture = Fixture::new(&clients, None);
+                let layouts = fixture.dir.path().join("layouts");
+                fs::create_dir(&layouts).unwrap();
+                let layout = layouts.join("switch.kdl");
+                let swap = layout.with_extension("swap.kdl");
+                fs::write(&layout, r#"layout { tab name="Primary" { pane; }; }"#).unwrap();
+                match input {
+                    "regular" => fs::write(&swap, "swap_tiled_layout { tab { pane; }; }").unwrap(),
+                    "fifo" => assert!(Command::new("mkfifo")
+                        .arg(&swap)
+                        .status()
+                        .unwrap()
+                        .success()),
+                    _ => {},
+                }
+                let fragment = format!(
+                    "layout_dir {:?}\ntheme \"dayfox\"\nterminal {{ underline_thickness 3; }}\n\
+                     keybinds {{ normal {{ bind \"Ctrl y\" {{ SwitchSession {{ name \"other\"; layout \"switch\"; }}; }}; }}; }}",
+                    layouts.to_str().unwrap(),
+                );
+                let assert_config = |config: &Config| {
+                    assert_eq!(config.terminal.underline_thickness, Some(3));
+                    assert_eq!(config.options.theme.as_deref(), Some("dayfox"));
+                    let actions =
+                        &config.keybinds.0[&InputMode::Normal][&"Ctrl y".parse().unwrap()];
+                    let [Action::SwitchSession {
+                        name,
+                        layout: Some(LayoutInfo::File(path, metadata)),
+                        ..
+                    }] = actions.as_slice()
+                    else {
+                        panic!("expected an on-disk SwitchSession binding, got {actions:?}");
+                    };
+                    assert_eq!(name.as_str(), "other");
+                    assert_eq!(Path::new(path), layout);
+                    assert_eq!(metadata.tabs.len(), 1);
+                    assert_eq!(metadata.tabs[0].name.as_deref(), Some("Primary"));
+                };
+
+                assert_refused(&fixture, all, &fragment, &["underline_thickness"]);
+                assert!(!managed(&fixture).exists());
+                request(&fixture, CLIENT, all, &fragment, true).unwrap();
+                assert_config(&load(&fixture));
+                fixture.with(|session| {
+                    let config = &session.session_configuration;
+                    assert_config(config.application_theme_source());
+                    assert_config(&config.get_client_configuration(&CLIENT));
+                    if all {
+                        assert_config(&config.get_client_configuration(&clients[1]));
+                    }
+                });
+                request(&fixture, CLIENT, all, "mouse_mode false", false).unwrap();
+            }
+        }
+    }
+
     #[test]
     fn layout_values_cannot_authorize_unsaved_underline_metrics_at_either_entry_point() {
         let fixture = Fixture::new(&[CLIENT, ClientId::new(2)], None);

@@ -1489,6 +1489,68 @@ fn reconfigure_takes_a_fragment_and_refuses_one_that_does_not_parse() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn underline_metrics_reconfigure_file_ignores_unused_switch_swap() {
+    use std::{fs, process::Command};
+
+    let directory = tempfile::tempdir().unwrap();
+    let layout = directory.path().join("switch.kdl");
+    let swap = layout.with_extension("swap.kdl");
+    fs::write(&layout, r#"layout { tab name="Primary" { pane; }; }"#).unwrap();
+    let fragment_file = directory.path().join("fragment.kdl");
+    let fragment = concat!(
+        "terminal { underline_thickness 3; }\n",
+        "keybinds { normal { bind \"Ctrl y\" { ",
+        "SwitchSession { name \"other\"; layout \"switch\"; }; }; }; }"
+    );
+    let mut config = Config::default();
+    config.options.layout_dir = Some(directory.path().to_owned());
+    let preflight = || {
+        crate::actions::actions_from_cli(
+            CliAction::Reconfigure {
+                kdl: None,
+                file: Some(fragment_file.clone()),
+                write: true,
+            },
+            local_paths(),
+            Some(config.clone()),
+        )
+    };
+
+    fs::write(&swap, "swap_tiled_layout { tab { pane; }; }").unwrap();
+    for input in ["regular", "absent", "fifo"] {
+        match input {
+            "absent" => fs::remove_file(&swap).unwrap(),
+            "fifo" => assert!(Command::new("mkfifo")
+                .arg(&swap)
+                .status()
+                .unwrap()
+                .success()),
+            _ => {},
+        }
+        fs::write(&fragment_file, fragment).unwrap();
+        assert_eq!(
+            preflight().unwrap(),
+            vec![Action::Reconfigure {
+                config: fragment.to_owned(),
+                write_to_disk: true,
+            }],
+            "{input} swap"
+        );
+        fs::write(
+            &fragment_file,
+            fragment.replace("thickness 3", "thickness 3.0"),
+        )
+        .unwrap();
+        let error = preflight().unwrap_err();
+        assert!(
+            error.contains("underline_thickness") && error.contains("-64 and 64"),
+            "{error}"
+        );
+    }
+}
+
 /// `set-hook` is the one-block fragment spelled for you; an empty url unbinds, and a point
 /// nobody has heard of is refused with the ones that exist.
 #[test]

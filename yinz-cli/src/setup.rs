@@ -154,6 +154,16 @@ fn load_config_with(
     load(args.config.as_deref(), args.config_dir.as_deref(), clean)
 }
 
+fn theme_loader(
+    checked: bool,
+) -> impl Fn(&mut Config, Option<Options>, Option<PathBuf>) -> Result<Options, ConfigError> {
+    if checked {
+        yinz_config::config::apply_checked_themes
+    } else {
+        yinz_config::config::apply_themes
+    }
+}
+
 impl Setup {
     /// Load terminal configuration and CLI overrides without reading a session layout.
     pub fn config_without_layout(cli_args: &CliArgs) -> Result<(Config, Options), ConfigError> {
@@ -174,13 +184,8 @@ impl Setup {
         } else {
             Config::load
         };
-        let apply_themes = if checked {
-            yinz_config::config::apply_checked_themes
-        } else {
-            yinz_config::config::apply_themes
-        };
         let mut config = load_config_with(cli_args, load)?;
-        let options = apply_themes(
+        let options = theme_loader(checked)(
             &mut config,
             merge_attach_command_options(cli_args.options(), cli_args),
             cli_args.config_dir.clone(),
@@ -201,12 +206,37 @@ impl Setup {
     ) -> Result<(Config, Option<LayoutInfo>, Options, Config, Options), ConfigError> {
         // note that this can potentially exit the process
         Setup::handle_setup_commands(cli_args);
-        let config = startup_stage("cli.config", || load_config(cli_args))?;
+        Self::from_cli_args_with(cli_args, false)
+    }
+
+    /// Prepare a native connection with the same checked runtime reads as its window.
+    pub fn native_connection_config(
+        cli_args: &CliArgs,
+    ) -> Result<(Config, Option<LayoutInfo>, Options, Config, Options), ConfigError> {
+        Self::from_cli_args_with(cli_args, true)
+    }
+
+    fn from_cli_args_with(
+        cli_args: &CliArgs,
+        checked: bool,
+    ) -> Result<(Config, Option<LayoutInfo>, Options, Config, Options), ConfigError> {
+        let load = if checked {
+            Config::load_checked
+        } else {
+            Config::load
+        };
+        let load_layout_and_config = if checked {
+            yinz_config::config::load_checked_layout_and_config
+        } else {
+            yinz_config::config::load_layout_and_config
+        };
+        let apply_themes = theme_loader(checked);
+        let config = startup_stage("cli.config", || load_config_with(cli_args, load))?;
         let cli_config_options = merge_attach_command_options(cli_args.options(), cli_args);
 
         let mut config_without_layout = config.clone();
         let (layout_info, mut config) = startup_stage("cli.layout", || {
-            yinz_config::config::load_layout_and_config(
+            load_layout_and_config(
                 cli_config_options.as_ref(),
                 config,
                 cli_args.config_dir.clone(),
@@ -218,14 +248,14 @@ impl Setup {
         })?;
 
         let config_options = startup_stage("cli.themes", || {
-            yinz_config::config::apply_themes(
+            apply_themes(
                 &mut config,
                 cli_config_options.clone(),
                 cli_args.config_dir.clone(),
             )
         })?;
         let config_options_without_layout = startup_stage("cli.themes_without_layout", || {
-            yinz_config::config::apply_themes(
+            apply_themes(
                 &mut config_without_layout,
                 cli_config_options,
                 cli_args.config_dir.clone(),

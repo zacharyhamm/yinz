@@ -8,6 +8,7 @@ use yinz_cli::args::{CliArgs, TerminalArgs};
 use yinz_client::os_input_output::{
     connect_with_deadline, CONNECT_TO_SERVER_RETRY_INTERVAL, CONNECT_TO_SERVER_TIMEOUT,
 };
+use yinz_config::config::ConfigError;
 use yinz_ipc::ipc::{
     ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg,
 };
@@ -159,8 +160,15 @@ fn prepare_connection(
             || args.session_name.is_none(),
         "session {name:?} does not exist; use --create"
     );
-    let (config, layout, options, _, _) = yinz_cli::setup::Setup::from_cli_args(opts)
-        .map_err(|error| anyhow!("{error}"))
+    let (config, layout, options, _, _) = yinz_cli::setup::Setup::native_connection_config(opts)
+        .map_err(|error| {
+            let detail = error.diagnostic_message();
+            if matches!(error, ConfigError::IoPath(..)) {
+                anyhow!("{detail}. Restore a readable regular file at the reported path.")
+            } else {
+                anyhow!("{detail}")
+            }
+        })
         .context("load native client configuration")?;
     let cwd = args
         .working_directory
