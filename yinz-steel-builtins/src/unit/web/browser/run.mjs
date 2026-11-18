@@ -675,7 +675,8 @@ async function assertTrap(page, sheet, presses = 7) {
 async function scrollState(page) {
   return page.evaluate(() => {
     const el = document.getElementById('timeline');
-    return { atBottom: el.scrollHeight - el.scrollTop - el.clientHeight < 32, top: el.scrollTop, overflow: el.scrollHeight > el.clientHeight + 100 };
+    const bottomGap = el.scrollHeight - el.scrollTop - el.clientHeight;
+    return { atBottom: bottomGap < 32, bottomGap, top: el.scrollTop, overflow: el.scrollHeight > el.clientHeight + 100 };
   });
 }
 
@@ -1023,12 +1024,25 @@ async function headerCharacterization(open, width, scheme) {
   }
 }
 
+async function setDocumentHidden(page, hidden) {
+  return page.evaluate((h) => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => h });
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (h ? 'hidden' : 'visible') });
+    document.dispatchEvent(new Event('visibilitychange'));
+    return window.__yinzFetches.filter((f) => f.p.startsWith('/api/')).length;
+  }, hidden);
+}
+
 // Reuse the app's foreground refresh path, then wait for completed fixture data.
-async function fixturePoll(page, fx, pathname = '/api/history') {
+async function refreshFixture(page, fx, pathname) {
   await idle(page);
   const before = fx.count(pathname);
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await until(`completed ${pathname} fixture refresh`, async () => fx.count(pathname) > before && await page.evaluate(() => window.__yinzOpen === 0));
+}
+
+async function fixturePoll(page, fx, pathname = '/api/history') {
+  await refreshFixture(page, fx, pathname);
   await nextFrame(page);
 }
 
@@ -2009,6 +2023,197 @@ async function composerKeyboard(open) {
   check(fx.count('/api/agent/prompt') === 1, 'picking a prompt sent it');
 }
 
+async function timelineResponseSpinner(open) {
+  const { page, fx } = await open();
+  const spinner = '#timeline .timeline-spinner';
+  const promptPath = '/api/agent/prompt';
+  const historyPath = '/api/history';
+  const fillHeld = async (entry) => {
+    const [status, json] = fixtureReply(fx, entry);
+    await fx.held.shift().fulfill({ status, json });
+  };
+  const send = async () => {
+    await page.locator('#composer-input').fill('Run the focused tests');
+    await domClick(page, '#composer-send');
+  };
+
+  fx.live.state = 'idle';
+  await openDetail(page);
+  check(!(await exists(page, spinner)), 'idle agent shows a spinner');
+  const pinned = await scrollState(page);
+  check(pinned.overflow && pinned.bottomGap <= 1, `idle Timeline must start overflowing and pinned (gap ${pinned.bottomGap}px)`);
+  fx.live.state = 'busy';
+  await fixturePoll(page, fx);
+  check(await exists(page, spinner), 'external activity did not show a spinner at the bottom');
+  const busyGap = (await scrollState(page)).bottomGap;
+  check(busyGap <= 1, `spinner left a ${busyGap}px gap at the bottom of the pinned Timeline`);
+  fx.live.state = 'idle';
+  await fixturePoll(page, fx);
+  check(!(await exists(page, spinner)), 'spinner remained when external activity ended');
+
+  fx.fail.set(promptPath, { mode: 'hold', times: 1 });
+  await send();
+  await until('held prompt', () => fx.held.length === 1);
+  await textUntil(page, '#timeline [role="status"]', 'Waiting for agent…', 'pending prompt status');
+  check(await page.locator(spinner).isVisible(), 'missing spinner while sending');
+  check(await page.locator(spinner).evaluate((el) => getComputedStyle(el).animationName) === 'none', 'spinner animates with reduced motion');
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  check(await page.locator(spinner).evaluate((el) => getComputedStyle(el).animationName) === 'timeline-spin', 'spinner does not animate');
+
+  fx.fail.set(historyPath, { mode: 'hold', times: 1 });
+  await until('held pre-confirmation history request', () => fx.held.length === 2);
+  await fillHeld(fx.log.find((e) => e.path === promptPath));
+  await until('draft cleared after confirmation', async () => (await valueOf(page, '#composer-input')) === '');
+  check(await exists(page, spinner), 'confirmation hid the spinner before the agent state arrived');
+  fx.fail.set(historyPath, { mode: 'hold', times: 1 });
+  await fillHeld(fx.log.findLast((e) => e.path === historyPath));
+  await until('held post-confirmation history request', () => fx.held.length === 1);
+  check(await exists(page, spinner), 'pre-confirmation history hid the spinner');
+
+  fx.live.state = 'busy';
+  await fillHeld(fx.log.findLast((e) => e.path === historyPath));
+  await textUntil(page, '.detail-summary .state-badge', 'Working', 'working agent state');
+  check(await exists(page, spinner), 'working agent lost its spinner');
+  fx.latest += 1;
+  fx.live.state = 'idle';
+  await fixturePoll(page, fx);
+  check(await exists(page, `#timeline [data-key="e${fx.latest}"]`), 'the reply was not rendered');
+  check(!(await exists(page, spinner)), 'spinner remained after the reply and idle state');
+
+  await page.locator('#timeline').evaluate((el) => { el.scrollTop = 0; });
+  await nextFrame(page);
+  const anchor = await timelineAnchor(page);
+  fx.live.state = 'busy';
+  await fixturePoll(page, fx);
+  check(await exists(page, spinner), 'externally started activity did not show a spinner');
+  await sameAnchor(page, anchor, 'spinner appeared');
+  check(!(await exists(page, '#timeline-new')), 'spinner was counted as a new message');
+  fx.live.state = 'waiting';
+  await fixturePoll(page, fx);
+  check(!(await exists(page, spinner)), 'agent that needs input still shows a spinner');
+  await sameAnchor(page, anchor, 'spinner disappeared');
+
+  fx.prompt = 'rejected';
+  fx.fail.set(promptPath, { mode: 'hold', times: 1 });
+  await send();
+  await until('held rejected prompt', () => fx.held.length === 1);
+  check(await exists(page, spinner), 'spinner did not show while the rejected prompt was in flight');
+  await fillHeld(fx.log.findLast((e) => e.path === promptPath));
+  await until('prompt rejection', () => exists(page, '#submission-failed'));
+  check(!(await exists(page, spinner)), 'rejected prompt still shows a spinner');
+
+  fx.live.state = 'busy';
+  await fixturePoll(page, fx);
+  check(await exists(page, spinner), 'working agent did not show a spinner before opening history');
+  await domClick(page, '#tab-details');
+  check(!(await exists(page, '.timeline-spinner')), 'spinner leaked into Details');
+  await domClick(page, '#details-previous');
+  await textUntil(page, '#timeline', 'Stored run-6', 'stored run content');
+  check(!(await exists(page, spinner)), 'stored run shows a spinner');
+}
+
+async function peerTimelineHandoff(open, recorded) {
+  const { context, page, fx } = await open({ clock: true });
+  const spinner = '#timeline .timeline-spinner';
+  const promptPath = '/api/agent/prompt';
+  const statusPath = recorded ? '/api/history' : '/api/agents';
+  const badge = '.detail-summary .state-badge';
+  const setActivity = (state, hookAt) => {
+    fx.live = { state, last_hook_at_ms: hookAt, current_session: false, session: 'peer' };
+    if (!recorded) fx.rows = [row(fx, AGENT_ID, state, { ...fx.live, run: '' })];
+  };
+  const poll = () => refreshFixture(page, fx, statusPath);
+  const send = async () => {
+    const before = fx.count(promptPath);
+    await page.locator('#composer-input').fill('Run the focused tests');
+    await domClick(page, '#composer-send');
+    await until('peer draft cleared after confirmation', async () => fx.count(promptPath) > before && (await valueOf(page, '#composer-input')) === '');
+    return page.evaluate(() => Date.now());
+  };
+  const confirm = async () => {
+    await idle(page);
+    const before = fx.count(statusPath);
+    const confirmedAt = await send();
+    await context.clock.runFor(150);
+    await until('confirmation started a status refresh', () => fx.count(statusPath) > before);
+    await idle(page);
+    check(await exists(page, spinner), 'post-confirmation cached idle response hid the peer spinner');
+    return confirmedAt;
+  };
+  const advanceTo = async (time) => context.clock.runFor(time - await page.evaluate(() => Date.now()));
+
+  setActivity('idle', 10);
+  await openApp(page, recorded ? detailHash() : `#/a/${encodeURIComponent(AGENT_ID)}?tab=timeline`);
+  await textUntil(page, badge, 'Idle', 'idle peer state');
+  await pauseClock(context, page);
+  check(!(await exists(page, spinner)), 'idle peer shows a spinner before submitting');
+
+  await confirm();
+  setActivity('busy', 10);
+  await poll();
+  await textUntil(page, badge, 'Working', 'fresh busy peer state');
+  check(await exists(page, spinner), 'fresh busy state failed to take over the peer spinner');
+  setActivity('idle', 10);
+  await poll();
+  await textUntil(page, badge, 'Idle', 'peer finished working');
+  check(!(await exists(page, spinner)), 'the peer handoff lingered after a busy state took over');
+
+  await confirm();
+  setActivity('idle', 9);
+  await poll();
+  check(await exists(page, spinner), 'an older idle hook report cleared the handoff');
+
+  fx.fail.set(statusPath, { mode: 'hold', times: 1 });
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await until('held peer status request', () => fx.held.length === 1);
+  await send();
+  await context.clock.runFor(150);
+  setActivity('idle', 11);
+  const [status, json] = fixtureReply(fx, fx.log.findLast((e) => e.path === statusPath));
+  await fx.held.shift().fulfill({ status, json });
+  await idle(page);
+  check(await exists(page, spinner), 'a status read started before the second confirmation cleared its handoff');
+  await poll();
+  check(!(await exists(page, spinner)), 'newer idle hook report did not clear the peer handoff');
+
+  const first = await confirm();
+  const second = await confirm();
+  await advanceTo(first + 10000);
+  await idle(page);
+  check(await exists(page, spinner), 'the first confirmation timer cleared the second handoff');
+  await advanceTo(second + 9999);
+  await idle(page);
+  check(await exists(page, spinner), 'unchanged peer status cleared the handoff before 10 seconds');
+  await context.clock.runFor(1);
+  await until('peer handoff expired at 10 seconds', async () => !(await exists(page, spinner)));
+}
+
+async function hiddenTimelineConfirmation(open) {
+  const { context, page, fx } = await open({ clock: true });
+  const promptPath = '/api/agent/prompt';
+  const statusPath = '/api/history';
+  fx.live = { state: 'idle', current_session: false, session: 'peer' };
+  await openDetail(page);
+  await pauseClock(context, page);
+  await idle(page);
+
+  fx.fail.set(promptPath, { mode: 'hold', times: 1 });
+  await page.locator('#composer-input').fill('Run the focused tests');
+  await domClick(page, '#composer-send');
+  await until('held prompt before hiding', () => fx.held.length === 1);
+  await setDocumentHidden(page, true);
+  const before = await fetchCount(page, statusPath);
+  const [status, json] = fixtureReply(fx, fx.log.findLast((e) => e.path === promptPath));
+  await fx.held.shift().fulfill({ status, json });
+  await until('draft cleared while hidden', async () => (await valueOf(page, '#composer-input')) === '');
+  await context.clock.runFor(3500);
+  check(await fetchCount(page, statusPath) === before, 'hidden confirmation started a status GET');
+
+  await setDocumentHidden(page, false);
+  await until('foreground started a status GET', async () => (await fetchCount(page, statusPath)) === before + 1);
+  await idle(page);
+}
+
 async function readerPrepend(open) {
   const { page, fx } = await open();
   await openDetail(page);
@@ -2103,12 +2308,7 @@ async function newMessages(open) {
 async function hiddenForeground(open) {
   const { context, page } = await open({ clock: true });
   await openList(page);
-  const hide = (hidden) => page.evaluate((h) => {
-    Object.defineProperty(document, 'hidden', { configurable: true, get: () => h });
-    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (h ? 'hidden' : 'visible') });
-    document.dispatchEvent(new Event('visibilitychange'));
-    return window.__yinzFetches.filter((f) => f.p.startsWith('/api/')).length;
-  }, hidden);
+  const hide = (hidden) => setDocumentHidden(page, hidden);
   await pauseClock(context, page);
   await idle(page);
   const c0 = await fetchCount(page, '/api/agents');
@@ -2418,6 +2618,10 @@ async function main() {
   await scenario('safe-area CSS and manifest', safeAreaManifest);
   await scenario('sheet focus trap, Escape and focus restore; keys and interrupt', sheetsKeyboard);
   await scenario('keyboard composer and past prompts', composerKeyboard);
+  await scenario('Timeline response spinner', timelineResponseSpinner);
+  await scenario('Timeline response spinner for a peer with recorded history', (open) => peerTimelineHandoff(open, true));
+  await scenario('Timeline response spinner for a peer without a recorded run', (open) => peerTimelineHandoff(open, false));
+  await scenario('Timeline response spinner confirmation while hidden', hiddenTimelineConfirmation);
   await scenario('readers and prepend keeps the reading anchor', readerPrepend);
   await scenario('new-message anchoring (pinned vs reading)', newMessages);
   await scenario('hidden document pauses polling; foreground refreshes immediately', hiddenForeground);

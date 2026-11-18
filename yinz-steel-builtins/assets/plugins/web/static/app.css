@@ -299,6 +299,16 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 .detail-page .event { max-width: 96%; padding: 6px 10px; flex: none; }
 .detail-page .screen-scroll { overflow-anchor: none; }
 .timeline-earlier { display: flex; justify-content: center; padding: 4px 0; }
+.timeline-response {
+  display: flex; align-items: center; align-self: flex-start; flex: none; gap: 8px;
+  color: var(--muted); font-size: 13px;
+}
+.timeline-response:empty { position: absolute; }
+.timeline-spinner {
+  width: 1em; height: 1em; border: 2px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; animation: timeline-spin 0.8s linear infinite;
+}
+@keyframes timeline-spin { to { transform: rotate(1turn); } }
 .event {
   max-width: 92%; padding: 8px 12px; border-radius: var(--radius);
   background: var(--surface); border: 1px solid var(--border); overflow-wrap: anywhere;

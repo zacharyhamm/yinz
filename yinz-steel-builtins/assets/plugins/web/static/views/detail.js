@@ -14,6 +14,7 @@ import { Composer, StaleSubmissions } from './composer.js';
 import { KeysSheet } from './keys.js';
 
 const KIND_LABELS = { prompt: 'You', message: 'Agent', result: 'Result', plan: 'Plan', question: 'Question', step: 'Step', summary: 'Summary', tool_call: 'Tool call', tool_result: 'Tool result', tools: 'Tools' };
+const PEER_HANDOFF_MS = 10000;
 
 function kindLabel(kind) {
   return KIND_LABELS[kind] || (typeof kind === 'string' ? kind : 'Event');
@@ -75,7 +76,7 @@ function TimelineItem({ item, onTools, onEvent }) {
  * the first visible item is kept in place (prepends, group splits, reader close)
  * and a "New messages" control appears.
  */
-function Timeline({ items, memory, earlier, loadingEarlier, onEarlier, onTools, onEvent, loaded, layoutKey, beforeResize }) {
+function Timeline({ items, memory, earlier, loadingEarlier, onEarlier, onTools, onEvent, loaded, waitingForAgent, layoutKey, beforeResize }) {
   const ref = useRef(null);
   const [fresh, setFresh] = useState(false);
   const lastKey = useRef(memory.lastKey);
@@ -108,7 +109,7 @@ function Timeline({ items, memory, earlier, loadingEarlier, onEarlier, onTools, 
     lastKey.current = last;
     memory.lastKey = last;
   }, [items]);
-  const measure = useScrollLayout(ref, capture, restore, items, layoutKey, beforeResize);
+  const measure = useScrollLayout(ref, capture, restore, items, `${layoutKey}|${waitingForAgent}`, beforeResize);
   const toBottom = () => {
     const el = ref.current;
     if (!el) return;
@@ -123,6 +124,9 @@ function Timeline({ items, memory, earlier, loadingEarlier, onEarlier, onTools, 
       ${loaded && !items.length ? html`<p class="empty">No messages in this run yet.</p>` : null}
       ${!loaded ? html`<p class="empty">Loading timeline…</p>` : null}
       ${items.map((item) => html`<${TimelineItem} key=${item.key} item=${item} onTools=${onTools} onEvent=${onEvent} />`)}
+      <div class="timeline-response" role="status" aria-live="polite">${waitingForAgent ? html`
+        <span class="timeline-spinner" aria-hidden="true"></span>Waiting for agent…
+      ` : null}</div>
     </div>
     ${fresh ? html`<button type="button" class="new-messages" id="timeline-new" onClick=${toBottom}>↓ New messages</button>` : null}
   </div>`;
@@ -307,6 +311,10 @@ function chooseTab(route, live) {
   return live && live.state === 'waiting' ? 'screen' : 'timeline';
 }
 
+function listedAgent(data, id) {
+  return Array.isArray(data?.agents) ? data.agents.find((row) => row?.id === id) || null : null;
+}
+
 export function DetailView({ env, route }) {
   const identity = route.bind ? `a:${route.id}:${route.run ? 'run' : 'none'}` : `r:${route.run}`;
   const store = useMemo(() => (route.run ? new TimelineStore({ run: route.run, agent: route.bind ? route.id : null }) : null), [identity]);
@@ -329,7 +337,32 @@ export function DetailView({ env, route }) {
   const earlierController = useRef(null);
   const memory = useRef({ atBottom: true, anchor: null, lastKey: null }).current;
   const lastRef = useRef(null);
+  const liveRow = useRef(null);
+  const [sending, setSending] = useState(null);
+  const [awaitingStatus, setAwaitingStatus] = useState(null);
   const now = useNow(1000);
+
+  const clearAwaitingStatus = useCallback((confirmation) => {
+    setAwaitingStatus((current) => current === confirmation ? null : current);
+  }, []);
+
+  function observePeerActivity(row) {
+    const snapshot = awaitingStatus?.peerActivity;
+    if (!snapshot || !sameTarget(row?.ref, awaitingStatus.scope.target)) return;
+    const hookAt = row.last_hook_at_ms;
+    const stateChanged = typeof row.state === 'string' && row.state !== snapshot.state;
+    const newerHook = Number.isFinite(hookAt) && hookAt > (snapshot.lastHookAtMs ?? -Infinity);
+    if (stateChanged || newerHook) {
+      clearAwaitingStatus(awaitingStatus);
+    }
+  }
+
+  function finishStatusPoll(signal, result, row) {
+    // Each request captures the confirmation it can acknowledge when it starts.
+    if (!awaitingStatus || signal.aborted) return;
+    if (!awaitingStatus.peerActivity || !result.ok) clearAwaitingStatus(awaitingStatus);
+    else observePeerActivity(row);
+  }
 
   const [tail, refreshTail] = usePoller({
     key: identity,
@@ -338,35 +371,80 @@ export function DetailView({ env, route }) {
     env,
     run: async ({ signal }) => {
       const ticket = store.ticket(store.loaded ? 'received' : 'latest');
-      const r = await env.api.read(store.refreshRequest(), env.tz, { signal });
-      if (r.ok && !env.api.stale(r)) {
+      let r = await env.api.read(store.refreshRequest(), env.tz, { signal });
+      let row;
+      if (!signal.aborted && r.ok && !env.api.stale(r)) {
         const previous = store.meta.live && store.meta.live.ref;
         const applied = store.apply(ticket, r.data);
-        if (!applied.applied && applied.reason === 'malformed') return { ok: false, kind: 'malformed' };
-        if (applied.retargeted) onRetarget(previous);
-        bump();
+        if (applied.applied) {
+          row = store.meta.live;
+          if (applied.retargeted) onRetarget(previous);
+          bump();
+        } else if (applied.reason === 'malformed') {
+          r = { ok: false, kind: 'malformed' };
+        }
       }
+      finishStatusPoll(signal, r, row);
       return r;
     },
   });
 
   // Agent without a recorded run yet: find its live row in the list.
-  const [list] = usePoller({
+  const [list, refreshList] = usePoller({
     key: `list-for:${route.id}`,
     enabled: !route.run && route.bind,
     intervalMs: env.config.poll.list_ms,
     env,
-    run: ({ signal }) => env.api.get('/api/agents', { signal }),
+    run: async ({ signal }) => {
+      const r = await env.api.get('/api/agents', { signal });
+      const row = r.ok && !env.api.stale(r) ? listedAgent(r.data, route.id) : null;
+      finishStatusPoll(signal, r, row);
+      return r;
+    },
   });
-  const listRow = !route.run && list && list.data && Array.isArray(list.data.agents) ? list.data.agents.find((a) => a && a.id === route.id) || null : null;
+  const listRow = route.run ? null : listedAgent(list?.data, route.id);
   useEffect(() => {
     if (listRow && listRow.run) env.replaceHash(detailHash({ id: route.id, run: listRow.run, tab: tab || undefined }));
   }, [listRow && listRow.run]);
 
   const meta = store ? store.meta : { live: listRow, agent_gone: false };
   const live = route.bind ? meta.live : null;
+  liveRow.current = live;
   const actions = route.bind && !!live && !meta.agent_gone;
   const currentRef = live && live.ref && validTarget(live.ref) ? targetOf(live.ref) : null;
+  const refreshLive = store ? refreshTail : refreshList;
+  const scope = useMemo(() => actions && currentRef ? { target: currentRef } : null,
+    [actions, store?.run, currentRef?.id, currentRef?.kind, currentRef?.session_id]);
+
+  useLayoutEffect(() => {
+    setAwaitingStatus(null);
+    setSending(scope && env.submissions.view(scope.target).state === 'sending' ? scope : null);
+    if (!scope) return undefined;
+    return env.submissions.subscribe((target, classification) => {
+      if (!sameTarget(target, scope.target)) return;
+      setSending(env.submissions.view(target).state === 'sending' ? scope : null);
+      if (classification?.state === 'submitted') {
+        const row = liveRow.current;
+        if (!sameTarget(row?.ref, target)) return;
+        const peerActivity = row.current_session === false ? {
+          state: row.state,
+          lastHookAtMs: row.last_hook_at_ms,
+          expiresAt: Date.now() + PEER_HANDOFF_MS,
+        } : null;
+        setAwaitingStatus({ scope, peerActivity });
+      }
+    });
+  }, [env.submissions, scope]);
+
+  useLayoutEffect(() => {
+    if (!awaitingStatus?.peerActivity || awaitingStatus.scope !== scope) return undefined;
+    const timer = setTimeout(() => clearAwaitingStatus(awaitingStatus), awaitingStatus.peerActivity.expiresAt - Date.now());
+    return () => clearTimeout(timer);
+  }, [awaitingStatus, scope, clearAwaitingStatus]);
+
+  useEffect(() => {
+    if (awaitingStatus?.scope === scope && !env.visibility.isHidden()) refreshLive();
+  }, [awaitingStatus, scope, refreshLive, env.visibility]);
 
   function onRetarget(previousRef) {
     setRetargetNotice(true);
@@ -438,6 +516,7 @@ export function DetailView({ env, route }) {
     if (r.ok && !env.api.stale(r)) {
       const previous = store.meta.live && store.meta.live.ref;
       const applied = store.apply(ticket, r.data);
+      if (applied.applied) observePeerActivity(store.meta.live);
       if (applied.retargeted) onRetarget(previous);
       memory.atBottom = true;
       setTabState('timeline');
@@ -464,7 +543,10 @@ export function DetailView({ env, route }) {
   // A new array only after a store change: the one-second age re-render must not rerun
   // the timeline's anchoring effect.
   const items = useMemo(() => (store ? store.items() : []), [store, version]);
-  const stale = tail && (tail.status === 'offline' || tail.status === 'retrying' || tail.status === 'error');
+  const liveStatus = store ? tail : list;
+  const stale = liveStatus && ['offline', 'retrying', 'error'].includes(liveStatus.status);
+  const waitingForAgent = actions && ((scope !== null && sending === scope)
+    || (!stale && (live.state === 'busy' || awaitingStatus?.scope === scope)));
   const title = live && live.title ? String(live.title) : store && store.meta.header && store.meta.header.name ? String(store.meta.header.name) : route.id;
   useEffect(() => {
     document.title = `${title} · ${env.config.title}`;
@@ -515,12 +597,12 @@ export function DetailView({ env, route }) {
         actions=${html`<button type="button" class="link-button" onClick=${() => setRetargetNotice(false)}>Dismiss</button>`}>
         The agent moved to a new run; the timeline was reset.<//>` : null}
       ${stale ? html`<${Banner} id="banner-offline" tone="warn"
-        actions=${html`<button type="button" class="link-button" onClick=${() => refreshTail()}>Retry</button>`}>${freshnessText(tail, now)}<//>` : null}
+        actions=${html`<button type="button" class="link-button" onClick=${() => refreshLive()}>Retry</button>`}>${freshnessText(liveStatus, now)}<//>` : null}
       ${!route.run && route.bind && !listRow ? html`<${Banner} id="banner-no-run" tone="info">${list && list.data ? 'This agent is not running.' : 'Looking for this agent…'}<//>` : null}
     </div>
     <main class=${cx('detail-body', stale && 'is-stale')} id="main">
       <div id=${`panel-${activeTab}`} role="tabpanel" aria-labelledby=${`tab-${activeTab}`} class="panel">
-        ${activeTab === 'timeline' ? html`<${Timeline} items=${items} memory=${memory} loaded=${!store || store.loaded} layoutKey=${informationOpen} beforeResize=${beforeResize}
+        ${activeTab === 'timeline' ? html`<${Timeline} items=${items} memory=${memory} loaded=${!store || store.loaded} waitingForAgent=${waitingForAgent} layoutKey=${informationOpen} beforeResize=${beforeResize}
           earlier=${store && !!store.earlierRequest()} loadingEarlier=${loadingEarlier} onEarlier=${loadEarlier}
           onTools=${(item) => setSheet({ type: 'tools', item })} onEvent=${(item) => setSheet({ type: 'event', item })} />` : null}
         ${activeTab === 'screen' ? html`<${ScreenPanel} env=${env} live=${live} enabled=${actions} layoutKey=${informationOpen} beforeResize=${beforeResize}
@@ -537,7 +619,7 @@ export function DetailView({ env, route }) {
     </main>
     ${route.bind && live ? html`<footer class="composer-dock">
       <${StaleSubmissions} env=${env} agentId=${route.id} current=${currentRef} canPrompt=${actions && !!live.can_prompt} />
-      <${Composer} env=${env} live=${live} enabled=${actions} onTargetChanged=${() => refreshTail()} />
+      <${Composer} env=${env} live=${live} enabled=${actions} onTargetChanged=${refreshLive} />
     </footer>` : null}
     ${route.bind && !live ? html`<${StaleSubmissions} env=${env} agentId=${route.id} current=${null} canPrompt=${false} dock=${true} />` : null}
     ${sheet && sheet.type === 'overflow' && live && currentRef ? html`<${OverflowSheet} env=${env} live=${live} onClose=${() => setSheet(null)}

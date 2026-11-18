@@ -139,8 +139,8 @@ export function createSubmissions({ storage, api, uuid = () => globalThis.crypto
   const memory = new Map();
   const listeners = new Set();
   const persistErrors = new Map();
-  const emit = (target) => {
-    for (const l of listeners) l(target);
+  const emit = (target, classification) => {
+    for (const l of listeners) l(target, classification);
   };
 
   function write(rec) {
@@ -173,10 +173,10 @@ export function createSubmissions({ storage, api, uuid = () => globalThis.crypto
     return rec;
   }
 
-  function update(target, fn) {
+  function update(target, fn, classification) {
     const next = fn({ ...load(target) });
     write(next);
-    emit(target);
+    emit(target, classification);
     return next;
   }
 
@@ -207,7 +207,7 @@ export function createSubmissions({ storage, api, uuid = () => globalThis.crypto
       rec.pending = { ...rec.pending, state: 'unknown', message: c.message };
       if (c.state === 'incompatible') rec.incompatible = { reason: c.message, replacement: rec.incompatible?.replacement ?? null };
       return rec;
-    });
+    }, current.incompatible ? undefined : c);
     return { record, result, classification: c };
   }
 
