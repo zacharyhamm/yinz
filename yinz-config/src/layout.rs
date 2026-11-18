@@ -412,7 +412,7 @@ pub fn from_str(
     crate::kdl::layout::from_kdl(raw, Some(path_to_raw_layout), swap_layouts, cwd)
 }
 pub fn stringified_from_dir(
-    layout: &PathBuf,
+    layout: &Path,
     layout_dir: Option<&PathBuf>,
 ) -> Result<StringifiedLayout, ConfigError> {
     stringified_from_dir_with(layout, layout_dir, ConfigRead::Ordinary)
@@ -651,7 +651,7 @@ fn swap_layout_and_path(path: &Path) -> Option<(String, String)> {
     }
 }
 
-pub fn metadata_from_path(path: &PathBuf) -> LayoutMetadata {
+pub fn metadata_from_path(path: &Path) -> LayoutMetadata {
     metadata_from_path_with(path, ConfigRead::Ordinary)
 }
 

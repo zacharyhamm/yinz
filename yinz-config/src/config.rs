@@ -970,7 +970,7 @@ impl Config {
             Err(e) => Err(e),
         }
     }
-    pub fn from_path(path: &PathBuf, default_config: Option<Config>) -> ConfigResult {
+    pub fn from_path(path: &Path, default_config: Option<Config>) -> ConfigResult {
         let mode = ConfigRead::Ordinary;
         Self::from_path_with(path, default_config, mode, mode.reader())
     }

@@ -1191,8 +1191,10 @@ fn native_switch_retains_source_until_client_exits() {
             ..Default::default()
         },
     );
-    let mut capture = crate::capturing_os::CapturingOs::default();
-    capture.fail_client = Some(client);
+    let capture = crate::capturing_os::CapturingOs {
+        fail_client: Some(client),
+        ..Default::default()
+    };
     let mut os: Box<dyn ServerOsApi> = Box::new(capture.clone());
     handoff_session_switch(client, target, &mut os, &state, &session).unwrap();
     assert!(!state.read().unwrap().is_interactive(&client));
