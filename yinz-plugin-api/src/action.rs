@@ -426,6 +426,12 @@ impl TryFrom<ProtobufAction> for Action {
                     None => Ok(Action::ActivateLastNotification),
                 }
             },
+            Some(ProtobufActionName::ReturnFromNotification) => {
+                match protobuf_action.optional_payload {
+                    Some(_) => Err("ReturnFromNotification should not have a payload"),
+                    None => Ok(Action::ReturnFromNotification),
+                }
+            },
             Some(ProtobufActionName::ToggleNotificationDetail) => {
                 match protobuf_action.optional_payload {
                     Some(_) => Err("ToggleNotificationDetail should not have a payload"),
@@ -1693,6 +1699,10 @@ impl TryFrom<Action> for ProtobufAction {
             }),
             Action::ActivateLastNotification => Ok(ProtobufAction {
                 name: ProtobufActionName::ActivateLastNotification as i32,
+                optional_payload: None,
+            }),
+            Action::ReturnFromNotification => Ok(ProtobufAction {
+                name: ProtobufActionName::ReturnFromNotification as i32,
                 optional_payload: None,
             }),
             Action::ToggleNotificationDetail => Ok(ProtobufAction {

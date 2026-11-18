@@ -21,6 +21,17 @@ pub(super) fn legacy_keybinds() -> yinz_types::data::KeybindsVec {
 
 pub(super) fn legacy_preset(source: &str) -> String {
     // Replay the recorded keymap, including the former manager shortcuts.
+    // The recorded keymaps predate the return binding.
+    let return_binding = source
+        .lines()
+        .find(|line| line.trim_end().ends_with("{ ReturnFromNotification; }"))
+        .map(|line| {
+            format!(
+                "    shared_except \"locked\" \"select\" \"notifications\" {{\n{line}\n    }}\n"
+            )
+        });
+    let source =
+        return_binding.map_or_else(|| source.to_owned(), |binding| source.replace(&binding, ""));
     let mut source = source
         .split_inclusive('\n')
         .filter(|line| !line.contains("TabGroup"))

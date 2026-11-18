@@ -237,6 +237,9 @@ keybinds {
     shared {
         bind "Ctrl Alt p" { ToggleCommandPalette; }
     }
+    shared_except "locked" "select" "notifications" {
+        bind "Alt u" { ReturnFromNotification; }
+    }
     shared_except "locked" "select" {
         bind "Alt a" { ActivateLastNotification; }
         bind "Ctrl g" { SwitchToMode "Locked"; }

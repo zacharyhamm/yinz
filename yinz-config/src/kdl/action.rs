@@ -555,6 +555,7 @@ fn spell(value: &Action) -> Result<KdlNode, NotWritable> {
         )),
         Action::ActivateNotification => Ok(KdlNode::new("ActivateNotification")),
         Action::ActivateLastNotification => Ok(KdlNode::new("ActivateLastNotification")),
+        Action::ReturnFromNotification => Ok(KdlNode::new("ReturnFromNotification")),
         Action::ToggleNotificationDetail => Ok(KdlNode::new("ToggleNotificationDetail")),
         Action::ScrollToBottom => Ok(KdlNode::new("ScrollToBottom")),
         Action::ScrollToTop => Ok(KdlNode::new("ScrollToTop")),
@@ -1191,6 +1192,7 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
         | "SwapTextSelectionEnds"
         | "ActivateNotification"
         | "ActivateLastNotification"
+        | "ReturnFromNotification"
         | "ToggleNotificationDetail"
         | "ScrollDown"
         | "ScrollToBottom"

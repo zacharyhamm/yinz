@@ -608,6 +608,14 @@ pub fn route_action(
                 ))
                 .with_context(err_context)?;
         },
+        Action::ReturnFromNotification => {
+            senders
+                .send_to_screen(ScreenInstruction::ReturnFromNotification(
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
         Action::ToggleNotificationDetail => {
             senders
                 .send_to_screen(ScreenInstruction::ToggleNotificationDetail(

@@ -426,6 +426,28 @@ fn every_preset_parses_with_palette_agent_selection_and_notifications() {
                         "{mode:?}"
                     );
                 }
+                let return_actions = config
+                    .keybinds
+                    .get_actions_for_key_in_mode(&mode, &key(&format!("{secondary} u")));
+                if secondary.is_empty()
+                    || matches!(
+                        mode,
+                        InputMode::Locked | InputMode::Select | InputMode::Notifications
+                    )
+                {
+                    assert!(
+                        !return_actions.is_some_and(|actions| {
+                            actions.contains(&Action::ReturnFromNotification)
+                        }),
+                        "{mode:?}"
+                    );
+                } else {
+                    assert_eq!(
+                        return_actions,
+                        Some(&vec![Action::ReturnFromNotification]),
+                        "{mode:?}"
+                    );
+                }
             }
             assert_eq!(
                 config.keybinds.0[&InputMode::Tab][&key("g")][0],

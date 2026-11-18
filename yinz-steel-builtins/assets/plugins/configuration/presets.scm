@@ -79,6 +79,9 @@
     shared_except \"locked\" \"select\" {
         bind \"" secondary-modifier " a\" { ActivateLastNotification; }
     }
+    shared_except \"locked\" \"select\" \"notifications\" {
+        bind \"" secondary-modifier " u\" { ReturnFromNotification; }
+    }
 "))
     "
     notifications {

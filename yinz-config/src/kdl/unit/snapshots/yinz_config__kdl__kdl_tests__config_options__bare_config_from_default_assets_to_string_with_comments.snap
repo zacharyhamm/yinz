@@ -165,6 +165,9 @@ keybinds clear-defaults=true {
     shared {
         bind "Ctrl Alt p" { ToggleCommandPalette; }
     }
+    shared_except "locked" "select" "notifications" {
+        bind "Alt u" { ReturnFromNotification; }
+    }
     shared_except "locked" "select" {
         bind "Alt left" { MoveFocusOrTab "left"; }
         bind "Alt down" { MoveFocus "down"; }

@@ -868,6 +868,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         },
         ActionKind::ActivateNotification => Action::ActivateNotification,
         ActionKind::ActivateLastNotification => Action::ActivateLastNotification,
+        ActionKind::ReturnFromNotification => Action::ReturnFromNotification,
         ActionKind::ToggleNotificationDetail => Action::ToggleNotificationDetail,
         ActionKind::PageScrollUp => Action::PageScrollUp,
         ActionKind::PageScrollDown => Action::PageScrollDown,

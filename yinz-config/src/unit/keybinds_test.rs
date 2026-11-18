@@ -29,6 +29,75 @@ fn latest_notification_binding_excludes_locked_and_select_and_roundtrips() {
 }
 
 #[test]
+fn notification_return_defaults_and_custom_binding_roundtrip() {
+    let shipped = Config::from_default_assets().unwrap();
+    let example = Config::from_kdl(include_str!("../../../example/default.kdl"), None).unwrap();
+    let default_key = "Alt u".parse().unwrap();
+    let custom_key = "Alt Shift u".parse().unwrap();
+    let action = vec![Action::ReturnFromNotification];
+    for config in [&shipped, &example] {
+        for mode in InputMode::iter() {
+            let expected = match mode {
+                InputMode::Locked | InputMode::Select | InputMode::Notifications => None,
+                _ => Some(&action),
+            };
+            assert_eq!(
+                config
+                    .keybinds
+                    .get_actions_for_key_in_mode(&mode, &default_key),
+                expected,
+                "{mode:?}"
+            );
+        }
+        for (key, expected) in [
+            (
+                "Ctrl o",
+                Action::SwitchToMode {
+                    input_mode: InputMode::Session,
+                },
+            ),
+            (
+                "Alt o",
+                Action::MoveTab {
+                    direction: Direction::Right,
+                },
+            ),
+        ] {
+            assert_eq!(
+                config
+                    .keybinds
+                    .get_actions_for_key_in_mode(&InputMode::Normal, &key.parse().unwrap()),
+                Some(&vec![expected])
+            );
+        }
+    }
+
+    let remapped = Config::from_kdl(
+        r#"keybinds {
+            unbind "Alt u";
+            normal { bind "Alt Shift u" { ReturnFromNotification; }; }
+        }"#,
+        Some(shipped),
+    )
+    .unwrap();
+    let saved = Config::from_kdl(&remapped.to_string(false).unwrap(), None).unwrap();
+    for config in [remapped, saved] {
+        assert_eq!(
+            config
+                .keybinds
+                .get_actions_for_key_in_mode(&InputMode::Normal, &default_key),
+            None
+        );
+        assert_eq!(
+            config
+                .keybinds
+                .get_actions_for_key_in_mode(&InputMode::Normal, &custom_key),
+            Some(&action)
+        );
+    }
+}
+
+#[test]
 fn default_command_palette_binding_is_shared_by_every_mode() {
     let config = Config::from_default_assets().unwrap();
     for mode in InputMode::iter() {

@@ -365,6 +365,7 @@ pub(crate) mod props {
             | Action::MoveNotificationSelection { .. }
             | Action::ActivateNotification
             | Action::ActivateLastNotification
+            | Action::ReturnFromNotification
             | Action::ToggleNotificationDetail
             | Action::PageScrollUp
             | Action::PageScrollDown

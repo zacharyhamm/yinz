@@ -87,6 +87,7 @@ macro_rules! parse_kdl_action_arguments {
                 "SwapTextSelectionEnds" => Ok(Action::SwapTextSelectionEnds),
                 "ActivateNotification" => Ok(Action::ActivateNotification),
                 "ActivateLastNotification" => Ok(Action::ActivateLastNotification),
+                "ReturnFromNotification" => Ok(Action::ReturnFromNotification),
                 "ToggleNotificationDetail" => Ok(Action::ToggleNotificationDetail),
                 "ScrollDown" => Ok(Action::ScrollDown),
                 "ScrollToBottom" => Ok(Action::ScrollToBottom),

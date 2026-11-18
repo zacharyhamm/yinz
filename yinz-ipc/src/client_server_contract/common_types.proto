@@ -351,6 +351,7 @@ message Action {
     CloseCurrentTabGroupAction close_current_tab_group = 186;
     bool list_tab_groups = 187;
     bool current_tab_group_info = 188;
+    ReturnFromNotificationAction return_from_notification = 190;
   }
 }
 
@@ -389,6 +390,7 @@ message MoveNotificationSelectionAction {
 }
 message ActivateNotificationAction {}
 message ActivateLastNotificationAction {}
+message ReturnFromNotificationAction {}
 message ToggleNotificationDetailAction {}
 message PageScrollUpAction {}
 message PageScrollDownAction {}

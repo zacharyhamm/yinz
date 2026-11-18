@@ -587,6 +587,7 @@ enum ActionName {
     CloseTabGroup = 135;
     MovePaneToNextTabGroup = 136;
     MovePaneToPreviousTabGroup = 137;
+    ReturnFromNotification = 139;
     reserved 127;
     reserved "ToggleMother";
     reserved 110;

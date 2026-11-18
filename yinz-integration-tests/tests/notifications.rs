@@ -2,9 +2,10 @@
 
 use yinz_cli::args::CliAction;
 use yinz_integration_tests::{
-    claim_first_terminal_and_wait_for_prompt, col, keys, start_yinz, TestRunner, TestSession,
-    TERMINAL_SIZE,
+    claim_first_terminal_and_wait_for_prompt, col, keys, start_yinz, FakePtyHandle, GridSnapshot,
+    LayoutInfo, TestRunner, TestSession, TERMINAL_SIZE,
 };
+use yinz_types::internal_ids::TerminalId;
 
 const TOAST_TOP_LEFT_CORNER: &str = "╭";
 const TOAST_BOTTOM_LEFT_CORNER: &str = "╰";
@@ -15,6 +16,149 @@ fn notify(yinz: &TestSession, text: &str) {
         text: text.to_owned(),
     });
     assert_eq!(exit_code, 0, "notify exited cleanly");
+}
+
+fn label_terminal(yinz: &TestSession, id: u32, label: &str) -> FakePtyHandle {
+    let pty = yinz.expect_pty_spawn_for(TerminalId::new(id));
+    pty.output(format!("\x1b[6;1H{label}").as_bytes());
+    pty
+}
+
+fn cursor_follows_label(snapshot: &GridSnapshot, label: &str) -> bool {
+    snapshot.text.lines().enumerate().any(|(y, line)| {
+        line.find(label).is_some_and(|x| {
+            snapshot.cursor_is_at(col(line[..x].chars().count() + label.len()).row(y))
+        })
+    })
+}
+
+fn notify_target(yinz: &TestSession, target: &FakePtyHandle) {
+    assert_eq!(
+        yinz.run_cli_action(CliAction::Notify {
+            pane_id: Some(target.terminal_id().get()),
+            text: "Targeted notification".into(),
+        }),
+        0
+    );
+}
+
+fn return_and_check_input(yinz: &TestSession, key: char, origin: &FakePtyHandle, label: &str) {
+    let start = origin.stdin_bytes().len();
+    let marker = "notification-return-input";
+    yinz.send_stdin(&keys::alt(key));
+    yinz.send_stdin(marker.as_bytes());
+    origin.wait_for_stdin("the immediate input goes to the saved pane", |bytes| {
+        bytes
+            .get(start..)
+            .is_some_and(|fresh| fresh.ends_with(marker.as_bytes()))
+    });
+    let echoed = format!("{label}{marker}");
+    yinz.wait_until("the saved pane renders the input and cursor", |snapshot| {
+        cursor_follows_label(snapshot, &echoed)
+    });
+}
+
+#[test]
+fn notification_return_same_tab() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(
+            r#"
+            notification_timeout 30
+            keybinds {
+                unbind "Alt u";
+                normal { bind "Alt z" { ReturnFromNotification; }; }
+            }
+        "#,
+        )
+        .with_layout(LayoutInfo::Stringified(
+            r#"
+            layout {
+                pane split_direction="vertical" {
+                    pane name="Origin" focus=true
+                    pane name="Destination"
+                }
+            }
+        "#
+            .into(),
+        ))
+        .start();
+    let origin = label_terminal(&yinz, 0, "Origin prompt");
+    let destination = label_terminal(&yinz, 1, "Destination prompt");
+    yinz.wait_until("both panes are ready with the origin focused", |snapshot| {
+        snapshot.contains("Destination prompt") && cursor_follows_label(snapshot, "Origin prompt")
+    });
+    notify_target(&yinz, &destination);
+    yinz.wait_until("delivery leaves the origin focused", |snapshot| {
+        snapshot.contains("Targeted notification")
+            && snapshot.contains("Alt+a to activate")
+            && cursor_follows_label(snapshot, "Origin prompt")
+    });
+    yinz.send_stdin(&keys::alt('a'));
+    yinz.wait_until("activation focuses the destination", |snapshot| {
+        cursor_follows_label(snapshot, "Destination prompt")
+    });
+    return_and_check_input(&yinz, 'z', &origin, "Origin prompt");
+    yinz.quit();
+}
+
+#[test]
+fn notification_return_cross_tab() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("notification_timeout 30")
+        .with_layout(LayoutInfo::Stringified(
+            r#"
+            layout {
+                tab name="Origin tab" focus=true split_direction="vertical" {
+                    pane name="Before delivery" focus=true
+                    pane name="Saved origin"
+                }
+                tab name="Destination tab" {
+                    pane name="Destination"
+                }
+            }
+        "#
+            .into(),
+        ))
+        .start();
+    label_terminal(&yinz, 0, "First prompt");
+    let origin = label_terminal(&yinz, 1, "Saved prompt");
+    let destination = label_terminal(&yinz, 2, "Destination prompt");
+    yinz.wait_until("the first pane is focused", |snapshot| {
+        snapshot.contains("Saved prompt") && cursor_follows_label(snapshot, "First prompt")
+    });
+    notify_target(&yinz, &destination);
+    yinz.wait_until("delivery leaves the first pane focused", |snapshot| {
+        snapshot.contains("Targeted notification")
+            && snapshot.contains("Alt+a to activate")
+            && cursor_follows_label(snapshot, "First prompt")
+    });
+    yinz.send_stdin(&keys::alt('l'));
+    yinz.wait_until("another pane takes focus before activation", |snapshot| {
+        cursor_follows_label(snapshot, "Saved prompt")
+    });
+    yinz.send_stdin(&keys::alt('a'));
+    yinz.wait_until("activation focuses the other tab", |snapshot| {
+        cursor_follows_label(snapshot, "Destination prompt")
+    });
+
+    yinz.send_stdin(&keys::ctrl('t'));
+    yinz.send_stdin(b"1");
+    yinz.wait_until(
+        "normal tab navigation revisits the origin tab",
+        |snapshot| cursor_follows_label(snapshot, "Saved prompt"),
+    );
+    yinz.send_stdin(&keys::alt('h'));
+    yinz.wait_until("the origin tab now remembers the first pane", |snapshot| {
+        cursor_follows_label(snapshot, "First prompt")
+    });
+    yinz.send_stdin(&keys::ctrl('t'));
+    yinz.send_stdin(b"2");
+    yinz.wait_until(
+        "normal tab navigation revisits the destination",
+        |snapshot| cursor_follows_label(snapshot, "Destination prompt"),
+    );
+    return_and_check_input(&yinz, 'u', &origin, "Saved prompt");
+    yinz.quit();
 }
 
 /// Wait for `expected` toasts, then report the row each one's top border sits on, top-to-bottom.

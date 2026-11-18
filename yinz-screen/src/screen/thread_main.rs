@@ -1268,6 +1268,9 @@ pub fn screen_thread_main(
                     screen.activate_last_notification(client_id, Instant::now());
                     screen.render()?;
                 },
+                ScreenInstruction::ReturnFromNotification(client_id, _completion_tx) => {
+                    screen.return_from_notification(client_id)?;
+                },
                 ScreenInstruction::ActivateNotification(client_id, _completion_tx) => {
                     screen.activate_selected_notification(client_id, Instant::now());
                     screen.render()?;
@@ -4092,7 +4095,7 @@ pub fn screen_thread_main(
                         }
                         if response.focus_pane {
                             screen
-                                .focus_pane_with_id(pane_id, false, false, client_id)
+                                .focus_notification_pane(pane_id, false, client_id)
                                 .non_fatal();
                         }
                         screen.render()?;

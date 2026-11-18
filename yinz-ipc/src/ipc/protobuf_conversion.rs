@@ -1938,6 +1938,7 @@ impl TryFrom<yinz_types::input::actions::Action>
             RenameTerminalPaneAction,
             ResizeAction,
             ResizeByPaneIdAction,
+            ReturnFromNotificationAction,
             RunAction,
             SaveSessionAction,
             ScrollDownAction,
@@ -2214,6 +2215,9 @@ impl TryFrom<yinz_types::input::actions::Action>
             },
             yinz_types::input::actions::Action::ActivateLastNotification => {
                 ActionType::ActivateLastNotification(ActivateLastNotificationAction {})
+            },
+            yinz_types::input::actions::Action::ReturnFromNotification => {
+                ActionType::ReturnFromNotification(ReturnFromNotificationAction {})
             },
             yinz_types::input::actions::Action::ToggleNotificationDetail => {
                 ActionType::ToggleNotificationDetail(ToggleNotificationDetailAction {})
@@ -3365,6 +3369,9 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             },
             ActionType::ActivateLastNotification(_) => {
                 Ok(yinz_types::input::actions::Action::ActivateLastNotification)
+            },
+            ActionType::ReturnFromNotification(_) => {
+                Ok(yinz_types::input::actions::Action::ReturnFromNotification)
             },
             ActionType::ToggleNotificationDetail(_) => {
                 Ok(yinz_types::input::actions::Action::ToggleNotificationDetail)

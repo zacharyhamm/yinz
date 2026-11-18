@@ -247,6 +247,8 @@ pub enum Action {
     /// source pane or invoke its plugin callback, even after toast expiry; dismiss a live
     /// informational toast. Repeated activations work backwards through eligible history.
     ActivateLastNotification,
+    /// Focus the pane that was active before the latest focus-changing notification activation.
+    ReturnFromNotification,
     /// Show or hide the full, unelided text of the notification selected in the browser.
     ToggleNotificationDetail,
     /// Scroll up one page in focus pane.

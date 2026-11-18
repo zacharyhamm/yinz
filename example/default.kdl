@@ -214,6 +214,9 @@ keybinds {
         bind "Space" { NextSwapLayout; }
         bind "x" { CloseFocus; SwitchToMode "Normal"; }
     }
+    shared_except "locked" "select" "notifications" {
+        bind "Alt u" { ReturnFromNotification; }
+    }
     shared_except "locked" "select" {
         bind "Alt a" { ActivateLastNotification; }
     }

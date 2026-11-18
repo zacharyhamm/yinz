@@ -725,6 +725,10 @@ fn pending_overflow_and_oversized_replacements_deliver_originals() {
 #[test]
 fn completion_waiters_and_synthesized_desktop_clicks_preserve_the_plugin_callback() {
     let (mut screen, _, plugins, instance) = policy_screen();
+    let client = ClientId::new(1);
+    let target = PaneId::Terminal(TerminalId::new(1));
+    let origin = PaneId::Terminal(TerminalId::new(2));
+    new_tab(&mut screen, 2, TabId::new(1));
     let (tx, mut rx) = tokio::sync::oneshot::channel();
     let click = crate::screen::NotificationClick {
         plugin_id: PluginId::new(7),
@@ -735,7 +739,7 @@ fn completion_waiters_and_synthesized_desktop_clicks_preserve_the_plugin_callbac
     screen
         .receive_toast(
             "body".into(),
-            None,
+            Some(target),
             Some(click),
             Some(PluginId::new(7)),
             Some(crate::route::NotificationEnd::new(tx)),
@@ -760,7 +764,13 @@ fn completion_waiters_and_synthesized_desktop_clicks_preserve_the_plugin_callbac
         "resolution releases the action waiter"
     );
     events(&plugins);
-    assert!(screen.activate_policy_desktop(b"i=yinz-notification-0;", ClientId::new(1)));
+    screen
+        .focus_pane_with_id(origin, false, false, client)
+        .unwrap();
+    assert!(screen.activate_policy_desktop(b"i=yinz-notification-0;", client));
+    assert_eq!(screen.active_pane_id(client), Some(target));
+    screen.return_from_notification(client).unwrap();
+    assert_eq!(screen.active_pane_id(client), Some(origin));
     assert!(plugins.try_iter().any(|(instruction, _)| matches!(instruction, PluginInstruction::NotificationClicked { plugin_id, message, payload, .. } if plugin_id == PluginId::new(7) && message == "clicked" && payload == "context")));
     screen.activate_last_notification(ClientId::new(1), Instant::now());
     assert!(!plugins.try_iter().any(|(instruction, _)| matches!(

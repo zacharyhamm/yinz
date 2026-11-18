@@ -239,6 +239,7 @@ pub enum ScreenInstruction {
     MoveNotificationSelection(Direction, ClientId, Option<NotificationEnd>),
     ActivateNotification(ClientId, Option<NotificationEnd>),
     ActivateLastNotification(ClientId, Option<NotificationEnd>),
+    ReturnFromNotification(ClientId, Option<NotificationEnd>),
     ToggleNotificationDetail(ClientId, Option<NotificationEnd>),
     /// The feedback flash `CopyLastCommandOutput` painted has run its course.
     ClearCommandOutputFlash(PaneId),

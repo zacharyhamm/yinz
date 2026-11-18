@@ -3,6 +3,7 @@ use crate::output::Output;
 use crate::ui::notification::{notification_chunks, MAX_NOTIFICATION_TEXT_ROWS};
 use std::time::{Duration, Instant};
 use yinz_types::animation::Tween;
+use yinz_types::data::{GetFocusedPaneInfoResponse, OverlayPlacement};
 use yinz_types::input::options::NotificationPosition;
 use yinz_types::keys::{BareKey, KeyWithModifier};
 use yinz_types::pane_size::Viewport;
@@ -71,6 +72,378 @@ fn receiving_a_targeted_notification_keeps_focus_until_activation() {
     assert_eq!(screen.get_active_pane_id(&client), Some(current));
     screen.activate_last_notification(client, now);
     assert_eq!(screen.get_active_pane_id(&client), Some(control));
+    screen.return_from_notification(client).unwrap();
+    assert_eq!(screen.get_active_pane_id(&client), Some(current));
+}
+
+fn activate_target(screen: &mut Screen, client: ClientId, target: PaneId, now: Instant) {
+    screen
+        .receive_toast("targeted".into(), Some(target), None, None, None)
+        .unwrap();
+    screen.activate_last_notification(client, now);
+}
+
+#[test]
+fn notification_return_uses_actual_focus_when_the_target_cannot_take_it() {
+    let (mut screen, client, _, now) = setup();
+    let first = PaneId::Terminal(TerminalId::new(1));
+    let second = PaneId::Terminal(TerminalId::new(2));
+    let modal = PaneId::Terminal(TerminalId::new(3));
+    let refused = PaneId::Terminal(TerminalId::new(4));
+    let second_tab = TabId::new(1);
+    new_tab(&mut screen, 2, second_tab);
+    screen
+        .focus_pane_with_id(first, false, false, client)
+        .unwrap();
+
+    activate_target(&mut screen, client, second, now);
+    assert_eq!(screen.active_pane_id(client), Some(second));
+    screen
+        .tabs
+        .get_mut(&second_tab)
+        .unwrap()
+        .new_pane(
+            modal,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Overlay(OverlayPlacement::modal(None)),
+            Some(client),
+            None,
+        )
+        .unwrap();
+    assert_eq!(screen.active_pane_id(client), Some(modal));
+    activate_target(&mut screen, client, second, now);
+    assert_eq!(screen.active_pane_id(client), Some(modal));
+    screen.return_from_notification(client).unwrap();
+    assert_eq!(screen.active_pane_id(client), Some(first));
+
+    screen.close_pane_explicitly(modal, None);
+    add_pane_to_tab(&mut screen, second_tab, refused, false);
+    assert!(screen.set_pane_selectable(refused, false));
+    screen
+        .focus_pane_with_id(second, false, false, client)
+        .unwrap();
+    screen
+        .focus_pane_with_id(first, false, false, client)
+        .unwrap();
+    // First establish a different saved origin so that recording the switch is observable.
+    activate_target(&mut screen, client, second, now);
+    activate_target(&mut screen, client, first, now);
+    assert_eq!(screen.notification_return_panes.get(&client), Some(&second));
+    activate_target(&mut screen, client, refused, now);
+    assert_eq!(screen.active_pane_id(client), Some(second));
+    screen.return_from_notification(client).unwrap();
+    assert_eq!(screen.active_pane_id(client), Some(first));
+}
+
+#[test]
+fn notification_return_slots_are_isolated_and_cleared_when_leaving_interactive_use() {
+    let (mut screen, client, _, now) = setup();
+    let other = ClientId::new(2);
+    let first = PaneId::Terminal(TerminalId::new(1));
+    let second = PaneId::Terminal(TerminalId::new(2));
+    let third = PaneId::Terminal(TerminalId::new(3));
+    new_tab(&mut screen, 2, TabId::new(1));
+    new_tab(&mut screen, 3, TabId::new(2));
+    screen.add_client(other).unwrap();
+    screen
+        .focus_pane_with_id(first, false, false, client)
+        .unwrap();
+    screen
+        .focus_pane_with_id(second, false, false, other)
+        .unwrap();
+    activate_target(&mut screen, client, third, now);
+    activate_target(&mut screen, other, third, now);
+    assert_eq!(screen.notification_return_panes.get(&client), Some(&first));
+    assert_eq!(screen.notification_return_panes.get(&other), Some(&second));
+
+    activate_target(&mut screen, other, third, now);
+    screen
+        .receive_toast("informational".into(), None, None, None, None)
+        .unwrap();
+    screen.activate_last_notification(other, now);
+    activate_target(
+        &mut screen,
+        other,
+        PaneId::Terminal(TerminalId::new(99)),
+        now,
+    );
+    screen
+        .receive_toast(
+            "callback only".into(),
+            None,
+            Some(crate::screen::NotificationClick {
+                plugin_id: crate::PluginId::new(7),
+                client_id: other,
+                message: "clicked".into(),
+                payload: String::new(),
+            }),
+            None,
+            None,
+        )
+        .unwrap();
+    screen.activate_last_notification(other, now);
+    assert_eq!(screen.notification_return_panes.get(&other), Some(&second));
+
+    screen.add_watcher_client(client).unwrap();
+    assert!(!screen.notification_return_panes.contains_key(&client));
+    activate_target(&mut screen, client, first, now);
+    assert!(!screen.notification_return_panes.contains_key(&client));
+    screen.remove_watcher_client(client);
+    screen.return_from_notification(other).unwrap();
+    assert_eq!(screen.active_pane_id(other), Some(second));
+    screen.remove_client(other).unwrap();
+    assert!(screen.notification_return_panes.is_empty());
+}
+
+#[test]
+fn notification_return_follows_an_origin_moved_to_another_group_and_can_repeat() {
+    let (mut screen, client, _, now) = setup();
+    let origin = PaneId::Terminal(TerminalId::new(4));
+    let target = PaneId::Terminal(TerminalId::new(2));
+    let new_home = TabId::new(2);
+    add_pane_to_tab(&mut screen, TabId::new(0), origin, false);
+    new_tab(&mut screen, 2, TabId::new(1));
+    new_tab(&mut screen, 3, new_home);
+    screen.restore_tab_group(
+        new_home,
+        &TiledPaneLayout {
+            tab_group: Some(yinz_types::tab_bar::TabGroupInfo {
+                id: 1,
+                name: "New home".into(),
+            }),
+            ..Default::default()
+        },
+    );
+    screen
+        .focus_pane_with_id(origin, false, false, client)
+        .unwrap();
+    activate_target(&mut screen, client, target, now);
+    let outcome = screen
+        .break_multiple_panes_to_tab_with_id(vec![origin], new_home, false, client)
+        .unwrap();
+    assert_eq!(outcome.moved, vec![origin]);
+    for _ in 0..2 {
+        screen
+            .focus_pane_with_id(target, false, false, client)
+            .unwrap();
+        screen.return_from_notification(client).unwrap();
+        assert_eq!(screen.active_pane_id(client), Some(origin));
+        assert_eq!(screen.get_active_tab(client).unwrap().id, new_home);
+        assert_eq!(screen.group_for_client(Some(client)), 1);
+    }
+}
+
+#[test]
+fn notification_return_leaves_unavailable_panes_in_place() {
+    let (mut screen, client, _, now) = setup();
+    let origin = PaneId::Terminal(TerminalId::new(3));
+    let target = PaneId::Terminal(TerminalId::new(2));
+    let origin_tab = TabId::new(0);
+    add_pane_to_tab(&mut screen, origin_tab, origin, false);
+    new_tab(&mut screen, 2, TabId::new(1));
+    screen
+        .focus_pane_with_id(origin, false, false, client)
+        .unwrap();
+    screen.return_from_notification(client).unwrap();
+    assert_eq!(screen.active_pane_id(client), Some(origin));
+    activate_target(&mut screen, client, target, now);
+    screen
+        .tabs
+        .get_mut(&origin_tab)
+        .unwrap()
+        .suppress_pane(origin, Some(client));
+    screen.return_from_notification(client).unwrap();
+    assert_eq!(screen.active_pane_id(client), Some(target));
+    assert!(screen.tabs[&origin_tab].has_pane_with_pid(&origin));
+    assert!(screen.tabs[&origin_tab].rendered_pane(origin).is_none());
+
+    screen
+        .tabs
+        .get_mut(&origin_tab)
+        .unwrap()
+        .unsuppress_pane(origin, false);
+    assert!(screen.set_pane_selectable(origin, false));
+    screen.return_from_notification(client).unwrap();
+    assert_eq!(screen.active_pane_id(client), Some(target));
+    assert!(screen.set_pane_selectable(origin, true));
+    screen.return_from_notification(client).unwrap();
+    assert_eq!(screen.active_pane_id(client), Some(origin));
+
+    screen
+        .focus_pane_with_id(target, false, false, client)
+        .unwrap();
+    screen.close_pane_explicitly(origin, None);
+    screen.return_from_notification(client).unwrap();
+    assert_eq!(screen.active_pane_id(client), Some(target));
+    assert!(!screen.notification_return_panes.contains_key(&client));
+}
+
+fn assert_mock_focus(mock: &MockScreen, tab_id: TabId, pane_id: PaneId) {
+    let (response_channel, response) = channels::bounded(1);
+    mock.to_screen
+        .send(ScreenInstruction::GetFocusedPaneInfo {
+            client_id: mock.main_client_id,
+            response_channel,
+        })
+        .unwrap();
+    assert_eq!(
+        response.recv_timeout(Duration::from_secs(10)).unwrap(),
+        GetFocusedPaneInfoResponse::Ok { tab_id, pane_id }
+    );
+}
+
+#[test]
+fn forwarded_desktop_clicks_save_focus_with_and_without_a_report() {
+    for (response, expected_report) in [
+        (
+            b"i=p0r.click;".as_slice(),
+            Some(b"\x1b]99;i=click;\x1b\\".as_slice()),
+        ),
+        (b"i=p0.click;".as_slice(), None),
+    ] {
+        assert_forwarded_desktop_return(response, expected_report);
+    }
+}
+
+fn assert_forwarded_desktop_return(response: &[u8], expected_report: Option<&[u8]>) {
+    let mut mock = MockScreen::new(Size { cols: 80, rows: 24 });
+    let screen_thread = mock.run(None, vec![]);
+    let client = mock.main_client_id;
+    let tab = TabId::new(0);
+    let destination = TerminalId::new(0);
+    let target = PaneId::Terminal(destination);
+    let origin = PaneId::Terminal(TerminalId::new(1));
+    let pty_writer = mock.pty_writer_receiver.take().unwrap();
+    mock.to_screen
+        .send(ScreenInstruction::NewPane(
+            origin,
+            None,
+            None,
+            None,
+            NewPanePlacement::default(),
+            false,
+            ClientTabIndexOrPaneId::ClientId(client),
+            None,
+            false,
+        ))
+        .unwrap();
+    assert_mock_focus(&mock, tab, origin);
+    mock.to_screen
+        .send(ScreenInstruction::ReturnFromNotification(client, None))
+        .unwrap();
+    assert_mock_focus(&mock, tab, origin);
+
+    let respond = |response: &[u8]| {
+        mock.to_screen
+            .send(ScreenInstruction::DesktopNotificationResponse(
+                response.to_vec(),
+                client,
+            ))
+            .unwrap();
+    };
+    let reports = || {
+        pty_writer
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                PtyWriteInstruction::Write(bytes, id, _) if bytes.starts_with(b"\x1b]99;") => {
+                    Some((bytes, id))
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    respond(response);
+    assert_mock_focus(&mock, tab, target);
+    assert_eq!(
+        reports(),
+        expected_report
+            .map(|bytes| (bytes.to_vec(), destination))
+            .into_iter()
+            .collect::<Vec<_>>()
+    );
+    // The query is written to the other pane without moving focus or replacing the origin.
+    respond(b"i=p1.query:p=?;reply");
+    assert_mock_focus(&mock, tab, target);
+    assert_eq!(
+        reports(),
+        vec![(
+            b"\x1b]99;i=query:p=?;reply\x1b\\".to_vec(),
+            TerminalId::new(1)
+        )]
+    );
+    mock.to_screen
+        .send(ScreenInstruction::ReturnFromNotification(client, None))
+        .unwrap();
+    assert_mock_focus(&mock, tab, origin);
+    mock.teardown(vec![screen_thread]);
+}
+
+#[test]
+fn notification_return_waits_for_a_fresh_press_after_a_pending_layout() {
+    let mut mock = MockScreen::new(Size { cols: 80, rows: 24 });
+    let screen_thread = mock.run(None, vec![]);
+    let client = mock.main_client_id;
+    let active_tab = TabId::new(0);
+    let pending_tab = TabId::new(1);
+    let target = PaneId::Terminal(TerminalId::new(0));
+    let origin = PaneId::Terminal(TerminalId::new(1));
+    let send = |instruction| mock.to_screen.send(instruction).unwrap();
+    send(ScreenInstruction::NewPane(
+        origin,
+        None,
+        None,
+        None,
+        NewPanePlacement::default(),
+        false,
+        ClientTabIndexOrPaneId::ClientId(client),
+        None,
+        false,
+    ));
+    assert_mock_focus(&mock, active_tab, origin);
+    send(ScreenInstruction::Notify(
+        "targeted".into(),
+        Some(target),
+        None,
+        None,
+    ));
+    send(ScreenInstruction::ActivateLastNotification(client, None));
+    assert_mock_focus(&mock, active_tab, target);
+
+    send(ScreenInstruction::NewTab(
+        None,
+        None,
+        Some(TiledPaneLayout::default()),
+        vec![],
+        None,
+        (Some(vec![]), Some(vec![])),
+        None,
+        false,
+        false,
+        client,
+        None,
+    ));
+    send(ScreenInstruction::ReturnFromNotification(client, None));
+    assert_mock_focus(&mock, active_tab, target);
+    send(ScreenInstruction::ApplyLayout(
+        TiledPaneLayout::default(),
+        vec![],
+        vec![(TerminalId::new(2), None)],
+        vec![],
+        vec![],
+        HashMap::new(),
+        pending_tab,
+        false,
+        client,
+        None,
+        None,
+    ));
+    assert_mock_focus(&mock, active_tab, target);
+    send(ScreenInstruction::ReturnFromNotification(client, None));
+    assert_mock_focus(&mock, active_tab, origin);
+    mock.teardown(vec![screen_thread]);
 }
 
 #[test]
@@ -357,6 +730,11 @@ fn clicking_or_browsing_an_older_notification_consumes_only_that_entry() {
     for mouse in [false, true] {
         let (mut screen, client, viewport, now) = setup();
         new_tab(&mut screen, 2, TabId::new(1));
+        let origin = PaneId::Terminal(TerminalId::new(2));
+        let target = PaneId::Terminal(TerminalId::new(1));
+        screen
+            .focus_pane_with_id(origin, false, false, client)
+            .unwrap();
         screen
             .receive_toast(
                 "newer".into(),
@@ -387,6 +765,9 @@ fn clicking_or_browsing_an_older_notification_consumes_only_that_entry() {
             screen.pending_notification().unwrap().info.id,
             NotificationId::new(1)
         );
+        assert_eq!(screen.active_pane_id(client), Some(target));
+        screen.return_from_notification(client).unwrap();
+        assert_eq!(screen.active_pane_id(client), Some(origin));
         screen.activate_last_notification(client, now);
         assert!(screen.pending_notification().is_none());
         screen.open_notification_browser(client);

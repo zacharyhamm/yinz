@@ -554,7 +554,7 @@ impl Screen {
             pane_id.filter(|pane_id| self.tab_containing_pane(*pane_id).is_some())
         {
             if self.get_active_pane_id(&client_id) != Some(pane_id) {
-                self.focus_pane_with_id(pane_id, true, false, client_id)
+                self.focus_notification_pane(pane_id, true, client_id)
                     .non_fatal();
             }
             self.clear_bell_for_pane_id(pane_id, client_id);
@@ -583,6 +583,47 @@ impl Screen {
         }
         self.notify_plugins_of_input(client_id);
         self.render().non_fatal();
+    }
+
+    pub(super) fn focus_notification_pane(
+        &mut self,
+        pane_id: PaneId,
+        should_float_if_hidden: bool,
+        client_id: ClientId,
+    ) -> Result<()> {
+        let previous = self.active_pane_id(client_id);
+        let result = self.focus_pane_with_id(pane_id, should_float_if_hidden, false, client_id);
+        if !self.watcher_clients.contains_key(&client_id)
+            && let (Some(previous), Some(current)) = (previous, self.active_pane_id(client_id))
+            && previous != current
+        {
+            self.notification_return_panes.insert(client_id, previous);
+        }
+        result
+    }
+
+    pub(super) fn return_from_notification(&mut self, client_id: ClientId) -> Result<()> {
+        let Some(&pane_id) = self.notification_return_panes.get(&client_id) else {
+            return Ok(());
+        };
+        if self.get_active_tab(client_id).is_err()
+            || self.watcher_clients.contains_key(&client_id)
+            || self.has_pending_tabs()
+        {
+            return Ok(());
+        }
+        let Some(tab) = self.tab_containing_pane(pane_id) else {
+            self.notification_return_panes.remove(&client_id);
+            return Ok(());
+        };
+        // Named focus can extract a suppressed pane even with both placement flags false.
+        if tab
+            .rendered_pane(pane_id)
+            .is_some_and(|pane| pane.selectable())
+        {
+            self.focus_existing_pane_now(pane_id, false, false, client_id)?;
+        }
+        Ok(())
     }
 
     /// Drop any toast that has finished sliding out, gliding the survivors into the gap it leaves.

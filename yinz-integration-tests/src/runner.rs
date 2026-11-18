@@ -10,6 +10,7 @@ use yinz_client::os_input_output::SignalEvent;
 use yinz_client::ClientInfo;
 use yinz_types::input::actions::Action;
 use yinz_types::input::options::Options;
+use yinz_types::internal_ids::TerminalId;
 use yinz_types::pane_size::Size;
 use {yinz_cli::args::CliAction, yinz_cli::args::CliArgs};
 use {yinz_types::data::LayoutInfo, yinz_types::data::SessionConnection};
@@ -797,7 +798,7 @@ impl TestSession {
     /// --hook-json` reads the event off stdin, which an in-process client has no way to fake.
     pub fn run_actions_reporting(&self, actions: Vec<Action>) -> (i32, String) {
         let what = format!("{actions:?}");
-        let (handle, client_screen) = self.spawn_cli_client_with_actions(actions, None);
+        let (handle, client_screen) = self.spawn_cli_client_with_actions(actions, None, None);
         let exit_code = join_cli_client(handle, &what, Some(&client_screen));
         let reported = client_screen
             .server_messages()
@@ -822,6 +823,11 @@ impl TestSession {
         cli_action: CliAction,
         stdin: Option<&str>,
     ) -> (JoinHandle<i32>, ClientScreen) {
+        // The production CLI sends the explicit notification target as the caller pane.
+        let caller = match &cli_action {
+            CliAction::Notify { pane_id, .. } => pane_id.map(TerminalId::new),
+            _ => None,
+        };
         let actions = yinz_cli::actions::actions_from_cli(
             cli_action,
             yinz_cli::actions::PathResolution::Local(Box::new(|| {
@@ -830,13 +836,14 @@ impl TestSession {
             Some(self.config.clone()),
         )
         .expect("failed to build cli actions");
-        self.spawn_cli_client_with_actions(actions, stdin)
+        self.spawn_cli_client_with_actions(actions, stdin, caller)
     }
 
     fn spawn_cli_client_with_actions(
         &self,
         actions: Vec<Action>,
         stdin: Option<&str>,
+        caller: Option<TerminalId>,
     ) -> (JoinHandle<i32>, ClientScreen) {
         let (fake_client_os_api, fake_client_handle) = FakeClientOsApi::new(self.size, None);
         let fake_client_os_api = fake_client_os_api.with_cli_stdin(stdin);
@@ -849,7 +856,7 @@ impl TestSession {
                     Box::new(fake_client_os_api),
                     &yinz_types::internal_ids::SessionName::new(&session_name),
                     actions,
-                    None,
+                    caller,
                 )
             })
             .unwrap();

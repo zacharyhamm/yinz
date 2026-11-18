@@ -414,6 +414,16 @@ Config {
                     input_mode: Tab,
                 },
             ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'u',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ReturnFromNotification,
+            ],
         },
         Locked: {
             KeyWithModifier {
@@ -1029,6 +1039,16 @@ Config {
                 SwitchToMode {
                     input_mode: Tab,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'u',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Esc,
@@ -1670,6 +1690,16 @@ Config {
                 SwitchToMode {
                     input_mode: Tab,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'u',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -2436,6 +2466,16 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'u',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ReturnFromNotification,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'x',
                 ),
                 key_modifiers: {},
@@ -3068,6 +3108,16 @@ Config {
                 HalfPageScrollUp,
             ],
             KeyWithModifier {
+                bare_key: Char(
+                    'u',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ReturnFromNotification,
+            ],
+            KeyWithModifier {
                 bare_key: Esc,
                 key_modifiers: {},
             }: [
@@ -3504,6 +3554,16 @@ Config {
                 SwitchToMode {
                     input_mode: Tab,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'u',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Esc,
@@ -4102,6 +4162,16 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'u',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ReturnFromNotification,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'w',
                 ),
                 key_modifiers: {},
@@ -4549,6 +4619,16 @@ Config {
                 },
             ],
             KeyWithModifier {
+                bare_key: Char(
+                    'u',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ReturnFromNotification,
+            ],
+            KeyWithModifier {
                 bare_key: Esc,
                 key_modifiers: {},
             }: [
@@ -4986,6 +5066,16 @@ Config {
                 SwitchToMode {
                     input_mode: Tab,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'u',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Esc,
@@ -5516,6 +5606,16 @@ Config {
                 SwitchToMode {
                     input_mode: Tab,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'u',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -6061,6 +6161,16 @@ Config {
                 },
             ],
             KeyWithModifier {
+                bare_key: Char(
+                    'u',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ReturnFromNotification,
+            ],
+            KeyWithModifier {
                 bare_key: Tab,
                 key_modifiers: {},
             }: [
@@ -6493,6 +6603,16 @@ Config {
                 SwitchToMode {
                     input_mode: Tab,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'u',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Esc,
@@ -7147,6 +7267,16 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'u',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ReturnFromNotification,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'x',
                 ),
                 key_modifiers: {},
@@ -7703,6 +7833,16 @@ Config {
                 SwitchToMode {
                     input_mode: Tab,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'u',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ReturnFromNotification,
             ],
             KeyWithModifier {
                 bare_key: Esc,
