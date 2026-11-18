@@ -194,6 +194,7 @@ pub struct CommandPalette {
     pub description: String,
     pub columns: Vec<yinz_types::command_palette::Column>,
     pub table_cells: std::collections::BTreeMap<String, Vec<String>>,
+    table_top_entry: RefCell<Option<String>>,
     description_offset: Cell<usize>,
     description_rows: Cell<usize>,
     description_total: Cell<usize>,
@@ -601,6 +602,7 @@ impl CommandPalette {
 
     /// Show freshly ranked results from the top, whatever row the last ranking had selected.
     pub fn set_ranked_section(&mut self, section: PluginSection) {
+        self.table_top_entry.get_mut().take();
         self.selection_explicit = false;
         self.selected = 0;
         self.set_sections(vec![section]);
@@ -1409,6 +1411,7 @@ impl CommandPalette {
     }
 
     fn rematch_query(&mut self) {
+        self.table_top_entry.get_mut().take();
         if self.is_root() {
             self.browsing = false;
         }
@@ -1827,7 +1830,24 @@ impl CommandPalette {
             .iter()
             .rposition(|row| self.row_selected(row))
             .unwrap_or(0);
-        let mut start = (selected + 1).saturating_sub(capacity);
+        let first_fitting = (selected + 1).saturating_sub(capacity);
+        let mut start = first_fitting;
+        if !self.columns.is_empty() && rows.len() > capacity {
+            let anchor = self.table_top_entry.borrow();
+            if let Some(anchor) = anchor.as_deref()
+                && let Some(top) = rows.iter().position(|row| {
+                    matches!(row, ResultRow::Entry(index, 0)
+                        if self.entries[self.matches[*index]].id == anchor)
+                })
+            {
+                let selected_first = match rows[selected] {
+                    ResultRow::Entry(_, line) => selected - line,
+                    _ => selected,
+                };
+                // Keep the whole selection visible and fill the viewport near the end.
+                start = top.clamp(first_fitting, selected_first.min(rows.len() - capacity));
+            }
+        }
         let sticky_heading = |start: usize| {
             if !self.columns.is_empty() {
                 return None;
@@ -2032,6 +2052,17 @@ impl CommandPalette {
             .text_offset
             .min(text_lines.len().saturating_sub(options_rows));
         let result_rows = self.visible_result_rows(options_rows, self.result_width.get());
+        if !self.columns.is_empty()
+            && let Some(id) = result_rows.iter().find_map(|row| match row {
+                ResultRow::Entry(index, 0) => Some(&self.entries[self.matches[*index]].id),
+                _ => None,
+            })
+        {
+            let mut anchor = self.table_top_entry.borrow_mut();
+            if anchor.as_ref() != Some(id) {
+                *anchor = Some(id.clone());
+            }
+        }
         let result_overflow = if footer_y.is_some() && self.agent.is_none() {
             self.result_overflow(&result_rows)
         } else {

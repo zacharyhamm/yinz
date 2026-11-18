@@ -3668,6 +3668,152 @@ fn table_headers_scroll_with_whole_actions_and_original_activation() {
 }
 
 #[test]
+fn table_selection_scrolls_only_past_the_viewport_edges() {
+    let mut palette = table_palette();
+    palette.columns[2].max_lines = 1;
+    let surface = Viewport {
+        cols: 92,
+        rows: 20,
+        ..Default::default()
+    };
+    let initial = ["row-0", "row-1", "row-2", "row-3", "row-4", "row-5"];
+    let scrolled = ["row-1", "row-2", "row-3", "row-4", "row-5", "row-6"];
+    palette.layout(surface);
+    assert_eq!(palette.visible_entry_ids(), initial);
+    for selected in 1..=5 {
+        key(&mut palette, BareKey::Down);
+        palette.layout(surface);
+        assert_eq!(palette.selected, selected);
+        assert_eq!(palette.visible_entry_ids(), initial);
+    }
+    key(&mut palette, BareKey::Down);
+    palette.layout(surface);
+    assert_eq!(palette.selected, 6);
+    assert_eq!(palette.visible_entry_ids(), scrolled);
+
+    palette.scroll(false);
+    palette.layout(surface);
+    assert_eq!(palette.selected, 3);
+    assert_eq!(palette.visible_entry_ids(), scrolled);
+    for selected in (1..=2).rev() {
+        key(&mut palette, BareKey::Up);
+        palette.layout(surface);
+        assert_eq!(palette.selected, selected);
+        assert_eq!(palette.visible_entry_ids(), scrolled);
+    }
+    key(&mut palette, BareKey::Down);
+    palette.layout(surface);
+    assert_eq!(palette.selected, 2);
+    assert_eq!(palette.visible_entry_ids(), scrolled);
+    key(&mut palette, BareKey::Up);
+    palette.layout(surface);
+    assert_eq!(palette.visible_entry_ids(), scrolled);
+
+    key(&mut palette, BareKey::Up);
+    palette.layout(surface);
+    assert_eq!(palette.selected, 0);
+    assert_eq!(palette.visible_entry_ids(), initial);
+}
+
+#[test]
+fn growing_table_viewport_shows_preceding_actions_at_the_end() {
+    let mut palette = table_palette();
+    palette.columns[2].max_lines = 1;
+    let mut section = palette.sections[0].clone();
+    section.entries.truncate(8);
+    palette.set_sections(vec![section]);
+    palette.select_id("row-7");
+
+    let surface = Viewport {
+        cols: 92,
+        rows: 14,
+        ..Default::default()
+    };
+    palette.layout(surface);
+    assert_eq!(palette.visible_entry_ids(), ["row-6", "row-7"]);
+
+    palette.layout(Viewport {
+        rows: 20,
+        ..surface
+    });
+    assert_eq!(
+        palette.visible_entry_ids(),
+        ["row-2", "row-3", "row-4", "row-5", "row-6", "row-7"]
+    );
+    assert_eq!(palette.selected_entry().unwrap().id, "row-7");
+}
+
+#[test]
+fn table_scroll_keeps_the_whole_selected_wrapped_row_visible() {
+    let mut palette = table_palette();
+    let surface = Viewport {
+        cols: 92,
+        rows: 24,
+        ..Default::default()
+    };
+    let initial = ["row-0", "row-1", "row-2"];
+    let scrolled = ["row-1", "row-2", "row-3"];
+    palette.layout(surface);
+    key(&mut palette, BareKey::Down);
+    palette.layout(surface);
+    assert_eq!(palette.visible_entry_ids(), initial);
+
+    key(&mut palette, BareKey::Down);
+    let layout = palette.layout(surface);
+    assert!(matches!(layout.result_rows[1], ResultRow::Entry(1, 0)));
+    assert_eq!(
+        layout
+            .result_rows
+            .iter()
+            .filter(|r| palette.row_selected(r))
+            .count(),
+        3
+    );
+    assert_eq!(palette.visible_entry_ids(), scrolled);
+
+    key(&mut palette, BareKey::Up);
+    palette.layout(surface);
+    assert_eq!(palette.visible_entry_ids(), scrolled);
+    key(&mut palette, BareKey::Up);
+    palette.layout(surface);
+    assert_eq!(palette.visible_entry_ids(), initial);
+}
+
+#[test]
+fn table_scroll_preserves_the_anchor_across_source_updates_and_back_navigation() {
+    let mut palette = table_palette();
+    palette.columns[2].max_lines = 1;
+    let surface = Viewport {
+        cols: 92,
+        rows: 20,
+        ..Default::default()
+    };
+    palette.layout(surface);
+    palette.select_id("row-7");
+    palette.layout(surface);
+    let visible = ["row-2", "row-3", "row-4", "row-5", "row-6", "row-7"];
+    assert_eq!(palette.visible_entry_ids(), visible);
+    key(&mut palette, BareKey::Up);
+    palette.layout(surface);
+
+    let mut section = palette.sections[0].clone();
+    section.entries.remove(0);
+    palette.set_sections(vec![section]);
+    assert_eq!(palette.selected_entry().unwrap().id, "row-6");
+    assert_eq!(palette.visible_entry_ids(), visible);
+    palette.layout(surface);
+
+    palette.push_view(2, "Details".into());
+    assert_eq!(palette.back(), Outcome::None);
+    assert_eq!(palette.visible_entry_ids(), visible);
+
+    palette.set_query("new query".into());
+    palette.layout(surface);
+    assert_eq!(palette.selected_entry().unwrap().id, "row-1");
+    assert_eq!(palette.visible_entry_ids()[0], "row-1");
+}
+
+#[test]
 fn table_mouse_geometry_and_selection_survive_small_surfaces() {
     use unicode_width::UnicodeWidthStr;
     let mut palette = table_palette();
