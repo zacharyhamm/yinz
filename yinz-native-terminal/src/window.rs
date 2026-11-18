@@ -124,8 +124,14 @@ struct App {
 }
 
 fn load_native_config(opts: &CliArgs) -> Result<(Config, Options)> {
-    yinz_cli::setup::Setup::config_without_layout(opts)
-        .map_err(|error| anyhow!("{}", error.diagnostic_message()))
+    yinz_cli::setup::Setup::native_window_config(opts).map_err(|error| {
+        let detail = error.diagnostic_message();
+        if matches!(error, yinz_config::config::ConfigError::IoPath(..)) {
+            anyhow!("{detail}. Restore a readable regular file at the reported path.")
+        } else {
+            anyhow!("{detail}")
+        }
+    })
 }
 
 pub fn run(args: TerminalArgs, opts: CliArgs) -> Result<()> {

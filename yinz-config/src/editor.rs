@@ -888,7 +888,7 @@ pub(crate) fn apply_with(
             ..Default::default()
         });
         let parsed = Config::from_kdl_with(&document.to_string(), base, mode).map_err(|error| {
-            if mode == ConfigRead::Saved && matches!(error, ConfigError::IoPath(..)) {
+            if mode != ConfigRead::Ordinary && matches!(error, ConfigError::IoPath(..)) {
                 error
             } else {
                 invalid(validation_error(error))
@@ -1305,8 +1305,10 @@ impl Disk {
             ConfigRead::Ordinary => {
                 Config::load(config_path, Some(&dir), false).map_err(validation_error)
             },
-            ConfigRead::Saved => Config::load_saved(config_path, Some(&dir))
-                .map_err(|error| error.diagnostic_message()),
+            ConfigRead::Checked | ConfigRead::Saved => {
+                Config::load_with(config_path, Some(&dir), false, mode)
+                    .map_err(|error| error.diagnostic_message())
+            },
         }?;
         let theme_dir = configured
             .options
@@ -1382,7 +1384,9 @@ impl Disk {
             config =
                 Config::from_kdl_with(source, Some(config), mode).map_err(|error| match mode {
                     ConfigRead::Ordinary => validation_error(error),
-                    ConfigRead::Saved => error.diagnostic_message_for_file(path),
+                    ConfigRead::Checked | ConfigRead::Saved => {
+                        error.diagnostic_message_for_file(path)
+                    },
                 })?;
         }
         let config_dir = self.overlay.parent().map(std::path::Path::to_path_buf);
@@ -1418,17 +1422,18 @@ impl Disk {
             )
             .map(|(_, config)| config)
             .map_err(validation_error),
-            ConfigRead::Saved => crate::config::load_saved_layout_config(
+            ConfigRead::Checked | ConfigRead::Saved => crate::config::load_default_layout_config(
                 config,
                 config_dir.clone(),
                 self.primary.as_deref(),
+                mode,
             )
             .map_err(|error| error.diagnostic_message()),
         }?;
         crate::config::apply_themes_with(&mut config, None, config_dir, mode).map_err(|error| {
             match mode {
                 ConfigRead::Ordinary => validation_error(error),
-                ConfigRead::Saved => error.diagnostic_message(),
+                ConfigRead::Checked | ConfigRead::Saved => error.diagnostic_message(),
             }
         })?;
         Ok((fragment.to_string(), config, underlay))

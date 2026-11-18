@@ -238,7 +238,7 @@ pub(crate) fn from_path_or_default_with(
         None,
         mode,
     )?;
-    let config = if mode == ConfigRead::Saved {
+    let config = if mode != ConfigRead::Ordinary {
         Config::from_file_text(
             Path::new(&path_to_raw_layout),
             raw_layout,
@@ -540,9 +540,27 @@ fn swap_layout_and_path(path: &Path) -> Option<(String, String)> {
 }
 
 pub fn metadata_from_path(path: &PathBuf) -> LayoutMetadata {
-    match crate::layout::stringified_from_path(path) {
-        Ok((path_str, stringified_layout, _swap_layouts)) => {
-            match crate::kdl::layout::from_kdl(&stringified_layout, Some(path_str), None, None) {
+    metadata_from_path_with(path, ConfigRead::Ordinary)
+}
+
+fn metadata_from_path_with(path: &Path, mode: ConfigRead) -> LayoutMetadata {
+    let primary = if mode == ConfigRead::Ordinary {
+        stringified_from_path(path).map(|(path, raw, _)| (path, raw))
+    } else {
+        // SwitchSession metadata only describes the primary layout.
+        reject_remote_layout(path)
+            .and_then(|()| read_saved_layout(path, open_config_input(path)))
+            .map(|(selected, raw)| (selected.display().to_string(), raw))
+    };
+    match primary {
+        Ok((path_str, stringified_layout)) => {
+            match crate::kdl::layout::from_kdl_with(
+                &stringified_layout,
+                Some(path_str),
+                None,
+                None,
+                mode,
+            ) {
                 Ok(layout) => {
                     let layout_tabs = layout.tabs();
                     let tabs = if layout_tabs.is_empty() {
@@ -583,7 +601,7 @@ pub fn metadata_from_path(path: &PathBuf) -> LayoutMetadata {
     }
 }
 
-fn creation_and_update_times(path: &PathBuf) -> (String, String) {
+fn creation_and_update_times(path: &Path) -> (String, String) {
     // (creation_time, update_time) returns stringified unix epoch
     match std::fs::metadata(path) {
         Ok(metadata) => {
@@ -681,12 +699,20 @@ pub(crate) fn layout_info_from_config_with(
 
     let file_info = |path: PathBuf| {
         // Saved validation needs the layout identity only. SwitchSession resolves it at use.
-        let metadata = if mode == ConfigRead::Ordinary {
-            metadata_from_path(&path)
-        } else {
+        let metadata = if mode == ConfigRead::Saved {
             LayoutMetadata::default()
+        } else {
+            metadata_from_path_with(&path, mode)
         };
         Some(LayoutInfo::File(path.display().to_string(), metadata))
+    };
+    let exists = |path: &Path| {
+        // Runtime metadata is best-effort. Keep its ordinary path selection.
+        if mode == ConfigRead::Saved {
+            mode.exists(path)
+        } else {
+            Ok(path.exists())
+        }
     };
     if layout_path.extension().is_some() || layout_path.components().count() > 1 {
         Ok(layout_dir
@@ -698,11 +724,11 @@ pub(crate) fn layout_info_from_config_with(
         // directory.
         if let Some(layout_dir) = layout_dir.clone().or_else(default_layout_dir) {
             let file_path = layout_dir.join(&layout_path);
-            if mode.exists(&file_path)? {
+            if exists(&file_path)? {
                 return Ok(file_info(file_path));
             }
             let file_path_with_ext = file_path.with_extension("kdl");
-            if mode.exists(&file_path_with_ext)? {
+            if exists(&file_path_with_ext)? {
                 return Ok(file_info(file_path_with_ext));
             }
         }

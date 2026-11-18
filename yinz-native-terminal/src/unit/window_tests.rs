@@ -1813,6 +1813,152 @@ fn baseline_offset_saved_file_reload_retains_inline_images_through_full_apply() 
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn underline_metrics_native_reload_rejects_nonregular_main_and_recovers() {
+    use crate::testing::painter::Painter;
+    use std::{
+        fs,
+        os::unix::{ffi::OsStrExt, fs::symlink},
+    };
+    use yinz_types::structured_render::{UNDERLINE_SHIFT, UNDERLINE_STRAIGHT};
+
+    let dir = tempfile::tempdir().unwrap();
+    let private = dir.path().join("private");
+    let config_dir = dir.path().join("shared");
+    let drop_ins = config_dir.join("config.d");
+    fs::create_dir_all(private.join("config.d")).unwrap();
+    fs::create_dir_all(&drop_ins).unwrap();
+    fs::create_dir(config_dir.join("layouts")).unwrap();
+    let main = private.join("config.kdl");
+    let regular = private.join("regular.kdl");
+    fs::write(
+        &regular,
+        "terminal { system_fonts false; underline_offset -2; underline_thickness 1; }",
+    )
+    .unwrap();
+    symlink(&regular, &main).unwrap();
+    fs::write(
+        private.join("config.d/20-private.kdl"),
+        "terminal { underline_offset 50; }",
+    )
+    .unwrap();
+    fs::write(
+        config_dir.join("layouts/default.kdl"),
+        "layout { pane; }\nterminal { underline_thickness 50; }",
+    )
+    .unwrap();
+    let valid_overlay = drop_ins.join("10-shared.kdl");
+    let write_overlay = |thickness| {
+        fs::write(
+            &valid_overlay,
+            format!("terminal {{ underline_thickness {thickness}; }}"),
+        )
+        .unwrap();
+    };
+    write_overlay(2);
+    fs::write(
+        drop_ins.join("20-invalid.kdl"),
+        "terminal { underline_offset 65; underline_thickness 51; }",
+    )
+    .unwrap();
+    let opts = CliArgs {
+        config: Some(main.clone()),
+        config_dir: Some(config_dir),
+        ..Default::default()
+    };
+    let (config, options) = load_native_config(&opts).unwrap();
+    let mut paints = paints_for(&config, &options);
+    let mut settings = config.terminal;
+    assert_eq!(settings.underline_offset, Some(-2));
+    assert_eq!(settings.underline_thickness, Some(2));
+    let mut active = effective_font_options(&settings, 1.0, 1.0);
+    let mut cache = GlyphCache::new(active.stack(1.0).unwrap());
+    let mut retained = RetainedScene::new();
+    let state = Painter::state(2, 8, |p| {
+        p.styled(0, 0, "a", |cell| {
+            cell.attrs |= UNDERLINE_STRAIGHT << UNDERLINE_SHIFT
+        });
+    });
+    let mut selection = LocalSelection::default();
+    selection.start(0, 0);
+    selection.extend(0, 1);
+    retained.set_selection(selection.range());
+    let copy = selection.text(state.screen());
+    assert!(copy.as_deref().is_some_and(|text| text.starts_with('a')));
+    let refresh = |retained: &mut RetainedScene, cache: &mut GlyphCache, paints: &Paints| {
+        retained.refresh(
+            SceneInputs {
+                state: &state,
+                phase: BlinkPhase::On,
+                paints,
+                cursor: CursorOptions::default(),
+                hovered_link: None,
+                preedit: None,
+            },
+            cache,
+        );
+    };
+    refresh(&mut retained, &mut cache, &paints);
+    let warm = retained.flatten();
+    let initial_settings = settings.clone();
+    let initial_paints = paints;
+    let initial_fonts = active.clone();
+    let generation = cache.generation();
+    retained.mark_row(1);
+
+    let pipe = private.join("pipe");
+    let name = std::ffi::CString::new(pipe.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    for use_symlink in [false, true] {
+        fs::remove_file(&main).unwrap();
+        if use_symlink {
+            symlink(&pipe, &main).unwrap();
+        } else {
+            fs::hard_link(&pipe, &main).unwrap();
+        }
+        write_overlay(3);
+        let Err(error) = PreparedReload::load(&opts, &active, 1.0, 1.0) else {
+            panic!("nonregular main was accepted");
+        };
+        let diagnostic = format!("{error:#}");
+        for expected in [
+            main.to_str().unwrap(),
+            "not a regular file",
+            "Restore a readable regular file",
+        ] {
+            assert!(diagnostic.contains(expected), "{diagnostic}");
+        }
+        assert_eq!(settings, initial_settings);
+        assert_eq!(paints, initial_paints);
+        assert_eq!(active, initial_fonts);
+        assert_eq!(cache.generation(), generation);
+        assert_eq!(retained.flatten().rects, warm.rects);
+        assert_eq!(selection.text(state.screen()), copy);
+    }
+
+    fs::remove_file(&main).unwrap();
+    symlink(&regular, &main).unwrap();
+    PreparedReload::load(&opts, &active, 1.0, 1.0)
+        .unwrap()
+        .apply(
+            &mut active,
+            &mut cache,
+            &mut retained,
+            &mut settings,
+            &mut paints,
+        );
+    refresh(&mut retained, &mut cache, &paints);
+    assert_eq!(settings.underline_offset, Some(-2));
+    assert_eq!(settings.underline_thickness, Some(3));
+    assert_ne!(retained.flatten().rects, warm.rects);
+    assert!(!retained.rebuilt_everything());
+    assert_eq!(retained.rebuilt_rows(), &[1]);
+    assert_eq!(retained.rebuilt_solid_rows(), &[0, 1]);
+    assert_eq!(cache.generation(), generation);
+    assert_eq!(selection.text(state.screen()), copy);
+}
+
 #[test]
 fn underline_metrics_saved_reload_scales_once_and_keeps_cells_and_copy() {
     use crate::emulation::screen_buffer::CursorShape;
@@ -1836,7 +1982,7 @@ fn underline_metrics_saved_reload_scales_once_and_keeps_cells_and_copy() {
         config_dir: Some(dir.path().to_path_buf()),
         ..Default::default()
     };
-    let (config, options) = yinz_cli::setup::Setup::config_without_layout(&opts).unwrap();
+    let (config, options) = load_native_config(&opts).unwrap();
     let mut paints = paints_for(&config, &options);
     let mut settings = config.terminal;
     let (zoom, scale) = (1.1, 1.5);

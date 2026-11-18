@@ -1,5 +1,5 @@
 use super::*;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use yinz_test_support::Watched;
 
 const WAIT: Duration = Duration::from_secs(30);
@@ -7,18 +7,31 @@ const WAIT: Duration = Duration::from_secs(30);
 struct Watching {
     runtime: tokio::runtime::Runtime,
     task: tokio::task::JoinHandle<()>,
-    changes: Watched<Option<Config>>,
+    changes: Watched<Vec<Publication>>,
     main_lost: Watched<bool>,
+}
+
+struct Publication {
+    config: Config,
+    at: Instant,
 }
 
 impl Watching {
     fn start(main: PathBuf, config_dir: PathBuf) -> Self {
+        Self::start_with_main_read(main, config_dir, |_| {})
+    }
+
+    fn start_with_main_read(
+        main: PathBuf,
+        config_dir: PathBuf,
+        on_main_read: impl Fn(&str) + Send + 'static,
+    ) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .unwrap();
-        let changes = Watched::new(None);
+        let changes = Watched::new(Vec::new());
         let received = changes.clone();
         let ready = Watched::new(false);
         let registered = ready.clone();
@@ -29,11 +42,15 @@ impl Watching {
                 main,
                 Some(&config_dir),
                 move |config| {
-                    *received.lock() = Some(config);
+                    received.lock().push(Publication {
+                        config,
+                        at: Instant::now(),
+                    });
                     async {}
                 },
                 move || *registered.lock() = true,
                 move || *lost.lock() = true,
+                on_main_read,
             )
             .await;
         });
@@ -54,32 +71,32 @@ impl Watching {
         self.changes.wait_until_described(
             &format!("reloaded drop-in content: ligatures={ligatures:?}, padding={padding}, opacity={opacity:?}"),
             WAIT,
-            |config| {
-                config.as_ref().and_then(|config| {
-                    (config.terminal.font_ligatures == ligatures
-                        && config.terminal.padding == Some(padding)
-                        && config.terminal.opacity == opacity)
-                        .then_some(())
-                })
+            |changes| {
+                let terminal = &changes.last()?.config.terminal;
+                (terminal.font_ligatures == ligatures
+                    && terminal.padding == Some(padding)
+                    && terminal.opacity == opacity)
+                    .then_some(())
             },
-            |config| format!("{:?}", config.as_ref().map(|config| &config.terminal)),
+            |changes| format!("{:?}", changes.last().map(|change| &change.config.terminal)),
         );
     }
 
     fn clear(&self) {
-        *self.changes.lock() = None;
+        self.changes.lock().clear();
     }
 
     fn expect_underline(&self, offset: i32, thickness: i32) {
-        self.changes.wait_until(
+        self.changes.wait_until_described(
             "effective underline metrics after saved reload",
             WAIT,
             |loaded| {
-                let terminal = &loaded.as_ref()?.terminal;
+                let terminal = &loaded.last()?.config.terminal;
                 ((terminal.underline_offset, terminal.underline_thickness)
                     == (Some(offset), Some(thickness)))
                     .then_some(())
             },
+            |changes| format!("{:?}", changes.last().map(|change| &change.config.terminal)),
         );
     }
 }
@@ -212,8 +229,9 @@ fn underline_metrics_managed_writes_reload_and_recover_after_invalid_main_file()
         watching
             .changes
             .lock()
-            .as_ref()
+            .last()
             .unwrap()
+            .config
             .terminal
             .underline_offset,
         Some(-2)
@@ -347,7 +365,7 @@ fn underline_metrics_managed_write_is_published_when_nonregular_main_is_restored
         assert!(!*watching.main_lost.lock());
         {
             let published = watching.changes.lock();
-            let terminal = &published.as_ref().unwrap().terminal;
+            let terminal = &published.last().unwrap().config.terminal;
             assert_eq!(
                 (terminal.underline_offset, terminal.underline_thickness),
                 (Some(-2), Some(2))
@@ -399,6 +417,267 @@ fn underline_metrics_watcher_observes_same_mtime_main_edits() {
     watching.clear();
     set_modified(&main, modified + Duration::from_secs(1));
     watching.expect_underline(-2, 3);
+}
+
+#[test]
+fn underline_metrics_watcher_settles_in_place_main_edits() {
+    use std::{cell::Cell, fs, io::Write};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let main = root.join("config.kdl");
+    let initial = "terminal { underline_thickness 2; }\nmouse_mode false";
+    let valid = "terminal { underline_thickness 3; }\nmouse_mode false";
+    let invalid = "terminal { underline_thickness 65; }\nmouse_mode true";
+    let corrected = "terminal { underline_thickness 4; }\nmouse_mode false";
+    fs::write(&main, initial).unwrap();
+    let finish = Watched::new(None::<&str>);
+    let observations = Watched::new(Vec::new());
+    let watching = Watching::start_with_main_read(main.clone(), root, {
+        let main = main.clone();
+        let finish = finish.clone();
+        let observations = observations.clone();
+        let completed = Cell::new(None);
+        move |text| {
+            if text.is_empty() {
+                if let Some(replacement) = finish.lock().take() {
+                    // Complete this same in-place edit after the watcher captured the
+                    // truncated snapshot, before it can act on that snapshot.
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .open(&main)
+                        .unwrap()
+                        .write_all(replacement.as_bytes())
+                        .unwrap();
+                    completed.set(Some(replacement));
+                }
+            } else if completed.get() == Some(text) {
+                observations
+                    .lock()
+                    .push((completed.take().unwrap(), Instant::now()));
+            }
+        }
+    });
+    let rewrite = |text| {
+        *finish.lock() = Some(text);
+        fs::File::create(&main).unwrap();
+    };
+    let expect_only = |thickness, text| {
+        watching
+            .changes
+            .wait_until("settled adjusted underline", WAIT, |changes| {
+                (changes.last()?.config.terminal.underline_thickness == Some(thickness))
+                    .then_some(())
+            });
+        let observed_at = observations
+            .lock()
+            .iter()
+            .find(|entry| entry.0 == text)
+            .unwrap()
+            .1;
+        for change in watching.changes.lock().iter() {
+            assert_eq!(change.config.terminal.underline_thickness, Some(thickness));
+            assert_eq!(change.config.options.mouse_mode, Some(false));
+            assert!(change.at.duration_since(observed_at) >= Duration::from_millis(100));
+        }
+    };
+
+    rewrite(valid);
+    expect_only(3, valid);
+    let logs = captured_config_logs();
+    rewrite(invalid);
+    logs.wait_until("watcher rejected the finished invalid edit", WAIT, |logs| {
+        logs.iter()
+            .any(|line| {
+                line.contains(main.to_str().unwrap())
+                    && line.contains("underline_thickness")
+                    && line.contains("between -64 and 64")
+            })
+            .then_some(())
+    });
+    {
+        let changes = watching.changes.lock();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].config.terminal.underline_thickness, Some(3));
+        assert_eq!(changes[0].config.options.mouse_mode, Some(false));
+    }
+
+    watching.clear();
+    rewrite(corrected);
+    expect_only(4, corrected);
+
+    watching.clear();
+    fs::File::create(&main).unwrap();
+    watching
+        .changes
+        .wait_until("settled intentionally empty main", WAIT, |changes| {
+            (changes
+                .last()?
+                .config
+                .terminal
+                .underline_thickness
+                .is_none())
+            .then_some(())
+        });
+}
+
+#[cfg(unix)]
+#[test]
+fn underline_metrics_watcher_rejects_nonregular_layout_inputs_and_recovers() {
+    use std::{
+        fs,
+        os::unix::{ffi::OsStrExt, fs::symlink},
+    };
+    use yinz_types::{data::InputMode, data::LayoutInfo, input::actions::Action};
+
+    struct UnblockOnFailure<'a> {
+        paths: [&'a Path; 3],
+        pipe: &'a Path,
+    }
+
+    impl Drop for UnblockOnFailure<'_> {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                for path in self.paths {
+                    let _ = fs::remove_file(path);
+                }
+                let _ = nonblocking_open_options().write(true).open(self.pipe);
+            }
+        }
+    }
+
+    for use_symlink in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let main = root.join("config.kdl");
+        let drop_ins = root.join("config.d");
+        let layouts = root.join("layouts");
+        let themes = root.join("themes");
+        for directory in [&drop_ins, &layouts, &themes] {
+            fs::create_dir(directory).unwrap();
+        }
+        let default_layout = layouts.join("default.kdl");
+        let switch_layout = layouts.join("switch.kdl");
+        let switch_swap = switch_layout.with_extension("swap.kdl");
+        let swap = layouts.join("default.swap.kdl");
+        let contents = layouts.join("preview.txt");
+        let pipe = root.join("pipe");
+        fs::write(
+            &main,
+            format!(
+                r#"layout_dir "{}"
+theme "watcher-control"
+terminal {{ underline_offset -2; }}
+keybinds {{ normal {{ bind "Ctrl Alt y" {{ SwitchSession {{ name "other"; layout "switch"; }}; }}; }}; }}"#,
+                layouts.display(),
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &default_layout,
+            "layout { pane contents_file=\"preview.txt\"; }\nterminal { padding 5; }\nmouse_mode false",
+        )
+        .unwrap();
+        fs::write(
+            &switch_layout,
+            r#"layout { tab name="Regular layout" { pane; }; }"#,
+        )
+        .unwrap();
+        fs::write(
+            themes.join("watcher.kdl"),
+            include_str!("../../assets/themes/adwaita.kdl")
+                .replace("\"adwaita\"", "\"watcher-control\""),
+        )
+        .unwrap();
+        let name = std::ffi::CString::new(pipe.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let place_pipe = |path: &Path| {
+            if use_symlink {
+                symlink(&pipe, path).unwrap();
+            } else {
+                fs::hard_link(&pipe, path).unwrap();
+            }
+        };
+        let save = |thickness| {
+            Config::write_managed_fragment(
+                &drop_ins,
+                &format!("terminal {{ underline_thickness {thickness}; }}"),
+            )
+            .unwrap();
+        };
+        let logs = captured_config_logs();
+        let wait_for_refusal = |path: &Path| {
+            logs.wait_until_described(
+                "watcher rejected the nonregular dependency",
+                WAIT,
+                |logs| {
+                    logs.iter()
+                        .any(|line| {
+                            line.contains("Failed to reload config")
+                                && line.contains(path.to_str().unwrap())
+                                && line.contains("not a regular file")
+                        })
+                        .then_some(())
+                },
+                |logs| format!("{logs:?}"),
+            );
+        };
+        let watching = Watching::start(main.clone(), root);
+        let _unblock = UnblockOnFailure {
+            paths: [&swap, &contents, &switch_swap],
+            pipe: &pipe,
+        };
+        save(2);
+        watching.expect_underline(-2, 2);
+
+        // SwitchSession metadata comes from its primary layout. A swap there
+        // is irrelevant unless that action is invoked.
+        place_pipe(&switch_swap);
+        place_pipe(&swap);
+        save(3);
+        wait_for_refusal(&swap);
+        save(4);
+        assert_eq!(
+            Config::load_saved(Some(&main), drop_ins.parent())
+                .unwrap()
+                .terminal
+                .underline_thickness,
+            Some(4)
+        );
+        // Move the failure to another selected input before a retry can publish.
+        // Neither layout input is watched, so after the second refusal a repair
+        // must be picked up without another main or drop-in edit.
+        place_pipe(&contents);
+        fs::remove_file(&swap).unwrap();
+        wait_for_refusal(&contents);
+        assert!(watching
+            .changes
+            .lock()
+            .iter()
+            .all(|change| { change.config.terminal.underline_thickness == Some(2) }));
+        fs::remove_file(&contents).unwrap();
+        watching.expect_underline(-2, 4);
+
+        for change in watching.changes.lock().iter() {
+            let config = &change.config;
+            assert!(matches!(config.terminal.underline_thickness, Some(2 | 4)));
+            assert_eq!(config.terminal.underline_offset, Some(-2));
+            assert_eq!(config.terminal.padding, Some(5.0));
+            assert_eq!(config.options.mouse_mode, Some(false));
+            assert_eq!(config.options.theme.as_deref(), Some("watcher-control"));
+            assert!(config.themes.inner().contains_key("watcher-control"));
+            let [Action::SwitchSession {
+                layout: Some(LayoutInfo::File(path, metadata)),
+                ..
+            }] = config.keybinds.0[&InputMode::Normal][&"Ctrl Alt y".parse().unwrap()].as_slice()
+            else {
+                panic!("expected a SwitchSession action with on-disk layout metadata");
+            };
+            assert_eq!(Path::new(path), switch_layout);
+            assert_eq!(metadata.tabs.len(), 1);
+            assert_eq!(metadata.tabs[0].name.as_deref(), Some("Regular layout"));
+        }
+    }
 }
 
 #[test]

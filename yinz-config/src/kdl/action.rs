@@ -1184,12 +1184,12 @@ pub(crate) fn from_kdl_with(
     let action_arguments: Vec<&KdlEntry> = kdl_argument_values!(kdl_action);
     let action_children: Vec<&KdlDocument> = kdl_children!(kdl_action);
     let layout_error = |error: ConfigError| {
-        if mode == ConfigRead::Saved && matches!(error, ConfigError::IoPath(..)) {
+        if mode != ConfigRead::Ordinary && matches!(error, ConfigError::IoPath(..)) {
             return error;
         }
         let message = match mode {
             ConfigRead::Ordinary => error.to_string(),
-            ConfigRead::Saved => error.diagnostic_message(),
+            ConfigRead::Checked | ConfigRead::Saved => error.diagnostic_message(),
         };
         ConfigError::new_kdl_error(
             format!("Failed to load layout: {message}"),

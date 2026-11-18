@@ -2,7 +2,13 @@ use clap::{Args, CommandFactory};
 use clap_complete::Shell;
 use log::info;
 use serde::{Deserialize, Serialize};
-use std::{fmt::Write as FmtWrite, fs, io::Write, path::PathBuf, process};
+use std::{
+    fmt::Write as FmtWrite,
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    process,
+};
 use yinz_config::assets::*;
 use yinz_runtime::logging::startup_stage;
 #[allow(unused_imports)]
@@ -137,15 +143,44 @@ pub struct Setup {
     pub generate_auto_start: Option<String>,
 }
 pub fn load_config(args: &CliArgs) -> Result<Config, ConfigError> {
+    load_config_with(args, Config::load)
+}
+
+fn load_config_with(
+    args: &CliArgs,
+    load: impl FnOnce(Option<&Path>, Option<&Path>, bool) -> Result<Config, ConfigError>,
+) -> Result<Config, ConfigError> {
     let clean = matches!(&args.command, Some(Command::Setup(setup)) if setup.clean);
-    Config::load(args.config.as_deref(), args.config_dir.as_deref(), clean)
+    load(args.config.as_deref(), args.config_dir.as_deref(), clean)
 }
 
 impl Setup {
     /// Load terminal configuration and CLI overrides without reading a session layout.
     pub fn config_without_layout(cli_args: &CliArgs) -> Result<(Config, Options), ConfigError> {
-        let mut config = load_config(cli_args)?;
-        let options = yinz_config::config::apply_themes(
+        Self::config_without_layout_with(cli_args, false)
+    }
+
+    /// Load native window settings through checked file reads without applying a session layout.
+    pub fn native_window_config(cli_args: &CliArgs) -> Result<(Config, Options), ConfigError> {
+        Self::config_without_layout_with(cli_args, true)
+    }
+
+    fn config_without_layout_with(
+        cli_args: &CliArgs,
+        checked: bool,
+    ) -> Result<(Config, Options), ConfigError> {
+        let load = if checked {
+            Config::load_checked
+        } else {
+            Config::load
+        };
+        let apply_themes = if checked {
+            yinz_config::config::apply_checked_themes
+        } else {
+            yinz_config::config::apply_themes
+        };
+        let mut config = load_config_with(cli_args, load)?;
+        let options = apply_themes(
             &mut config,
             merge_attach_command_options(cli_args.options(), cli_args),
             cli_args.config_dir.clone(),

@@ -273,11 +273,19 @@ layout files, plain text for pane contents files such as a layout's
 file leaves the current native settings in use, and invalid drop-ins are skipped
 as whole layers. A managed save can succeed while the main file is unusable or
 missing when the fragment can be validated against the built-in defaults.
-Restoring a valid, readable regular main file resumes automatic reload.
+The session watcher reports unreadable configuration or layout inputs in the
+session log and retains the last working configuration. Restore the reported
+path to resume automatic reload. An optional swap layout or pane contents file
+can also be removed to use the layout's fallback.
 
 On a session file-update notification, each native window rereads its own
 `--config` and `--config-dir` layers. Use shared watched paths for automatic
-updates. A window with private config paths can load edits to them when reopened.
+updates. Native configuration inputs must be
+readable regular files. Symlinks to regular files work. Startup errors appear
+on stderr. If the window cannot read its configuration on reload, it keeps its
+current settings and reports the error in the client log. After repairing a
+private path, reopen the window or make a valid edit to shared watched settings
+to trigger another reload.
 Successful `--write` completion confirms persistence. Reload and redraw follow
 asynchronously when the window can load the files and the edited values win.
 

@@ -10,33 +10,83 @@ use yinz_types::structured_render::decode;
 mod real_fixture;
 
 #[cfg(feature = "native-terminal")]
+fn native_startup_with_config(
+    dir: &std::path::Path,
+    config: &std::path::Path,
+) -> std::process::Output {
+    use std::time::{Duration, Instant};
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_yinz"))
+        .env("HOME", dir)
+        .env("TMPDIR", dir)
+        .env("YINZ_TEST_CACHE_DIR", dir.join("cache"))
+        .env("YINZ_SOCKET_DIR", dir)
+        .env_remove("WAYLAND_DISPLAY")
+        .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("DISPLAY")
+        .arg("--config")
+        .arg(config)
+        .arg("--config-dir")
+        .arg(dir)
+        .args(["terminal", "invalid-underline-config"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + yinz_test_support::default_timeout();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().unwrap(),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            status => {
+                let _ = child.kill();
+                let output = child.wait_with_output();
+                panic!(
+                    "native startup did not reject {}: {status:?}, {output:?}",
+                    config.display()
+                );
+            },
+        }
+    }
+}
+
+#[cfg(feature = "native-terminal")]
 #[test]
 fn underline_metrics_native_startup_reports_invalid_setting() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("config.kdl");
     fs::write(&config, "terminal { underline_thickness 65; }").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_yinz"))
-        .env("HOME", dir.path())
-        .env("TMPDIR", dir.path())
-        .env("YINZ_TEST_CACHE_DIR", dir.path().join("cache"))
-        .env("YINZ_SOCKET_DIR", dir.path())
-        .env_remove("WAYLAND_DISPLAY")
-        .env_remove("XDG_RUNTIME_DIR")
-        .env_remove("DISPLAY")
-        .arg("--config")
-        .arg(&config)
-        .arg("--config-dir")
-        .arg(dir.path())
-        .args(["terminal", "invalid-underline-config"])
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
+    let output = native_startup_with_config(dir.path(), &config);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     for expected in [
         config.to_str().unwrap(),
         "underline_thickness",
         "between -64 and 64",
+    ] {
+        assert!(stderr.contains(expected), "{stderr}");
+    }
+}
+
+#[cfg(feature = "native-terminal")]
+#[test]
+fn underline_metrics_native_startup_reports_nonregular_main() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let private = dir.path().join("private");
+    fs::create_dir(&private).unwrap();
+    let config = private.join("config.kdl");
+    let name = std::ffi::CString::new(config.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { nix::libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let output = native_startup_with_config(dir.path(), &config);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for expected in [
+        config.to_str().unwrap(),
+        "not a regular file",
+        "Restore a readable regular file",
     ] {
         assert!(stderr.contains(expected), "{stderr}");
     }

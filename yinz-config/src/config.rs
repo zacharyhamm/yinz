@@ -517,6 +517,7 @@ fn managed_recovery(error: String) -> String {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConfigRead {
     Ordinary,
+    Checked,
     Saved,
 }
 
@@ -524,7 +525,7 @@ impl ConfigRead {
     pub(crate) fn reader(self) -> fn(&Path) -> io::Result<String> {
         match self {
             Self::Ordinary => |path| std::fs::read_to_string(path),
-            Self::Saved => read_regular_config,
+            Self::Checked | Self::Saved => read_regular_config,
         }
     }
 
@@ -546,7 +547,7 @@ impl ConfigRead {
     pub(crate) fn exists(self, path: &Path) -> Result<bool, ConfigError> {
         match self {
             Self::Ordinary => Ok(path.exists()),
-            Self::Saved => path
+            Self::Checked | Self::Saved => path
                 .try_exists()
                 .map_err(|error| ConfigError::IoPath(error, path.into())),
         }
@@ -559,10 +560,27 @@ impl Config {
         config_dir: Option<&Path>,
         clean: bool,
     ) -> ConfigResult {
+        Self::load_with(config_path, config_dir, clean, ConfigRead::Ordinary)
+    }
+
+    /// Read runtime layers from checked regular files, skipping invalid drop-ins.
+    pub fn load_checked(
+        config_path: Option<&Path>,
+        config_dir: Option<&Path>,
+        clean: bool,
+    ) -> ConfigResult {
+        Self::load_with(config_path, config_dir, clean, ConfigRead::Checked)
+    }
+
+    pub(crate) fn load_with(
+        config_path: Option<&Path>,
+        config_dir: Option<&Path>,
+        clean: bool,
+        mode: ConfigRead,
+    ) -> ConfigResult {
         if clean {
             return Config::from_default_assets();
         }
-        let mode = ConfigRead::Ordinary;
         Self::load_layers(config_path, config_dir, mode, mode.reader())
     }
 
@@ -1376,17 +1394,25 @@ pub async fn watch_config_file_changes<F, Fut>(
     F: Fn(Config) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send,
 {
-    watch_config_file_changes_inner(config_file_path, config_dir, on_config_change, || {}, || {})
-        .await;
+    watch_config_file_changes_inner(
+        config_file_path,
+        config_dir,
+        on_config_change,
+        || {},
+        || {},
+        |_| {},
+    )
+    .await;
 }
 
-// Tests can observe registration and main-file loss through the production watcher loop.
+// Tests can observe registration, main-file loss and reads through the production loop.
 async fn watch_config_file_changes_inner<F, Fut>(
     config_file_path: PathBuf,
     config_dir: Option<&Path>,
     on_config_change: F,
     on_ready: impl FnOnce() + Send,
     on_main_lost: impl Fn() + Send,
+    on_main_read: impl Fn(&str) + Send,
 ) where
     F: Fn(Config) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send,
@@ -1394,7 +1420,10 @@ async fn watch_config_file_changes_inner<F, Fut>(
     use notify::{self, Config as WatcherConfig, Event, PollWatcher, RecursiveMode, Watcher};
     use std::time::{Duration, SystemTime};
     use tokio::sync::mpsc;
+    use tokio::time::Instant;
     use yinz_runtime::errors::prelude::*;
+
+    const SETTLE: Duration = Duration::from_millis(100);
 
     #[derive(PartialEq, Eq)]
     struct MainConfig {
@@ -1416,23 +1445,14 @@ async fn watch_config_file_changes_inner<F, Fut>(
         config_dir: Option<&Path>,
         main_text: &str,
     ) -> Result<(Config, Option<PathBuf>), ConfigError> {
-        let config = Config::load_layers(
-            Some(config_file_path),
-            config_dir,
-            ConfigRead::Ordinary,
-            |_| Ok(main_text.to_owned()),
-        )?;
+        let mode = ConfigRead::Checked;
+        let config = Config::load_layers(Some(config_file_path), config_dir, mode, |_| {
+            Ok(main_text.to_owned())
+        })?;
         let config_dir = config_dir.map(Path::to_path_buf);
-        let (_, mut config) = load_layout_and_config(
-            None,
-            config,
-            config_dir.clone(),
-            Some(config_file_path),
-            None,
-            None,
-            PathBuf::from("."),
-        )?;
-        let config_options = apply_themes(&mut config, None, config_dir.clone())?;
+        let mut config =
+            load_default_layout_config(config, config_dir.clone(), Some(config_file_path), mode)?;
+        let config_options = apply_themes_with(&mut config, None, config_dir.clone(), mode)?;
         let theme_dir = config_options.theme_dir.or_else(|| {
             home::get_theme_dir(config_dir.or_else(home::find_default_config_dir))
                 .filter(|dir| dir.exists())
@@ -1463,6 +1483,7 @@ async fn watch_config_file_changes_inner<F, Fut>(
 
     let mut on_ready = Some(on_ready);
     let mut last_main = None;
+    let mut last_dependency_error = None;
     let mut recover_on_registration = false;
     loop {
         // Wait on the main path alone when it is missing. An unusable path still
@@ -1476,9 +1497,15 @@ async fn watch_config_file_changes_inner<F, Fut>(
             }
         };
         let watched_theme_dir = initial_main.as_ref().ok().and_then(|main| {
-            load_config_and_theme_dir(&config_file_path, config_dir, &main.text)
-                .ok()
-                .and_then(|(_, theme_dir)| theme_dir)
+            match load_config_and_theme_dir(&config_file_path, config_dir, &main.text) {
+                Ok((_, theme_dir)) => theme_dir,
+                Err(error) => {
+                    // A theme directory cannot be discovered when a dependency is
+                    // unusable. Retry through the same publication path.
+                    recover_on_registration |= matches!(error, ConfigError::IoPath(..));
+                    None
+                },
+            }
         });
         if last_main.is_none() {
             if let Err(error) = &initial_main {
@@ -1524,6 +1551,7 @@ async fn watch_config_file_changes_inner<F, Fut>(
 
         let mut presence_probe = tokio::time::interval(Duration::from_secs(1));
         presence_probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut settle_at = None;
         let main_lost = loop {
             // After a missing main returns, load the full configuration after the
             // directories are registered, so their initial snapshots cannot hide a write.
@@ -1575,48 +1603,76 @@ async fn watch_config_file_changes_inner<F, Fut>(
                             }
                             // Register before loading so a racing write is read or observed.
                         }
-                        changed && !overlay_watch_failed
+                        (changed && !overlay_watch_failed) || last_dependency_error.is_some()
                     },
+                    _ = tokio::time::sleep_until(settle_at.unwrap_or_else(Instant::now)),
+                        if settle_at.is_some() => false,
                 }
             };
-            if reload_layers {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-
             let current = read_main(&config_file_path);
+            if let Ok(main) = &current {
+                on_main_read(&main.text);
+            }
             let changed = match (last_main.as_ref(), &current) {
                 (Some(Ok(previous)), Ok(main)) => previous != main,
                 (Some(Err(previous)), Err(error)) => previous.kind() != error.kind(),
                 _ => true,
             };
             let main = match last_main.insert(current) {
-                Ok(main) if changed || reload_layers => main,
-                Ok(_) => continue,
+                Ok(main) => main,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => break true,
                 Err(error) => {
+                    settle_at = None;
                     if changed {
                         log_main_read_error(&config_file_path, error);
                     }
                     continue;
                 },
             };
+            if changed || reload_layers {
+                settle_at = Some(Instant::now() + SETTLE);
+                continue;
+            }
+            if !settle_at.is_some_and(|deadline| Instant::now() >= deadline) {
+                continue;
+            }
+            // The read after the deadline still matches the candidate.
+            settle_at = None;
 
-            let (config, theme_dir) =
-                match load_config_and_theme_dir(&config_file_path, config_dir, &main.text) {
-                    Ok(loaded) => loaded,
-                    Err(error) => {
+            let (config, theme_dir) = match load_config_and_theme_dir(
+                &config_file_path,
+                config_dir,
+                &main.text,
+            ) {
+                Ok(loaded) => loaded,
+                Err(error @ ConfigError::IoPath(..)) => {
+                    let diagnostic = error.diagnostic_message();
+                    if last_dependency_error.as_ref() != Some(&diagnostic) {
                         log::error!(
-                            "Failed to reload config from {}",
-                            error.diagnostic_message_for_file(&config_file_path)
+                            "Failed to reload config: {diagnostic}. Restore a readable regular file at the reported path."
                         );
-                        continue;
-                    },
-                };
+                        last_dependency_error = Some(diagnostic);
+                    }
+                    continue;
+                },
+                Err(error) => {
+                    last_dependency_error = None;
+                    log::error!(
+                        "Failed to reload config from {}",
+                        error.diagnostic_message_for_file(&config_file_path)
+                    );
+                    continue;
+                },
+            };
+            last_dependency_error = None;
             on_config_change(config).await;
             if theme_dir != watched_theme_dir {
                 break false;
             }
         };
+        // If the directory watcher had to restart mid-settle, the next
+        // registration must still publish the pending snapshot.
+        recover_on_registration |= settle_at.is_some();
         if main_lost {
             drop(watcher);
             on_main_lost();
@@ -1711,19 +1767,16 @@ fn configured_layout_dir(
         .map(|d| d.canonicalize().unwrap_or(d))
 }
 
-pub(crate) fn load_saved_layout_config(
+pub(crate) fn load_default_layout_config(
     config: Config,
     config_dir: Option<PathBuf>,
     config_path: Option<&Path>,
+    mode: ConfigRead,
 ) -> ConfigResult {
     let layout_dir = configured_layout_dir(None, &config, config_dir.clone());
     let layout_path = config.options.default_layout.clone();
-    let (_, config) = crate::layout::from_path_or_default_with(
-        layout_path.as_ref(),
-        layout_dir,
-        config,
-        ConfigRead::Saved,
-    )?;
+    let (_, config) =
+        crate::layout::from_path_or_default_with(layout_path.as_ref(), layout_dir, config, mode)?;
     config.resolve_plugin_repositories(config_path, config_dir.as_deref())
 }
 
@@ -1779,6 +1832,15 @@ pub fn apply_themes(
     config_dir: Option<PathBuf>,
 ) -> Result<Options, ConfigError> {
     apply_themes_with(config, cli_config_options, config_dir, ConfigRead::Ordinary)
+}
+
+/// Load external themes for a checked runtime configuration.
+pub fn apply_checked_themes(
+    config: &mut Config,
+    cli_config_options: Option<Options>,
+    config_dir: Option<PathBuf>,
+) -> Result<Options, ConfigError> {
+    apply_themes_with(config, cli_config_options, config_dir, ConfigRead::Checked)
 }
 
 pub(crate) fn apply_themes_with(
