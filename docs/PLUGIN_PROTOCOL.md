@@ -960,9 +960,16 @@ cannot dispatch the new variant.
 Focus revalidates selectability and suppression and uses the first attached
 terminal. Local focus executes in that same screen turn through the palette's
 focus core; a pending terminal layout returns recoverable `unavailable` for retry.
-Peer focus revalidates the owner and instance in the screen's current cache and uses the
-palette's session switch once the scanned socket and published session names
-agree. A rename awaiting publication returns recoverable `unavailable`.
+Peer focus requires matching scanned and published names, then sends the
+read-only `VerifyFocus` action to the scanned socket in the existing
+`WebPeerGuarded` envelope. The peer checks the running instance, canonical
+pane, provider, conversation, selectability and suppression before replying.
+The probe and final serving Screen check share a five-second budget. A
+successful probe permits the serving Screen to recheck its cache and dispatch
+the palette's name-based session switch. The destination can still change
+between verification and terminal reconnect. A rename awaiting publication,
+an older peer that cannot verify Focus, or a timeout returns recoverable
+`unavailable`. A confirmed identity mismatch returns `target_changed`.
 
 Rows contain `id`, `ref`, `session`, `current_session`, `pane_id` (canonical),
 `pane` (display number), `provider`, `state`, `glyph`, `status`, `host`, `title`,

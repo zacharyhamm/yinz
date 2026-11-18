@@ -36,10 +36,81 @@ test('scoped peers with the same conversation retain isolated recovery records a
   const reloaded = setup({ storage: session }).subs;
   assert.deepEqual(reloaded.staleRecords(peer.id).map(({ draft }) => draft), ['peer text']);
   assert.deepEqual(reloaded.staleRecords(replacement.id).map(({ draft }) => draft), ['other peer text']);
-  reloaded.discardUnavailable(peer);
+  reloaded.discardUnavailable(peer, 'draft');
   assert.deepEqual(reloaded.staleRecords(peer.id), []);
   assert.equal(reloaded.get(replacement).draft, 'other peer text');
   assert.equal(reloaded.get(A).draft, 'old unscoped record');
+});
+
+test('a scoped retry-time snapshot miss preserves the frozen attempt and independent edit', async () => {
+  const peer = { ...A, id: `peer-detail:v1:${'a'.repeat(64)}` };
+  const { subs, fetch, session } = setup();
+  subs.setDraft(peer, 'original text');
+  const lost = fetch.hold();
+  const first = subs.send(peer);
+  lost.reject(new TypeError('lost response'));
+  await first;
+  subs.setDraft(peer, 'edited text');
+  const miss = fetch.hold();
+  const retry = subs.retry(peer);
+  miss.resolve(response(409, { error: { code: 'target_changed', message: 'Agent disappeared or changed identity' } }));
+  assert.equal((await retry).classification.verificationLost, true);
+  const again = setup({ storage: session });
+  assert.equal(again.subs.view(peer).state, 'unknown');
+  assert.equal(again.subs.get(peer).draft, 'edited text');
+  assert.equal(again.fetch.calls.length, 0);
+  const matched = again.fetch.hold();
+  const resent = again.subs.retry(peer);
+  matched.resolve(ok('submitted', 'uuid-1'));
+  await resent;
+  assert.deepEqual([fetch.calls[0].body, fetch.calls[1].body], [again.fetch.calls[0].body, again.fetch.calls[0].body]);
+  assert.equal(again.subs.get(peer).draft, 'edited text');
+});
+
+test('legacy HTTP 409 recovery requires verification of the same scoped pending record', async () => {
+  const peer = { ...A, id: `peer-detail:v1:${'a'.repeat(64)}` };
+  const other = { ...peer, id: `peer-detail:v1:${'b'.repeat(64)}` };
+  const { subs, fetch, session } = setup();
+  subs.setDraft(peer, 'saved');
+  const conflict = fetch.hold();
+  const send = subs.send(peer);
+  conflict.resolve(response(409, { error: { code: 'target_changed' } }));
+  await send;
+  const again = setup({ storage: session }).subs;
+  again.restoreVerifiedRetry(other);
+  assert.equal(again.view(peer).state, 'incompatible');
+  const key = targetKey(peer);
+  const saved = JSON.parse(session.map.get(key));
+  session.map.set(key, JSON.stringify({ ...saved, incompatible: { ...saved.incompatible, replacement: other } }));
+  const replaced = setup({ storage: session }).subs;
+  replaced.restoreVerifiedRetry(peer);
+  assert.equal(replaced.view(peer).state, 'incompatible');
+  session.map.set(key, JSON.stringify(saved));
+  const returned = setup({ storage: session }).subs;
+  returned.restoreVerifiedRetry(peer);
+  assert.equal(returned.view(peer).state, 'unknown');
+  assert.equal(returned.view(peer).submission_id, 'uuid-1');
+});
+
+test('scoped discard changes only the chosen text and protects a sending attempt', async () => {
+  const peer = { ...A, id: `peer-detail:v1:${'c'.repeat(64)}` };
+  for (const field of ['draft', 'attempt', 'shared']) {
+    const { subs, fetch, session } = setup();
+    subs.setDraft(peer, 'attempt text');
+    const lost = fetch.hold();
+    const send = subs.send(peer);
+    subs.discardUnavailable(peer, 'shared');
+    assert.equal(subs.view(peer).state, 'sending');
+    lost.reject(new TypeError('lost response'));
+    await send;
+    if (field !== 'shared') subs.setDraft(peer, 'edited text');
+    subs.discardUnavailable(peer, field);
+    const again = setup({ storage: session }).subs.get(peer);
+    assert.equal(again.draft, field === 'attempt' ? 'edited text' : '');
+    assert.equal(again.pending?.text, field === 'draft' ? 'attempt text' : undefined);
+    assert.equal(again.pending?.submission_id, field === 'draft' ? 'uuid-1' : undefined);
+    assert.equal(fetch.calls.length, 1);
+  }
 });
 
 test('persists the safety record before the prompt fetch, with the exact body', async () => {

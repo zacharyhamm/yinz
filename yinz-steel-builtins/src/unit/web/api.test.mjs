@@ -37,7 +37,7 @@ test('peer cards use a scoped selection and a stripped selector allows only stor
   assert.equal(cardDetail({ ...peer, detail_id: undefined, current_session: undefined,
     tab_group_session: 'peer' }, 'local'), null);
   assert.deepEqual(parseHash(detailHash(cardDetail({ ...other, detail_id: null }, 'local'))),
-    { view: 'detail', id: other.id, run: 'other-run', tab: 'screen', bind: false });
+    { view: 'detail', id: other.id, run: 'other-run', tab: 'timeline', bind: false });
 });
 
 function setup({ token = 'yzw1_token', remember = false, fail = null } = {}) {

@@ -2,14 +2,20 @@
 use super::command_palette::history::LiveAgentTab;
 use super::Screen;
 use std::collections::HashMap;
+use std::time::Instant;
 use yinz_bus::command_palette::HistoryHeader;
 use yinz_bus::web::{WebAgentRef, WebFocusError, WebLiveAgent, WebLiveHeader};
 use yinz_runtime::errors::prelude::*;
-use yinz_types::agent::control::{peer_web_detail_id, valid_web_peer_instance};
+use yinz_types::agent::control::{
+    peer_web_detail_id, valid_web_identity, valid_web_peer_instance, AgentOutcome,
+};
+use yinz_types::agent::AgentState;
 use yinz_types::internal_ids::SessionName;
+use yinz_types::pane_id::PaneId;
 
 impl Screen {
     pub(super) fn web_live_agents(&mut self, reply: crossbeam::channel::Sender<Vec<WebLiveAgent>>) {
+        let instance = self.instance_id.to_string();
         let mut local_groups = HashMap::new();
         let agents = self
             .live_agents_with_tabs()
@@ -33,7 +39,7 @@ impl Screen {
                         socket_name,
                         session,
                         position,
-                    } => (
+                    } if session.web_peer_instance.as_deref() != Some(instance.as_str()) => (
                         socket_name,
                         session
                             .tabs
@@ -46,6 +52,7 @@ impl Screen {
                             .filter(|value| valid_web_peer_instance(value))
                             .map(str::to_owned),
                     ),
+                    LiveAgentTab::Peer { .. } => return None,
                 };
                 let (glyph, status, _) = yinz_panes::ui::agent_title::status(presentation.state);
                 let mut header = HistoryHeader::default();
@@ -96,14 +103,47 @@ impl Screen {
             .non_fatal();
     }
 
+    pub(super) fn verify_web_peer_focus(
+        &self,
+        expected_instance: &str,
+        pane_id: PaneId,
+        kind: &str,
+        conversation: &str,
+    ) -> AgentOutcome {
+        if expected_instance != self.instance_id.to_string()
+            || !valid_web_identity(kind)
+            || !valid_web_identity(conversation)
+        {
+            return AgentOutcome::TargetChanged;
+        }
+        let Some(pane) = self.get_pane_info(pane_id) else {
+            return AgentOutcome::TargetNotFound;
+        };
+        let Some(agent) = pane.agent else {
+            return AgentOutcome::TargetChanged;
+        };
+        if agent.kind != kind || agent.session_id.as_deref() != Some(conversation) {
+            return AgentOutcome::TargetChanged;
+        }
+        if pane.exited || agent.state == AgentState::Exited {
+            return AgentOutcome::TargetExited;
+        }
+        if !pane.is_selectable || pane.is_suppressed {
+            return AgentOutcome::Rejected;
+        }
+        AgentOutcome::Ok
+    }
+
     pub(super) fn web_focus_agent(
         &mut self,
         agent: WebAgentRef,
         owner: SessionName,
         expected_instance: Option<&str>,
+        deadline: Instant,
         reply: crossbeam::channel::Sender<Result<(), WebFocusError>>,
     ) {
         let result = (|| {
+            let own_instance = self.instance_id.to_string();
             let mut matches = self
                 .live_agents_with_tabs()
                 .into_iter()
@@ -115,7 +155,8 @@ impl Screen {
                         && match (tab, expected_instance) {
                             (LiveAgentTab::Local(_), None) => agent.matches_agent(&live.id(), info),
                             (LiveAgentTab::Peer { session, .. }, Some(instance))
-                                if session.web_peer_instance.as_deref() == Some(instance) =>
+                                if instance != own_instance
+                                    && session.web_peer_instance.as_deref() == Some(instance) =>
                             {
                                 agent.matches_agent(
                                     &peer_web_detail_id(instance, live.pane.id, info),
@@ -140,6 +181,12 @@ impl Screen {
             if *socket_name != live.session {
                 return Err(WebFocusError::Unavailable(
                     "Focus is temporarily unavailable while the peer publishes its renamed session. Refresh Agents and reopen the card.".into(),
+                ));
+            }
+            if expected_instance.is_some() && (!live.pane.is_selectable || live.pane.is_suppressed)
+            {
+                return Err(WebFocusError::Unavailable(
+                    "The peer pane cannot be focused. Refresh Agents and try again.".into(),
                 ));
             }
             let action = self
@@ -186,6 +233,11 @@ impl Screen {
                 }
             } else {
                 // Peer focus retains palette session-switch semantics, based on this snapshot.
+                if Instant::now() >= deadline {
+                    return Err(WebFocusError::Unavailable(
+                        "Focus verification expired. Refresh Agents and try again.".into(),
+                    ));
+                }
                 self.dispatch_command_palette_action(
                     pane,
                     tab,

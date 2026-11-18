@@ -333,11 +333,13 @@ plugin configuration or secrets.
   newly recorded run keeps that binding. A restart, conversation change or older
   bookmark can leave only the retained run available. Return to Agents and
   reopen the card for the current binding. Older peers without a published
-  identity offer stored history when a run is available.
+  identity open directly to the stored Timeline when a run is available. When
+  there is no recorded run, the card explains why live controls are unavailable.
   This labelled region scrolls when its content is long. Its open/closed choice
   survives polling, tab changes and a live agent moving to a new run; leaving
   or reloading the detail view resets it. Expanding it preserves the draft and
-  reading position. A waiting agent opens on **Screen**; others open on **Timeline**.
+  reading position. A live waiting agent opens on **Screen**. A stored run opens
+  on **Timeline**.
   - **Timeline** keeps the newest message at the bottom unless you scroll up,
     in which case a **New messages** button appears. **Load earlier** follows
     the native `earlier` navigation. Tapping a message opens its reader; tool
@@ -365,8 +367,10 @@ plugin configuration or secrets.
   when no live agent is bound and disabled with the native reason when
   `can_prompt` is false.
   When a scoped peer is unavailable, its exact Detail link still offers its
-  saved text for copying or discarding, including after reload. A pending
-  attempt can be retried only after the same target is available again. Drafts
+  saved text for copying or discarding, including after reload when the first
+  History or Agents request fails. A separate edit and a frozen attempt can be
+  discarded independently. If an explicit retry cannot verify the peer, reopen
+  the exact link once the peer returns to retry with the original submission ID. Drafts
   saved before peer identity was recorded stay in browser storage without
   transferring to a peer composer.
 - **Actions sheet**: **Focus on desktop** (labeled with the target session for
@@ -374,10 +378,14 @@ plugin configuration or secrets.
   for up to eight of the native keys. Native code exposes no restart, close or
   spawn action.
 
-Peer Screen, keys, and prompts use the scanned session socket and recheck the
-running Screen instance, pane, provider and conversation at the destination.
-During a rename, **Focus on desktop** becomes
-available once the peer cache contains the newly published session name. If a
+Peer Screen, keys, prompts and **Focus on desktop** use the scanned session
+socket and check the running Screen instance, pane, provider and conversation.
+Focus also checks that the pane is selectable. It verifies the peer before
+asking the desktop to reconnect by session name. The peer can still change
+between verification and that reconnect. During a rename, Focus becomes
+available once the peer cache contains the newly published session name.
+A Focus-only failure explains the reason and leaves other live controls
+available while the binding is valid. If a
 key reports that the agent changed or disappeared, refresh Agents and reopen
 its card. If delivery is uncertain, inspect the agent before retrying.
 

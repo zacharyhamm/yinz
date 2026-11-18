@@ -16944,6 +16944,7 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
         original_ref.clone(),
         renamed_key.clone(),
         original.peer_instance.as_deref(),
+        Instant::now() + Duration::from_secs(5),
         tx,
     );
     assert!(matches!(
@@ -16996,6 +16997,7 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
         web_agents_reference(converged),
         replacement.name,
         converged.peer_instance.as_deref(),
+        Instant::now() + Duration::from_secs(5),
         tx,
     );
     assert_eq!(
@@ -17007,6 +17009,7 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
         web_agents_reference(converged),
         renamed_key.clone(),
         replacement.web_peer_instance.as_deref(),
+        Instant::now() + Duration::from_secs(5),
         tx,
     );
     assert_eq!(
@@ -17018,6 +17021,7 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
         web_agents_reference(converged),
         renamed_key,
         converged.peer_instance.as_deref(),
+        Instant::now() + Duration::from_secs(5),
         tx,
     );
     assert_eq!(
@@ -17026,7 +17030,13 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
     );
     let reference = web_agents_reference(detached.iter().find(|a| a.current_session).unwrap());
     let (tx, rx) = channels::bounded(1);
-    screen.web_focus_agent(reference, screen.session_name.clone(), None, tx);
+    screen.web_focus_agent(
+        reference,
+        screen.session_name.clone(),
+        None,
+        Instant::now() + Duration::from_secs(5),
+        tx,
+    );
     assert_eq!(
         rx.recv().unwrap(),
         Err(yinz_bus::web::WebFocusError::NoTerminal)
@@ -17039,6 +17049,82 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
     let remaining = web_agents_snapshot(&mut screen);
     assert_eq!(remaining.len(), 4);
     assert!(remaining.iter().all(|a| !a.current_session));
+}
+
+#[test]
+fn web_agents_snapshot_excludes_the_serving_sessions_former_self_after_rename() {
+    use yinz_ipc::session_ownership::SessionOwnership;
+    use yinz_runtime::consts::YINZ_SOCK_DIR;
+    use yinz_types::internal_ids::SessionName;
+
+    let (mut screen, _, _) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    report(&mut screen, permission_wait("codex"));
+    screen.log_and_report_session_state().unwrap();
+    let old: SessionName = format!("web-old-{}", uuid::Uuid::new_v4()).into();
+    let renamed: SessionName = format!("web-new-{}", uuid::Uuid::new_v4()).into();
+    let peer: SessionName = format!("web-peer-{}", uuid::Uuid::new_v4()).into();
+    let mut initial = screen.peer_sessions_cache[&screen.session_name].clone();
+    screen.session_name = old.clone();
+    initial.name = old.clone();
+    initial.web_peer_instance = None;
+    screen.peer_sessions_cache.clear();
+    screen.peer_sessions_cache.insert(old.clone(), initial);
+    screen.report_pane_state().unwrap();
+    let former = screen.peer_sessions_cache[&old].clone();
+    let instance = screen.instance_id.to_string();
+    assert_eq!(former.web_peer_instance.as_deref(), Some(instance.as_str()));
+    let scoped_self = yinz_types::agent::control::peer_web_detail_id(
+        &instance,
+        PANE,
+        former
+            .panes
+            .panes
+            .values()
+            .flatten()
+            .find(|pane| pane.id == PANE)
+            .unwrap()
+            .agent
+            .as_ref()
+            .unwrap(),
+    );
+
+    std::fs::create_dir_all(&*YINZ_SOCK_DIR).unwrap();
+    let ownership = std::sync::Arc::new(
+        SessionOwnership::acquire(&YINZ_SOCK_DIR.join(&old))
+            .unwrap()
+            .unwrap(),
+    );
+    let _listener = ownership.bind().unwrap();
+    screen.bus.senders.session_ownership = Some(std::sync::Arc::downgrade(&ownership));
+    screen.rename_session(renamed.clone(), CLIENT).unwrap();
+    assert_eq!(screen.session_name, renamed);
+    assert!(screen.peer_sessions_cache.contains_key(&old));
+
+    let mut genuine_peer = former;
+    genuine_peer.web_peer_instance = Some(uuid::Uuid::new_v4().to_string());
+    // The peer deliberately reuses the old embedded name, pane and group IDs.
+    screen
+        .peer_sessions_cache
+        .insert(peer.clone(), genuine_peer);
+    let live = web_agents_snapshot(&mut screen);
+    let palette = screen.live_palette_agents();
+    assert_eq!(palette.iter().filter(|row| row.pane.id == PANE).count(), 3);
+    assert_eq!(live.len(), 2);
+    assert!(live
+        .iter()
+        .all(|row| row.pane.id == PANE && row.metadata["state"] == "waiting"));
+    assert!(!live
+        .iter()
+        .any(|row| row.peer_detail_id().as_deref() == Some(scoped_self.as_str())));
+    let local = live.iter().find(|row| row.current_session).unwrap();
+    assert_eq!(local.tab_group_session, renamed);
+    assert_eq!(local.tab_group.as_ref().unwrap().id, 0);
+    assert_eq!(local.tab_group.as_ref().unwrap().name, "Default");
+    let other = live.iter().find(|row| !row.current_session).unwrap();
+    assert_eq!(other.tab_group_session, peer);
+    assert_eq!(other.tab_group, local.tab_group);
+    assert!(other.peer_detail_id().is_some());
 }
 
 #[test]
@@ -17081,7 +17167,13 @@ fn web_agents_focus_revalidates_provider_conversation_selectability_and_peer_mem
             _ => reference.id = "live-agent:unknown-peer:7".into(),
         }
         let (tx, rx) = channels::bounded(1);
-        screen.web_focus_agent(reference, screen.session_name.clone(), None, tx);
+        screen.web_focus_agent(
+            reference,
+            screen.session_name.clone(),
+            None,
+            Instant::now() + Duration::from_secs(5),
+            tx,
+        );
         assert_eq!(
             rx.recv().unwrap(),
             Err(WebFocusError::TargetChanged),
@@ -17208,6 +17300,130 @@ fn web_agents_peer_instance_guard_refuses_a_restarted_screen_before_read_or_inpu
 }
 
 #[test]
+fn web_agents_peer_focus_verification_checks_live_identity_without_terminal_actions() {
+    use yinz_types::agent::control::WebAgentAction::VerifyFocus;
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    let current = screen.instance_id.to_string();
+    let replaced = uuid::Uuid::new_v4().to_string();
+    let request = |instance: &str, kind: &str, conversation: &str| AgentRequest::WebPeerGuarded {
+        expected_instance: instance.into(),
+        pane_id: PANE,
+        expected_kind: kind.into(),
+        expected_session_id: conversation.into(),
+        action: VerifyFocus,
+    };
+    let active = screen.get_active_pane_id(&CLIENT);
+    for (instance, kind, conversation, expected) in [
+        (
+            replaced.as_str(),
+            "codex",
+            "conversation",
+            AgentOutcome::TargetChanged,
+        ),
+        (
+            current.as_str(),
+            "claude",
+            "conversation",
+            AgentOutcome::TargetChanged,
+        ),
+        (
+            current.as_str(),
+            "codex",
+            "old",
+            AgentOutcome::TargetChanged,
+        ),
+        (current.as_str(), "codex", "conversation", AgentOutcome::Ok),
+    ] {
+        screen.agent_control(request(instance, kind, conversation), CLIENT);
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(response.outcome, expected);
+        assert!(response.output.is_none());
+        assert!(finish_paste(&writes).is_empty());
+        assert_eq!(screen.get_active_pane_id(&CLIENT), active);
+    }
+    screen.with_pane(PANE, |pane| pane.set_selectable(false));
+    screen.agent_control(request(&current, "codex", "conversation"), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Rejected
+    );
+    screen.with_pane(PANE, |pane| pane.set_selectable(true));
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .suppress_pane(PANE, None);
+    screen.agent_control(request(&current, "codex", "conversation"), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Rejected
+    );
+    screen.agent_control(
+        AgentRequest::WebGuarded {
+            pane_id: PANE,
+            expected_kind: "codex".into(),
+            expected_session_id: "conversation".into(),
+            action: VerifyFocus,
+        },
+        CLIENT,
+    );
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Rejected
+    );
+    assert!(finish_paste(&writes).is_empty());
+}
+
+#[test]
+fn web_agents_focus_refuses_expired_peer_dispatch() {
+    let (mut screen, messages, _) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    screen.log_and_report_session_state().unwrap();
+    let mut peer = screen.peer_sessions_cache[&screen.session_name].clone();
+    peer.name = "focus-peer".into();
+    peer.web_peer_instance = Some(uuid::Uuid::new_v4().to_string());
+    screen
+        .peer_sessions_cache
+        .insert(peer.name.clone(), peer.clone());
+    let snapshot = web_agents_snapshot(&mut screen);
+    let target = snapshot.iter().find(|row| !row.current_session).unwrap();
+    let (tx, rx) = channels::bounded(1);
+    screen.web_focus_agent(
+        web_agents_reference(target),
+        peer.name.clone(),
+        peer.web_peer_instance.as_deref(),
+        Instant::now(),
+        tx,
+    );
+    assert!(matches!(rx.recv().unwrap(),
+        Err(yinz_bus::web::WebFocusError::Unavailable(message)) if message.contains("expired")
+    ));
+    assert!(!messages
+        .lock()
+        .unwrap()
+        .values()
+        .flatten()
+        .any(|message| matches!(message, ServerToClientMsg::SwitchSession { .. })));
+    for pane in peer.panes.panes.values_mut().flatten() {
+        pane.is_selectable = false;
+    }
+    screen
+        .peer_sessions_cache
+        .insert(peer.name.clone(), peer.clone());
+    let (tx, rx) = channels::bounded(1);
+    screen.web_focus_agent(
+        web_agents_reference(target),
+        peer.name,
+        peer.web_peer_instance.as_deref(),
+        Instant::now() + Duration::from_secs(5),
+        tx,
+    );
+    assert!(matches!(rx.recv().unwrap(),
+        Err(yinz_bus::web::WebFocusError::Unavailable(message)) if message.contains("cannot be focused")
+    ));
+}
+
+#[test]
 fn web_agents_guarded_read_keys_and_prompt_retry_use_existing_control_state_machine() {
     use yinz_types::agent::control::WebAgentAction;
     let (mut screen, messages, writes) = setup("codex");
@@ -17286,7 +17502,13 @@ fn web_agents_local_focus_finishes_before_reply_in_the_validated_screen_turn() {
         .focus_pane_with_id(PaneId::Terminal(TerminalId::new(1)), true, false, CLIENT)
         .unwrap();
     let (reply, rx) = channels::bounded(1);
-    screen.web_focus_agent(reference, screen.session_name.clone(), None, reply);
+    screen.web_focus_agent(
+        reference,
+        screen.session_name.clone(),
+        None,
+        Instant::now() + Duration::from_secs(5),
+        reply,
+    );
     assert_eq!(rx.recv().unwrap(), Ok(()));
     assert_eq!(
         screen.get_active_pane_id(&CLIENT),

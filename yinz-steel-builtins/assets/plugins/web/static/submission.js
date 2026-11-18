@@ -21,6 +21,7 @@ import { KEYS, describeError, utf8Length } from './api.js';
 export const UNKNOWN_TEXT = 'Outcome unknown — check the timeline';
 export const MAX_PROMPT_BYTES = 32768;
 const RECORD_VERSION = 1;
+const HTTP_TARGET_CHANGED = 'The agent changed or disappeared. This prompt was not sent to any replacement.';
 const TARGET_OUTCOMES = new Set(['target_changed', 'target_closed', 'target_not_found', 'not_agent', 'target_exited']);
 // Rejected by native policy before dispatch: definitely not delivered.
 const DEFINITE_HTTP = new Set([400, 403, 404, 408, 413, 415, 429]);
@@ -31,6 +32,10 @@ function identity(v) {
 
 export function validTarget(t) {
   return !!t && identity(t.id) && identity(t.kind) && identity(t.session_id);
+}
+
+export function isScopedPeer(id) {
+  return typeof id === 'string' && /^peer-detail:v1:[0-9a-f]{64}$/.test(id);
 }
 
 export function sameTarget(a, b) {
@@ -97,7 +102,7 @@ export function classifyPromptResult(result, id) {
   if (!result || !result.ok) {
     if (result && result.kind === 'http') {
       if (result.status === 409) {
-        return { state: 'incompatible', message: 'The agent changed or disappeared. This prompt was not sent to any replacement.' };
+        return { state: 'incompatible', message: HTTP_TARGET_CHANGED };
       }
       if (DEFINITE_HTTP.has(result.status)) return { state: 'failed', message: `Not sent: ${describeError(result)}` };
       if (result.status === 401) return { state: 'unknown', message: `${UNKNOWN_TEXT}. Your sign-in ended during sending.` };
@@ -180,13 +185,17 @@ export function createSubmissions({ storage, api, uuid = () => globalThis.crypto
     return next;
   }
 
-  async function dispatch(target, attempt) {
+  async function dispatch(target, attempt, retry = false) {
     const { submission_id: id, text } = attempt;
     const result = await api.post('/api/agent/prompt', { agent: targetOf(target), submission_id: id, text });
     const current = load(target);
     // Discarded, retried or replaced meanwhile: a late reply cannot touch another attempt.
     if (!current.pending || current.pending.submission_id !== id) return { record: current, result, stale: true };
-    const c = classifyPromptResult(result, id);
+    // A snapshot miss on this retry does not resolve the earlier attempt.
+    const c = retry && isScopedPeer(target.id) && result?.kind === 'http' &&
+      result.status === 409 && result.code === 'target_changed'
+      ? { state: 'unknown', message: UNKNOWN_TEXT, verificationLost: true }
+      : classifyPromptResult(result, id);
     const record = update(target, (rec) => {
       if (c.state === 'submitted' || c.state === 'command_sent') {
         rec.commandNotice = c.state === 'command_sent' ? c.message : null;
@@ -261,8 +270,17 @@ export function createSubmissions({ storage, api, uuid = () => globalThis.crypto
       const attempt = { ...rec.pending, state: 'sending', attempts: rec.pending.attempts + 1, message: null };
       write({ ...rec, pending: attempt }); // the id is already durable; a failed state write is harmless
       emit(target);
-      const out = await dispatch(target, attempt);
+      const out = await dispatch(target, attempt, true);
       return { ok: true, ...out };
+    },
+    /** Called only after Detail verifies the exact live ref. */
+    restoreVerifiedRetry(target) {
+      if (!isScopedPeer(target.id)) return;
+      const rec = load(target);
+      if (rec.pending?.state === 'unknown' && rec.incompatible?.reason === HTTP_TARGET_CHANGED &&
+          !rec.incompatible.replacement) {
+        update(target, (r) => ({ ...r, incompatible: null, pending: { ...r.pending, message: UNKNOWN_TEXT } }));
+      }
     },
     /**
      * Drop the attempt. The editable draft stays for the current identity; a record
@@ -271,8 +289,17 @@ export function createSubmissions({ storage, api, uuid = () => globalThis.crypto
     discard(target) {
       return update(target, (r) => ({ ...r, draft: r.incompatible ? '' : r.draft, pending: null, lastFailure: null, commandNotice: null, incompatible: null, adopted: null }));
     },
-    discardUnavailable(target) {
-      return update(target, () => emptyRecord(target));
+    discardUnavailable(target, field) {
+      const rec = load(target);
+      if (field === 'draft') {
+        if (rec.pending?.text === rec.draft) return rec;
+        return update(target, (r) => r.pending ? { ...r, draft: '' } : emptyRecord(target));
+      }
+      if (!rec.pending || rec.pending.state === 'sending') return rec;
+      if (field === 'shared' && rec.pending.text !== rec.draft) return rec;
+      return update(target, (r) => field === 'shared' || !r.draft
+        ? emptyRecord(target)
+        : { ...r, pending: null, lastFailure: null, commandNotice: null });
     },
     /**
      * Explicit user decision after a retarget left this identity's record disabled:
@@ -316,7 +343,7 @@ export function createSubmissions({ storage, api, uuid = () => globalThis.crypto
         }
         if (!validTarget(target) || (current && sameTarget(target, current))) continue;
         const rec = load(target);
-        if (rec.pending || rec.draft.trim() || rec.incompatible) out.push(rec);
+        if (rec.pending || (isScopedPeer(agentId) ? rec.draft : rec.draft.trim()) || rec.incompatible) out.push(rec);
       }
       return out;
     },

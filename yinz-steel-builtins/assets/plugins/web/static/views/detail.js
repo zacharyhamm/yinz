@@ -285,11 +285,14 @@ function OverflowSheet({ env, live, target, onClose, onInterrupt, onKeys, onTarg
   async function focus() {
     onClose();
     const r = await env.api.post('/api/agent/focus', { agent: target });
-    if (r.ok) env.toast(peer ? `Desktop switched to session ${live.session}.` : 'Focused on the desktop.');
-    else if (r.status === 409 || r.data?.response?.outcome === 'target_changed') {
+    if (r.code === 'target_changed') {
       env.toast('The agent changed or disappeared.');
       onTargetGone();
-    } else if (r.status !== 401) env.toast(describeError(r));
+    } else if (r.ok && r.data?.ok === true) {
+      env.toast(peer ? `Desktop switched to session ${live.session}.` : 'Focused on the desktop.');
+    } else if (r.status !== 401) {
+      env.toast(describeError(r.ok ? { kind: 'malformed' } : r));
+    }
   }
   return html`<${Sheet} id="sheet-overflow" title="Actions" onClose=${onClose}>
     <div class="menu-list">
@@ -414,10 +417,13 @@ export function DetailView({ env, route }) {
   const currentRef = candidate?.id === route.id ? candidate : null;
   const actions = route.bind && !!currentRef && !meta.agent_gone && !peerRejected;
   const unavailable = meta.agent_gone || peerRejected || ((store?.loaded || list?.data) && !currentRef);
+  const lookup = store ? tail : list;
+  const lookupFailed = lookup && (lookup.status === 'offline' || lookup.status === 'retrying' || lookup.status === 'error');
+  const scopedRecovery = recoverScoped && (unavailable || (!currentRef && lookupFailed));
 
   function onTargetGone() {
     if (scoped) setPeerRejected(true);
-    refreshLive();
+    refreshTarget();
   }
 
   useEffect(() => {
@@ -425,7 +431,7 @@ export function DetailView({ env, route }) {
       setSheet((value) => ['overflow', 'interrupt', 'keys'].includes(value?.type) ? null : value);
     }
   }, [actions]);
-  const refreshLive = store ? refreshTail : refreshList;
+  const refreshTarget = store ? refreshTail : refreshList;
   const scope = useMemo(() => actions && currentRef ? { target: currentRef } : null,
     [actions, store?.run, currentRef?.id, currentRef?.kind, currentRef?.session_id]);
 
@@ -456,8 +462,12 @@ export function DetailView({ env, route }) {
   }, [awaitingStatus, scope, clearAwaitingStatus]);
 
   useEffect(() => {
-    if (awaitingStatus && awaitingStatus.scope === scope && !env.visibility.isHidden()) refreshLive();
-  }, [awaitingStatus, scope, refreshLive, env.visibility]);
+    if (awaitingStatus && awaitingStatus.scope === scope && !env.visibility.isHidden()) refreshTarget();
+  }, [awaitingStatus, scope, refreshTarget, env.visibility]);
+
+  useEffect(() => {
+    if (recoverScoped && actions) env.submissions.restoreVerifiedRetry(currentRef);
+  }, [recoverScoped, actions, currentRef?.id, currentRef?.kind, currentRef?.session_id]);
 
   function onRetarget(previousRef) {
     setRetargetNotice(true);
@@ -558,10 +568,9 @@ export function DetailView({ env, route }) {
   // A new array only after a store change: the one-second age re-render must not rerun
   // the timeline's anchoring effect.
   const items = useMemo(() => (store ? store.items() : []), [store, version]);
-  const liveStatus = store ? tail : list;
-  const stale = liveStatus && ['offline', 'retrying', 'error'].includes(liveStatus.status);
+  const stale = store ? lookupFailed : recoverScoped && lookupFailed;
   const waitingForAgent = actions && ((scope !== null && sending === scope)
-    || (!stale && (live.state === 'busy' || awaitingStatus?.scope === scope)));
+    || (!lookupFailed && (live.state === 'busy' || awaitingStatus?.scope === scope)));
   const title = live && live.title ? String(live.title) : store && store.meta.header && store.meta.header.name ? String(store.meta.header.name)
     : scoped ? 'Peer agent' : route.id;
   useEffect(() => {
@@ -617,7 +626,7 @@ export function DetailView({ env, route }) {
         actions=${html`<button type="button" class="link-button" onClick=${() => setRetargetNotice(false)}>Dismiss</button>`}>
         The agent moved to a new run; the timeline was reset.<//>` : null}
       ${stale ? html`<${Banner} id="banner-offline" tone="warn"
-        actions=${html`<button type="button" class="link-button" onClick=${() => refreshLive()}>Retry</button>`}>${freshnessText(liveStatus, now)}<//>` : null}
+        actions=${html`<button type="button" class="link-button" onClick=${refreshTarget}>Retry</button>`}>${freshnessText(lookup, now)}<//>` : null}
       ${!route.run && route.bind && !listRow ? html`<${Banner} id="banner-no-run" tone="info">${list && list.data ? 'This agent is not running.' : 'Looking for this agent…'}<//>` : null}
     </div>
     <main class=${cx('detail-body', stale && 'is-stale')} id="main">
@@ -640,9 +649,9 @@ export function DetailView({ env, route }) {
     ${route.bind && live && !(scoped && unavailable) ? html`<footer class="composer-dock">
       ${!scoped ? html`<${StaleSubmissions} env=${env} agentId=${route.id} current=${currentRef} canPrompt=${actions && !!live.can_prompt} />` : null}
       <${Composer} env=${env} live=${live} target=${currentRef} enabled=${actions}
-        onTargetChanged=${(state) => state === 'incompatible' ? onTargetGone() : refreshLive()} />
+        onTargetChanged=${(state) => state === 'incompatible' ? onTargetGone() : refreshTarget()} />
     </footer>` : null}
-    ${((route.bind && !scoped && !live) || (recoverScoped && unavailable)) ? html`<${StaleSubmissions} env=${env}
+    ${((route.bind && !scoped && !live) || scopedRecovery) ? html`<${StaleSubmissions} env=${env}
       agentId=${route.id} scoped=${recoverScoped} dock=${true} />` : null}
     ${actions && sheet?.type === 'overflow' ? html`<${OverflowSheet} env=${env} live=${live} target=${currentRef} onClose=${() => setSheet(null)}
       onInterrupt=${() => setSheet({ type: 'interrupt' })} onKeys=${() => setSheet({ type: 'keys' })} onTargetGone=${onTargetGone} />` : null}

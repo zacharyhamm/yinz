@@ -65,6 +65,8 @@ export function StaleSubmissions({ env, agentId, current, canPrompt, scoped = fa
     ${records.map((rec) => {
       const text = rec.pending ? rec.pending.text : rec.draft;
       const adopted = rec.adopted && current && rec.adopted.session_id === current.session_id && rec.adopted.kind === current.kind;
+      const shared = rec.pending && rec.draft === text;
+      const edited = rec.pending && rec.draft && !shared;
       return html`<div class="submission-panel submission-incompatible" role="alert" key=${`${rec.target.kind}|${rec.target.session_id}`}>
         <p class="submission-message">${rec.incompatible ? rec.incompatible.reason
           : rec.pending ? `${UNKNOWN_TEXT}. The agent is unavailable, so it cannot be retried now.`
@@ -73,15 +75,22 @@ export function StaleSubmissions({ env, agentId, current, canPrompt, scoped = fa
         ${scoped ? html`<label>${rec.pending ? 'Attempted prompt' : 'Saved draft'}
           <textarea class="composer-input" readonly rows=${rowsFor(text)} value=${text}></textarea>
         </label>
-        ${rec.pending && rec.draft.trim() && rec.draft !== text ? html`<label>Edited draft
+        ${edited ? html`<label>Edited draft
           <textarea class="composer-input" readonly rows=${rowsFor(rec.draft)} value=${rec.draft}></textarea>
         </label>` : null}` : html`<p class="submission-text">${preview(text)}</p>`}
         <div class="submission-actions">
           ${current && canPrompt && !adopted ? html`<button type="button" class="button submission-adopt"
             onClick=${() => env.submissions.adopt(rec.target, current)}>Use as a new draft for the current conversation</button>` : null}
           ${adopted ? html`<span class="hint">Copied into the current draft.</span>` : null}
-          <button type="button" class="button submission-discard-stale" onClick=${() => scoped
-            ? env.submissions.discardUnavailable(rec.target) : env.submissions.discard(rec.target)}>Discard</button>
+          ${scoped ? html`
+            ${rec.pending && rec.pending.state !== 'sending' ? html`<button type="button" class="button"
+              onClick=${() => env.submissions.discardUnavailable(rec.target, shared ? 'shared' : 'attempt')}>
+              ${shared ? 'Discard shared saved text' : 'Discard attempted prompt'}</button>` : null}
+            ${!shared && rec.draft ? html`<button type="button" class="button"
+              onClick=${() => env.submissions.discardUnavailable(rec.target, 'draft')}>
+              ${edited ? 'Discard edited draft' : 'Discard saved draft'}</button>` : null}`
+            : html`<button type="button" class="button submission-discard-stale"
+              onClick=${() => env.submissions.discard(rec.target)}>Discard</button>`}
         </div>
       </div>`;
     })}
@@ -111,7 +120,8 @@ export function Composer({ env, live, target, enabled, onTargetChanged }) {
   async function retry() {
     setProblem(null);
     const r = await env.submissions.retry(target);
-    if (r.ok && r.classification && ['incompatible', 'command_sent'].includes(r.classification.state)) onTargetChanged(r.classification.state);
+    if (r.classification?.verificationLost) onTargetChanged('incompatible');
+    else if (r.classification && ['incompatible', 'command_sent'].includes(r.classification.state)) onTargetChanged(r.classification.state);
   }
   function pick(text) {
     setPrompts(false);

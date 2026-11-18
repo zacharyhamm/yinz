@@ -451,7 +451,7 @@ impl Screen {
         };
         let session_info = SessionInfo {
             name: self.session_name.clone(),
-            web_peer_instance: Some(self.instance_id.to_string()),
+            web_peer_instance: None,
             tabs: tab_infos,
             panes: pane_manifest,
             connected_clients: self.active_tab_ids.keys().len(),
@@ -473,10 +473,11 @@ impl Screen {
         self.report_session_info(session_info)
     }
 
-    fn report_session_info(&mut self, session_info: SessionInfo) -> Result<()> {
+    fn report_session_info(&mut self, mut session_info: SessionInfo) -> Result<()> {
         if self.migration_reports_suspended() {
             return Ok(());
         }
+        session_info.web_peer_instance = Some(self.instance_id.to_string());
         let err_context = || "Failed to report session info".to_string();
 
         self.bus

@@ -1925,6 +1925,22 @@ impl Screen {
                 pane_id,
                 expected_kind,
                 expected_session_id,
+                action: yinz_types::agent::control::WebAgentAction::VerifyFocus,
+            } => {
+                let outcome = self.verify_web_peer_focus(
+                    &expected_instance,
+                    pane_id,
+                    &expected_kind,
+                    &expected_session_id,
+                );
+                self.agent_reply(&client, AgentResponse::new(outcome));
+                return;
+            },
+            WebPeerGuarded {
+                expected_instance,
+                pane_id,
+                expected_kind,
+                expected_session_id,
                 action,
             } => (
                 WebGuarded {

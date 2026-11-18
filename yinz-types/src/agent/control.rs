@@ -130,9 +130,18 @@ pub const CLOSEOUT_CAPABILITY: &str = "agent-controller-closeout-v1";
 /// Closed web control surface. A distinct wire variant fails closed on older peers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum WebAgentAction {
-    Prompt { text: String, submission_id: String },
-    Read { lines: usize },
-    SendKeys { keys: Vec<String> },
+    Prompt {
+        text: String,
+        submission_id: String,
+    },
+    Read {
+        lines: usize,
+    },
+    SendKeys {
+        keys: Vec<String>,
+    },
+    /// Read-only check of the owning Screen, accepted only under WebPeerGuarded.
+    VerifyFocus,
 }
 
 pub const WEB_KEYS: &[&str] = &[
@@ -246,6 +255,9 @@ impl WebAgentAction {
     pub fn lower(self, pane_id: PaneId, session_id: String) -> Result<AgentRequest, String> {
         self.validate().map_err(str::to_owned)?;
         Ok(match self {
+            Self::VerifyFocus => {
+                return Err("Focus verification requires a peer instance guard".into())
+            },
             Self::Prompt {
                 text,
                 submission_id,

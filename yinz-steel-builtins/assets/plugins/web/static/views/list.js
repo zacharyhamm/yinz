@@ -126,7 +126,9 @@ function restoreCardFocus(main, header, focus) {
 function AgentCard({ row, session, href, identity, env, onKeys, onNext, busy }) {
   const waiting = row.state === 'waiting';
   const content = html`<${ServerHtml} html=${row.html} class="card-html" />
-    <${RowBadges} row=${row} peerSession=${session ?? 'unavailable'} />`;
+    <${RowBadges} row=${row} peerSession=${session ?? 'unavailable'} />
+    ${!href ? html`<span class="hint">${nonblank(row.prompt_unavailable) ? row.prompt_unavailable
+      : 'Live controls are unavailable. Refresh Agents to try again.'}</span>` : null}`;
   return html`<li class=${cx('agent-card', `card-${row.state || 'unknown'}`, row.wait_needs_a_person && 'card-needs-person')} data-agent-id=${row.id} data-agent-ref=${identity}>
     ${href ? html`<a class="card-main agent-open-area" href=${href} aria-label=${`Open ${row.title || row.id}, ${stateLabel(row.state)}`}>${content}</a>`
       : html`<div class="card-main">${content}</div>`}

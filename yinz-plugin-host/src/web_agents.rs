@@ -364,6 +364,43 @@ fn target(senders: &ThreadSenders, agent: &WebAgentRef) -> Result<WebLiveAgent> 
     unique_live(snapshot(senders)?.into_iter().filter(|a| a.matches(agent)))
         .ok_or_else(|| error("target_changed", "Agent disappeared or changed identity"))
 }
+
+fn verify_peer_focus(live: &WebLiveAgent, agent: &WebAgentRef, deadline: Instant) -> Result<()> {
+    let unavailable = || {
+        error(
+            "unavailable",
+            "Peer Focus is unavailable. Refresh Agents and try again.",
+        )
+    };
+    if live.tab_group_session != live.session {
+        return Err(error(
+            "unavailable",
+            "Focus is temporarily unavailable while the peer publishes its renamed session. Refresh Agents and reopen the card.",
+        ));
+    }
+    let expected_instance = live
+        .peer_instance
+        .clone()
+        .ok_or_else(|| error("target_changed", "Peer identity unavailable"))?;
+    let request = AgentRequest::WebPeerGuarded {
+        expected_instance,
+        pane_id: live.pane.id,
+        expected_kind: agent.kind.clone(),
+        expected_session_id: agent.session_id.clone(),
+        action: WebAgentAction::VerifyFocus,
+    };
+    let response = palette_agents::control_peer(&live.tab_group_session, request, deadline)
+        .map_err(|_| unavailable())?;
+    match response.outcome {
+        AgentOutcome::Ok if Instant::now() < deadline => Ok(()),
+        AgentOutcome::TargetChanged => Err(error(
+            "target_changed",
+            "Agent disappeared or changed identity",
+        )),
+        _ => Err(unavailable()),
+    }
+}
+
 fn control(
     agent: WebAgentRef,
     action: WebAgentAction,
@@ -649,17 +686,27 @@ fn execute(
         },
         Operation::Focus { agent } => {
             let live = target(senders, &agent)?;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            if !live.current_session {
+                verify_peer_focus(&live, &agent, deadline)?;
+            }
             let (reply, rx) = crossbeam::channel::bounded(1);
             senders
                 .send_to_screen(ScreenInstruction::WebFocusAgent {
                     agent,
                     owner: live.tab_group_session,
                     peer_instance: live.peer_instance,
+                    deadline,
                     reply,
                 })
                 .map_err(|e| error("failed", e.to_string()))?;
-            rx.recv_timeout(Duration::from_secs(5))
-                .map_err(|_| error("unavailable", "Focus unavailable"))?
+            rx.recv_deadline(deadline)
+                .map_err(|_| {
+                    error(
+                        "unavailable",
+                        "Focus unavailable. Refresh Agents and try again.",
+                    )
+                })?
                 .map_err(|e| match e {
                     WebFocusError::TargetChanged => {
                         error("target_changed", "Agent disappeared or changed identity")

@@ -1250,6 +1250,158 @@ fn web_agents_archive_adapter_pages_ties_nulls_workers_search_tools_and_live_del
 }
 
 #[test]
+fn web_agents_peer_focus_requires_one_positive_reply_from_the_scanned_socket() {
+    use nix::poll::{poll, PollFd, PollFlags};
+    use std::os::{fd::AsFd, unix::net::UnixListener};
+    use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
+
+    let (_dir, data) = data();
+    let directory = tempfile::tempdir().unwrap();
+    let session = format!(
+        "focus-{}",
+        directory.path().file_name().unwrap().to_str().unwrap()
+    );
+    let socket = yinz_runtime::consts::YINZ_SOCK_DIR.join(&session);
+    std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    let agent = live(&session, AgentState::Waiting, false);
+    let reference = WebAgentRef {
+        id: agent.peer_detail_id().unwrap(),
+        kind: "codex".into(),
+        session_id: "conversation".into(),
+    };
+    let input = json!({"op":"focus","agent":reference});
+    // Keep the same snapshot as an older peer, a replacement and a verified
+    // owner take turns listening at this path.
+    for mode in [
+        "refused",
+        "older",
+        "replacement",
+        "unselectable",
+        "silent",
+        "verified",
+    ] {
+        let listener = (mode != "refused").then(|| UnixListener::bind(&socket).unwrap());
+        if mode == "refused" {
+            drop(UnixListener::bind(&socket).unwrap());
+        }
+        let (tx, rx) = channels::unbounded();
+        let senders = ThreadSenders {
+            to_screen: Some(SenderWithContext::new(tx)),
+            ..Default::default()
+        };
+        thread::scope(|scope| {
+            let screen = scope.spawn(|| {
+                let (ScreenInstruction::WebLiveAgents { reply }, _) =
+                    rx.recv_timeout(Duration::from_secs(5)).unwrap()
+                else {
+                    panic!("expected snapshot")
+                };
+                reply.send(vec![agent.clone()]).unwrap();
+            });
+            let probe = listener.as_ref().map(|listener| {
+                scope.spawn(|| {
+                    let mut sockets = [PollFd::new(listener.as_fd(), PollFlags::POLLIN)];
+                    assert_eq!(poll(&mut sockets, 5000u16).unwrap(), 1);
+                    let (connection, _) = listener.accept().unwrap();
+                    let connection =
+                        interprocess::os::unix::uds_local_socket::Stream::from(connection).into();
+                    let mut sender = IpcSenderWithContext::<ServerToClientMsg>::new(connection);
+                    let mut receiver = sender.get_receiver::<ClientToServerMsg>().unwrap();
+                    receiver
+                        .set_recv_timeout(Some(Duration::from_secs(8)))
+                        .unwrap();
+                    let IpcRecv::Msg(ClientToServerMsg::AgentControl(request), _) =
+                        receiver.recv_client_msg()
+                    else {
+                        panic!("expected verification probe")
+                    };
+                    assert_eq!(
+                        request,
+                        AgentRequest::WebPeerGuarded {
+                            expected_instance: agent.peer_instance.clone().unwrap(),
+                            pane_id: agent.pane.id,
+                            expected_kind: reference.kind.clone(),
+                            expected_session_id: reference.session_id.clone(),
+                            action: WebAgentAction::VerifyFocus,
+                        }
+                    );
+                    assert!(rx.try_recv().is_err(), "dispatch before verification");
+                    let reply = match mode {
+                        "older" => ServerToClientMsg::LogError {
+                            lines: vec!["unsupported action".into()],
+                        },
+                        "replacement" => ServerToClientMsg::AgentControl(AgentResponse::new(
+                            AgentOutcome::TargetChanged,
+                        )),
+                        "unselectable" => ServerToClientMsg::AgentControl(AgentResponse::new(
+                            AgentOutcome::Rejected,
+                        )),
+                        "silent" => {
+                            assert!(matches!(receiver.recv_client_msg(), IpcRecv::Eof));
+                            return;
+                        },
+                        "verified" => {
+                            ServerToClientMsg::AgentControl(AgentResponse::new(AgentOutcome::Ok))
+                        },
+                        _ => unreachable!(),
+                    };
+                    sender.send_server_msg(reply).unwrap();
+                    if mode == "verified" {
+                        let (
+                            ScreenInstruction::WebFocusAgent {
+                                agent: target,
+                                owner,
+                                peer_instance,
+                                deadline,
+                                reply,
+                            },
+                            _,
+                        ) = rx.recv_timeout(Duration::from_secs(5)).unwrap()
+                        else {
+                            panic!("expected serving Screen focus")
+                        };
+                        assert_eq!(target, reference);
+                        assert_eq!(owner, agent.tab_group_session);
+                        assert_eq!(peer_instance, agent.peer_instance);
+                        assert!(deadline > Instant::now());
+                        reply.send(Ok(())).unwrap();
+                    }
+                })
+            });
+            let response = handle(&input.to_string(), ClientId::new(1), &senders, &data);
+            screen.join().unwrap();
+            if let Some(probe) = probe {
+                probe.join().unwrap();
+            }
+            if mode == "verified" {
+                assert_eq!(response["ok"], true);
+            } else {
+                assert_eq!(
+                    response["error"]["code"],
+                    if mode == "replacement" {
+                        "target_changed"
+                    } else {
+                        "unavailable"
+                    },
+                    "{mode}"
+                );
+                assert!(rx.try_recv().is_err(), "{mode} routed to serving Screen");
+            }
+        });
+        drop(listener);
+        std::fs::remove_file(&socket).unwrap();
+    }
+    let mut renaming = agent;
+    renaming.session = "previous-name".into();
+    let response = with_snapshot(input, vec![renaming], &data);
+    assert_eq!(response["error"]["code"], "unavailable");
+    assert!(response["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("renamed session"));
+}
+
+#[test]
 fn web_agents_peer_receive_deadline_bounds_cleanup_without_retrying() {
     use interprocess::local_socket::prelude::*;
     use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};

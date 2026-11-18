@@ -4,7 +4,9 @@
 // `bind=0` marks stored-run browsing (previous/original run links), which reads
 // the run without the live agent binding. Routes never carry credentials.
 
-import { targetOf, validTarget } from './submission.js';
+import { isScopedPeer, targetOf, validTarget } from './submission.js';
+
+export { isScopedPeer };
 
 export const TABS = ['timeline', 'screen', 'details'];
 
@@ -12,10 +14,6 @@ const PEER_DETAIL_PREFIX = 'peer-detail:';
 
 export function isPeerDetail(id) {
   return typeof id === 'string' && id.startsWith(PEER_DETAIL_PREFIX);
-}
-
-export function isScopedPeer(id) {
-  return typeof id === 'string' && /^peer-detail:v1:[0-9a-f]{64}$/.test(id);
 }
 
 function peerRow(row, servingSession) {
@@ -38,11 +36,12 @@ export function cardDetail(row, servingSession) {
   const peer = peerRow(row, servingSession);
   const scoped = peer && isScopedPeer(row.detail_id);
   if (peer && !scoped && !row.run) return null;
+  const bind = scoped || !peer;
   return {
     id: scoped ? row.detail_id : row.id,
     run: row.run,
-    tab: row.run && row.state !== 'waiting' ? 'timeline' : 'screen',
-    bind: scoped || !peer,
+    tab: !bind || (row.run && row.state !== 'waiting') ? 'timeline' : 'screen',
+    bind,
   };
 }
 

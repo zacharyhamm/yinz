@@ -2191,6 +2191,180 @@ async function scopedPeerDetails(open) {
   check(await valueOf(page, '#composer-input') === 'Original edited draft', 'retry cleared the separately edited draft');
 }
 
+async function openScopedPeer(open, { run = 'peer-retained', state = 'busy' } = {}) {
+  const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
+  const { published, replacement } = peerDetailRows(fx);
+  const peer = { ...published, run, state };
+  const hash = `#/a/${encodeURIComponent(peer.detail_id)}?${new URLSearchParams({ run, tab: 'timeline' })}`;
+  fx.rows = [peer, replacement];
+  await openApp(page, hash);
+  await until('scoped composer is enabled', () => page.locator('#composer-input').isEnabled());
+  return { page, fx, peer, replacement, hash };
+}
+
+async function saveUnknownPeerPrompt(page, fx) {
+  await page.locator('#composer-input').fill('Original attempted prompt');
+  fx.fail.set('/api/agent/prompt', { mode: 'abort', times: 1 });
+  await page.click('#composer-send');
+  await until('lost prompt outcome is visible', () => exists(page, '#submission-unknown'));
+  await page.locator('#composer-input').fill('Independent edited draft');
+}
+
+async function assertPeerRecovery(page, texts) {
+  const values = () => page.locator('.stale-submissions textarea').evaluateAll((nodes) =>
+    nodes.map((node) => [node.value, node.readOnly]));
+  const expected = JSON.stringify(texts.map((text) => [text, true]));
+  await until('read-only recovery contains the saved texts', async () => JSON.stringify(await values()) === expected);
+  check(!(await exists(page, '#composer-input, #overflow-button, #submission-retry, .submission-adopt, .screen-keys')),
+    'an unverified peer offered live controls');
+  check(await page.locator('#tab-screen').isDisabled(), 'an unverified peer allowed Screen');
+}
+
+async function peerDesktopFocus(open) {
+  const { page, fx, peer } = await openScopedPeer(open);
+  const focus = async (status, body) => {
+    fx.fail.set('/api/agent/focus', { mode: 'reply', times: 1, status, body });
+    await page.click('#overflow-button');
+    await sheetReady(page, 'sheet-overflow', 'Focus actions are available');
+    await page.click('#action-focus');
+  };
+  for (const message of ['Focus is temporarily unavailable while the peer publishes its renamed session.', 'No terminal attached']) {
+    await focus(409, { error: { code: 'unavailable', message } });
+    await textUntil(page, '#toast', message, 'native Focus reason');
+    check(await page.locator('#composer-input').isEnabled(), 'Focus-only failure disabled the composer');
+    check(await page.locator('#tab-screen').isEnabled(), 'Focus-only failure disabled Screen');
+  }
+  await page.click('#tab-screen');
+  await textUntil(page, '#screen', SCREEN_LAST, 'screen remains readable');
+  await page.locator('.screen-keys .quick-key').first().click();
+  await until('key goes to the same peer', () => fx.bodies('/api/agent/keys').some((body) => body.agent.id === peer.detail_id));
+  await focus(200, { ok: false });
+  await textUntil(page, '#toast', 'cannot read', 'unconfirmed Focus response');
+  await focus(200, { ok: true });
+  await textUntil(page, '#toast', `Desktop switched to session ${peer.session}`, 'verified switch');
+  await focus(409, { error: { code: 'target_changed', message: 'Agent disappeared or changed identity' } });
+  await textUntil(page, '#toast', 'The agent changed or disappeared.', 'changed peer message');
+  await until('changed peer loses guarded controls', async () =>
+    await page.locator('#tab-screen').isDisabled() && !(await exists(page, '#composer-input, #overflow-button, .screen-keys')));
+}
+
+async function scopedPeerRetry(open) {
+  const { page, fx, peer, replacement } = await openScopedPeer(open);
+  await saveUnknownPeerPrompt(page, fx);
+  fx.fail.set('/api/agent/prompt', { mode: 'reply', times: 1, status: 409,
+    body: { error: { code: 'target_changed', message: 'Agent disappeared or changed identity' } } });
+  // The retry snapshot misses before the next History snapshot observes the loss.
+  await page.click('#submission-retry');
+  await until('retry receives the typed cache miss', () => fx.count('/api/agent/prompt', 'POST') === 2);
+  await assertPeerRecovery(page, ['Original attempted prompt', 'Independent edited draft']);
+  fx.rows = [replacement];
+  await page.reload();
+  await assertPeerRecovery(page, ['Original attempted prompt', 'Independent edited draft']);
+  fx.rows = [peer, replacement];
+  await until('same binding offers same-ID retry after verification', () => exists(page, '#submission-retry'));
+  check(await valueOf(page, '#composer-input') === 'Independent edited draft', 'reverification lost the edited draft');
+  check(fx.count('/api/agent/prompt', 'POST') === 2, 'reverification retried automatically');
+  await page.click('#submission-retry');
+  await until('one more explicit retry', () => fx.count('/api/agent/prompt', 'POST') === 3);
+  const bodies = fx.bodies('/api/agent/prompt');
+  check(bodies.every((body) => JSON.stringify(body) === JSON.stringify(bodies[0])) &&
+    bodies[0].agent.id === peer.detail_id, 'the original POST body changed');
+  await until('successful retry clears its pending attempt', async () => !(await exists(page, '#submission-retry')));
+  check(await valueOf(page, '#composer-input') === 'Independent edited draft', 'successful retry erased the edit');
+}
+
+async function scopedPeerInitialLookupFailure(open) {
+  for (const run of ['peer-retained', '']) {
+    const { page, fx, peer, replacement, hash } = await openScopedPeer(open, { run });
+    await saveUnknownPeerPrompt(page, fx);
+    const path = run ? '/api/history' : '/api/agents';
+    fx.fail.set(path, { mode: 'reply', times: Infinity, status: 503,
+      body: { error: { code: 'unavailable', message: 'First lookup failed' } } });
+    await page.reload();
+    await until('failure offers lookup Retry', () => exists(page, '#banner-offline button'));
+    await assertPeerRecovery(page, ['Original attempted prompt', 'Independent edited draft']);
+    if (run) {
+      await openApp(page, `${hash}&bind=0`);
+      await until('stored run remains unbound on error', () => exists(page, '#banner-stored'));
+      check(!(await exists(page, '.stale-submissions, #composer-input')), 'stored run revealed scoped text');
+      await openApp(page, hash);
+      await assertPeerRecovery(page, ['Original attempted prompt', 'Independent edited draft']);
+    }
+    fx.rows = [replacement];
+    fx.fail.delete(path);
+    await page.locator('#banner-offline button').click();
+    await until('lookup confirms peer is unavailable', () => exists(page, '#banner-agent-gone'));
+    await assertPeerRecovery(page, ['Original attempted prompt', 'Independent edited draft']);
+    fx.rows = [peer];
+    await until('only the original peer restores retry', () => exists(page, '#submission-retry'));
+    check(await valueOf(page, '#composer-input') === 'Independent edited draft', 'the saved edit changed');
+    check(fx.count('/api/agent/prompt', 'POST') === 1, 'recovery sent a prompt');
+  }
+}
+
+async function scopedPeerDiscards(open) {
+  for (const what of ['attempted prompt', 'edited draft', 'shared saved text']) {
+    const { page, fx, peer, replacement } = await openScopedPeer(open);
+    await saveUnknownPeerPrompt(page, fx);
+    const attempt = 'Original attempted prompt';
+    const edit = 'Independent edited draft';
+    const shared = what === 'shared saved text';
+    if (shared) await page.locator('#composer-input').fill(attempt);
+    fx.rows = [replacement];
+    await assertPeerRecovery(page, shared ? [attempt] : [attempt, edit]);
+    const before = fx.log.filter(({ path, method }) => method === 'POST' && path.startsWith('/api/agent/')).length;
+    await page.getByRole('button', { name: `Discard ${what}`, exact: true }).click();
+    await page.reload();
+    await until('peer remains unavailable on reload', () => exists(page, '#banner-agent-gone'));
+    const keepingAttempt = what === 'edited draft';
+    if (shared) {
+      check(!(await exists(page, '.stale-submissions')), 'shared discard left saved texts');
+    } else {
+      await assertPeerRecovery(page, [keepingAttempt ? attempt : edit]);
+    }
+    fx.rows = [peer, replacement];
+    await until('peer returns after discard', () => page.locator('#composer-input').isEnabled());
+    check(await valueOf(page, '#composer-input') === (what === 'attempted prompt' ? edit : ''), 'discard changed the surviving edit');
+    check(await exists(page, '#submission-retry') === keepingAttempt, 'discard changed the wrong pending attempt');
+    check(fx.log.filter(({ path, method }) => method === 'POST' && path.startsWith('/api/agent/')).length === before,
+      'discard or reload posted a live request');
+  }
+}
+
+async function olderPeerHistory(open) {
+  const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
+  const reason = 'Live controls are unavailable until the peer publishes its identity. Refresh Agents and reopen the card.';
+  const old = row(fx, 'live:older-peer:11', 'waiting', { current_session: false, session: 'older-peer',
+    run: 'older-run', title: 'Older peer with history', can_prompt: false });
+  const runless = row(fx, 'live:older-peer:12', 'waiting', { ...old, id: 'live:older-peer:12',
+    run: '', title: 'Older peer without history', prompt_unavailable: reason });
+  const omitted = row(fx, 'live:older-peer:13', 'waiting', { ...runless, id: 'live:older-peer:13',
+    title: 'Older peer without hook guidance', prompt_unavailable: null });
+  const { published } = peerDetailRows(fx);
+  fx.rows = [old, runless, omitted, published];
+  await openList(page);
+  for (const [unavailable, explanation] of [[runless, reason], [omitted, 'Refresh Agents to try again']]) {
+    const card = page.locator(cardSelector(unavailable.id));
+    check((await card.textContent()).includes(explanation), 'runless card omitted availability guidance');
+    check(await card.getByRole('link').count() === 0, 'runless older peer offered a live link');
+    for (const key of await card.locator('.quick-key').all()) check(await key.isDisabled(), 'older peer key was enabled');
+  }
+  for (const link of ['.agent-open-area', '.agent-open']) {
+    await page.locator(cardSelector(old.id)).locator(link).click();
+    await textUntil(page, '#timeline', 'Stored older-run message', 'older waiting card opens stored Timeline');
+    check(await page.getAttribute('#tab-timeline', 'aria-selected') === 'true', 'stored link selected Screen');
+    check(await page.locator('#tab-screen').isDisabled() && !(await exists(page, '#composer-input')), 'stored route enabled controls');
+    await domClick(page, '#detail-back');
+    await until('return to older cards', () => exists(page, cardSelector(old.id)));
+  }
+  const reads = fx.log.filter(({ path, query }) => path === '/api/history' && query.get('run') === old.run);
+  check(reads.length >= 2 && reads.every(({ query }) => !query.has('agent')), 'stored fallback did a live lookup');
+  check(!fx.log.some(({ path }) => path.startsWith('/api/agent/')), 'older peer issued a live request');
+  await page.locator(cardSelector(published.id)).locator('.agent-open').click();
+  await until('valid waiting peer uses Screen', () => fx.bodies('/api/agent/screen').some((body) => body.agent.id === published.detail_id));
+  check(await page.getAttribute('#tab-screen', 'aria-selected') === 'true', 'valid waiting route lost Screen');
+}
+
 async function nextWaitingAgent(open) {
   const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
   const firstGroup = { id: 0, name: 'First' };
@@ -3113,6 +3287,11 @@ async function main() {
   await scenario('Agents peer focus across republication: Open', (open) => peerFocusAcrossRepublication(open, '.agent-open'));
   await scenario('Agents peer focus across republication: quick key', (open) => peerFocusAcrossRepublication(open, '.quick-key[data-key="1"]'));
   await scenario('Agents peer Detail routing and draft isolation', scopedPeerDetails);
+  await scenario('Agents peer desktop Focus response and controls', peerDesktopFocus);
+  await scenario('Agents scoped peer retry through cache loss', scopedPeerRetry);
+  await scenario('Agents scoped draft recovery after first lookup failure', scopedPeerInitialLookupFailure);
+  await scenario('Agents scoped draft recovery discards each text independently', scopedPeerDiscards);
+  await scenario('Agents older peer history and unavailable controls', olderPeerHistory);
   await scenario('Agents Next waiting agent navigation', nextWaitingAgent);
   await scenario('Agents headings for whitespace-colliding session names', whitespaceSessionHeadings);
   await scenario('Agents keyboard focus through automatic group moves and reorders', agentListPollFocus);
