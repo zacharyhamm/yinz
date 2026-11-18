@@ -293,10 +293,20 @@ plugin configuration or secrets.
 
 ### What the app offers
 
-- **Agents** (`#/`): agents from every local session, in the terminal palette's
-  order, under **Needs you**, **Working** and **Idle**. Each section has a text
-  label that supplies the state without repeating it on each default row; unknown
-  states keep their row label. Task titles use the theme's accent color and
+- **Agents** (`#/`) shows live agents from the serving session and its cached peer
+  sessions, grouped by their pane's Yinz tab group. Each heading shows the group
+  name and owning session, including when only one group has agents. Groups
+  with the same name remain separate by group ID and session. Sections appear
+  in the order their first agent appears in the list returned by the hooks,
+  and cards in each section keep their relative order. A card without usable
+  group information appears under **Tab group unavailable** for its session.
+  If the owning session is also missing, the heading says **Session unavailable**.
+  Stored membership still applies when `tab_groups` is off in the terminal.
+  Local moves and renames appear on the next successful list update, and peer
+  changes appear after the serving session's peer cache refreshes. Each card
+  shows its state and any custom status text. The header's attention count
+  includes all waiting agents in the snapshot, even when a hook hides some
+  cards. Task titles use the theme's accent color and
   replies use the main text color. Default reply previews retain up to 160 Unicode
   characters, with an ellipsis for locally or upstream truncated text, and display
   at most three lines. Blank replies take no space. Open the agent's timeline and

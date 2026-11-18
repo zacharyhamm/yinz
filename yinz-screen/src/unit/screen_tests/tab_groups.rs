@@ -260,6 +260,103 @@ fn grouped_screen() -> Screen {
 }
 
 #[test]
+fn web_agents_snapshot_tracks_moves_renames_and_project_group_names() {
+    use super::agent_control::{web_agents_reference, web_agents_snapshot};
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+
+    let mut screen = grouped_screen();
+    let pane = PaneId::Terminal(TerminalId::new(4));
+    for id in [1, 3, 4] {
+        screen.with_pane(PaneId::Terminal(TerminalId::new(id)), |pane| {
+            pane.set_agent_info(Some(AgentInfo {
+                kind: "codex".into(),
+                state: AgentState::Idle,
+                source: AgentSource::Reported,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                session_id: Some(format!("conversation-{id}")),
+                run_id: None,
+            }));
+        });
+    }
+    screen.pane_projects.insert(
+        PaneId::Terminal(TerminalId::new(3)),
+        "Shared Project".into(),
+    );
+    let before = web_agents_snapshot(&mut screen);
+    assert_eq!(before.len(), 3);
+    for row in &before {
+        assert_eq!(
+            row.tab_group,
+            Some(if row.pane.id == pane {
+                TabGroupInfo {
+                    id: 1,
+                    name: "Group 1".into(),
+                }
+            } else {
+                TabGroupInfo {
+                    id: 0,
+                    name: "Shared Project".into(),
+                }
+            })
+        );
+    }
+    let agent = before.iter().find(|row| row.pane.id == pane).unwrap();
+    let reference = web_agents_reference(agent);
+    screen
+        .tab_group_action(
+            Action::RenameTabGroup {
+                id: 1,
+                name: "Release".into(),
+            },
+            CLIENT,
+            None,
+            &mut HashSet::new(),
+        )
+        .unwrap();
+    let renamed = web_agents_snapshot(&mut screen);
+    let row = renamed.iter().find(|row| row.matches(&reference)).unwrap();
+    assert_eq!(
+        row.tab_group,
+        Some(TabGroupInfo {
+            id: 1,
+            name: "Release".into()
+        })
+    );
+    screen.default_mode_info.tab_groups = Some(false);
+    let disabled = web_agents_snapshot(&mut screen);
+    assert_eq!(
+        disabled
+            .iter()
+            .find(|row| row.matches(&reference))
+            .unwrap()
+            .tab_group,
+        row.tab_group
+    );
+    screen.default_mode_info.tab_groups = Some(true);
+    assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
+    screen
+        .tab_group_action(
+            Action::MovePaneToPreviousTabGroup,
+            CLIENT,
+            None,
+            &mut HashSet::new(),
+        )
+        .unwrap();
+    screen.settle_tabs().unwrap();
+    let moved = web_agents_snapshot(&mut screen);
+    assert_eq!(moved.len(), 3);
+    assert!(moved.iter().any(|row| row.matches(&reference)));
+    assert!(moved.iter().all(|row| row.tab_group
+        == Some(TabGroupInfo {
+            id: 0,
+            name: "Shared Project".into(),
+        })));
+}
+
+#[test]
 fn warped_tabs_carry_their_groups_displayed_name() {
     for project in [None, Some("工程")] {
         let mut screen = grouped_screen();

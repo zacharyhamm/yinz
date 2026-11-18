@@ -13,6 +13,7 @@ use crate::command_palette::AgentLabelSource;
 use yinz_types::data::PaneInfo;
 use yinz_types::input::layout::RunPluginOrAlias;
 use yinz_types::internal_ids::{ClientId, PluginId, SessionName};
+use yinz_types::tab_bar::TabGroupInfo;
 use yinz_types::web::{SiteHandle, WebReply, WebRequest};
 
 /// Where the answer to one web request goes.
@@ -107,6 +108,8 @@ pub struct WebLiveAgent {
     /// `LiveAgent::id()`.
     pub id: String,
     pub session: SessionName,
+    /// Group identity and display name within the owning session.
+    pub tab_group: Option<TabGroupInfo>,
     pub current_session: bool,
     pub pane: PaneInfo,
     pub metadata: BTreeMap<String, String>,

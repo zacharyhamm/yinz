@@ -78,13 +78,15 @@ const STATE_LABELS = { waiting: 'Needs you', busy: 'Working', idle: 'Idle' };
 const STATE_GLYPHS = { waiting: '!', busy: '●', idle: '○' };
 
 export function stateLabel(state) {
-  return STATE_LABELS[state] || (typeof state === 'string' && state ? state : 'Unknown');
+  if (typeof state !== 'string' || !state.trim()) return 'Unknown';
+  return Object.hasOwn(STATE_LABELS, state) ? STATE_LABELS[state] : state;
 }
 
 export function StateBadge({ row }) {
   const state = row && typeof row.state === 'string' ? row.state : 'unknown';
-  return html`<span class=${cx('badge', 'state-badge', `state-${STATE_LABELS[state] ? state : 'unknown'}`, row && row.wait_needs_a_person && 'needs-person')}>
-    <span class="state-glyph" aria-hidden="true">${STATE_GLYPHS[state] || '?'}</span>
+  const known = Object.hasOwn(STATE_LABELS, state);
+  return html`<span class=${cx('badge', 'state-badge', `state-${known ? state : 'unknown'}`, row && row.wait_needs_a_person && 'needs-person')}>
+    <span class="state-glyph" aria-hidden="true">${known ? STATE_GLYPHS[state] : '?'}</span>
     <span class="state-text">${stateLabel(state)}</span>
   </span>`;
 }

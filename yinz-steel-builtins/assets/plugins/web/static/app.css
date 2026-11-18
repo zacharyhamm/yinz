@@ -145,9 +145,9 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 /* Agents list */
 .list-main { padding: 4px calc(12px + var(--safe-right)) calc(24px + var(--safe-bottom)) calc(12px + var(--safe-left)); max-width: 760px; margin: 0 auto; }
 .agent-section { margin-top: 12px; }
-.section-title { font-size: 15px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 0 4px 8px; }
-.section-count { font-weight: 600; margin-left: 4px; }
-#section-waiting .section-title { color: var(--waiting); }
+.section-title { font-size: 15px; font-weight: 700; color: var(--text); margin: 0 4px 8px; overflow-wrap: anywhere; }
+.section-count { font-weight: 600; color: var(--muted); margin-left: 4px; }
+.section-session { display: block; font-size: 13px; font-weight: 400; color: var(--muted); }
 .agent-cards { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .agent-card {
   background: var(--surface); border: 1px solid var(--border); border-left: 5px solid var(--idle);
@@ -172,10 +172,10 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden;
 }
 .list-main .agent-meta:empty, .list-main .agent-reply:empty, .list-main .badges:empty { display: none; }
-/* Only the default row's matching state repeats the named section, even through hook wrappers. */
-#section-waiting .agent-row[data-state="waiting"] .agent-row-heading > .agent-status,
-#section-busy .agent-row[data-state="busy"] .agent-row-heading > .agent-status,
-#section-idle .agent-row[data-state="idle"] .agent-row-heading > .agent-status { display: none; }
+/* The default hook marks labels that repeat the card's state badge. */
+.card-waiting .agent-status[data-redundant-state="waiting"],
+.card-busy .agent-status[data-redundant-state="busy"],
+.card-idle .agent-status[data-redundant-state="idle"] { display: none; }
 .list-main .badges { gap: 4px; }
 .list-main .badge { padding: 2px 6px; max-width: 100%; overflow-wrap: anywhere; }
 .badges { display: flex; flex-wrap: wrap; gap: 6px; }

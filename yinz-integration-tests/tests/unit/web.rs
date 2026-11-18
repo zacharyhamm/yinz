@@ -1075,6 +1075,30 @@ fn web_builtin_production_http() {
     );
     let reference = agent["ref"].clone();
     let agent_id = agent["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        agent["tab_group"],
+        json!({"id":0,"name":"Default"}),
+        "{agent}"
+    );
+
+    let (exit, output) = session.run_actions_reporting(vec![Action::RenameTabGroup {
+        id: 0,
+        name: "Release Review".into(),
+    }]);
+    assert_eq!(exit, 0, "{output}");
+    let renamed = call_ok(addr, "GET", "/api/agents", &token, "");
+    let agent = renamed["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == agent_id)
+        .unwrap_or_else(|| panic!("{renamed}"));
+    assert_eq!(
+        agent["tab_group"],
+        json!({"id":0,"name":"Release Review"}),
+        "{agent}"
+    );
+    assert_eq!(agent["ref"], reference);
 
     let history = call_ok(
         addr,
@@ -1089,6 +1113,7 @@ fn web_builtin_production_http() {
     // The fixture run is the live agent's run, so history stays bound to it.
     assert_eq!(history["retargeted"], false, "{history}");
     assert_eq!(history["live"]["ref"], reference, "{history}");
+    assert!(history["live"].get("tab_group").is_none(), "{history}");
     let event = &history["events"][0];
     assert_eq!(
         event["markdown"], "Native web retained conversation",

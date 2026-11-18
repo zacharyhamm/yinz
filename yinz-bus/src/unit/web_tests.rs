@@ -61,6 +61,7 @@ fn live(kind: &str, session_id: Option<&str>) -> WebLiveAgent {
         ..Default::default()
     };
     WebLiveAgent {
+        tab_group: None,
         id: "live-agent:0::main:7".into(),
         session: SessionName::new("main"),
         current_session: true,

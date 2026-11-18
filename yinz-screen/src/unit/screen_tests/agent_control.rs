@@ -16788,12 +16788,14 @@ fn closeout_claude_busy_controller_uses_the_native_prompt_identity() {
     assert!(screen.tab_containing_pane(PANE).is_none());
 }
 
-fn web_agents_snapshot(screen: &mut Screen) -> Vec<yinz_bus::web::WebLiveAgent> {
+pub(super) fn web_agents_snapshot(screen: &mut Screen) -> Vec<yinz_bus::web::WebLiveAgent> {
     let (tx, rx) = channels::bounded(1);
     screen.web_live_agents(tx);
     rx.recv().unwrap()
 }
-fn web_agents_reference(live: &yinz_bus::web::WebLiveAgent) -> yinz_bus::web::WebAgentRef {
+pub(super) fn web_agents_reference(
+    live: &yinz_bus::web::WebLiveAgent,
+) -> yinz_bus::web::WebAgentRef {
     let agent = live.pane.agent.as_ref().unwrap();
     yinz_bus::web::WebAgentRef {
         id: live.id.clone(),
@@ -16803,19 +16805,63 @@ fn web_agents_reference(live: &yinz_bus::web::WebLiveAgent) -> yinz_bus::web::We
 }
 #[test]
 fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_exclusion() {
+    use yinz_types::{data::TabInfo, internal_ids::TabPosition, tab_bar::TabGroupInfo};
+
     let (mut screen, _, _) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     screen.log_and_report_session_state().unwrap();
     let mut peer = screen.peer_sessions_cache[&screen.session_name].clone();
     peer.name = "web-peer".into();
     peer.is_current_session = false;
-    screen.peer_sessions_cache.insert(peer.name.clone(), peer);
+    let position = TabPosition::new(4);
+    let pane = peer.panes.panes[&TabPosition::new(0)]
+        .iter()
+        .find(|pane| pane.id == PANE)
+        .unwrap()
+        .clone();
+    peer.tabs = vec![
+        TabInfo {
+            tab_id: TabId::new(4),
+            position: TabPosition::new(1),
+            group: Some(TabGroupInfo {
+                id: 3,
+                name: "Decoy".into(),
+            }),
+            ..Default::default()
+        },
+        TabInfo {
+            tab_id: TabId::new(99),
+            position,
+            group: Some(TabGroupInfo {
+                id: 0,
+                name: "Peer Default".into(),
+            }),
+            ..Default::default()
+        },
+    ];
+    let mut legacy = pane.clone();
+    legacy.id = PaneId::Terminal(TerminalId::new(8));
+    let mut unknown = pane.clone();
+    unknown.id = PaneId::Terminal(TerminalId::new(9));
+    peer.tabs.push(TabInfo {
+        tab_id: TabId::new(5),
+        position: TabPosition::new(2),
+        ..Default::default()
+    });
+    peer.panes.panes = HashMap::from([
+        (position, vec![pane]),
+        (TabPosition::new(2), vec![legacy]),
+        (TabPosition::new(3), vec![unknown]),
+    ]);
+    screen
+        .peer_sessions_cache
+        .insert(peer.name.clone(), peer.clone());
     let live = web_agents_snapshot(&mut screen);
     let palette = screen.live_palette_agents();
-    assert_eq!(live.len(), 2);
+    assert_eq!(live.len(), 4);
     assert_eq!(live.len(), palette.len());
-    for row in &live {
-        let same = palette.iter().find(|a| a.id() == row.id).unwrap();
+    for (row, same) in live.iter().zip(&palette) {
+        assert_eq!(row.id, same.id());
         assert_eq!(row.label_source, same.label_source());
         let presentation = same.presentation().unwrap();
         assert_eq!(row.provider, presentation.provider);
@@ -16834,14 +16880,46 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
             same.usage_unavailable(&screen.session_name)
         );
     }
+    let local = live.iter().find(|a| a.current_session).unwrap();
+    let remote = live
+        .iter()
+        .find(|a| !a.current_session && a.pane.id == PANE)
+        .unwrap();
     assert_ne!(
-        live[0].id, live[1].id,
+        local.id, remote.id,
         "same pane number is qualified by owning session"
     );
+    assert_eq!(
+        local.tab_group,
+        Some(TabGroupInfo {
+            id: 0,
+            name: "Default".into()
+        })
+    );
+    assert_eq!(remote.tab_group, peer.tabs[1].group);
+    assert!(live
+        .iter()
+        .filter(|a| a.pane.id != PANE)
+        .all(|a| a.tab_group.is_none()));
+
+    let moved = TabGroupInfo {
+        id: 12,
+        name: "Peer Release".into(),
+    };
+    peer.tabs[1].group = Some(moved.clone());
+    screen.peer_sessions_cache.insert(peer.name.clone(), peer);
     screen.active_tab_ids.clear();
     let detached = web_agents_snapshot(&mut screen);
-    assert_eq!(detached.len(), 2);
+    assert_eq!(detached.len(), 4);
     assert!(detached.iter().all(|a| !a.focused));
+    assert_eq!(
+        detached
+            .iter()
+            .find(|a| a.id == remote.id)
+            .unwrap()
+            .tab_group,
+        Some(moved)
+    );
     let reference = web_agents_reference(detached.iter().find(|a| a.current_session).unwrap());
     let (tx, rx) = channels::bounded(1);
     screen.web_focus_agent(reference, tx);
@@ -16854,7 +16932,31 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
         a.state = AgentState::Exited;
         pane.set_agent_info(Some(a));
     });
-    assert_eq!(web_agents_snapshot(&mut screen).len(), 1);
+    let remaining = web_agents_snapshot(&mut screen);
+    assert_eq!(remaining.len(), 3);
+    assert!(remaining.iter().all(|a| !a.current_session));
+}
+
+#[test]
+fn web_agents_snapshot_includes_floating_and_suppressed_panes() {
+    let (mut screen, _, _) = setup_with_placement(
+        "codex",
+        PaneTarget::Local,
+        Size { cols: 80, rows: 24 },
+        NewPanePlacement::Floating(None),
+    );
+    report(&mut screen, hook("SessionStart"));
+    let floating = web_agents_snapshot(&mut screen).pop().unwrap();
+    assert!(floating.pane.is_floating);
+    assert_eq!(floating.tab_group.as_ref().unwrap().name, "Default");
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .suppress_pane(PANE, None);
+    let suppressed = web_agents_snapshot(&mut screen).pop().unwrap();
+    assert!(suppressed.suppressed);
+    assert_eq!(suppressed.id, floating.id);
+    assert_eq!(suppressed.tab_group, floating.tab_group);
 }
 #[test]
 fn web_agents_focus_revalidates_provider_conversation_selectability_and_peer_membership() {

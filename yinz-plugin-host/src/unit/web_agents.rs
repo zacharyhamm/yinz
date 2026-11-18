@@ -37,6 +37,10 @@ fn live(session: &str, state: AgentState, current_session: bool) -> WebLiveAgent
         ..Default::default()
     };
     WebLiveAgent {
+        tab_group: Some(yinz_types::tab_bar::TabGroupInfo {
+            id: 0,
+            name: format!("Group for {session}"),
+        }),
         id: id.clone(),
         session: session.into(),
         current_session,
@@ -152,10 +156,12 @@ fn web_agents_validation_rejects_bad_operations_and_bounds_without_dispatch() {
 #[test]
 fn web_agents_list_uses_shared_order_and_peer_usage_without_local_collection() {
     let (_dir, data) = data();
+    let mut ungrouped = live("busy", AgentState::Busy, true);
+    ungrouped.tab_group = None;
     let agents = vec![
         live("local", AgentState::Idle, true),
         live("peer", AgentState::Waiting, false),
-        live("busy", AgentState::Busy, true),
+        ungrouped,
     ];
     let response = with_snapshot(json!({"op":"list"}), agents.clone(), &data);
     assert_eq!(
@@ -165,6 +171,18 @@ fn web_agents_list_uses_shared_order_and_peer_usage_without_local_collection() {
     assert_eq!(response["ok"]["agents"][0]["session"], "peer");
     assert_eq!(response["ok"]["agents"][1]["session"], "busy");
     assert_eq!(response["ok"]["agents"][2]["session"], "local");
+    for (index, session, group) in [
+        (0, "peer", json!({"id":0,"name":"Group for peer"})),
+        (1, "busy", Value::Null),
+        (2, "local", json!({"id":0,"name":"Group for local"})),
+    ] {
+        let row = &response["ok"]["agents"][index];
+        assert_eq!(row.get("tab_group"), Some(&group));
+        assert_eq!(
+            row["ref"],
+            json!({"id":format!("live:{session}:7"),"kind":"codex","session_id":"conversation"})
+        );
+    }
     assert_eq!(response["ok"]["agents"][0]["can_prompt"], true);
     let response = with_snapshot(json!({"op":"usage","agent":"live:peer:7"}), agents, &data);
     assert_eq!(response["ok"]["usage"]["status"], "unavailable");
@@ -489,6 +507,7 @@ fn web_agents_history_navigation_refresh_tracks_live_gone_and_returned_agents() 
     assert_eq!(unchanged["agent_gone"], false);
     assert_eq!(unchanged["header"]["name"], "updated live header");
     assert_eq!(unchanged["live"]["id"], agent.id);
+    assert!(unchanged["live"].get("tab_group").is_none());
     assert_eq!(
         unchanged["navigation"]["received"],
         page["navigation"]["received"]

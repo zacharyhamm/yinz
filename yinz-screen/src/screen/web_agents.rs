@@ -1,22 +1,41 @@
 //! Live snapshots and focus share the palette's population, presentation and action rules.
+use super::command_palette::history::LiveAgentTab;
 use super::Screen;
+use std::collections::HashMap;
 use yinz_bus::command_palette::HistoryHeader;
 use yinz_bus::web::{WebAgentRef, WebFocusError, WebLiveAgent, WebLiveHeader};
 use yinz_runtime::errors::prelude::*;
 
 impl Screen {
     pub(super) fn web_live_agents(&mut self, reply: crossbeam::channel::Sender<Vec<WebLiveAgent>>) {
+        let mut local_groups = HashMap::new();
         let agents = self
-            .live_palette_agents()
+            .live_agents_with_tabs()
             .into_iter()
-            .filter_map(|live| {
+            .filter_map(|(live, tab)| {
                 let presentation = live.presentation()?;
+                let tab_group = match tab {
+                    LiveAgentTab::Local(tab) => self.tab_group_ids.get(&tab).and_then(|&id| {
+                        local_groups
+                            .entry(id)
+                            .or_insert_with(|| self.tab_group_info(tab))
+                            .clone()
+                    }),
+                    LiveAgentTab::Peer(position) => self
+                        .peer_sessions_cache
+                        .get(&live.session)
+                        .and_then(|session| {
+                            session.tabs.iter().find(|tab| tab.position == position)
+                        })
+                        .and_then(|tab| tab.group.clone()),
+                };
                 let (glyph, status, _) = yinz_panes::ui::agent_title::status(presentation.state);
                 let mut header = HistoryHeader::default();
                 live.header_overlay(&mut header, None);
                 Some(WebLiveAgent {
                     id: live.id(),
                     session: live.session.clone(),
+                    tab_group,
                     current_session: live.session == self.session_name,
                     run: live.run(),
                     label_source: live.label_source(),

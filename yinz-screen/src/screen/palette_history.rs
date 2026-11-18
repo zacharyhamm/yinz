@@ -12,8 +12,13 @@ use yinz_runtime::errors::prelude::*;
 use yinz_types::{
     data::PaneInfo,
     input::actions::Action,
-    internal_ids::{ClientId, SessionName},
+    internal_ids::{ClientId, SessionName, TabId, TabPosition},
 };
+
+pub(in crate::screen) enum LiveAgentTab {
+    Local(TabId),
+    Peer(TabPosition),
+}
 
 #[derive(Clone)]
 pub(in crate::screen) struct LiveAgent {
@@ -315,8 +320,15 @@ impl Screen {
         }
     }
     pub(in crate::screen) fn live_palette_agents(&self) -> Vec<LiveAgent> {
+        self.live_agents_with_tabs()
+            .into_iter()
+            .map(|(agent, _)| agent)
+            .collect()
+    }
+
+    pub(in crate::screen) fn live_agents_with_tabs(&self) -> Vec<(LiveAgent, LiveAgentTab)> {
         let mut agents = Vec::new();
-        let mut add = |session: &SessionName, pane: PaneInfo| {
+        let mut add = |session: &SessionName, pane: PaneInfo, tab: LiveAgentTab| {
             let Some(a) = &pane.agent else {
                 return;
             };
@@ -359,16 +371,19 @@ impl Screen {
             {
                 metadata.insert("project".into(), project.clone());
             }
-            agents.push(LiveAgent {
-                session: session.clone(),
-                host,
-                pane,
-                metadata,
-            });
+            agents.push((
+                LiveAgent {
+                    session: session.clone(),
+                    host,
+                    pane,
+                    metadata,
+                },
+                tab,
+            ));
         };
         for tab in self.tabs.values() {
             for pane in tab.pane_infos() {
-                add(&self.session_name, pane);
+                add(&self.session_name, pane, LiveAgentTab::Local(tab.id));
             }
         }
         for session in self
@@ -376,11 +391,13 @@ impl Screen {
             .values()
             .filter(|s| s.name != self.session_name)
         {
-            for pane in session.panes.panes.values().flatten() {
-                add(&session.name, pane.clone());
+            for (&position, panes) in &session.panes.panes {
+                for pane in panes {
+                    add(&session.name, pane.clone(), LiveAgentTab::Peer(position));
+                }
             }
         }
-        agents.sort_by_key(LiveAgent::id);
+        agents.sort_by_key(|(agent, _)| agent.id());
         agents
     }
 

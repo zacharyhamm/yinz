@@ -87,6 +87,7 @@ function redact(text) {
 const INTERCEPTED = new Set(['/api/agents', '/api/history', '/api/hit', '/api/event', '/api/tools', '/api/usage', '/api/prompts']);
 const intercepted = (pathname) => INTERCEPTED.has(pathname) || pathname.startsWith('/api/agent/');
 const AGENT_ID = 'live:dev:7';
+const cardSelector = (id) => `.agent-card[data-agent-id="${id}"]`;
 const REF7 = { id: AGENT_ID, kind: 'codex', session_id: 'conv-1' };
 const REF7B = { id: AGENT_ID, kind: 'codex', session_id: 'conv-2' };
 const XSS = (n) => `<img src=x onerror="window.__yinzXss=${n}">`;
@@ -126,11 +127,13 @@ class Fixture {
 
 function row(fx, id, state, extra = {}) {
   const retargeted = fx.retarget && id === AGENT_ID;
+  const defaultStatus = { waiting: 'needs input', busy: 'working', idle: 'idle' }[state];
   const r = {
     id, ref: retargeted ? { ...REF7B } : { id, kind: 'codex', session_id: 'conv-1' },
     session: 'browser-check', current_session: true, pane_id: id.split(':').pop(), provider: 'codex', state,
     glyph: { waiting: '?', busy: '●', idle: '○' }[state] || '?',
-    status: { waiting: 'needs input', busy: 'working', idle: 'idle' }[state] || state,
+    status: defaultStatus || state,
+    tab_group: { id: 0, name: 'Default' },
     host: null, title: `Agent ${id.split(':').pop()}`, activity: 'editing', project: 'yinz',
     branch: 'main', last_reply: { text: 'Done with step 1', truncated: false }, last_hook_at_ms: 1, focused: false,
     selectable: true, suppressed: false, directory: '/w', run: retargeted ? 'run-7b' : `run-${id.split(':').pop()}`,
@@ -143,7 +146,8 @@ function row(fx, id, state, extra = {}) {
   const chars = Array.from(source);
   const preview = chars.slice(0, 160).join('') + (chars.length > 160 || r.last_reply?.truncated ? '…' : '');
   const badges = (r.badges || []).map((b) => `<span class="badge" data-tone="${esc(b.tone || '')}">${esc(b.text)}</span>`).join('');
-  r.html = `<div class="agent-row" data-state="${esc(r.state)}"><div class="agent-row-heading"><span class="agent-glyph" aria-hidden="true">${esc(r.glyph)}</span><strong class="agent-title">${esc(r.title.trim() ? r.title : r.provider)}</strong><span class="agent-status">${esc(r.status)}</span></div><div class="agent-meta">${[r.provider, r.project, r.branch].filter((s) => s && s.trim()).map(esc).join(' · ')}</div>${badges ? `<div class="badges">${badges}</div>` : ''}${source.trim() ? `<p class="agent-reply">${esc(preview)}</p>` : ''}</div>`;
+  const stateMarker = defaultStatus && r.status === defaultStatus ? ` data-redundant-state="${esc(state)}"` : '';
+  r.html = `<div class="agent-row" data-state="${esc(r.state)}"><div class="agent-row-heading"><span class="agent-glyph" aria-hidden="true">${esc(r.glyph)}</span><strong class="agent-title">${esc(r.title.trim() ? r.title : r.provider)}</strong><span class="agent-status"${stateMarker}>${esc(r.status)}</span></div><div class="agent-meta">${[r.provider, r.project, r.branch].filter((s) => s && s.trim()).map(esc).join(' · ')}</div>${badges ? `<div class="badges">${badges}</div>` : ''}${source.trim() ? `<p class="agent-reply">${esc(preview)}</p>` : ''}</div>`;
   if (r.wrapper) r.html = `<div class="custom-row">${r.html}</div>`;
   return r;
 }
@@ -151,7 +155,7 @@ function row(fx, id, state, extra = {}) {
 function agents(fx) {
   if (fx.rows) return {
     session: 'browser-check', now_ms: Date.now(),
-    counts: Object.fromEntries(['waiting', 'busy', 'idle'].map((s) => [s, fx.rows.filter((r) => r.state === s).length])),
+    counts: fx.counts ?? Object.fromEntries(['waiting', 'busy', 'idle'].map((s) => [s, fx.rows.filter((r) => r.state === s).length])),
     agents: fx.rows,
   };
   return {
@@ -934,13 +938,13 @@ async function phoneLayout(open, width) {
   await noClippedControls(page, `login ${width}px`);
   await signIn(page);
   await until('agent cards', () => exists(page, 'li.agent-card'));
-  await until('three sections', async () => (await exists(page, '#section-waiting')) && (await exists(page, '#section-busy')) && (await exists(page, '#section-idle')));
+  check(await page.locator('.agent-section').count() === 2, 'default groups should be separate by owning session');
   await noHorizontalOverflow(page, `list ${width}px`);
   await touchTargets(page, `list ${width}px`);
   await noClippedControls(page, `list ${width}px`);
   check((await textOf(page, 'li.agent-card[data-agent-id="live:peer:9"]')).includes('session peer'), 'peer session chip missing');
   // Agent titles arrive as server-escaped row html; the title also reaches toasts as text.
-  check((await textOf(page, '#section-waiting')).includes('<img src=x'), 'escaped title text not shown');
+  check((await textOf(page, cardSelector(AGENT_ID))).includes('<img src=x'), 'escaped title text not shown');
   await domClick(page, 'li.agent-card[data-agent-id="live:dev:7"] .quick-key[data-key="1"]');
   await until('quick key request', () => fx.count('/api/agent/keys') === 1);
   const keys = fx.bodies('/api/agent/keys')[0];
@@ -1780,7 +1784,7 @@ async function compactAgentList(open, width, scheme) {
   // and theme after login, before measuring any typography or colours.
   await page.emulateMedia({ colorScheme: scheme });
   check(await page.evaluate(({ width, scheme }) => innerWidth === width && matchMedia('(prefers-color-scheme: dark)').matches === (scheme === 'dark'), { width, scheme }), 'wrong viewport or colour scheme');
-  const reference = '#section-busy .agent-card';
+  const reference = cardSelector('live:dev:8');
   const metrics = await page.evaluate((sel) => {
     const card = document.querySelector(sel);
     const title = card.querySelector('.agent-title');
@@ -1805,11 +1809,11 @@ async function compactAgentList(open, width, scheme) {
   check(metrics.clamp === '3' && metrics.replyHeight <= metrics.lineHeight * 3 + 1, `reply exceeds three lines: ${JSON.stringify(metrics)}`);
   check(metrics.text === `${longReply.slice(0, 160)}…`, 'long preview lost its character cap or ellipsis cue');
   check(metrics.height < (width === 320 ? 240 : 220), `reference card too tall: ${metrics.height}px at ${width}px`);
-  check(await textOf(page, '#section-waiting .agent-reply') === 'Ready for your review.', 'short reply changed');
-  check(await textOf(page, '#section-idle .agent-reply') === 'Upstream preview…', 'upstream truncation cue missing');
-  check(!(await exists(page, '.list-main .state-badge')), 'duplicate known-state badge');
-  check(!(await exists(page, '#section-busy .badges')), 'empty badge row retained');
-  check(await page.evaluate(() => [...document.querySelectorAll('.list-main .agent-status')].every((el) => getComputedStyle(el).display === 'none')), 'duplicate heading state visible through a wrapper');
+  check(await textOf(page, `${cardSelector(AGENT_ID)} .agent-reply`) === 'Ready for your review.', 'short reply changed');
+  check(await textOf(page, `${cardSelector('live:peer:9')} .agent-reply`) === 'Upstream preview…', 'upstream truncation cue missing');
+  check(JSON.stringify(await page.locator('.list-main .state-text:visible').allTextContents()) === JSON.stringify(['Needs you', 'Working', 'Idle']), 'card state badges missing or reordered');
+  check(await page.getByRole('link', { name: 'Open Review the change, Needs you', exact: true }).count() === 1, 'card link label omits the agent state');
+  check(await page.locator('.list-main .agent-status:visible').count() === 0, 'duplicate default status visible through a wrapper');
   for (const sel of ['.custom-row .badge', '.badge-focused', '.badge-peer', '.badge-host', '.agent-glyph']) check(await exists(page, sel), `missing context ${sel}`);
   check((await textOf(page, '.custom-row .badges')).includes('<custom context>'), 'custom badge was not preserved as text');
   check(await page.evaluate(() => getComputedStyle(document.querySelector('.card-needs-person')).borderLeftColor !== getComputedStyle(document.querySelector('.card-busy')).borderLeftColor), 'needs-person emphasis lost');
@@ -1837,7 +1841,7 @@ async function compactAgentList(open, width, scheme) {
   await page.keyboard.press('Escape');
   await until('reader closes', async () => !(await exists(page, '#sheet-reader')));
   await domClick(page, '#detail-back');
-  await until('return to list', () => exists(page, '#section-waiting'));
+  await until('return to list', () => exists(page, cardSelector(AGENT_ID)));
 
   // Edge cases retain useful text, including long unbroken metadata, without empty rows.
   fx.rows = [
@@ -1849,7 +1853,7 @@ async function compactAgentList(open, width, scheme) {
     row(fx, 'live:dev:14', 'paused', { title: 'Unknown state', status: 'paused', last_reply: null }),
   ];
   await domClick(page, '#list-refresh');
-  await until('edge-case rows', () => exists(page, '#section-other'));
+  await until('edge-case rows', () => exists(page, cardSelector('live:dev:14')));
   const edge = await page.evaluate(() => {
     const card = document.querySelector('.agent-card[data-agent-id="live:dev:10"]');
     const title = card.querySelector('.agent-title');
@@ -1859,15 +1863,14 @@ async function compactAgentList(open, width, scheme) {
       titleUnclipped: title.scrollHeight <= title.clientHeight + 1,
       metaHidden: getComputedStyle(meta).display === 'none', reply: card.querySelector('.agent-reply').textContent,
       replies: document.querySelectorAll('.list-main .agent-reply').length,
-      unknownVisible: getComputedStyle(document.querySelector('#section-other .agent-status')).display !== 'none',
-      longMeta: document.querySelector('#section-waiting .agent-meta').textContent,
+      longMeta: document.querySelector('.card-waiting .agent-meta').textContent,
     };
   });
   check(edge.title === '界🙂'.repeat(100) && edge.titleWrapped && edge.titleUnclipped, 'long Unicode title lost or clipped');
   check(edge.metaHidden && edge.replies === 1, 'empty metadata/reply occupied a row');
   check(edge.reply === `${'界🙂'.repeat(80)}…`, 'Unicode reply preview damaged');
   check(edge.longMeta.includes('project'.repeat(30)) && edge.longMeta.includes('branch'.repeat(30)), 'long metadata lost');
-  check(edge.unknownVisible && (await textOf(page, '#section-other .state-badge')).includes('paused'), 'unknown state label missing');
+  check(await page.locator(`${cardSelector('live:dev:14')} .agent-status`).isVisible() && (await textOf(page, `${cardSelector('live:dev:14')} .state-badge`)).includes('paused'), 'unknown state label missing');
   await noHorizontalOverflow(page, `long content ${width}px ${scheme}`);
   await noClippedControls(page, `long content ${width}px ${scheme}`);
   await touchTargets(page, `long content ${width}px ${scheme}`);
@@ -1881,7 +1884,75 @@ async function compactAgentList(open, width, scheme) {
   check(!(await exists(page, '.agent-section')) && !(await exists(page, '#banner-offline')), 'empty list retained cards or an error');
   fx.rows = null;
   await domClick(page, '#list-refresh');
-  await until('populated list recovers', () => exists(page, '#section-waiting'));
+  await until('populated list recovers', () => exists(page, cardSelector(AGENT_ID)));
+}
+
+async function groupedAgentList(open) {
+  const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
+  const name = 'Release Review';
+  const longName = `Peer ${XSS(3)} ${'release'.repeat(40)}`;
+  const first = row(fx, AGENT_ID, 'waiting', { tab_group: { id: 0, name } });
+  const busy = row(fx, 'live:dev:8', 'busy', {
+    tab_group: { id: 0, name }, status: 'Checking the build', wrapper: true,
+  });
+  const second = row(fx, 'live:dev:9', 'idle', { tab_group: { id: 1, name } });
+  const peer = row(fx, 'live:peer:7', 'idle', {
+    session: 'peer', current_session: false, tab_group: { id: 0, name },
+  });
+  const peerLong = row(fx, 'live:peer:8', 'idle', {
+    session: 'peer', current_session: false, tab_group: { id: 0xffffffff, name: longName },
+  });
+  const missing = row(fx, 'live:dev:10', 'idle', { tab_group: null });
+  const invalid = row(fx, 'live:dev:11', 'idle', { tab_group: { id: 0x100000000, name: 'Invalid' } });
+  const peerMissing = row(fx, 'live:peer:10', 'idle', {
+    session: 'peer', current_session: false, tab_group: undefined,
+  });
+  const ownerless = row(fx, 'live:unknown:12', 'idle', { session: undefined, tab_group: { id: 0, name } });
+  const alsoOwnerless = row(fx, 'live:unknown:13', 'idle', { session: ' ', tab_group: { id: 0, name } });
+  const unnamed = row(fx, 'live:dev:14', 'idle', { tab_group: { id: 2, name: ' ' } });
+  second.html = second.html.replace(' data-redundant-state="idle"', '').replace('>idle</span>', '>Awaiting a deploy</span>');
+  fx.rows = [first, second, peer, busy, peerLong, missing, peerMissing, ownerless, invalid, alsoOwnerless, unnamed];
+  fx.counts = { waiting: 4, busy: 1, idle: 9 };
+  await openList(page);
+  const sections = () => page.locator('.agent-section').evaluateAll((nodes) => nodes.map((node) => {
+    const heading = document.getElementById(node.getAttribute('aria-labelledby'));
+    if (!heading || heading !== node.querySelector('h2')) throw new Error('invalid group heading association');
+    return [
+      heading.querySelector('.section-name').textContent,
+      heading.querySelector('.section-session').textContent,
+      [...node.querySelectorAll('.agent-card')].map((card) => card.dataset.agentId),
+    ];
+  }));
+  const expected = [
+    [name, 'Session browser-check', [first.id, busy.id]],
+    [name, 'Session browser-check', [second.id]],
+    [name, 'Session peer', [peer.id]],
+    [longName, 'Session peer', [peerLong.id]],
+    ['Tab group unavailable', 'Session browser-check', [missing.id, invalid.id]],
+    ['Tab group unavailable', 'Session peer', [peerMissing.id]],
+    ['Tab group unavailable', 'Session unavailable', [ownerless.id, alsoOwnerless.id]],
+    ['Unnamed tab group', 'Session browser-check', [unnamed.id]],
+  ];
+  check(JSON.stringify(await sections()) === JSON.stringify(expected), 'incorrect ordered group membership');
+  check(await page.locator('.section-title').first().evaluate((el) => getComputedStyle(el).textTransform) === 'none', 'group name case changed');
+  check(await textOf(page, '.need-count') === '4 need you' && (await page.title()).startsWith('(4) '), 'global attention was recomputed from visible rows');
+  check(await page.locator(`${cardSelector(busy.id)} .agent-status`).isVisible(), 'hook-supplied status hidden');
+  check(await page.locator(`${cardSelector(second.id)} .agent-status`).isVisible(), 'custom markup status hidden');
+  await noHorizontalOverflow(page, 'tab group labels at 320px');
+  await noInjection(page);
+
+  const peerLink = page.locator(`${cardSelector(peer.id)} .agent-open-area`);
+  await peerLink.focus();
+  fx.rows = [peer, first, second, busy, peerLong, missing, peerMissing, ownerless, invalid, alsoOwnerless, unnamed];
+  const reordered = [expected[2], expected[0], expected[1], ...expected.slice(3)];
+  await until('poll reorders tab groups', async () => JSON.stringify(await sections()) === JSON.stringify(reordered));
+  check(await peerLink.evaluate((el) => document.activeElement === el), 'section reorder lost keyboard focus');
+
+  const renamedGroup = { id: 0, name: 'Review Complete' };
+  fx.rows = [peer, ...[first, second, busy].map((r) => ({ ...r, tab_group: renamedGroup })), peerLong];
+  const moved = [expected[2], [renamedGroup.name, 'Session browser-check', [first.id, second.id, busy.id]], expected[3]];
+  await domClick(page, '#list-refresh');
+  await until('poll shows renamed group and moved card', async () => JSON.stringify(await sections()) === JSON.stringify(moved));
 }
 
 async function darkMode(open) {
@@ -2604,6 +2675,7 @@ async function main() {
     for (const scheme of ['light', 'dark']) await scenario(`compact agent list ${width}px ${scheme}`, (open) => compactAgentList(open, width, scheme));
   }
   await scenario('compact agent list 1024px desktop', (open) => compactAgentList(open, 1024, 'light'));
+  await scenario('Agents group membership, fallback and poll updates', groupedAgentList);
   for (const width of [320, 390, 1024]) for (const scheme of ['light', 'dark']) {
     await scenario(`compact detail ${width}px ${scheme}`, (open) => compactDetail(open, width, scheme));
   }

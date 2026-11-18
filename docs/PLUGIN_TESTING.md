@@ -369,10 +369,14 @@ its tooling, it fails with the provisioning command instead of skipping.
 
 The browser fixture mirrors the default agent-row and agent-header structures
 and is paired with the real Scheme route tests for preview boundaries, Unicode, escaping and raw
-field preservation. List checks cover compact previews, contrast, density,
-wrapping, badges, actions and focus at 320px and 390px in both color schemes,
-plus a desktop smoke and successful empty-list recovery. Detail checks use the
-same header object to generate short/long escaped default markup, with additional
+field preservation. The authenticated production HTTP test covers group
+metadata from a live Screen and a group rename. Browser list checks cover
+session-scoped ordering, missing metadata, wrapped labels, per-card state,
+global attention counts and focus through poll reordering. They also cover
+compact previews, contrast, density, actions and focus at 320px and 390px in
+both color schemes, plus a desktop smoke and successful empty-list recovery.
+Detail checks use the same header object to generate short and long escaped
+default markup, with additional
 missing, wrapped and custom hook variants. At exact 320×640 and 390×844 CSS
 viewports in both themes, the collapsed header (including tabs) must be ≤120px,
 the idle empty-draft composer ≤64px, and the healthy timeline ≥450px/650px.

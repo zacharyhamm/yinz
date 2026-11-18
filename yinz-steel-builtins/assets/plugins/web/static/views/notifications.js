@@ -25,7 +25,7 @@ export function Notifications({ push }) {
   }
   return html`<section aria-label="Session notifications">
     <p>${support || 'Receive notifications from all local Yinz sessions, including when this app is closed.'}</p>
-    ${!support ? html`<button type="button" disabled=${busy} onClick=${toggle}>${busy ? 'Checking notifications…' : enabled ? 'Disable notifications' : 'Enable notifications'}</button>` : null}
+    ${!support ? html`<button type="button" class="button" disabled=${busy} onClick=${toggle}>${busy ? 'Checking notifications…' : enabled ? 'Disable notifications' : 'Enable notifications'}</button>` : null}
     <p role="status">${message || (enabled ? 'Notifications enabled for this device.' : '')}</p>
   </section>`;
 }

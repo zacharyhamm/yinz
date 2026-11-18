@@ -1,28 +1,44 @@
-// Agents list (#/): server-ordered sections with labelled state indicators.
+// Agents list (#/): session-scoped tab groups with labelled state indicators.
 import { describeError, freshnessText } from '../api.js';
-import { html, useState, useEffect, usePoller, useNow, ServerHtml, RowBadges, QuickKeys, Banner, Freshness, responseText, cx } from './ui.js';
+import { html, useState, useEffect, useLayoutEffect, usePoller, useNow, ServerHtml, RowBadges, stateLabel, QuickKeys, Banner, Freshness, responseText, cx } from './ui.js';
 import { Sheet, ConfirmSheet } from './sheets.js';
 import { detailHash } from '../app-route.js';
 import { Notifications } from './notifications.js';
 
-const SECTIONS = [
-  ['waiting', 'Needs you'],
-  ['busy', 'Working'],
-  ['idle', 'Idle'],
-];
+function nonblank(value) {
+  return typeof value === 'string' && value.trim() !== '';
+}
+
+function groupAgents(agents) {
+  const groups = new Map();
+  for (const row of agents) {
+    const session = nonblank(row.session) ? row.session : null;
+    const id = row.tab_group?.id;
+    const hasGroup = session !== null && Number.isInteger(id) && id >= 0 && id <= 0xffffffff;
+    const key = JSON.stringify([session, hasGroup ? id : null]);
+    if (!groups.has(key)) {
+      const name = hasGroup
+        ? (nonblank(row.tab_group.name) ? row.tab_group.name : 'Unnamed tab group')
+        : 'Tab group unavailable';
+      groups.set(key, { key, name, session, rows: [] });
+    }
+    groups.get(key).rows.push(row);
+  }
+  return [...groups.values()];
+}
 
 function cardKeys(config) {
   const preferred = ['1', '2', 'esc'].filter((k) => config.quick_keys.includes(k));
   return preferred.length ? preferred : config.quick_keys.slice(0, 3);
 }
 
-function AgentCard({ row, env, onKeys, busy, showState }) {
+function AgentCard({ row, env, onKeys, busy }) {
   const waiting = row.state === 'waiting';
   const href = row.run ? detailHash({ id: row.id, run: row.run, tab: waiting ? 'screen' : 'timeline' }) : detailHash({ id: row.id, run: '', tab: 'screen' });
   return html`<li class=${cx('agent-card', `card-${row.state || 'unknown'}`, row.wait_needs_a_person && 'card-needs-person')} data-agent-id=${row.id}>
-    <a class="card-main agent-open-area" href=${href} aria-label=${`Open ${row.title || row.id}`}>
+    <a class="card-main agent-open-area" href=${href} aria-label=${`Open ${row.title || row.id}, ${stateLabel(row.state)}`}>
       <${ServerHtml} html=${row.html} class="card-html" />
-      <${RowBadges} row=${row} showState=${showState} />
+      <${RowBadges} row=${row} />
     </a>
     ${waiting ? html`<div class="card-actions">
       <${QuickKeys} keys=${cardKeys(env.config)} disabled=${busy || !row.ref} label=${`Quick keys for ${row.title || 'agent'}`}
@@ -49,6 +65,15 @@ export function ListView({ env }) {
   const data = state && state.data;
   const agents = data ? data.agents.filter((a) => a && typeof a.id === 'string') : [];
   const waiting = data && data.counts && Number.isInteger(data.counts.waiting) ? data.counts.waiting : agents.filter((a) => a.state === 'waiting').length;
+  const groups = groupAgents(agents);
+  const focusedControl = document.activeElement?.closest('.agent-card a, .agent-card button');
+
+  // Reordering a keyed section can move its existing DOM nodes and blur a control.
+  useLayoutEffect(() => {
+    if (focusedControl?.isConnected && document.activeElement === document.body) {
+      focusedControl.focus({ preventScroll: true });
+    }
+  }, [data]);
 
   useEffect(() => {
     document.title = waiting > 0 ? `(${waiting}) ${env.config.title}` : env.config.title;
@@ -65,10 +90,6 @@ export function ListView({ env }) {
     else if (r.status !== 401) env.toast(`Key not confirmed: ${describeError(r)} Check the screen before trying again.`);
     refresh();
   }
-
-  const groups = SECTIONS.map(([key, label]) => [key, label, agents.filter((a) => a.state === key)]);
-  const other = agents.filter((a) => !SECTIONS.some(([k]) => k === a.state));
-  if (other.length) groups.push(['other', 'Other', other]);
 
   return html`<div class="page list-page">
     <header class="app-header" id="list-header">
@@ -87,10 +108,14 @@ export function ListView({ env }) {
       ${state && state.error && ['offline', 'retrying', 'error'].includes(state.status) ? html`<${Banner} id="banner-offline" tone="warn">${freshnessText(state, now)}<//>` : null}
       ${!data && (!state || state.loading) ? html`<p class="empty">Loading agents…</p>` : null}
       ${data && !agents.length ? html`<p class="empty" id="list-empty">No agents are running.</p>` : null}
-      ${groups.filter(([, , rows]) => rows.length).map(([key, label, rows]) => html`<section class="agent-section" id=${`section-${key}`} data-state=${key} aria-labelledby=${`section-${key}-title`}>
-        <h2 class="section-title" id=${`section-${key}-title`}>${label} <span class="section-count">${rows.length}</span></h2>
+      ${groups.map(({ key, name, session, rows }, index) => html`<section key=${key} class="agent-section" aria-labelledby=${`agent-group-${index}`}>
+        <h2 class="section-title" id=${`agent-group-${index}`}>
+          <span class="section-name">${name}</span>
+          <span class="section-count">${rows.length}</span>
+          <span class="section-session">${session === null ? 'Session unavailable' : `Session ${session}`}</span>
+        </h2>
         <ul class="agent-cards">
-          ${rows.map((row) => html`<${AgentCard} key=${row.id} row=${row} env=${env} onKeys=${sendKey} busy=${!!busyKeys[row.id]} showState=${key === 'other'} />`)}
+          ${rows.map((row) => html`<${AgentCard} key=${row.id} row=${row} env=${env} onKeys=${sendKey} busy=${!!busyKeys[row.id]} />`)}
         </ul>
       </section>`)}
     </main>

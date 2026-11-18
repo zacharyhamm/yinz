@@ -525,10 +525,18 @@ fn execute(
                     .filter(|a| a.metadata.get("state").is_some_and(|s| s == state))
                     .count()
             };
+            let agents: Vec<_> = live
+                .iter()
+                .map(|a| {
+                    let mut row = row(a, labels.get(&a.id));
+                    row["tab_group"] = json!(a.tab_group);
+                    row
+                })
+                .collect();
             Ok(
                 json!({"session":senders.session.current(),"now_ms":agent_proto::agents::now_ms(),
                 "counts":{"waiting":count("waiting"),"busy":count("busy"),"idle":count("idle")},
-                "agents":live.iter().map(|a| row(a, labels.get(&a.id))).collect::<Vec<_>>()}),
+                "agents":agents}),
             )
         },
         Operation::Prompts {} => Ok(
