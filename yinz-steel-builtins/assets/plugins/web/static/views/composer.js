@@ -1,6 +1,6 @@
 // Bottom composer and submission retry UI, driven by submission.js.
 import { describeError } from '../api.js';
-import { recordView, targetOf, validTarget, UNKNOWN_TEXT } from '../submission.js';
+import { recordView, UNKNOWN_TEXT } from '../submission.js';
 import { html, useState, useEffect, useMemo, cx } from './ui.js';
 import { Sheet } from './sheets.js';
 
@@ -57,12 +57,9 @@ function PromptsSheet({ env, onPick, onClose }) {
 }
 
 /** Records written for an earlier identity of this pane: explicit adopt or discard. */
-export function StaleSubmissions({ env, agentId, current, canPrompt, verifiedTarget, dock = false }) {
+export function StaleSubmissions({ env, agentId, current, canPrompt, scoped = false, dock = false }) {
   useSubmissions(env);
-  const exact = verifiedTarget ? env.submissions.get(verifiedTarget) : null;
-  const records = verifiedTarget
-    ? (exact && (exact.pending || exact.draft.trim() || exact.incompatible) ? [exact] : [])
-    : env.submissions.staleRecords(agentId, current);
+  const records = env.submissions.staleRecords(agentId, current);
   if (!records.length) return null;
   return html`<div class=${cx('stale-submissions', dock && 'composer-dock')}>
     ${records.map((rec) => {
@@ -73,23 +70,28 @@ export function StaleSubmissions({ env, agentId, current, canPrompt, verifiedTar
           : rec.pending ? `${UNKNOWN_TEXT}. The agent is unavailable, so it cannot be retried now.`
             : 'Draft saved for this agent while it is unavailable.'}
           ${rec.incompatible && rec.pending && rec.pending.state === 'unknown' ? ` ${UNKNOWN_TEXT}.` : ''}</p>
-        <p class="submission-text">${preview(text)}</p>
+        ${scoped ? html`<label>${rec.pending ? 'Attempted prompt' : 'Saved draft'}
+          <textarea class="composer-input" readonly rows=${rowsFor(text)} value=${text}></textarea>
+        </label>
+        ${rec.pending && rec.draft.trim() && rec.draft !== text ? html`<label>Edited draft
+          <textarea class="composer-input" readonly rows=${rowsFor(rec.draft)} value=${rec.draft}></textarea>
+        </label>` : null}` : html`<p class="submission-text">${preview(text)}</p>`}
         <div class="submission-actions">
           ${current && canPrompt && !adopted ? html`<button type="button" class="button submission-adopt"
             onClick=${() => env.submissions.adopt(rec.target, current)}>Use as a new draft for the current conversation</button>` : null}
           ${adopted ? html`<span class="hint">Copied into the current draft.</span>` : null}
-          <button type="button" class="button submission-discard-stale" onClick=${() => env.submissions.discard(rec.target)}>Discard</button>
+          <button type="button" class="button submission-discard-stale" onClick=${() => scoped
+            ? env.submissions.discardUnavailable(rec.target) : env.submissions.discard(rec.target)}>Discard</button>
         </div>
       </div>`;
     })}
   </div>`;
 }
 
-export function Composer({ env, live, enabled, onTargetChanged }) {
+export function Composer({ env, live, target, enabled, onTargetChanged }) {
   useSubmissions(env);
   const [prompts, setPrompts] = useState(false);
   const [problem, setProblem] = useState(null);
-  const target = live && live.ref && validTarget(live.ref) ? targetOf(live.ref) : null;
   const canPrompt = !!live && live.can_prompt === true && !!target;
   const reason = !live ? null
     : !enabled ? 'Actions are disabled while the agent is unavailable.'
@@ -104,12 +106,12 @@ export function Composer({ env, live, enabled, onTargetChanged }) {
     setProblem(null);
     const r = await env.submissions.send(target, { canPrompt: canPrompt && enabled, reason });
     if (!r.ok) setProblem(r.reason);
-    else if (r.classification && ['incompatible', 'command_sent'].includes(r.classification.state)) onTargetChanged();
+    else if (r.classification && ['incompatible', 'command_sent'].includes(r.classification.state)) onTargetChanged(r.classification.state);
   }
   async function retry() {
     setProblem(null);
     const r = await env.submissions.retry(target);
-    if (r.ok && r.classification && ['incompatible', 'command_sent'].includes(r.classification.state)) onTargetChanged();
+    if (r.ok && r.classification && ['incompatible', 'command_sent'].includes(r.classification.state)) onTargetChanged(r.classification.state);
   }
   function pick(text) {
     setPrompts(false);
@@ -156,6 +158,6 @@ export function Composer({ env, live, enabled, onTargetChanged }) {
       <button type="button" class=${cx('button', 'button-primary', 'composer-send')} id="composer-send"
         disabled=${blocked || !!sendProblem} title=${sendProblem || 'Send'} onClick=${send}>Send</button>
     </div>
-    ${prompts ? html`<${PromptsSheet} env=${env} onPick=${pick} onClose=${() => setPrompts(false)} />` : null}
+    ${prompts && !blocked ? html`<${PromptsSheet} env=${env} onPick=${pick} onClose=${() => setPrompts(false)} />` : null}
   </div>`;
 }

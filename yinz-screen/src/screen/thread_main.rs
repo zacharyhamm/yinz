@@ -3417,9 +3417,10 @@ pub fn screen_thread_main(
                 ScreenInstruction::WebFocusAgent {
                     agent,
                     owner,
+                    peer_instance,
                     reply,
                 } => {
-                    screen.web_focus_agent(agent, owner, reply);
+                    screen.web_focus_agent(agent, owner, peer_instance.as_deref(), reply);
                 },
                 ScreenInstruction::AgentReport(report, accepted_at) => {
                     if !apply_queued_agent_report(&mut screen, &report, accepted_at)? {

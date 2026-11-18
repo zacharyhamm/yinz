@@ -312,7 +312,10 @@ plugin configuration or secrets.
   shows its state and any custom status text. The header's attention count
   includes all waiting agents in the snapshot, even when a hook hides some
   cards. **Next waiting agent** focuses and reveals the next waiting card with
-  an Open link in displayed order, wrapping back to the first. Task titles use the theme's accent color and
+  an Open link in displayed order, wrapping back to the first. When multiple
+  waiting cards are reachable, press Tab from a card's main Open link to reach
+  its **Next waiting agent** button. Enter on the focused Open link opens the card.
+  Task titles use the theme's accent color and
   replies use the main text color. Default reply previews retain up to 160 Unicode
   characters, with an ellipsis for locally or upstream truncated text, and display
   at most three lines. Blank replies take no space. Open the agent's timeline and
@@ -326,10 +329,11 @@ plugin configuration or secrets.
   actions and three tabs. Agent information starts collapsed on phones and
   desktop. Open it for the full title, complete server header (including custom
   hook output), host/session/focus badges and provider quota or usage errors.
-  Peer links identify the conversation within its scanned session. A peer
-  bookmark may lose its live binding after a session rename or conversation
-  change. Its retained run remains readable when available. Return to Agents
-  and reopen the card for the current binding.
+  Peer links identify the conversation in the running peer. A rename or a
+  newly recorded run keeps that binding. A restart, conversation change or older
+  bookmark can leave only the retained run available. Return to Agents and
+  reopen the card for the current binding. Older peers without a published
+  identity offer stored history when a run is available.
   This labelled region scrolls when its content is long. Its open/closed choice
   survives polling, tab changes and a live agent moving to a new run; leaving
   or reloading the detail view resets it. Expanding it preserves the draft and
@@ -360,13 +364,19 @@ plugin configuration or secrets.
 - **Composer**: a prompt box with a **Past prompts** sheet. Prompting is hidden
   when no live agent is bound and disabled with the native reason when
   `can_prompt` is false.
+  When a scoped peer is unavailable, its exact Detail link still offers its
+  saved text for copying or discarding, including after reload. A pending
+  attempt can be retried only after the same target is available again. Drafts
+  saved before peer identity was recorded stay in browser storage without
+  transferring to a peer composer.
 - **Actions sheet**: **Focus on desktop** (labeled with the target session for
   peers), **Interrupt**, which sends `Esc` after you confirm, and **Send keys…**
   for up to eight of the native keys. Native code exposes no restart, close or
   spawn action.
 
 Peer Screen, keys, and prompts use the scanned session socket and recheck the
-conversation at the destination. During a rename, **Focus on desktop** becomes
+running Screen instance, pane, provider and conversation at the destination.
+During a rename, **Focus on desktop** becomes
 available once the peer cache contains the newly published session name. If a
 key reports that the agent changed or disappeared, refresh Agents and reopen
 its card. If delivery is uncertain, inspect the agent before retrying.

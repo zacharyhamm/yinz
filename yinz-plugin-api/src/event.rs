@@ -1818,6 +1818,7 @@ impl TryFrom<ProtobufSessionManifest> for SessionInfo {
         }
         Ok(SessionInfo {
             name: protobuf_session_manifest.name.into(),
+            web_peer_instance: None,
             tabs: protobuf_session_manifest
                 .tabs
                 .iter()

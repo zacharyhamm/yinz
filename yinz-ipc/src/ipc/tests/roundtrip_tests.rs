@@ -5954,6 +5954,25 @@ fn agent_create_project_roundtrip() {
 }
 
 #[test]
+fn web_peer_guarded_agent_control_roundtrip() {
+    use yinz_types::agent::control::{AgentRequest, WebAgentAction};
+    use yinz_types::internal_ids::TerminalId;
+    use yinz_types::pane_id::PaneId;
+    test_client_roundtrip!(ClientToServerMsg::AgentControl(
+        AgentRequest::WebPeerGuarded {
+            expected_instance: "c0a3c5f4-91b9-46be-8047-357cefe5e030".into(),
+            pane_id: PaneId::Terminal(TerminalId::new(7)),
+            expected_kind: "codex".into(),
+            expected_session_id: "conversation".into(),
+            action: WebAgentAction::Prompt {
+                text: "continue".into(),
+                submission_id: "peer-retry".into(),
+            },
+        }
+    ));
+}
+
+#[test]
 fn agent_provider_usage_roundtrip() {
     use yinz_types::agent::control::{
         AgentRequest, AgentResponse, ProviderUsage, ProviderUsageStatus, ProviderUsageWindow,

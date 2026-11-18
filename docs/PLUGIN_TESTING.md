@@ -375,6 +375,12 @@ session-scoped ordering, missing metadata, wrapped labels, per-card state,
 global attention counts and focus through poll reordering. They also cover
 compact previews, contrast, density, actions and focus at 320px and 390px in
 both color schemes, plus a desktop smoke and successful empty-list recovery.
+Focused peer cases cover checkpoint republication with the original legacy
+identity reused by another peer, both Open affordances, quick keys, and a
+same-target retry after reloading unavailable draft recovery. The waiting-agent
+case repeats navigation with Tab and Enter across groups. Native checkpoint,
+IPC, Screen and host tests cover peer identity publication, destination guards
+and isolated List labels independently of the browser fixtures.
 Detail checks use the same header object to generate short and long escaped
 default markup, with additional
 missing, wrapped and custom hook variants. At exact 320×640 and 390×844 CSS

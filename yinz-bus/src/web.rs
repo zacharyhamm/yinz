@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use crate::command_palette::AgentLabelSource;
+use yinz_types::agent::control::{peer_web_detail_id, valid_web_identity};
+use yinz_types::agent::AgentInfo;
 use yinz_types::data::PaneInfo;
 use yinz_types::input::layout::RunPluginOrAlias;
 use yinz_types::internal_ids::{ClientId, PluginId, SessionName};
@@ -113,6 +115,7 @@ pub struct WebLiveAgent {
     /// Group identity and display name within `tab_group_session`.
     pub tab_group: Option<TabGroupInfo>,
     pub current_session: bool,
+    pub peer_instance: Option<String>,
     pub pane: PaneInfo,
     pub metadata: BTreeMap<String, String>,
     /// `LiveAgent::run()`.
@@ -156,18 +159,34 @@ pub struct WebAgentRef {
     pub session_id: String,
 }
 
+impl WebAgentRef {
+    pub fn matches_agent(&self, id: &str, agent: &AgentInfo) -> bool {
+        [&self.id, &self.kind, &self.session_id]
+            .into_iter()
+            .all(|value| valid_web_identity(value))
+            && self.id == id
+            && agent.kind == self.kind
+            && agent.session_id.as_deref() == Some(self.session_id.as_str())
+    }
+}
+
 impl WebLiveAgent {
-    /// Same live-agent id, agent kind and agent session id, none of them empty.
-    pub fn matches(&self, r: &WebAgentRef) -> bool {
+    pub fn peer_detail_id(&self) -> Option<String> {
+        let instance = self.peer_instance.as_deref()?;
+        let agent = self.pane.agent.as_ref()?;
+        Some(peer_web_detail_id(instance, self.pane.id, agent))
+    }
+
+    pub fn matches(&self, reference: &WebAgentRef) -> bool {
         let Some(agent) = self.pane.agent.as_ref() else {
             return false;
         };
-        yinz_types::agent::control::valid_web_identity(&r.id)
-            && yinz_types::agent::control::valid_web_identity(&r.kind)
-            && yinz_types::agent::control::valid_web_identity(&r.session_id)
-            && self.id == r.id
-            && agent.kind == r.kind
-            && agent.session_id.as_deref() == Some(r.session_id.as_str())
+        if self.current_session {
+            reference.matches_agent(&self.id, agent)
+        } else {
+            self.peer_detail_id()
+                .is_some_and(|id| reference.matches_agent(&id, agent))
+        }
     }
 }
 

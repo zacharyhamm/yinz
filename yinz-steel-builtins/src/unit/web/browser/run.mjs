@@ -88,7 +88,7 @@ const INTERCEPTED = new Set(['/api/agents', '/api/history', '/api/hit', '/api/ev
 const intercepted = (pathname) => INTERCEPTED.has(pathname) || pathname.startsWith('/api/agent/');
 const AGENT_ID = 'live:dev:7';
 const cardSelector = (id) => `.agent-card[data-agent-id="${id}"]`;
-const peerSelector = (digit) => `peer-detail:${digit.repeat(64)}`;
+const peerSelector = (digit) => `peer-detail:v1:${digit.repeat(64)}`;
 const REF7 = { id: AGENT_ID, kind: 'codex', session_id: 'conv-1' };
 const REF7B = { id: AGENT_ID, kind: 'codex', session_id: 'conv-2' };
 const XSS = (n) => `<img src=x onerror="window.__yinzXss=${n}">`;
@@ -141,6 +141,7 @@ function row(fx, id, state, extra = {}) {
     wait_needs_a_person: state === 'waiting', source: 'hook', can_prompt: true, prompt_unavailable: null,
     usage_unavailable: null, ...extra,
   };
+  if (r.detail_id && r.ref) r.ref = { ...r.ref, id: r.detail_id };
   // Mirror the default Scheme hook's structure, paired with real /api/agents Scheme
   // assertions in web.test.scm; this fixture is not evidence of Scheme execution.
   const source = r.last_reply?.text || '';
@@ -226,7 +227,7 @@ function history(fx, q) {
   let live = null;
   if (agent && !fx.gone) {
     if (scoped && matches.length === 1) {
-      const { detail_id, tab_group, tab_group_session, ...selected } = matches[0];
+      const { tab_group, tab_group_session, ...selected } = matches[0];
       live = selected;
     } else if (!scoped) {
       live = row(fx, agent, 'waiting', { title: fx.header === 'long' ? headerFields(fx, requested).name : `Fix flaky test ${XSS(1)}`, ...fx.live });
@@ -2017,7 +2018,7 @@ async function peerGroupOwnership(open) {
   const oldKey = region('Source default', 'old-name').getByRole('button', { name: 'Key 1', exact: true });
   await oldKey.focus();
   const oldNode = await oldKey.elementHandle();
-  const renamed = { ...source, tab_group_session: 'new-name', detail_id: peerSelector('c') };
+  const renamed = { ...source, tab_group_session: 'new-name' };
   const renamedMissing = { ...missing, tab_group_session: 'new-name' };
   fx.rows = [renamed, replacement, renamedMissing, replacementMissing];
 
@@ -2061,7 +2062,7 @@ async function peerGroupOwnership(open) {
   await textUntil(page, '#toast', 'inspect agent before retrying', 'uncertain key outcome');
 
   const publishedId = 'live:new-name:7';
-  const published = { ...renamed, id: publishedId, session: 'new-name', ref: { ...renamed.ref, id: publishedId } };
+  const published = { ...renamed, id: publishedId, session: 'new-name' };
   const publishedMissingId = 'live:new-name:8';
   const publishedMissing = {
     ...renamedMissing, id: publishedMissingId, session: 'new-name', ref: { ...renamedMissing.ref, id: publishedMissingId },
@@ -2071,99 +2072,123 @@ async function peerGroupOwnership(open) {
   check(await sourceSection.evaluate((el, id) => el.isConnected && el.querySelector('.agent-card')?.dataset.agentId === id, publishedId),
     'republishing the checkpoint replaced the section for the same cache owner');
   await currentKey.click();
-  await until('published peer key uses its new ref', () => fx.bodies('/api/agent/keys').some((body) => body.agent.id === publishedId));
+  await until('published peer key keeps its ref', () => fx.bodies('/api/agent/keys').length === 5);
+  check(fx.bodies('/api/agent/keys').at(-1).agent.id === source.detail_id, 'republication changed the guarded ref');
 }
 
 function peerDetailRows(fx) {
-  const source = row(fx, 'live:old-peer:7', 'waiting', {
-    title: 'Original peer', session: 'old-peer', tab_group_session: 'old-peer', current_session: false,
+  const renamed = row(fx, 'live:old-peer:7', 'waiting', {
+    title: 'Original peer', session: 'old-peer', tab_group_session: 'new-peer', current_session: false,
     detail_id: peerSelector('a'), run: '', tab_group: { id: 0, name: 'Source' },
   });
-  const renamed = { ...source, tab_group_session: 'new-peer', detail_id: peerSelector('b') };
-  const replacement = row(fx, source.id, 'waiting', {
+  const replacement = row(fx, renamed.id, 'waiting', {
     title: 'Replacement peer', session: 'old-peer', tab_group_session: 'old-peer', current_session: false,
-    detail_id: peerSelector('c'), run: '', ref: { ...source.ref, session_id: 'other-conversation' },
-    tab_group: { id: 0, name: 'Replacement' },
+    detail_id: peerSelector('c'), run: '', tab_group: { id: 0, name: 'Replacement' },
   });
-  return { source, renamed, replacement };
+  const published = { ...renamed, id: 'live:new-peer:7', session: 'new-peer' };
+  return { renamed, replacement, published };
 }
 
 const peerRegion = (page, name, owner) => page.getByRole('region', {
   name: `${name} · 1 agent Session ${owner}`, exact: true,
 });
 
-async function peerOpenFocus(open, control) {
+async function peerFocusAcrossRepublication(open, control) {
   const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
-  const { source, renamed, replacement } = peerDetailRows(fx);
-  fx.rows = [source];
+  const { renamed, replacement, published } = peerDetailRows(fx);
+  const key = control.includes('quick-key');
+  fx.rows = [renamed];
   await openList(page);
-  const before = peerRegion(page, 'Source', 'old-peer').locator(control);
-  await before.focus();
-  const oldNode = await before.elementHandle();
-  fx.rows = [replacement, renamed];
-  const after = peerRegion(page, 'Source', 'new-peer').locator(control);
-  await until('focus follows renamed peer', async () =>
-    !!(await after.count()) && await after.evaluate((el) => document.activeElement === el));
-  check(await oldNode.evaluate((el) => !el.isConnected), 'aliased row kept the original focused link');
+  const original = peerRegion(page, 'Source', 'new-peer').locator(control);
+  await original.focus();
+  fx.rows = [replacement, published];
+  await until('poll republishes original and restores the old name', () =>
+    exists(page, cardSelector(published.id)));
+  check(await original.evaluate((el) => document.activeElement === el), 'focus left the republished peer');
   await page.keyboard.press('Enter');
-  await textUntil(page, '#detail-header .header-title', renamed.title, 'Enter opens the original peer');
-  check(decodeURIComponent(await hashOf(page)).startsWith(`#/a/${renamed.detail_id}?`), 'opened the wrong selector');
-  await until('Screen uses the original ref', () => fx.bodies('/api/agent/screen').some((body) => body.agent.session_id === source.ref.session_id));
-  await domClick(page, '#detail-back');
-  await until('return to the separate peer cards', () => after.count());
-  await after.focus();
+  if (key) {
+    await until('focused key posts once', () => fx.count('/api/agent/keys', 'POST') === 1);
+    check(JSON.stringify(fx.bodies('/api/agent/keys')[0]) === JSON.stringify({ agent: renamed.ref, keys: ['1'] }),
+      'the replacement inherited the focused key');
+    await until('key re-enabled', () => original.isEnabled());
+  } else {
+    await textUntil(page, '#detail-header .header-title', renamed.title, 'Enter opens the original peer');
+    check(decodeURIComponent(await hashOf(page)).startsWith(`#/a/${renamed.detail_id}?`), 'opened the wrong selector');
+    await until('Screen uses the scoped ref', () => fx.bodies('/api/agent/screen').some((body) => body.agent.id === renamed.detail_id));
+    await domClick(page, '#detail-back');
+    await until('return to the peer cards', () => original.count());
+  }
+  await original.focus();
   fx.rows = [replacement];
-  await until('the original peer disappears', async () => !(await after.count()));
+  await until('original peer disappears', async () => !(await original.count()));
+  check(await page.evaluate(() => document.activeElement === document.body), 'replacement inherited focus');
   const beforeEnter = await hashOf(page);
   await page.keyboard.press('Enter');
-  check(await hashOf(page) === beforeEnter && await exists(page, '.list-main'), 'Enter reached the replacement after the original disappeared');
+  check(await hashOf(page) === beforeEnter && fx.count('/api/agent/keys', 'POST') === Number(key),
+    'Enter activated a control after the original peer disappeared');
 }
 
 async function scopedPeerDetails(open) {
   const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
-  const { renamed, replacement } = peerDetailRows(fx);
-  fx.rows = [replacement, renamed];
+  const { renamed, replacement, published } = peerDetailRows(fx);
+  fx.rows = [renamed];
   await openList(page);
   const openCard = (name, owner) => peerRegion(page, name, owner).getByRole('link', { name: 'Open', exact: true }).click();
   await openCard('Source', 'new-peer');
   await textUntil(page, '#detail-header .header-title', renamed.title, 'runless source title');
-  await page.locator('#composer-input').fill('Original draft');
+  await page.locator('#composer-input').fill('Original attempted prompt');
+  fx.fail.set('/api/agent/prompt', { mode: 'abort', times: 1 });
+  await page.click('#composer-send');
+  await until('lost prompt outcome is visible', () => exists(page, '#submission-unknown'));
+  await page.locator('#composer-input').fill('Original edited draft');
+
+  const recorded = { ...published, run: 'run-after-publication' };
+  fx.rows = [replacement, recorded];
+  await until('runless peer gains a recorded run after republication', async () =>
+    decodeURIComponent(await hashOf(page)).includes(`${renamed.detail_id}?run=run-after-publication`));
+  await until('same peer keeps its edited draft and pending attempt', async () =>
+    (await valueOf(page, '#composer-input')) === 'Original edited draft' && await exists(page, '#submission-retry'));
   await domClick(page, '#detail-back');
   await openCard('Replacement', 'old-peer');
-  await textUntil(page, '#detail-header .header-title', replacement.title, 'runless replacement title');
-  check(await page.locator('#composer-input').inputValue() === '', 'aliased peer opened the original draft');
-  check(!(await exists(page, '.stale-submissions')), 'aliased peer exposed the original draft');
+  await textUntil(page, '#detail-header .header-title', replacement.title, 'replacement title');
+  check(await valueOf(page, '#composer-input') === '', 'replacement inherited the original draft');
+  check(!(await exists(page, '#submission-retry, .stale-submissions')), 'replacement inherited the original attempt');
   await page.locator('#composer-input').fill('Replacement draft');
-  const recorded = { ...replacement, run: 'replacement-first' };
-  fx.rows = [renamed, recorded];
-  await until('runless peer acquires a bound Timeline', async () =>
-    (await hashOf(page)).includes('run=replacement-first') &&
-    fx.log.some((e) => e.path === '/api/history' && e.query.get('agent') === replacement.detail_id));
-  await until('exact draft survives acquiring a run', () => page.locator('#composer-input').evaluate((el) => el.value === 'Replacement draft'));
-  await page.click('#tab-timeline');
-  await textUntil(page, '#timeline', 'Stored replacement-first message', 'replacement history');
-  fx.rows = [{ ...recorded, run: 'replacement-next' }, renamed];
-  await until('same peer changes run', async () => (await hashOf(page)).includes('run=replacement-next'));
-  await textUntil(page, '#timeline', 'Stored replacement-next message', 'replacement rollover history');
-  check(await page.locator('#composer-input').inputValue() === 'Replacement draft', 'same-ref rollover altered the draft');
-  check(fx.log.some((e) => e.path === '/api/usage' && e.query.get('agent') === replacement.detail_id), 'Usage lost the scoped selector');
-  fx.rows = [renamed];
-  await textUntil(page, '#banner-agent-gone', 'history stays readable', 'scoped peer disappears');
-  await textUntil(page, '.stale-submissions', 'Replacement draft', 'only the verified draft is available');
-  check(!(await textOf(page, '.stale-submissions')).includes('Original draft'), 'scoped stale panel exposed a different peer draft');
-  check(!(await exists(page, '#composer-input')), 'missing peer retained live composer');
   await domClick(page, '#detail-back');
   await openCard('Source', 'new-peer');
-  await textUntil(page, '#detail-header .header-title', renamed.title, 'original remains independently navigable');
-  check(await page.locator('#composer-input').inputValue() === 'Original draft', 'original draft changed while browsing the replacement');
-  const republished = { ...renamed, id: 'live:new-peer:7', session: 'new-peer', run: 'run-after-publication',
-    ref: { ...renamed.ref, id: 'live:new-peer:7' } };
-  fx.rows = [replacement, republished];
-  await until('republished peer keeps its selector and gains a run', async () =>
-    decodeURIComponent(await hashOf(page)).includes(`${renamed.detail_id}?run=run-after-publication`));
-  await until('changed ref cannot transfer the draft', () => page.locator('#composer-input').evaluate((el) => el.value === ''));
-  check(!(await exists(page, '.stale-submissions')), 'scoped peer exposed a draft for its old guarded ref');
-  check(fx.count('/api/agent/prompt', 'POST') === 0, 'navigation or republishing submitted a draft');
+  await until('original keeps its draft across navigation', async () =>
+    (await valueOf(page, '#composer-input')) === 'Original edited draft' && await exists(page, '#submission-retry'));
+  await page.click('#tab-timeline');
+  await textUntil(page, '#timeline', 'Stored run-after-publication message', 'original history');
+  fx.rows = [replacement, { ...recorded, run: 'next-run' }];
+  await until('same peer changes run', async () => (await hashOf(page)).includes('run=next-run'));
+  await textUntil(page, '#timeline', 'Stored next-run message', 'rollover history');
+  check(fx.log.some((e) => e.path === '/api/usage' && e.query.get('agent') === renamed.detail_id), 'Usage lost the scoped selector');
+
+  await page.click('#overflow-button');
+  await sheetReady(page, 'sheet-overflow', 'actions sheet holds focus');
+  await page.click('#action-keys');
+  await until('keys sheet open', () => exists(page, '#sheet-keys'));
+  fx.rows = [replacement];
+  await textUntil(page, '#banner-agent-gone', 'history stays readable', 'scoped peer disappears');
+  check(!(await exists(page, '#sheet-keys, #composer-input, #submission-retry')), 'missing peer retained live controls');
+  await page.reload();
+  await until('reloaded route exposes only recovery text', () => exists(page, '.stale-submissions textarea'));
+  check(JSON.stringify(await page.locator('.stale-submissions textarea').evaluateAll((nodes) =>
+    nodes.map((node) => [node.value, node.readOnly]))) === JSON.stringify([
+    ['Original attempted prompt', true], ['Original edited draft', true],
+  ]), 'recovery did not isolate both saved texts');
+  check(!(await exists(page, '#submission-retry, .submission-adopt')), 'unverified peer offered retry or adoption');
+  fx.rows = [replacement, { ...recorded, run: 'next-run' }];
+  await until('same peer returns and permits explicit retry', () => exists(page, '#submission-retry'));
+  check(fx.count('/api/agent/prompt', 'POST') === 1, 'navigation replayed a prompt');
+  await page.click('#submission-retry');
+  await until('explicit retry posts', () => fx.count('/api/agent/prompt', 'POST') === 2);
+  const [first, retry] = fx.bodies('/api/agent/prompt');
+  check(JSON.stringify(first) === JSON.stringify(retry) && first.agent.id === renamed.detail_id,
+    'the retry changed the prompt, submission ID or target');
+  await until('submitted attempt clears', async () => !(await exists(page, '#submission-retry')));
+  check(await valueOf(page, '#composer-input') === 'Original edited draft', 'retry cleared the separately edited draft');
 }
 
 async function nextWaitingAgent(open) {
@@ -2175,25 +2200,41 @@ async function nextWaitingAgent(open) {
   fx.rows = [first, second, ...idle];
   fx.counts = { waiting: 5, busy: 0, idle: idle.length };
   await openList(page);
-  const shortcut = page.getByRole('button', { name: 'Next waiting agent', exact: true });
-  const jump = async (row) => {
-    await shortcut.focus();
-    await page.keyboard.press('Enter');
-    const link = page.locator(`${cardSelector(row.id)} .agent-open-area`);
-    check(await link.evaluate((el) => {
+  const shortcut = page.locator('#list-next-waiting');
+  const card = (row) => page.locator(cardSelector(row.id));
+  const focused = async (row) => {
+    check(await card(row).locator('.agent-open-area').evaluate((el) => {
       const rect = el.getBoundingClientRect();
       return document.activeElement === el && rect.top >= document.querySelector('#list-header').getBoundingClientRect().bottom - 1 &&
         rect.bottom <= innerHeight + 1;
     }), `jump did not focus and reveal ${row.id}`);
   };
+  const next = async (from, to) => {
+    await page.keyboard.press('Tab');
+    check(await card(from).locator('.card-waiting-next').evaluate((el) => document.activeElement === el),
+      'ordinary Tab did not reach the adjacent repeat control');
+    await page.keyboard.press('Enter');
+    await focused(to);
+  };
   check(await textOf(page, '.need-count') === '5 need you', 'shortcut replaced the native count');
-  await jump(first);
-  await jump(second);
-  await jump(first);
-  await jump(second);
+  await shortcut.focus();
+  await page.keyboard.press('Enter');
+  await focused(first);
+  await next(first, second);
+  await next(second, first);
+  await noHorizontalOverflow(page, 'adjacent waiting control at phone width');
+  fx.rows = [second, first, ...idle];
+  await until('poll reverses waiting groups', async () => await page.locator('.section-name').first().textContent() === 'Second');
+  await next(first, second);
+  await page.keyboard.press('Enter');
+  await until('ordinary Enter opens the focused card', async () => decodeURIComponent(await hashOf(page)).includes(second.id));
+  await domClick(page, '#detail-back');
+  await until('return to Agents', () => exists(page, '#list-next-waiting'));
   fx.rows = [first, ...idle];
-  await until('poll removes the previously reached card', async () => !(await exists(page, cardSelector(second.id))));
-  await jump(first);
+  await until('removal hides all adjacent buttons', async () => !(await exists(page, '.card-waiting-next')));
+  await shortcut.focus();
+  await page.keyboard.press('Enter');
+  await focused(first);
   fx.rows = idle;
   await until('shortcut hides when no rendered waiting card remains', async () => !(await shortcut.count()));
   check(await textOf(page, '.need-count') === '5 need you', 'hook-hidden waiting cards changed the native count');
@@ -3068,8 +3109,9 @@ async function main() {
   await scenario('compact agent list 1024px desktop', (open) => compactAgentList(open, 1024, 'light'));
   await scenario('Agents group membership, fallback and poll updates', groupedAgentList);
   await scenario('Agents peer group ownership during session name reuse', peerGroupOwnership);
-  await scenario('Agents card-area Open focus follows the peer conversation', (open) => peerOpenFocus(open, '.agent-open-area'));
-  await scenario('Agents separate Open focus follows the peer conversation', (open) => peerOpenFocus(open, '.agent-open'));
+  await scenario('Agents peer focus across republication: card area', (open) => peerFocusAcrossRepublication(open, '.agent-open-area'));
+  await scenario('Agents peer focus across republication: Open', (open) => peerFocusAcrossRepublication(open, '.agent-open'));
+  await scenario('Agents peer focus across republication: quick key', (open) => peerFocusAcrossRepublication(open, '.quick-key[data-key="1"]'));
   await scenario('Agents peer Detail routing and draft isolation', scopedPeerDetails);
   await scenario('Agents Next waiting agent navigation', nextWaitingAgent);
   await scenario('Agents headings for whitespace-colliding session names', whitespaceSessionHeadings);

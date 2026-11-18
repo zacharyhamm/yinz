@@ -74,7 +74,9 @@ pub fn control_agent(
                 .clone(),
         ),
         AgentRequest::WaitTurn { submission_id, .. } => Some(submission_id.clone()),
-        AgentRequest::WebGuarded { action, .. } => action.submission_id().map(str::to_owned),
+        AgentRequest::WebGuarded { action, .. } | AgentRequest::WebPeerGuarded { action, .. } => {
+            action.submission_id().map(str::to_owned)
+        },
         _ => None,
     };
     let result = (|| -> Result<AgentResponse, String> {

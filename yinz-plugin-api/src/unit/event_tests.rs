@@ -960,6 +960,7 @@ fn serialize_session_update_event_with_non_default_values() {
         plugins,
         tab_history,
         pane_history: Default::default(),
+        web_peer_instance: None,
         creation_time: Duration::from_secs(100),
     };
     let session_info_2 = SessionInfo {
@@ -992,6 +993,7 @@ fn serialize_session_update_event_with_non_default_values() {
         plugins: Default::default(),
         tab_history: Default::default(),
         pane_history: Default::default(),
+        web_peer_instance: None,
         creation_time: Duration::from_secs(200),
     };
     let session_infos = vec![session_info_1, session_info_2];

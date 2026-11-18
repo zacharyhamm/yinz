@@ -26,6 +26,22 @@ function setup({ fail = null, storage: existing = null } = {}) {
 
 const ok = (outcome, submission_id, extra = {}) => response(200, { response: { outcome, submission_id, acknowledged: true, ...extra } });
 
+test('scoped peers with the same conversation retain isolated recovery records after reload', () => {
+  const { subs, session } = setup();
+  const peer = { ...A, id: `peer-detail:v1:${'a'.repeat(64)}` };
+  const replacement = { ...peer, id: `peer-detail:v1:${'b'.repeat(64)}` };
+  subs.setDraft(A, 'old unscoped record');
+  subs.setDraft(peer, 'peer text');
+  subs.setDraft(replacement, 'other peer text');
+  const reloaded = setup({ storage: session }).subs;
+  assert.deepEqual(reloaded.staleRecords(peer.id).map(({ draft }) => draft), ['peer text']);
+  assert.deepEqual(reloaded.staleRecords(replacement.id).map(({ draft }) => draft), ['other peer text']);
+  reloaded.discardUnavailable(peer);
+  assert.deepEqual(reloaded.staleRecords(peer.id), []);
+  assert.equal(reloaded.get(replacement).draft, 'other peer text');
+  assert.equal(reloaded.get(A).draft, 'old unscoped record');
+});
+
 test('persists the safety record before the prompt fetch, with the exact body', async () => {
   const { log, session, fetch, subs } = setup();
   subs.setDraft(A, 'hello\nworld');

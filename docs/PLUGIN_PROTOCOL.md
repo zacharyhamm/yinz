@@ -952,14 +952,15 @@ handler that survives terminal detach. Operations reject unknown fields. No nati
 `AgentRef` is `{id, kind, session_id}`. All identity strings must be nonblank
 and contain no control characters. Actions take a fresh snapshot and require a
 unique match for the complete identity.
-Prompt, screen and keys also recheck kind and conversation on the owning screen
-using the distinct `WebGuarded` IPC variant. For peers the destination is the
-snapshot's scanned socket owner, with one dispatch attempt and no fallback
-to the checkpoint name.
+Prompt, screen and keys also recheck kind and conversation on the owning screen.
+Local requests use `WebGuarded`. Peer requests use `WebPeerGuarded`, which
+also checks the running Screen instance before dispatch. The host uses the
+snapshot's scanned socket owner for one dispatch attempt. An older peer
+cannot dispatch the new variant.
 Focus revalidates selectability and suppression and uses the first attached
 terminal. Local focus executes in that same screen turn through the palette's
 focus core; a pending terminal layout returns recoverable `unavailable` for retry.
-Peer focus revalidates the owner in the screen's current cache and uses the
+Peer focus revalidates the owner and instance in the screen's current cache and uses the
 palette's session switch once the scanned socket and published session names
 agree. A rename awaiting publication returns recoverable `unavailable`.
 
@@ -969,20 +970,22 @@ Rows contain `id`, `ref`, `session`, `current_session`, `pane_id` (canonical),
 `last_hook_at_ms`, `focused`, `selectable`, `suppressed`, `directory`, `run`,
 `wait_needs_a_person`, `source`, `can_prompt`, `prompt_unavailable` and
 `usage_unavailable`. Population, ordering, labels, presentation, live headers and
-quota reasons reuse the terminal palette. Exited panes and Exited agent records
+quota reasons reuse the terminal palette. Web List associates labels with individual
+snapshot rows even when their public row IDs coincide. Exited panes and Exited agent records
 are excluded from both live lists; their retained run history remains readable.
 `can_prompt` describes complete identity, independently of current input readiness.
 Missing conversation IDs report `Agent has no conversation ID`.
 
-Native peer List rows additionally carry `detail_id`, an opaque selector
-derived from the scanned session owner, canonical pane ID, provider kind,
-and optional conversation ID. Its value is stable through checkpoint
-republication under the same scanned owner and through run discovery.
-History and Usage accept the selector in the existing `agent` field and
-require a unique match for it or for a legacy row ID. A complete action ref
-shared by multiple rows is unavailable for binding and is sent as incomplete
-in List. Usage returns `not_found` without a unique binding. History's live row keeps the shared
-row schema, and action requests continue to carry `AgentRef`.
+Peer List and live History rows with current instance metadata carry
+`detail_id`. This opaque selector binds the running Screen instance, canonical
+pane ID, provider and optional conversation. The checkpoint incarnation stays
+private. The selector remains stable through rename, checkpoint republication
+and run discovery, and is also the peer's `ref.id`. Public row IDs and local
+refs keep their existing format. Ambiguous peer selectors and missing instance
+metadata leave the row visible with stored-run access when available.
+History and Usage accept the selector in the existing `agent` field, with legacy
+IDs eligible for local live rows only. Usage returns `not_found` without a
+unique binding. Action requests continue to carry `AgentRef`.
 
 Web `prompt` text beginning with `/` uses command submission for Claude, Codex
 and Pi, with arbitrary command names and arguments. It retains the same complete

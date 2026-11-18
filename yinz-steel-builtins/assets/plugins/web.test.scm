@@ -58,9 +58,10 @@
     "title" hostile "activity" "" "project" "yinz" "branch" "main" "last_reply" (hash "text" "<b>hi</b>" "truncated" #f)
     "last_hook_at_ms" 5 "focused" #f "selectable" #t "suppressed" #f "directory" "/w" "run" "R" "wait_needs_a_person" #t
     "source" json-null "can_prompt" #t "prompt_unavailable" json-null "usage_unavailable" json-null))
+(define peer-selector (string-append "peer-detail:v1:" (make-string 64 #\a)))
 (define grouped-row (t-merge row (hash "tab_group" (hash "id" 0 "name" "Default")
       "tab_group_session" "renamed-peer" "status" "needs input"
-      "detail_id" (string-append "peer-detail:" (make-string 64 #\a)))))
+      "current_session" #f "detail_id" peer-selector "ref" (hash-insert agent "id" peer-selector))))
 (define ungrouped-row (t-merge row (hash "id" "live:main:8" "tab_group" json-null "tab_group_session" "main")))
 (define listing (hash "session" "main" "now_ms" 99 "counts" (hash "waiting" 2 "busy" 0 "idle" 0)
     "agents" (list grouped-row ungrouped-row)))
@@ -136,6 +137,23 @@
     (define head (w-request "HEAD" "/api/agents"))
     (w-ok listing)
     (assert-equal (w-status head) 200)))
+
+(test "decorated peer rows keep their own labels when the legacy row ID is shared" (lambda ()
+    (w-load)
+    (define id (w-get "/api/agents"))
+    (define replacement-selector (string-append "peer-detail:v1:" (make-string 64 #\b)))
+    (define replacement (t-merge grouped-row (hash "tab_group_session" "old-peer"
+          "detail_id" replacement-selector "ref" (hash-insert agent "id" replacement-selector)
+          "project" "other-project" "branch" "topic" "last_reply" json-null)))
+    (w-ok (hash-insert listing "agents" (list grouped-row replacement)))
+    (define rows (hash-ref (w-body id) "agents"))
+    (assert-equal (map (lambda (row) (hash-remove row "html")) rows) (list grouped-row replacement))
+    (define original-html (hash-ref (car rows) "html"))
+    (define replacement-html (hash-ref (cadr rows) "html"))
+    (assert (w-contains? original-html "claude · yinz · main"))
+    (assert (w-contains? original-html "&lt;b&gt;hi&lt;/b&gt;"))
+    (assert (w-contains? replacement-html "claude · other-project · topic"))
+    (assert (not (w-contains? replacement-html "agent-reply")))))
 
 (test "agent row previews cap Unicode characters without changing native fields" (lambda ()
     (w-load)

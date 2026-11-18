@@ -896,6 +896,9 @@ impl ModeInfo {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SessionInfo {
     pub name: SessionName,
+    /// Live Screen incarnation from the local session checkpoint.
+    #[serde(skip)]
+    pub web_peer_instance: Option<String>,
     pub tabs: Vec<TabInfo>,
     pub panes: PaneManifest,
     pub connected_clients: usize,

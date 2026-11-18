@@ -45,6 +45,7 @@ fn live(session: &str, state: AgentState, current_session: bool) -> WebLiveAgent
         id: id.clone(),
         session: session.into(),
         current_session,
+        peer_instance: (!current_session).then(|| uuid::Uuid::new_v4().to_string()),
         pane,
         metadata: BTreeMap::from([("state".into(), state.to_string().to_lowercase())]),
         run: Some("run".into()),
@@ -159,6 +160,7 @@ fn web_agents_list_uses_shared_order_and_peer_usage_without_local_collection() {
     let (_dir, data) = data();
     let mut peer = live("peer", AgentState::Waiting, false);
     peer.tab_group_session = "renamed-peer".into();
+    let peer_id = peer.peer_detail_id().unwrap();
     let mut ungrouped = live("busy", AgentState::Busy, true);
     ungrouped.tab_group = None;
     let agents = vec![live("local", AgentState::Idle, true), peer, ungrouped];
@@ -186,19 +188,107 @@ fn web_agents_list_uses_shared_order_and_peer_usage_without_local_collection() {
         assert_eq!(row["session"], session);
         assert_eq!(row["tab_group_session"], owner);
         assert_eq!(row.get("tab_group"), Some(&group));
+        let id = if session == "peer" {
+            peer_id.clone()
+        } else {
+            format!("live:{session}:7")
+        };
         assert_eq!(
             row["ref"],
-            json!({"id":format!("live:{session}:7"),"kind":"codex","session_id":"conversation"})
+            json!({"id":id,"kind":"codex","session_id":"conversation"})
         );
     }
     assert_eq!(response["ok"]["agents"][0]["can_prompt"], true);
-    let response = with_snapshot(json!({"op":"usage","agent":"live:peer:7"}), agents, &data);
+    let response = with_snapshot(json!({"op":"usage","agent":peer_id}), agents, &data);
     assert_eq!(response["ok"]["usage"]["status"], "unavailable");
     assert_eq!(
         response["ok"]["usage"]["message"],
         "Quota unavailable for peer-session agents"
     );
 }
+#[test]
+fn web_agents_list_isolates_peer_labels_for_aliased_rows() {
+    use project_data::{
+        location::Location,
+        projects::{self, Repository},
+    };
+    let (directory, data) = history_navigation_data();
+    let mut original = live("stored", AgentState::Waiting, false);
+    let mut replacement = live("stored", AgentState::Waiting, false);
+    original.tab_group_session = "renamed".into();
+    replacement.tab_group_session = "stored".into();
+    assert_eq!(original.label_source.id, replacement.label_source.id);
+    let mut locations = serde_json::Map::new();
+    for (agent, project, branch, run, owner) in [
+        (&mut original, "alpha", "release", "run", "stored"),
+        (&mut replacement, "beta", "develop", "replacement", "stored"),
+    ] {
+        let path = directory.path().join(project);
+        let path = path.to_str().unwrap();
+        let location = Location::local(path);
+        locations.insert(
+            location.key(),
+            json!(Repository {
+                root: path.into(),
+                branch: Some(branch.into()),
+                worktree_status: Some(projects::WorktreeStatus::Primary),
+                ..Default::default()
+            }),
+        );
+        data.plugin_data()
+            .apply(
+                project_data::store::SHARED,
+                &[projects::to_mutation(
+                    &projects::validate(project, path).unwrap(),
+                )],
+            )
+            .unwrap();
+        agent.label_source.cwd = Some(path.into());
+        agent.label_source.run = Some(palette::AgentRunSource {
+            id: run.into(),
+            host_id: yinz_runtime::host_identity::host_id(),
+            session: owner.into(),
+        });
+        agent.run = Some(run.into());
+    }
+    crate::project_provider::publish(
+        1,
+        json!({
+            "providers": yinz_types::project_provider::providers(),
+            "locations": locations,
+        }),
+    )
+    .unwrap();
+    for has_reply in [true, false] {
+        if !has_reply {
+            replacement.label_source.run.as_mut().unwrap().session = "different-owner".into();
+        }
+        for agents in [
+            vec![original.clone(), replacement.clone()],
+            vec![replacement.clone(), original.clone()],
+        ] {
+            let result = with_snapshot(json!({"op":"list"}), agents, &data);
+            let rows = result["ok"]["agents"].as_array().unwrap();
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0]["tab_group_session"], "renamed");
+            assert_eq!(rows[0]["project"], "alpha");
+            assert_eq!(rows[0]["branch"], "release");
+            assert_eq!(rows[0]["last_reply"]["text"], "needle run 220");
+            assert_eq!(rows[1]["project"], "beta");
+            assert_eq!(rows[1]["branch"], "develop");
+            if has_reply {
+                assert_eq!(
+                    rows[1]["last_reply"]["text"],
+                    "unrelated replacement message"
+                );
+            } else {
+                assert!(rows[1]["last_reply"].is_null());
+            }
+        }
+    }
+    assert!(crate::project_provider::clear(1));
+}
+
 #[test]
 fn web_agents_actions_reject_missing_and_stale_refs_without_routing() {
     let (_dir, data) = data();
@@ -505,8 +595,8 @@ fn web_agents_peer_detail_selector_keeps_aliased_rows_and_history_separate() {
     replacement.pane.agent.as_mut().unwrap().session_id = Some("other-conversation".into());
     replacement.run = Some("replacement".into());
     assert_eq!(renamed.id, replacement.id);
-    let original_id = peer_detail_id(&renamed).unwrap();
-    let other_id = peer_detail_id(&replacement).unwrap();
+    let original_id = renamed.peer_detail_id().unwrap();
+    let other_id = replacement.peer_detail_id().unwrap();
     assert_ne!(original_id, other_id);
     assert!(!original_id.contains("conversation"));
     let forward = vec![renamed.clone(), replacement.clone()];
@@ -532,7 +622,8 @@ fn web_agents_peer_detail_selector_keeps_aliased_rows_and_history_separate() {
             assert_eq!(page["run"], run);
             assert_eq!(page["retargeted"], false);
             assert_eq!(page["live"]["ref"]["session_id"], conversation);
-            assert!(page["live"].get("detail_id").is_none());
+            assert_eq!(page["live"]["detail_id"], *id);
+            assert_eq!(page["live"]["ref"]["id"], *id);
             assert_eq!(page["navigation"]["received"]["agent"], *id);
             assert!(page["navigation"]
                 .get("previous")
@@ -569,12 +660,12 @@ fn web_agents_peer_detail_selector_keeps_aliased_rows_and_history_separate() {
         usage["ok"]["usage"]["message"],
         "Quota unavailable for peer-session agents"
     );
-    let mut ambiguous_ref = replacement.clone();
-    ambiguous_ref.pane.agent.as_mut().unwrap().session_id = Some("conversation".into());
+    let mut ambiguous_ref = renamed.clone();
+    ambiguous_ref.tab_group_session = "duplicate-cache-owner".into();
     let ambiguous_agents = vec![renamed.clone(), ambiguous_ref];
     let list = with_snapshot(json!({"op":"list"}), ambiguous_agents.clone(), &data);
     let rows = list["ok"]["agents"].as_array().unwrap();
-    assert_ne!(rows[0]["detail_id"], rows[1]["detail_id"]);
+    assert!(rows.iter().all(|row| row.get("detail_id").is_none()));
     assert!(rows
         .iter()
         .all(|row| row["ref"]["session_id"] == "" && row["can_prompt"] == false));
@@ -588,7 +679,7 @@ fn web_agents_peer_detail_selector_keeps_aliased_rows_and_history_separate() {
 
     renamed.run = None;
     assert_eq!(
-        peer_detail_id(&renamed).as_deref(),
+        renamed.peer_detail_id().as_deref(),
         Some(original_id.as_str())
     );
     let before = history_navigation_page(
@@ -600,7 +691,7 @@ fn web_agents_peer_detail_selector_keeps_aliased_rows_and_history_separate() {
     renamed.id = "live:new-name:7".into();
     renamed.run = Some("replacement".into());
     assert_eq!(
-        peer_detail_id(&renamed).as_deref(),
+        renamed.peer_detail_id().as_deref(),
         Some(original_id.as_str())
     );
     let after = history_navigation_page(
@@ -610,11 +701,11 @@ fn web_agents_peer_detail_selector_keeps_aliased_rows_and_history_separate() {
     );
     assert_eq!(after["run"], "replacement");
     assert_eq!(after["retargeted"], true);
-    assert_eq!(after["live"]["ref"]["id"], renamed.id);
+    assert_eq!(after["live"]["ref"]["id"], original_id);
     assert_eq!(after["live"]["ref"]["session_id"], "conversation");
     assert!(after["events"].to_string().contains("needle replacement 1"));
     renamed.pane.agent.as_mut().unwrap().session_id = None;
-    let runless_id = peer_detail_id(&renamed).unwrap();
+    let runless_id = renamed.peer_detail_id().unwrap();
     assert_ne!(runless_id, original_id);
     let page = history_navigation_page(
         after["navigation"]["received"].clone(),
@@ -834,18 +925,58 @@ fn web_agents_peer_controls_keep_wire_guard_and_retry_id_on_disconnect() {
     let renamed_listener = UnixListener::bind(&renamed_socket).unwrap();
     let mut original = live(&session, AgentState::Idle, false);
     original.tab_group_session = renamed_session.clone().into();
-    let mut replacement = live(&session, AgentState::Idle, false);
-    replacement.pane.agent.as_mut().unwrap().session_id = Some("other-conversation".into());
-    let agents = vec![replacement.clone(), original.clone()];
-    let id = original.id.clone();
-    let reference = |conversation| json!({"id":id,"kind":"codex","session_id":conversation});
-    for (op, conversation, destination, other) in [
-        ("screen", "conversation", &renamed_listener, &listener),
-        ("keys", "conversation", &renamed_listener, &listener),
-        ("prompt", "conversation", &renamed_listener, &listener),
-        ("keys", "other-conversation", &listener, &renamed_listener),
+    let replacement = live(&session, AgentState::Idle, false);
+    let legacy_id = original.id.clone();
+    let mut published = original.clone();
+    published.session = renamed_session.clone().into();
+    published.id = format!("live:{renamed_session}:7");
+    let reference = |id: &str| json!({"id":id,"kind":"codex","session_id":"conversation"});
+    let original_id = original.peer_detail_id().unwrap();
+    let replacement_id = replacement.peer_detail_id().unwrap();
+    assert_eq!(original.id, replacement.id);
+    assert_eq!(
+        published.peer_detail_id().as_deref(),
+        Some(original_id.as_str())
+    );
+    let agents = vec![replacement.clone(), published.clone()];
+    for (op, target, snapshot, destination, other) in [
+        (
+            "screen",
+            &original,
+            vec![original.clone()],
+            &renamed_listener,
+            &listener,
+        ),
+        (
+            "keys",
+            &published,
+            agents.clone(),
+            &renamed_listener,
+            &listener,
+        ),
+        (
+            "prompt",
+            &original,
+            vec![original.clone()],
+            &renamed_listener,
+            &listener,
+        ),
+        (
+            "prompt",
+            &published,
+            agents.clone(),
+            &renamed_listener,
+            &listener,
+        ),
+        (
+            "keys",
+            &replacement,
+            agents.clone(),
+            &listener,
+            &renamed_listener,
+        ),
     ] {
-        let reference = reference(conversation);
+        let reference = reference(&target.peer_detail_id().unwrap());
         let mut request = json!({"op":op,"agent":reference});
         if op == "keys" {
             request["keys"] = json!(["y"]);
@@ -859,7 +990,6 @@ fn web_agents_peer_controls_keep_wire_guard_and_retry_id_on_disconnect() {
             to_screen: Some(SenderWithContext::new(tx)),
             ..Default::default()
         };
-        let snapshot = agents.clone();
         thread::scope(|scope| {
             scope.spawn(move || {
                 let (ScreenInstruction::WebLiveAgents { reply }, _) =
@@ -888,7 +1018,8 @@ fn web_agents_peer_controls_keep_wire_guard_and_retry_id_on_disconnect() {
                     .set_recv_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
                 let IpcRecv::Msg(
-                    ClientToServerMsg::AgentControl(AgentRequest::WebGuarded {
+                    ClientToServerMsg::AgentControl(AgentRequest::WebPeerGuarded {
+                        expected_instance,
                         pane_id,
                         expected_kind,
                         expected_session_id,
@@ -899,9 +1030,10 @@ fn web_agents_peer_controls_keep_wire_guard_and_retry_id_on_disconnect() {
                 else {
                     panic!("guarded wire request")
                 };
+                assert_eq!(Some(&expected_instance), target.peer_instance.as_ref());
                 assert_eq!(pane_id, original.pane.id);
                 assert_eq!(expected_kind, "codex");
-                assert_eq!(expected_session_id, conversation);
+                assert_eq!(expected_session_id, "conversation");
                 if op == "prompt" {
                     assert_eq!(action.submission_id(), Some("peer-retry"));
                     return;
@@ -928,20 +1060,30 @@ fn web_agents_peer_controls_keep_wire_guard_and_retry_id_on_disconnect() {
             }
         });
     }
-    let keys = |conversation| json!({"op":"keys","agent":reference(conversation),"keys":["y"]});
-    assert_eq!(
-        with_snapshot(keys("missing"), agents.clone(), &data)["error"]["code"],
-        "target_changed",
-    );
-    let mut ambiguous = replacement;
-    ambiguous.pane.agent.as_mut().unwrap().session_id = Some("conversation".into());
-    assert_eq!(
-        with_snapshot(keys("conversation"), vec![original, ambiguous], &data)["error"]["code"],
-        "target_changed",
-    );
+    let keys = |id| json!({"op":"keys","agent":reference(id),"keys":["y"]});
+    for (id, snapshot) in [
+        (legacy_id.as_str(), vec![replacement.clone()]),
+        (original_id.as_str(), vec![replacement.clone()]),
+        (
+            replacement_id.as_str(),
+            vec![replacement.clone(), replacement.clone()],
+        ),
+    ] {
+        assert_eq!(
+            with_snapshot(keys(id), snapshot, &data)["error"]["code"],
+            "target_changed"
+        );
+    }
+    let mut legacy = replacement.clone();
+    legacy.peer_instance = None;
+    let list = with_snapshot(json!({"op":"list"}), vec![legacy], &data);
+    let row = &list["ok"]["agents"][0];
+    assert!(row.get("detail_id").is_none());
+    assert_eq!(row["can_prompt"], false);
+    assert_eq!(row["run"], "run");
     drop(renamed_listener);
     std::fs::remove_file(renamed_socket).unwrap();
-    let disconnected = with_snapshot(keys("conversation"), agents, &data);
+    let disconnected = with_snapshot(keys(&original_id), agents, &data);
     assert!(disconnected["ok"]["response"]["message"]
         .as_str()
         .unwrap()
@@ -1124,7 +1266,8 @@ fn web_agents_peer_receive_deadline_bounds_cleanup_without_retrying() {
         let session = &session;
         scope.spawn(move || {
             let start = Instant::now();
-            let request = AgentRequest::WebGuarded {
+            let request = AgentRequest::WebPeerGuarded {
+                expected_instance: uuid::Uuid::new_v4().to_string(),
                 pane_id: PaneId::Terminal(TerminalId::new(7)),
                 expected_kind: "codex".into(),
                 expected_session_id: "conversation".into(),
@@ -1146,7 +1289,7 @@ fn web_agents_peer_receive_deadline_bounds_cleanup_without_retrying() {
         assert!(matches!(
             receiver.recv_client_msg(),
             IpcRecv::Msg(
-                ClientToServerMsg::AgentControl(AgentRequest::WebGuarded { .. }),
+                ClientToServerMsg::AgentControl(AgentRequest::WebPeerGuarded { .. }),
                 _
             )
         ));

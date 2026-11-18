@@ -4,6 +4,8 @@
 // `bind=0` marks stored-run browsing (previous/original run links), which reads
 // the run without the live agent binding. Routes never carry credentials.
 
+import { targetOf, validTarget } from './submission.js';
+
 export const TABS = ['timeline', 'screen', 'details'];
 
 const PEER_DETAIL_PREFIX = 'peer-detail:';
@@ -12,13 +14,29 @@ export function isPeerDetail(id) {
   return typeof id === 'string' && id.startsWith(PEER_DETAIL_PREFIX);
 }
 
-export function cardDetail(row, servingSession) {
-  const scoped = isPeerDetail(row.detail_id) && /^peer-detail:[0-9a-f]{64}$/.test(row.detail_id);
+export function isScopedPeer(id) {
+  return typeof id === 'string' && /^peer-detail:v1:[0-9a-f]{64}$/.test(id);
+}
+
+function peerRow(row, servingSession) {
+  if (typeof row.current_session === 'boolean') return !row.current_session;
   const owner = typeof row.tab_group_session === 'string' && row.tab_group_session.trim() !== ''
     ? row.tab_group_session : row.session;
-  const peer = row.current_session === false ||
-    (typeof servingSession === 'string' && typeof owner === 'string' && owner.trim() !== '' &&
-      owner !== servingSession);
+  return typeof servingSession === 'string' && typeof owner === 'string' && owner.trim() !== '' &&
+    owner !== servingSession;
+}
+
+export function controlTarget(row, servingSession) {
+  if (!validTarget(row?.ref)) return null;
+  if (peerRow(row, servingSession)) {
+    if (!isScopedPeer(row.detail_id) || row.ref.id !== row.detail_id) return null;
+  } else if (row.ref.id !== row.id || isPeerDetail(row.ref.id)) return null;
+  return targetOf(row.ref);
+}
+
+export function cardDetail(row, servingSession) {
+  const peer = peerRow(row, servingSession);
+  const scoped = peer && isScopedPeer(row.detail_id);
   if (peer && !scoped && !row.run) return null;
   return {
     id: scoped ? row.detail_id : row.id,
@@ -28,9 +46,12 @@ export function cardDetail(row, servingSession) {
   };
 }
 
-export function detailListRow(rows, id) {
-  const scoped = isPeerDetail(id);
-  const matches = rows.filter((row) => row && (scoped ? row.detail_id : row.id) === id);
+export function detailListRow(rows, id, servingSession) {
+  if (isPeerDetail(id) && !isScopedPeer(id)) return null;
+  const scoped = isScopedPeer(id);
+  const matches = rows.filter((row) => row &&
+    (scoped ? peerRow(row, servingSession) && row.detail_id === id
+      : !peerRow(row, servingSession) && row.id === id));
   return matches.length === 1 ? matches[0] : null;
 }
 

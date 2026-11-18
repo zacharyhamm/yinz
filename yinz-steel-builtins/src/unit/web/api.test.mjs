@@ -6,7 +6,7 @@ import path from 'node:path';
 import { FakeClock, FakeFetch, LogStorage, STATIC_DIR, flush, response, staticUrl } from './fakes.mjs';
 
 const api = await import(staticUrl('api.js'));
-const { cardDetail, detailHash, detailListRow, parseHash } = await import(staticUrl('app-route.js'));
+const { cardDetail, controlTarget, detailHash, detailListRow, parseHash } = await import(staticUrl('app-route.js'));
 const {
   KEYS, createApi, createPoller, createTokenStore, safeStorage, requestUrl, parseRetryAfter,
   describeError, normalizeConfig, saveReturn, takeReturn, logoutNotice, freshnessText,
@@ -14,10 +14,10 @@ const {
 } = api;
 
 test('peer cards use a scoped selection and a stripped selector allows only stored history', () => {
-  const detailId = `peer-detail:${'a'.repeat(64)}`;
-  const otherId = `peer-detail:${'b'.repeat(64)}`;
+  const detailId = `peer-detail:v1:${'a'.repeat(64)}`;
+  const otherId = `peer-detail:v1:${'b'.repeat(64)}`;
   const peer = { id: 'live-agent:4:host:old:terminal_7', detail_id: detailId,
-    current_session: false, state: 'waiting' };
+    current_session: false, state: 'waiting', ref: { id: detailId, kind: 'codex', session_id: 'shared' } };
   const other = { ...peer, detail_id: otherId, run: 'other-run' };
   const route = parseHash(detailHash(cardDetail(peer, 'local')));
   assert.deepEqual(route, { view: 'detail', id: detailId, run: '', tab: 'screen', bind: true });
@@ -26,7 +26,13 @@ test('peer cards use a scoped selection and a stripped selector allows only stor
   assert.equal(detailListRow([other], route.id), null);
   assert.equal(detailListRow([peer, peer], route.id), null);
   assert.equal(detailListRow([peer, other], peer.id), null);
-  assert.equal(detailListRow([peer], peer.id), peer);
+  assert.equal(detailListRow([peer], peer.id), null);
+  assert.deepEqual(controlTarget(peer, 'local'), peer.ref);
+  assert.equal(controlTarget(other, 'local'), null);
+  assert.equal(controlTarget({ ...peer, ref: { ...peer.ref, id: peer.id } }, 'local'), null);
+  const oldSelector = `peer-detail:${'a'.repeat(64)}`;
+  assert.equal(detailListRow([{ ...peer, detail_id: oldSelector }], oldSelector), null);
+  assert.equal(controlTarget({ ...peer, detail_id: oldSelector, ref: { ...peer.ref, id: oldSelector } }, 'local'), null);
   assert.equal(cardDetail({ ...peer, detail_id: null }, 'local'), null);
   assert.equal(cardDetail({ ...peer, detail_id: undefined, current_session: undefined,
     tab_group_session: 'peer' }, 'local'), null);

@@ -14,12 +14,14 @@ export function KeysSheet({ env, target, onClose, onTargetGone }) {
     setResult(null);
     const r = await env.api.post('/api/agent/keys', { agent: target, keys });
     setBusy(false);
-    if (r.ok) {
+    if (r.status === 409 || r.data?.response?.outcome === 'target_changed') {
+      const message = 'The agent changed or disappeared. The keys were not sent.';
+      setResult(message);
+      env.toast(message);
+      onTargetGone();
+    } else if (r.ok) {
       setResult(responseText(r.data && r.data.response));
       setKeys([]);
-    } else if (r.status === 409) {
-      setResult('The agent changed or disappeared. The keys were not sent.');
-      onTargetGone();
     } else {
       setResult(`Not confirmed: ${describeError(r)} Check the screen before sending again.`);
     }

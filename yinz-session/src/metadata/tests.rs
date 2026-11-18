@@ -194,6 +194,7 @@ fn serialize_and_deserialize_session_info_with_data() {
         plugins: Default::default(),
         tab_history: Default::default(),
         pane_history: Default::default(),
+        web_peer_instance: None,
         creation_time: Duration::from_secs(300),
     };
     let serialized = crate::metadata::session_info::to_string(&session_info).unwrap();
@@ -204,6 +205,34 @@ fn serialize_and_deserialize_session_info_with_data() {
     .unwrap();
     assert_eq!(session_info, deserealized);
     insta::assert_snapshot!(serialized);
+}
+
+#[test]
+fn web_peer_checkpoint_instance_roundtrips_and_is_private() {
+    let mut session = SessionInfo::new("before".into());
+    let instance = "c0a3c5f4-91b9-46be-8047-357cefe5e030";
+    session.web_peer_instance = Some(instance.into());
+    let serving = "serving".into();
+    for name in ["before", "after"] {
+        session.name = name.into();
+        let checkpoint = super::session_info::to_string(&session).unwrap();
+        let read = super::session_info::from_string(&checkpoint, &serving).unwrap();
+        assert_eq!(read, session);
+        for bad in ["invalid", "00000000-0000-0000-0000-000000000000"] {
+            let malformed = checkpoint.replace(instance, bad);
+            let read = super::session_info::from_string(&malformed, &serving).unwrap();
+            assert!(read.web_peer_instance.is_none());
+        }
+    }
+    let event = serde_json::to_value(&session).unwrap();
+    assert!(event.get("web_peer_instance").is_none());
+    session.web_peer_instance = None;
+    let legacy = super::session_info::to_string(&session).unwrap();
+    assert!(!legacy.contains("web_peer_instance"));
+    assert_eq!(
+        super::session_info::from_string(&legacy, &serving).unwrap(),
+        session
+    );
 }
 
 #[test]

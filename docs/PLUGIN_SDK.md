@@ -1287,10 +1287,11 @@ display, and `tab_group`, a hash with a numeric `id` and display `name`, or
 `json-null`. For a cached peer, `tab_group_session` is the scanned socket
 name and `session` is the last published checkpoint name. These can differ
 briefly after a rename. Preserve both grouping fields when rebuilding a row.
-Native peer rows also carry an opaque `detail_id` for live Detail links,
-History, and Usage. Preserve it alongside `id` and `ref` when rebuilding a
-row. A known peer missing its selector can only link to a recorded run as
-stored history. Guarded actions still use the complete `ref`.
+Native peer rows with current instance metadata carry an opaque `detail_id`
+for live Detail links, History and Usage. Preserve it alongside `id` and the
+complete `ref` when rebuilding a row. For those rows, `ref.id` equals
+`detail_id` and remains stable across a rename. A peer missing its selector
+can link to a recorded run as stored history.
 Rows without a usable `tab_group_session` fall back to `session` for grouping.
 Group IDs are local to a session and can be zero. The view groups the rows
 returned by `agent-list` in order of first appearance and retains row order

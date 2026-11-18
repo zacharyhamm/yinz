@@ -16798,7 +16798,7 @@ pub(super) fn web_agents_reference(
 ) -> yinz_bus::web::WebAgentRef {
     let agent = live.pane.agent.as_ref().unwrap();
     yinz_bus::web::WebAgentRef {
-        id: live.id.clone(),
+        id: live.peer_detail_id().unwrap_or_else(|| live.id.clone()),
         kind: agent.kind.clone(),
         session_id: agent.session_id.clone().unwrap(),
     }
@@ -16817,6 +16817,7 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
     let mut peer = screen.peer_sessions_cache[&screen.session_name].clone();
     peer.name = "web-peer".into();
     peer.is_current_session = false;
+    peer.web_peer_instance = Some(uuid::Uuid::new_v4().to_string());
     let position = TabPosition::new(4);
     let pane = peer.panes.panes[&TabPosition::new(0)]
         .iter()
@@ -16873,13 +16874,9 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
     // Another live session has already published under the original socket name.
     let renamed_key = SessionName::new("renamed-web-peer");
     let mut replacement = peer.clone();
-    let mut reused_pane = peer.panes.panes[&position][0].clone();
-    let replacement_ref = yinz_bus::web::WebAgentRef {
-        session_id: "replacement-conversation".into(),
-        ..original_ref.clone()
-    };
-    reused_pane.agent.as_mut().unwrap().session_id = Some(replacement_ref.session_id.clone());
-    replacement.panes.panes = HashMap::from([(position, vec![reused_pane])]);
+    replacement.web_peer_instance = Some(uuid::Uuid::new_v4().to_string());
+    replacement.panes.panes =
+        HashMap::from([(position, vec![peer.panes.panes[&position][0].clone()])]);
     replacement.tabs[1].group = Some(TabGroupInfo {
         id: 0,
         name: "Replacement Default".into(),
@@ -16934,13 +16931,21 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
     assert_eq!(remote.tab_group_session, renamed_key);
     let reused = live
         .iter()
-        .find(|row| row.matches(&replacement_ref))
+        .find(|row| row.tab_group_session == replacement.name)
         .unwrap();
+    let replacement_ref = web_agents_reference(reused);
+    assert_ne!(original_ref.id, replacement_ref.id);
+    assert_eq!(original_ref.session_id, replacement_ref.session_id);
     assert_eq!(reused.session, original.session);
     assert_eq!(reused.tab_group_session, peer.name);
     assert_eq!(reused.tab_group, replacement.tabs[1].group);
     let (tx, rx) = channels::bounded(1);
-    screen.web_focus_agent(original_ref.clone(), renamed_key.clone(), tx);
+    screen.web_focus_agent(
+        original_ref.clone(),
+        renamed_key.clone(),
+        original.peer_instance.as_deref(),
+        tx,
+    );
     assert!(matches!(
         rx.recv().unwrap(),
         Err(yinz_bus::web::WebFocusError::Unavailable(message)) if message.contains("renamed session")
@@ -16984,23 +16989,44 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
         .unwrap();
     assert_eq!(converged.tab_group_session, renamed_key);
     assert_eq!(converged.tab_group, Some(moved));
-    assert!(!republished.iter().any(|row| row.matches(&original_ref)));
+    assert!(converged.matches(&original_ref));
     assert!(republished.iter().any(|row| row.matches(&replacement_ref)));
     let (tx, rx) = channels::bounded(1);
-    screen.web_focus_agent(web_agents_reference(converged), replacement.name, tx);
+    screen.web_focus_agent(
+        web_agents_reference(converged),
+        replacement.name,
+        converged.peer_instance.as_deref(),
+        tx,
+    );
     assert_eq!(
         rx.recv().unwrap(),
         Err(yinz_bus::web::WebFocusError::TargetChanged)
     );
     let (tx, rx) = channels::bounded(1);
-    screen.web_focus_agent(web_agents_reference(converged), renamed_key, tx);
+    screen.web_focus_agent(
+        web_agents_reference(converged),
+        renamed_key.clone(),
+        replacement.web_peer_instance.as_deref(),
+        tx,
+    );
+    assert_eq!(
+        rx.recv().unwrap(),
+        Err(yinz_bus::web::WebFocusError::TargetChanged)
+    );
+    let (tx, rx) = channels::bounded(1);
+    screen.web_focus_agent(
+        web_agents_reference(converged),
+        renamed_key,
+        converged.peer_instance.as_deref(),
+        tx,
+    );
     assert_eq!(
         rx.recv().unwrap(),
         Err(yinz_bus::web::WebFocusError::NoTerminal)
     );
     let reference = web_agents_reference(detached.iter().find(|a| a.current_session).unwrap());
     let (tx, rx) = channels::bounded(1);
-    screen.web_focus_agent(reference, screen.session_name.clone(), tx);
+    screen.web_focus_agent(reference, screen.session_name.clone(), None, tx);
     assert_eq!(
         rx.recv().unwrap(),
         Err(yinz_bus::web::WebFocusError::NoTerminal)
@@ -17055,7 +17081,7 @@ fn web_agents_focus_revalidates_provider_conversation_selectability_and_peer_mem
             _ => reference.id = "live-agent:unknown-peer:7".into(),
         }
         let (tx, rx) = channels::bounded(1);
-        screen.web_focus_agent(reference, screen.session_name.clone(), tx);
+        screen.web_focus_agent(reference, screen.session_name.clone(), None, tx);
         assert_eq!(
             rx.recv().unwrap(),
             Err(WebFocusError::TargetChanged),
@@ -17125,6 +17151,62 @@ fn web_agents_owning_screen_rejects_replacements_and_invalid_actions_without_inp
         }
     }
 }
+#[test]
+fn web_agents_peer_instance_guard_refuses_a_restarted_screen_before_read_or_input() {
+    use yinz_types::agent::control::WebAgentAction;
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    let stale = uuid::Uuid::new_v4().to_string();
+    let current = screen.instance_id.to_string();
+    let request = |instance: &str, action| AgentRequest::WebPeerGuarded {
+        expected_instance: instance.into(),
+        pane_id: PANE,
+        expected_kind: "codex".into(),
+        expected_session_id: "conversation".into(),
+        action,
+    };
+    for action in [
+        WebAgentAction::Read { lines: 80 },
+        WebAgentAction::SendKeys {
+            keys: vec!["y".into()],
+        },
+        WebAgentAction::Prompt {
+            text: "continue".into(),
+            submission_id: "peer-retry".into(),
+        },
+    ] {
+        let submission_id = action.submission_id().map(str::to_owned);
+        screen.agent_control(request(&stale, action), CLIENT);
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(response.outcome, AgentOutcome::TargetChanged);
+        assert_eq!(response.submission_id, submission_id);
+        assert!(response.output.is_none());
+        assert!(finish_paste(&writes).is_empty());
+    }
+    screen.agent_control(
+        request(&current, WebAgentAction::Read { lines: 80 }),
+        CLIENT,
+    );
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Ok
+    );
+    screen.agent_control(
+        request(
+            &current,
+            WebAgentAction::SendKeys {
+                keys: vec!["y".into()],
+            },
+        ),
+        CLIENT,
+    );
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Ok
+    );
+    assert_eq!(finish_paste(&writes), b"y");
+}
+
 #[test]
 fn web_agents_guarded_read_keys_and_prompt_retry_use_existing_control_state_machine() {
     use yinz_types::agent::control::WebAgentAction;
@@ -17204,7 +17286,7 @@ fn web_agents_local_focus_finishes_before_reply_in_the_validated_screen_turn() {
         .focus_pane_with_id(PaneId::Terminal(TerminalId::new(1)), true, false, CLIENT)
         .unwrap();
     let (reply, rx) = channels::bounded(1);
-    screen.web_focus_agent(reference, screen.session_name.clone(), reply);
+    screen.web_focus_agent(reference, screen.session_name.clone(), None, reply);
     assert_eq!(rx.recv().unwrap(), Ok(()));
     assert_eq!(
         screen.get_active_pane_id(&CLIENT),

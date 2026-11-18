@@ -4,7 +4,7 @@ import {
 } from '../api.js';
 import { TimelineStore, ToolsReader } from '../timeline.js';
 import { sameTarget, targetOf, validTarget } from '../submission.js';
-import { detailHash, detailListRow, isPeerDetail } from '../app-route.js';
+import { controlTarget, detailHash, detailListRow, isPeerDetail, isScopedPeer } from '../app-route.js';
 import {
   html, useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, usePoller, useNow,
   ServerHtml, StateBadge, RowBadges, QuickKeys, QuotaBar, Banner, responseText, keyName, cx,
@@ -193,8 +193,7 @@ function ToolsReaderSheet({ env, item, onClose }) {
   <//>`;
 }
 
-function ScreenPanel({ env, live, enabled, onTargetGone, layoutKey, beforeResize, view, onView }) {
-  const ref = live && live.ref && validTarget(live.ref) ? targetOf(live.ref) : null;
+function ScreenPanel({ env, target: ref, enabled, onTargetGone, layoutKey, beforeResize, view, onView }) {
   const now = useNow(1000);
   const [busy, setBusy] = useState(false);
   const scroller = useRef(null);
@@ -206,20 +205,20 @@ function ScreenPanel({ env, live, enabled, onTargetGone, layoutKey, beforeResize
     env,
     run: async ({ signal }) => {
       const r = await env.api.post('/api/agent/screen', { agent: ref, lines: 80 }, { signal });
-      if (!r.ok && r.status === 409) onTargetGone();
+      if (r.status === 409 || r.data?.response?.outcome === 'target_changed') onTargetGone();
       return r;
     },
   });
   async function key(k) {
-    if (!ref) return;
+    if (!ref || !enabled) return;
     setBusy(true);
     const r = await env.api.post('/api/agent/keys', { agent: ref, keys: [k] });
     setBusy(false);
-    if (r.ok) env.toast(`${keyName(k)}: ${responseText(r.data && r.data.response)}`);
-    else if (r.status === 409) {
+    if (r.status === 409 || r.data?.response?.outcome === 'target_changed') {
       env.toast('The agent changed or disappeared. The key was not sent.');
       onTargetGone();
-    } else if (r.status !== 401) env.toast(`Key not confirmed: ${describeError(r)} Check the screen before trying again.`);
+    } else if (r.ok) env.toast(`${keyName(k)}: ${responseText(r.data && r.data.response)}`);
+    else if (r.status !== 401) env.toast(`Key not confirmed: ${describeError(r)} Check the screen before trying again.`);
     refresh();
   }
   const data = state && state.data;
@@ -281,13 +280,13 @@ function ScreenPanel({ env, live, enabled, onTargetGone, layoutKey, beforeResize
   </div>`;
 }
 
-function OverflowSheet({ env, live, onClose, onInterrupt, onKeys, onTargetGone }) {
+function OverflowSheet({ env, live, target, onClose, onInterrupt, onKeys, onTargetGone }) {
   const peer = live.current_session === false;
   async function focus() {
     onClose();
-    const r = await env.api.post('/api/agent/focus', { agent: targetOf(live.ref) });
+    const r = await env.api.post('/api/agent/focus', { agent: target });
     if (r.ok) env.toast(peer ? `Desktop switched to session ${live.session}.` : 'Focused on the desktop.');
-    else if (r.status === 409 && r.code === 'target_changed') {
+    else if (r.status === 409 || r.data?.response?.outcome === 'target_changed') {
       env.toast('The agent changed or disappeared.');
       onTargetGone();
     } else if (r.status !== 401) env.toast(describeError(r));
@@ -313,12 +312,14 @@ function chooseTab(route, live) {
 
 export function DetailView({ env, route }) {
   const scoped = isPeerDetail(route.id);
+  const recoverScoped = route.bind && isScopedPeer(route.id);
   const identity = route.bind ? `a:${route.id}:${route.run ? 'run' : 'none'}` : `r:${route.run}`;
   const store = useMemo(() => (route.run ? new TimelineStore({ run: route.run, agent: route.bind ? route.id : null }) : null), [identity]);
   const [version, setVersion] = useState(0);
   const bump = () => setVersion((v) => v + 1);
   const [tab, setTabState] = useState(route.tab);
   const [sheet, setSheet] = useState(null);
+  const [peerRejected, setPeerRejected] = useState(false);
   const [informationOpen, setInformationOpen] = useState(false);
   const beforeResize = useRef(null);
   // Per device: kept across polls, tab switches and reloads. When storage fails,
@@ -345,7 +346,7 @@ export function DetailView({ env, route }) {
 
   function observePeerActivity(row) {
     const snapshot = awaitingStatus?.peerActivity;
-    if (!snapshot || !sameTarget(row?.ref, awaitingStatus.scope.target)) return;
+    if (!snapshot || !sameTarget(controlTarget(row), awaitingStatus.scope.target)) return;
     const hookAt = row.last_hook_at_ms;
     const stateChanged = typeof row.state === 'string' && row.state !== snapshot.state;
     const newerHook = Number.isFinite(hookAt) && hookAt > (snapshot.lastHookAtMs ?? -Infinity);
@@ -395,13 +396,13 @@ export function DetailView({ env, route }) {
     run: async ({ signal }) => {
       const r = await env.api.get('/api/agents', { signal });
       const row = r.ok && !env.api.stale(r) && Array.isArray(r.data?.agents)
-        ? detailListRow(r.data.agents, route.id) : null;
+        ? detailListRow(r.data.agents, route.id, r.data.session) : null;
       finishStatusPoll(signal, r, row);
       return r;
     },
   });
   const listRows = !route.run && list?.data?.agents;
-  const listRow = Array.isArray(listRows) ? detailListRow(listRows, route.id) : null;
+  const listRow = Array.isArray(listRows) ? detailListRow(listRows, route.id, list.data.session) : null;
   useEffect(() => {
     if (listRow && listRow.run) env.replaceHash(detailHash({ id: route.id, run: listRow.run, tab: tab || undefined }));
   }, [listRow && listRow.run]);
@@ -409,8 +410,21 @@ export function DetailView({ env, route }) {
   const meta = store ? store.meta : { live: listRow, agent_gone: Array.isArray(listRows) && !listRow };
   const live = route.bind ? meta.live : null;
   liveRow.current = live;
-  const currentRef = live && live.ref && validTarget(live.ref) ? targetOf(live.ref) : null;
-  const actions = route.bind && !!currentRef && !meta.agent_gone;
+  const candidate = controlTarget(live);
+  const currentRef = candidate?.id === route.id ? candidate : null;
+  const actions = route.bind && !!currentRef && !meta.agent_gone && !peerRejected;
+  const unavailable = meta.agent_gone || peerRejected || ((store?.loaded || list?.data) && !currentRef);
+
+  function onTargetGone() {
+    if (scoped) setPeerRejected(true);
+    refreshLive();
+  }
+
+  useEffect(() => {
+    if (!actions) {
+      setSheet((value) => ['overflow', 'interrupt', 'keys'].includes(value?.type) ? null : value);
+    }
+  }, [actions]);
   const refreshLive = store ? refreshTail : refreshList;
   const scope = useMemo(() => actions && currentRef ? { target: currentRef } : null,
     [actions, store?.run, currentRef?.id, currentRef?.kind, currentRef?.session_id]);
@@ -424,7 +438,7 @@ export function DetailView({ env, route }) {
       setSending(env.submissions.view(target).state === 'sending' ? scope : null);
       if (classification?.state === 'submitted') {
         const row = liveRow.current;
-        if (!sameTarget(row?.ref, target)) return;
+        if (!sameTarget(controlTarget(row), target)) return;
         const peerActivity = row.current_session === false ? {
           state: row.state,
           lastHookAtMs: row.last_hook_at_ms,
@@ -532,13 +546,13 @@ export function DetailView({ env, route }) {
   }
 
   async function interrupt() {
-    if (!currentRef) return;
+    if (!actions) return;
     const r = await env.api.post('/api/agent/keys', { agent: currentRef, keys: ['esc'] });
-    if (r.ok) env.toast(`Interrupt: ${responseText(r.data && r.data.response)}`);
-    else if (r.status === 409) {
+    if (r.status === 409 || r.data?.response?.outcome === 'target_changed') {
       env.toast('The agent changed or disappeared. Esc was not sent.');
-      refreshTail();
-    } else if (r.status !== 401) env.toast(`Interrupt not confirmed: ${describeError(r)} Check the screen before trying again.`);
+      onTargetGone();
+    } else if (r.ok) env.toast(`Interrupt: ${responseText(r.data && r.data.response)}`);
+    else if (r.status !== 401) env.toast(`Interrupt not confirmed: ${describeError(r)} Check the screen before trying again.`);
   }
 
   // A new array only after a store change: the one-second age re-render must not rerun
@@ -597,6 +611,8 @@ export function DetailView({ env, route }) {
       ${route.bind && meta.agent_gone ? html`<${Banner} id="banner-agent-gone" tone="warn">${store
         ? 'This agent is gone. Its history stays readable and actions are disabled. Checking for its return…'
         : 'This agent is unavailable. Return to Agents and reopen its card.'}<//>` : null}
+      ${peerRejected && !meta.agent_gone ? html`<${Banner} tone="warn">
+        The peer could not be verified. Refresh Agents and reopen its card before trying again.<//>` : null}
       ${retargetNotice ? html`<${Banner} id="banner-retargeted" tone="info"
         actions=${html`<button type="button" class="link-button" onClick=${() => setRetargetNotice(false)}>Dismiss</button>`}>
         The agent moved to a new run; the timeline was reset.<//>` : null}
@@ -609,8 +625,8 @@ export function DetailView({ env, route }) {
         ${activeTab === 'timeline' ? html`<${Timeline} items=${items} memory=${memory} loaded=${!store || store.loaded} waitingForAgent=${waitingForAgent} layoutKey=${informationOpen} beforeResize=${beforeResize}
           earlier=${store && !!store.earlierRequest()} loadingEarlier=${loadingEarlier} onEarlier=${loadEarlier}
           onTools=${(item) => setSheet({ type: 'tools', item })} onEvent=${(item) => setSheet({ type: 'event', item })} />` : null}
-        ${activeTab === 'screen' ? html`<${ScreenPanel} env=${env} live=${live} enabled=${actions} layoutKey=${informationOpen} beforeResize=${beforeResize}
-          view=${screenView} onView=${changeScreenView} onTargetGone=${() => refreshTail()} />` : null}
+        ${activeTab === 'screen' ? html`<${ScreenPanel} env=${env} target=${actions ? currentRef : null} enabled=${actions} layoutKey=${informationOpen} beforeResize=${beforeResize}
+          view=${screenView} onView=${changeScreenView} onTargetGone=${onTargetGone} />` : null}
         ${activeTab === 'details' ? html`<div class="details-panel">
           ${store && store.meta.details_html ? html`<${ServerHtml} html=${store.meta.details_html} class="details-html" id="details" />` : html`<p class="empty">No details yet.</p>`}
           <div class="details-nav">
@@ -621,19 +637,19 @@ export function DetailView({ env, route }) {
         </div>` : null}
       </div>
     </main>
-    ${route.bind && live ? html`<footer class="composer-dock">
-      ${!scoped ? html`<${StaleSubmissions} env=${env} agentId=${route.id} current=${currentRef} canPrompt=${actions && !!live.can_prompt} />`
-        : !currentRef && lastRef.current ? html`<${StaleSubmissions} env=${env} verifiedTarget=${lastRef.current} />` : null}
-      <${Composer} env=${env} live=${live} enabled=${actions} onTargetChanged=${refreshLive} />
+    ${route.bind && live && !(scoped && unavailable) ? html`<footer class="composer-dock">
+      ${!scoped ? html`<${StaleSubmissions} env=${env} agentId=${route.id} current=${currentRef} canPrompt=${actions && !!live.can_prompt} />` : null}
+      <${Composer} env=${env} live=${live} target=${currentRef} enabled=${actions}
+        onTargetChanged=${(state) => state === 'incompatible' ? onTargetGone() : refreshLive()} />
     </footer>` : null}
-    ${route.bind && !live && (!scoped || lastRef.current) ? html`<${StaleSubmissions} env=${env} agentId=${route.id}
-      verifiedTarget=${scoped ? lastRef.current : null} dock=${true} />` : null}
-    ${sheet && sheet.type === 'overflow' && live && currentRef ? html`<${OverflowSheet} env=${env} live=${live} onClose=${() => setSheet(null)}
-      onInterrupt=${() => setSheet({ type: 'interrupt' })} onKeys=${() => setSheet({ type: 'keys' })} onTargetGone=${() => refreshTail()} />` : null}
-    ${sheet && sheet.type === 'interrupt' ? html`<${ConfirmSheet} id="sheet-interrupt-confirm" title="Interrupt the agent?" danger=${true}
+    ${((route.bind && !scoped && !live) || (recoverScoped && unavailable)) ? html`<${StaleSubmissions} env=${env}
+      agentId=${route.id} scoped=${recoverScoped} dock=${true} />` : null}
+    ${actions && sheet?.type === 'overflow' ? html`<${OverflowSheet} env=${env} live=${live} target=${currentRef} onClose=${() => setSheet(null)}
+      onInterrupt=${() => setSheet({ type: 'interrupt' })} onKeys=${() => setSheet({ type: 'keys' })} onTargetGone=${onTargetGone} />` : null}
+    ${actions && sheet?.type === 'interrupt' ? html`<${ConfirmSheet} id="sheet-interrupt-confirm" title="Interrupt the agent?" danger=${true}
       message="This sends a single Esc key to the agent's terminal. It is not retried automatically."
       confirmLabel="Send Esc" confirmId="action-interrupt-confirm" onClose=${() => setSheet(null)} onConfirm=${interrupt} />` : null}
-    ${sheet && sheet.type === 'keys' && currentRef ? html`<${KeysSheet} env=${env} target=${currentRef} onClose=${() => setSheet(null)} onTargetGone=${() => refreshTail()} />` : null}
+    ${actions && sheet?.type === 'keys' ? html`<${KeysSheet} env=${env} target=${currentRef} onClose=${() => setSheet(null)} onTargetGone=${onTargetGone} />` : null}
     ${sheet && sheet.type === 'tools' ? html`<${ToolsReaderSheet} env=${env} item=${sheet.item} onClose=${() => setSheet(null)} />` : null}
     ${sheet && sheet.type === 'event' ? html`<${EventReaderSheet} env=${env} item=${sheet.item} onClose=${() => setSheet(null)} />` : null}
   </div>`;

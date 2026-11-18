@@ -1055,6 +1055,7 @@ pub enum ScreenInstruction {
     WebFocusAgent {
         agent: crate::web::WebAgentRef,
         owner: SessionName,
+        peer_instance: Option<String>,
         reply: crossbeam::channel::Sender<Result<(), crate::web::WebFocusError>>,
     },
     ResolveAgentTab {

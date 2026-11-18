@@ -655,7 +655,7 @@ pub(crate) fn control_peer(
     let is_prompt = matches!(
         request,
         yinz_types::agent::control::AgentRequest::Prompt { .. }
-            | yinz_types::agent::control::AgentRequest::WebGuarded {
+            | yinz_types::agent::control::AgentRequest::WebPeerGuarded {
                 action: yinz_types::agent::control::WebAgentAction::Prompt { .. },
                 ..
             }

@@ -152,6 +152,12 @@ pub fn from_string(
         .unwrap_or_default();
     Ok(SessionInfo {
         name: name.into(),
+        web_peer_instance: kdl_document
+            .get("web_peer_instance")
+            .and_then(|node| node.entries().first())
+            .and_then(|entry| entry.value().as_string())
+            .filter(|value| yinz_types::agent::control::valid_web_peer_instance(value))
+            .map(str::to_owned),
         tabs,
         panes,
         connected_clients,
@@ -249,6 +255,11 @@ pub fn to_string(value: &SessionInfo) -> anyhow::Result<String> {
     pane_history.set_children(pane_history_children);
 
     kdl_document.nodes_mut().push(name);
+    if let Some(instance) = &value.web_peer_instance {
+        let mut node = KdlNode::new("web_peer_instance");
+        node.push(instance.as_str());
+        kdl_document.nodes_mut().push(node);
+    }
     kdl_document.nodes_mut().push(tabs);
     kdl_document.nodes_mut().push(panes);
     kdl_document.nodes_mut().push(connected_clients);

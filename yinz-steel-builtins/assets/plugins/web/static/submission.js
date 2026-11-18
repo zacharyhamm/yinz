@@ -271,6 +271,9 @@ export function createSubmissions({ storage, api, uuid = () => globalThis.crypto
     discard(target) {
       return update(target, (r) => ({ ...r, draft: r.incompatible ? '' : r.draft, pending: null, lastFailure: null, commandNotice: null, incompatible: null, adopted: null }));
     },
+    discardUnavailable(target) {
+      return update(target, () => emptyRecord(target));
+    },
     /**
      * Explicit user decision after a retarget left this identity's record disabled:
      * keep the text as a fresh draft (a later Send generates a new id).

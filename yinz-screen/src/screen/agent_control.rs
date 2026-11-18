@@ -1919,6 +1919,24 @@ impl Screen {
         // Check the complete identity in this instruction turn, before lowering to the
         // existing control state machine (which keeps its asynchronous identity fences).
         let mut web_command = false;
+        let (request, instance_matches) = match request {
+            WebPeerGuarded {
+                expected_instance,
+                pane_id,
+                expected_kind,
+                expected_session_id,
+                action,
+            } => (
+                WebGuarded {
+                    pane_id,
+                    expected_kind,
+                    expected_session_id,
+                    action,
+                },
+                expected_instance == self.instance_id.to_string(),
+            ),
+            request => (request, true),
+        };
         let request = match request {
             WebGuarded {
                 pane_id,
@@ -1932,9 +1950,9 @@ impl Screen {
                 let submission_id = action.submission_id().map(str::to_owned);
                 let valid = yinz_types::agent::control::valid_web_identity(&expected_kind)
                     && yinz_types::agent::control::valid_web_identity(&expected_session_id);
-                let status = self.agent_status(pane_id, None);
-                let matches = valid
-                    && status.as_ref().is_some_and(|status| {
+                let matches = instance_matches
+                    && valid
+                    && self.agent_status(pane_id, None).is_some_and(|status| {
                         status.agent.kind == expected_kind
                             && status.agent.session_id.as_deref()
                                 == Some(expected_session_id.as_str())
@@ -1969,7 +1987,7 @@ impl Screen {
             return;
         }
         let (pane, expected) = match &request {
-            WebGuarded { .. } => unreachable!("lowered above"),
+            WebGuarded { .. } | WebPeerGuarded { .. } => unreachable!("lowered above"),
             Restart {
                 pane_id,
                 prompt,
@@ -3096,7 +3114,8 @@ impl Screen {
             | CloseoutSnapshot { .. }
             | CloseoutClose { .. }
             | SpawnBubblewrapSupport
-            | WebGuarded { .. } => {},
+            | WebGuarded { .. }
+            | WebPeerGuarded { .. } => {},
         }
     }
 

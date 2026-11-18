@@ -451,6 +451,7 @@ impl Screen {
         };
         let session_info = SessionInfo {
             name: self.session_name.clone(),
+            web_peer_instance: Some(self.instance_id.to_string()),
             tabs: tab_infos,
             panes: pane_manifest,
             connected_clients: self.active_tab_ids.keys().len(),

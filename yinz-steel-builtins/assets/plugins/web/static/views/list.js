@@ -2,8 +2,7 @@
 import { describeError, freshnessText } from '../api.js';
 import { html, useState, useEffect, useLayoutEffect, useRef, usePoller, useNow, ServerHtml, RowBadges, stateLabel, QuickKeys, Banner, Freshness, responseText, cx } from './ui.js';
 import { Sheet, ConfirmSheet } from './sheets.js';
-import { cardDetail, detailHash } from '../app-route.js';
-import { targetOf, validTarget } from '../submission.js';
+import { cardDetail, controlTarget, detailHash, isScopedPeer } from '../app-route.js';
 import { Notifications } from './notifications.js';
 
 function nonblank(value) {
@@ -65,13 +64,10 @@ function cardKeys(config) {
   return preferred.length ? preferred : config.quick_keys.slice(0, 3);
 }
 
-function refIdentity(ref) {
-  return validTarget(ref) ? JSON.stringify(targetOf(ref)) : null;
-}
-
 const CARD_SELECTOR = ':scope > .agent-section > .agent-cards > .agent-card';
 const CARD_CONTROLS = {
   main: ':scope > a.agent-open-area',
+  next: ':scope > .card-waiting-next',
   open: ':scope > .card-actions > a.agent-open',
   key: ':scope > .card-actions > .quick-keys > button.quick-key',
 };
@@ -106,31 +102,36 @@ function restoreCardFocus(main, header, focus) {
   let control;
   if (focus.identity) {
     const cards = [...main.querySelectorAll(CARD_SELECTOR)].filter((card) => card.dataset.agentRef === focus.identity);
-    if (cards.length !== 1) return;
-    const matches = [...cards[0].querySelectorAll(CARD_CONTROLS[focus.kind])]
-      .filter((candidate) => candidate.dataset.key === focus.key && !candidate.matches(':disabled'));
-    if (matches.length !== 1) return;
-    [control] = matches;
-  } else if (focus.kind !== 'key' && main.contains(focus.control) &&
+    if (cards.length === 1) {
+      const matches = [...cards[0].querySelectorAll(CARD_CONTROLS[focus.kind])]
+        .filter((candidate) => candidate.dataset.key === focus.key && !candidate.matches(':disabled'));
+      if (matches.length === 1) [control] = matches;
+    }
+  } else if (focus.href && main.contains(focus.control) &&
     !focus.control.closest('.agent-card')?.dataset.agentRef &&
     focus.control.getAttribute('href') === focus.href) {
     control = focus.control;
   }
-  if (!control) return;
-  if (document.activeElement === document.body) control.focus({ preventScroll: true });
+  if (!control) {
+    if (document.activeElement === focus.control) focus.control.blur();
+    return;
+  }
+  if (document.activeElement !== control) control.focus({ preventScroll: true });
   if (focus.wasVisible && document.activeElement === control) {
     const offset = revealOffset(control, header);
     if (offset) window.scrollBy({ top: offset, behavior: 'instant' });
   }
 }
 
-function AgentCard({ row, session, href, identity, env, onKeys, busy }) {
+function AgentCard({ row, session, href, identity, env, onKeys, onNext, busy }) {
   const waiting = row.state === 'waiting';
   const content = html`<${ServerHtml} html=${row.html} class="card-html" />
     <${RowBadges} row=${row} peerSession=${session ?? 'unavailable'} />`;
   return html`<li class=${cx('agent-card', `card-${row.state || 'unknown'}`, row.wait_needs_a_person && 'card-needs-person')} data-agent-id=${row.id} data-agent-ref=${identity}>
     ${href ? html`<a class="card-main agent-open-area" href=${href} aria-label=${`Open ${row.title || row.id}, ${stateLabel(row.state)}`}>${content}</a>`
       : html`<div class="card-main">${content}</div>`}
+    ${onNext ? html`<button type="button" class="link-button card-waiting-next"
+      onClick=${onNext}>Next waiting agent</button>` : null}
     ${waiting ? html`<div class="card-actions">
       <${QuickKeys} keys=${cardKeys(env.config)} disabled=${busy || !identity} label=${`Quick keys for ${row.title || 'agent'}`}
         onKey=${(k) => onKeys(row, k)} />
@@ -158,6 +159,17 @@ export function ListView({ env }) {
   const waiting = data && data.counts && Number.isInteger(data.counts.waiting) ? data.counts.waiting : agents.filter((a) => a.state === 'waiting').length;
   const groups = groupAgents(agents);
   const markers = sessionMarkers(groups);
+  const cards = new Map();
+  const bindings = new Map();
+  const waitingCount = agents.reduce((count, row) => {
+    const route = cardDetail(row, data.session);
+    const href = route && detailHash(route);
+    const target = controlTarget(row, data.session);
+    const binding = target ? JSON.stringify(target) : null;
+    if (binding) bindings.set(binding, (bindings.get(binding) || 0) + 1);
+    cards.set(row, { href, target, binding, scoped: route?.bind && isScopedPeer(route.id) ? route.id : null });
+    return count + Number(!!href && row.state === 'waiting');
+  }, 0);
   const header = useRef(null);
   const main = useRef(null);
   const previousJump = useRef(null);
@@ -177,11 +189,10 @@ export function ListView({ env }) {
   }, [waiting]);
 
   async function sendKey(row, key) {
-    const identity = refIdentity(row.ref);
-    if (!identity) return;
+    const { target, binding: identity } = cards.get(row);
+    if (!identity || bindings.get(identity) !== 1) return;
     setBusyKeys((b) => ({ ...b, [identity]: true }));
-    const agent = targetOf(row.ref);
-    const r = await env.api.post('/api/agent/keys', { agent, keys: [key] });
+    const r = await env.api.post('/api/agent/keys', { agent: target, keys: [key] });
     setBusyKeys((b) => {
       const next = { ...b };
       delete next[identity];
@@ -195,14 +206,16 @@ export function ListView({ env }) {
     refresh();
   }
 
-  function nextWaiting() {
+  function nextWaiting(fromCard) {
     const links = [...main.current.querySelectorAll(`${CARD_SELECTOR}.card-waiting > a.agent-open-area`)];
     const identities = links.map((link) => {
       const card = link.closest('.agent-card');
       return card.dataset.agentRef || link.getAttribute('href');
     });
-    const previous = identities.indexOf(previousJump.current);
-    const index = previous !== identities.lastIndexOf(previousJump.current) ? 0 : (previous + 1) % links.length;
+    const previous = fromCard ? links.findIndex((link) => link.closest('.agent-card') === fromCard)
+      : identities.indexOf(previousJump.current);
+    const ambiguous = !fromCard && previous !== identities.lastIndexOf(previousJump.current);
+    const index = ambiguous ? 0 : (previous + 1) % links.length;
     const link = links[index];
     if (!link) return;
     previousJump.current = identities[index];
@@ -221,8 +234,8 @@ export function ListView({ env }) {
         <${Freshness} id="list-freshness" state=${state} now=${now} />
         ${data && typeof data.session === 'string' ? html`<span class="serving-session" id="list-session">Session ${data.session}</span>` : null}
         <button type="button" class="link-button" id="list-refresh" onClick=${() => refresh()}>Refresh</button>
-        ${agents.some((row) => row.state === 'waiting' && cardDetail(row, data.session)) ? html`<button type="button" class="button next-waiting" id="list-next-waiting"
-          onClick=${nextWaiting}>Next waiting agent</button>` : null}
+        ${waitingCount ? html`<button type="button" class="button next-waiting" id="list-next-waiting"
+          onClick=${() => nextWaiting()}>Next waiting agent</button>` : null}
       </div>
     </header>
     ${env.notice ? html`<${Banner} id="banner-notice" tone="info" actions=${html`<button type="button" class="link-button" onClick=${env.clearNotice}>Dismiss</button>`}>${env.notice}<//>` : null}
@@ -243,14 +256,16 @@ export function ListView({ env }) {
           </h2>
           <ul class="agent-cards">
             ${rows.map((row) => {
-              const route = cardDetail(row, data.session);
-              const href = route && detailHash(route);
-              const identity = refIdentity(row.ref);
-              const cardKey = JSON.stringify([row.id, row.detail_id, identity || href]);
+              const { href, binding, scoped } = cards.get(row);
+              const identity = binding && bindings.get(binding) === 1 ? binding : null;
+              const cardKey = JSON.stringify(identity
+                ? [scoped || row.id, identity] : [row.id, scoped, href]);
               const occurrence = occurrences.get(cardKey) || 0;
               occurrences.set(cardKey, occurrence + 1);
               return html`<${AgentCard} key=${JSON.stringify([cardKey, occurrence])} row=${row} session=${session} href=${href}
-                identity=${identity} env=${env} onKeys=${sendKey} busy=${!!busyKeys[identity]} />`;
+                identity=${identity} env=${env} onKeys=${sendKey} busy=${!!busyKeys[identity]}
+                onNext=${href && row.state === 'waiting' && waitingCount > 1
+                  ? (event) => nextWaiting(event.currentTarget.closest('.agent-card')) : null} />`;
             })}
           </ul>
         </section>`;

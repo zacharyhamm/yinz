@@ -161,6 +161,47 @@ pub fn valid_web_identity(value: &str) -> bool {
     !value.trim().is_empty() && !value.chars().any(char::is_control)
 }
 
+/// Check the canonical v4 UUID written by Screen.
+pub fn valid_web_peer_instance(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            14 => byte == b'4',
+            19 => matches!(byte, b'8' | b'9' | b'a' | b'b'),
+            _ => matches!(byte, b'0'..=b'9' | b'a'..=b'f'),
+        })
+}
+
+pub const PEER_DETAIL_PREFIX: &str = "peer-detail:";
+
+pub fn peer_web_detail_id(instance: &str, pane: PaneId, agent: &AgentInfo) -> String {
+    let pane = pane.to_string();
+    let mut hash = Sha256::new();
+    hash.update(b"yinz:web-peer:v1\0");
+    // Length-prefix each member and distinguish an absent conversation from a string.
+    for member in [
+        Some(instance),
+        Some(pane.as_str()),
+        Some(agent.kind.as_str()),
+        agent.session_id.as_deref(),
+    ] {
+        match member {
+            Some(value) => {
+                hash.update([1]);
+                hash.update((value.len() as u64).to_be_bytes());
+                hash.update(value.as_bytes());
+            },
+            None => hash.update([0]),
+        }
+    }
+    let hex: String = hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("{PEER_DETAIL_PREFIX}v1:{hex}")
+}
+
 impl WebAgentAction {
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
@@ -238,6 +279,13 @@ impl WebAgentAction {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum AgentRequest {
     WebGuarded {
+        pane_id: PaneId,
+        expected_kind: String,
+        expected_session_id: String,
+        action: WebAgentAction,
+    },
+    WebPeerGuarded {
+        expected_instance: String,
         pane_id: PaneId,
         expected_kind: String,
         expected_session_id: String,

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use yinz_bus::command_palette::HistoryHeader;
 use yinz_bus::web::{WebAgentRef, WebFocusError, WebLiveAgent, WebLiveHeader};
 use yinz_runtime::errors::prelude::*;
+use yinz_types::agent::control::{peer_web_detail_id, valid_web_peer_instance};
 use yinz_types::internal_ids::SessionName;
 
 impl Screen {
@@ -15,7 +16,8 @@ impl Screen {
             .into_iter()
             .filter_map(|(live, tab)| {
                 let presentation = live.presentation()?;
-                let (tab_group_session, tab_group) = match tab {
+                let current_session = matches!(tab, LiveAgentTab::Local(_));
+                let (tab_group_session, tab_group, peer_instance) = match tab {
                     LiveAgentTab::Local(tab) => (
                         &self.session_name,
                         self.tab_group_ids.get(&tab).and_then(|&id| {
@@ -24,6 +26,7 @@ impl Screen {
                                 .or_insert_with(|| self.tab_group_info(tab))
                                 .clone()
                         }),
+                        None,
                     ),
                     // A renamed socket can be discovered before the checkpoint name changes.
                     LiveAgentTab::Peer {
@@ -37,6 +40,11 @@ impl Screen {
                             .iter()
                             .find(|tab| tab.position == position)
                             .and_then(|tab| tab.group.clone()),
+                        session
+                            .web_peer_instance
+                            .as_deref()
+                            .filter(|value| valid_web_peer_instance(value))
+                            .map(str::to_owned),
                     ),
                 };
                 let (glyph, status, _) = yinz_panes::ui::agent_title::status(presentation.state);
@@ -47,7 +55,8 @@ impl Screen {
                     session: live.session.clone(),
                     tab_group_session: tab_group_session.clone(),
                     tab_group,
-                    current_session: live.session == self.session_name,
+                    current_session,
+                    peer_instance,
                     run: live.run(),
                     label_source: live.label_source(),
                     provider: presentation.provider,
@@ -56,7 +65,7 @@ impl Screen {
                     pane_label: presentation.pane_id,
                     glyph,
                     status,
-                    focused: live.session == self.session_name
+                    focused: current_session
                         && self
                             .active_tab_ids
                             .keys()
@@ -91,26 +100,30 @@ impl Screen {
         &mut self,
         agent: WebAgentRef,
         owner: SessionName,
+        expected_instance: Option<&str>,
         reply: crossbeam::channel::Sender<Result<(), WebFocusError>>,
     ) {
         let result = (|| {
-            use yinz_types::agent::control::valid_web_identity;
-            if ![&agent.id, &agent.kind, &agent.session_id]
-                .into_iter()
-                .all(|value| valid_web_identity(value))
-            {
-                return Err(WebFocusError::TargetChanged);
-            }
             let mut matches = self
                 .live_agents_with_tabs()
                 .into_iter()
-                .filter(|(live, _)| {
+                .filter(|(live, tab)| {
+                    let Some(info) = live.pane.agent.as_ref() else {
+                        return false;
+                    };
                     live.presentation().is_some()
-                        && live.id() == agent.id
-                        && live.pane.agent.as_ref().is_some_and(|a| {
-                            a.kind == agent.kind
-                                && a.session_id.as_deref() == Some(agent.session_id.as_str())
-                        })
+                        && match (tab, expected_instance) {
+                            (LiveAgentTab::Local(_), None) => agent.matches_agent(&live.id(), info),
+                            (LiveAgentTab::Peer { session, .. }, Some(instance))
+                                if session.web_peer_instance.as_deref() == Some(instance) =>
+                            {
+                                agent.matches_agent(
+                                    &peer_web_detail_id(instance, live.pane.id, info),
+                                    info,
+                                )
+                            },
+                            _ => false,
+                        }
                 });
             let (live, tab) = matches.next().ok_or(WebFocusError::TargetChanged)?;
             if matches.next().is_some() {

@@ -4,7 +4,6 @@ use super::{agent_control, palette_agents};
 use palette_agents::history;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashSet},
     sync::{atomic::AtomicBool, Arc},
@@ -21,7 +20,7 @@ use yinz_types::{
     agent::{
         control::{
             valid_web_identity, AgentOutcome, AgentRequest, AgentResponse, ProviderUsage,
-            ProviderUsageStatus, WebAgentAction,
+            ProviderUsageStatus, WebAgentAction, PEER_DETAIL_PREFIX,
         },
         history::{Cursor, Range},
         LiveAgentOrder,
@@ -293,11 +292,7 @@ fn labels(
     palette_agents::compute_labels(live.iter().map(|a| a.label_source.clone()).collect(), data)
         .map_err(|e| error("failed", e))
 }
-fn order<'a>(
-    a: &'a WebLiveAgent,
-    labels: &'a BTreeMap<String, palette::AgentLabels>,
-) -> LiveAgentOrder<'a> {
-    let label = labels.get(&a.id);
+fn order<'a>(a: &'a WebLiveAgent, label: Option<&'a palette::AgentLabels>) -> LiveAgentOrder<'a> {
     LiveAgentOrder::new(
         a.pane.agent.as_ref().map(|a| a.state),
         a.pane.last_hook_at_ms,
@@ -313,12 +308,17 @@ fn row(live: &WebLiveAgent, label: Option<&palette::AgentLabels>) -> Value {
     let session_id = agent
         .and_then(|a| a.session_id.as_deref())
         .unwrap_or_default();
+    let detail_id = live.peer_detail_id();
     let identity = WebAgentRef {
-        id: live.id.clone(),
+        id: if live.current_session {
+            live.id.clone()
+        } else {
+            detail_id.clone().unwrap_or_default()
+        },
         kind: kind.into(),
         session_id: session_id.into(),
     };
-    json!({"id":live.id,"ref":identity,"session":live.session,"current_session":live.current_session,
+    let mut row = json!({"id":live.id,"ref":identity,"session":live.session,"current_session":live.current_session,
         "pane_id":live.pane.id.to_string(),"pane":live.pane_label,"provider":live.provider,
         "state":live.metadata.get("state"),"glyph":live.glyph,"status":live.status,"host":live.host,
         "title":live.pane.title,"activity":live.activity,"project":label.map(|l| l.project.as_str()).unwrap_or_default(),
@@ -327,54 +327,19 @@ fn row(live: &WebLiveAgent, label: Option<&palette::AgentLabels>) -> Value {
         "last_hook_at_ms":live.pane.last_hook_at_ms,"focused":live.focused,"selectable":live.selectable,
         "suppressed":live.suppressed,"directory":live.metadata.get("directory"),"run":live.run,
         "wait_needs_a_person":agent.is_some_and(|a| a.wait_needs_a_person),"source":live.metadata.get("source"),
-        "can_prompt":live.matches(&identity) && valid_web_identity(kind) && valid_web_identity(session_id),
-        "prompt_unavailable":(!valid_web_identity(session_id)).then_some("Agent has no conversation ID"),
-        "usage_unavailable":live.usage_unavailable})
-}
-const PEER_DETAIL_PREFIX: &str = "peer-detail:";
-
-fn peer_detail_id(live: &WebLiveAgent) -> Option<String> {
-    if live.current_session {
-        return None;
+        "can_prompt":live.matches(&identity),
+        "prompt_unavailable":if !live.current_session && detail_id.is_none() {
+            Some("Live controls are unavailable until the peer publishes its identity. Refresh Agents and reopen the card.")
+        } else if !valid_web_identity(session_id) {
+            Some("Agent has no conversation ID")
+        } else {
+            None
+        },
+        "usage_unavailable":live.usage_unavailable});
+    if let Some(id) = detail_id {
+        row["detail_id"] = json!(id);
     }
-    let agent = live.pane.agent.as_ref()?;
-    let pane = live.pane.id.to_string();
-    let mut hash = Sha256::new();
-    // Length-prefix each tuple member and distinguish an absent conversation from a string.
-    for member in [
-        Some(live.tab_group_session.as_str()),
-        Some(pane.as_str()),
-        Some(agent.kind.as_str()),
-        agent.session_id.as_deref(),
-    ] {
-        match member {
-            Some(value) => {
-                hash.update([1]);
-                hash.update((value.len() as u64).to_be_bytes());
-                hash.update(value.as_bytes());
-            },
-            None => hash.update([0]),
-        }
-    }
-    let hex: String = hash
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    Some(format!("{PEER_DETAIL_PREFIX}{hex}"))
-}
-
-fn complete_ref(live: &WebLiveAgent) -> Option<(&str, &str, &str)> {
-    let agent = live.pane.agent.as_ref()?;
-    let key = (
-        live.id.as_str(),
-        agent.kind.as_str(),
-        agent.session_id.as_deref()?,
-    );
-    [key.0, key.1, key.2]
-        .into_iter()
-        .all(valid_web_identity)
-        .then_some(key)
+    row
 }
 
 fn unique_live<T>(mut matches: impl Iterator<Item = T>) -> Option<T> {
@@ -383,23 +348,15 @@ fn unique_live<T>(mut matches: impl Iterator<Item = T>) -> Option<T> {
 }
 
 fn detail_target(mut live: Vec<WebLiveAgent>, id: &str) -> Option<WebLiveAgent> {
-    let (index, selected) = unique_live(live.iter().enumerate().filter(|(_, row)| {
-        if id.starts_with(PEER_DETAIL_PREFIX) {
-            peer_detail_id(row).as_deref() == Some(id)
+    let scoped = id.starts_with(PEER_DETAIL_PREFIX);
+    let index = unique_live(live.iter().enumerate().filter_map(|(index, row)| {
+        let matched = if scoped {
+            row.peer_detail_id().as_deref() == Some(id)
         } else {
-            row.id == id
-        }
+            row.current_session && row.id == id
+        };
+        matched.then_some(index)
     }))?;
-    // Detail also uses this ref to open any locally saved draft for the conversation.
-    if let Some(key) = complete_ref(selected)
-        && live
-            .iter()
-            .filter(|row| complete_ref(row) == Some(key))
-            .nth(1)
-            .is_some()
-    {
-        return None;
-    }
     Some(live.swap_remove(index))
 }
 
@@ -416,15 +373,25 @@ fn control(
 ) -> Result<Value> {
     let live = target(senders, &agent)?;
     let submission_id = action.submission_id().map(str::to_owned);
-    let request = AgentRequest::WebGuarded {
-        pane_id: live.pane.id,
-        expected_kind: agent.kind,
-        expected_session_id: agent.session_id,
-        action,
-    };
     let mut response = if live.current_session {
+        let request = AgentRequest::WebGuarded {
+            pane_id: live.pane.id,
+            expected_kind: agent.kind,
+            expected_session_id: agent.session_id,
+            action,
+        };
         agent_control::control_agent(request, client, senders, data)
     } else {
+        let expected_instance = live
+            .peer_instance
+            .ok_or_else(|| error("target_changed", "Peer identity unavailable"))?;
+        let request = AgentRequest::WebPeerGuarded {
+            expected_instance,
+            pane_id: live.pane.id,
+            expected_kind: agent.kind,
+            expected_session_id: agent.session_id,
+            action,
+        };
         // Only a session obtained from this fresh snapshot can become a route.
         palette_agents::control_peer(
             &live.tab_group_session,
@@ -588,30 +555,56 @@ fn execute(
 ) -> Result<Value> {
     match op {
         Operation::List {} => {
-            let mut live = snapshot(senders)?;
-            let labels = labels(&live, data)?;
-            live.sort_by(|a, b| order(a, &labels).cmp(&order(b, &labels)));
+            let live = snapshot(senders)?;
+            let sources = live
+                .iter()
+                .enumerate()
+                .map(|(slot, agent)| {
+                    let mut source = agent.label_source.clone();
+                    source.id = slot.to_string();
+                    source
+                })
+                .collect();
+            let mut labels =
+                palette_agents::compute_labels(sources, data).map_err(|e| error("failed", e))?;
+            let mut live: Vec<_> = live
+                .into_iter()
+                .enumerate()
+                .map(|(slot, row)| (row, labels.remove(&slot.to_string())))
+                .collect();
+            live.sort_by(|(a, a_label), (b, b_label)| {
+                order(a, a_label.as_ref()).cmp(&order(b, b_label.as_ref()))
+            });
             let count = |state: &str| {
                 live.iter()
-                    .filter(|a| a.metadata.get("state").is_some_and(|s| s == state))
+                    .filter(|(a, _)| a.metadata.get("state").is_some_and(|s| s == state))
                     .count()
             };
             let mut seen = HashSet::new();
-            let ambiguous_refs: HashSet<_> = live
-                .iter()
-                .filter_map(complete_ref)
-                .filter(|&key| !seen.insert(key))
-                .collect();
+            let mut ambiguous = HashSet::new();
+            for (agent, _) in &live {
+                let id = if agent.current_session {
+                    Some(agent.id.clone())
+                } else {
+                    agent.peer_detail_id()
+                };
+                if let Some(id) = id
+                    && !seen.insert(id.clone())
+                {
+                    ambiguous.insert(id);
+                }
+            }
             let agents: Vec<_> = live
                 .iter()
-                .map(|a| {
-                    let mut row = row(a, labels.get(&a.id));
+                .map(|(a, label)| {
+                    let mut row = row(a, label.as_ref());
                     row["tab_group_session"] = json!(a.tab_group_session);
                     row["tab_group"] = json!(a.tab_group);
-                    if let Some(id) = peer_detail_id(a) {
-                        row["detail_id"] = json!(id);
-                    }
-                    if complete_ref(a).is_some_and(|key| ambiguous_refs.contains(&key)) {
+                    if row["ref"]["id"]
+                        .as_str()
+                        .is_some_and(|id| ambiguous.contains(id))
+                    {
+                        row.as_object_mut().map(|fields| fields.remove("detail_id"));
                         row["ref"]["session_id"] = json!("");
                         row["can_prompt"] = json!(false);
                         row["prompt_unavailable"] = json!(
@@ -655,12 +648,13 @@ fn execute(
             Ok(json!({"usage":usage}))
         },
         Operation::Focus { agent } => {
-            let owner = target(senders, &agent)?.tab_group_session;
+            let live = target(senders, &agent)?;
             let (reply, rx) = crossbeam::channel::bounded(1);
             senders
                 .send_to_screen(ScreenInstruction::WebFocusAgent {
                     agent,
-                    owner,
+                    owner: live.tab_group_session,
+                    peer_instance: live.peer_instance,
                     reply,
                 })
                 .map_err(|e| error("failed", e.to_string()))?;
