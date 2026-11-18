@@ -683,6 +683,17 @@ keybinds {{ normal {{ bind "Ctrl Alt y" {{ SwitchSession {{ name "other"; layout
 #[cfg(unix)]
 #[test]
 fn underline_metrics_watcher_recovers_after_intermediate_layout_parse_error() {
+    watcher_recovers_after_swap_parse_error(true);
+}
+
+#[cfg(unix)]
+#[test]
+fn underline_metrics_watcher_recovers_after_initial_layout_parse_error() {
+    watcher_recovers_after_swap_parse_error(false);
+}
+
+#[cfg(unix)]
+fn watcher_recovers_after_swap_parse_error(io_failure_first: bool) {
     use std::{fs, os::unix::ffi::OsStrExt};
 
     for restore_swap in [false, true] {
@@ -729,15 +740,19 @@ fn underline_metrics_watcher_recovers_after_intermediate_layout_parse_error() {
         watching.expect_underline(-2, 2);
         watching.clear();
 
-        let name = std::ffi::CString::new(swap.as_os_str().as_bytes()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-        save(4);
-        wait_for_diagnostic("not a regular file");
-        // Rename over the FIFO atomically so the watcher cannot publish in a
-        // gap between removing the pipe and installing the malformed swap.
-        let replacement = layouts.join("replacement.kdl");
-        fs::write(&replacement, "layout { pane; }").unwrap();
-        fs::rename(replacement, &swap).unwrap();
+        if io_failure_first {
+            let name = std::ffi::CString::new(swap.as_os_str().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            save(4);
+            wait_for_diagnostic("not a regular file");
+            // Keep the swap continuously present during the transition.
+            let replacement = layouts.join("replacement.kdl");
+            fs::write(&replacement, "layout { pane; }").unwrap();
+            fs::rename(replacement, &swap).unwrap();
+        } else {
+            fs::write(&swap, "layout { pane; }").unwrap();
+            save(4);
+        }
         wait_for_diagnostic("Swap layouts should not have their own layout node");
         assert_eq!(
             Config::load_checked(Some(&main), Some(&root), false)
@@ -764,6 +779,44 @@ fn underline_metrics_watcher_recovers_after_intermediate_layout_parse_error() {
             assert_eq!(change.config.options.mouse_mode, Some(false));
         }
     }
+}
+
+#[test]
+fn underline_metrics_watcher_recovers_after_initial_layout_parse_error_at_registration() {
+    use std::fs;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let main = root.join("config.kdl");
+    let layouts = root.join("layouts");
+    fs::create_dir(&layouts).unwrap();
+    fs::write(
+        &main,
+        "terminal { underline_offset -3; underline_thickness 6; }",
+    )
+    .unwrap();
+    let layout = layouts.join("default.kdl");
+    fs::write(&layout, "layout {").unwrap();
+    let logs = captured_config_logs();
+    let watching = Watching::start(main, root);
+    logs.wait_until("malformed primary layout at registration", WAIT, |logs| {
+        logs.iter()
+            .any(|line| {
+                line.contains("Failed to reload config") && line.contains(layout.to_str().unwrap())
+            })
+            .then_some(())
+    });
+    assert!(watching.changes.lock().is_empty());
+
+    fs::write(
+        &layout,
+        "layout { pane; }\nterminal { padding 5; }\nmouse_mode false",
+    )
+    .unwrap();
+    watching.expect_underline(-3, 6);
+    let changes = watching.changes.lock();
+    assert_eq!(changes[0].config.terminal.padding, Some(5.0));
+    assert_eq!(changes[0].config.options.mouse_mode, Some(false));
 }
 
 #[test]

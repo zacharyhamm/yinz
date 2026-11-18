@@ -36,6 +36,7 @@ pub struct Frame<'a> {
     pub origin: (i32, i32),
     pub margins: &'a [crate::render::scene::Rect],
     pub layer: Option<&'a crate::render::scroll_animation::ScrollLayer>,
+    pub notice: Option<&'a crate::render::scene::RowScene>,
 }
 
 struct Pass {
@@ -332,6 +333,46 @@ impl Renderer {
             }
             if let Some(opacity) = transparency.fade() {
                 self.fade_everything(opacity, viewport);
+            }
+            if let Some(notice) = frame.notice {
+                self.layer_vertices.clear();
+                push_solid_vertices(&mut self.layer_vertices, &notice.rects);
+                draw_pass(
+                    &self.gl,
+                    &self.layer_solid,
+                    &self.layer_vertices,
+                    SOLID_STRIDE,
+                    viewport,
+                    origin,
+                );
+                self.layer_vertices.clear();
+                push_glyph_vertices(&mut self.layer_vertices, &notice.glyphs, atlases.mask);
+                self.gl
+                    .bind_texture(glow::TEXTURE_2D, Some(self.mask_atlas.texture));
+                draw_pass(
+                    &self.gl,
+                    &self.layer_glyph,
+                    &self.layer_vertices,
+                    GLYPH_STRIDE,
+                    viewport,
+                    origin,
+                );
+                self.layer_vertices.clear();
+                push_glyph_vertices(
+                    &mut self.layer_vertices,
+                    &notice.color_glyphs,
+                    atlases.color,
+                );
+                self.gl
+                    .bind_texture(glow::TEXTURE_2D, Some(self.color_atlas.texture));
+                draw_pass(
+                    &self.gl,
+                    &self.layer_color,
+                    &self.layer_vertices,
+                    GLYPH_STRIDE,
+                    viewport,
+                    origin,
+                );
             }
             self.gl.bind_vertex_array(None);
         }

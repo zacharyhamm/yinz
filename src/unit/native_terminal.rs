@@ -249,13 +249,25 @@ fn underline_metrics_saved_reconfigure_keeps_the_session_responsive_after_fifo_r
 fn native_headless_creates_and_reattaches_with_structured_content() {
     std::thread::Builder::new()
         .stack_size(32 * 1024 * 1024)
-        .spawn(native_headless_fixture)
+        .spawn(|| native_headless_fixture(false))
         .unwrap()
         .join()
         .unwrap();
 }
 
-fn native_headless_fixture() {
+#[test]
+fn native_headless_uses_builtin_despite_extensionless_collision() {
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| native_headless_fixture(true))
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn native_headless_fixture(builtin_collision: bool) {
+    use std::time::{Duration, Instant};
+
     let fixture = real_fixture::RealFixture::new("native-");
     fs::create_dir(fixture.path().join("home")).unwrap();
     fs::create_dir(fixture.path().join("tmp")).unwrap();
@@ -265,11 +277,16 @@ fn native_headless_fixture() {
         &fixture.path().join("data"),
     )
     .unwrap();
-    fs::write(
-        fixture.path().join("config.kdl"),
-        "detachable_panes false\nload_plugins clear-defaults=true\n",
-    )
-    .unwrap();
+    let mut config = "detachable_panes false\nload_plugins clear-defaults=true\n".to_owned();
+    if builtin_collision {
+        let layouts = fixture.path().join("layouts");
+        fs::create_dir(&layouts).unwrap();
+        fs::write(layouts.join("default"), "layout { pane command=\"/bin/sh\" { args \"-c\" \"printf wrong-layout-marker; exec /bin/sh\"; }; }").unwrap();
+        let shell = fixture.path().join("native-shell");
+        yinz_test_support::write_warm_script(&shell, "printf native-frame-marker\nexec /bin/sh");
+        config.push_str(&format!("default_shell {:?}\n", shell.to_str().unwrap()));
+    }
+    fs::write(fixture.path().join("config.kdl"), config).unwrap();
     fs::write(fixture.path().join("layout.kdl"), "layout { pane command=\"/bin/sh\" { args \"-c\" \"printf native-frame-marker; exec /bin/sh\"; }; }\n").unwrap();
     let command = || {
         let mut command = Command::new(env!("CARGO_BIN_EXE_yinz"));
@@ -285,6 +302,8 @@ fn native_headless_fixture() {
             .env("SHELL", "/bin/sh")
             .arg("--config")
             .arg(fixture.path().join("config.kdl"))
+            .arg("--config-dir")
+            .arg(fixture.path())
             .arg("--data-dir")
             .arg(fixture.path().join("data"))
             .stdin(Stdio::null())
@@ -292,14 +311,18 @@ fn native_headless_fixture() {
             .stderr(Stdio::piped());
         command
     };
-    for create in [true, false] {
+    for &create in if builtin_collision {
+        &[true][..]
+    } else {
+        &[true, false][..]
+    } {
         let recording = fixture.path().join(if create {
             "first.frames"
         } else {
             "reattach.frames"
         });
         let mut child = command();
-        if create {
+        if create && !builtin_collision {
             child.arg("--layout").arg(fixture.path().join("layout.kdl"));
         }
         child
@@ -315,42 +338,52 @@ fn native_headless_fixture() {
         if create {
             child.arg("--create");
         }
-        if create {
+        if create && !builtin_collision {
             let cli = yinz_cli::args::CliArgs::try_parse_from(
                 std::iter::once(std::ffi::OsStr::new("yinz")).chain(child.get_args()),
             )
             .unwrap();
             assert_eq!(cli.layout, Some(fixture.path().join("layout.kdl")));
             let (config, layout, options, _, _) =
-                yinz_cli::setup::Setup::from_cli_args(&cli).unwrap();
+                yinz_cli::setup::Setup::native_connection_config(&cli).unwrap();
             let message = yinz_client::native_first_message(
                 &cli,
                 &options,
                 &config.env,
                 layout,
+                None,
                 yinz_types::pane_size::Size {
                     rows: 40,
                     cols: 120,
                 },
                 true,
+                false,
                 None,
             );
             let yinz_ipc::ipc::ClientToServerMsg::FirstClientConnected { cli_assets } = message
             else {
                 panic!("expected first client");
             };
-            let (layout, _) = yinz_config::layout::from_layout_info_with_config(
-                &None,
-                cli_assets.layout.as_ref().unwrap(),
-                Some(config),
-            )
-            .unwrap();
+            assert!(cli_assets.checked_native_layout);
+            assert!(!cli_assets.retains_source_on_switch);
+            let (_, layout) = yinz_config::cli_assets::load_config_and_layout(&cli_assets).unwrap();
             assert!(
                 format!("{layout:?}").contains("native-frame-marker"),
                 "{layout:?}"
             );
         }
-        let output = child.output().unwrap();
+        let mut child = child.spawn().unwrap();
+        let deadline = Instant::now() + yinz_test_support::default_timeout();
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let output = child.wait_with_output().unwrap();
+                panic!("headless fixture missed its deadline: {output:?}");
+            }
+            // Observe the process's completion portably across Linux and macOS.
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().unwrap();
         assert!(
             output.status.success(),
             "stdout={} stderr={}",
@@ -364,6 +397,12 @@ fn native_headless_fixture() {
         while !rest.is_empty() {
             let len = u32::from_le_bytes(rest[..4].try_into().unwrap()) as usize;
             let view = decode(&rest[4..4 + len]).unwrap();
+            if last_seq == 0 {
+                assert!(
+                    view.header().full_repaint(),
+                    "the first structured frame must be usable on its own"
+                );
+            }
             assert!(view.header().seq > last_seq);
             last_seq = view.header().seq;
             for (_, cells) in view.rows() {
@@ -377,5 +416,6 @@ fn native_headless_fixture() {
             "create={create}, frames={last_seq}, content={:?}",
             content.chars().take(600).collect::<String>()
         );
+        assert!(!content.contains("wrong-layout-marker"));
     }
 }

@@ -1,6 +1,6 @@
 use crate::emulation::color::Paints;
 use crate::emulation::selection::LocalSelection;
-use crate::emulation::terminal::TerminalState;
+use crate::emulation::terminal::{FrameApplied, TerminalState};
 use crate::input::clipboard::{Clipboard, ClipboardHandle};
 use crate::input::composition::{Composition, Reaction};
 use crate::input::{keyboard, links};
@@ -19,6 +19,7 @@ use glutin::prelude::*;
 use glutin::surface::{Surface, SurfaceAttributesBuilder, SwapInterval, WindowSurface};
 use glutin_winit::{DisplayBuilder, GlWindow};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -28,7 +29,7 @@ use winit::raw_window_handle::HasWindowHandle;
 use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
 use yinz_cli::args::{CliArgs, TerminalArgs};
 use yinz_config::config::Config;
-use yinz_ipc::ipc::{ClientToServerMsg, PixelDimensions, ServerToClientMsg};
+use yinz_ipc::ipc::{ClientToServerMsg, ExitReason, PixelDimensions, ServerToClientMsg};
 use yinz_runtime::errors::prelude::*;
 use yinz_types::input::actions::Action;
 use yinz_types::input::native_terminal::{StartupMode, TerminalConfig};
@@ -90,7 +91,7 @@ impl Surfaces {
 
 struct App {
     surfaces: Option<Surfaces>,
-    proxy: winit::event_loop::EventLoopProxy<()>,
+    wake_reader: ReaderWake,
     args: TerminalArgs,
     opts: CliArgs,
     settings: TerminalConfig,
@@ -100,8 +101,12 @@ struct App {
     reported_geometry: Option<Geometry>,
     retained: RetainedScene,
     state: TerminalState,
-    sender: Option<Sender>,
+    sender: Option<AttachedSender>,
     messages: Option<Receiver<ServerToClientMsg>>,
+    connection_id: u64,
+    next_connection_id: u64,
+    pending_switch: Option<PendingSwitch>,
+    switch_notice: Option<String>,
     recorder: Recorder,
     modifiers: ModifiersState,
     alt_keys: keyboard::AltKeys,
@@ -123,6 +128,206 @@ struct App {
     error: Option<anyhow::Error>,
 }
 
+const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
+type ReaderWake = Arc<dyn Fn(u64) -> bool + Send + Sync>;
+
+struct AttachedSender(Sender);
+
+impl Drop for AttachedSender {
+    fn drop(&mut self) {
+        if let Ok(mut sender) = self.0.lock() {
+            sender
+                .send_client_msg_until(
+                    ClientToServerMsg::ClientExited,
+                    Instant::now() + Duration::from_millis(100),
+                )
+                .context("detach native client")
+                .non_fatal();
+            sender
+                .shutdown()
+                .context("close native connection")
+                .non_fatal();
+        }
+    }
+}
+
+fn read_session(
+    mut reader: yinz_ipc::ipc::IpcReceiverWithContext<ServerToClientMsg>,
+    tx: mpsc::SyncSender<ServerToClientMsg>,
+    wake: impl Fn() -> bool,
+) {
+    while let Some((message, _)) = reader.recv_server_msg().msg() {
+        if tx.send(message).is_err() || !wake() {
+            return;
+        }
+    }
+    drop(tx);
+    wake();
+}
+
+struct PendingSwitch {
+    id: u64,
+    deadline: Instant,
+    destination: String,
+    opening: Option<Receiver<Result<(String, AttachedSender)>>>,
+    sender: Option<AttachedSender>,
+    messages: Receiver<ServerToClientMsg>,
+    mouse_mode: bool,
+    reload: bool,
+}
+
+struct SwitchFrame {
+    state: TerminalState,
+    frame: Vec<u8>,
+    applied: FrameApplied,
+}
+
+impl PendingSwitch {
+    fn stage(
+        id: u64,
+        args: TerminalArgs,
+        opts: CliArgs,
+        size: Size,
+        target: yinz_types::data::SessionConnection,
+        destination: String,
+        wake_reader: ReaderWake,
+    ) -> Result<Self> {
+        let deadline = Instant::now() + FIRST_FRAME_TIMEOUT;
+        let (opened_tx, opened_rx) = mpsc::sync_channel(1);
+        let (tx, messages) = mpsc::sync_channel(2);
+        std::thread::Builder::new()
+            .name("native-switch-reader".into())
+            .spawn(move || {
+                let wake = || wake_reader(id);
+                match session::connect_to(&args, &opts, size, Some(&target), Some(deadline)) {
+                    Ok(connection) => {
+                        let opened = Ok((connection.name, AttachedSender(connection.sender)));
+                        if opened_tx.send(opened).is_ok() && wake() {
+                            read_session(connection.receiver, tx, wake);
+                        }
+                    },
+                    Err(error) => {
+                        if opened_tx.send(Err(error)).is_ok() {
+                            wake();
+                        }
+                    },
+                }
+            })
+            .context("start native session switch")?;
+        Ok(Self {
+            id,
+            deadline,
+            destination,
+            opening: Some(opened_rx),
+            sender: None,
+            messages,
+            mouse_mode: true,
+            reload: false,
+        })
+    }
+
+    fn check_deadline(&self, now: Instant) -> Result<()> {
+        anyhow::ensure!(
+            now < self.deadline,
+            "timed out waiting for the destination to render"
+        );
+        Ok(())
+    }
+
+    fn poll(
+        &mut self,
+        id: u64,
+        now: Instant,
+        size: Size,
+        cell: crate::text::font::CellMetrics,
+    ) -> Result<Option<SwitchFrame>> {
+        if id != self.id {
+            return Ok(None);
+        }
+        self.check_deadline(now)?;
+        if let Some(opening) = &self.opening {
+            match opening.try_recv() {
+                Ok(opened) => {
+                    let (name, sender) = opened?;
+                    self.destination = name;
+                    self.sender = Some(sender);
+                    self.opening = None;
+                },
+                Err(mpsc::TryRecvError::Empty) => {},
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    anyhow::bail!("the destination stopped opening its connection")
+                },
+            }
+            return Ok(None);
+        }
+        match receive_message(Some(&self.messages))? {
+            Some(ServerToClientMsg::RenderFrame { frame }) => {
+                let decoded = yinz_types::structured_render::decode(&frame)
+                    .map_err(|error| anyhow!("{error:?}"))
+                    .context("decode the destination's first frame")?;
+                anyhow::ensure!(
+                    decoded.header().full_repaint(),
+                    "the destination did not send a full first frame"
+                );
+                let mut state = TerminalState::new(size.rows, size.cols);
+                state.set_cell_size(cell.width, cell.height);
+                let applied = state
+                    .apply_frame(&frame)
+                    .context("apply the destination's first frame")?;
+                Ok(Some(SwitchFrame {
+                    state,
+                    frame,
+                    applied,
+                }))
+            },
+            Some(ServerToClientMsg::Exit { exit_reason }) => {
+                anyhow::bail!("the destination exited before rendering: {exit_reason}")
+            },
+            Some(ServerToClientMsg::SetMouseMode { enabled }) => {
+                self.mouse_mode = enabled;
+                Ok(None)
+            },
+            Some(ServerToClientMsg::ConfigFileUpdated) => {
+                self.reload = true;
+                Ok(None)
+            },
+            _ => Ok(None),
+        }
+    }
+
+    fn report_ready(&self, geometry: Option<Geometry>, focused: bool, seq: u64) -> Result<()> {
+        let sender = self
+            .sender
+            .as_ref()
+            .context("destination connection is missing")?;
+        let mut sender = sender
+            .0
+            .lock()
+            .map_err(|_| anyhow!("destination IPC sender lock poisoned"))?;
+        for message in geometry
+            .into_iter()
+            .flat_map(|geometry| geometry.messages(None))
+            .chain([
+                ClientToServerMsg::HostTerminalFocusChanged { focused },
+                ClientToServerMsg::RenderFrameAck { seq },
+            ])
+        {
+            sender
+                .send_client_msg_until(message, self.deadline)
+                .context("confirm destination connection")?;
+        }
+        sender
+            .set_send_timeout(None)
+            .context("restore native sender timeout")
+    }
+}
+
+fn switch_notice(destination: &str, error: &anyhow::Error) -> String {
+    format!(
+        "Could not switch to {destination}. Esc dismisses.\nFix the reported input or remove the optional swap, then retry the switch.\n{error:#}"
+    )
+}
+
 fn load_native_config(opts: &CliArgs) -> Result<(Config, Options)> {
     yinz_cli::setup::Setup::native_window_config(opts).map_err(|error| {
         let detail = error.diagnostic_message();
@@ -135,68 +340,24 @@ fn load_native_config(opts: &CliArgs) -> Result<(Config, Options)> {
 }
 
 pub fn run(args: TerminalArgs, opts: CliArgs) -> Result<()> {
-    let (config, options) = load_native_config(&opts).context("load native settings")?;
-    let event_loop = EventLoop::<()>::with_user_event()
+    let config = load_native_config(&opts).context("load native settings")?;
+    let event_loop = EventLoop::<u64>::with_user_event()
         .build()
         .context("initialize native event loop")?;
-    let recorder = Recorder::new(args.record.as_deref())?;
-    let active_fonts = effective_font_options(&config.terminal, 1.0, 1.0);
-    let fonts = active_fonts
-        .stack(1.0)
-        .context("load native terminal fonts")?;
-    let now = Instant::now();
-    let paints = paints_for(&config, &options);
-    let mut app = App {
-        surfaces: None,
-        proxy: event_loop.create_proxy(),
-        state: TerminalState::new(args.rows as usize, args.cols as usize),
+    let proxy = event_loop.create_proxy();
+    let mut app = App::new(
         args,
         opts,
-        settings: config.terminal,
-        paints,
-        cache: GlyphCache::new(fonts),
-        active_fonts,
-        reported_geometry: None,
-        retained: RetainedScene::new(),
-        sender: None,
-        messages: None,
-        recorder,
-        clipboard: std::sync::Arc::new(std::sync::Mutex::new(Clipboard::open())),
-        modifiers: ModifiersState::empty(),
-        alt_keys: keyboard::AltKeys::default(),
-        composition: Composition::new(),
-        pointer: (0.0, 0.0),
-        scroll: ScrollAccumulator::default(),
-        buttons: (false, false, false),
-        selection: LocalSelection::default(),
-        mouse_mode: true,
-        focused: true,
-        pacer: Pacer::new(None),
-        blink: BlinkPhase::On,
-        next_blink: now + Duration::from_millis(500),
-        scale: 1.0,
-        zoom: 1.0,
-        received_frame: false,
-        started: now,
-        error: None,
-    };
+        config,
+        Arc::new(move |id| proxy.send_event(id).is_ok()),
+        Clipboard::open,
+    )?;
     // A bounded queue holds at most two messages between IPC and the window thread.
     // The event proxy only wakes the loop; frames remain in this bounded queue.
-    let proxy = event_loop.create_proxy();
-    app.open_connection(proxy)?;
+    app.open_connection()?;
     event_loop
         .run_app(&mut app)
         .context("run native event loop")?;
-    app.messages.take();
-    if let Some(sender) = &app.sender {
-        session::send(sender, ClientToServerMsg::ClientExited).non_fatal();
-        if let Ok(sender) = sender.lock() {
-            sender
-                .shutdown()
-                .context("close native session connection")
-                .non_fatal();
-        }
-    }
     match app.error {
         Some(error) => Err(error),
         None => Ok(()),
@@ -522,7 +683,7 @@ fn receive_message(
             Ok(None)
         },
         Some(Ok(ServerToClientMsg::Exit {
-            exit_reason: yinz_ipc::ipc::ExitReason::Error(message),
+            exit_reason: ExitReason::Error(message),
         })) => anyhow::bail!("{message}"),
         Some(Ok(message)) => Ok(Some(message)),
         Some(Err(mpsc::TryRecvError::Disconnected)) => {
@@ -533,7 +694,61 @@ fn receive_message(
 }
 
 impl App {
-    fn open_connection(&mut self, proxy: winit::event_loop::EventLoopProxy<()>) -> Result<()> {
+    fn new(
+        args: TerminalArgs,
+        opts: CliArgs,
+        (config, options): (Config, Options),
+        wake_reader: ReaderWake,
+        clipboard: impl FnOnce() -> Clipboard,
+    ) -> Result<Self> {
+        let recorder = Recorder::new(args.record.as_deref())?;
+        let active_fonts = effective_font_options(&config.terminal, 1.0, 1.0);
+        let fonts = active_fonts
+            .stack(1.0)
+            .context("load native terminal fonts")?;
+        let now = Instant::now();
+        let paints = paints_for(&config, &options);
+        Ok(Self {
+            surfaces: None,
+            wake_reader,
+            state: TerminalState::new(args.rows as usize, args.cols as usize),
+            args,
+            opts,
+            settings: config.terminal,
+            paints,
+            cache: GlyphCache::new(fonts),
+            active_fonts,
+            reported_geometry: None,
+            retained: RetainedScene::new(),
+            sender: None,
+            messages: None,
+            connection_id: 0,
+            next_connection_id: 1,
+            pending_switch: None,
+            switch_notice: None,
+            recorder,
+            clipboard: Arc::new(Mutex::new(clipboard())),
+            modifiers: ModifiersState::empty(),
+            alt_keys: keyboard::AltKeys::default(),
+            composition: Composition::new(),
+            pointer: (0.0, 0.0),
+            scroll: ScrollAccumulator::default(),
+            buttons: (false, false, false),
+            selection: LocalSelection::default(),
+            mouse_mode: true,
+            focused: true,
+            pacer: Pacer::new(None),
+            blink: BlinkPhase::On,
+            next_blink: now + Duration::from_millis(500),
+            scale: 1.0,
+            zoom: 1.0,
+            received_frame: false,
+            started: now,
+            error: None,
+        })
+    }
+
+    fn open_connection(&mut self) -> Result<()> {
         let connection = session::connect(
             &self.args,
             &self.opts,
@@ -543,33 +758,29 @@ impl App {
             },
         )?;
         let (tx, rx) = mpsc::sync_channel(2);
-        let mut reader = connection.receiver;
+        let sender = AttachedSender(connection.sender);
+        let wake_reader = self.wake_reader.clone();
+        let id = self.connection_id;
         std::thread::Builder::new()
             .name("native-session-reader".into())
             .spawn(move || {
-                while let Some((message, _)) = reader.recv_server_msg().msg() {
-                    if tx.send(message).is_err() || proxy.send_event(()).is_err() {
-                        return;
-                    }
-                }
-                drop(tx);
-                let _ = proxy.send_event(());
+                read_session(connection.receiver, tx, || wake_reader(id));
             })
             .context("spawn native session reader")?;
-        self.sender = Some(connection.sender);
+        self.sender = Some(sender);
         self.args.session_name = Some(connection.name);
         self.messages = Some(rx);
         Ok(())
     }
     fn send(&self, message: ClientToServerMsg) -> Result<()> {
         if let Some(sender) = &self.sender {
-            session::send(sender, message)?;
+            session::send(&sender.0, message)?;
         }
         Ok(())
     }
     fn action(&self, action: Action) -> Result<()> {
         if let Some(sender) = &self.sender {
-            session::action(sender, action)?;
+            session::action(&sender.0, action)?;
         }
         Ok(())
     }
@@ -714,16 +925,11 @@ impl App {
         self.refresh_geometry()
     }
     fn refresh_geometry(&mut self) -> Result<()> {
-        let Some(surfaces) = &self.surfaces else {
+        let Some(geometry) = self.geometry() else {
             return Ok(());
         };
-        let size = surfaces.window.inner_size();
-        let metrics = self.cache.metrics();
-        let Some(geometry) = Geometry::calculate(size.width, size.height, self.padding(), metrics)
-        else {
-            return Ok(());
-        };
-        self.state.set_cell_size(metrics.width, metrics.height);
+        self.state
+            .set_cell_size(geometry.cell.width as u32, geometry.cell.height as u32);
         for message in geometry.messages(self.reported_geometry) {
             if let ClientToServerMsg::TerminalResize { new_size } = &message {
                 self.selection
@@ -734,6 +940,15 @@ impl App {
         self.reported_geometry = Some(geometry);
         self.pacer.schedule();
         Ok(())
+    }
+    fn geometry(&self) -> Option<Geometry> {
+        let size = self.surfaces.as_ref()?.window.inner_size();
+        Geometry::calculate(
+            size.width,
+            size.height,
+            self.padding(),
+            self.cache.metrics(),
+        )
     }
     fn padding(&self) -> u32 {
         (self.settings.padding.unwrap_or(0.0) as f64 * self.scale).round() as u32
@@ -808,77 +1023,12 @@ impl App {
                     .apply_frame(&mut self.state, &frame)
                     .context("apply native render frame")?;
                 self.recorder.frame(&frame)?;
-                self.received_frame = true;
-                self.retained.mark(&applied.damage);
                 self.send(ClientToServerMsg::RenderFrameAck { seq: applied.seq })?;
-                if let Some(title) = self.state.take_title()
-                    && let Some(surfaces) = &self.surfaces
-                {
-                    surfaces
-                        .window
-                        .set_title(title.as_deref().unwrap_or("Yinz"));
-                }
-                if self.state.take_bells() > 0
-                    && let Some(surfaces) = &self.surfaces
-                {
-                    surfaces.window.request_user_attention(Some(
-                        winit::window::UserAttentionType::Informational,
-                    ));
-                }
-                if let Some(text) = self.state.take_copied_text() {
-                    self.set_clipboard(text);
-                }
-                self.pacer.schedule();
+                self.present_frame(applied);
             },
             ServerToClientMsg::Exit { .. } => event_loop.exit(),
             ServerToClientMsg::SwitchSession { connect_to_session } => {
-                // Reuse this window and its GPU resources for the new session.
-                if let Some(sender) = &self.sender {
-                    session::send(sender, ClientToServerMsg::ClientExited).non_fatal();
-                    if let Ok(sender) = sender.lock() {
-                        sender
-                            .shutdown()
-                            .context("close previous native connection")
-                            .non_fatal();
-                    }
-                }
-                self.messages.take();
-                self.args.create = true;
-                let connection = session::connect_to(
-                    &self.args,
-                    &self.opts,
-                    Size {
-                        rows: self.state.size().rows,
-                        cols: self.state.size().cols,
-                    },
-                    Some(&connect_to_session),
-                )?;
-                self.sender = Some(connection.sender);
-                let (tx, rx) = mpsc::sync_channel(2);
-                let proxy = self.proxy.clone();
-                let mut reader = connection.receiver;
-                std::thread::Builder::new()
-                    .name("native-session-reader".into())
-                    .spawn(move || {
-                        while let Some((message, _)) = reader.recv_server_msg().msg() {
-                            if tx.send(message).is_err() || proxy.send_event(()).is_err() {
-                                break;
-                            }
-                        }
-                        drop(tx);
-                        let _ = proxy.send_event(());
-                    })
-                    .context("spawn switched native reader")?;
-                self.args.session_name = Some(connection.name);
-                self.messages = Some(rx);
-                self.selection.clear();
-                self.state = TerminalState::new(self.state.size().rows, self.state.size().cols);
-                self.retained = RetainedScene::new();
-                if let Some(surfaces) = &mut self.surfaces {
-                    surfaces.renderer.clear_images();
-                }
-                self.reported_geometry = None;
-                self.refresh_geometry()?;
+                self.begin_switch(connect_to_session);
             },
             ServerToClientMsg::ClipboardUpdate { content } => {
                 if let Some(text) = crate::emulation::kitty::clipboard_update(&content) {
@@ -920,6 +1070,130 @@ impl App {
         }
         Ok(())
     }
+
+    fn present_frame(&mut self, applied: FrameApplied) {
+        self.received_frame = true;
+        self.retained.mark(&applied.damage);
+        if let Some(title) = self.state.take_title()
+            && let Some(surfaces) = &self.surfaces
+        {
+            surfaces
+                .window
+                .set_title(title.as_deref().unwrap_or("Yinz"));
+        }
+        if self.state.take_bells() > 0
+            && let Some(surfaces) = &self.surfaces
+        {
+            surfaces
+                .window
+                .request_user_attention(Some(winit::window::UserAttentionType::Informational));
+        }
+        if let Some(text) = self.state.take_copied_text() {
+            self.set_clipboard(text);
+        }
+        self.pacer.schedule();
+    }
+
+    fn begin_switch(&mut self, target: yinz_types::data::SessionConnection) {
+        if self.pending_switch.is_some() {
+            return;
+        }
+        let id = self.next_connection_id;
+        self.next_connection_id += 1;
+        let destination = target
+            .name
+            .as_ref()
+            .map_or_else(|| "a new session".to_owned(), |name| format!("{name}"));
+        if self.switch_notice.take().is_some() {
+            self.pacer.schedule();
+        }
+        match PendingSwitch::stage(
+            id,
+            self.args.clone(),
+            self.opts.clone(),
+            self.grid_size(),
+            target,
+            destination.clone(),
+            self.wake_reader.clone(),
+        ) {
+            Ok(pending) => self.pending_switch = Some(pending),
+            Err(error) => self.show_switch_notice(&destination, &error),
+        }
+    }
+
+    fn grid_size(&self) -> Size {
+        Size {
+            rows: self.state.size().rows,
+            cols: self.state.size().cols,
+        }
+    }
+
+    fn show_switch_notice(&mut self, destination: &str, error: &anyhow::Error) {
+        log::error!("could not switch native window to {destination}: {error:#}");
+        self.switch_notice = Some(switch_notice(destination, error));
+        self.pacer.schedule();
+    }
+
+    fn dismiss_switch_notice(&mut self) -> bool {
+        let had_notice = self.switch_notice.take().is_some();
+        if had_notice {
+            self.pacer.schedule();
+        }
+        had_notice
+    }
+
+    fn switch_failed(&mut self, error: &anyhow::Error) {
+        if let Some(pending) = self.pending_switch.take() {
+            self.show_switch_notice(&pending.destination, error);
+        }
+    }
+
+    fn receive_switch(&mut self, id: u64, now: Instant) -> Result<()> {
+        let size = self.grid_size();
+        let cell = self.cache.metrics();
+        let Some(pending) = &mut self.pending_switch else {
+            return Ok(());
+        };
+        let first = match pending.poll(id, now, size, cell) {
+            Ok(Some(first)) => first,
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                self.switch_failed(&error);
+                return Ok(());
+            },
+        };
+        let geometry = self.geometry();
+        let pending = self
+            .pending_switch
+            .take()
+            .context("finish pending native switch")?;
+        if let Err(error) = pending.report_ready(geometry, self.focused, first.applied.seq) {
+            self.show_switch_notice(&pending.destination, &error);
+            return Ok(());
+        }
+        self.recorder.frame(&first.frame)?;
+        self.connection_id = pending.id;
+        self.messages = Some(pending.messages);
+        self.sender = pending.sender;
+        self.args.session_name = Some(pending.destination);
+        self.selection.clear();
+        self.composition = Composition::new();
+        self.mouse_mode = pending.mouse_mode;
+        self.switch_notice = None;
+        self.reported_geometry = geometry;
+        self.state = first.state;
+        self.retained = RetainedScene::new();
+        if let Some(surfaces) = &mut self.surfaces {
+            surfaces.renderer.clear_images();
+            surfaces.window.set_title("Yinz");
+        }
+        self.present_frame(first.applied);
+        if pending.reload {
+            self.reload()?;
+        }
+        Ok(())
+    }
+
     fn draw(&mut self) -> Result<()> {
         let preedit = self.composition.shown();
         self.retained.set_selection(self.selection.range());
@@ -959,6 +1233,9 @@ impl App {
             return Ok(());
         };
         let padding = self.padding() as i32;
+        let notice = self.switch_notice.as_deref().map(|text| {
+            crate::render::scene::notice_scene(text, &mut self.cache, size, padding as u32)
+        });
         if let Some(surfaces) = &mut self.surfaces {
             surfaces.renderer.draw_retained(
                 &self.retained,
@@ -966,6 +1243,7 @@ impl App {
                 size,
                 Frame {
                     origin: (padding, padding),
+                    notice: notice.as_ref(),
                     ..Default::default()
                 },
             );
@@ -1048,6 +1326,10 @@ impl App {
                 is_synthetic: false,
                 ..
             } if event.state == ElementState::Pressed => {
+                if event.logical_key == Key::Named(NamedKey::Escape) && self.dismiss_switch_notice()
+                {
+                    return Ok(());
+                }
                 let press = keyboard::Press::of(
                     &event,
                     self.modifiers,
@@ -1274,7 +1556,7 @@ impl App {
         event_loop.exit();
     }
 }
-impl ApplicationHandler<()> for App {
+impl ApplicationHandler<u64> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.surfaces.is_none()
             && let Err(error) = self.open(event_loop)
@@ -1287,8 +1569,14 @@ impl ApplicationHandler<()> for App {
             self.fail(error, event_loop);
         }
     }
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, _: ()) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, id: u64) {
         if event_loop.exiting() {
+            return;
+        }
+        if id != self.connection_id {
+            if let Err(error) = self.receive_switch(id, Instant::now()) {
+                self.fail(error, event_loop);
+            }
             return;
         }
         // The reader posts one wake for each bounded-queue message. Handle one
@@ -1307,9 +1595,14 @@ impl ApplicationHandler<()> for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
-        if !self.received_frame && now.duration_since(self.started) >= Duration::from_secs(10) {
+        if !self.received_frame && now.duration_since(self.started) >= FIRST_FRAME_TIMEOUT {
             self.fail(anyhow!("server did not send structured rendering; restart the session with this Yinz build"),event_loop);
             return;
+        }
+        if let Some(pending) = &self.pending_switch
+            && let Err(error) = pending.check_deadline(now)
+        {
+            self.switch_failed(&error);
         }
         if self
             .args
@@ -1330,6 +1623,9 @@ impl ApplicationHandler<()> for App {
             self.pacer.schedule();
         }
         let mut wake = self.next_blink;
+        if let Some(pending) = &self.pending_switch {
+            wake = wake.min(pending.deadline);
+        }
         match redraw_decision(&self.pacer, self.surfaces.as_ref().map(Surfaces::size), now) {
             Decision::Now => {
                 if let Some(surfaces) = &self.surfaces {
@@ -1340,6 +1636,12 @@ impl ApplicationHandler<()> for App {
             Decision::Idle => {},
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
+    }
+
+    fn exiting(&mut self, _: &ActiveEventLoop) {
+        self.pending_switch.take();
+        self.messages.take();
+        self.sender.take();
     }
 }
 fn window_state_path() -> std::path::PathBuf {

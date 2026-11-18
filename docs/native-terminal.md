@@ -276,21 +276,35 @@ missing when the fragment can be validated against the built-in defaults.
 The session watcher reports unreadable configuration or layout inputs in the
 session log and retains the last working configuration. Restore the reported
 path to resume automatic reload. An optional swap layout or pane contents file
-can also be removed to use the layout's fallback. After an unreadable layout
-input, the watcher keeps retrying while you repair it, including if a replacement
-layout still has a syntax error. A successful repair applies the pending
-configuration without another edit to the main file or a drop-in.
+can also be removed to use the layout's fallback. The watcher also retries
+malformed KDL in the selected primary layout or swap layout. Correcting the
+reported layout or removing an optional swap applies the pending configuration
+without another edit to the main file or a drop-in.
 
 On a session file-update notification, each native window rereads its own
 `--config` and `--config-dir` layers. Use shared watched paths for automatic
 updates. Native configuration inputs must be
 readable regular files. Symlinks to regular files work. Startup errors appear
 on stderr. Opening or switching sessions also checks the selected layout and
-its swap and pane contents files. A `SwitchSession` keybinding gets tab metadata
-from the primary layout when available. Its swap is read only when that layout
+its swap and pane contents files. With a configured layouts directory, an
+implicit or bare built-in name such as `default` selects the built-in unless
+`default.kdl` exists in that directory. If both `default` and `default.kdl`
+exist there, the extensionless file takes precedence. Use an explicit path
+such as `./layouts/default` to select an extensionless file directly. For a
+new native session, the server checks the same selected file, swap and pane
+contents as it opens them, and reports any unusable input.
+
+A `SwitchSession` keybinding gets tab metadata from the primary layout when
+available. Its swap is read only when that layout
 is selected. If a selected input is reported as unusable, restore a readable
 regular file or remove an optional input to use the layout's fallback before
-retrying. If the window cannot read its configuration on reload, it keeps its
+retrying. A graphical native window connected to a server from the same build
+keeps its source session active until the destination supplies its first
+structured frame. If the destination fails to open or render, the window shows
+the error and keeps the source available. Press Escape to dismiss the notice.
+Correct the reported input and use the same switch action again.
+
+If the window cannot read its configuration on reload, it keeps its
 current settings and reports the error in the client log. After repairing a
 private path, reopen the window or make a valid edit to shared watched settings
 to trigger another reload.

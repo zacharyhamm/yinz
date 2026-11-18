@@ -44,13 +44,14 @@ pub fn action(sender: &Sender, action: Action) -> Result<()> {
     )
 }
 pub fn connect(args: &TerminalArgs, opts: &CliArgs, size: Size) -> Result<Connection> {
-    connect_to(args, opts, size, None)
+    connect_to(args, opts, size, None, None)
 }
 pub fn connect_to(
     args: &TerminalArgs,
     original_opts: &CliArgs,
     size: Size,
     target: Option<&yinz_types::data::SessionConnection>,
+    deadline: Option<Instant>,
 ) -> Result<Connection> {
     let sessions = yinz_session::sessions::get_sessions()
         .map_err(|error| anyhow!("list local sessions: {error:?}"))?;
@@ -60,6 +61,10 @@ pub fn connect_to(
         env,
         opening,
     } = prepare_connection(args, original_opts, size, target, &sessions)?;
+    anyhow::ensure!(
+        deadline.is_none_or(|deadline| Instant::now() < deadline),
+        "timed out preparing session {name:?}"
+    );
     let path = yinz_runtime::consts::YINZ_SOCK_DIR.join(&name);
     let stream = if new {
         std::fs::create_dir_all(&*yinz_runtime::consts::YINZ_SOCK_DIR)
@@ -75,7 +80,9 @@ pub fn connect_to(
         // The double-fork launcher can exit before the daemon binds its socket.
         connect_with_deadline(
             &path,
-            CONNECT_TO_SERVER_TIMEOUT,
+            deadline.map_or(CONNECT_TO_SERVER_TIMEOUT, |deadline| {
+                deadline.saturating_duration_since(Instant::now())
+            }),
             CONNECT_TO_SERVER_RETRY_INTERVAL,
         )
         .context("connect native client to session")?
@@ -86,14 +93,23 @@ pub fn connect_to(
     let receiver = sender
         .get_receiver()
         .context("clone native session receiver")?;
-    sender
-        .send_client_msg(opening)
-        .context("send native session handshake")?;
+    let support = ClientToServerMsg::StructuredRenderSupport { supported: true };
+    if let Some(deadline) = deadline {
+        sender
+            .send_client_msg_until(opening, deadline)
+            .context("send native session handshake")?;
+        sender
+            .send_client_msg_until(support, deadline)
+            .context("negotiate structured rendering")?;
+    } else {
+        sender
+            .send_client_msg(opening)
+            .context("send native session handshake")?;
+        sender
+            .send_client_msg(support)
+            .context("negotiate structured rendering")?;
+    }
     let sender = Arc::new(Mutex::new(sender));
-    send(
-        &sender,
-        ClientToServerMsg::StructuredRenderSupport { supported: true },
-    )?;
     Ok(Connection {
         sender,
         receiver,
@@ -101,15 +117,15 @@ pub fn connect_to(
     })
 }
 
-struct PreparedConnection {
+pub(crate) struct PreparedConnection {
     name: String,
     new: bool,
     env: EnvironmentVariables,
-    opening: ClientToServerMsg,
+    pub(crate) opening: ClientToServerMsg,
 }
 
 // Resolve and validate the handshake before spawning a server for a new or resurrected session.
-fn prepare_connection(
+pub(crate) fn prepare_connection(
     args: &TerminalArgs,
     original_opts: &CliArgs,
     size: Size,
@@ -179,9 +195,11 @@ fn prepare_connection(
         opts,
         &options,
         &config.env,
-        resurrection.or(layout),
+        layout,
+        resurrection,
         size,
         new,
+        !args.headless,
         target.and_then(|target| target.cwd.clone()).or(cwd),
     );
     if let (

@@ -110,3 +110,125 @@ fn carried_file_themes_restore_without_reading_the_theme_directory() {
     restore_themes(&mut replacement, Some(&carried), &assets).unwrap();
     assert_eq!(base(&replacement, "from-dir"), None);
 }
+
+#[test]
+fn checked_native_first_client_uses_resolved_layout() {
+    use std::fs;
+
+    let dir = tempfile::tempdir().unwrap();
+    let layouts = dir.path().join("layouts");
+    fs::create_dir(&layouts).unwrap();
+    fs::write(
+        layouts.join("default"),
+        "layout { tab name=\"Different\" { pane; }; }",
+    )
+    .unwrap();
+    let mut assets = CliAssets {
+        config_dir: Some(dir.path().into()),
+        checked_native_layout: true,
+        layout: Some(LayoutInfo::BuiltIn("default".into())),
+        ..Default::default()
+    };
+    assert_eq!(
+        load_config_and_layout(&assets).unwrap().1,
+        crate::layout::default_layout_asset()
+    );
+    assets.layout = Some(LayoutInfo::Stringified(
+        "layout { tab name=\"Inline\" { pane; }; }\nterminal { underline_thickness 4; }".into(),
+    ));
+    let (config, layout) = load_config_and_layout(&assets).unwrap();
+    assert_eq!(layout.tabs()[0].0.as_deref(), Some("Inline"));
+    assert_eq!(config.terminal.underline_thickness, Some(4));
+
+    // A user layout selected by the checked resolver may have the same
+    // basename as a checkpoint without being part of one.
+    let name = yinz_runtime::session_checkpoint::LAYOUT;
+    let primary = dir.path().join(name);
+    fs::write(&primary, "layout { tab name=\"User layout\" { pane; }; }").unwrap();
+    fs::write(dir.path().join("current"), "").unwrap();
+    let requested = primary.with_extension("missing");
+    let (identity, _) = crate::config::load_checked_layout_and_config(
+        None,
+        Config::default(),
+        None,
+        None,
+        None,
+        Some(&requested),
+        dir.path().into(),
+    )
+    .unwrap();
+    assets.layout = identity;
+    let (_, layout) = load_config_and_layout(&assets).unwrap();
+    assert_eq!(layout.tabs()[0].0.as_deref(), Some("User layout"));
+}
+
+#[cfg(unix)]
+#[test]
+fn checked_native_first_client_refuses_replaced_layout() {
+    use std::{fs, os::unix::fs::symlink};
+
+    let dir = tempfile::tempdir().unwrap();
+    let primary = dir.path().join("selected");
+    let fallback = primary.with_extension("kdl");
+    for path in [&primary, &fallback] {
+        fs::write(path, "layout { pane; }").unwrap();
+    }
+    let (layout, _) = crate::config::load_checked_layout_and_config(
+        None,
+        Config::default(),
+        None,
+        None,
+        None,
+        Some(&primary),
+        dir.path().into(),
+    )
+    .unwrap();
+    let mut assets = CliAssets {
+        layout,
+        checked_native_layout: true,
+        ..Default::default()
+    };
+    fs::remove_file(&primary).unwrap();
+    let error = load_config_and_layout(&assets).unwrap_err().to_string();
+    assert!(error.contains(primary.to_str().unwrap()), "{error}");
+    // The ordinary loader still permits the extension fallback.
+    assets.checked_native_layout = false;
+    assert!(load_config_and_layout(&assets).is_ok());
+
+    assets.checked_native_layout = true;
+    let pipe = dir.path().join("pipe");
+    let pipe_name = std::ffi::CString::new(pipe.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(pipe_name.as_ptr(), 0o600) }, 0);
+    symlink(&pipe, &primary).unwrap();
+    let assert_refusal = |path: &std::path::Path| {
+        let error = load_config_and_layout(&assets).unwrap_err().to_string();
+        assert!(error.contains(path.to_str().unwrap()), "{error}");
+        assert!(error.contains("not a regular file"), "{error}");
+    };
+    assert_refusal(&primary);
+    fs::remove_file(&primary).unwrap();
+    fs::write(&primary, "layout { pane contents_file=\"preview\"; }").unwrap();
+    let swap = primary.with_extension("swap.kdl");
+    symlink(&pipe, &swap).unwrap();
+    assert_refusal(&swap);
+    fs::remove_file(&swap).unwrap();
+    let preview = dir.path().join("preview");
+    symlink(&pipe, &preview).unwrap();
+    assert_refusal(&preview);
+    fs::remove_file(&preview).unwrap();
+    fs::write(&preview, "beside the symlink").unwrap();
+    let elsewhere = dir.path().join("real");
+    fs::create_dir(&elsewhere).unwrap();
+    fs::write(elsewhere.join("preview"), "beside the target").unwrap();
+    fs::write(
+        elsewhere.join("source.kdl"),
+        "layout { tab name=\"Symlink\" { pane contents_file=\"preview\"; }; }",
+    )
+    .unwrap();
+    fs::remove_file(&primary).unwrap();
+    symlink(elsewhere.join("source.kdl"), &primary).unwrap();
+    let (_, layout) = load_config_and_layout(&assets).unwrap();
+    let tab = &layout.tabs()[0];
+    assert_eq!(tab.0.as_deref(), Some("Symlink"));
+    assert!(format!("{:?}", tab.1).contains("beside the symlink"));
+}

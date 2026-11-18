@@ -16,6 +16,7 @@ use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TabNumber;
 use yinz_types::keys::{BareKey, KeyModifier, KeyWithModifier};
 use yinz_types::mouse::{MouseEvent, MouseEventType};
+
 use yinz_types::pane_size::{Size, SizeInPixels};
 use yinz_types::position::Position;
 use yinz_types::style::HostTerminalThemeMode;
@@ -54,6 +55,40 @@ use {
 };
 
 const ROUNDTRIP_TEST_STACK_SIZE: usize = 32 * 1024 * 1024;
+
+#[test]
+fn native_handoff_capabilities_roundtrip_and_default_off() {
+    use crate::client_server_contract::client_server_contract::CliAssets as ProtoCliAssets;
+
+    for (checked_native_layout, retains_source_on_switch) in
+        [(true, false), (false, true), (true, true)]
+    {
+        let assets = CliAssets {
+            checked_native_layout,
+            retains_source_on_switch,
+            ..Default::default()
+        };
+        let wire = ProtoCliAssets::from(assets.clone()).encode_to_vec();
+        assert_eq!(
+            CliAssets::try_from(ProtoCliAssets::decode(wire.as_slice()).unwrap()).unwrap(),
+            assets
+        );
+    }
+    let legacy = ProtoCliAssets::from(CliAssets::default()).encode_to_vec();
+    assert!(!legacy
+        .windows(2)
+        .any(|tag| matches!(tag, [0xb8, 1] | [0xc0, 1])));
+    let decoded = CliAssets::try_from(ProtoCliAssets::decode(legacy.as_slice()).unwrap()).unwrap();
+    assert!(!decoded.checked_native_layout);
+    assert!(!decoded.retains_source_on_switch);
+    let mut json = serde_json::to_value(decoded).unwrap();
+    let fields = json.as_object_mut().unwrap();
+    fields.remove("checked_native_layout");
+    fields.remove("retains_source_on_switch");
+    let legacy: CliAssets = serde_json::from_value(json).unwrap();
+    assert!(!legacy.checked_native_layout);
+    assert!(!legacy.retains_source_on_switch);
+}
 
 #[test]
 fn client_ids_preserve_detach_bytes() {
@@ -807,6 +842,8 @@ fn test_client_messages() {
             supports_session_requests: true,
             supports_in_place_update: true,
             supports_source_update: true,
+            checked_native_layout: false,
+            retains_source_on_switch: false,
             update_target: None,
             update_source_session: None,
             update_configuration: None,
@@ -835,6 +872,8 @@ fn test_client_messages() {
             supports_session_requests: true,
             supports_in_place_update: true,
             supports_source_update: true,
+            checked_native_layout: false,
+            retains_source_on_switch: false,
             update_target: None,
             update_source_session: None,
             update_configuration: None,
@@ -933,6 +972,8 @@ fn test_client_messages() {
             supports_session_requests: true,
             supports_in_place_update: true,
             supports_source_update: true,
+            checked_native_layout: false,
+            retains_source_on_switch: false,
             update_target: None,
             update_source_session: None,
             update_configuration: None,

@@ -1144,3 +1144,86 @@ fn a_rejected_attachment_leaves_other_attached_clients_alone() {
         .is_none());
     assert_eq!(&*capture.removed_clients.lock(), &[attaching]);
 }
+
+#[test]
+fn native_switch_retains_source_until_client_exits() {
+    let AttachingClient {
+        session,
+        state,
+        client,
+        ..
+    } = detached_session_with_attaching_client();
+    state.write().unwrap().update_client_assets.insert(
+        client,
+        CliAssets {
+            retains_source_on_switch: true,
+            ..Default::default()
+        },
+    );
+    let capture = crate::capturing_os::CapturingOs::default();
+    let mut os: Box<dyn ServerOsApi> = Box::new(capture.clone());
+    let target = yinz_types::data::SessionConnection {
+        name: Some("destination".into()),
+        ..Default::default()
+    };
+    handoff_session_switch(client, target.clone(), &mut os, &state, &session).unwrap();
+    assert!(matches!(
+        capture.server_to_client_messages.lock().get(&client).unwrap().last(),
+        Some(ServerToClientMsg::SwitchSession { connect_to_session }) if *connect_to_session == target
+    ));
+    assert!(state.read().unwrap().is_interactive(&client));
+    assert!(capture.removed_clients.lock().is_empty());
+    // The router translates ClientExited into normal attachment removal.
+    remove_client_and_flush_forwards(client, &mut os, &state, &session).unwrap();
+    assert!(!state.read().unwrap().is_interactive(&client));
+    assert_eq!(&*capture.removed_clients.lock(), &[client]);
+
+    let AttachingClient {
+        session,
+        state,
+        client,
+        ..
+    } = detached_session_with_attaching_client();
+    state.write().unwrap().update_client_assets.insert(
+        client,
+        CliAssets {
+            retains_source_on_switch: true,
+            ..Default::default()
+        },
+    );
+    let mut capture = crate::capturing_os::CapturingOs::default();
+    capture.fail_client = Some(client);
+    let mut os: Box<dyn ServerOsApi> = Box::new(capture.clone());
+    handoff_session_switch(client, target, &mut os, &state, &session).unwrap();
+    assert!(!state.read().unwrap().is_interactive(&client));
+    assert_eq!(&*capture.removed_clients.lock(), &[client]);
+}
+
+#[test]
+fn ordinary_switch_retires_source_on_handoff() {
+    let AttachingClient {
+        session,
+        state,
+        client,
+        ..
+    } = detached_session_with_attaching_client();
+    state
+        .write()
+        .unwrap()
+        .update_client_assets
+        .insert(client, CliAssets::default());
+    let capture = crate::capturing_os::CapturingOs::default();
+    let mut os: Box<dyn ServerOsApi> = Box::new(capture.clone());
+    handoff_session_switch(client, Default::default(), &mut os, &state, &session).unwrap();
+    assert!(matches!(
+        capture
+            .server_to_client_messages
+            .lock()
+            .get(&client)
+            .unwrap()
+            .last(),
+        Some(ServerToClientMsg::SwitchSession { .. })
+    ));
+    assert!(!state.read().unwrap().is_interactive(&client));
+    assert_eq!(&*capture.removed_clients.lock(), &[client]);
+}

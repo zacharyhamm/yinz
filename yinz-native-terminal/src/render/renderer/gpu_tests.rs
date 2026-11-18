@@ -187,6 +187,10 @@ fn draw_and_read(
     target: (u32, u32),
 ) -> Vec<u8> {
     renderer.draw_retained(retained, atlases, target, Frame::default());
+    read_framebuffer(renderer)
+}
+
+fn read_framebuffer(renderer: &Renderer) -> Vec<u8> {
     let mut pixels = vec![0; 768 * 384 * 4];
     unsafe {
         renderer.gl.read_pixels(
@@ -200,6 +204,67 @@ fn draw_and_read(
         );
     }
     pixels
+}
+
+#[test]
+fn native_switch_notice_draws_and_dismisses_over_source_content() {
+    use crate::emulation::selection::Selection;
+    use crate::render::scene::notice_scene;
+    use crate::testing::painter::{residency, Painter, Place};
+    use crate::text::font::FontOptions;
+
+    with_renderer(|renderer| {
+        let original = [0, 255, 0, 255];
+        let state = Painter::state(5, 48, |p| {
+            p.text(0, 4, "source content");
+            p.graphics(&[
+                residency(1, 8, 8, original),
+                Place::of(1, 8, 8).depth(1).record(),
+            ]);
+        });
+        let selection = Selection::at(0, 4).extended_to(0, 9);
+        let copied = selection.text(state.screen());
+        let mut cache = fixture_cache(&FontOptions::default());
+        let mut retained = RetainedScene::new();
+        retained.set_selection(Some(selection));
+        let baseline = font_pixels(renderer, &mut retained, &state, &mut cache);
+        assert_eq!(baseline_offset_atlas_retry_pixel(&baseline, 1, 1), original);
+        let target = (768, 384);
+        let notice = notice_scene(
+            "Could not switch to destination. Esc dismisses.\nFix /work/layout.swap.kdl and retry.",
+            &mut cache,
+            target,
+            0,
+        );
+        assert!(!notice.glyphs.is_empty());
+        renderer.draw_retained(
+            &retained,
+            cache.atlases(),
+            target,
+            Frame {
+                notice: Some(&notice),
+                ..Default::default()
+            },
+        );
+        let shown = read_framebuffer(renderer);
+        assert_eq!(
+            baseline_offset_atlas_retry_pixel(&shown, 1, 1),
+            [35, 29, 23, 255]
+        );
+        let panel = notice.rects[0];
+        let text_ink = (2..panel.height - 2).any(|y| {
+            (2..panel.width - 2).any(|x| {
+                let [r, _, _, _] = baseline_offset_atlas_retry_pixel(&shown, x, y);
+                r > 100
+            })
+        });
+        assert!(text_ink, "the notice panel must contain visible text ink");
+        assert_eq!(selection.text(state.screen()), copied);
+        assert_eq!(
+            draw_and_read(renderer, &retained, cache.atlases(), target),
+            baseline
+        );
+    });
 }
 
 #[test]

@@ -95,11 +95,12 @@ pub fn load_config_and_layout(assets: &CliAssets) -> anyhow::Result<(Config, Lay
                     .or_else(find_default_config_dir)
                     .map(|dir| dir.join("layouts"))
             });
-        // Resurrection paths cross IPC before they are opened. Resolve and lock
-        // the checkpoint here, where parsing also opens its pane-content files.
+        // Resurrection uses the existing checkpoint handoff. A checked native
+        // layout carries a selected file, even if it has the checkpoint's basename.
         let checkpoint = match assets.layout.as_ref() {
             Some(LayoutInfo::File(path, _))
-                if std::path::Path::new(path).is_absolute()
+                if !assets.checked_native_layout
+                    && std::path::Path::new(path).is_absolute()
                     && std::path::Path::new(path).file_name()
                         == Some(std::ffi::OsStr::new(
                             yinz_runtime::session_checkpoint::LAYOUT,
@@ -122,6 +123,15 @@ pub fn load_config_and_layout(assets: &CliAssets) -> anyhow::Result<(Config, Lay
                 )
                 .map_err(|error| anyhow::anyhow!("failed to parse checkpoint layout: {error}"))?,
             )
+        } else if assets.checked_native_layout {
+            assets
+                .layout
+                .as_ref()
+                .map(|identity| {
+                    crate::layout::reopen_checked_native_layout(identity, config.clone())
+                        .map_err(|error| anyhow::anyhow!("{}", error.diagnostic_message()))
+                })
+                .transpose()?
         } else {
             assets.layout.as_ref().and_then(|layout_info| {
                 crate::layout::from_layout_info_with_config(

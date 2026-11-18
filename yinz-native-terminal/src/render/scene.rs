@@ -89,6 +89,100 @@ impl RowScene {
     }
 }
 
+pub(crate) fn notice_scene(
+    text: &str,
+    cache: &mut GlyphCache,
+    target: (u32, u32),
+    padding: u32,
+) -> RowScene {
+    use unicode_width::UnicodeWidthChar;
+
+    let metrics = cache.metrics();
+    let inset = metrics.stroke.max(2);
+    let available = |pixels: u32| pixels.saturating_sub(2 * (padding + inset));
+    let columns = (available(target.0) / metrics.width.max(1)).min(100);
+    let rows = (available(target.1) / metrics.height.max(1)).min(12);
+    let mut scene = RowScene::default();
+    if columns < 2 || rows == 0 {
+        return scene;
+    }
+    let background = [35, 29, 23];
+    let foreground = [255, 232, 200];
+    let paint = CellPaint {
+        foreground,
+        background,
+        tint: OPAQUE,
+        style: FaceStyle::Regular,
+        draw_glyph: true,
+        hidden: false,
+    };
+    let (mut row, mut column, mut used_columns) = (0, 0, 0);
+    for character in text.chars() {
+        if character == '\n' {
+            row += 1;
+            column = 0;
+            if row == rows {
+                break;
+            }
+            continue;
+        }
+        let width = character.width().unwrap_or(1).clamp(1, 2) as u32;
+        if column + width > columns {
+            row += 1;
+            column = 0;
+            if row == rows {
+                break;
+            }
+        }
+        let cell = RowCell {
+            cell: WireCell {
+                ch: character as u32,
+                width: width as u8,
+                ..WireCell::BLANK
+            },
+            occupancy: if width == 2 {
+                Occupancy::WideHead
+            } else {
+                Occupancy::Single
+            },
+            paint,
+            explicit_background: false,
+            on_cursor: false,
+            inverted_by_cursor: false,
+            composing: false,
+            held: false,
+            cluster: false,
+            continuation: false,
+            complex: false,
+            unit_end: 0,
+        };
+        push_glyphs(
+            &mut scene,
+            cache,
+            &cell,
+            (
+                (inset + column * metrics.width) as i32,
+                (inset + row * metrics.height) as i32,
+            ),
+            metrics,
+            0,
+        );
+        column += width;
+        used_columns = used_columns.max(column);
+    }
+    scene.rects.insert(
+        0,
+        Rect {
+            x: 0,
+            y: 0,
+            width: used_columns * metrics.width + 2 * inset,
+            height: (row + 1).min(rows) * metrics.height + 2 * inset,
+            color: background,
+        },
+    );
+    scene
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct CellPaint {
     foreground: Srgb,

@@ -29,6 +29,12 @@ pub struct CliAssets {
     /// Source artifact transfers and running-image identity are supported by this client.
     #[serde(default)]
     pub supports_source_update: bool,
+    /// The native client resolved its layout identity with checked reads.
+    #[serde(default)]
+    pub checked_native_layout: bool,
+    /// This graphical client detaches itself after its destination has rendered.
+    #[serde(default)]
+    pub retains_source_on_switch: bool,
     /// Private replacement server bootstrap; ordinary clients must leave this absent.
     #[serde(default)]
     pub update_target: Option<String>,

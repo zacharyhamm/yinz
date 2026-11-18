@@ -690,6 +690,33 @@ macro_rules! send_to_client {
     };
 }
 
+fn handoff_session_switch(
+    client_id: ClientId,
+    connect_to_session: yinz_types::data::SessionConnection,
+    os_input: &mut Box<dyn ServerOsApi>,
+    session_state: &Arc<RwLock<SessionState>>,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+) -> Result<()> {
+    let retain_source = session_state
+        .read()
+        .to_anyhow()
+        .context("read switch client capabilities")?
+        .update_client_assets
+        .get(&client_id)
+        .is_some_and(|assets| assets.retains_source_on_switch);
+    send_to_client!(
+        client_id,
+        *os_input,
+        ServerToClientMsg::SwitchSession { connect_to_session },
+        session_state,
+        session_data
+    );
+    if !retain_source {
+        remove_client!(client_id, *os_input, session_state, session_data);
+    }
+    Ok(())
+}
+
 /// Forward a plugin's session request to its acting client. A client that has left, or that
 /// predates session requests and would discard one unread, is never sent it: the plugin gets
 /// the reason at once instead of waiting out its timeout.
@@ -1375,19 +1402,20 @@ pub fn start_server_impl(
                     }) {
                         Ok(config_and_layout) => config_and_layout,
                         Err(error) => {
+                            let failure = if cli_assets.checked_native_layout {
+                                "failed to load native session configuration and layout"
+                            } else {
+                                "failed to load session checkpoint"
+                            };
                             let _ = os_input.send_to_client(
                                 client_id,
                                 ServerToClientMsg::Exit {
-                                    exit_reason: ExitReason::Error(format!(
-                                        "failed to load session checkpoint: {error:#}"
-                                    )),
+                                    exit_reason: ExitReason::Error(format!("{failure}: {error:#}")),
                                 },
                             );
-                            Err::<(), _>(error)
-                                .context("failed to load session checkpoint")
-                                .non_fatal();
+                            Err::<(), _>(error).context(failure).non_fatal();
                             remove_client!(client_id, os_input, session_state, session_data);
-                            exit_reason = "failed to load session checkpoint";
+                            exit_reason = failure;
                             break;
                         },
                     };
@@ -2464,15 +2492,14 @@ pub fn start_server_impl(
                             connect_to_session.apply_layout_dir(&layout_dir);
                         }
 
-                        send_to_client!(
+                        handoff_session_switch(
                             client_id,
-                            os_input,
-                            ServerToClientMsg::SwitchSession { connect_to_session },
-                            session_state,
-                            session_data
-                        );
-                        remove_client!(client_id, os_input, session_state, session_data);
-                        drop(completion_tx); // cleanup is queued before the action completes
+                            connect_to_session,
+                            &mut os_input,
+                            &session_state,
+                            &session_data,
+                        )?;
+                        drop(completion_tx);
                     }
                 },
                 ServerInstruction::AssociatePipeWithClient { pipe_id, client_id } => {

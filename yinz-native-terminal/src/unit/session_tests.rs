@@ -190,6 +190,7 @@ fn dead_named_sessions_prepare_a_resurrection_handshake_before_spawning() {
                 ))
             );
             assert!(!cli_assets.force_run_layout_commands);
+            assert!(!cli_assets.checked_native_layout);
             // The logical path must resolve the published checkpoint, not a flat layout file.
             let (_, layout) = yinz_config::cli_assets::load_config_and_layout(&cli_assets).unwrap();
             assert!(format!("{layout:?}").contains("hold_on_start: true"));
@@ -212,6 +213,7 @@ fn missing_checkpoints_keep_normal_new_session_behavior() {
         let ClientToServerMsg::FirstClientConnected { cli_assets } = prepared.opening else {
             panic!("expected new-session handshake");
         };
+        assert!(cli_assets.checked_native_layout);
         assert_eq!(
             cli_assets.layout,
             Some(match supplied {
@@ -361,7 +363,7 @@ fn underline_metrics_native_connection_prepares_with_unused_switch_swap() {
             _ => {},
         }
         for (switch, name, expected_layout) in [
-            (None, "startup", &startup_path),
+            (None, "startup", &startup_layout),
             (Some(&target), "target", &target_layout),
         ] {
             let prepared = prepare_connection(&args, &opts, SIZE, switch, &sessions).unwrap();
@@ -378,6 +380,7 @@ fn underline_metrics_native_connection_prepares_with_unused_switch_swap() {
             let Some(LayoutInfo::File(path, metadata)) = cli_assets.layout else {
                 panic!("expected a file layout in the {name} handshake");
             };
+            assert!(cli_assets.retains_source_on_switch);
             assert_eq!(Path::new(&path), expected_layout);
             assert_eq!(metadata.tabs.len(), 1);
             assert_eq!(
@@ -468,4 +471,99 @@ fn underline_metrics_native_connection_refuses_unusable_selected_layout_inputs()
     fs::remove_file(&contents).unwrap();
     fs::write(&contents, "preview").unwrap();
     assert!(prepare(&opts).is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn checked_native_preparation_and_server_loader_agree_on_bare_default() {
+    use std::{fs, process::Command};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let layouts = root.join("layouts");
+    fs::create_dir(&layouts).unwrap();
+    let main = root.join("config.kdl");
+    fs::write(
+        &main,
+        "terminal { underline_thickness 2; }\npane_frames true",
+    )
+    .unwrap();
+    let collision = layouts.join("default");
+    let kdl = collision.with_extension("kdl");
+    let args = TerminalArgs {
+        create: true,
+        session_name: Some("native".into()),
+        ..Default::default()
+    };
+    let files = [(&collision, "Extensionless", 4), (&kdl, "WithExtension", 6)];
+    let write = |path: &Path, tab: &str, thickness: i32| {
+        fs::write(path, format!("layout {{ tab name=\"{tab}\" {{ pane; }}; }}\nterminal {{ underline_thickness {thickness}; }}\npane_frames false")).unwrap();
+    };
+    let opts = |layout| CliArgs {
+        config_dir: Some(root.clone()),
+        config: Some(main.clone()),
+        layout,
+        ..Default::default()
+    };
+    let prepare = |opts: &CliArgs| prepare_connection(&args, opts, SIZE, None, &[]);
+    let check = |layout, expected_file: Option<(&Path, &str, i32)>| {
+        let ClientToServerMsg::FirstClientConnected { cli_assets } =
+            prepare(&opts(layout)).unwrap().opening
+        else {
+            panic!("expected first-client handshake");
+        };
+        assert!(cli_assets.checked_native_layout);
+        assert!(cli_assets.retains_source_on_switch);
+        let (config, layout) =
+            yinz_config::cli_assets::load_config_and_layout(&cli_assets).unwrap();
+        let options = cli_assets.configuration_options.unwrap();
+        if let Some((expected_path, tab, thickness)) = expected_file {
+            let Some(LayoutInfo::File(path, metadata)) = cli_assets.layout else {
+                panic!("expected {expected_path:?}");
+            };
+            assert_eq!(Path::new(&path), expected_path);
+            assert_eq!(metadata.tabs[0].name.as_deref(), Some(tab));
+            assert_eq!(layout.tabs()[0].0.as_deref(), Some(tab));
+            assert_eq!(config.terminal.underline_thickness, Some(thickness));
+            assert_eq!(options.pane_frames, Some(false));
+        } else {
+            assert_eq!(
+                cli_assets.layout,
+                Some(LayoutInfo::BuiltIn("default".into()))
+            );
+            assert_eq!(layout, yinz_config::layout::default_layout_asset());
+            assert_eq!(config.terminal.underline_thickness, Some(2));
+            assert_eq!(options.pane_frames, Some(true));
+        }
+    };
+
+    write(files[0].0, files[0].1, files[0].2);
+    for bare in [None, Some("default".into())] {
+        check(bare, None);
+    }
+    check(
+        Some(collision.clone()),
+        Some((&collision, "Extensionless", 4)),
+    );
+    write(files[1].0, files[1].1, files[1].2);
+    check(None, Some((&collision, "Extensionless", 4)));
+    fs::remove_file(&collision).unwrap();
+    check(Some("default".into()), Some((&kdl, "WithExtension", 6)));
+    check(
+        Some(collision.with_extension("missing")),
+        Some((&kdl, "WithExtension", 6)),
+    );
+    fs::remove_file(&kdl).unwrap();
+
+    assert!(Command::new("mkfifo")
+        .arg(&collision)
+        .status()
+        .unwrap()
+        .success());
+    for bare in [None, Some("default".into())] {
+        check(bare, None);
+    }
+    let error = prepare(&opts(Some(collision.clone()))).err().unwrap();
+    assert!(format!("{error:#}").contains(collision.to_str().unwrap()));
+    assert!(format!("{error:#}").contains("not a regular file"));
 }

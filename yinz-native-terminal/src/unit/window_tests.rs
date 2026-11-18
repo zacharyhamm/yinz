@@ -92,6 +92,294 @@ fn normal_exit_is_forwarded_to_the_window() {
     ));
 }
 
+#[cfg(unix)]
+fn switch_peer() -> (
+    AttachedSender,
+    yinz_ipc::ipc::IpcReceiverWithContext<ClientToServerMsg>,
+) {
+    use interprocess::os::unix::uds_local_socket::Stream;
+    let (local, peer) = std::os::unix::net::UnixStream::pair().unwrap();
+    let local = yinz_ipc::ipc::IpcSenderWithContext::new(Stream::from(local).into());
+    let peer = yinz_ipc::ipc::IpcReceiverWithContext::new(Stream::from(peer).into());
+    peer.set_recv_timeout(Some(Duration::from_secs(3))).unwrap();
+    (AttachedSender(Arc::new(Mutex::new(local))), peer)
+}
+
+#[cfg(unix)]
+fn switch_app(opts: CliArgs) -> App {
+    let args = TerminalArgs {
+        session_name: Some("source".into()),
+        rows: 2,
+        cols: 18,
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.terminal.system_fonts = Some(false);
+    let mut app = App::new(
+        args,
+        opts,
+        (config, Options::default()),
+        Arc::new(|_| true),
+        Clipboard::in_memory,
+    )
+    .unwrap();
+    crate::testing::painter::Painter::apply(&mut app.state, |p| p.text(0, 0, "source content"));
+    app.selection.start(0, 0);
+    app.selection.extend(0, 5);
+    app.received_frame = true;
+    app
+}
+
+#[cfg(unix)]
+fn stage_test_switch(
+    app: &mut App,
+    id: u64,
+    now: Instant,
+    opened: Result<(String, AttachedSender)>,
+) -> mpsc::Sender<ServerToClientMsg> {
+    let (opening_tx, opening) = mpsc::channel();
+    opening_tx.send(opened).unwrap();
+    let (tx, messages) = mpsc::channel();
+    app.pending_switch = Some(PendingSwitch {
+        id,
+        deadline: now + FIRST_FRAME_TIMEOUT,
+        destination: "destination".into(),
+        opening: Some(opening),
+        sender: None,
+        messages,
+        mouse_mode: true,
+        reload: false,
+    });
+    tx
+}
+
+#[cfg(unix)]
+fn destination_frame() -> ServerToClientMsg {
+    use crate::testing::painter::sixel_chunk;
+    use yinz_types::structured_render::{FrameBuilder, WireCell};
+    let mut frame = FrameBuilder::new(18, 2, 9);
+    frame.set_full_repaint(true);
+    frame.push_row(
+        0,
+        0,
+        &[WireCell {
+            ch: 'D' as u32,
+            ..WireCell::BLANK
+        }],
+    );
+    frame.extend_graphics(&[sixel_chunk(
+        0,
+        1,
+        8,
+        6,
+        "\x1bP0;1;0q\"1;1;8;6#0;2;100;0;0!8~\x1b\\",
+    )]);
+    ServerToClientMsg::RenderFrame {
+        frame: frame.finish(),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn native_switch_refusal_retains_source_and_supports_retry() {
+    use std::fs;
+    use yinz_types::{
+        data::{LayoutInfo, SessionConnection},
+        internal_ids::TabNumber,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let main = root.join("config.kdl");
+    fs::write(&main, "terminal { system_fonts false; }").unwrap();
+    let layout = root.join("selected.kdl");
+    fs::write(&layout, "layout { pane; }").unwrap();
+    let swap = layout.with_extension("swap.kdl");
+    fs::create_dir(&swap).unwrap();
+    let opts = CliArgs {
+        config: Some(main),
+        config_dir: Some(root),
+        ..Default::default()
+    };
+    let target = SessionConnection {
+        name: Some("destination".into()),
+        tab_position: Some(TabNumber::new(2)),
+        pane_id: Some(yinz_types::pane_id::PaneId::Terminal(
+            yinz_types::internal_ids::TerminalId::new(3),
+        )),
+        layout: Some(LayoutInfo::File(
+            layout.display().to_string(),
+            Default::default(),
+        )),
+        ..Default::default()
+    };
+    let mut app = switch_app(opts);
+    let (source, mut source_peer) = switch_peer();
+    app.sender = Some(source);
+    let saved_selection = app.selection.range();
+    let copied = app.selection.text(app.state.screen()).unwrap();
+    let prepare = || {
+        session::prepare_connection(
+            &app.args,
+            &app.opts,
+            app.grid_size(),
+            Some(&target),
+            &[("destination".into(), Duration::ZERO)],
+        )
+    };
+    let error = prepare().err().expect("directory swap is refused");
+    let now = Instant::now();
+    let _events = stage_test_switch(&mut app, 1, now, Err(error));
+    app.receive_switch(1, now).unwrap();
+    assert!(app.pending_switch.is_none());
+    let notice = app.switch_notice.as_deref().unwrap();
+    for part in [
+        "destination",
+        swap.to_str().unwrap(),
+        "not a regular file",
+        "retry",
+        "Esc",
+    ] {
+        assert!(notice.contains(part), "{notice}");
+    }
+    assert_eq!(app.args.session_name.as_deref(), Some("source"));
+    assert_eq!(app.selection.range(), saved_selection);
+    assert_eq!(
+        app.selection.text(app.state.screen()).as_deref(),
+        Some(copied.as_str())
+    );
+    assert!(app.dismiss_switch_notice());
+    assert_eq!(app.selection.range(), saved_selection);
+    app.type_text("source input".into()).unwrap();
+    assert!(
+        matches!(source_peer.recv_client_msg().msg(), Some((ClientToServerMsg::Text(text), _)) if text == "source input")
+    );
+
+    fs::remove_dir(swap).unwrap();
+    let prepared = session::prepare_connection(
+        &app.args,
+        &app.opts,
+        app.grid_size(),
+        Some(&target),
+        &[("destination".into(), Duration::ZERO)],
+    )
+    .unwrap();
+    assert!(matches!(
+        prepared.opening,
+        ClientToServerMsg::AttachClient { tab_number_to_focus, pane_to_focus, .. }
+        if tab_number_to_focus == target.tab_position && pane_to_focus == target.pane_id
+    ));
+    let (destination, mut destination_peer) = switch_peer();
+    let events = stage_test_switch(&mut app, 2, now, Ok(("destination".into(), destination)));
+    app.receive_switch(2, now).unwrap();
+    events.send(destination_frame()).unwrap();
+    app.receive_switch(2, now).unwrap();
+    assert_eq!(app.connection_id, 2);
+    assert_eq!(app.args.session_name.as_deref(), Some("destination"));
+    assert!(app.selection.range().is_none());
+    assert_eq!(app.state.screen().cell(0, 0).character(), 'D');
+    assert!(!app.state.sixels().is_empty());
+    assert!(matches!(
+        source_peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::ClientExited, _))
+    ));
+    assert!(source_peer.recv_client_msg().is_eof());
+    assert!(matches!(
+        destination_peer.recv_client_msg().msg(),
+        Some((
+            ClientToServerMsg::HostTerminalFocusChanged { focused: true },
+            _
+        ))
+    ));
+    assert!(matches!(
+        destination_peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::RenderFrameAck { seq: 9 }, _))
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn native_switch_target_failure_keeps_source_until_retry() {
+    let mut app = switch_app(CliArgs::default());
+    let (source, mut source_peer) = switch_peer();
+    app.sender = Some(source);
+    let selection = app.selection.range();
+    let now = Instant::now();
+    let (destination, mut destination_peer) = switch_peer();
+    let events = stage_test_switch(&mut app, 1, now, Ok(("destination".into(), destination)));
+    app.receive_switch(1, now).unwrap();
+    events.send(ServerToClientMsg::Exit {
+        exit_reason: ExitReason::Error("failed to load native session configuration and layout: /fixture/selected.kdl: not a regular file".into()),
+    }).unwrap();
+    app.receive_switch(1, now).unwrap();
+    assert!(app
+        .switch_notice
+        .as_deref()
+        .unwrap()
+        .contains("/fixture/selected.kdl"));
+    assert_eq!(app.selection.range(), selection);
+    assert_eq!(app.state.screen().cell(0, 0).character(), 's');
+    assert!(matches!(
+        destination_peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::ClientExited, _))
+    ));
+    assert!(destination_peer.recv_client_msg().is_eof());
+    app.type_text("still attached".into()).unwrap();
+    assert!(
+        matches!(source_peer.recv_client_msg().msg(), Some((ClientToServerMsg::Text(text), _)) if text == "still attached")
+    );
+
+    let (retry, _) = switch_peer();
+    let events = stage_test_switch(&mut app, 2, now, Ok(("destination".into(), retry)));
+    app.receive_switch(2, now).unwrap();
+    drop(events);
+    app.receive_switch(2, now).unwrap();
+    assert!(app
+        .switch_notice
+        .as_deref()
+        .unwrap()
+        .contains("closed unexpectedly"));
+    assert_eq!(app.connection_id, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn native_switch_pending_cleanup_and_stale_events() {
+    let mut app = switch_app(CliArgs::default());
+    let now = Instant::now();
+    let (source, mut source_peer) = switch_peer();
+    app.sender = Some(source);
+    let (pending, mut pending_peer) = switch_peer();
+    let stale = stage_test_switch(&mut app, 1, now, Ok(("destination".into(), pending)));
+    app.receive_switch(1, now).unwrap();
+    app.receive_switch(1, now + FIRST_FRAME_TIMEOUT).unwrap();
+    assert!(app.switch_notice.as_deref().unwrap().contains("timed out"));
+    assert!(stale.send(destination_frame()).is_err());
+    assert!(matches!(
+        pending_peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::ClientExited, _))
+    ));
+    assert!(pending_peer.recv_client_msg().is_eof());
+    assert_eq!(app.connection_id, 0);
+
+    let (pending, mut pending_peer) = switch_peer();
+    let events = stage_test_switch(&mut app, 2, now, Ok(("destination".into(), pending)));
+    app.receive_switch(2, now).unwrap();
+    events.send(destination_frame()).unwrap();
+    app.receive_switch(1, now).unwrap();
+    assert_eq!(app.connection_id, 0);
+    assert!(app.pending_switch.is_some());
+    // Dropping the window while the destination is still pending retires both peers.
+    drop(app);
+    for peer in [&mut pending_peer, &mut source_peer] {
+        assert!(matches!(
+            peer.recv_client_msg().msg(),
+            Some((ClientToServerMsg::ClientExited, _))
+        ));
+        assert!(peer.recv_client_msg().is_eof());
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn option_as_alt_preserves_each_side_and_defaults_to_none() {

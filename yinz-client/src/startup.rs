@@ -130,6 +130,8 @@ impl<'a> StartupContext<'a> {
             supports_session_requests: true,
             supports_in_place_update: true,
             supports_source_update: true,
+            checked_native_layout: false,
+            retains_source_on_switch: false,
             update_target: None,
             update_source_session: None,
             update_configuration: None,
@@ -297,18 +299,22 @@ pub fn native_first_message(
     options: &Options,
     env: &EnvironmentVariables,
     layout: Option<LayoutInfo>,
+    resurrection: Option<LayoutInfo>,
     size: Size,
     new_session: bool,
+    graphical: bool,
     cwd: Option<PathBuf>,
 ) -> ClientToServerMsg {
     let mut context = StartupContext::detached(args, options, env);
     context.terminal_window_size = size;
-    let layout = context.resolve_layout(layout, options);
-    let mut cli_assets = context.build_cli_assets(options, layout, false, cwd);
+    let checked_native_layout = new_session && resurrection.is_none();
+    let mut cli_assets = context.build_cli_assets(options, resurrection.or(layout), false, cwd);
     // Native windows do not participate in replacement of a terminal-attached process.
     cli_assets.supports_in_place_update = false;
     cli_assets.supports_source_update = false;
     cli_assets.supports_session_requests = false;
+    cli_assets.checked_native_layout = checked_native_layout;
+    cli_assets.retains_source_on_switch = graphical;
     if new_session {
         ClientToServerMsg::FirstClientConnected { cli_assets }
     } else {

@@ -168,6 +168,24 @@ pub fn from_layout_info_with_config(
 /// A layout file read to a string: `(layout path, layout text, Some((swap layout path, swap layout text)))`.
 pub type StringifiedLayout = (String, String, Option<(String, String)>);
 
+enum LayoutSource {
+    File(PathBuf),
+    BuiltIn(PathBuf),
+}
+
+impl LayoutSource {
+    fn read(&self, mode: ConfigRead) -> Result<StringifiedLayout, ConfigError> {
+        match self {
+            Self::File(path) => stringified_from_path_with(path, mode),
+            Self::BuiltIn(name) => stringified_from_default_assets(name),
+        }
+    }
+}
+
+fn is_layout_path(path: &Path) -> bool {
+    path.extension().is_some() || path.components().count() > 1
+}
+
 pub fn stringified_from_path_or_default(
     layout_path: Option<&PathBuf>,
     layout_dir: Option<PathBuf>,
@@ -185,7 +203,7 @@ pub(crate) fn stringified_from_path_or_default_with(
             // The way we determine where to look for the layout is similar to
             // how a path would look for an executable.
             // See the gh issue for more: https://github.com/zellij-org/zellij/issues/1412#issuecomment-1131559720
-            if layout_path.extension().is_some() || layout_path.components().count() > 1 {
+            if is_layout_path(layout_path) {
                 // We look localy!
                 stringified_from_path_with(layout_path, mode)
             } else {
@@ -229,6 +247,18 @@ pub(crate) fn from_path_or_default_with(
 ) -> Result<(Layout, Config), ConfigError> {
     let (path_to_raw_layout, raw_layout, raw_swap_layouts) =
         stringified_from_path_or_default_with(layout_path, layout_dir, mode)?;
+    parse_layout_and_config(
+        (path_to_raw_layout, raw_layout, raw_swap_layouts),
+        config,
+        mode,
+    )
+}
+
+fn parse_layout_and_config(
+    (path_to_raw_layout, raw_layout, raw_swap_layouts): StringifiedLayout,
+    config: Config,
+    mode: ConfigRead,
+) -> Result<(Layout, Config), ConfigError> {
     let layout = crate::kdl::layout::from_kdl_with(
         &raw_layout,
         Some(path_to_raw_layout.clone()),
@@ -249,6 +279,65 @@ pub(crate) fn from_path_or_default_with(
         Config::from_kdl(&raw_layout, Some(config))?
     };
     Ok((layout, config))
+}
+
+pub(crate) fn checked_native_layout(
+    layout: Option<&Path>,
+    layout_dir: Option<&PathBuf>,
+    cwd: &Path,
+    config: Config,
+) -> Result<(LayoutInfo, Config), ConfigError> {
+    let name = layout.unwrap_or_else(|| Path::new("default"));
+    reject_remote_layout(name)?;
+    let source = if is_layout_path(name) {
+        LayoutSource::File(cwd.join(name))
+    } else {
+        layout_source_from_dir(name, layout_dir, ConfigRead::Checked)?
+    };
+    let source = match source {
+        LayoutSource::File(path) => {
+            let absolute =
+                std::path::absolute(&path).map_err(|error| ConfigError::IoPath(error, path))?;
+            LayoutSource::File(absolute)
+        },
+        builtin => builtin,
+    };
+    let raw = source.read(ConfigRead::Checked)?;
+    let resolved_path = PathBuf::from(&raw.0);
+    let (layout, config) = parse_layout_and_config(raw, config, ConfigRead::Checked)?;
+    let identity = match source {
+        LayoutSource::BuiltIn(name) => LayoutInfo::BuiltIn(name.display().to_string()),
+        LayoutSource::File(_) => LayoutInfo::File(
+            resolved_path.display().to_string(),
+            layout_metadata(&layout, &resolved_path),
+        ),
+    };
+    Ok((identity, config))
+}
+
+pub(crate) fn reopen_checked_native_layout(
+    layout: &LayoutInfo,
+    config: Config,
+) -> Result<(Layout, Config), ConfigError> {
+    let mode = ConfigRead::Checked;
+    let raw = match layout {
+        LayoutInfo::BuiltIn(name) => stringified_from_default_assets(Path::new(name))?,
+        LayoutInfo::Stringified(text) => return from_stringified_layout_with(text, config, mode),
+        LayoutInfo::File(path, _) => {
+            let path = Path::new(path);
+            reject_remote_layout(path)?;
+            if !path.is_absolute() {
+                return Err(ConfigError::IoPath(
+                    io::Error::other("checked layout path must be absolute"),
+                    path.into(),
+                ));
+            }
+            let raw =
+                mode.reader()(path).map_err(|error| ConfigError::IoPath(error, path.into()))?;
+            checked_layout_text(path, raw, mode)?
+        },
+    };
+    parse_layout_and_config(raw, config, mode)
 }
 pub fn from_stringified_layout(
     stringified_layout: &str,
@@ -334,29 +423,36 @@ fn stringified_from_dir_with(
     layout_dir: Option<&PathBuf>,
     mode: ConfigRead,
 ) -> Result<StringifiedLayout, ConfigError> {
+    layout_source_from_dir(layout, layout_dir, mode)?.read(mode)
+}
+
+fn layout_source_from_dir(
+    layout: &Path,
+    layout_dir: Option<&PathBuf>,
+    mode: ConfigRead,
+) -> Result<LayoutSource, ConfigError> {
     reject_remote_layout(layout)?;
     // Absolute files do not need a configured layouts directory. A first native
     // session can start before the user's config directory exists.
     if layout.is_absolute() {
-        return stringified_from_path_with(layout, mode);
+        return Ok(LayoutSource::File(layout.into()));
     }
     match layout_dir {
         Some(dir) => {
-            let layout_path = &dir.join(layout);
+            let layout_path = dir.join(layout);
             if mode.exists(&layout_path.with_extension("kdl"))? {
-                stringified_from_path_with(layout_path, mode)
+                Ok(LayoutSource::File(layout_path))
             } else {
-                crate::layout::stringified_from_default_assets(layout)
+                Ok(LayoutSource::BuiltIn(layout.into()))
             }
         },
         None => {
             let home = find_default_config_dir();
             let Some(home) = home else {
-                return crate::layout::stringified_from_default_assets(layout);
+                return Ok(LayoutSource::BuiltIn(layout.into()));
             };
 
-            let layout_path = &home.join(layout);
-            stringified_from_path_with(layout_path, mode)
+            Ok(LayoutSource::File(home.join(layout)))
         },
     }
 }
@@ -407,11 +503,19 @@ fn stringified_from_path_with(
     }
     reject_remote_layout(layout_path)?;
     let (path, raw) = read_saved_layout(layout_path, open_config_input(layout_path))?;
+    checked_layout_text(&path, raw, mode)
+}
+
+fn checked_layout_text(
+    layout_path: &Path,
+    raw: String,
+    mode: ConfigRead,
+) -> Result<StringifiedLayout, ConfigError> {
     let swap_path = layout_path.with_extension("swap.kdl");
     let swap = mode
         .optional_layout_text(&swap_path)?
         .map(|raw| (swap_path.display().to_string(), raw));
-    Ok((path.display().to_string(), raw, swap))
+    Ok((layout_path.display().to_string(), raw, swap))
 }
 
 pub(crate) fn read_saved_layout(
@@ -570,33 +674,7 @@ fn metadata_from_path_with(path: &Path, mode: ConfigRead) -> LayoutMetadata {
                 None,
                 mode,
             ) {
-                Ok(layout) => {
-                    let layout_tabs = layout.tabs();
-                    let tabs = if layout_tabs.is_empty() {
-                        let (tiled_pane_layout, floating_pane_layout) = layout.new_tab();
-                        vec![TabMetadata::from(&(
-                            None,
-                            tiled_pane_layout,
-                            floating_pane_layout,
-                        ))]
-                    } else {
-                        layout
-                            .tabs()
-                            .into_iter()
-                            .map(|tab| TabMetadata::from(&tab))
-                            .collect()
-                    };
-
-                    // Get file metadata for creation and modification times as Unix epochs
-                    let (creation_time, update_time) =
-                        crate::layout::creation_and_update_times(path);
-
-                    LayoutMetadata {
-                        tabs,
-                        creation_time,
-                        update_time,
-                    }
-                },
+                Ok(layout) => layout_metadata(&layout, path),
                 Err(e) => {
                     log::error!("Failed to parse layout: {}", e);
                     LayoutMetadata::default()
@@ -607,6 +685,26 @@ fn metadata_from_path_with(path: &Path, mode: ConfigRead) -> LayoutMetadata {
             log::error!("Failed to read layout file: {}", e);
             LayoutMetadata::default()
         },
+    }
+}
+
+fn layout_metadata(layout: &Layout, path: &Path) -> LayoutMetadata {
+    let layout_tabs = layout.tabs();
+    let tabs = if layout_tabs.is_empty() {
+        let (tiled_pane_layout, floating_pane_layout) = layout.new_tab();
+        vec![TabMetadata::from(&(
+            None,
+            tiled_pane_layout,
+            floating_pane_layout,
+        ))]
+    } else {
+        layout_tabs.iter().map(TabMetadata::from).collect()
+    };
+    let (creation_time, update_time) = creation_and_update_times(path);
+    LayoutMetadata {
+        tabs,
+        creation_time,
+        update_time,
     }
 }
 
