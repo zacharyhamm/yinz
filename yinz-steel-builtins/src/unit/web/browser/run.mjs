@@ -604,11 +604,11 @@ async function signIn(page, { remember = false } = {}) {
 }
 
 async function openApp(page, hash, { remember = false } = {}) {
-  await page.goto(`${ORIGIN}/${hash}`);
-  if (pathOf(page) === '/login' || !(await tokenStores(page)).session) {
-    await until('a page settled at / or /login', () => ['/', '/login'].includes(pathOf(page)));
-    if (pathOf(page) === '/login') await signIn(page, { remember });
-  }
+  await page.goto(`${ORIGIN}/${hash}`, { waitUntil: 'commit' });
+  // An unauthenticated app document schedules its redirect after it loads.
+  await until('the sign-in page or authenticated app', async () =>
+    pathOf(page) === '/login' || await exists(page, '#app .app'));
+  if (pathOf(page) === '/login') await signIn(page, { remember });
 }
 
 async function openDetail(page, hash = detailHash()) {
