@@ -12,7 +12,7 @@ fn cli_quit_exits_with_an_event_subscriber_still_connected() {
     events.wait_for_event("PaneUpdate");
 
     // Quit has no CliAction variant; use the same CLI transport with its wire action.
-    let (quit, _) = session.spawn_cli_client_with_actions(vec![Action::Quit], None);
+    let (quit, _) = session.spawn_cli_client_with_actions(vec![Action::Quit], None, None);
     session.wait_for_exit();
     assert_eq!(quit.join().expect("quit CLI client panicked"), 0);
     assert!(!YINZ_SOCK_DIR.join(session.session_name()).exists());
