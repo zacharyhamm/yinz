@@ -16805,7 +16805,11 @@ pub(super) fn web_agents_reference(
 }
 #[test]
 fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_exclusion() {
-    use yinz_types::{data::TabInfo, internal_ids::TabPosition, tab_bar::TabGroupInfo};
+    use yinz_types::{
+        data::TabInfo,
+        internal_ids::{SessionName, TabPosition},
+        tab_bar::TabGroupInfo,
+    };
 
     let (mut screen, _, _) = setup("codex");
     report(&mut screen, hook("SessionStart"));
@@ -16856,6 +16860,27 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
     screen
         .peer_sessions_cache
         .insert(peer.name.clone(), peer.clone());
+    let original = web_agents_snapshot(&mut screen);
+    let original_ref = web_agents_reference(
+        original
+            .iter()
+            .find(|row| !row.current_session && row.pane.id == PANE)
+            .unwrap(),
+    );
+
+    // The scan finds the renamed socket before a checkpoint updates the embedded name.
+    // A record under the old key can even have a different group at the same position.
+    let renamed_key = SessionName::new("renamed-web-peer");
+    let mut decoy = peer.clone();
+    decoy.panes.panes.clear();
+    decoy.tabs[1].group = Some(TabGroupInfo {
+        id: 17,
+        name: "Wrong peer group".into(),
+    });
+    screen.peer_sessions_cache.insert(peer.name.clone(), decoy);
+    screen
+        .peer_sessions_cache
+        .insert(renamed_key.clone(), peer.clone());
     let live = web_agents_snapshot(&mut screen);
     let palette = screen.live_palette_agents();
     assert_eq!(live.len(), 4);
@@ -16896,6 +16921,15 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
             name: "Default".into()
         })
     );
+    assert!(remote.matches(&original_ref));
+    assert_eq!(
+        remote.tab_group,
+        original
+            .iter()
+            .find(|row| row.matches(&original_ref))
+            .unwrap()
+            .tab_group
+    );
     assert_eq!(remote.tab_group, peer.tabs[1].group);
     assert!(live
         .iter()
@@ -16907,7 +16941,7 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
         name: "Peer Release".into(),
     };
     peer.tabs[1].group = Some(moved.clone());
-    screen.peer_sessions_cache.insert(peer.name.clone(), peer);
+    screen.peer_sessions_cache.insert(renamed_key, peer);
     screen.active_tab_ids.clear();
     let detached = web_agents_snapshot(&mut screen);
     assert_eq!(detached.len(), 4);
@@ -16915,7 +16949,7 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
     assert_eq!(
         detached
             .iter()
-            .find(|a| a.id == remote.id)
+            .find(|a| a.matches(&original_ref))
             .unwrap()
             .tab_group,
         Some(moved)

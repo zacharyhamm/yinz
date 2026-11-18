@@ -146,7 +146,7 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 .list-main { padding: 4px calc(12px + var(--safe-right)) calc(24px + var(--safe-bottom)) calc(12px + var(--safe-left)); max-width: 760px; margin: 0 auto; }
 .agent-section { margin-top: 12px; }
 .section-title { font-size: 15px; font-weight: 700; color: var(--text); margin: 0 4px 8px; overflow-wrap: anywhere; }
-.section-count { font-weight: 600; color: var(--muted); margin-left: 4px; }
+.section-count { font-weight: 600; color: var(--muted); }
 .section-session { display: block; font-size: 13px; font-weight: 400; color: var(--muted); }
 .agent-cards { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .agent-card {

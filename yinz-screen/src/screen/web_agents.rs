@@ -21,12 +21,11 @@ impl Screen {
                             .or_insert_with(|| self.tab_group_info(tab))
                             .clone()
                     }),
-                    LiveAgentTab::Peer(position) => self
-                        .peer_sessions_cache
-                        .get(&live.session)
-                        .and_then(|session| {
-                            session.tabs.iter().find(|tab| tab.position == position)
-                        })
+                    // A renamed socket can be discovered before the checkpoint name changes.
+                    LiveAgentTab::Peer(session, position) => session
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.position == position)
                         .and_then(|tab| tab.group.clone()),
                 };
                 let (glyph, status, _) = yinz_panes::ui::agent_title::status(presentation.state);

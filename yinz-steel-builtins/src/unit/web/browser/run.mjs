@@ -1889,13 +1889,14 @@ async function compactAgentList(open, width, scheme) {
 
 async function groupedAgentList(open) {
   const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
-  const name = 'Release Review';
+  const name = 'Release Review 7';
   const longName = `Peer ${XSS(3)} ${'release'.repeat(40)}`;
   const first = row(fx, AGENT_ID, 'waiting', { tab_group: { id: 0, name } });
   const busy = row(fx, 'live:dev:8', 'busy', {
     tab_group: { id: 0, name }, status: 'Checking the build', wrapper: true,
   });
   const second = row(fx, 'live:dev:9', 'idle', { tab_group: { id: 1, name } });
+  const secondBusy = row(fx, 'live:dev:15', 'busy', { tab_group: { id: 1, name } });
   const peer = row(fx, 'live:peer:7', 'idle', {
     session: 'peer', current_session: false, tab_group: { id: 0, name },
   });
@@ -1904,6 +1905,7 @@ async function groupedAgentList(open) {
   });
   const missing = row(fx, 'live:dev:10', 'idle', { tab_group: null });
   const invalid = row(fx, 'live:dev:11', 'idle', { tab_group: { id: 0x100000000, name: 'Invalid' } });
+  const fallbackName = row(fx, 'live:dev:16', 'idle', { tab_group: { id: 3, name: 'Tab group unavailable' } });
   const peerMissing = row(fx, 'live:peer:10', 'idle', {
     session: 'peer', current_session: false, tab_group: undefined,
   });
@@ -1911,8 +1913,8 @@ async function groupedAgentList(open) {
   const alsoOwnerless = row(fx, 'live:unknown:13', 'idle', { session: ' ', tab_group: { id: 0, name } });
   const unnamed = row(fx, 'live:dev:14', 'idle', { tab_group: { id: 2, name: ' ' } });
   second.html = second.html.replace(' data-redundant-state="idle"', '').replace('>idle</span>', '>Awaiting a deploy</span>');
-  fx.rows = [first, second, peer, busy, peerLong, missing, peerMissing, ownerless, invalid, alsoOwnerless, unnamed];
-  fx.counts = { waiting: 4, busy: 1, idle: 9 };
+  fx.rows = [first, second, peer, busy, secondBusy, peerLong, missing, fallbackName, peerMissing, ownerless, invalid, alsoOwnerless, unnamed];
+  fx.counts = { waiting: 4, busy: 2, idle: 10 };
   await openList(page);
   const sections = () => page.locator('.agent-section').evaluateAll((nodes) => nodes.map((node) => {
     const heading = document.getElementById(node.getAttribute('aria-labelledby'));
@@ -1924,16 +1926,28 @@ async function groupedAgentList(open) {
     ];
   }));
   const expected = [
-    [name, 'Session browser-check', [first.id, busy.id]],
-    [name, 'Session browser-check', [second.id]],
+    [name, 'Session browser-check · Group 0', [first.id, busy.id]],
+    [name, 'Session browser-check · Group 1', [second.id, secondBusy.id]],
     [name, 'Session peer', [peer.id]],
     [longName, 'Session peer', [peerLong.id]],
     ['Tab group unavailable', 'Session browser-check', [missing.id, invalid.id]],
+    ['Tab group unavailable', 'Session browser-check · Group 3', [fallbackName.id]],
     ['Tab group unavailable', 'Session peer', [peerMissing.id]],
     ['Tab group unavailable', 'Session unavailable', [ownerless.id, alsoOwnerless.id]],
     ['Unnamed tab group', 'Session browser-check', [unnamed.id]],
   ];
   check(JSON.stringify(await sections()) === JSON.stringify(expected), 'incorrect ordered group membership');
+  for (const label of [
+    `${name} · 2 agents Session browser-check · Group 0`,
+    `${name} · 2 agents Session browser-check · Group 1`,
+    `${name} · 1 agent Session peer`,
+    'Tab group unavailable · 2 agents Session browser-check',
+    'Tab group unavailable · 1 agent Session browser-check · Group 3',
+    'Tab group unavailable · 1 agent Session peer',
+  ]) {
+    check(await page.getByRole('heading', { name: label, exact: true }).count() === 1, `wrong accessible heading: ${label}`);
+    check(await page.getByRole('region', { name: label, exact: true }).count() === 1, `wrong accessible region: ${label}`);
+  }
   check(await page.locator('.section-title').first().evaluate((el) => getComputedStyle(el).textTransform) === 'none', 'group name case changed');
   check(await textOf(page, '.need-count') === '4 need you' && (await page.title()).startsWith('(4) '), 'global attention was recomputed from visible rows');
   check(await page.locator(`${cardSelector(busy.id)} .agent-status`).isVisible(), 'hook-supplied status hidden');
@@ -1943,16 +1957,135 @@ async function groupedAgentList(open) {
 
   const peerLink = page.locator(`${cardSelector(peer.id)} .agent-open-area`);
   await peerLink.focus();
-  fx.rows = [peer, first, second, busy, peerLong, missing, peerMissing, ownerless, invalid, alsoOwnerless, unnamed];
+  fx.rows = [peer, ...fx.rows.filter((r) => r !== peer)];
   const reordered = [expected[2], expected[0], expected[1], ...expected.slice(3)];
   await until('poll reorders tab groups', async () => JSON.stringify(await sections()) === JSON.stringify(reordered));
   check(await peerLink.evaluate((el) => document.activeElement === el), 'section reorder lost keyboard focus');
 
   const renamedGroup = { id: 0, name: 'Review Complete' };
-  fx.rows = [peer, ...[first, second, busy].map((r) => ({ ...r, tab_group: renamedGroup })), peerLong];
-  const moved = [expected[2], [renamedGroup.name, 'Session browser-check', [first.id, second.id, busy.id]], expected[3]];
+  const local = [first, second, busy, secondBusy];
+  fx.rows = [peer, ...local.map((r) => ({ ...r, tab_group: renamedGroup })), peerLong];
+  const moved = [expected[2], [renamedGroup.name, 'Session browser-check', local.map((r) => r.id)], expected[3]];
   await domClick(page, '#list-refresh');
   await until('poll shows renamed group and moved card', async () => JSON.stringify(await sections()) === JSON.stringify(moved));
+}
+
+async function agentListPollFocus(open) {
+  const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
+  const initial = { id: 0, name: 'Initial group' };
+  const destination = { id: 1, name: 'Destination' };
+  const tallGroup = { id: 2, name: 'Tall group' };
+  const agent = row(fx, AGENT_ID, 'waiting', { tab_group: initial });
+  const neighbor = row(fx, 'live:dev:8', 'idle', { tab_group: destination });
+  const tall = Array.from({ length: 14 }, (_, i) => row(fx, `live:dev:${20 + i}`, 'idle', { tab_group: tallGroup }));
+  fx.rows = [agent, neighbor, ...tall];
+  await openList(page);
+
+  const quickKey = page.locator(cardSelector(agent.id)).getByRole('button', { name: 'Key 1', exact: true });
+  const geometry = () => quickKey.evaluate((el) => {
+    const { top, bottom } = el.getBoundingClientRect();
+    const headerBottom = document.getElementById('list-header').getBoundingClientRect().bottom;
+    return {
+      active: document.activeElement === el, visible: top >= headerBottom - 1 && bottom <= innerHeight + 1,
+      documentTop: top + scrollY, viewport: innerHeight, scroll: scrollY,
+    };
+  });
+  const assertFocusedInView = async (label) => {
+    const g = await geometry();
+    check(g.active && g.visible, `${label}: ${JSON.stringify(g)}`);
+    return g;
+  };
+  await quickKey.focus();
+  await assertFocusedInView('initial quick key');
+  const oldKey = await quickKey.elementHandle();
+  const moved = { ...agent, tab_group: destination };
+  fx.rows = [moved, neighbor, ...tall];
+  await until('automatic poll moves the focused agent', () =>
+    quickKey.evaluate((el) => el.closest('.agent-section').querySelector('.section-name').textContent === 'Destination'));
+  check(await oldKey.evaluate((el) => !el.isConnected), 'the group move did not replace the control');
+  const beforeReorder = await assertFocusedInView('replacement quick key');
+  const movedKey = await quickKey.elementHandle();
+
+  const promoted = [row(fx, tall[0].id, 'waiting', { tab_group: tallGroup }), ...tall.slice(1)];
+  fx.rows = [...promoted, moved, neighbor];
+  await until('automatic poll promotes the tall group', async () =>
+    await page.locator('.section-name').first().textContent() === tallGroup.name);
+  const afterReorder = await assertFocusedInView('quick key after group promotion');
+  check(await movedKey.evaluate((el) => document.activeElement === el), 'group promotion replaced the focused node');
+  check(afterReorder.documentTop - beforeReorder.documentTop > beforeReorder.viewport, 'competing group did not displace the quick key far enough');
+  await page.keyboard.press('Enter');
+  await until('focused quick key posts', () => fx.count('/api/agent/keys', 'POST') === 1);
+  await until('quick key completes', () => quickKey.isEnabled());
+  check(JSON.stringify(fx.bodies('/api/agent/keys')) === JSON.stringify([{ agent: REF7, keys: ['1'] }]),
+    'Enter did not send exactly one key for the original conversation');
+
+  await quickKey.focus();
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const scrolledAway = await geometry();
+  check(scrolledAway.active && !scrolledAway.visible && scrolledAway.scroll === 0, 'manual scroll did not move the key out of view');
+  const renamed = { ...moved, tab_group: { ...destination, name: 'Destination renamed' } };
+  fx.rows = [...promoted, renamed, neighbor];
+  await until('poll applies rename while scrolled away', () => quickKey.evaluate((el) =>
+    el.closest('.agent-section').querySelector('.section-name').textContent === 'Destination renamed'));
+  const afterManualScroll = await geometry();
+  check(afterManualScroll.active && !afterManualScroll.visible && afterManualScroll.scroll === 0, 'poll undid manual scrolling');
+}
+
+async function agentListPollFocusGuards(open) {
+  const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
+  const original = row(fx, AGENT_ID, 'waiting');
+  const nextGroup = { id: 1, name: 'Destination' };
+  const waitingInDestination = { ...original, tab_group: nextGroup };
+  const quickKey = page.locator(cardSelector(original.id)).getByRole('button', { name: 'Key 1', exact: true });
+  const hasBodyFocus = () => page.evaluate(() => document.activeElement === document.body);
+  fx.rows = [original];
+  await openList(page);
+
+  await quickKey.focus();
+  fx.rows = [{ ...row(fx, original.id, 'busy'), tab_group: nextGroup }];
+  await until('poll removes quick key from working agent', async () => await quickKey.count() === 0);
+  check(await hasBodyFocus(), 'focus moved to a different control when the quick key disappeared');
+
+  fx.rows = [original];
+  await until('poll restores waiting agent', () => quickKey.isEnabled());
+  await quickKey.focus();
+  fx.rows = [{ ...waitingInDestination, ref: null }];
+  await until('poll renders disabled quick key in destination', () => quickKey.isDisabled());
+  check(await hasBodyFocus(), 'focus moved to a disabled replacement');
+
+  fx.rows = [waitingInDestination];
+  await until('poll enables destination quick key', () => quickKey.isEnabled());
+  await quickKey.focus();
+  const priorKey = await quickKey.elementHandle();
+  fx.rows = [{ ...waitingInDestination, ref: REF7B, run: 'run-7b' }];
+  await until('poll publishes replacement conversation in the same card', () =>
+    page.locator(cardSelector(original.id)).getByRole('link', { name: 'Open', exact: true })
+      .evaluate((el) => el.hash.includes('run-7b')));
+  check(await priorKey.evaluate((el) => !el.isConnected) && await hasBodyFocus(), 'replacement conversation inherited quick-key focus');
+  await page.keyboard.press('Enter');
+  check(fx.count('/api/agent/keys', 'POST') === 0, 'Enter sent a key to a retargeted or unavailable agent');
+}
+
+async function agentListPollFocusOutsideCards(open) {
+  const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
+  const original = row(fx, AGENT_ID, 'waiting');
+  const customRow = { ...original, html: `${original.html}<span class="hook-focus" tabindex="0">Hook content</span>` };
+  const nextGroup = { id: 1, name: 'Destination' };
+  fx.rows = [customRow];
+  await openList(page);
+
+  const refresh = page.getByRole('button', { name: 'Refresh', exact: true });
+  await refresh.focus();
+  fx.rows = [{ ...customRow, tab_group: nextGroup }];
+  await until('poll moves card while Refresh is focused', async () => await textOf(page, '.section-name') === nextGroup.name);
+  check(await refresh.evaluate((el) => document.activeElement === el), 'poll stole focus from the header');
+
+  const hook = page.locator('.hook-focus');
+  await hook.focus();
+  check(await hook.evaluate((el) => document.activeElement === el), 'hook control did not receive focus');
+  fx.rows = [customRow];
+  await until('poll moves the card with custom content', async () => await textOf(page, '.section-name') === 'Default');
+  check(await page.evaluate(() => document.activeElement === document.body), 'poll restored focus to hook content');
 }
 
 async function darkMode(open) {
@@ -2676,6 +2809,9 @@ async function main() {
   }
   await scenario('compact agent list 1024px desktop', (open) => compactAgentList(open, 1024, 'light'));
   await scenario('Agents group membership, fallback and poll updates', groupedAgentList);
+  await scenario('Agents keyboard focus through automatic group moves and reorders', agentListPollFocus);
+  await scenario('Agents keyboard focus guards during automatic updates', agentListPollFocusGuards);
+  await scenario('Agents polls respect keyboard focus outside built-in card controls', agentListPollFocusOutsideCards);
   for (const width of [320, 390, 1024]) for (const scheme of ['light', 'dark']) {
     await scenario(`compact detail ${width}px ${scheme}`, (open) => compactDetail(open, width, scheme));
   }

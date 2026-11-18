@@ -10,14 +10,14 @@ use yinz_bus::command_palette::{
 };
 use yinz_runtime::errors::prelude::*;
 use yinz_types::{
-    data::PaneInfo,
+    data::{PaneInfo, SessionInfo},
     input::actions::Action,
     internal_ids::{ClientId, SessionName, TabId, TabPosition},
 };
 
-pub(in crate::screen) enum LiveAgentTab {
+pub(in crate::screen) enum LiveAgentTab<'a> {
     Local(TabId),
-    Peer(TabPosition),
+    Peer(&'a SessionInfo, TabPosition),
 }
 
 #[derive(Clone)]
@@ -326,9 +326,11 @@ impl Screen {
             .collect()
     }
 
-    pub(in crate::screen) fn live_agents_with_tabs(&self) -> Vec<(LiveAgent, LiveAgentTab)> {
+    pub(in crate::screen) fn live_agents_with_tabs<'a>(
+        &'a self,
+    ) -> Vec<(LiveAgent, LiveAgentTab<'a>)> {
         let mut agents = Vec::new();
-        let mut add = |session: &SessionName, pane: PaneInfo, tab: LiveAgentTab| {
+        let mut add = |session: &SessionName, pane: PaneInfo, tab: LiveAgentTab<'a>| {
             let Some(a) = &pane.agent else {
                 return;
             };
@@ -393,7 +395,11 @@ impl Screen {
         {
             for (&position, panes) in &session.panes.panes {
                 for pane in panes {
-                    add(&session.name, pane.clone(), LiveAgentTab::Peer(position));
+                    add(
+                        &session.name,
+                        pane.clone(),
+                        LiveAgentTab::Peer(session, position),
+                    );
                 }
             }
         }

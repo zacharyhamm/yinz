@@ -295,8 +295,9 @@ plugin configuration or secrets.
 
 - **Agents** (`#/`) shows live agents from the serving session and its cached peer
   sessions, grouped by their pane's Yinz tab group. Each heading shows the group
-  name and owning session, including when only one group has agents. Groups
-  with the same name remain separate by group ID and session. Sections appear
+  name, agent count, and owning session, including when only one group has
+  agents. If headings in one session share a group name, each matching group
+  also shows its stable group ID. Sections appear
   in the order their first agent appears in the list returned by the hooks,
   and cards in each section keep their relative order. A card without usable
   group information appears under **Tab group unavailable** for its session.
