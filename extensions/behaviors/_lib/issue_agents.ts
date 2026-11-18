@@ -25,6 +25,7 @@ import {
   recordFeedback,
   refreshIssue,
   reopenAgenda,
+  reviewScope,
   RollbackInputSchema,
   rollbackState,
   StateSchema,
@@ -353,6 +354,40 @@ async function saveTask(context: Context, task: Task) {
   return saved;
 }
 
+/** What the reviewer covers: the whole feature, or only a repair diff. */
+function reviewScopeInstructions(
+  continuity: z.infer<typeof ContinuityContext>,
+  files: AssignmentFiles | undefined,
+) {
+  const featureDiff = files
+    ? files.files.featureDiff?.path ?? join(files.directory, "feature.diff")
+    : undefined;
+  const delta = files
+    ? files.files.delta?.path ?? join(files.directory, "delta.diff")
+    : undefined;
+  const encoding =
+    "Decode featureDiff/delta from base64 when their encoding field says base64; otherwise they are UTF-8.";
+  const persistence =
+    "keep persistent IDs and origin identities. For a persists outcome, also include the same finding with its origin in findings and leave resolution unset; label an unchanged ignored concern as historical continuity, not a new defect. Keep ignored findings visibly unresolved. Reopening a verified-fixed/disposed concern requires new concrete source or behavioral evidence and rationale addressing the earlier decision.";
+  const scope = continuity.scope;
+  if (scope?.kind === "delta") {
+    return `This is a delta re-review after a repair pass, not a new audit. Review the repair diff from ${scope.base} (the last reviewed commit of your role) to the reviewed HEAD${
+      delta ? `, decoded in ${delta}` : ""
+    }. It changes: ${scope.paths.join(", ")}. ${
+      files ? "" : `${encoding} `
+    }Verify each prior finding listed in continuity.scope.findings: return priorFindings with an outcome (persists, verified_fixed or reopened), rationale and evidence for each; ${persistence} Report a new finding only for a regression this repair diff introduced; its affectedPaths must include a path the repair changed. Do not re-audit unchanged code or raise unrelated or pre-existing concerns. ${
+      featureDiff
+        ? `The complete feature diff in ${featureDiff} is context only.`
+        : "The complete feature diff is context only."
+    } Findings include affectedPaths and relevant approved checkIds.`;
+  }
+  return `Review the complete feature diff, current requirements, approved assumptions, affected callers, tests and failure paths independently. Endpoint delta prioritizes investigation; it never bounds scope. ${
+    files
+      ? `The complete feature diff and endpoint delta are decoded in ${featureDiff} and ${delta} (when present).`
+      : encoding
+  } Rebased/divergent history is not a descendant repair. Return priorFindings with an outcome (persists, verified_fixed or reopened), rationale and evidence for every prior unresolved finding of your role; ${persistence} Prior acceptance does not authorize a changed review. New defects anywhere in the full feature scope remain reportable. Findings include affectedPaths and relevant approved checkIds.`;
+}
+
 export function taskPrompt(
   role: z.infer<typeof Role>,
   state: z.infer<typeof StateSchema>,
@@ -397,7 +432,7 @@ export function taskPrompt(
     plan_review_fixes:
       "Plan focused repairs for activeReviewFix's selected findings in reviewDecisions. Read the stored technical and UX reviews, the user's request and existing approved plan. Do not edit source. Propose only the selected repairs, explain risks in steps, and include focused argv checks and a testingStrategy. Return the repair plan for user approval; this task authorizes no implementation.",
     implement_review_fixes:
-      "Implement only the approved repair plan in the last reviewDecisions entry in this existing issue worktree. Respect ignored findings and the user's selected scope. Run focused checks, investigate failures, and commit changes on the existing feature branch. Return summary and full commit hash. Do not rebase, merge, push, or run full CI.",
+      "Repair the selected findings of the last reviewDecisions entry in this existing issue worktree, working directly from those findings, their evidence and the user's decision request; there is no separate repair plan or approval. Change only what the selected findings require, respect ignored findings and the user's selected scope, and preserve the approved plan's behavior. A legacy repair plan in that entry, if present, is guidance only. When the approved plan's checks do not cover a repaired behavior, return checks: focused development checks selected per AGENTS.md (never unfiltered full suites), each with a new short id that no plan check uses, an argv array run verbatim without a shell in the issue worktree, and covers naming the repaired findings or plan steps. The lifecycle runs them after the plan's checks before merge authorization. Run focused checks, investigate failures, and commit changes on the existing feature branch. Return summary, full commit hash and a response for each selected finding; report a finding that needs broader work as unresolved instead of expanding scope. Do not rebase, merge, push, or run full CI.",
     review_ux:
       "Review the supplied committed change specifically for its impact on the user experience. Use the issue requirements, actual implementation, affected callers, tests, help and documentation to identify affected users and tasks. Trace representative end-to-end workflows through discovery, normal use, repeat use, waiting, failure, cancellation and recovery as applicable. Independently assess whether the experience remains understandable, consistent, responsive and usable, even when the code follows the approved plan. Inspect relevant terminal UI, keyboard navigation and focus, rendering/readability, CLI commands and output, configuration/defaults, help/documentation, feedback, errors and lifecycle handoffs. Consider indirect responsiveness, compatibility surprises, extra interaction steps and loss of user work. Can users understand what happened, what is happening and what to do next? Keep implementation details out of user flows unless they support a meaningful user decision. Exercise representative interactions when practical; distinguish observed results from source-based conclusions and state material limitations. Report concrete actionable UX defects introduced or exposed by the change. Each finding needs the affected user/task, triggering interaction sequence, observed or source-derived behavior, user consequence, severity and concrete source or interaction evidence. Avoid personal aesthetic preferences, speculative concerns and unrelated redesigns. An empty findings array is valid after a real review. Always submit assessment with impact, a nonempty rationale, assessedPaths describing affected user tasks/workflows and source paths, and limitations. A no_material_impact result requires a source-based rationale; absence of UI-file changes is insufficient. Preliminary checks are advisory; record only checks actually performed. Return the supplied full commit hash and planVersion.",
   }[role];
@@ -410,10 +445,18 @@ export function taskPrompt(
       : "This is investigation or review: do not edit source files, Git refs, or configuration.",
     "Run every command and check in the foreground. Do not use run_in_background, Monitor, background subagents or any other background job. If a check exceeds the tool timeout, split it into smaller checks rather than backgrounding it.",
     continuity && role === "review_code"
-      ? instructions.replace(
-        "against local main",
-        "from the captured merge base to reviewed HEAD",
-      )
+      ? continuity.scope?.kind === "delta"
+        ? instructions.replace(
+          "Review the committed diff against local main, issue requirements and the approved plan.",
+          "Review the committed repair diff against the prior findings, issue requirements and the approved plan.",
+        ).replace(
+          "Cover each plan step exactly once and justify deviations.",
+          "Cover each plan step exactly once; the evidence template carries each step's status from the prior review, so change one only when the repair diff changes it, and justify deviations.",
+        )
+        : instructions.replace(
+          "against local main",
+          "from the captured merge base to reviewed HEAD",
+        )
       : instructions,
     ...logAccess,
     ...(continuity
@@ -423,17 +466,8 @@ export function taskPrompt(
             ? "Assignment contract version 3. Assignment files are read-only and bound by the manifest below."
             : "Assignment contract version 2."
         } The bound packet below contains authoritative findings and decisions; do not truncate or reconstruct history. Worker-proposed tradeoffs are proposals; controller dispositions and exact user authorizations have their recorded scope only.`,
-        "Preserve unaffected decisions and identify newly necessary scope changes. Repair planners return findingMappings with one exact finding identity per selected finding, approved step IDs and check IDs. Implementers return responses (addressed, disputed or unresolved), rationale, affectedPaths, source/check evidence and checkIds for every selected finding. Implementation claims never close findings. Broader work requires a revised plan and approval through the controller.",
-        `Review the complete feature diff, current requirements, approved assumptions, affected callers, tests and failure paths independently. Endpoint delta prioritizes investigation; it never bounds scope. ${
-          files
-            ? `The complete feature diff and endpoint delta are decoded in ${
-              files.files.featureDiff?.path ??
-                join(files.directory, "feature.diff")
-            } and ${
-              files.files.delta?.path ?? join(files.directory, "delta.diff")
-            } (when present).`
-            : "Decode featureDiff/delta from base64 when their encoding field says base64; otherwise they are UTF-8."
-        } Rebased/divergent history is not a descendant repair. Return priorFindings with an outcome (persists, verified_fixed or reopened), rationale and evidence for every prior unresolved finding of your role; keep persistent IDs and origin identities. For a persists outcome, also include the same finding with its origin in findings and leave resolution unset; label an unchanged ignored concern as historical continuity, not a new defect. Keep ignored findings visibly unresolved. Prior acceptance does not authorize a changed review. Reopening a verified-fixed/disposed concern requires new concrete source or behavioral evidence and rationale addressing the earlier decision. New defects anywhere in the full feature scope remain reportable. Findings include affectedPaths and relevant approved checkIds.`,
+        "Preserve unaffected decisions and identify newly necessary scope changes. Repair implementers return responses (addressed, disputed or unresolved), rationale, affectedPaths, source/check evidence and checkIds for every selected finding. Implementation claims never close findings. Broader work requires a revised plan and approval through the controller.",
+        reviewScopeInstructions(continuity, files),
         "Structured advisoryEvidence names producingTask, original full commit, requirementDigest, argv/cwd, result, durable outputRef, relevantFiles/tests, platform/toolchain and prerequisites. Reused evidence must retain original attribution and explain applicability at the current commit. Changed commits require a documented comparison of implementation, callers, tests, fixtures, dependencies, build configuration, requirements and environment; patch identity alone is insufficient. Missing objects/logs, dirty state, unknown dependencies or failed/flaky execution cannot support passing reuse. Free-text preliminaryChecks remain available; reused evidence is never newly executed. Advisory evidence cannot replace approved deterministic verification or rebased merge CI.",
         ...(files
           ? [
@@ -485,6 +519,7 @@ export function taskPrompt(
         CHECK_POLICY_SUMMARY,
       ]
       : []),
+    ...(role === "implement_review_fixes" ? [CHECK_POLICY_SUMMARY] : []),
     ...(["review_plan", "review_code", "review_ux"].includes(role)
       ? [
         `Read ${join(references, "review.md")} and ${
@@ -957,28 +992,19 @@ export async function prepareTask(
       );
     }
     if (args.role !== "implement") commit = repo.head;
-    if (
-      args.role === "plan_review_fixes" ||
-      args.role === "implement_review_fixes"
-    ) {
-      const fix = activeReviewFix(state);
-      if (
-        !fix ||
-        (args.role === "plan_review_fixes"
-          ? !!fix.plan
-          : !fix.plan || !fix.approval)
-      ) {
-        throw new Error(
-          "Review repairs require current selection and explicit repair-plan approval before implementation",
-        );
-      }
-      if (args.role === "plan_review_fixes" && repo.head !== fix.commit) {
-        throw new Error("Review repair plan commit is stale");
-      }
+    if (args.role === "plan_review_fixes") {
+      throw new Error(
+        "Repair planning is retired: run drive, which dispatches implement_review_fixes for the selected findings",
+      );
+    }
+    if (args.role === "implement_review_fixes" && !activeReviewFix(state)) {
+      throw new Error(
+        "Review repairs require a current selection of findings to repair",
+      );
     }
     if (args.role === "implement" && activeReviewFix(state)) {
       throw new Error(
-        "Use the approved review repair worker for selected findings",
+        "Use the review repair worker for selected findings",
       );
     }
     if (
@@ -1081,6 +1107,9 @@ export async function prepareTask(
         : []
     ),
     baseline,
+    ...(baseline && (args.role === "review_code" || args.role === "review_ux")
+      ? { scope: reviewScope(state, args.role, baseline) }
+      : {}),
   });
   identity.round = await createRound(context, identity);
   await dependencies.captureCloseoutOrigin?.(context, args.control);
@@ -1522,6 +1551,11 @@ async function beginRecovery(
     ? activeReviewFix(source) ??
       (task?.role === restart.role ? activeReviewFix(task.before) : undefined)
     : undefined;
+  if (restart?.role === "plan_review_fixes") {
+    throw new Error(
+      "Repair planning is retired: discard the planner with discard-agent, then run drive to dispatch implement_review_fixes",
+    );
+  }
   if (repairRestart && !selected) {
     throw new Error("No current review repair assignment to restart");
   }
@@ -1533,18 +1567,17 @@ async function beginRecovery(
     // explicit restart restores that scope while retaining the imported outcome
     // in history; it does not rewind the checkout or require another approval.
     next.codeReview = structuredClone(selected.codeReview);
-    next.uxReview = structuredClone(selected.uxReview);
+    if (selected.uxReview) next.uxReview = structuredClone(selected.uxReview);
+    else delete next.uxReview;
     next.implementation!.head = selected.commit;
     next.rollbackId = id;
     const replacement = {
       ...structuredClone(selected),
       id,
       reviewFingerprint: codeReviewFingerprint(next),
+      generation: planningGeneration(next),
+      rollbackId: id,
     };
-    if (restart.role === "plan_review_fixes") {
-      delete replacement.plan;
-      delete replacement.approval;
-    }
     next.reviewDecisions = [...(next.reviewDecisions ?? []), replacement];
     delete next.verification;
     delete next.mergeAuthorization;

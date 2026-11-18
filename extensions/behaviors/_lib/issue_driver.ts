@@ -20,6 +20,8 @@ import {
   runTask,
 } from "./issue_agents.ts";
 import {
+  ActionSchemas,
+  activeFollowUps,
   activeMergeFailure,
   activeReviewFix,
   codeReviewFingerprint,
@@ -29,9 +31,11 @@ import {
   implementationMergeGate,
   initialPlanning,
   type LifecycleState,
+  pendingReviewFindings,
   planningGeneration,
   refreshImpact,
   refreshIssue,
+  requireCurrentCodeReview,
   requireCurrentReviews,
   requireReviewAcceptance,
   reviewFingerprint,
@@ -83,8 +87,24 @@ export const DriveInputSchema = z.object({
     handoffId: z.uuid(),
     request: UserRequestSchema,
   }).strict().optional(),
+  // The user's standing request to repair every blocking review finding of
+  // this plan and rollback without asking, or its withdrawal.
+  autoRepair: z.union([
+    z.object({ request: UserRequestSchema }).strict(),
+    z.object({ withdraw: z.literal(true) }).strict(),
+  ]).optional(),
 })
   .strip();
+/** Auto-repair rounds per authorization before drive asks the user again. */
+export const AUTO_REPAIR_ROUNDS = 3;
+const AutoRepairSchema = z.object({
+  request: UserRequestSchema,
+  createdAt: z.iso.datetime(),
+  issueDigest: z.string(),
+  planVersion: z.number().int().nonnegative(),
+  rollbackId: z.uuid().optional(),
+  rounds: z.number().int().nonnegative(),
+}).strict();
 /**
  * Consecutive ordinary wait timeouts, with accepted evidence and only pane
  * background work outstanding, before drive stops observing and hands off.
@@ -127,6 +147,7 @@ export const DriverSchema = z.object({
   // Accepted evidence whose pane kept reporting background work; repeated drive
   // calls re-present this blocker instead of observing the same task again.
   backgroundStall: BackgroundStallSchema.optional(),
+  autoRepair: AutoRepairSchema.optional(),
 }).strict();
 export const HandoffSchema = z.object({
   id: z.uuid(),
@@ -137,6 +158,7 @@ export const HandoffSchema = z.object({
     "prepare_worktree",
     "authorize_merge",
     "address_review_findings",
+    // Legacy: saved before repair planning was retired; drive no longer issues it.
     "approve_review_fixes",
     "integrate",
     "summarize",
@@ -167,6 +189,16 @@ export const HandoffSchema = z.object({
 }).strict();
 export type Handoff = z.infer<typeof HandoffSchema>;
 type Task = z.infer<typeof AgentTaskSchema>;
+
+/** Whether the current reviews can scope a findings decision. */
+function reviewDecisionReady(state: LifecycleState) {
+  try {
+    requireCurrentCodeReview(state);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function blockedFindings(findings: z.infer<typeof FindingSchema>[] = []) {
   return findings.some((finding) =>
@@ -268,12 +300,39 @@ function present(
   if (handoff.decision === "address_review_findings") {
     lines.push(
       "Which findings would you like addressed? You may ignore any findings or sign off on merge with findings outstanding.",
-      "Planning is authorized only for selected repairs; implementation needs separate plan approval.",
+      "Selected findings go straight to a repair worker; the next review checks only the repair diff against them.",
+      ...(state.uxReview
+        ? []
+        : ["UX review runs once the code review's findings are settled."]),
     );
   }
   if (handoff.decision === "approve_review_fixes") {
     lines.push(
-      "Review the proposed repairs and checks. Approval authorizes only this repair plan.",
+      "Legacy repair-plan approval: approving lets the saved plan guide the repair worker. Running drive instead dispatches the repair worker without it.",
+    );
+  }
+  const followUps = activeFollowUps(state);
+  if (
+    followUps.length &&
+    ["address_review_findings", "authorize_merge", "summarize"].includes(
+      handoff.decision,
+    )
+  ) {
+    lines.push(
+      `Follow-ups (${
+        followUps.map((f) => f.detail.severity).filter((v, i, a) =>
+          a.indexOf(v) === i
+        ).join("/")
+      } severity, not repaired${
+        handoff.decision === "summarize"
+          ? "; summarize files each as a separate Agenda item"
+          : "; select one with --repair to fix it now"
+      }):`,
+      ...followUps.map((f) =>
+        `- ${f.finding.role}/${f.finding.findingId}: ${f.detail.description}${
+          f.agendaItem?.itemId ? ` (Agenda item ${f.agendaItem.itemId})` : ""
+        }`
+      ),
     );
   }
   for (const decision of state.reviewDecisions ?? []) {
@@ -817,6 +876,52 @@ async function drive(
     const raw = await context.readResource("agent-task");
     return raw == null ? undefined : AgentTaskSchema.parse(raw);
   }
+  /**
+   * The repair decision drive records under the user's standing auto-repair
+   * request, or why the user must decide instead.
+   */
+  function autoRepairDecision(state: LifecycleState): {
+    decision?: z.input<typeof ActionSchemas.decide_review>;
+    reason?: string;
+  } {
+    const auto = driver.autoRepair;
+    if (!auto) return {};
+    if (
+      auto.issueDigest !== state.issue.digest ||
+      auto.planVersion !== state.planVersion ||
+      auto.rollbackId !== state.rollbackId
+    ) {
+      return {
+        reason:
+          "The auto-repair request covered earlier requirements, plan or rollback; renew it with drive --auto-repair",
+      };
+    }
+    if (auto.rounds >= AUTO_REPAIR_ROUNDS) {
+      return {
+        reason:
+          `Auto-repair stopped after ${AUTO_REPAIR_ROUNDS} rounds; renew it with drive --auto-repair to continue`,
+      };
+    }
+    const pending = pendingReviewFindings(state);
+    const reopened = pending.filter((f) => f.finding.reopening);
+    if (reopened.length) {
+      return {
+        reason: `Auto-repair needs your direction on reopened findings: ${
+          reopened.map((f) => `${f.role}/${f.findingId}`).join(", ")
+        }`,
+      };
+    }
+    return {
+      decision: {
+        id: dependencies.id(),
+        reviewFingerprint: codeReviewFingerprint(state),
+        request: auto.request,
+        repair: pending.map(({ role, findingId }) => ({ role, findingId })),
+        ignore: [],
+        source: "auto_repair",
+      },
+    };
+  }
   async function handoff(
     decision: Handoff["decision"],
     reason: string,
@@ -865,7 +970,8 @@ async function drive(
         reason,
         createdAt: dependencies.now(),
         state,
-        ...(decision !== "blocked" && state.codeReview && state.uxReview
+        ...(decision !== "blocked" && state.codeReview &&
+            reviewDecisionReady(state)
           ? { codeReviewFingerprint: codeReviewFingerprint(state) }
           : {}),
         ...(state.planReview
@@ -1123,6 +1229,23 @@ async function drive(
         };
       }
     }
+    if (input.autoRepair && "withdraw" in input.autoRepair) {
+      const { autoRepair: _withdrawn, ...rest } = driver;
+      driver = rest;
+    } else if (input.autoRepair) {
+      const state = await loadState(context);
+      driver = {
+        ...driver,
+        autoRepair: {
+          request: input.autoRepair.request,
+          createdAt: dependencies.now(),
+          issueDigest: state.issue.digest,
+          planVersion: state.planVersion,
+          ...(state.rollbackId ? { rollbackId: state.rollbackId } : {}),
+          rounds: 0,
+        },
+      };
+    }
     // Persist the authorization and exact assignment together before dispatch.
     handles.push(await context.writeResource("driver", "driver", driver));
 
@@ -1308,73 +1431,92 @@ async function drive(
               "Code review evidence is stale for the current worktree commit",
             );
           }
-          if (!state.uxReview) {
+          requireCurrentCodeReview(
+            state,
+            atReview ? repo.head : state.codeReview.commit,
+          );
+          // Selected repairs go straight to a worker: legacy repair plans,
+          // approved or not, are guidance only.
+          if (activeReviewFix(state)) {
+            role = "implement_review_fixes";
+          } else if (pendingReviewFindings(state).length) {
+            const auto = autoRepairDecision(state);
+            if (auto.decision) {
+              driver = {
+                ...driver,
+                autoRepair: {
+                  ...driver.autoRepair!,
+                  rounds: driver.autoRepair!.rounds + 1,
+                },
+              };
+              handles.push(
+                await context.writeResource("driver", "driver", driver),
+              );
+              handles.push(
+                ...(await saveState(
+                  context,
+                  "decide_review",
+                  transition(state, "decide_review", auto.decision),
+                )).dataHandles,
+              );
+              continue;
+            }
+            return await handoff(
+              "address_review_findings",
+              (state.uxReview
+                ? "Present technical and UX findings and ask which to repair or ignore before continuing"
+                : "Present the code review's findings and ask which to repair or ignore; UX review runs after code findings are settled") +
+                (auto.reason ? `. ${auto.reason}` : ""),
+            );
+          } else if (!state.uxReview) {
             role = "review_ux";
           } else {
             requireCurrentReviews(
               state,
               atReview ? repo.head : state.codeReview.commit,
             );
-            const fix = activeReviewFix(state);
-            if (fix) {
-              if (!fix.plan) role = "plan_review_fixes";
-              else if (!fix.approval) {
-                return await handoff(
-                  "approve_review_fixes",
-                  "Approve the focused repair plan before an implementation worker edits code",
-                );
-              } else role = "implement_review_fixes";
-            } else {
-              try {
-                requireReviewAcceptance(state);
-              } catch {
-                return await handoff(
-                  "address_review_findings",
-                  "Present technical and UX findings and ask which to repair or ignore before continuing",
-                );
-              }
-              if (gate.kind === "legacy" && gate.failedPreliminary) {
-                return await handoff(
-                  "blocked",
-                  "Resolve failed verification, then obtain fresh review evidence",
-                );
-              }
-              if (gate.kind === "unverified") {
-                // Deterministic and authorization-free. Run inline: this method
-                // already holds the issue lock that a nested method would need.
-                handles.push(
-                  ...(await runVerification(context, state, dependencies))
-                    .dataHandles,
-                );
-                continue;
-              }
-              if (gate.kind === "failed") {
-                const { verification } = gate;
-                const failures = verificationFailureItems(
-                  verification,
-                  (log) => checkLogQuery(context.definition.name, log),
-                );
-                const staleBase = (verification.baseline ?? []).some((check) =>
-                    check.status === "failed"
-                  )
-                  ? ". Baseline checks ran at the un-rebased reviewed commit: a baseline failure in code this branch did not change can come from its older base, and the repaired worker rebases onto local main when main already fixes it"
-                  : "";
-                return await handoff(
-                  "blocked",
-                  `Verification ${verification.id} failed at ${verification.commit}: ${
-                    failures.join("; ")
-                  }. Run repair (no input needed: the recorded failures become lastFailure for the implementation worker; add a reason only for context the logs lack), or rerun verify explicitly for an environment failure at this same commit${staleBase}${
-                    atReview
-                      ? ""
-                      : ". The worktree is no longer clean at the reviewed commit: obtain review of its new commit, or restore the reviewed commit before rerunning verify"
-                  }`,
-                );
-              }
+            requireReviewAcceptance(state);
+            if (gate.kind === "legacy" && gate.failedPreliminary) {
               return await handoff(
-                "authorize_merge",
-                "Explicit merge authorization for this reviewed commit is required; plan approval does not authorize merging",
+                "blocked",
+                "Resolve failed verification, then obtain fresh review evidence",
               );
             }
+            if (gate.kind === "unverified") {
+              // Deterministic and authorization-free. Run inline: this method
+              // already holds the issue lock that a nested method would need.
+              handles.push(
+                ...(await runVerification(context, state, dependencies))
+                  .dataHandles,
+              );
+              continue;
+            }
+            if (gate.kind === "failed") {
+              const { verification } = gate;
+              const failures = verificationFailureItems(
+                verification,
+                (log) => checkLogQuery(context.definition.name, log),
+              );
+              const staleBase = (verification.baseline ?? []).some((check) =>
+                  check.status === "failed"
+                )
+                ? ". Baseline checks ran at the un-rebased reviewed commit: a baseline failure in code this branch did not change can come from its older base, and the repaired worker rebases onto local main when main already fixes it"
+                : "";
+              return await handoff(
+                "blocked",
+                `Verification ${verification.id} failed at ${verification.commit}: ${
+                  failures.join("; ")
+                }. Run repair (no input needed: the recorded failures become lastFailure for the implementation worker; add a reason only for context the logs lack), or rerun verify explicitly for an environment failure at this same commit${staleBase}${
+                  atReview
+                    ? ""
+                    : ". The worktree is no longer clean at the reviewed commit: obtain review of its new commit, or restore the reviewed commit before rerunning verify"
+                }`,
+              );
+            }
+            return await handoff(
+              "authorize_merge",
+              "Explicit merge authorization for this reviewed commit is required; plan approval does not authorize merging",
+            );
           }
         } else {
           // A discarded review launch does not erase the completed implementation.

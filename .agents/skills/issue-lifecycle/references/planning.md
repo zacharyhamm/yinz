@@ -38,7 +38,8 @@ restart the investigation or treat its old final-message contract as authority.
 
 ## Check policy
 
-Plan checks are enforced when plan evidence (`plan` or `plan_review_fixes`) is
+Plan checks are enforced when plan evidence (`plan`, legacy `plan_review_fixes`,
+or the optional `checks` of an `implement_review_fixes` result) is
 submitted; a violation is rejected and listed in full, and the worker corrects
 the submission in place. Persisted plans are not re-validated. Each check's
 `command` is an argv array run directly in the issue worktree without a shell:
@@ -99,18 +100,19 @@ failure log references and captured Git endpoints. Use this packet as the source
 of repair obligations; preserve unaffected decisions. Worker-proposed tradeoffs
 are distinct from controller adjudications and user approval.
 
-A repair plan returns `findingMappings`, exactly one per selected finding, mapping
-its full identity to known repair `steps` and `checks`; the evidence template
-pre-fills one mapping per selected finding, and the server validates the result. Checks must cover the
-mapped steps. Unknown, duplicate or omitted findings/steps/checks are rejected.
-Record newly necessary scope in `scopeChanges` and proposed tradeoffs separately
-in `proposedTradeoffs`. Selection authorizes planning; the existing separate
-repair-plan approval authorizes implementation of the resulting scope.
+Selection authorizes the repair worker directly; there is no repair plan or
+approval step. A repair implementation returns exactly one `responses` entry for
+each selected finding (pre-filled in the template): `addressed`, `disputed` or
+`unresolved`, rationale, affected repository paths, source/check evidence and
+relevant check IDs. When the approved plan's checks do not cover a repaired
+behavior, return `checks`: focused argv checks under the
+[check policy](#check-policy), with IDs no plan check uses and `covers` naming
+the repaired findings or plan steps. Verification runs them after the plan's
+checks. Disputes and partial repairs remain visible. `scopeChanges` are rejected:
+report a finding that needs broader work as `unresolved`, which needs a plan
+revision. Implementation claims never close findings. Delta-scoped independent
+reviews and deterministic verification still follow every repair.
 
-A repair implementation returns exactly one `responses` entry for each selected
-finding (pre-filled in the template): `addressed`, `disputed` or `unresolved`, rationale, affected repository
-paths, source/check evidence and relevant approved check IDs. Disputes and partial
-repairs remain visible. Newly discovered implementation scope changes require a
-revised plan and approval; do not broaden implementation under the old approval.
-Implementation claims never close findings. Both fresh independent reviews and
-approved deterministic verification still follow every repair.
+Repair plans (`findingMappings`, `scopeChanges`, `proposedTradeoffs`) exist only
+on issues saved before repair planning was retired. A saved plan is guidance for
+the repair worker, and its checks join verification only if the user approved it.

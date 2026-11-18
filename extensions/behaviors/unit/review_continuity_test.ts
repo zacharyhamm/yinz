@@ -8,12 +8,14 @@ import {
   type LifecycleState,
   priorImplementationFindings,
   refreshIssue,
+  reviewScope,
   rollbackState,
   selectedRepairFindings,
   transition,
   validateImplementationReview,
   validateRepairMappings,
   validateRepairResponses,
+  validateRepairResult,
 } from "../_lib/lifecycle.ts";
 import {
   assignmentCore,
@@ -142,13 +144,18 @@ function assignment(
     "review_code",
   modern = true,
   contractVersion: 2 | 3 = 2,
+  bound: {
+    reviewCommit?: string;
+    baseline?: Record<string, unknown>;
+    scope?: unknown;
+  } = {},
 ) {
   const task = {
     id,
     behaviorName: `issue-agent-${id}`,
     role,
     before: state,
-    reviewCommit: head,
+    reviewCommit: bound.reviewCommit ?? head,
     config: AgentConfigSchema.parse({
       session: "test",
       kind: "codex",
@@ -193,7 +200,8 @@ function assignment(
             ? [implementationReviewFingerprint(state, role)]
             : []
         ),
-        baseline,
+        baseline: bound.baseline ?? baseline,
+        ...(bound.scope ? { scope: bound.scope } : {}),
       },
     }
     : legacy;
@@ -260,6 +268,84 @@ for (const version of [2, 3] as const) {
   });
 }
 
+Deno.test("continuity: delta scope is controller-bound and stamped on review evidence", () => {
+  const repairedHead = "e".repeat(40);
+  const repaired = transition(selected(), "implement_review_fixes", {
+    summary: "Kept every failure",
+    commit: repairedHead,
+  });
+  const deltaBaseline = {
+    ...baseline,
+    head: repairedHead,
+    previousHead: head,
+    delta: "repair diff",
+    ancestry: "descendant" as const,
+    deltaPaths: ["check.ts"],
+  };
+  const scope = reviewScope(repaired, "review_code", deltaBaseline);
+  assert(scope.kind === "delta" && scope.base === head);
+  const bound = (value: unknown) =>
+    assignment(repaired, "review_code", true, 3, {
+      reviewCommit: repairedHead,
+      baseline: deltaBaseline,
+      scope: value,
+    });
+  rejects(
+    () => validateAssignment(bound({ kind: "full" })),
+    "does not match its assignment",
+  );
+  const current = bound(scope);
+  validateAssignment(current);
+  const evidence = {
+    planVersion: 1,
+    commit: repairedHead,
+    steps: [{ id: "check", status: "implemented" }],
+    findings: [] as Record<string, unknown>[],
+    priorFindings: scope.findings.map((finding) => ({
+      finding,
+      outcome: "verified_fixed",
+      rationale: "Every failure is retained",
+      evidence: ["check.ts:3"],
+    })),
+  };
+  const validated = validateEvidence(current, {
+    role: "review_code",
+    evidence,
+  });
+  equal(
+    JSON.stringify((validated.payload.evidence as { scope?: unknown }).scope),
+    JSON.stringify(scope),
+  );
+  equal(
+    JSON.stringify(validated.next.codeReview!.scope),
+    JSON.stringify(scope),
+  );
+  rejects(
+    () =>
+      validateEvidence(current, {
+        role: "review_code",
+        evidence: { ...evidence, scope: { kind: "full" } },
+      }),
+    "Reviewer scope differs",
+  );
+  rejects(
+    () =>
+      validateEvidence(current, {
+        role: "review_code",
+        evidence: {
+          ...evidence,
+          findings: [{
+            id: "unrelated",
+            severity: "medium",
+            description: "Pre-existing documentation gap",
+            affectedPaths: ["README.md"],
+            evidence: ["README.md:1"],
+          }],
+        },
+      }),
+    "Delta re-review reports only regressions",
+  );
+});
 Deno.test("continuity: role collisions retain separate origins and exact repair coverage", () => {
   const s = selected();
   const selectedFindings = selectedRepairFindings(s);
@@ -312,13 +398,13 @@ Deno.test("continuity: role collisions retain separate origins and exact repair 
   );
   rejects(
     () =>
-      validateRepairResponses(s, {
+      validateRepairResult(s, {
         summary: "Broader",
         commit: head,
         responses,
         scopeChanges: ["Change public API"],
-      }, true),
-    "user approval",
+      }),
+    "broader scope needs a plan revision",
   );
 });
 Deno.test("continuity: archives survive ordinary implementation, refresh and UX-only rollback", () => {
@@ -656,7 +742,30 @@ function goldenPacketStates() {
     request: "Implement both fixes",
   });
   archiveReviews(approved, "Earlier review", "review_code");
-  return { fixture: fixture(), reviewed: reviewed(), repair, approved };
+  // Records saved before ignore carry-forward have no generation or rollbackId.
+  for (const state of [repair, approved]) {
+    for (const decision of state.reviewDecisions ?? []) {
+      delete decision.generation;
+      delete decision.rollbackId;
+    }
+  }
+  // A decision on code findings before UX review runs.
+  const codeOnly = reviewed();
+  delete codeOnly.uxReview;
+  const codeStage = transition(codeOnly, "decide_review", {
+    id,
+    reviewFingerprint: codeReviewFingerprint(codeOnly),
+    request: "Repair the code finding",
+    repair: [{ role: "review_code", findingId: "same" }],
+    ignore: [],
+  });
+  return {
+    fixture: fixture(),
+    reviewed: reviewed(),
+    repair,
+    approved,
+    codeStage,
+  };
 }
 // Golden digests recorded on the code before contract 3. validateAssignment
 // recomputes packetDigest for every open or accepted contract-2/3 assignment,
@@ -667,6 +776,8 @@ const GOLDEN_PACKET_DIGESTS: Record<string, string> = {
   reviewed: "a06c449fa009d723fc8c981442cbaab08ae41d13dc36c2a9b2a76fde78d63b62",
   repair: "043a7bd4790e94bc78a6298adaac79db77b7c35eddbd803b7356136d436060e9",
   approved: "bf507d6479489206c3099850cdea93b4f7bb001c525522cd4ca039debe9bf289",
+  // Recorded when code-stage decisions were introduced.
+  codeStage: "954075ee92511dfda5928b91e5a903ada11649c1d9fbcfff7b8e5d0d8de65d6d",
 };
 Deno.test("reviewPacket output is byte-stable for bound assignments", () => {
   const states = goldenPacketStates();

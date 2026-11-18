@@ -45,7 +45,8 @@ def _text(flag, value):
 
 
 def build_inputs(command, file_inputs, *, handoff=None, request=None, repair=(), ignore=(),
-                 ignore_remaining=False, decision=None, skip_ci_request=None):
+                 ignore_remaining=False, decision=None, skip_ci_request=None,
+                 auto_repair=False, no_auto_repair=False):
     """Return the method inputs: the input file's object plus the mapped flags."""
     inputs = dict(file_inputs)
 
@@ -63,10 +64,24 @@ def build_inputs(command, file_inputs, *, handoff=None, request=None, repair=(),
         request = _text("--request", request)
         if command not in REQUEST_FIELDS and command != "drive":
             raise InputError(f"--request applies only to {', '.join(sorted({*REQUEST_FIELDS, 'drive'}))}")
+    if (auto_repair or no_auto_repair) and command != "drive":
+        raise InputError("--auto-repair and --no-auto-repair apply only to drive")
+    if auto_repair and no_auto_repair:
+        raise InputError("--auto-repair and --no-auto-repair conflict")
     if command == "drive":
-        if (handoff is None) != (request is None):
+        if auto_repair:
+            # The user's standing instruction: repair every blocking finding of
+            # this plan and rollback without asking.
+            if handoff is not None or request is None:
+                raise InputError("--auto-repair takes --request (the user's words) and no --handoff")
+            put("--auto-repair", "autoRepair", {"request": request})
+        elif no_auto_repair:
+            if handoff is not None or request is not None:
+                raise InputError("--no-auto-repair takes no --handoff or --request")
+            put("--no-auto-repair", "autoRepair", {"withdraw": True})
+        elif (handoff is None) != (request is None):
             raise InputError("drive takes --handoff and --request together, as one revision authorization")
-        if handoff is not None:
+        elif handoff is not None:
             put("--handoff/--request", "revisionApproval", {"handoffId": handoff, "request": request})
     else:
         if handoff is not None:

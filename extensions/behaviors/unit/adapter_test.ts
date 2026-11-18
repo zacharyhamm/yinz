@@ -365,6 +365,170 @@ print(json.dumps(result))
   }
 });
 
+Deno.test("summarize files each follow-up as its own Agenda item exactly once, retrying by marker", async () => {
+  const repo = await tempRepo();
+  const previousPath = Deno.env.get("PATH");
+  try {
+    const state = createState({ ...issue, digest: await digestIssue(issue) });
+    state.phase = "merged";
+    state.receipt = {
+      attemptId: "a6da10b0-c980-4b82-b920-640238095f1a",
+      originalCommit: "a".repeat(40),
+      rebasedCommit: "b".repeat(40),
+      mergedCommit: "b".repeat(40),
+      baseCommit: "c".repeat(40),
+      worktree: repo,
+      branch: "fixture",
+      ciStatus: "passed",
+      mergedAt: "2026-11-09T12:00:00.000Z",
+    };
+    const followUp = {
+      finding: {
+        issue: "default/85",
+        role: "review_code" as const,
+        reviewFingerprint: "f".repeat(64),
+        findingId: "nit",
+      },
+      issueDigest: state.issue.digest,
+      commit: "a".repeat(40),
+      detail: {
+        id: "nit",
+        severity: "low" as const,
+        description: "Helper name is unclear",
+        affectedPaths: ["src/lib.rs"],
+        evidence: ["src/lib.rs:4"],
+      },
+    };
+    state.reviewFollowUps = [
+      followUp,
+      // Raised to blocking, then accepted: not a follow-up any more.
+      {
+        ...followUp,
+        finding: { ...followUp.finding, findingId: "raised" },
+        detail: { ...followUp.detail, id: "raised", severity: "medium" },
+      },
+    ];
+    const raw = {
+      ...state.receipt,
+      status: "merged",
+      issueKey: "default/85",
+      issueDigest: state.issue.digest,
+      ci: { status: "passed", command: ["cargo", "x", "ci", "check"] },
+    };
+    await Deno.writeTextFile(
+      join(repo, "scripts", "issue_lifecycle", "git_ops.py"),
+      `import json, sys
+request = json.load(sys.stdin)
+action = request["action"]
+if action == "receipt":
+    result = json.loads(${JSON.stringify(JSON.stringify(raw))})
+elif action == "closeout-receipt":
+    print(json.dumps({"error": "No closeout in this fixture"}))
+    sys.exit(1)
+elif action == "agenda-workspace":
+    result = {"workspace": "default"}
+elif action == "inspect":
+    result = {"commonDir": ${JSON.stringify(join(repo, ".git"))}, "worktree": ${
+        JSON.stringify(repo)
+      }, "branch": "fixture", "head": "${"a".repeat(40)}", "main": "${
+        "b".repeat(40)
+      }", "clean": True}
+else:
+    raise AssertionError(request)
+print(json.dumps(result))
+`,
+    );
+    const issueItem = {
+      id: 85,
+      kind: "task",
+      text: issue.text,
+      note: issue.note,
+      status: "done",
+      completed: true,
+      blocked: false,
+      discarded_at: null,
+      assignments: [],
+    };
+    const store = join(repo, "agenda-store.json");
+    const log = join(repo, "agenda-log.json");
+    await Deno.writeTextFile(store, "[]");
+    await Deno.writeTextFile(log, "[]");
+    const bin = join(repo, "vault-bin");
+    await Deno.writeTextFile(
+      join(bin, "agenda"),
+      `#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+store, log = ${JSON.stringify(store)}, ${JSON.stringify(log)}
+calls = json.load(open(log)); calls.append(args); json.dump(calls, open(log, "w"))
+items = json.load(open(store))
+assert args[:3] == ["--workspace", "default", "--json"], args
+issue = json.loads(${JSON.stringify(JSON.stringify(issueItem))})
+if args[3:5] == ["item", "show"]:
+    print(json.dumps({"schema_version": 1, "item": issue}))
+elif args[3:5] == ["item", "done"]:
+    print(json.dumps({"schema_version": 1, "items": [issue], "completion": {"completed": 1, "reopened": 0, "created": 0, "created_items": []}}))
+elif args[3:5] == ["item", "list"]:
+    assert args[5] == "--search" and args[7:] == ["--status", "all"], args
+    found = [i for i in items if args[6] in i["note"]]
+    print(json.dumps({"schema_version": 1, "items": found, "offset": 0, "total": len(found)}))
+elif args[3:5] == ["item", "add"]:
+    assert args[6] == "--note", args
+    item = {"id": 200 + len(items), "kind": "task", "text": args[5], "note": args[7]}
+    items.append(item); json.dump(items, open(store, "w"))
+    # The first add is created but its reply is lost.
+    if os.path.exists(${JSON.stringify(join(repo, "lose-reply"))}):
+        os.remove(${JSON.stringify(join(repo, "lose-reply"))})
+        sys.exit(1)
+    print(json.dumps({"schema_version": 1, "item": item}))
+else:
+    raise AssertionError(args)
+`,
+    );
+    await Deno.chmod(join(bin, "agenda"), 0o755);
+    await Deno.writeTextFile(join(repo, "lose-reply"), "");
+    Deno.env.set("PATH", `${bin}:${previousPath ?? ""}`);
+    const fixture = fakeContext(repo, state);
+    const summary = { outcomeMet: true as const, summary: "Delivered" };
+    await rejects(
+      () => behavior.methods.summarize.execute(summary, fixture.context),
+      "Agenda exited 1",
+    );
+    const interrupted = await loadState(fixture.context);
+    equal(interrupted.phase, "merged");
+    equal(interrupted.reviewFollowUps![0].agendaItem?.status, "creating");
+    await behavior.methods.summarize.execute(summary, fixture.context);
+    const completed = await loadState(fixture.context);
+    equal(completed.phase, "done");
+    const filed = completed.reviewFollowUps![0].agendaItem!;
+    equal(filed.status, "created");
+    equal(filed.itemId, 200);
+    equal(completed.reviewFollowUps![1].agendaItem, undefined);
+    const items = JSON.parse(await Deno.readTextFile(store));
+    equal(items.length, 1);
+    equal(items[0].text, "Follow-up from #85: code review nit");
+    for (
+      const text of [
+        "Helper name is unclear",
+        "Severity: low",
+        "Affected paths: src/lib.rs",
+        `Marker: ${filed.marker}`,
+      ]
+    ) assert(items[0].note.includes(text), text);
+    const calls = JSON.parse(await Deno.readTextFile(log)) as string[][];
+    // The issue item is only read and completed, never edited.
+    assert(!calls.some((c) => c[4] === "edit"));
+    equal(calls.filter((c) => c[4] === "add").length, 1);
+    // A completed summarize files nothing again.
+    await behavior.methods.summarize.execute(summary, fixture.context);
+    equal(JSON.parse(await Deno.readTextFile(store)).length, 1);
+  } finally {
+    if (previousPath === undefined) Deno.env.delete("PATH");
+    else Deno.env.set("PATH", previousPath);
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
 Deno.test("existing lifecycle start resumes without writing or consulting Agenda", async () => {
   const repo = await tempRepo();
   try {

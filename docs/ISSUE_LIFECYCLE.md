@@ -19,13 +19,13 @@ flowchart LR
     T --> P[Plan and review]
     P --> I[Approved implementation]
     I --> R[Technical code review]
-    R --> U[UX review]
-    U --> D[User selects repairs or accepts findings]
-    D --> C[Deterministic approved checks]
-    D -->|Plan selected repairs| RP[Repair planning worker]
-    RP --> AP[User approves repair plan]
-    AP --> RF[Repair implementation worker]
-    RF --> R
+    R -->|Medium or higher findings| D[User selects repairs or accepts findings]
+    R -->|Clean or accepted| U[UX review, once]
+    U -->|Medium or higher findings| D
+    U -->|Clean or accepted| C[Deterministic approved checks]
+    D -->|Repair selected findings| RF[Repair worker]
+    RF --> DR[Delta re-review of the repair diff]
+    DR --> R
     C --> M[Merge authorization]
     M --> Q[Wait for integration lock]
     Q --> B[Rebase onto local main]
@@ -71,7 +71,8 @@ approval, merge authorization and a CI waiver are separate decisions.
 After saving a human-intervention handoff, `drive` sends an in-app Yinz
 notification to its saved control session and pane. This applies to
 `authorize_plan_revision`, `approve_plan`, `address_review_findings`,
-`approve_review_fixes`, `authorize_merge`, `authorize_closeout` and `blocked`,
+`authorize_merge`, `authorize_closeout` and `blocked` (and a legacy
+`approve_review_fixes` saved before repair planning was retired),
 including every repeated return of an unchanged handoff. Direct behavior calls
 and launcher calls use the same driver path. Automatic transitions, completion
 and worker dialogs do not independently send these notifications.
@@ -268,8 +269,10 @@ issue snapshot, plan version or commit, assignment and recovery identity,
 decision, an optional `requirementsChange` and presentation, which ends with a
 `Next:` line naming the exact launcher command. Decisions are
 `authorize_plan_revision`, `approve_plan`, `address_review_findings`,
-`approve_review_fixes`, `authorize_merge`, `integrate`, `summarize`,
-`authorize_closeout`, `resume_closeout`, `complete` and `blocked`.
+`authorize_merge`, `integrate`, `summarize`, `authorize_closeout`,
+`resume_closeout`, `complete` and `blocked`. A saved `approve_review_fixes`
+handoff from before repair planning was retired still parses; the next `drive`
+replaces it (see [Legacy states](#legacy-states)).
 `prepare_worktree` appears only after accepted close-out cleanup or for a legacy
 issue without a recorded worker worktree, since drive adopts the recorded one.
 Completed handoffs keep their identity across resume; changed state or
@@ -278,7 +281,8 @@ assignments invalidate them.
 Each human decision is one launcher command bound to the presented handoff id
 (`--handoff`, never filled automatically) and the user's actual words
 (`--request`/`--request-file`), plus `--repair`/`--ignore`/`--ignore-remaining`
-for review findings and `--decision` for close-out. The behavior derives plan
+for review findings, `--auto-repair`/`--no-auto-repair` on `drive` and
+`--decision` for close-out. The behavior derives plan
 versions, fingerprints, repair IDs and commits from that exact current handoff
 and rejects a stale one. Decision commands and `implement`, `repair`, `refresh`,
 `resume-rollback` and `merge` then continue with `drive` unless `--no-drive`.
@@ -300,8 +304,9 @@ controller conversation.
 The driver supplies role-specific prompts and validates results against the
 original task and current issue, plan and commit before import. Implementation
 returns the clean worktree's full committed HEAD. Reviews contain actual evidence.
-`implement`, `review_code`, `review_ux`, `plan_review_fixes` and
-`implement_review_fixes` roles require current-plan approval and preparation.
+`implement`, `review_code`, `review_ux` and `implement_review_fixes` roles
+require current-plan approval and preparation. New `plan_review_fixes`
+assignments are refused; a saved one still imports.
 A completed provider turn alone does not establish code correctness.
 
 ### Planning generations and adjudication
@@ -432,7 +437,8 @@ The reusable behavior saves a versioned launch ID and server incarnation before 
 
 Inputs are JSON objects for the selected command; the launcher maps its decision
 flags into them (`--handoff` to `handoffId`, `--request` to the command's request
-field, `--repair`/`--ignore`/`--ignore-remaining`, `--decision`). A flag that
+field, `--repair`/`--ignore`/`--ignore-remaining`, `--auto-repair`/`--no-auto-repair`,
+`--decision`). A flag that
 conflicts with the same key in `--input-file` is rejected. Worker outputs are
 supplied by pane roles. Commit identifiers are full issue-worktree Git IDs, never
 branch names or abbreviations.
@@ -445,16 +451,15 @@ branch names or abbreviations.
 | `start` | Optional `agent` override; launcher flag `--new-worktree` creates or adopts the canonical issue worktree. |
 | `adjudicate-plan` | `handoffId` of the current `authorize_plan_revision` or `approve_plan` handoff (plan version and review fingerprint are derived from it); nonempty `dispositions`: `findingId`, `disposition` (`resolved`, `rejected`, `downgraded`), `rationale`, nonempty `evidence`; lower corrected `severity` required only for downgrade. |
 | `approve` | `handoffId` of the current `approve_plan` handoff (plan version derived); `request`: actual user authorization and scope. |
-| `drive` | Optional `agent` and `control`; `revisionApproval: {handoffId, request}` from `--handoff` with `--request` authorizes one targeted revision. |
+| `drive` | Optional `agent` and `control`; `revisionApproval: {handoffId, request}` from `--handoff` with `--request` authorizes one targeted revision; `autoRepair: {request}` from `--auto-repair --request` records a standing instruction to repair blocking review findings, and `autoRepair: {withdraw: true}` from `--no-auto-repair` withdraws it. |
 | `implement` | Normally run by `drive`. Explicitly, a deliberately selected absolute `worktree` and existing feature `branch`; omitted values default to the recorded worker worktree and its branch. |
 | Implementation result | `summary`; full `commit` of clean issue worktree. |
-| Code review result | `planVersion`, `commit`, `steps` covering plan step IDs with `implemented` or `deviated` status; deviations require `justification`; `findings`; optional advisory `preliminaryChecks`. |
+| Code review result | `planVersion`, `commit`, `steps` covering plan step IDs with `implemented` or `deviated` status; deviations require `justification`; `findings`; optional advisory `preliminaryChecks`. The controller stamps `scope` (`{kind: "full"}` or `{kind: "delta", base, paths, findings}`) from the assignment. |
 | UX review result (`review-ux`) | `planVersion`, full `commit`, `assessment: {impact: material\|no_material_impact, summary, assessedPaths, limitations}`, shared `findings`, optional advisory `preliminaryChecks`. Rationale and assessed paths are nonempty even for no material impact. |
-| `decide-review` | `handoffId` of the current `address_review_findings` handoff (review fingerprint derived from its `codeReviewFingerprint`), actual user `request`, `repair` and `ignore` arrays of `{role: review_code\|review_ux, findingId}`, optional `ignoreRemaining` to ignore every other outstanding finding. Role qualifies IDs shared across reviews. |
-| Repair plan result (`plan_review_fixes`) | Same checked plan content as an initial plan; selected findings only. Stored separately from the approved issue plan. |
-| `approve-review-fixes` | Current `approve_review_fixes` `handoffId` (repair selection ID derived), actual user `request`. |
-| Repair implementation result (`implement_review_fixes`) | `summary`, full clean worktree `commit`. Requires the selected repair plan's approval. |
-| `verify` | No input; approved issue and completed repair checks run at the reviewed commit through `yinz-issue-verify`. |
+| `decide-review` | `handoffId` of the current `address_review_findings` handoff (review fingerprint derived from its `codeReviewFingerprint`), actual user `request`, `repair` and `ignore` arrays of `{role: review_code\|review_ux, findingId}`, optional `ignoreRemaining` to ignore every other blocking (medium or higher) finding. Role qualifies IDs shared across reviews. Follow-ups may be selected for repair. |
+| Repair implementation result (`implement_review_fixes`) | `summary`, full clean worktree `commit`, a response per selected finding, optional `checks` (focused argv checks with IDs no plan check uses). `scopeChanges` are rejected: broader work is reported as `unresolved`. |
+| Legacy repair plan result (`plan_review_fixes`) and `approve-review-fixes` | Accepted only to drain issues saved before repair planning was retired; drive never dispatches the planner or asks for approval. |
+| `verify` | No input; approved issue checks and completed repairs' checks run at the reviewed commit through `yinz-issue-verify`. |
 | `ready` | `handoffId` of the current `authorize_merge` handoff (commit derived); `mergeRequest` (from `--request`): user authorization to merge, accepting remaining findings at this commit. |
 | `merge` | Normally no input; explicit exception is `skipCiRequest`. |
 | `repair` | Optional `reason`; required only when no failed verification or merge attempt is recorded, whose details are attached automatically. |
@@ -464,8 +469,10 @@ branch names or abbreviations.
 | `summarize` | `outcomeMet: true`; `summary`: original problem, delivered outcome and limits. |
 
 Finding severities are `low`, `medium`, `high`, `critical`. Unresolved high/critical
-plan findings block planning approval. Implementation review findings of every
-severity require user direction; users may accept any of them for merge. Empty findings mean a real review found none, never skipped
+plan findings block planning approval. Implementation review findings of medium
+or higher severity require user direction; users may accept any of them for
+merge. Low implementation findings are follow-ups (`FOLLOW_UP_SEVERITIES`): they
+start no repair round. Empty findings mean a real review found none, never skipped
 review. New plan versions require fresh review, as do repaired implementations.
 Adopting ad-hoc work does not bypass planning, review or verification.
 Requirement changes invalidate affected planning evidence through refresh;
@@ -477,22 +484,25 @@ run verbatim without a shell, for example
 `["cargo", "x", "test", "-p", "yinz-server", "-E", "test(/^tabs::/)"]`.
 Checks are focused according to `AGENTS.md`, not unfiltered full suites already
 covered by the merge gate. The [check policy](../.agents/skills/issue-lifecycle/references/planning.md#check-policy)
-enforces argv form and focused selection when `plan` or `plan_review_fixes`
-evidence is submitted and when a controller records those methods directly. It
+enforces argv form and focused selection when `plan`, `plan_review_fixes` or
+`implement_review_fixes` (its optional `checks`) evidence is submitted and when a
+controller records those methods directly. It
 never runs in transitions or receipt replay, so persisted plans still verify. Reviewer preliminary checks contain `command`,
 `result` (`passed`, `failed`, `skipped`) and `summary`; they are advisory for
 plans with checks. Approval of the presented plan approves running its checks.
 
 ### Separate implementation reviews
 
-Normal drive runs implement -> technical code review -> UX review -> user
-findings decision (when findings remain) -> approved checks -> merge authorization. Both visible workers review the same full commit,
-issue requirements and current approved plan. Technical review independently
-challenges behavior and design assumptions, traces affected callers and lifecycle
-paths, and inspects weak assertions while reporting every plan step. UX review
-traces affected users/tasks through discovery, normal/repeat use, waiting,
-failure, cancellation and recovery, including indirect usability effects.
-Both read the shared evidence/severity standards and applicable review dimensions.
+Normal drive runs implement -> technical code review -> (repair rounds) -> one
+UX review -> (repair rounds) -> approved checks -> merge authorization. UX review
+runs only once the code review has no pending finding of medium or higher
+severity. Both visible workers review the same full commit, issue requirements
+and current approved plan. Technical review independently challenges behavior
+and design assumptions, traces affected callers and lifecycle paths, and inspects
+weak assertions while reporting every plan step. UX review traces affected
+users/tasks through discovery, normal/repeat use, waiting, failure, cancellation
+and recovery, including indirect usability effects. Both read the shared
+evidence/severity standards and applicable review dimensions.
 
 `state.uxReview` is optional historical storage, never defaulted to completion.
 Status and handoffs show its impact, rationale, assessed workflows/source paths,
@@ -502,36 +512,97 @@ assessments are valid; no UI-file change alone is not a rationale. Proposed fixe
 must not be marked as resolutions of newly reported defects.
 
 Verification preflight, `ready`, `begin_merge` and resumed unlanded integration
-require both current reviews. Verification and integration also require recorded
-user acceptance of outstanding findings. `ready` can record that acceptance
-through explicit merge sign-off. Technical approval never substitutes for UX. New technical evidence or a repaired commit
-invalidates UX and downstream evidence. UX-only rollback retains matching
-technical review/head but clears UX, verification and authorization. Ready-only
-rollback retains both reviews and same-commit verification. Saved original tasks,
-prompts, submissions and accepted receipts resume without duplicate reviewers.
+require both current reviews at the same commit. Verification and integration
+also require recorded user acceptance of pending findings. `ready` can record
+that acceptance through explicit merge sign-off. Technical approval never
+substitutes for UX. New technical evidence or a repaired commit invalidates UX
+and downstream evidence. UX-only rollback retains matching technical review/head
+but clears UX, verification and authorization. Ready-only rollback retains both
+reviews and same-commit verification. Saved original tasks, prompts, submissions
+and accepted receipts resume without duplicate reviewers.
 
-The `address_review_findings` handoff presents both reviews and asks which findings
-to address. No automatic code repair is allowed. Selection authorizes only a
-`plan_review_fixes` worker. Its proposed changes, risks, assumptions and argv
-checks yield `approve_review_fixes`; explicit approval authorizes an
-`implement_review_fixes` worker in the existing worktree. Repairs preserve the
-original approved plan and require fresh technical and UX reviews. New findings
-or changed review evidence return to the user instead of extending approval.
+#### Review rounds
+
+The `address_review_findings` handoff presents the current reviews' blocking
+findings: the code review's alone before UX review runs, both afterwards. It asks
+which to repair or ignore. Selection authorizes an `implement_review_fixes`
+worker in the existing worktree directly, with no repair plan or approval step.
+The worker repairs only the selected findings from their recorded evidence and
+the user's request, returns a response per finding, and may add focused argv
+`checks` under the check policy. Repairs preserve the original approved plan.
+
+A repair invalidates both reviews. The next code review, and the UX review once it
+has run, are **delta re-reviews**:
+
+- Drive binds `scope: {kind: "delta", base, paths, findings}` into the assignment
+  when the role has a prior review in the same requirements generation, rollback
+  and plan version, the last decision's repair commit is the reviewed HEAD, and
+  history descends from that review's commit. `base` is that commit, `paths` the
+  repair diff's changed paths (`git_ops.py review-context` returns `deltaPaths`),
+  and `findings` the role's prior-finding obligations.
+- The reviewer verifies each listed finding (`priorFindings` outcome) and reports
+  only regressions the repair diff introduced. A new finding without `origin`
+  must name an affected path the repair changed; otherwise the import is
+  rejected. A delta code review's template carries plan-step conformance from
+  its base review.
+- The controller stamps the assignment's `scope` on the review, so the next round
+  knows its base. A worker-supplied scope that differs is rejected.
+- Anything else, including the first review of each role, rollback, requirement
+  or plan changes, verification and merge-gate repairs, and rebased history,
+  gets `{kind: "full"}`. An explicit rollback to `review_code` or `review_ux` is
+  the way to ask for a full re-audit.
+
+After a UX repair, a delta code review checks the repair diff for technical
+regressions before the delta UX review verifies the UX findings. The UX delta's
+base is the last UX-reviewed commit, so it covers any intervening code repairs.
 
 Optional `reviewDecisions` retains selections, actual requests, source reviews,
-repair plans, approvals and committed results. Decisions bind requirements,
-rollback, plan and both exact reviews through `codeReviewFingerprint`. Stale
-handoffs, reused IDs with different input and unknown/duplicate finding references
-are rejected. Ignored findings keep their original severity and unresolved
-status. Unselected findings remain pending. Merge sign-off can accept all
-remaining findings; when checks have not run, record that acceptance with
-`decide-review`, run checks, then record `ready` using the already-given merge
-request. Acceptance never waives verification or the separate full merge CI gate.
-Completed repair checks are added to original checks with unique lifecycle log
-IDs; repair-plan approval authorizes them. No additional approval is needed to
-resume the same saved worker assignment. Explicit repair-worker restart preserves
-selected scope and existing implementation approval while fencing the old worker.
-Ordinary rollback requires renewed decisions for retained findings.
+legacy repair plans and approvals, and committed results. Decisions bind
+requirements, rollback, plan and the exact current reviews through
+`codeReviewFingerprint`; before UX review runs that is the code review alone, and
+code findings ignored then stay ignored once UX review runs. New decisions record
+their planning `generation` and `rollbackId`. Stale handoffs, reused IDs with
+different input and unknown/duplicate finding references are rejected. Ignored
+findings keep their original severity and unresolved status. In a delta
+re-review, a finding the user ignored earlier in the same generation and
+rollback carries that ignore forward when the reviewer reports it as `persists`,
+without `reopening` and at no higher severity; a full review asks again.
+Unselected findings remain pending. Merge sign-off can accept all remaining
+findings; when checks have not run, record that acceptance with `decide-review`,
+run checks, then record `ready` using the already-given merge request.
+Acceptance never waives verification or the separate full merge CI gate.
+Completed repairs' checks are added to original checks with unique lifecycle log
+IDs (`<decision id>-<n>`); a legacy repair plan's checks count only when that
+plan was approved. No additional approval is needed to resume the same saved
+worker assignment. Explicit repair-worker restart preserves selected scope while
+fencing the old worker. Ordinary rollback requires renewed decisions for
+retained findings.
+
+#### Follow-ups
+
+Unresolved low findings are recorded in `state.reviewFollowUps` (finding
+identity, latest reported form, commit, issue digest) when their review is
+imported. They are excluded from blocking acceptance and from later reviewers'
+prior-finding obligations, and listed in the `address_review_findings`,
+`authorize_merge` and `summarize` handoffs. The user can still select one with
+`--repair`. A later report at medium or higher makes it blocking again. Before
+completing the Agenda issue, `summarize` files each remaining follow-up of the
+current requirements as its own Agenda item. It records `agendaItem: {marker,
+status: "creating"}` first, searches for the marker on retry before adding, and
+stores the created item's ID. It never edits the issue's own note, whose content
+is part of the issue digest. A failed add blocks `summarize` with a retryable
+error and leaves the issue `merged`.
+
+#### Auto-repair
+
+`drive --auto-repair --request TEXT` saves the user's standing instruction in
+`driver.autoRepair`, scoped to the issue digest, plan version and rollback.
+Where drive would present `address_review_findings`, it records a
+`decide_review` instead: every pending blocking finding is repaired, none
+ignored, with the saved request and `source: "auto_repair"`. It still hands off
+when a pending finding has `reopening`, after three auto-repair rounds under one
+request, or when the scope no longer matches. `drive --no-auto-repair` withdraws
+the instruction.
 
 Existing records need no bulk rewrite. Already-landed receipts remain
 authoritative; integration first reconciles durable landed receipts, and landed
@@ -642,7 +713,7 @@ decisions, `drive` (or explicit `verify`) runs, outside the repository merge loc
    commit;
 2. the configured baseline checks, in order (see
    [worker defaults](#worker-defaults-and-issue-overrides));
-3. the approved plan's checks, then completed repair checks, in order.
+3. the approved plan's checks, then completed repairs' checks, in order.
 
 A configuration error stops verification before anything runs. Before each check,
 the Git helper requires a clean issue branch at the reviewed commit with its own
@@ -753,7 +824,7 @@ publishes the assignment's files in a private directory outside every worktree,
 | `target.json` | Submission target: protocol, task ID, role, evidence behavior, control directory, assignment digest. |
 | `snapshot.json` | The lifecycle snapshot the task was dispatched from; packet `sourceRef` paths resolve against it. |
 | `packet.json` | The deterministic review/repair packet; its SHA-256 equals `continuity.packetDigest`. |
-| `evidence-template.json` | Role evidence with every required identity pre-filled (plan steps, prior-finding obligations, selected findings, blocking findings). An unedited template fails validation. |
+| `evidence-template.json` | Role evidence with every required identity pre-filled (plan steps, prior-finding obligations, selected findings, blocking findings). A delta code review's steps carry its base review's conformance. An unedited template fails validation. |
 | `evidence-schema.json` | The role's JSON Schema. |
 | `baseline.json`, `feature.diff`, `delta.diff` | Captured continuity endpoints and the decoded diffs, when present. |
 | `manifest.json` | Path, size and SHA-256 of every file. |
@@ -1068,8 +1139,10 @@ passing merge.
 The installed-command smoke test submits evidence from a second process while the
 controller waits and drives planning through review with truncated final chat.
 It also checks continuation and handoff resume without duplicate submissions,
-stale finding selections, acceptance without invented resolutions, repair planning
-and approval through the launcher, committed repairs, and fresh reviews/checks.
+stale finding selections, acceptance without invented resolutions, a selected
+repair going straight to the repair worker with its own focused check, delta
+re-reviews stamped with the reviewed base commit and the repair's changed paths,
+and a full re-review after rollback.
 
 Fake Cargo checks establish ordering/recovery without running full Rust suites.
 They establish neither live provider launch nor a passed full feature gate. A
@@ -1096,7 +1169,9 @@ prompts. When a handoff, status or blocker names one of these states:
 | Legacy structured rejection | A resource-free structured `launch_rejected` without a version-two receipt stays readable and discard-eligible; legacy ID-less launches remain uncertain. |
 | Legacy placement and cleanup | Existing saved tasks keep their original tab placement and cleanup behavior. |
 | Legacy first-version plan | May receive one automatic revision; later legacy versions count as having used it. Recorded revision authorizations remain usable. |
-| Legacy plan without `checks` | Keeps the reviewer-reported gate: both current reviews are required and `ready` rejects failed preliminary checks from either reviewer. Approved repair checks augment it without discarding failed preliminary checks; without them the handoff states that no deterministic verification ran. A separate current UX assessment is still required. |
+| Legacy plan without `checks` | Keeps the reviewer-reported gate: both current reviews are required and `ready` rejects failed preliminary checks from either reviewer. Repair checks augment it without discarding failed preliminary checks; without them the handoff states that no deterministic verification ran. A separate current UX assessment is still required. |
+| Repair selected before planning was retired | Drains without a data rewrite. With no repair plan yet, or a plan awaiting `approve_review_fixes`, the next `drive` dispatches `implement_review_fixes` directly and replaces the saved handoff; until then `approve-review-fixes` against that current handoff still records approval. A running `plan_review_fixes` worker's evidence still imports and the plan becomes guidance. An unapproved plan's checks are not added to verification; an approved one's are. New planner dispatch and planner restart are refused. |
+| Decisions without `generation`/`rollbackId` | Parse unchanged; their ignores apply only to the exact reviews they named and never carry forward. |
 | Legacy implementing work with technical review only | Proceeds to UX review; this is not synthetic approval. |
 | Legacy unmerged ready state without UX | Blocks: with the user's request, `rollback` to `review_ux`, then `drive`, checks and a new merge authorization. Legacy ready findings with both reviews return to `address_review_findings`. |
 | Legacy unlanded active attempt | Needs `repair` and fresh reviews. First consult its durable receipt: a landed merge is a fact, and merge/close-out replay reuses it without inventing UX evidence. |
@@ -1235,28 +1310,32 @@ rollback archives only UX and retains matching technical evidence. Archives neve
 satisfy current gates. Concern identity includes issue, role, origin fingerprint
 and stable finding ID. Cross-role links preserve independent obligations. The
 packet carries complete saved planning/review decisions, user authorizations,
-selected findings, repair plans/responses, approved checks and failure log
+selected findings, legacy repair plans, repair responses, approved and repair checks and failure log
 references; it distinguishes worker-proposed tradeoffs from dispositions and
 actual approvals. Changed requirements retain archives as context without
 importing their old obligations into the new digest.
 
-Repair planners map every selected full finding identity to repair steps and
-checks. Implementers respond to every selection with `addressed`, `disputed` or
-`unresolved`, rationale, affected paths and source/check evidence. A new scope
-proposal returns through repair planning/approval. Implementation claims never
-close findings. Subsequent reviewers respond to prior unresolved findings with
+Repair implementers respond to every selection with `addressed`, `disputed` or
+`unresolved`, rationale, affected paths and source/check evidence. Work beyond the
+selected findings is reported as `unresolved`; broader scope needs a plan
+revision. Legacy repair planners mapped every selected full finding identity to
+repair steps and checks. Implementation claims never close findings. Subsequent reviewers respond to prior unresolved findings with
 `persists`, `verified_fixed` or `reopened`. Persistent concerns remain in current
 findings with their original identity. Omission cannot close a concern. Reopening
 verified-fixed concerns requires new evidence and rationale addressing the earlier
 decision. An unchanged ignored concern is labelled historical continuity and
-remains unresolved; acceptance still needs an exact current review fingerprint.
+remains unresolved; acceptance needs an exact current review fingerprint, a
+code-stage decision on the same code review, or a carried-forward ignore in a
+delta re-review.
 
-Requirements review remains independent of the approved design. Full feature
-scope, assumptions, callers, tests and failure paths remain review obligations;
-the repair delta only prioritizes investigation. Technical and UX reviews remain
-sequential and fresh after repairs. Selection, repair-plan approval, current
-finding acceptance, deterministic verification and merge authorization remain
-separate gates. Rebased merge CI and its explicit per-merge waiver rules are
+Requirements review remains independent of the approved design. In a full
+review, feature scope, assumptions, callers, tests and failure paths remain
+review obligations and the endpoint delta only prioritizes investigation. A delta
+re-review is bounded by its assignment `scope`: the repair diff, its prior
+findings, and regressions touching the changed paths. Technical review precedes
+UX review, and both are fresh after repairs. Selection, current finding
+acceptance, deterministic verification and merge authorization remain separate
+gates. Rebased merge CI and its explicit per-merge waiver rules are
 unchanged.
 
 Optional structured `advisoryEvidence` preserves producing task, original commit,

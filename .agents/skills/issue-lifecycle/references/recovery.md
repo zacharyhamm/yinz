@@ -285,17 +285,25 @@ records.
 
 Plan blockers use the skill's `authorize_plan_revision` route: supported
 adjudication or separately authorized targeted revision, never implied approval.
-Technical and UX findings yield `address_review_findings` after both reviews.
-Present findings and ask which to repair or ignore; any severity may be accepted
-by the user. Use `decide-review --handoff <id> --request '<direction>'` with
-`--repair`/`--ignore` role-qualified finding references; the behavior binds the
-exact review fingerprint from that handoff. Selected repairs run a
-planner and yield `approve_review_fixes`; approval authorizes the implementation
-worker. Repairs require fresh technical and UX reviews and verification. The
-user may sign off on merge with outstanding findings; preserve them as unresolved.
-Resume interrupted repair assignments using their original submissions and saved
-approval. Explicit `restart-agent` for either repair role retains selected scope
-and any approved repair plan; ordinary rollback invalidates finding decisions. A failed, unaccepted or stale
+Medium or higher code findings yield `address_review_findings` before UX review
+runs; UX findings yield it after the single UX review. Low findings are
+follow-ups and never block. Present findings and ask which to repair or ignore;
+any severity may be accepted by the user. Use `decide-review --handoff <id>
+--request '<direction>'` with `--repair`/`--ignore` role-qualified finding
+references; the behavior binds the exact review fingerprint from that handoff.
+Selected repairs go straight to the `implement_review_fixes` worker. Repairs
+require fresh, delta-scoped technical and UX reviews and verification; roll back
+to `review_code` or `review_ux` for a full re-audit. The user may sign off on
+merge with outstanding findings; preserve them as unresolved. Resume interrupted
+repair assignments using their original submissions. Explicit `restart-agent`
+for `implement_review_fixes` retains selected scope; `plan_review_fixes` restart
+is refused (discard a legacy planner and `drive`). Ordinary rollback invalidates
+finding decisions. A delta re-review that rejects a new finding outside the
+repair's changed paths is a worker evidence error: let the reviewer resubmit,
+moving a pre-existing concern to a later full review or follow-up. If
+auto-repair stops (round limit, reopened finding, or a changed plan or rollback),
+present the findings and obtain the user's direction or renewed
+`drive --auto-repair`. A failed, unaccepted or stale
 UX assignment never counts as approval; resume its original saved submission. Existing
 ad-hoc code still needs a real plan, review and verification; never fabricate
 evidence. Stale review cannot cover a new plan or repaired implementation.

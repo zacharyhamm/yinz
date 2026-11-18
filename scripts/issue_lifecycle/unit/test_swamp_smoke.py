@@ -224,7 +224,9 @@ else:
             marker.write_text(marker.read_text() + "repaired feedback\\n")
             subprocess.run(["git", "-C", state["cwd"], "add", "marker.txt"], check=True)
             subprocess.run(["git", "-C", state["cwd"], "commit", "-m", "Repair fixture feedback"], check=True, capture_output=True)
+            # No repair plan: the worker adds its own focused check for the repair.
             evidence = {"summary":"Repaired selected UX feedback", "commit":subprocess.check_output(["git", "-C", state["cwd"], "rev-parse", "HEAD"], text=True).strip(),
+                        "checks":[{"id":"feedback","command":["grep","-q","repaired feedback","marker.txt"],"covers":["review_ux/ux-feedback"]}],
                         "responses":[{**response, "status":"addressed", "rationale":"Added the repair marker for the selected feedback", "affectedPaths":["marker.txt"], "evidence":["marker.txt: repaired feedback"], "checkIds":["feedback"]} for response in evidence["responses"]]}
         elif role == "review_plan":
             if evidence["planVersion"] <= int(os.environ.get("YINZ_SMOKE_BLOCKED_VERSIONS", "0")):
@@ -897,22 +899,23 @@ raise SystemExit(result.returncode)
         self.assertEqual(accepted["decision"], "authorize_merge")
         self.assertNotIn("resolution", accepted["state"]["uxReview"]["findings"][0])
         # A new review invalidates acceptance and can be selected for repair.
-        self.lifecycle("rollback", {"step": "review_ux", "request": "Repeat fixture UX and plan its repair"})
+        self.lifecycle("rollback", {"step": "review_ux", "request": "Repeat fixture UX and repair it"})
         findings = json.loads(self.lifecycle("drive"))
         self.assertEqual(findings["decision"], "address_review_findings")
+        # The selection goes straight to the repair worker: no plan or approval.
         self.lifecycle("decide-review", {"id":findings["id"], "reviewFingerprint":findings["codeReviewFingerprint"],
-                                        "request":"Plan the feedback repair", "repair":[{"role":"review_ux","findingId":"ux-feedback"}], "ignore":[]})
-        proposed = json.loads(self.lifecycle("drive"))
-        self.assertEqual(proposed["decision"], "approve_review_fixes")
-        self.assertEqual(self.git(worktree, "rev-parse", "HEAD"), commit)
-        self.assertEqual(json.loads(self.lifecycle("drive"))["id"], proposed["id"])
-        fix = proposed["state"]["reviewDecisions"][-1]
-        self.lifecycle("approve-review-fixes", {"id":fix["id"], "handoffId":proposed["id"], "request":"Implement this feedback repair"})
+                                        "request":"Repair the feedback", "repair":[{"role":"review_ux","findingId":"ux-feedback"}], "ignore":[]})
         del self.env["YINZ_SMOKE_BLOCK_UX"]
         clean = json.loads(self.lifecycle("drive"))
         self.assertNotEqual(clean["commit"], commit)
         self.assertEqual(len(clean["state"]["verification"]["checks"]), 2)
         self.assertEqual(clean["state"]["reviewDecisions"][-1]["result"]["commit"], clean["commit"])
+        self.assertNotIn("plan", clean["state"]["reviewDecisions"][-1])
+        # Both re-reviews cover only the repair diff from the reviewed commit.
+        for review in ("codeReview", "uxReview"):
+            self.assertEqual(clean["state"][review]["scope"]["kind"], "delta", review)
+            self.assertEqual(clean["state"][review]["scope"]["base"], commit, review)
+            self.assertEqual(clean["state"][review]["scope"]["paths"], ["marker.txt"], review)
         self.assertEqual(clean["decision"], "authorize_merge")
         self.assertEqual(clean["state"]["uxReview"]["assessment"]["impact"], "no_material_impact")
         self.assertEqual(clean["state"]["verification"]["status"], "passed")
@@ -922,15 +925,28 @@ raise SystemExit(result.returncode)
             calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
             return [json.loads(call["stdin"].split("Swamp submission target:\n", 1)[1].split("\n\n", 1)[0])["role"]
                     for call in calls if call["args"][3] == "prompt"]
-        self.assertEqual(roles(), ["triage", "plan", "review_plan", "review_ux", "review_ux", "plan_review_fixes", "implement_review_fixes", "review_code", "review_ux"])
+        self.assertEqual(roles(), ["triage", "plan", "review_plan", "review_ux", "review_ux", "implement_review_fixes", "review_code", "review_ux"])
         replay = json.loads(self.lifecycle("drive"))
         self.assertEqual(replay["id"], clean["id"])
-        self.assertEqual(roles(), ["triage", "plan", "review_plan", "review_ux", "review_ux", "plan_review_fixes", "implement_review_fixes", "review_code", "review_ux"])
+        self.assertEqual(roles(), ["triage", "plan", "review_plan", "review_ux", "review_ux", "implement_review_fixes", "review_code", "review_ux"])
         # Repeat from technical review to exercise the visible two-role sequence.
         self.lifecycle("rollback", {"step": "review_code", "request": "Repeat both fixture reviews"})
         again = json.loads(self.lifecycle("drive"))
         self.assertEqual(again["decision"], "authorize_merge")
         self.assertEqual(roles()[-2:], ["review_code", "review_ux"])
+        # A rollback asks for a full re-audit, not a delta.
+        self.assertEqual(again["state"]["codeReview"]["scope"], {"kind": "full"})
+        # The standing auto-repair instruction passes the workflow's input schema.
+        def driver():
+            document = json.loads(self.lifecycle("status"))
+            return next((r for r in document["results"] if "autoRepair" in r or "agent" in r and "assignmentId" in r), {})
+        auto = json.loads(self.lifecycle("drive", flags=("--auto-repair", "--request", "Repair every blocking finding")))
+        self.assertEqual(auto["id"], again["id"])
+        self.assertEqual(driver().get("autoRepair", {}).get("request"), "Repair every blocking finding")
+        self.lifecycle("drive", flags=("--no-auto-repair",))
+        withdrawn = driver()
+        self.assertIn("assignmentId", withdrawn)
+        self.assertNotIn("autoRepair", withdrawn)
 
     def record_ux(self, commit):
         self.lifecycle("review-ux", {

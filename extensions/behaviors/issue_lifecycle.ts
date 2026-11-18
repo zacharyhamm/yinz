@@ -27,9 +27,12 @@ import {
 import { assertCheckPolicy } from "./_lib/check_policy.ts";
 import {
   ActionSchemas,
+  activeFollowUps,
   CheckSchema,
   completeAgenda,
   createState,
+  fileFollowUpItem,
+  followUpMarker,
   type LifecycleState,
   type MergeFailure,
   readAgenda,
@@ -45,6 +48,7 @@ import {
   EventSchema,
   gitOperation,
   GlobalArgsSchema,
+  type Handle,
   inspect,
   loadState,
   mergeLogName,
@@ -152,11 +156,15 @@ function recordedTransition<K extends keyof typeof ActionSchemas>(
             () => raw == null ? undefined : HandoffSchema.parse(raw),
           );
         }
-        if (action === "plan" || action === "plan_review_fixes") {
+        if (
+          action === "plan" || action === "plan_review_fixes" ||
+          action === "implement_review_fixes"
+        ) {
           // Submission-time policy for new plans; transition() replays persisted
           // plans without it. Malformed checks fall through to transition's error.
           const plan = z.object({ checks: z.array(CheckSchema) }).loose()
             .safeParse(input);
+          // A repair result's checks are optional; plans always carry them.
           if (plan.success) assertCheckPolicy(plan.data.checks);
         }
         if (
@@ -179,7 +187,7 @@ function recordedTransition<K extends keyof typeof ActionSchemas>(
 /** Local behavior; the issue's state and every decision are versioned Swamp data. */
 export const behavior = {
   type: "@yinz/issue-lifecycle",
-  version: "2026.11.14.1",
+  version: "2026.11.18.1",
   globalArguments: GlobalArgsSchema,
   resources: {
     rounds: {
@@ -403,15 +411,15 @@ export const behavior = {
     },
     decide_review: recordedTransition(
       "decide_review",
-      "Record the user's selected review repairs and ignored findings",
+      "Record the user's selected review repairs and ignored findings; selected repairs go straight to the repair worker",
     ),
     plan_review_fixes: recordedTransition(
       "plan_review_fixes",
-      "Record a focused repair plan; visible workers remain required",
+      "Legacy: record a repair plan for an issue saved before repair planning was retired",
     ),
     approve_review_fixes: recordedTransition(
       "approve_review_fixes",
-      "Approve the current repair plan before implementation",
+      "Legacy: approve a saved repair plan; drive repairs selected findings without it",
     ),
     review_code: recordedTransition(
       "review_code",
@@ -613,10 +621,34 @@ export const behavior = {
             action: "receipt",
             attemptId: state.receipt.attemptId,
           }).then((raw) => normalizeReceipt(raw, state));
-          const next = state.phase === "done"
-            ? state
-            : transition(state, "done", args);
           if (state.phase === "done") return { dataHandles: [] };
+          // Validate the outcome before any Agenda write.
+          transition(state, "done", args);
+          const filed: Handle[] = [];
+          for (const followUp of activeFollowUps(state)) {
+            if (followUp.agendaItem?.status === "created") continue;
+            const marker = followUp.agendaItem?.marker ??
+              followUpMarker(followUp);
+            if (!followUp.agendaItem) {
+              // Record intent first: a retry searches for the marker before adding.
+              followUp.agendaItem = { marker, status: "creating" };
+              filed.push(
+                ...(await saveState(context, "file_follow_up", state))
+                  .dataHandles,
+              );
+            }
+            const itemId = await fileFollowUpItem(
+              state.issue,
+              followUp,
+              marker,
+            );
+            followUp.agendaItem = { marker, status: "created", itemId };
+            filed.push(
+              ...(await saveState(context, "file_follow_up", state))
+                .dataHandles,
+            );
+          }
+          const next = transition(state, "done", args);
           await completeAgenda(state.issue);
           const saved = await saveState(context, "done", next);
           try {
@@ -624,7 +656,7 @@ export const behavior = {
             return {
               dataHandles: [
                 ...new Map(
-                  [...saved.dataHandles, ...offered.dataHandles].map(
+                  [...filed, ...saved.dataHandles, ...offered.dataHandles].map(
                     (handle) => [handle.name, handle],
                   ),
                 ).values(),
@@ -643,7 +675,7 @@ export const behavior = {
               state: StateSchema.parse(next),
               presentation: reason,
             });
-            return { dataHandles: [...saved.dataHandles, handoff] };
+            return { dataHandles: [...filed, ...saved.dataHandles, handoff] };
           }
         }),
     },

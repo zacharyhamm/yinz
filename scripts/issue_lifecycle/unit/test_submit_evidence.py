@@ -136,7 +136,9 @@ class SubmitEvidenceTests(unittest.TestCase):
             "SWAMP_LOCK_TIMEOUT_MS": "3000",
         }
         command = [sys.executable, "-I", str(HELPER), "--task-dir", str(task_dir or self.task_dir), "--assignment-digest", digest, *args]
-        result = subprocess.run(command, input=stdin, text=True, capture_output=True, env=env, timeout=60)
+        # The helper never sees the runner's stdin unless a test supplies it.
+        source = {"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}
+        result = subprocess.run(command, **source, text=True, capture_output=True, env=env, timeout=60)
         lines = result.stdout.strip().splitlines()
         return result, (json.loads(lines[-1]) if lines and lines[-1].startswith("{") else None)
 
@@ -278,6 +280,22 @@ class SubmitEvidenceTests(unittest.TestCase):
         result, output = self.helper("--status")
         self.assertEqual((result.returncode, output["status"]), (1, "error"))
         self.assertTrue(all(call["argv"][:2] == ["data", "query"] for call in self.calls() if "--stdin" not in call["argv"]))
+
+    def test_swamp_children_never_inherit_an_open_stdin(self):
+        # The helper's stdin is a pipe whose write end stays open, so it never
+        # reaches EOF. The fake swamp reads stdin: inheriting it would block.
+        env = {**os.environ, "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
+               "FAKE_SWAMP_ROOT": str(self.root)}
+        command = [sys.executable, "-I", str(HELPER), "--task-dir", str(self.task_dir),
+                   "--assignment-digest", DIGEST, "--status"]
+        read, write = os.pipe()
+        try:
+            result = subprocess.run(command, stdin=read, capture_output=True, text=True, env=env, timeout=30)
+        finally:
+            os.close(read)
+            os.close(write)
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(json.loads(result.stdout.strip().splitlines()[-1])["status"], "open")
 
     def test_print_commands_sends_nothing(self):
         result, _ = self.helper("--print-commands")

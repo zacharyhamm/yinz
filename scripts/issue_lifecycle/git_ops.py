@@ -461,6 +461,15 @@ def review_context(request):
         except UnicodeDecodeError:
             return base64.b64encode(data).decode("ascii"), "base64"
 
+    def changed_paths(before, after):
+        # Read raw bytes: -z output is unquoted, and command() strips text.
+        with tempfile.TemporaryDirectory(prefix="yinz-review-paths-") as directory:
+            output = Path(directory) / "paths"
+            git(worktree, "diff", "--no-ext-diff", "--name-only", "-z",
+                "--output=" + str(output), before, after, "--")
+            data = output.read_bytes()
+        return sorted({name.decode("utf-8", "replace") for name in data.split(b"\0") if name})
+
     pinned = request.get("baseline")
     main = commit(pinned["main"] if pinned else state["main"])
     commit(head)
@@ -493,6 +502,8 @@ def review_context(request):
             result["ancestry"] = "same" if previous_head == head else (
                 "descendant" if git(worktree, "merge-base", "--is-ancestor", previous_head, head, check=False)[0] == 0 else "divergent")
             result["delta"], result["deltaEncoding"] = capture_diff(previous_head, head)
+            # Bounds a delta re-review's new findings to what the repair changed.
+            result["deltaPaths"] = changed_paths(previous_head, head)
             if result["ancestry"] == "divergent":
                 result["limitations"].append("Rebased or divergent history: endpoint delta is not a descendant repair diff.")
     if pinned and state["main"] != main:

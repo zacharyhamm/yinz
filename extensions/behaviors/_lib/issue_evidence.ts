@@ -11,6 +11,7 @@ import {
   priorImplementationFindings,
   recordFeedback,
   RepairResultSchema,
+  reviewScope,
   RevisionPlanSchema,
   selectedRepairFindings,
   StateSchema,
@@ -281,7 +282,14 @@ export function reviewPacket(state: z.infer<typeof StateSchema>) {
       decision.codeReview,
       `reviewDecisions[${index}].codeReview`,
     ),
-    uxReview: review(decision.uxReview, `reviewDecisions[${index}].uxReview`),
+    ...(decision.uxReview
+      ? {
+        uxReview: review(
+          decision.uxReview,
+          `reviewDecisions[${index}].uxReview`,
+        ),
+      }
+      : {}),
   }));
   const fix = activeReviewFix(state);
   return {
@@ -352,7 +360,14 @@ export function validateAssignment(assignment: Assignment) {
         "review_ux",
         "plan_review_fixes",
         "implement_review_fixes",
-      ].includes(assignment.role) && !c.baseline)
+      ].includes(assignment.role) && !c.baseline) ||
+      (c.scope !== undefined &&
+        (!(assignment.role === "review_code" ||
+          assignment.role === "review_ux") ||
+          canonical(c.scope) !==
+            canonical(
+              reviewScope(assignment.before, assignment.role, c.baseline),
+            )))
     ) {
       throw new Error(
         "Review continuity does not match its assignment snapshot and baseline",
@@ -426,6 +441,13 @@ export function validateEvidence(assignment: Assignment, raw: unknown) {
       validateRepairResponses(state, payload.evidence, true);
     }
     if (payload.role === "review_code" || payload.role === "review_ux") {
+      const scope = assignment.continuity!.scope;
+      if (
+        payload.evidence.scope &&
+        canonical(payload.evidence.scope) !== canonical(scope)
+      ) throw new Error("Reviewer scope differs from assignment");
+      // Controller provenance: the base and paths the reviewer was assigned.
+      if (scope) payload.evidence.scope = scope;
       validateImplementationReview(state, payload.role, payload.evidence, true);
       if (
         payload.evidence.baseline &&

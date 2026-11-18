@@ -174,6 +174,12 @@ export function createEvidenceMethods(dependencies = evidenceDependencies) {
         ) {
           assertCheckPolicy(validated.payload.evidence.checks);
         }
+        if (
+          validated.payload.role === "implement_review_fixes" &&
+          validated.payload.evidence.checks
+        ) {
+          assertCheckPolicy(validated.payload.evidence.checks);
+        }
         const task = await checkTask(context, assignment);
         const recovery = await parentResource(context, assignment, "recovery");
         if (
@@ -340,7 +346,7 @@ async function parentTaskWithIdentity(
 
 export const behavior = {
   type: "@yinz/issue-evidence",
-  version: "2026.11.14.1",
+  version: "2026.11.18.1",
   globalArguments: z.object({}).strict(),
   resources: {
     submission: {

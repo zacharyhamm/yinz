@@ -49,6 +49,25 @@ class BuildInputsTests(unittest.TestCase):
             with self.subTest(kwargs=kwargs), self.assertRaisesRegex(InputError, "together"):
                 build_inputs("drive", {}, **kwargs)
 
+    def test_auto_repair_flags_set_or_withdraw_the_standing_request(self):
+        self.assertEqual(build_inputs("drive", {"agent": {"kind": "claude"}}, request="Fix every blocker",
+                                      auto_repair=True),
+                         {"agent": {"kind": "claude"}, "autoRepair": {"request": "Fix every blocker"}})
+        self.assertEqual(build_inputs("drive", {}, no_auto_repair=True), {"autoRepair": {"withdraw": True}})
+        for kwargs, message in (
+            ({"auto_repair": True}, "takes --request"),
+            ({"auto_repair": True, "request": "r", "handoff": HANDOFF}, "no --handoff"),
+            ({"no_auto_repair": True, "request": "r"}, "no --handoff or --request"),
+            ({"auto_repair": True, "no_auto_repair": True, "request": "r"}, "conflict"),
+        ):
+            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(InputError, message):
+                build_inputs("drive", {}, **kwargs)
+        with self.assertRaisesRegex(InputError, "conflicts with autoRepair"):
+            build_inputs("drive", {"autoRepair": {"request": "file"}}, request="flag", auto_repair=True)
+        for command in ("decide-review", "ready", "approve"):
+            with self.subTest(command=command), self.assertRaisesRegex(InputError, "apply only to drive"):
+                build_inputs(command, {}, handoff=HANDOFF, request="r", auto_repair=True)
+
     def test_invalid_handoff_and_finding_refs_are_rejected(self):
         with self.assertRaisesRegex(InputError, "UUID"):
             build_inputs("approve", {}, handoff="not-a-uuid", request="Approve")

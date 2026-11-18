@@ -145,8 +145,11 @@ def environment() -> dict:
 
 
 def run(command: list[str], stdin: str | None = None) -> subprocess.CompletedProcess:
+    # A command without input never inherits ours: an open caller pipe would
+    # otherwise block a child that reads stdin until the timeout.
+    source = {"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}
     try:
-        return subprocess.run(command, input=stdin, text=True, capture_output=True, env=environment(), timeout=600)
+        return subprocess.run(command, **source, text=True, capture_output=True, env=environment(), timeout=600)
     except (OSError, subprocess.TimeoutExpired) as error:
         return subprocess.CompletedProcess(command, 1, "", str(error))
 

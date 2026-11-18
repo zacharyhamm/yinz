@@ -718,6 +718,20 @@ raise SystemExit(subprocess.run([{real_git!r}, *args]).returncode)
         self.assertEqual(current["ancestry"], "descendant")
         self.assertIn("+later\n", current["delta"])
         self.assertIn("+later\n", current["featureDiff"])
+        self.assertNotIn("deltaPaths", initial)
+        self.assertEqual(current["deltaPaths"], ["later.txt"])
+
+    def test_review_context_delta_paths_name_every_repaired_path_exactly(self):
+        worktree = self.feature_worktree("review-delta-paths")
+        request = {"action": "review-context", "repoPath": str(self.repo), "worktree": str(worktree), "head": self.git(worktree, "rev-parse", "HEAD")}
+        initial = self.run_request(request)
+        (worktree / "dir with space").mkdir()
+        (worktree / "dir with space" / " padded.txt").write_text("x\n")
+        (worktree / "caf\u00e9.txt").write_text("y\n")
+        self.git(worktree, "add", ".")
+        self.git(worktree, "commit", "-m", "repair")
+        current = self.run_request({**request, "head": self.git(worktree, "rev-parse", "HEAD"), "previous": initial})
+        self.assertEqual(current["deltaPaths"], sorted(["caf\u00e9.txt", "dir with space/ padded.txt"]))
 
     def test_claim_reserves_canonical_worktree_for_one_issue(self):
         worktree = self.feature_worktree("origin")

@@ -4,9 +4,9 @@ import {
   ActionSchemas,
   activeReviewFix,
   AdjudicationSchema,
+  blockingReviewFindings,
   codeReviewFingerprint,
   type LifecycleState,
-  outstandingReviewFindings,
   reviewFingerprint,
   UserRequestSchema,
 } from "./lifecycle.ts";
@@ -179,7 +179,8 @@ export function resolveDecisionArgs(
       const ignore = [...a.ignore];
       if (a.ignoreRemaining) {
         const chosen = [...a.repair, ...a.ignore];
-        for (const { role, findingId } of outstandingReviewFindings(state)) {
+        // Follow-ups stay deferred; only findings that block need a choice.
+        for (const { role, findingId } of blockingReviewFindings(state)) {
           if (
             !chosen.some((ref) =>
               ref.role === role && ref.findingId === findingId

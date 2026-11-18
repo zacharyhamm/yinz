@@ -8,6 +8,7 @@ import {
   PriorFindingOutcome,
   RepairMapping,
   RepairResponse,
+  ReviewScope,
 } from "./review_continuity.ts";
 import { WorkerSelectionSchema } from "./worker_selection.ts";
 
@@ -44,6 +45,18 @@ export const FindingSchema = z.object({
     .strict().optional(),
 }).strict();
 const Severities = FindingSchema.shape.severity.options;
+/**
+ * Implementation review findings at these severities are recorded as follow-ups
+ * instead of starting a repair round. Higher severities need a user decision.
+ */
+export const FOLLOW_UP_SEVERITIES: readonly z.infer<
+  typeof FindingSchema
+>["severity"][] = ["low"];
+export function isFollowUpSeverity(
+  severity: z.infer<typeof FindingSchema>["severity"],
+) {
+  return FOLLOW_UP_SEVERITIES.includes(severity);
+}
 const FindingsSchema = z.array(FindingSchema).refine(
   (findings) =>
     new Set(findings.map((finding) => finding.id)).size === findings.length,
@@ -220,6 +233,8 @@ const CodeReviewSchema = z.object({
   priorFindings: z.array(PriorFindingOutcome).optional(),
   advisoryEvidence: z.array(AdvisoryEvidence).optional(),
   baseline: GitBaseline.optional(),
+  // Stamped by the controller from the assignment; absent on earlier reviews.
+  scope: ReviewScope.optional(),
   preliminaryChecks: z.array(
     z.object({
       command: Text,
@@ -237,6 +252,7 @@ export const UxReviewSchema = CodeReviewSchema.pick({
   priorFindings: true,
   advisoryEvidence: true,
   baseline: true,
+  scope: true,
 }).extend({
   assessment: z.object({
     impact: z.enum(["material", "no_material_impact"]),
@@ -260,6 +276,8 @@ const ReviewDecisionSchema = z.object({
   request: UserRequestSchema,
   repair: FindingRefsSchema,
   ignore: FindingRefsSchema,
+  // Recorded by drive under the user's standing auto-repair request.
+  source: z.literal("auto_repair").optional(),
 }).strict();
 const RepairPlanSchema = CheckedPlanSchema.omit({ revision: true }).extend({
   findingMappings: z.array(RepairMapping).optional(),
@@ -272,6 +290,11 @@ export const RepairResultSchema = z.object({
   summary: Text,
   commit: Commit,
   responses: z.array(RepairResponse).optional(),
+  // Focused checks the repair adds; verification runs them after the plan's.
+  checks: z.array(CheckSchema).min(1).refine(
+    (checks) => new Set(checks.map((check) => check.id)).size === checks.length,
+    "Check IDs must be unique",
+  ).optional(),
   scopeChanges: z.array(Text).optional(),
   advisoryEvidence: z.array(AdvisoryEvidence).optional(),
 }).strict();
@@ -280,11 +303,34 @@ const ReviewFixSchema = ReviewDecisionSchema.extend({
   commit: Commit,
   // Preserve the source reviews across repairs and subsequent review rounds.
   codeReview: CodeReviewSchema,
-  uxReview: UxReviewSchema,
+  // Absent for decisions on code findings made before UX review runs.
+  uxReview: UxReviewSchema.optional(),
+  // Absent on decisions recorded before ignores carried across delta reviews.
+  generation: Text.optional(),
+  rollbackId: z.uuid().optional(),
+  // Legacy: repair plans and their approval are no longer produced.
   plan: RepairPlanSchema.optional(),
   approval: UserRequestSchema.optional(),
   result: RepairResultSchema.optional(),
 }).strict();
+/** A low-severity finding deferred out of the repair loop. */
+export const ReviewFollowUpSchema = z.object({
+  finding: FindingIdentity,
+  issueDigest: z.string().regex(/^[0-9a-f]{64}$/),
+  commit: Commit,
+  // The latest reported form; a raised severity makes it blocking again.
+  detail: FindingSchema,
+  // Separate Agenda item created at summarize; never the issue's own note.
+  agendaItem: z.object({
+    marker: Text,
+    status: z.enum(["creating", "created"]),
+    itemId: z.number().int().positive().safe().optional(),
+  }).strict().refine(
+    (item) => (item.status === "created") === (item.itemId !== undefined),
+    "Only a created follow-up item has an ID",
+  ).optional(),
+}).strict();
+export type ReviewFollowUp = z.infer<typeof ReviewFollowUpSchema>;
 const RunFields = {
   // Null when the executable could not be started.
   exitCode: z.number().int().nullable(),
@@ -612,6 +658,7 @@ export const StateSchema = z.object({
   codeReview: CodeReviewSchema.optional(),
   uxReview: UxReviewSchema.optional(),
   reviewDecisions: z.array(ReviewFixSchema).optional(),
+  reviewFollowUps: z.array(ReviewFollowUpSchema).optional(),
   reviewHistory: z.array(
     z.object({
       issueDigest: Text,
@@ -808,7 +855,8 @@ export function validateRepairResponses(
   const ids = new Set(
     [
       ...(state.plan?.checks ?? []),
-      ...(activeReviewFix(state)?.plan?.checks ?? []),
+      ...approvedLegacyRepairChecks(activeReviewFix(state)),
+      ...(result.checks ?? []),
     ].map((c) => c.id),
   );
   for (const response of result.responses ?? []) {
@@ -816,9 +864,28 @@ export function validateRepairResponses(
       throw new Error("Repair response cites an unknown approved check");
     }
   }
+}
+/** A legacy repair plan's checks count only when the user approved that plan. */
+function approvedLegacyRepairChecks(
+  fix: z.infer<typeof ReviewFixSchema> | undefined,
+) {
+  return fix?.plan && fix.approval ? fix.plan.checks : [];
+}
+/** Scope and check rules for a repair result, whatever its contract version. */
+export function validateRepairResult(
+  state: LifecycleState,
+  result: z.infer<typeof RepairResultSchema>,
+) {
   if (result.scopeChanges?.length) {
     throw new Error(
-      "New repair scope requires a revised repair plan and user approval",
+      "Repairs cover only the selected findings: report a finding that needs broader work as unresolved; broader scope needs a plan revision",
+    );
+  }
+  const planIds = new Set((state.plan?.checks ?? []).map((c) => c.id));
+  const clash = (result.checks ?? []).find((c) => planIds.has(c.id));
+  if (clash) {
+    throw new Error(
+      `Repair check ${clash.id} reuses an approved plan check ID; choose a new ID`,
     );
   }
 }
@@ -827,8 +894,11 @@ export function priorFindingObligations(
   state: LifecycleState,
   role: "review_code" | "review_ux",
 ) {
+  const deferred = new Set(
+    activeFollowUps(state).map((f) => identityKey(f.finding)),
+  );
   return priorImplementationFindings(state).filter((p) =>
-    p.ref.role === role && !p.fixed
+    p.ref.role === role && !p.fixed && !deferred.has(identityKey(p.ref))
   );
 }
 export function validateImplementationReview(
@@ -864,9 +934,28 @@ export function validateImplementationReview(
   const checks = new Set(
     [
       ...(state.plan?.checks ?? []),
-      ...(state.reviewDecisions ?? []).flatMap((d) => d.plan?.checks ?? []),
+      ...(state.reviewDecisions ?? []).flatMap((d) => [
+        ...(d.plan?.checks ?? []),
+        ...(d.result?.checks ?? []),
+      ]),
     ].map((c) => c.id),
   );
+  const scope = review.scope;
+  if (scope?.kind === "delta") {
+    const paths = new Set(scope.paths);
+    for (const finding of review.findings) {
+      if (
+        !finding.origin &&
+        !finding.affectedPaths?.some((path) => paths.has(path))
+      ) {
+        throw new Error(
+          `Delta re-review reports only regressions in the repair diff: ${finding.id} names no path the repair changed (${
+            scope.paths.join(", ")
+          })`,
+        );
+      }
+    }
+  }
   for (const finding of review.findings) {
     if (
       required && (!finding.affectedPaths?.length || !finding.evidence?.length)
@@ -1309,14 +1398,16 @@ function requireResolved(findings: z.infer<typeof FindingsSchema>): void {
   }
 }
 
-/** All unlanded advancement paths require the same pair of current reviews. */
-export function requireCurrentReviews(
+/**
+ * The code review of the current implementation. A UX review, when present,
+ * must cover the same commit; UX review runs only after code findings settle.
+ */
+export function requireCurrentCodeReview(
   state: LifecycleState,
   commit?: string,
 ): void {
   const plan = requirePlan(state);
   const technical = state.codeReview;
-  const ux = state.uxReview;
   if (
     !technical || technical.planVersion !== plan.version ||
     state.approval?.planVersion !== plan.version ||
@@ -1327,8 +1418,9 @@ export function requireCurrentReviews(
       "Current code review must match the reviewed commit and approved plan",
     );
   }
+  const ux = state.uxReview;
   if (
-    !ux || ux.planVersion !== plan.version || ux.commit !== technical.commit
+    ux && (ux.planVersion !== plan.version || ux.commit !== technical.commit)
   ) {
     throw new Error(
       "Current UX review must match the reviewed commit and approved plan; rollback to review_ux and drive, or repair an unlanded active attempt first",
@@ -1336,9 +1428,25 @@ export function requireCurrentReviews(
   }
 }
 
-/** Decisions are scoped to the exact pair of reviews, requirements and rollback. */
+/** All unlanded advancement paths require the same pair of current reviews. */
+export function requireCurrentReviews(
+  state: LifecycleState,
+  commit?: string,
+): void {
+  requireCurrentCodeReview(state, commit);
+  if (!state.uxReview) {
+    throw new Error(
+      "Current UX review must match the reviewed commit and approved plan; rollback to review_ux and drive, or repair an unlanded active attempt first",
+    );
+  }
+}
+
+/**
+ * Decisions are scoped to the exact current reviews, requirements and rollback.
+ * Before UX review runs, that is the code review alone.
+ */
 export function codeReviewFingerprint(state: LifecycleState): string {
-  requireCurrentReviews(state);
+  requireCurrentCodeReview(state);
   return createHash("sha256").update(JSON.stringify({
     digest: state.issue.digest,
     rollbackId: state.rollbackId,
@@ -1354,46 +1462,211 @@ export function outstandingReviewFindings(state: LifecycleState) {
       .map((finding) => ({ role, findingId: finding.id, finding })) ?? []
   );
 }
+/** Unresolved findings at a severity that starts a repair round. */
+export function blockingReviewFindings(state: LifecycleState) {
+  return outstandingReviewFindings(state).filter((f) =>
+    !isFollowUpSeverity(f.finding.severity)
+  );
+}
 export function activeReviewFix(state: LifecycleState) {
   const decision = state.reviewDecisions?.at(-1);
   return decision?.repair.length && !decision.result && state.codeReview &&
-      state.uxReview &&
       decision.reviewFingerprint === codeReviewFingerprint(state)
     ? decision
     : undefined;
 }
+/** Identity of a finding in the review a decision recorded. */
+function decidedFindingIdentity(
+  state: LifecycleState,
+  decision: z.infer<typeof ReviewFixSchema>,
+  ref: z.infer<typeof FindingRefSchema>,
+) {
+  const review = ref.role === "review_code"
+    ? decision.codeReview
+    : decision.uxReview;
+  const finding = review?.findings.find((f) => f.id === ref.findingId);
+  if (!review || !finding) return undefined;
+  return {
+    finding,
+    identity: finding.origin ?? {
+      issue: `${state.issue.workspace}/${state.issue.itemId}`,
+      role: ref.role,
+      reviewFingerprint: implementationReviewFingerprint(
+        state,
+        ref.role,
+        review,
+      ),
+      findingId: finding.id,
+    },
+  };
+}
+/**
+ * Findings of a delta re-review that an earlier decision in this generation and
+ * rollback already ignored, reported again unchanged: persisting, not reopened,
+ * and no more severe. A full review asks again.
+ */
+export function carriedIgnores(state: LifecycleState) {
+  const generation = planningGeneration(state);
+  const ignored = (state.reviewDecisions ?? []).filter((d) =>
+    d.generation === generation && d.rollbackId === state.rollbackId &&
+    d.planVersion === state.plan?.version
+  ).flatMap((d) =>
+    d.ignore.flatMap((ref) => {
+      const decided = decidedFindingIdentity(state, d, ref);
+      return decided ? [decided] : [];
+    })
+  );
+  return outstandingReviewFindings(state).filter(({ role, finding }) => {
+    const review = role === "review_code" ? state.codeReview : state.uxReview;
+    if (review?.scope?.kind !== "delta" || !finding.origin) return false;
+    if (finding.reopening) return false;
+    const key = identityKey(finding.origin);
+    const persists = review.priorFindings?.some((o) =>
+      identityKey(o.finding) === key && o.outcome === "persists"
+    );
+    return persists && ignored.some((i) =>
+      identityKey(i.identity) === key &&
+      Severities.indexOf(finding.severity) <=
+        Severities.indexOf(i.finding.severity)
+    );
+  });
+}
+/**
+ * Ignores that apply to the current reviews: those decided against them, and
+ * code findings ignored before this UX review ran against the same code review.
+ */
+function currentIgnores(state: LifecycleState) {
+  const fingerprint = codeReviewFingerprint(state);
+  const codeStage = state.uxReview
+    ? codeReviewFingerprint({ ...state, uxReview: undefined })
+    : undefined;
+  return (state.reviewDecisions ?? []).flatMap((d) =>
+    d.reviewFingerprint === fingerprint
+      ? d.ignore
+      : d.reviewFingerprint === codeStage
+      ? d.ignore.filter((ref) => ref.role === "review_code")
+      : []
+  );
+}
+/** Blocking findings the user has neither ignored nor had carried forward. */
+export function pendingReviewFindings(state: LifecycleState) {
+  const ignored = currentIgnores(state);
+  const carried = carriedIgnores(state);
+  return blockingReviewFindings(state).filter((ref) =>
+    !ignored.some((item) =>
+      item.role === ref.role && item.findingId === ref.findingId
+    ) &&
+    !carried.some((item) =>
+      item.role === ref.role && item.findingId === ref.findingId
+    )
+  );
+}
 export function requireReviewAcceptance(state: LifecycleState) {
   requireCurrentReviews(state);
-  const fingerprint = codeReviewFingerprint(state);
-  const ignored = (state.reviewDecisions ?? []).filter((d) =>
-    d.reviewFingerprint === fingerprint
-  ).flatMap((d) => d.ignore);
-  if (
-    activeReviewFix(state) ||
-    outstandingReviewFindings(state).some((ref) =>
-      !ignored.some((item) =>
-        item.role === ref.role && item.findingId === ref.findingId
-      )
-    )
-  ) {
+  if (activeReviewFix(state) || pendingReviewFindings(state).length) {
     throw new Error(
       "Present review findings and obtain the user's decision before continuing",
     );
   }
 }
-/** Original checks plus every approved repair's focused checks, with unique log IDs. */
+/** Follow-ups of the current requirements that remain deferred at low severity. */
+export function activeFollowUps(state: LifecycleState) {
+  const repaired = (state.reviewDecisions ?? []).flatMap((d) => d.repair);
+  return (state.reviewFollowUps ?? []).filter((f) =>
+    f.issueDigest === state.issue.digest &&
+    isFollowUpSeverity(f.detail.severity) && !f.detail.resolution &&
+    !repaired.some((r) =>
+      r.role === f.finding.role && r.findingId === f.finding.findingId
+    )
+  );
+}
+/**
+ * Record the current review's unresolved findings as follow-ups when their
+ * severity defers them, and refresh the reported form of known ones.
+ */
+function recordFollowUps(
+  state: LifecycleState,
+  role: "review_code" | "review_ux",
+) {
+  const review = role === "review_code" ? state.codeReview : state.uxReview;
+  if (!review) return;
+  const fingerprint = implementationReviewFingerprint(state, role, review);
+  const follow = state.reviewFollowUps ?? [];
+  for (const record of priorImplementationFindings(state)) {
+    if (record.sourceReview !== fingerprint || record.ref.role !== role) {
+      continue;
+    }
+    const key = identityKey(record.ref);
+    const known = follow.find((f) => identityKey(f.finding) === key);
+    if (known) {
+      known.detail = structuredClone(record.finding);
+      known.commit = review.commit;
+    } else if (
+      isFollowUpSeverity(record.finding.severity) && !record.finding.resolution
+    ) {
+      follow.push({
+        finding: record.ref,
+        issueDigest: state.issue.digest,
+        commit: review.commit,
+        detail: structuredClone(record.finding),
+      });
+    }
+  }
+  if (follow.length) state.reviewFollowUps = follow;
+}
+/**
+ * Delta scope for a re-review after a repair pass: the role's last review in
+ * this generation, rollback and plan is the base, the repair result is HEAD,
+ * and history descends. Anything else is reviewed in full.
+ */
+export function reviewScope(
+  state: LifecycleState,
+  role: "review_code" | "review_ux",
+  baseline: z.infer<typeof GitBaseline> | undefined,
+): z.infer<typeof ReviewScope> {
+  const full = { kind: "full" as const };
+  const plan = state.plan;
+  if (
+    !plan || !baseline?.previousHead || baseline.ancestry !== "descendant" ||
+    !baseline.deltaPaths?.length
+  ) return full;
+  const generation = planningGeneration(state);
+  const current = role === "review_code" ? state.codeReview : state.uxReview;
+  const prior = current ??
+    state.reviewHistory?.findLast((h) =>
+      h.role === role && h.issueDigest === state.issue.digest &&
+      h.generation === generation && h.rollbackId === state.rollbackId
+    )?.review;
+  const fix = state.reviewDecisions?.at(-1);
+  if (
+    !prior || prior.planVersion !== plan.version ||
+    prior.commit !== baseline.previousHead ||
+    !fix?.result || fix.planVersion !== plan.version ||
+    fix.result.commit !== baseline.head
+  ) return full;
+  return {
+    kind: "delta",
+    base: prior.commit,
+    paths: baseline.deltaPaths,
+    findings: priorFindingObligations(state, role).map((p) => p.ref),
+  };
+}
+/** Original checks plus every completed repair's focused checks, with unique log IDs. */
 export function verificationPlan(state: LifecycleState): Plan {
   const plan = requirePlan(state);
   const repairs = (state.reviewDecisions ?? []).filter((d) =>
-    d.planVersion === plan.version && d.result && d.approval && d.plan
-  );
+    d.planVersion === plan.version && d.result
+  ).map((d) => ({
+    id: d.id,
+    checks: [...approvedLegacyRepairChecks(d), ...(d.result!.checks ?? [])],
+  })).filter((d) => d.checks.length);
   if (!repairs.length) return plan;
   return {
     ...plan,
     checks: [
       ...(plan.checks ?? []),
       ...repairs.flatMap((d) =>
-        d.plan!.checks.map((check, index) => ({
+        d.checks.map((check, index) => ({
           ...check,
           id: `${d.id}-${index}`,
         }))
@@ -1776,6 +2049,7 @@ export function transition(
       clearReview(state);
       state.codeReview = review;
       state.implementation.head = review.commit;
+      recordFollowUps(state, "review_code");
       state.phase = "implementing";
       break;
     }
@@ -1796,6 +2070,7 @@ export function transition(
       validateImplementationReview(state, "review_ux", review, false);
       archiveReviews(state, "UX review superseded", "review_ux");
       state.uxReview = review;
+      recordFollowUps(state, "review_ux");
       delete state.verification;
       delete state.mergeAuthorization;
       delete state.attempt;
@@ -1809,7 +2084,7 @@ export function transition(
           "Repair or roll back the active merge attempt before deciding findings",
         );
       }
-      requireCurrentReviews(state);
+      requireCurrentCodeReview(state);
       const decision = ActionSchemas.decide_review.parse(args);
       if (decision.reviewFingerprint !== codeReviewFingerprint(state)) {
         throw new Error("Review decision is stale");
@@ -1845,12 +2120,15 @@ export function transition(
         planVersion: state.plan!.version,
         commit: state.codeReview!.commit,
         codeReview: state.codeReview!,
-        uxReview: state.uxReview!,
+        ...(state.uxReview ? { uxReview: state.uxReview } : {}),
+        generation: planningGeneration(state),
+        ...(state.rollbackId ? { rollbackId: state.rollbackId } : {}),
       }];
       delete state.mergeAuthorization;
       state.phase = "implementing";
       break;
     }
+    // Legacy: drains repair planners dispatched before planning was retired.
     case "plan_review_fixes": {
       requirePhase(state, ["implementing"]);
       const fix = activeReviewFix(state);
@@ -1862,6 +2140,7 @@ export function transition(
       fix.plan = repairPlan;
       break;
     }
+    // Legacy: an approve_review_fixes handoff saved before planning was retired.
     case "approve_review_fixes": {
       requirePhase(state, ["implementing"]);
       const approval = ActionSchemas.approve_review_fixes.parse(args);
@@ -1878,10 +2157,11 @@ export function transition(
     case "implement_review_fixes": {
       requirePhase(state, ["implementing"]);
       const fix = activeReviewFix(state);
-      if (!fix?.plan || !fix.approval) {
-        throw new Error("Approve the review repair plan before implementation");
+      if (!fix) {
+        throw new Error("Select review findings to repair before repairing");
       }
       const result = ActionSchemas.implement_review_fixes.parse(args);
+      validateRepairResult(state, result);
       validateRepairResponses(state, result, false);
       fix.result = result;
       clearReview(state);
@@ -1985,6 +2265,8 @@ export function transition(
           commit: ready.commit,
           codeReview: state.codeReview!,
           uxReview: state.uxReview!,
+          generation: planningGeneration(state),
+          ...(state.rollbackId ? { rollbackId: state.rollbackId } : {}),
         }];
       }
       const gate = implementationMergeGate(state);
@@ -2293,6 +2575,98 @@ export async function reopenAgenda(
       "Agenda description changed during rollback; inspect the recovery record",
     );
   }
+}
+
+/** Marker in a follow-up item's note; summarize retries find the item by it. */
+export function followUpMarker(followUp: ReviewFollowUp): string {
+  return `yinz-follow-up-${
+    createHash("sha256").update(identityKey(followUp.finding)).digest("hex")
+      .slice(0, 24)
+  }`;
+}
+
+/** Title and note of a follow-up's separate Agenda item. */
+export function followUpItem(
+  issue: Issue,
+  followUp: ReviewFollowUp,
+  marker: string,
+) {
+  const review = followUp.finding.role === "review_code" ? "code" : "UX";
+  const detail = followUp.detail;
+  return {
+    // Kept free of finding prose: Agenda reads dates from item titles.
+    title: `Follow-up from #${issue.itemId}: ${review} review ${detail.id}`,
+    note: [
+      detail.description,
+      `Severity: ${detail.severity} (deferred by the issue lifecycle; not repaired before merge).`,
+      `Issue: ${issue.workspace}/${issue.itemId}: ${issue.text}`,
+      `Reviewed commit: ${followUp.commit}`,
+      ...(detail.affectedPaths?.length
+        ? [`Affected paths: ${detail.affectedPaths.join(", ")}`]
+        : []),
+      ...(detail.evidence?.length
+        ? [`Evidence: ${detail.evidence.join("; ")}`]
+        : []),
+      `Marker: ${marker}`,
+    ].join("\n"),
+  };
+}
+
+/**
+ * The Agenda item for a follow-up: one an earlier attempt already created
+ * (found by its marker), else a new one. Never edits the issue's own item.
+ */
+export async function fileFollowUpItem(
+  issue: Issue,
+  followUp: ReviewFollowUp,
+  marker: string,
+  command: AgendaCommand = agendaCommand,
+): Promise<number> {
+  const Listed = z.object({
+    items: z.array(
+      z.object({ id: z.number().int().positive().safe(), note: z.string() })
+        .loose(),
+    ),
+  }).loose();
+  const listed = Listed.parse(
+    await command([
+      "--workspace",
+      issue.workspace,
+      "--json",
+      "item",
+      "list",
+      "--search",
+      marker,
+      "--status",
+      "all",
+    ]),
+  );
+  const existing = listed.items.find((item) =>
+    item.id !== issue.itemId && item.note.includes(marker)
+  );
+  if (existing) return existing.id;
+  const { title, note } = followUpItem(issue, followUp, marker);
+  const added = z.object({
+    item: z.object({
+      id: z.number().int().positive().safe(),
+      note: z.string(),
+    }).loose(),
+  }).loose().parse(
+    await command([
+      "--workspace",
+      issue.workspace,
+      "--json",
+      "item",
+      "add",
+      title,
+      "--note",
+      note,
+    ]),
+  );
+  if (added.item.id === issue.itemId || !added.item.note.includes(marker)) {
+    throw new Error("Agenda did not confirm the follow-up item");
+  }
+  return added.item.id;
 }
 
 /** Complete only the captured issue; retries preserve its description and verify the result. */

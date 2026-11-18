@@ -352,6 +352,78 @@ Deno.test("base64 baselines decode to raw diff files; utf8 is verbatim; absent d
   );
 });
 
+Deno.test("delta code re-review templates carry step conformance and omit follow-ups", () => {
+  const changed = "d".repeat(40);
+  let s = transition(implementing(), "review_code", {
+    planVersion: 1,
+    commit: head,
+    steps: [{ id: "check", status: "implemented" }, {
+      id: "docs",
+      status: "deviated",
+      justification: "Documented in the command help instead",
+    }],
+    findings: [finding, {
+      id: "nit",
+      severity: "low",
+      description: "Naming",
+      affectedPaths: ["check.ts"],
+      evidence: ["check.ts:9"],
+    }],
+    baseline,
+  });
+  s = transition(s, "decide_review", {
+    id,
+    reviewFingerprint: codeReviewFingerprint(s),
+    request: "Repair the lost failure",
+    repair: [{ role: "review_code", findingId: "same" }],
+    ignore: [],
+  });
+  // No repair plan: the worker's template lists only the selected findings.
+  const repair = evidenceTemplate(source(s, "implement_review_fixes").task)
+    .evidence;
+  equal(
+    (repair.responses as { finding: unknown }[]).map((r) => r.finding),
+    selectedRepairFindings(s).map((p) => p.ref),
+  );
+  assert(
+    !("checks" in repair),
+    "Repair checks are optional, not a placeholder",
+  );
+  s = transition(s, "implement_review_fixes", {
+    summary: "Kept every failure",
+    commit: changed,
+  });
+  const obligations = priorFindingObligations(s, "review_code");
+  equal(obligations.map((p) => p.ref.findingId), ["same"]);
+  const delta = evidenceTemplate({
+    ...source(s, "review_code").task,
+    reviewCommit: changed,
+    continuity: {
+      ...source(s, "review_code").task.continuity,
+      scope: {
+        kind: "delta",
+        base: head,
+        paths: ["check.ts"],
+        findings: obligations.map((p) => p.ref),
+      },
+    },
+  }).evidence;
+  equal(delta.steps, [{ id: "check", status: "implemented" }, {
+    id: "docs",
+    status: "deviated",
+    justification: "Documented in the command help instead",
+  }]);
+  equal(
+    (delta.priorFindings as { finding: unknown }[]).map((p) => p.finding),
+    obligations.map((p) => p.ref),
+  );
+  // Without a delta scope the reviewer assesses every step afresh.
+  equal(
+    evidenceTemplate(source(s, "review_code").task).evidence.steps,
+    plan.steps.map((step) => ({ id: step.id, status: "" })),
+  );
+});
+
 Deno.test("templates pre-fill identities per role", () => {
   const rereview = rereviewing();
   const code = evidenceTemplate(source(rereview, "review_code").task);

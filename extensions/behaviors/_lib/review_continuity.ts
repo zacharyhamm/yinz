@@ -39,12 +39,29 @@ export const GitBaseline = z.object({
   previousHead: ObjectId.optional(),
   delta: z.string().optional(),
   deltaEncoding: z.enum(["utf8", "base64"]).optional(),
+  // Paths the endpoint delta changes; bounds a delta re-review's new findings.
+  deltaPaths: z.array(z.string().min(1)).optional(),
   ancestry: z.enum(["initial", "same", "descendant", "divergent", "missing"]),
   baselineChanged: z.boolean(),
   baselineComparison: z.enum(["initial", "same", "changed", "unknown"])
     .optional(),
   limitations: z.array(Text),
 }).strict();
+/**
+ * What an implementation review covers. A delta re-review checks the repair
+ * diff from `base` (the last same-role reviewed commit) against the listed prior
+ * findings, and reports only regressions touching `paths`.
+ */
+export const ReviewScope = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("full") }).strict(),
+  z.object({
+    kind: z.literal("delta"),
+    base: ObjectId,
+    paths: z.array(z.string().min(1)).min(1),
+    findings: z.array(FindingIdentity),
+  }).strict(),
+]);
+export type ReviewScope = z.infer<typeof ReviewScope>;
 export const AdvisoryEvidence = z.object({
   producingTask: z.uuid(),
   commit: ObjectId,
@@ -163,6 +180,8 @@ export const ContinuityContext = z.object({
   packetDigest: Digest,
   reviewFingerprints: z.array(Digest),
   baseline: GitBaseline.optional(),
+  // Absent on assignments dispatched before delta-scoped re-review.
+  scope: ReviewScope.optional(),
 }).strict();
 export const identityKey = (ref: z.infer<typeof FindingIdentity>) =>
   JSON.stringify([ref.issue, ref.role, ref.reviewFingerprint, ref.findingId]);

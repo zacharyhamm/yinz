@@ -25,6 +25,18 @@ inputs:
             request:
               type: string
               minLength: 1
+        autoRepair:
+          type: object
+          additionalProperties: false
+          minProperties: 1
+          maxProperties: 1
+          properties:
+            request:
+              type: string
+              minLength: 1
+            withdraw:
+              type: boolean
+              const: true
         control:
           type: object
           required: [session, paneId]

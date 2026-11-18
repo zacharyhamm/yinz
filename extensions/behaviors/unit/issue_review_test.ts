@@ -436,8 +436,132 @@ Deno.test("planning and plan-review prompts state the submission check policy", 
     const prompt = taskPrompt(role, state, "/fixture", "/standards", "Submit");
     assert(
       prompt.includes(CHECK_POLICY_SUMMARY) ===
-        ["plan", "review_plan", "plan_review_fixes"].includes(role),
+        ["plan", "review_plan", "plan_review_fixes", "implement_review_fixes"]
+          .includes(role),
       `${role} check policy summary`,
     );
+  }
+});
+
+Deno.test("repair workers fix selected findings directly and may add focused checks", () => {
+  const prompt = taskPrompt(
+    "implement_review_fixes",
+    reviewState(),
+    "/fixture",
+    "/standards",
+    "Submit",
+  );
+  for (
+    const text of [
+      "working directly from those findings",
+      "there is no separate repair plan or approval",
+      "A legacy repair plan in that entry, if present, is guidance only",
+      "a new short id that no plan check uses",
+      "report a finding that needs broader work as unresolved",
+      CHECK_POLICY_SUMMARY,
+    ]
+  ) assert(prompt.includes(text), `repair prompt missing ${text}`);
+  assert(!prompt.includes("approved repair plan"), "Old repair-plan wording");
+});
+
+Deno.test("delta re-review prompts bound scope to the repair diff and prior findings", () => {
+  const base = "c".repeat(40);
+  const commit = "a".repeat(40);
+  const state = reviewState();
+  const id = "a6da10b0-c980-4b82-b920-000000000004";
+  const baseline = {
+    main: "e".repeat(40),
+    mergeBase: "e".repeat(40),
+    head: commit,
+    featureDiff: "diff --git a/command.ts b/command.ts",
+    previousHead: base,
+    delta: "diff --git a/command.ts b/command.ts",
+    ancestry: "descendant",
+    baselineChanged: false,
+    limitations: [],
+    deltaPaths: ["command.ts"],
+  };
+  const continuity = (scope: unknown) =>
+    ContinuityContext.parse({
+      version: 1,
+      assignmentId: id,
+      issueDigest: state.issue.digest,
+      generation: planningGeneration(state),
+      planVersion: state.planVersion,
+      packetDigest: evidenceDigest(reviewPacket(state)),
+      reviewFingerprints: [],
+      baseline,
+      scope,
+    });
+  const delta = {
+    kind: "delta",
+    base,
+    paths: ["command.ts"],
+    findings: [{
+      issue: "test/1",
+      role: "review_code",
+      reviewFingerprint: "f".repeat(64),
+      findingId: "race",
+    }],
+  };
+  for (const role of ["review_code", "review_ux"] as const) {
+    const prompt = (scope: unknown) => {
+      const bound = continuity(scope);
+      const files = assignmentManifest(
+        `/repo/.git/yinz-lifecycle/assignments/${id}`,
+        assignmentFileContents({
+          id,
+          role,
+          before: state,
+          reviewCommit: commit,
+          continuity: bound,
+          submission: {
+            protocol: 1,
+            behaviorName: `issue-evidence-${id}`,
+            controlDir: "/control",
+            assignmentDigest: "d".repeat(64),
+          },
+        }),
+      );
+      return taskPrompt(
+        role,
+        state,
+        "/fixture",
+        "/standards",
+        "Evaluation-only response contract",
+        commit,
+        undefined,
+        bound,
+        { files },
+      );
+    };
+    const scoped = prompt(delta);
+    for (
+      const text of [
+        "This is a delta re-review after a repair pass, not a new audit.",
+        `Review the repair diff from ${base}`,
+        "It changes: command.ts.",
+        "continuity.scope.findings",
+        "its affectedPaths must include a path the repair changed",
+        "Do not re-audit unchanged code or raise unrelated or pre-existing concerns.",
+        "is context only.",
+      ]
+    ) assert(scoped.includes(text), `${role} delta prompt missing ${text}`);
+    assert(
+      !scoped.includes("New defects anywhere in the full feature scope"),
+      `${role} delta prompt keeps full-scope wording`,
+    );
+    assert(
+      scoped.includes("the evidence template carries each step's status") ===
+        (role === "review_code"),
+      `${role} step carry-forward wording`,
+    );
+    const full = prompt({ kind: "full" });
+    assert(full.includes("it never bounds scope"), `${role} full wording`);
+    assert(
+      full.includes("New defects anywhere in the full feature scope"),
+      `${role} full prompt reports anywhere`,
+    );
+    assert(!full.includes("delta re-review"), `${role} full prompt`);
   }
 });

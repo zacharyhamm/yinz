@@ -2,7 +2,11 @@
  * The exact launcher command that follows a handoff. Pure, and it imports only
  * lifecycle.ts, so closeout can use it without an import cycle.
  */
-import { type LifecycleState, outstandingReviewFindings } from "./lifecycle.ts";
+import {
+  activeFollowUps,
+  blockingReviewFindings,
+  type LifecycleState,
+} from "./lifecycle.ts";
 
 export function nextStep(h: {
   id: string;
@@ -28,15 +32,22 @@ export function nextStep(h: {
       }
       return `Next: ${run} implement ${worktreeInput} (legacy issue without a recorded worker worktree), then ${run} drive`;
     case "address_review_findings": {
-      const findings = outstandingReviewFindings(state).map((f) =>
+      const findings = blockingReviewFindings(state).map((f) =>
         `${f.role}/${f.findingId}`
       );
-      return `Next: ${run} decide-review --handoff ${h.id} --request '<the user direction>' with --repair <role/id> and --ignore <role/id> for each finding the user chose (--ignore-remaining when the user ignores all others). Findings: ${
+      const followUps = activeFollowUps(state).map((f) =>
+        `${f.finding.role}/${f.finding.findingId}`
+      );
+      return `Next: ${run} decide-review --handoff ${h.id} --request '<the user direction>' with --repair <role/id> and --ignore <role/id> for each finding the user chose (--ignore-remaining when the user ignores all others); selected repairs go straight to a repair worker. Findings: ${
         findings.join(", ") || "none"
-      }`;
+      }${
+        followUps.length
+          ? `. Follow-ups (deferred unless selected): ${followUps.join(", ")}`
+          : ""
+      }. To stop asking for this plan, ${run} drive --auto-repair --request '<the standing user instruction to repair every blocking finding>'`;
     }
     case "approve_review_fixes":
-      return `Next: ${run} approve-review-fixes --handoff ${h.id} --request '<the user approval of this repair plan>'`;
+      return `Next: ${run} drive (dispatches the repair worker; legacy plan approval is no longer required), or ${run} approve-review-fixes --handoff ${h.id} --request '<the user approval of this repair plan>' to keep the saved plan as guidance`;
     case "authorize_merge":
       return `Next: ${run} ready --handoff ${h.id} --request '<the explicit user merge authorization for ${h.commit}>' (merge then rebases, runs the full CI gate and fast-forwards main; add --skip-ci-request '<the explicit user waiver>' only if the user waived CI for this merge)`;
     case "integrate":

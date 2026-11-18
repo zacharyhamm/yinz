@@ -143,7 +143,7 @@ function handoff(
     reason: "Fixture",
     createdAt: "2026-11-03T12:00:00.000Z",
     state,
-    ...(decision !== "blocked" && state.codeReview && state.uxReview
+    ...(decision !== "blocked" && state.codeReview
       ? { codeReviewFingerprint: codeReviewFingerprint(state) }
       : {}),
     ...(state.planReview
@@ -447,7 +447,7 @@ Deno.test("decide-review binds id to the handoff and derives codeReviewFingerpri
   );
 });
 
-Deno.test("ignoreRemaining expands to every outstanding finding not selected for repair", () => {
+Deno.test("ignoreRemaining expands to every blocking finding not selected for repair", () => {
   const state = withFindings();
   const current = handoff(state, "address_review_findings");
   equal(
@@ -468,10 +468,8 @@ Deno.test("ignoreRemaining expands to every outstanding finding not selected for
       reviewFingerprint: codeReviewFingerprint(state),
       request: "Repair the race and ignore everything else",
       repair: [{ role: "review_code", findingId: "race" }],
-      ignore: [
-        { role: "review_ux", findingId: "copy" },
-        { role: "review_code", findingId: "leak" },
-      ],
+      // Low findings are deferred follow-ups, never expanded into ignores.
+      ignore: [{ role: "review_ux", findingId: "copy" }],
     },
   );
   const all = resolve(
@@ -485,11 +483,43 @@ Deno.test("ignoreRemaining expands to every outstanding finding not selected for
     current,
   ) as { repair: unknown[]; ignore: unknown[] };
   equal(all.repair, []);
-  equal(all.ignore, [
-    { role: "review_code", findingId: "race" },
-    { role: "review_code", findingId: "leak" },
-    { role: "review_ux", findingId: "copy" },
-  ]);
+  equal(all.ignore, [{ role: "review_code", findingId: "race" }]);
+});
+
+Deno.test("decide-review binds a code-stage handoff before UX review runs", () => {
+  const state = withFindings();
+  delete state.uxReview;
+  const current = handoff(state, "address_review_findings");
+  equal(current.codeReviewFingerprint, codeReviewFingerprint(state));
+  const decision = resolve(
+    "decide_review",
+    {
+      handoffId,
+      request: "Repair the race",
+      repair: [{ role: "review_code", findingId: "race" }],
+      ignoreRemaining: true,
+    },
+    state,
+    current,
+  );
+  equal(decision, {
+    id: handoffId,
+    reviewFingerprint: codeReviewFingerprint(state),
+    request: "Repair the race",
+    repair: [{ role: "review_code", findingId: "race" }],
+    ignore: [],
+  });
+  const next = transition(state, "decide_review", decision);
+  equal(next.reviewDecisions![0].uxReview, undefined);
+  // UX findings are not selectable before UX review runs.
+  rejects(
+    () =>
+      transition(state, "decide_review", {
+        ...(decision as object),
+        repair: [{ role: "review_ux", findingId: "copy" }],
+      }),
+    "Unknown or resolved review finding",
+  );
 });
 
 Deno.test("approve-review-fixes derives the active repair id", () => {

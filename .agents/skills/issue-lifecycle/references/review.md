@@ -74,13 +74,17 @@ nonempty `assessedPaths` describing user tasks/workflows and source paths, and
 `limitations` (possibly empty). No-impact conclusions require tracing affected
 paths; absence of UI-file changes is insufficient.
 
-Both reviews must be current. Present their findings together and let the user
-choose which to repair or ignore, regardless of severity. Ignored findings remain
-unresolved, with user decisions recorded separately against the exact reviews.
-Users may explicitly authorize merge with outstanding findings. Selected repairs
-need a worker's repair plan and separate user approval before implementation;
-repairs require fresh technical and UX reviews and verification. No reviewer or
-controller may infer permission to fix or ignore a finding. Checks actually performed by either
+Technical review comes first; UX review runs once code findings are settled, and
+both must be current at merge. Present the current reviews' pending findings and
+let the user choose which to repair or ignore. Medium or higher findings need
+that decision; low findings are recorded as follow-ups and start no repair round
+(the user may still select one). Ignored findings remain unresolved, with user
+decisions recorded separately against the exact reviews. Users may explicitly
+authorize merge with outstanding findings. Selected repairs go straight to a
+repair worker; repairs require fresh, delta-scoped technical and UX reviews and
+verification. No reviewer or controller may infer permission to fix or ignore a
+finding; only the user's own standing `drive --auto-repair` instruction lets
+drive select every blocking finding for repair. Checks actually performed by either
 reviewer remain advisory for structured plans; the lifecycle runs approved checks.
 Follow AGENTS.md's focused-test policy; review never authorizes full suites.
 Plan checks are valid command argument arrays executed directly without a shell;
@@ -98,9 +102,10 @@ assignment manifest: `packet.json`, `snapshot.json` (which packet `sourceRef`
 paths resolve against), `baseline.json`, and the decoded `feature.diff` and
 `delta.diff`. Contract-2 prompts inline the packet and base64 diffs. Read the
 saved packet, source reviews and referenced failure logs.
-The captured `baseline.main`, `mergeBase` and `head` are full object IDs. Review
-the feature diff across the complete merge-base-to-HEAD scope; the delta is optional
-endpoint assistance. A moved local main never changes the technical/UX pair's
+The captured `baseline.main`, `mergeBase` and `head` are full object IDs. A full
+review (`continuity.scope.kind` is `full` or absent) covers the feature diff
+across the complete merge-base-to-HEAD scope; the delta is optional endpoint
+assistance there. A delta re-review is bounded instead (see below). A moved local main never changes the technical/UX pair's
 baseline. Divergent/rebased history is not a descendant repair. Missing previous
 objects explicitly disable delta and reuse assistance; missing required current
 objects block dispatch. Binary diffs are included without silent truncation.
@@ -117,20 +122,40 @@ Return `priorFindings` outcomes for every prior unresolved finding of your role
 `persists`, `verified_fixed`, or `reopened`, each with rationale and evidence.
 For `persists`, also carry the same finding and its origin in `findings`, leaving
 `resolution` unset. Describe an unchanged ignored concern as historical
-continuity, not a newly discovered defect. Ignored concerns remain unresolved and
-need fresh user decisions against the exact current review pair; a previous
-acceptance never renews itself. Omission does not establish closure. A repair
+continuity, not a newly discovered defect. Ignored concerns remain unresolved.
+In a full review they need fresh user decisions against the exact current
+reviews; in a delta re-review an unchanged `persists` report, with no
+`reopening` and no higher severity, keeps the earlier ignore. Omission does not
+establish closure. A repair
 worker's `addressed` claim does not establish closure either. Reopening a
 verified-fixed concern requires concrete new evidence and a rationale addressing
 the prior decision, plus an explicit `reopened` outcome. Structural validation
 checks completeness and references; reviewers remain responsible for evidence
 quality and recognizing the same underlying concern under changed wording.
 
-Independently inspect current requirements, approved assumptions, affected callers,
-tests and failure paths across the complete feature change, even when the delta
-is small. Incorrect approved designs, incomplete selected repairs and newly
-introduced defects outside the selected repairs remain reportable. Historical
-archives inform review and never satisfy a current approval or review gate.
+In a full review, independently inspect current requirements, approved
+assumptions, affected callers, tests and failure paths across the complete
+feature change, even when the delta is small. Incorrect approved designs,
+incomplete selected repairs and newly introduced defects outside the selected
+repairs remain reportable.
+
+### Delta re-review
+
+After a repair pass, the assignment's `continuity.scope` is
+`{kind: "delta", base, paths, findings}`: `base` is the last commit your role
+reviewed, `paths` the files the repair diff (`delta.diff`) changes, and
+`findings` the prior findings you must account for. Verify each listed finding
+with a `priorFindings` outcome. Report a new finding only for a regression the
+repair diff introduced; its `affectedPaths` must include a changed path, or the
+submission is rejected. Do not re-audit unchanged code or raise unrelated or
+pre-existing concerns; the complete feature diff is context only. A delta code
+review's template carries each plan step's status from the base review: change
+one only if the repair changed it. The controller stamps the assigned `scope` on
+the review; do not supply a different one. A rollback to `review_code` or
+`review_ux` returns to a full review.
+
+Historical archives inform review and never satisfy a current approval or review
+gate.
 
 Optional `advisoryEvidence` records original task/commit/requirements, argv/cwd,
 result, durable output reference, relevant files/tests, platform/toolchain,

@@ -36,7 +36,10 @@ example decide-review on a legacy ready state, or resume-rollback to merge). A
 merge can hold the shared CI gate for hours: run ready, drive and merge in the
 background or with a long timeout, or pass --no-merge to ready or drive.
 Chained commands print progress on stderr and exactly one handoff JSON on
-stdout.
+stdout. drive --auto-repair --request TEXT records the user's standing
+instruction to repair every blocking review finding of the current plan
+without asking; drive --no-auto-repair withdraws it. plan-review-fixes and
+approve-review-fixes only drain issues saved before repair planning was retired.
 """
 
 
@@ -161,6 +164,11 @@ def main():
     parser.add_argument("--ignore-remaining", action="store_true",
                         help="decide-review: accept every outstanding finding not selected for repair")
     parser.add_argument("--decision", choices=("accept", "decline"), help="closeout: the user's decision")
+    parser.add_argument("--auto-repair", action="store_true",
+                        help="drive: with --request, repair every blocking review finding of this plan "
+                             "without asking (at most 3 rounds; reopened findings still ask)")
+    parser.add_argument("--no-auto-repair", action="store_true",
+                        help="drive: withdraw a standing --auto-repair request")
     parser.add_argument("--skip-ci-request", metavar="TEXT",
                         help="ready, drive or merge: the user's explicit CI waiver for this merge")
     parser.add_argument("--no-drive", action="store_true", help="Stop after this command; do not continue with drive")
@@ -209,7 +217,8 @@ def main():
     try:
         inputs = build_inputs(args.command, inputs, handoff=args.handoff, request=request_text,
                               repair=args.repair, ignore=args.ignore, ignore_remaining=args.ignore_remaining,
-                              decision=args.decision, skip_ci_request=args.skip_ci_request)
+                              decision=args.decision, skip_ci_request=args.skip_ci_request,
+                              auto_repair=args.auto_repair, no_auto_repair=args.no_auto_repair)
     except InputError as error:
         parser.error(str(error))
     if args.command == "start":
@@ -224,8 +233,8 @@ def main():
         parser.error("verify takes no method inputs")
     if args.command == "merge" and set(inputs) - {"skipCiRequest"}:
         parser.error("merge accepts only skipCiRequest")
-    if args.command == "drive" and set(inputs) - {"agent", "control", "revisionApproval"}:
-        parser.error("drive accepts only agent settings, control identity and revisionApproval; omit them to resume")
+    if args.command == "drive" and set(inputs) - {"agent", "control", "revisionApproval", "autoRepair"}:
+        parser.error("drive accepts only agent settings, control identity, revisionApproval and autoRepair; omit them to resume")
     workspace = agenda_workspace(control, args.workspace)
     name = issue_name(workspace, args.item)
     # A shell configured for a remote Swamp server must not redirect local Git.

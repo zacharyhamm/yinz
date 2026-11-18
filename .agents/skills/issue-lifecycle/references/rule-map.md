@@ -315,6 +315,25 @@ D036, D038, D039, D056 and D058.
 | R058 | ISSUE_LIFECYCLE.md:925–931 | Contract 3 extends contract-2 continuity | [Design: review continuity](../../../../docs/ISSUE_LIFECYCLE.md#review-continuity-and-assessment) |
 | R059 | (new) | Legacy states collected in one section | [Design: legacy states](../../../../docs/ISSUE_LIFECYCLE.md#legacy-states) |
 
+## Review-loop revision
+
+Baseline: commit `00f33789a52ba4ce294aa6953923b9fd5300957f`. The revision shortened
+the implementation review loop: selected findings go straight to the repair
+worker, re-reviews after a repair are delta-scoped, UX review runs once after code
+findings settle, low findings become follow-ups filed as Agenda items at
+summarize, ignores carry forward through unchanged delta re-reviews, and an
+opt-in auto-repair instruction can record decisions. Earlier rows are not edited.
+R018 is superseded by L001; R008, R016, R017 and R036 are narrowed by L002–L005.
+
+| ID | Baseline source | Rule label | Authoritative destination |
+| --- | --- | --- | --- |
+| L001 | (replaces R018) | Selection authorizes the repair worker directly; plan_review_fixes and approve-review-fixes only drain saved issues | [Skill: review/authorization](../SKILL.md#review-and-authorization), [Design: review rounds](../../../../docs/ISSUE_LIFECYCLE.md#review-rounds), [Design: legacy states](../../../../docs/ISSUE_LIFECYCLE.md#legacy-states), [Code: issue_driver.ts drive](../../../../extensions/behaviors/_lib/issue_driver.ts) |
+| L002 | (narrows R008, R016) | UX review runs once code findings settle; code-stage decisions bind the code review alone | [Design: separate reviews](../../../../docs/ISSUE_LIFECYCLE.md#separate-implementation-reviews), [Code: lifecycle.ts pendingReviewFindings](../../../../extensions/behaviors/_lib/lifecycle.ts) |
+| L003 | (new) | Delta re-review scope bound by the controller, stamped on the review and enforced on new findings | [Review: delta re-review](review.md#delta-re-review), [Design: review rounds](../../../../docs/ISSUE_LIFECYCLE.md#review-rounds), [Code: lifecycle.ts reviewScope](../../../../extensions/behaviors/_lib/lifecycle.ts), [Code: git_ops.py review_context](../../../../scripts/issue_lifecycle/git_ops.py) |
+| L004 | (narrows R017, R036) | Low findings are follow-ups; ignoreRemaining covers blocking findings; delta ignores carry forward | [Design: follow-ups](../../../../docs/ISSUE_LIFECYCLE.md#follow-ups), [Code: decisions.ts](../../../../extensions/behaviors/_lib/decisions.ts) |
+| L005 | (new) | drive --auto-repair records decisions under the user's standing instruction, with round and scope limits | [Design: auto-repair](../../../../docs/ISSUE_LIFECYCLE.md#auto-repair), [Code: decisions.py build_inputs](../../../../scripts/issue_lifecycle/decisions.py) |
+| L006 | (new) | Repair results may add focused checks under the check policy | [Planning: check policy](planning.md#check-policy), [Planning: repair continuity](planning.md#review-repair-continuity) |
+
 ## Audit and limits
 
 The source-span correction audit checked all 114 skill entries and all 92
@@ -335,7 +354,9 @@ All eight phases and all eight handoff decisions were checked against
 `extensions/behaviors/_lib/issue_driver.ts`. For the determinism revision, the
 handoff decisions were revalidated against `HandoffSchema` in `issue_driver.ts`:
 there are now twelve (adding `address_review_findings`, `approve_review_fixes`,
-`authorize_closeout` and `resume_closeout`), and `prepare_worktree` is reached
+`authorize_closeout` and `resume_closeout`; after the review-loop revision drive
+no longer issues `approve_review_fixes`, which remains only as a saved legacy
+handoff), and `prepare_worktree` is reached
 only after accepted close-out cleanup or for legacy issues. Rules now enforced by
 code are a row category: their destination names the enforcement point. Pending work precedes phase dispatch;
 the blocker table includes a free-text catch-all. Explicit restart routing does

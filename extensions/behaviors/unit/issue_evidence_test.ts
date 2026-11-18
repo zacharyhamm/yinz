@@ -709,6 +709,45 @@ Deno.test("plan and repair-plan submissions reject policy-violating checks and s
   }
 });
 
+Deno.test("repair submissions may add focused checks; policy violations stay open", async () => {
+  const h = await fixture("implement_review_fixes");
+  const repaired = h.input().evidence as Record<string, unknown>;
+  await rejects(
+    () =>
+      h.submit({
+        ...repaired,
+        checks: [{
+          id: "repair",
+          command: ["cargo", "x", "test"],
+          covers: ["review_ux/ux"],
+        }],
+      }),
+    'Plan checks violate repository test policy:\n- checks[0] (id "repair"): ',
+  );
+  equal(SubmissionSchema.parse(h.records.get("submission")).status, "open");
+  await rejects(
+    () =>
+      h.submit({
+        ...repaired,
+        checks: [{ ...plan.checks[0], covers: ["review_ux/ux"] }],
+      }),
+    "reuses an approved plan check ID",
+  );
+  equal(SubmissionSchema.parse(h.records.get("submission")).status, "open");
+  await h.submit({
+    ...repaired,
+    checks: [{
+      id: "repair",
+      command: ["cargo", "x", "test", "-p", "yinz-server", "repair"],
+      covers: ["review_ux/ux"],
+    }],
+  });
+  equal(
+    SubmissionSchema.parse(h.records.get("submission")).status,
+    "accepted",
+  );
+});
+
 Deno.test("accepted receipts with now-invalid checks still replay and import", async () => {
   for (const role of ["plan", "plan_review_fixes"] as const) {
     const h = await fixture(role);

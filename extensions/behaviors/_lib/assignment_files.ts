@@ -128,10 +128,22 @@ function planSkeleton() {
 
 /** Placeholders ("" and []) fail validation; pre-filled identities are exact. */
 export function evidenceTemplate(
-  task: Pick<AssignmentSource, "role" | "before" | "reviewCommit">,
+  task:
+    & Pick<AssignmentSource, "role" | "before" | "reviewCommit">
+    & Partial<Pick<AssignmentSource, "continuity">>,
 ): { role: Role; evidence: Record<string, unknown> } {
   const state: LifecycleState = task.before;
   const plan = state.plan;
+  // A delta code re-review carries plan-step conformance from its base review.
+  const scope = task.continuity?.scope;
+  const base = scope?.kind === "delta"
+    ? (state.codeReview?.commit === scope.base
+      ? state.codeReview
+      : state.reviewHistory?.findLast((h) =>
+        h.role === "review_code" && h.review.commit === scope.base
+      )?.review)
+    : undefined;
+  const carried = base && "steps" in base ? base.steps : [];
   const prior = (role: "review_code" | "review_ux") =>
     priorFindingObligations(state, role).map((p) => ({
       finding: p.ref,
@@ -173,7 +185,9 @@ export function evidenceTemplate(
         return {
           planVersion: plan?.version,
           commit: task.reviewCommit,
-          steps: (plan?.steps ?? []).map((s) => ({ id: s.id, status: "" })),
+          steps: (plan?.steps ?? []).map((s) =>
+            carried.find((c) => c.id === s.id) ?? { id: s.id, status: "" }
+          ),
           findings: [],
           priorFindings: prior("review_code"),
         };

@@ -1,4 +1,7 @@
 import {
+  activeFollowUps,
+  activeReviewFix,
+  carriedIgnores,
   codeReviewFingerprint,
   completeAgenda,
   createState,
@@ -9,7 +12,10 @@ import {
   type LifecycleState,
   LifecycleStepSchema,
   mergeGate,
+  pendingReviewFindings,
   previousPlanFindings,
+  priorFindingObligations,
+  priorImplementationFindings,
   readAgenda,
   RebaseProbeSchema,
   recordMergeFailure,
@@ -17,6 +23,7 @@ import {
   refreshIssue,
   reopenAgenda,
   reviewFingerprint,
+  reviewScope,
   rollbackState,
   transition,
   validatePlanReview,
@@ -1830,8 +1837,8 @@ function selectRepairs(state: LifecycleState) {
     ignore: [{ role: "review_ux", findingId: "same" }],
   });
 }
-Deno.test("all severities require user direction and can be accepted without fabricating resolution", () => {
-  for (const severity of ["low", "medium", "high", "critical"] as const) {
+Deno.test("medium and higher findings require user direction and can be accepted without fabricating resolution", () => {
+  for (const severity of ["medium", "high", "critical"] as const) {
     let state = findingsState();
     state.codeReview!.findings[0].severity = severity;
     rejects(
@@ -1868,6 +1875,65 @@ Deno.test("all severities require user direction and can be accepted without fab
     });
     equal(state.phase, "ready");
   }
+});
+const nit = {
+  id: "nit",
+  severity: "low" as const,
+  description: "Naming nit",
+  evidence: ["src/lib.rs:3"],
+  affectedPaths: ["src/lib.rs"],
+};
+Deno.test("low findings become follow-ups that need no decision and stay unresolved", () => {
+  let state = transition(implementing(), "review_code", {
+    ...review,
+    findings: [nit],
+  });
+  equal(pendingReviewFindings(state), []);
+  equal(activeFollowUps(state).map((f) => f.finding.findingId), ["nit"]);
+  equal(activeFollowUps(state)[0].commit, head);
+  equal(priorFindingObligations(state, "review_code"), []);
+  state = withUx(state);
+  state = transition(state, "verify", verification(state));
+  state = transition(state, "ready", {
+    commit: head,
+    mergeRequest: "Merge with the nit deferred",
+  });
+  equal(state.phase, "ready");
+  equal(state.codeReview!.findings[0].resolution, undefined);
+  equal(activeFollowUps(state).length, 1);
+
+  // A later report at a blocking severity needs a decision again.
+  let raised = transition(implementing(), "review_code", {
+    ...review,
+    findings: [nit],
+  });
+  raised = transition(raised, "review_code", {
+    ...review,
+    findings: [{ ...nit, severity: "medium" }],
+  });
+  equal(activeFollowUps(raised), []);
+  equal(raised.reviewFollowUps!.length, 1);
+  equal(raised.reviewFollowUps![0].detail.severity, "medium");
+  equal(pendingReviewFindings(raised).map((f) => f.findingId), ["nit"]);
+
+  // Selecting a follow-up for repair takes it out of the deferred list.
+  const selected = transition(
+    transition(implementing(), "review_code", { ...review, findings: [nit] }),
+    "decide_review",
+    {
+      id: decisionId,
+      reviewFingerprint: codeReviewFingerprint(
+        transition(implementing(), "review_code", {
+          ...review,
+          findings: [nit],
+        }),
+      ),
+      request: "Fix the nit too",
+      repair: [{ role: "review_code", findingId: "nit" }],
+      ignore: [],
+    },
+  );
+  equal(activeFollowUps(selected), []);
 });
 Deno.test("explicit merge sign-off accepts remaining legacy review findings but never failed checks", () => {
   const state = legacy(findingsState());
@@ -1929,40 +1995,58 @@ Deno.test("review decisions reject stale identity unknown findings duplicates an
     "already used",
   );
 });
-Deno.test("selected repairs require plan approval and new reviews and verify original plus repair checks", () => {
+const repairCheck = {
+  id: "repair",
+  command: ["cargo", "x", "test", "-p", "demo", "-E", "test(repair)"],
+  covers: ["review_code/same"],
+};
+function passedChecks(state: LifecycleState, commit: string) {
+  const record = verification(state, undefined, commit);
+  record.verification.checks = verificationPlan(state).checks!.map((
+    check,
+  ) => ({
+    ...check,
+    exitCode: 0,
+    durationMs: 1,
+    log: check.id,
+    worktreeUnchanged: true,
+    status: "passed" as const,
+  }));
+  return record;
+}
+Deno.test("selected repairs implement directly, need fresh review and verify plan plus repair checks", () => {
   let state = selectRepairs(findingsState());
-  rejects(
-    () =>
-      transition(state, "implement_review_fixes", {
-        commit: changedHead,
-        summary: "Fix",
-      }),
-    "Approve",
-  );
-  state = transition(state, "plan_review_fixes", plan);
-  rejects(
-    () =>
-      transition(state, "implement_review_fixes", {
-        commit: changedHead,
-        summary: "Fix",
-      }),
-    "Approve",
-  );
-  state = transition(state, "approve_review_fixes", {
-    id: decisionId,
-    handoffId: decisionId,
-    request: "Implement these repairs",
-  });
   rejects(
     () => transition(state, "ready", { commit: head, mergeRequest: "Merge" }),
     "Finish or roll back",
+  );
+  rejects(
+    () =>
+      transition(state, "implement_review_fixes", {
+        commit: changedHead,
+        summary: "Fix",
+        checks: [{ ...repairCheck, id: "crate" }],
+      }),
+    "reuses an approved plan check ID",
+  );
+  rejects(
+    () =>
+      transition(state, "implement_review_fixes", {
+        commit: changedHead,
+        summary: "Fix",
+        scopeChanges: ["Also rewrite the parser"],
+      }),
+    "report a finding that needs broader work as unresolved",
   );
   const original = state.plan;
   state = transition(state, "implement_review_fixes", {
     commit: changedHead,
     summary: "Fixed the selected defect",
+    checks: [repairCheck],
   });
   equal(state.plan, original);
+  equal(state.reviewDecisions![0].plan, undefined);
+  equal(state.reviewDecisions![0].approval, undefined);
   equal(state.codeReview, undefined);
   equal(state.uxReview, undefined);
   equal(state.verification, undefined);
@@ -1977,24 +2061,288 @@ Deno.test("selected repairs require plan approval and new reviews and verify ori
   state = transition(state, "review_code", { ...review, commit: changedHead });
   state = withUx(state);
   const checks = verificationPlan(state).checks!;
-  equal(checks.length, 4);
-  equal(new Set(checks.map((c) => c.id)).size, 4);
-  const record = verification(state, undefined, changedHead);
-  record.verification.checks = checks.map((check) => ({
-    ...check,
-    exitCode: 0,
-    durationMs: 1,
-    log: check.id,
-    worktreeUnchanged: true,
-    status: "passed" as const,
-  }));
-  state = transition(state, "verify", record);
+  equal(checks.map((c) => c.id), ["crate", "docs", `${decisionId}-0`]);
+  equal(checks[2].command, repairCheck.command);
+  state = transition(state, "verify", passedChecks(state, changedHead));
   state = transition(state, "ready", {
     commit: changedHead,
     mergeRequest: "Merge fixed code",
   });
   equal(state.phase, "ready");
   equal(state.reviewDecisions![0].codeReview.findings[0].resolution, undefined);
+});
+Deno.test("a legacy repair plan never gates repair and its checks count only when approved", () => {
+  const planned = transition(
+    selectRepairs(findingsState()),
+    "plan_review_fixes",
+    plan,
+  );
+  const repair = (state: LifecycleState) =>
+    withUx(
+      transition(
+        transition(state, "implement_review_fixes", {
+          commit: changedHead,
+          summary: "Fixed",
+        }),
+        "review_code",
+        { ...review, commit: changedHead },
+      ),
+    );
+  // Waiting at approve_review_fixes: drive now repairs without the approval.
+  equal(verificationPlan(repair(planned)).checks!.length, 2);
+  const approved = transition(planned, "approve_review_fixes", {
+    id: decisionId,
+    handoffId: decisionId,
+    request: "Implement these repairs",
+  });
+  equal(
+    verificationPlan(repair(approved)).checks!.map((c) => c.id),
+    ["crate", "docs", `${decisionId}-0`, `${decisionId}-1`],
+  );
+});
+const bug = {
+  id: "bug",
+  severity: "high" as const,
+  description: "Loses input on resize",
+  evidence: ["src/lib.rs:10"],
+  affectedPaths: ["src/lib.rs"],
+};
+const style = {
+  id: "style",
+  severity: "medium" as const,
+  description: "Inconsistent error wording",
+  evidence: ["src/lib.rs:20"],
+  affectedPaths: ["src/lib.rs"],
+};
+function codeStage(findings = [bug, style]) {
+  return transition(implementing(), "review_code", { ...review, findings });
+}
+function decide(
+  state: LifecycleState,
+  repair: string[],
+  ignore: string[] = [],
+  id = decisionId,
+) {
+  return transition(state, "decide_review", {
+    id,
+    reviewFingerprint: codeReviewFingerprint(state),
+    request: "Repair the selected findings",
+    repair: repair.map((findingId) => ({ role: "review_code", findingId })),
+    ignore: ignore.map((findingId) => ({ role: "review_code", findingId })),
+  });
+}
+const deltaBaseline = {
+  main: "d".repeat(40),
+  mergeBase: "d".repeat(40),
+  head: changedHead,
+  featureDiff: "",
+  previousHead: head,
+  delta: "",
+  ancestry: "descendant" as const,
+  baselineChanged: false,
+  limitations: [],
+  deltaPaths: ["src/lib.rs"],
+};
+Deno.test("code findings are decided and repaired before UX review runs", () => {
+  let state = codeStage();
+  rejects(
+    () => transition(state, "verify", verification(state)),
+    "Current UX review",
+  );
+  equal(pendingReviewFindings(state).map((f) => f.findingId), ["bug", "style"]);
+  state = decide(state, ["bug", "style"]);
+  equal(state.reviewDecisions![0].uxReview, undefined);
+  equal(state.reviewDecisions![0].generation, `${issue.digest}:0`);
+  equal(activeReviewFix(state)?.id, decisionId);
+  state = transition(state, "implement_review_fixes", {
+    commit: changedHead,
+    summary: "Fixed both",
+  });
+  state = transition(state, "review_code", { ...review, commit: changedHead });
+  equal(pendingReviewFindings(state), []);
+  state = withUx(state);
+  state = transition(state, "verify", passedChecks(state, changedHead));
+  equal(state.verification!.status, "passed");
+});
+Deno.test("code findings ignored before UX review stay ignored once it runs", () => {
+  let state = decide(codeStage([style]), [], ["style"]);
+  equal(pendingReviewFindings(state), []);
+  state = withUx(state);
+  equal(pendingReviewFindings(state), []);
+  state = transition(state, "verify", verification(state));
+  equal(state.verification!.status, "passed");
+  // A UX finding still needs its own decision.
+  const ux = transition(
+    decide(codeStage([style]), [], ["style"]),
+    "review_ux",
+    {
+      planVersion: 1,
+      commit: head,
+      findings: [{ ...style, id: "copy" }],
+      assessment: {
+        impact: "material",
+        summary: "Error wording misleads",
+        assessedPaths: ["src/lib.rs"],
+        limitations: [],
+      },
+    },
+  );
+  equal(pendingReviewFindings(ux).map((f) => f.role + "/" + f.findingId), [
+    "review_ux/copy",
+  ]);
+});
+Deno.test("re-reviews after a repair pass are delta-scoped to the repair diff", () => {
+  const repaired = transition(
+    decide(codeStage(), ["bug", "style"]),
+    "implement_review_fixes",
+    {
+      commit: changedHead,
+      summary: "Fixed both",
+    },
+  );
+  const scope = reviewScope(repaired, "review_code", deltaBaseline);
+  assert(scope.kind === "delta");
+  equal(scope.base, head);
+  equal(scope.paths, ["src/lib.rs"]);
+  equal(scope.findings.map((f) => f.findingId), ["bug", "style"]);
+  // First UX review, divergent history, missing paths and rollback are full.
+  equal(reviewScope(repaired, "review_ux", deltaBaseline), { kind: "full" });
+  equal(
+    reviewScope(repaired, "review_code", {
+      ...deltaBaseline,
+      ancestry: "divergent",
+    }),
+    { kind: "full" },
+  );
+  equal(
+    reviewScope(repaired, "review_code", {
+      ...deltaBaseline,
+      deltaPaths: [],
+    }),
+    { kind: "full" },
+  );
+  equal(
+    reviewScope(repaired, "review_code", {
+      ...deltaBaseline,
+      previousHead: "e".repeat(40),
+    }),
+    { kind: "full" },
+  );
+  const rolledBack = rollbackState(
+    repaired,
+    "review_code",
+    "a6da10b0-c980-4b82-b920-640238095f1b",
+  );
+  equal(reviewScope(rolledBack, "review_code", deltaBaseline), {
+    kind: "full",
+  });
+
+  const outcomes = scope.findings.map((finding) => ({
+    finding,
+    outcome: "verified_fixed" as const,
+    rationale: "The repair diff handles it",
+    evidence: ["src/lib.rs:12"],
+  }));
+  const deltaReview = {
+    ...review,
+    commit: changedHead,
+    scope,
+    priorFindings: outcomes,
+  };
+  rejects(
+    () =>
+      transition(repaired, "review_code", {
+        ...deltaReview,
+        findings: [{
+          id: "unrelated",
+          severity: "medium",
+          description: "Pre-existing README gap",
+          evidence: ["README.md:1"],
+          affectedPaths: ["README.md"],
+        }],
+      }),
+    "Delta re-review reports only regressions in the repair diff",
+  );
+  const regressed = transition(repaired, "review_code", {
+    ...deltaReview,
+    findings: [{
+      id: "regression",
+      severity: "high",
+      description: "The repair drops the trailing newline",
+      evidence: ["src/lib.rs:12"],
+      affectedPaths: ["src/lib.rs", "src/caller.rs"],
+    }],
+  });
+  equal(regressed.codeReview!.scope, scope);
+  equal(pendingReviewFindings(regressed).map((f) => f.findingId), [
+    "regression",
+  ]);
+});
+Deno.test("an ignored finding carries forward through delta re-reviews until it changes", () => {
+  const first = codeStage();
+  const refs = priorImplementationFindings(first).map((p) => p.ref);
+  const [bugRef, styleRef] = refs;
+  const repaired = transition(
+    decide(first, ["bug"], ["style"]),
+    "implement_review_fixes",
+    {
+      commit: changedHead,
+      summary: "Fixed the bug",
+    },
+  );
+  const scope = reviewScope(repaired, "review_code", deltaBaseline);
+  assert(scope.kind === "delta");
+  const rereview = (
+    finding: Record<string, unknown>,
+    reviewScope: unknown = scope,
+  ) =>
+    transition(repaired, "review_code", {
+      ...review,
+      commit: changedHead,
+      ...(reviewScope ? { scope: reviewScope } : {}),
+      findings: [{ ...style, origin: styleRef, ...finding }],
+      priorFindings: [{
+        finding: bugRef,
+        outcome: "verified_fixed",
+        rationale: "Fixed",
+        evidence: ["src/lib.rs:10"],
+      }, {
+        finding: styleRef,
+        outcome: "persists",
+        rationale: "Unchanged; the user ignored it",
+        evidence: ["src/lib.rs:20"],
+      }],
+    });
+  const carried = rereview({});
+  equal(carriedIgnores(carried).map((f) => f.findingId), ["style"]);
+  equal(pendingReviewFindings(carried), []);
+  equal(carried.codeReview!.findings[0].resolution, undefined);
+  // UX review can run, and the merge gate accepts the carried ignore.
+  const merged = transition(
+    withUx(carried),
+    "verify",
+    passedChecks(withUx(carried), changedHead),
+  );
+  equal(merged.verification!.status, "passed");
+  // A raised severity, a reopening or a full review asks again.
+  equal(
+    pendingReviewFindings(rereview({ severity: "high" })).map((f) =>
+      f.findingId
+    ),
+    ["style"],
+  );
+  equal(
+    pendingReviewFindings(
+      rereview({
+        reopening: { rationale: "Now user-visible", evidence: ["new.ts:1"] },
+      }),
+    ).map((f) => f.findingId),
+    ["style"],
+  );
+  equal(
+    pendingReviewFindings(rereview({}, null)).map((f) => f.findingId),
+    ["style"],
+  );
 });
 Deno.test("changed review evidence and rollback require renewed acceptance", () => {
   let state = findingsState();
