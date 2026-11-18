@@ -94,7 +94,8 @@ const REF7B = { id: AGENT_ID, kind: 'codex', session_id: 'conv-2' };
 const XSS = (n) => `<img src=x onerror="window.__yinzXss=${n}">`;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const detailHash = (run = 'run-7', tab = 'timeline') => `#/a/${encodeURIComponent(AGENT_ID)}?run=${run}&tab=${tab}`;
+const detailHash = (run = 'run-7', tab = 'timeline', id = AGENT_ID) =>
+  `#/a/${encodeURIComponent(id)}?${run ? `run=${run}&` : ''}tab=${tab}`;
 const FILLER = 'The agent kept working through the change and reported progress in a few longer sentences so phone rows wrap.';
 
 class Fixture {
@@ -456,6 +457,30 @@ class Guard {
 
 let browser;
 const contexts = new Set();
+const publicRequestStarts = [];
+const publicRequestWindowMs = 1500;
+const publicRequestWindowLimit = 64;
+
+function isPublicPageOrAsset(pathname) {
+  return pathname === '/' || pathname === '/login' || pathname.startsWith('/static/');
+}
+
+async function continuePublicRequest(route) {
+  // Fresh fixture contexts load the same module graph without a shared cache.
+  // Pace that synthetic traffic across contexts below the listener's shared
+  // public budget (50 requests/s, burst 100). All responses still come from Yinz.
+  for (;;) {
+    const now = performance.now();
+    while (publicRequestStarts.length && now - publicRequestStarts[0] >= publicRequestWindowMs) {
+      publicRequestStarts.shift();
+    }
+    if (publicRequestStarts.length < publicRequestWindowLimit) {
+      publicRequestStarts.push(now);
+      return route.continue();
+    }
+    await pause(Math.ceil(publicRequestStarts[0] + publicRequestWindowMs - now));
+  }
+}
 
 function attachPage(page, guard) {
   page.on('pageerror', (e) => guard.add(`pageerror: ${e.message}`));
@@ -465,7 +490,7 @@ function attachPage(page, guard) {
   page.on('response', (r) => {
     const u = new URL(r.url());
     if (u.origin !== ORIGIN || intercepted(u.pathname)) return;
-    if ((u.pathname.startsWith('/static/') || u.pathname === '/' || u.pathname === '/login') && r.status() >= 400) {
+    if (isPublicPageOrAsset(u.pathname) && r.status() >= 400) {
       guard.add(`live ${u.pathname} returned ${r.status()}`);
     }
   });
@@ -491,6 +516,7 @@ async function openContext(options = {}) {
   const guard = new Guard();
   await context.exposeBinding('__yinzCheckReport', (_source, kind, detail) => guard.add(`${kind}: ${detail}`));
   await context.addInitScript(INIT);
+  await context.route((u) => u.origin === ORIGIN && isPublicPageOrAsset(u.pathname), continuePublicRequest);
   await context.route((u) => u.origin === ORIGIN && intercepted(u.pathname), (route) => handle(context, route, fx));
   context.on('request', (req) => {
     const url = req.url();
@@ -2791,13 +2817,17 @@ async function timelineResponseSpinner(open) {
 
 async function peerTimelineHandoff(open, recorded) {
   const { context, page, fx } = await open({ clock: true });
+  const detailId = peerSelector('a');
+  const peerId = 'live:peer:7';
+  const run = recorded ? 'run-7' : '';
   const spinner = '#timeline .timeline-spinner';
   const promptPath = '/api/agent/prompt';
   const statusPath = recorded ? '/api/history' : '/api/agents';
   const badge = '.detail-summary .state-badge';
   const setActivity = (state, hookAt) => {
-    fx.live = { state, last_hook_at_ms: hookAt, current_session: false, session: 'peer' };
-    if (!recorded) fx.rows = [row(fx, AGENT_ID, state, { ...fx.live, run: '' })];
+    fx.rows = [row(fx, peerId, state, {
+      detail_id: detailId, last_hook_at_ms: hookAt, current_session: false, session: 'peer', run,
+    })];
   };
   const poll = () => refreshFixture(page, fx, statusPath);
   const send = async () => {
@@ -2805,6 +2835,7 @@ async function peerTimelineHandoff(open, recorded) {
     await page.locator('#composer-input').fill('Run the focused tests');
     await domClick(page, '#composer-send');
     await until('peer draft cleared after confirmation', async () => fx.count(promptPath) > before && (await valueOf(page, '#composer-input')) === '');
+    check(fx.bodies(promptPath).at(-1)?.agent?.id === detailId, 'prompt did not use the scoped peer ref');
     return page.evaluate(() => Date.now());
   };
   const confirm = async () => {
@@ -2820,7 +2851,7 @@ async function peerTimelineHandoff(open, recorded) {
   const advanceTo = async (time) => context.clock.runFor(time - await page.evaluate(() => Date.now()));
 
   setActivity('idle', 10);
-  await openApp(page, recorded ? detailHash() : `#/a/${encodeURIComponent(AGENT_ID)}?tab=timeline`);
+  await openApp(page, detailHash(run, 'timeline', detailId));
   await textUntil(page, badge, 'Idle', 'idle peer state');
   await pauseClock(context, page);
   check(!(await exists(page, spinner)), 'idle peer shows a spinner before submitting');
@@ -2867,10 +2898,13 @@ async function peerTimelineHandoff(open, recorded) {
 
 async function hiddenTimelineConfirmation(open) {
   const { context, page, fx } = await open({ clock: true });
+  const detailId = peerSelector('a');
   const promptPath = '/api/agent/prompt';
   const statusPath = '/api/history';
-  fx.live = { state: 'idle', current_session: false, session: 'peer' };
-  await openDetail(page);
+  fx.rows = [row(fx, 'live:peer:7', 'idle', {
+    detail_id: detailId, current_session: false, session: 'peer', run: 'run-7',
+  })];
+  await openDetail(page, detailHash('run-7', 'timeline', detailId));
   await pauseClock(context, page);
   await idle(page);
 

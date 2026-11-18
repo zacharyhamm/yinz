@@ -418,8 +418,9 @@ export function DetailView({ env, route }) {
   const actions = route.bind && !!currentRef && !meta.agent_gone && !peerRejected;
   const unavailable = meta.agent_gone || peerRejected || ((store?.loaded || list?.data) && !currentRef);
   const lookup = store ? tail : list;
-  const lookupFailed = lookup && (lookup.status === 'offline' || lookup.status === 'retrying' || lookup.status === 'error');
-  const scopedRecovery = recoverScoped && (unavailable || (!currentRef && lookupFailed));
+  const stale = lookup && ['offline', 'retrying', 'error'].includes(lookup.status);
+  const scopedRecovery = recoverScoped && (unavailable || (!currentRef && stale));
+  const refreshTarget = store ? refreshTail : refreshList;
 
   function onTargetGone() {
     if (scoped) setPeerRejected(true);
@@ -431,7 +432,6 @@ export function DetailView({ env, route }) {
       setSheet((value) => ['overflow', 'interrupt', 'keys'].includes(value?.type) ? null : value);
     }
   }, [actions]);
-  const refreshTarget = store ? refreshTail : refreshList;
   const scope = useMemo(() => actions && currentRef ? { target: currentRef } : null,
     [actions, store?.run, currentRef?.id, currentRef?.kind, currentRef?.session_id]);
 
@@ -568,9 +568,8 @@ export function DetailView({ env, route }) {
   // A new array only after a store change: the one-second age re-render must not rerun
   // the timeline's anchoring effect.
   const items = useMemo(() => (store ? store.items() : []), [store, version]);
-  const stale = store ? lookupFailed : recoverScoped && lookupFailed;
   const waitingForAgent = actions && ((scope !== null && sending === scope)
-    || (!lookupFailed && (live.state === 'busy' || awaitingStatus?.scope === scope)));
+    || (!stale && (live.state === 'busy' || awaitingStatus?.scope === scope)));
   const title = live && live.title ? String(live.title) : store && store.meta.header && store.meta.header.name ? String(store.meta.header.name)
     : scoped ? 'Peer agent' : route.id;
   useEffect(() => {
