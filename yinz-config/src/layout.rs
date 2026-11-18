@@ -1,6 +1,9 @@
 //! Layout loading and parsing. Pure layout models live in yinz-types.
 use {
-    crate::config::{Config, ConfigError, ConfigRead},
+    crate::config::{
+        layout_open_can_fall_back, open_config_input, require_regular_file, Config, ConfigError,
+        ConfigRead,
+    },
     yinz_runtime::home::default_layout_dir,
     yinz_runtime::home::find_default_config_dir,
     yinz_types::data::LayoutInfo,
@@ -14,7 +17,7 @@ use std::cmp::Ordering;
 
 use std::path::{Path, PathBuf};
 use std::vec::Vec;
-use std::{fs::File, io::prelude::*};
+use std::{fs::File, io, io::prelude::*};
 
 use yinz_types::input::layout::*;
 
@@ -395,21 +398,35 @@ fn stringified_from_path_with(
         return stringified_from_path(layout_path);
     }
     reject_remote_layout(layout_path)?;
-    let read =
-        |path: &Path| mode.reader()(path).map_err(|error| ConfigError::IoPath(error, path.into()));
-    let (path, raw) = match read(layout_path) {
-        Err(ConfigError::IoPath(error, _)) if error.kind() == std::io::ErrorKind::NotFound => {
-            let path = layout_path.with_extension("kdl");
-            let raw = read(&path)?;
-            (path, raw)
-        },
-        result => (layout_path.to_path_buf(), result?),
-    };
+    let (path, raw) = read_saved_layout(layout_path, open_config_input(layout_path))?;
     let swap_path = layout_path.with_extension("swap.kdl");
     let swap = mode
         .optional_layout_text(&swap_path)?
         .map(|raw| (swap_path.display().to_string(), raw));
     Ok((path.display().to_string(), raw, swap))
+}
+
+pub(crate) fn read_saved_layout(
+    path: &Path,
+    opened: io::Result<File>,
+) -> Result<(PathBuf, String), ConfigError> {
+    let fallback = path.with_extension("kdl");
+    // Path metadata can qualify a failed open for fallback. The selected
+    // descriptor still determines whether the input is regular.
+    let (path, file) = match opened {
+        Err(error) if fallback != path && layout_open_can_fall_back(path, &error) => {
+            let file = open_config_input(&fallback)
+                .map_err(|error| ConfigError::IoPath(error, fallback.clone()))?;
+            (fallback, file)
+        },
+        result => (
+            path.to_path_buf(),
+            result.map_err(|error| ConfigError::IoPath(error, path.into()))?,
+        ),
+    };
+    require_regular_file(&file).map_err(|error| ConfigError::IoPath(error, path.clone()))?;
+    let raw = io::read_to_string(file).map_err(|error| ConfigError::IoPath(error, path.clone()))?;
+    Ok((path, raw))
 }
 pub fn stringified_from_default_assets(path: &Path) -> Result<StringifiedLayout, ConfigError> {
     // These names identify compiled-in assets. User layouts are loaded from the layout directory.

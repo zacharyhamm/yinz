@@ -244,6 +244,161 @@ fn underline_metrics_managed_write_is_published_when_missing_main_returns() {
     Config::write_managed_fragment(&drop_ins, "terminal { underline_thickness 3; }").unwrap();
     std::fs::write(&main, original).unwrap();
     watching.expect_underline(-2, 3);
+
+    let logs = captured_config_logs();
+    *watching.main_lost.lock() = false;
+    std::fs::remove_file(&main).unwrap();
+    watching.main_lost.wait_until(
+        "watcher noticed the second main-file removal",
+        WAIT,
+        |lost| lost.then_some(()),
+    );
+    std::fs::write(&main, "terminal { underline_thickness 65; }").unwrap();
+    logs.wait_until("watcher rejected the malformed restoration", WAIT, |logs| {
+        logs.iter()
+            .any(|line| {
+                line.contains("Failed to reload config")
+                    && line.contains(main.to_str().unwrap())
+                    && line.contains("underline_thickness")
+            })
+            .then_some(())
+    });
+    Config::write_managed_fragment(&drop_ins, "terminal { underline_thickness 4; }").unwrap();
+    std::fs::write(&main, original).unwrap();
+    watching.expect_underline(-2, 4);
+}
+
+#[cfg(unix)]
+#[test]
+fn underline_metrics_managed_write_is_published_when_nonregular_main_is_restored() {
+    use std::{
+        fs,
+        os::unix::{ffi::OsStrExt, fs::symlink},
+    };
+
+    struct UnblockOnFailure<'a> {
+        main: &'a Path,
+        restored: &'a Path,
+        pipe_alias: &'a Path,
+    }
+
+    impl Drop for UnblockOnFailure<'_> {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                // Remove the FIFO from the watched path before releasing any blocked
+                // open on its old inode. The successful case never opens a writer.
+                let _ = fs::rename(self.restored, self.main);
+                let _ = nonblocking_open_options().write(true).open(self.pipe_alias);
+            }
+        }
+    }
+
+    for use_symlink in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let main = root.join("config.kdl");
+        let drop_ins = root.join("config.d");
+        let pipe = root.join("pipe");
+        let replacement = root.join("replacement");
+        let restored = root.join("restored");
+        let original = "terminal { underline_offset -2; underline_thickness 1; }";
+        fs::create_dir(&drop_ins).unwrap();
+        fs::write(&main, original).unwrap();
+        // Restore the very same bytes and mtime. The refused observation must
+        // still count as a transition when readable input returns.
+        fs::hard_link(&main, &restored).unwrap();
+        let name = std::ffi::CString::new(pipe.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        if use_symlink {
+            symlink(&pipe, &replacement).unwrap();
+        } else {
+            fs::hard_link(&pipe, &replacement).unwrap();
+        }
+
+        let logs = captured_config_logs();
+        let watching = Watching::start(main.clone(), root);
+        let _unblock = UnblockOnFailure {
+            main: &main,
+            restored: &restored,
+            pipe_alias: &pipe,
+        };
+        Config::write_managed_fragment(&drop_ins, "terminal { underline_thickness 2; }").unwrap();
+        watching.expect_underline(-2, 2);
+        fs::rename(&replacement, &main).unwrap();
+        logs.wait_until("watcher rejected the nonregular main", WAIT, |logs| {
+            logs.iter()
+                .any(|line| {
+                    line.contains("Failed to reload config")
+                        && line.contains(main.to_str().unwrap())
+                        && line.contains("not a regular file")
+                })
+                .then_some(())
+        });
+        let managed =
+            Config::write_managed_fragment(&drop_ins, "terminal { underline_thickness 3; }")
+                .unwrap();
+        assert_eq!(
+            Config::from_path(&managed, None)
+                .unwrap()
+                .terminal
+                .underline_thickness,
+            Some(3)
+        );
+        assert!(!*watching.main_lost.lock());
+        {
+            let published = watching.changes.lock();
+            let terminal = &published.as_ref().unwrap().terminal;
+            assert_eq!(
+                (terminal.underline_offset, terminal.underline_thickness),
+                (Some(-2), Some(2))
+            );
+        }
+        fs::rename(&restored, &main).unwrap();
+        watching.expect_underline(-2, 3);
+    }
+}
+
+#[test]
+fn underline_metrics_watcher_observes_same_mtime_main_edits() {
+    use std::{
+        fs::{self, File, FileTimes},
+        time::SystemTime,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let main = root.join("config.kdl");
+    let replacement = root.join("replacement");
+    let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1_750_000_000);
+    let set_modified = |path: &Path, modified| {
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(modified))
+            .unwrap();
+    };
+    fs::write(
+        &main,
+        "terminal { underline_offset -2; underline_thickness 1; }",
+    )
+    .unwrap();
+    set_modified(&main, modified);
+    let watching = Watching::start(main.clone(), root);
+
+    fs::write(
+        &replacement,
+        "terminal { underline_offset -2; underline_thickness 3; }",
+    )
+    .unwrap();
+    set_modified(&replacement, modified);
+    fs::rename(&replacement, &main).unwrap();
+    assert_eq!(fs::metadata(&main).unwrap().modified().unwrap(), modified);
+    watching.expect_underline(-2, 3);
+
+    watching.clear();
+    set_modified(&main, modified + Duration::from_secs(1));
+    watching.expect_underline(-2, 3);
 }
 
 #[test]

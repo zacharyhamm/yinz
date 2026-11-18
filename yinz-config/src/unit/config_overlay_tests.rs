@@ -789,6 +789,93 @@ const MANAGED_LAYOUT_EDITS: &str = r#"
         terminal { underline_thickness 3; padding 4; }
     "#;
 
+#[cfg(unix)]
+#[test]
+fn underline_metrics_managed_save_preserves_required_layout_fallback() {
+    use crate::editor::Disk;
+    use std::{
+        fs,
+        os::unix::{ffi::OsStrExt, fs::PermissionsExt},
+    };
+    use yinz_types::{data::InputMode, input::actions::Action};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let overlay = root.join("config.d");
+    let layouts = root.join("layouts");
+    fs::create_dir(&overlay).unwrap();
+    fs::create_dir(&layouts).unwrap();
+    let managed = overlay.join(MANAGED_CONFIG_FILE_NAME);
+    let first = layouts.join("default");
+    let fallback = layouts.join("default.kdl");
+    let first_text = "layout { pane; }";
+    let fallback_text = "layout { pane; pane; }";
+    fs::write(&managed, MANAGED_LAYOUT_EDITS).unwrap();
+    fs::write(&first, first_text).unwrap();
+    fs::write(&fallback, fallback_text).unwrap();
+    fs::set_permissions(&first, fs::Permissions::from_mode(0o000)).unwrap();
+
+    match fs::File::open(&first) {
+        Err(error) => assert_eq!(error.kind(), io::ErrorKind::PermissionDenied),
+        Ok(_) => {
+            // A privileged runner can bypass mode bits. Exercise the saved selection
+            // with the corresponding failed open and the real on-disk candidates.
+            let denied = io::Error::from(io::ErrorKind::PermissionDenied);
+            let (selected, raw) = crate::layout::read_saved_layout(&first, Err(denied)).unwrap();
+            assert_eq!(selected, fallback);
+            assert_eq!(raw, fallback_text);
+        },
+    }
+    let preview = || Disk::read(None, Some(root)).unwrap().preview(&[], &[]);
+    let (_, before, _) = preview().unwrap();
+    assert_eq!(before.terminal.underline_offset, None);
+    let fragment = "terminal { underline_offset -2; }";
+    Config::write_managed_fragment(&overlay, fragment).unwrap();
+    let (_, saved, _) = preview().unwrap();
+    let effective = Config::load_saved(None, Some(root)).unwrap();
+    for config in [saved, effective] {
+        assert_eq!(config.terminal.underline_offset, Some(-2));
+        assert_eq!(config.terminal.underline_thickness, Some(3));
+        assert_eq!(config.terminal.padding, Some(4.0));
+        assert_eq!(
+            config.keybinds.0[&InputMode::Normal][&"Ctrl Alt y".parse().unwrap()],
+            [Action::Quit]
+        );
+    }
+    assert_eq!(
+        fs::metadata(&first).unwrap().permissions().mode() & 0o777,
+        0
+    );
+    fs::set_permissions(&first, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(fs::read_to_string(&first).unwrap(), first_text);
+    assert_eq!(fs::read_to_string(&fallback).unwrap(), fallback_text);
+
+    let committed = fs::read(&managed).unwrap();
+    let assert_refused = |diagnostic: &str| {
+        let error = Config::write_managed_fragment(&overlay, "terminal { underline_offset 3; }")
+            .unwrap_err();
+        assert!(error.contains(first.to_str().unwrap()), "{error}");
+        assert!(error.contains(diagnostic), "{error}");
+        assert_eq!(fs::read(&managed).unwrap(), committed);
+        assert_eq!(fs::read_to_string(&fallback).unwrap(), fallback_text);
+    };
+
+    let invalid_utf8 = b"invalid UTF-8: \xff";
+    fs::write(&first, invalid_utf8).unwrap();
+    assert_refused("UTF-8");
+    assert_eq!(fs::read(&first).unwrap(), invalid_utf8);
+
+    let invalid_kdl = "layout {";
+    fs::write(&first, invalid_kdl).unwrap();
+    assert_refused("Kdl Deserialization Error");
+    assert_eq!(fs::read_to_string(&first).unwrap(), invalid_kdl);
+
+    fs::remove_file(&first).unwrap();
+    let name = std::ffi::CString::new(first.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    assert_refused("not a regular file");
+}
+
 #[test]
 fn underline_metrics_managed_save_accepts_optional_layout_text_fallbacks() {
     use crate::editor::Disk;

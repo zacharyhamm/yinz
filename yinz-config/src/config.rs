@@ -486,18 +486,28 @@ fn nonblocking_open_options() -> OpenOptions {
     File::options()
 }
 
-fn require_regular_file(file: &File) -> io::Result<()> {
-    if file.metadata()?.is_file() {
-        Ok(())
+pub(crate) fn open_config_input(path: &Path) -> io::Result<File> {
+    nonblocking_open_options().read(true).open(path)
+}
+
+pub(crate) fn require_regular_file(file: &File) -> io::Result<std::fs::Metadata> {
+    let metadata = file.metadata()?;
+    if metadata.is_file() {
+        Ok(metadata)
     } else {
         Err(io::Error::other("not a regular file"))
     }
 }
 
 fn read_regular_config(path: &Path) -> io::Result<String> {
-    let file = nonblocking_open_options().read(true).open(path)?;
+    let file = open_config_input(path)?;
     require_regular_file(&file)?;
     io::read_to_string(file)
+}
+
+pub(crate) fn layout_open_can_fall_back(path: &Path, error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::NotFound
+        || path.metadata().is_ok_and(|metadata| metadata.is_file())
 }
 
 fn managed_recovery(error: String) -> String {
@@ -524,14 +534,9 @@ impl ConfigRead {
         }
 
         let path_error = |error| ConfigError::IoPath(error, path.into());
-        let file = match nonblocking_open_options().read(true).open(path) {
+        let file = match open_config_input(path) {
             Ok(file) => file,
-            Err(error)
-                if error.kind() == io::ErrorKind::NotFound
-                    || path.metadata().is_ok_and(|metadata| metadata.is_file()) =>
-            {
-                return Ok(None);
-            },
+            Err(error) if layout_open_can_fall_back(path, &error) => return Ok(None),
             Err(error) => return Err(path_error(error)),
         };
         require_regular_file(&file).map_err(path_error)?;
@@ -557,19 +562,22 @@ impl Config {
         if clean {
             return Config::from_default_assets();
         }
-        Self::load_layers(config_path, config_dir, ConfigRead::Ordinary)
+        let mode = ConfigRead::Ordinary;
+        Self::load_layers(config_path, config_dir, mode, mode.reader())
     }
 
     /// Read the saved layers using regular files. I/O errors that could affect the
     /// winning configuration make the snapshot indeterminate.
     pub fn load_saved(config_path: Option<&Path>, config_dir: Option<&Path>) -> ConfigResult {
-        Self::load_layers(config_path, config_dir, ConfigRead::Saved)
+        let mode = ConfigRead::Saved;
+        Self::load_layers(config_path, config_dir, mode, mode.reader())
     }
 
     fn load_layers(
         config_path: Option<&Path>,
         config_dir: Option<&Path>,
         mode: ConfigRead,
+        read_main: impl FnOnce(&Path) -> io::Result<String>,
     ) -> ConfigResult {
         // The config *directory*, whichever file is read: the drop-ins hang off it, so a
         // one-off `--config /somewhere/else.kdl` still gets the user's `config.d`, and never
@@ -591,7 +599,7 @@ impl Config {
             (None, None) => None,
         };
         if let Some(path) = main {
-            config = Config::from_path_with(path, Some(config), mode)?;
+            config = Config::from_path_with(path, Some(config), mode, read_main)?;
         }
         config.load_overlay_dir(overlay_dir.as_deref(), mode)?;
         config.resolve_plugin_repositories(config_path, config_dir.as_deref())
@@ -945,21 +953,22 @@ impl Config {
         }
     }
     pub fn from_path(path: &PathBuf, default_config: Option<Config>) -> ConfigResult {
-        Self::from_path_with(path, default_config, ConfigRead::Ordinary)
+        let mode = ConfigRead::Ordinary;
+        Self::from_path_with(path, default_config, mode, mode.reader())
     }
 
     fn from_path_with(
         path: &Path,
         default_config: Option<Config>,
         mode: ConfigRead,
+        read: impl FnOnce(&Path) -> io::Result<String>,
     ) -> ConfigResult {
         if path.extension().and_then(|extension| extension.to_str()) == Some("lua") {
             return Err(ConfigError::UnsupportedFormat(
                 "Lua configuration is no longer supported".into(),
             ));
         }
-        let kdl_config =
-            mode.reader()(path).map_err(|error| ConfigError::IoPath(error, path.into()))?;
+        let kdl_config = read(path).map_err(|error| ConfigError::IoPath(error, path.into()))?;
         Self::from_file_text(path, kdl_config, default_config, mode)
     }
 
@@ -1382,31 +1391,37 @@ async fn watch_config_file_changes_inner<F, Fut>(
     F: Fn(Config) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send,
 {
+    use notify::{self, Config as WatcherConfig, Event, PollWatcher, RecursiveMode, Watcher};
+    use std::time::{Duration, SystemTime};
+    use tokio::sync::mpsc;
     use yinz_runtime::errors::prelude::*;
 
-    let mut on_ready = Some(on_ready);
-    let mut pending_main_recovery = false;
-    // in a gist, what we do here is fire the `on_config_change` function whenever there is a
-    // change in the config file or the configured theme directory, we do this by:
-    // 1. Trying to watch the provided config file for changes
-    // 2. If the file is deleted or does not exist, we periodically poll for it (manually, not
-    //    through filesystem events)
-    // 3. Once it exists, we start watching it for changes again
-    //
-    // we do this because the alternative is to watch its parent folder and this might cause the
-    // classic "too many open files" issue if there are a lot of files there and/or lots of Yinz
-    // instances
-    use notify::{self, Config as WatcherConfig, Event, PollWatcher, RecursiveMode, Watcher};
-    use std::time::Duration;
-    use tokio::sync::mpsc;
+    #[derive(PartialEq, Eq)]
+    struct MainConfig {
+        text: String,
+        modified: Option<SystemTime>,
+    }
 
-    /// The theme dir and the `config.d` drop-in dir, as far as they exist: the two folders a
-    /// change in which is a change in the config. Watched together with the file.
+    // PollWatcher's content comparison opens paths separately from its file-type check.
+    // Keep observation and parsing of the main file tied to one checked descriptor.
+    fn read_main(path: &Path) -> io::Result<MainConfig> {
+        let file = open_config_input(path)?;
+        let modified = require_regular_file(&file)?.modified().ok();
+        let text = io::read_to_string(file)?;
+        Ok(MainConfig { text, modified })
+    }
+
     fn load_config_and_theme_dir(
         config_file_path: &Path,
         config_dir: Option<&Path>,
+        main_text: &str,
     ) -> Result<(Config, Option<PathBuf>), ConfigError> {
-        let config = Config::load(Some(config_file_path), config_dir, false)?;
+        let config = Config::load_layers(
+            Some(config_file_path),
+            config_dir,
+            ConfigRead::Ordinary,
+            |_| Ok(main_text.to_owned()),
+        )?;
         let config_dir = config_dir.map(Path::to_path_buf);
         let (_, mut config) = load_layout_and_config(
             None,
@@ -1437,185 +1452,114 @@ async fn watch_config_file_changes_inner<F, Fut>(
         expected_overlay_dir(config_dir).filter(|dir| dir.is_dir())
     }
 
-    fn event_is_for_config_file(event: &Event, config_file_path: &Path) -> bool {
-        event.paths.iter().any(|path| path == config_file_path)
-    }
-
     fn event_is_in_theme_dir(event: &Event, theme_dir: Option<&Path>) -> bool {
         theme_dir
             .is_some_and(|theme_dir| event.paths.iter().any(|path| path.starts_with(theme_dir)))
     }
 
-    enum Reload {
-        Published { theme_dir_changed: bool },
-        MissingMain,
-        Failed,
+    fn log_main_read_error(path: &Path, error: &io::Error) {
+        log::error!("Failed to reload config from {}: {error}", path.display());
     }
 
-    async fn reload_config_after_change<F, Fut>(
-        config_file_path: &Path,
-        config_dir: Option<&Path>,
-        watched_theme_dir: Option<&Path>,
-        on_config_change: &F,
-    ) -> Reload
-    where
-        F: Fn(Config) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = ()> + Send,
-    {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        if !config_file_path.exists() {
-            return Reload::MissingMain;
-        }
-
-        let (new_config, new_theme_dir) =
-            match load_config_and_theme_dir(config_file_path, config_dir) {
-                Ok(loaded) => loaded,
-                Err(ConfigError::IoPath(error, path))
-                    if path == config_file_path && error.kind() == io::ErrorKind::NotFound =>
-                {
-                    return Reload::MissingMain;
-                },
-                Err(error) => {
-                    log::error!(
-                        "Failed to reload config from {}",
-                        error.diagnostic_message_for_file(config_file_path)
-                    );
-                    return Reload::Failed;
-                },
-            };
-        on_config_change(new_config).await;
-        // Overlay topology is reconciled independently by the presence probe, which
-        // installs its watch before loading. Keep theme-directory behavior unchanged.
-        Reload::Published {
-            theme_dir_changed: new_theme_dir.as_deref() != watched_theme_dir,
-        }
-    }
-
+    let mut on_ready = Some(on_ready);
+    let mut last_main = None;
+    let mut recover_on_registration = false;
     loop {
-        if config_file_path.exists() {
-            let watched_theme_dir =
-                load_config_and_theme_dir(config_file_path.as_path(), config_dir)
-                    .ok()
-                    .and_then(|(_, theme_dir)| theme_dir);
-            let mut watched_overlay_dir = existing_overlay_dir(config_dir);
-            let (tx, mut rx) = mpsc::unbounded_channel();
-
-            let mut watcher = match PollWatcher::new(
-                move |res: Result<Event, notify::Error>| {
-                    let _ = tx.send(res);
+        // Wait on the main path alone when it is missing. An unusable path still
+        // gets a probe and directory watches so an in-place repair is observed.
+        let initial_main = loop {
+            match read_main(&config_file_path) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
                 },
-                // A newly discovered drop-in can be edited again in the same second.
-                // PollWatcher's default mtime comparison rounds to whole seconds, so
-                // compare contents as well to retain those edits after the first reload.
-                WatcherConfig::default()
-                    .with_poll_interval(Duration::from_secs(1))
-                    .with_compare_contents(true),
-            ) {
-                Ok(watcher) => watcher,
-                Err(e) => {
-                    log::error!("Failed to create config watcher: {}", e);
-                    break;
-                },
-            };
-
-            if let Err(e) = watcher.watch(&config_file_path, RecursiveMode::NonRecursive) {
-                if !config_file_path.exists() {
-                    pending_main_recovery |= on_ready.is_none();
-                    if pending_main_recovery {
-                        drop(watcher);
-                        on_main_lost();
-                    }
-                    continue;
-                }
-                log::error!("Failed to watch config file {:?}: {}", config_file_path, e);
+                result => break result,
+            }
+        };
+        let watched_theme_dir = initial_main.as_ref().ok().and_then(|main| {
+            load_config_and_theme_dir(&config_file_path, config_dir, &main.text)
+                .ok()
+                .and_then(|(_, theme_dir)| theme_dir)
+        });
+        if last_main.is_none() {
+            if let Err(error) = &initial_main {
+                log_main_read_error(&config_file_path, error);
+            }
+            last_main = Some(initial_main);
+        }
+        let mut watched_overlay_dir = existing_overlay_dir(config_dir);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut watcher = match PollWatcher::new(
+            move |res: Result<Event, notify::Error>| {
+                let _ = tx.send(res);
+            },
+            // A newly discovered drop-in can be edited again in the same second.
+            // PollWatcher's default mtime comparison rounds to whole seconds.
+            WatcherConfig::default()
+                .with_poll_interval(Duration::from_secs(1))
+                .with_compare_contents(true),
+        ) {
+            Ok(watcher) => watcher,
+            Err(error) => {
+                log::error!("Failed to create config watcher: {error}");
                 break;
-            }
+            },
+        };
 
-            if let Some(watched_theme_dir) = &watched_theme_dir
-                && let Err(e) = watcher.watch(watched_theme_dir, RecursiveMode::NonRecursive)
-            {
-                log::error!(
-                    "Failed to watch theme dir {:?}, continuing without it: {}",
-                    watched_theme_dir,
-                    e,
-                );
-            }
-            let mut overlay_watch_failed = false;
-            if let Some(overlay_dir) = &watched_overlay_dir
-                && let Err(e) = watcher.watch(overlay_dir, RecursiveMode::NonRecursive)
-            {
-                log::error!(
-                    "Failed to watch config drop-in dir {:?}: {}",
-                    overlay_dir,
-                    e
-                );
-                watched_overlay_dir = None;
-                overlay_watch_failed = true;
-            }
-            if let Some(on_ready) = on_ready.take() {
-                on_ready();
-            }
-            // PollWatcher seeds its snapshot when it registers. Read the effective layers
-            // afterward so writes during the gap either made it into this load or will be
-            // observed by the new watch.
-            let mut recover_on_registration = pending_main_recovery;
-            let mut presence_probe = tokio::time::interval(Duration::from_secs(1));
-            presence_probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let main_lost = loop {
-                if !std::mem::take(&mut recover_on_registration) {
-                    tokio::select! {
-                        event = rx.recv() => {
-                            match event {
-                                None => break false,
-                                Some(Err(error)) => {
-                                    log::error!("Config watcher event error: {error}");
-                                    let missing_main = error.paths.contains(&config_file_path)
-                                        && match &error.kind {
-                                            notify::ErrorKind::PathNotFound => true,
-                                            notify::ErrorKind::Io(error) => error.kind() == io::ErrorKind::NotFound,
-                                            _ => false,
-                                        };
-                                    if missing_main || !config_file_path.exists() {
-                                        break true;
-                                    }
-                                    if watched_overlay_dir.as_ref().is_some_and(|directory| {
-                                        !directory.is_dir()
-                                            || error.paths.iter().any(|path| path.starts_with(directory))
-                                    }) {
-                                        // Reconcile a removed drop-in directory before discarding
-                                        // its registration, including rapid recreation.
-                                        overlay_watch_failed = true;
-                                        continue;
-                                    }
-                                    break false;
-                                },
-                                Some(Ok(event)) if event_is_for_config_file(&event, &config_file_path) => {
-                                    if event.kind.is_remove() {
-                                        break true;
-                                    }
-                                    if !event.kind.is_create() && !event.kind.is_modify() {
-                                        continue;
-                                    }
-                                },
-                                Some(Ok(event)) => {
-                                    if !(event_is_in_theme_dir(&event, watched_theme_dir.as_deref())
-                                        || event_is_in_theme_dir(&event, watched_overlay_dir.as_deref()))
-                                        || !(event.kind.is_remove() || event.kind.is_create() || event.kind.is_modify())
-                                    {
-                                        continue;
-                                    }
-                                },
-                            }
-                        },
-                        _ = presence_probe.tick() => {
-                            if !config_file_path.exists() {
-                                break true;
-                            }
-                            let overlay_dir = existing_overlay_dir(config_dir);
-                            if overlay_dir == watched_overlay_dir && !overlay_watch_failed {
-                                continue;
-                            }
+        if let Some(directory) = &watched_theme_dir
+            && let Err(error) = watcher.watch(directory, RecursiveMode::NonRecursive)
+        {
+            log::error!("Failed to watch theme dir {directory:?}, continuing without it: {error}");
+        }
+        let mut overlay_watch_failed = false;
+        if let Some(directory) = &watched_overlay_dir
+            && let Err(error) = watcher.watch(directory, RecursiveMode::NonRecursive)
+        {
+            log::error!("Failed to watch config drop-in dir {directory:?}: {error}");
+            watched_overlay_dir = None;
+            overlay_watch_failed = true;
+        }
+        if let Some(on_ready) = on_ready.take() {
+            on_ready();
+        }
+
+        let mut presence_probe = tokio::time::interval(Duration::from_secs(1));
+        presence_probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let main_lost = loop {
+            // After a missing main returns, load the full configuration after the
+            // directories are registered, so their initial snapshots cannot hide a write.
+            let reload_layers = if std::mem::take(&mut recover_on_registration) {
+                true
+            } else {
+                tokio::select! {
+                    event = rx.recv() => {
+                        match event {
+                            None => break false,
+                            Some(Err(error)) => {
+                                log::error!("Config watcher event error: {error}");
+                                if watched_overlay_dir.as_ref().is_some_and(|directory| {
+                                    !directory.is_dir()
+                                        || error.paths.iter().any(|path| path.starts_with(directory))
+                                }) {
+                                    overlay_watch_failed = true;
+                                    continue;
+                                }
+                                break false;
+                            },
+                            Some(Ok(event)) => {
+                                if !(event_is_in_theme_dir(&event, watched_theme_dir.as_deref())
+                                    || event_is_in_theme_dir(&event, watched_overlay_dir.as_deref()))
+                                    || !(event.kind.is_remove() || event.kind.is_create() || event.kind.is_modify())
+                                {
+                                    continue;
+                                }
+                                true
+                            },
+                        }
+                    },
+                    _ = presence_probe.tick() => {
+                        let overlay_dir = existing_overlay_dir(config_dir);
+                        let changed = overlay_dir != watched_overlay_dir || overlay_watch_failed;
+                        if changed {
                             overlay_watch_failed = false;
                             if let Some(previous) = watched_overlay_dir.take() {
                                 watcher.unwatch(&previous).context("unwatch removed config drop-in directory").non_fatal();
@@ -1623,45 +1567,60 @@ async fn watch_config_file_changes_inner<F, Fut>(
                             if let Some(directory) = overlay_dir {
                                 match watcher.watch(&directory, RecursiveMode::NonRecursive) {
                                     Ok(()) => watched_overlay_dir = Some(directory),
-                                    Err(e) => {
-                                        log::error!("Failed to watch config drop-in dir {:?}: {}", directory, e);
-                                        continue;
+                                    Err(error) => {
+                                        log::error!("Failed to watch config drop-in dir {directory:?}: {error}");
+                                        overlay_watch_failed = true;
                                     },
                                 }
                             }
                             // Register before loading so a racing write is read or observed.
-                        },
-                    }
-                }
-                match reload_config_after_change(
-                    &config_file_path,
-                    config_dir,
-                    watched_theme_dir.as_deref(),
-                    &on_config_change,
-                )
-                .await
-                {
-                    Reload::Published { theme_dir_changed } => {
-                        pending_main_recovery = false;
-                        if theme_dir_changed {
-                            break false;
                         }
+                        changed && !overlay_watch_failed
                     },
-                    Reload::MissingMain => break true,
-                    // Keep the registration so an edit that repairs the invalid input
-                    // cannot be absorbed by a new watch's initial snapshot.
-                    Reload::Failed => {},
                 }
             };
-            if main_lost || !config_file_path.exists() {
-                pending_main_recovery = true;
-                drop(watcher);
-                on_main_lost();
+            if reload_layers {
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
-        }
 
-        while !config_file_path.exists() {
-            tokio::time::sleep(Duration::from_secs(3)).await;
+            let current = read_main(&config_file_path);
+            let changed = match (last_main.as_ref(), &current) {
+                (Some(Ok(previous)), Ok(main)) => previous != main,
+                (Some(Err(previous)), Err(error)) => previous.kind() != error.kind(),
+                _ => true,
+            };
+            let main = match last_main.insert(current) {
+                Ok(main) if changed || reload_layers => main,
+                Ok(_) => continue,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => break true,
+                Err(error) => {
+                    if changed {
+                        log_main_read_error(&config_file_path, error);
+                    }
+                    continue;
+                },
+            };
+
+            let (config, theme_dir) =
+                match load_config_and_theme_dir(&config_file_path, config_dir, &main.text) {
+                    Ok(loaded) => loaded,
+                    Err(error) => {
+                        log::error!(
+                            "Failed to reload config from {}",
+                            error.diagnostic_message_for_file(&config_file_path)
+                        );
+                        continue;
+                    },
+                };
+            on_config_change(config).await;
+            if theme_dir != watched_theme_dir {
+                break false;
+            }
+        };
+        if main_lost {
+            drop(watcher);
+            on_main_lost();
+            recover_on_registration = true;
         }
     }
 }
