@@ -919,6 +919,119 @@ fn agent_service_merges_conflicting_run_and_other_runs_progress() {
     );
 }
 
+/// Stored tool payloads leave memory, but their ids still deduplicate redeliveries, both
+/// while the run is held and after a reload hydrates it from the store.
+#[test]
+fn agent_service_compacts_stored_tool_entries_and_still_deduplicates_them() {
+    use super::runtime_parity::SteelReference;
+    use agent_proto::agents::{rows, AgentRun};
+
+    let data = DataHost::new("agent-service");
+    seed(&data);
+    let id = "claude:conversation-1";
+    let stored: AgentRun = serde_json::from_value(json!({
+        "id":id, "pane_id":7, "host_id":"parity-host-id", "yinz_session_name":"work",
+        "session_id":"conversation-1", "kind":"claude", "started_at_ms":1000, "revision":3,
+        "entries":[
+            {"revision":1,"kind":"prompt","text":"Run the tests"},
+            {"revision":2,"kind":"tool_call","event_id":"tool:stored-call","text":"Bash · requested"},
+            {"revision":3,"kind":"tool_result","event_id":"tool:stored-result","text":"Bash · completed"}
+        ]
+    }))
+    .unwrap();
+    data.apply("shared:yinz", &rows::run_mutations(&stored, REV_ABSENT));
+    let source = r#"
+        (require "./agent-service/state.scm" "./agent-service/messages.scm" "./agent-service/runs.scm")
+        (define (load _)
+          (as-set! "host" "parity-host-id") (as-set! "session" "work")
+          (as-call "restore-runs"))
+        (define (deliver raw now)
+          (as-call "record-event" 7 "claude" (hash-ref (as-model "HookEvent" raw) "Ok") now)
+          (as-call "persist") #t)
+        (define (held) (map (lambda (entry) (hash-ref entry "kind")) (hash-ref (as-map-get "runs" 7 #f) "entries")))
+        (define (base) (length (hash-ref (as-map-get "run-bases" "claude:conversation-1" #f) "entries")))
+        (define (pending) (as-keys (as-get "dirty-runs")))
+        "#;
+    let service = || {
+        SteelReference::from_source(
+            "agent-service",
+            source,
+            BTreeMap::new(),
+            data.responder(Arc::new(default_reply)),
+        )
+    };
+    let stored_entries = || {
+        data.fetch(&rows::entries_request([id.into()]).in_namespace("shared:yinz"))
+            .rows
+            .len()
+    };
+    let event = |value: Value| {
+        let mut event: yinz_types::agent::HookEvent = serde_json::from_value(value).unwrap();
+        event.tool_capture = yinz_types::agent::tool_capture::prepare("claude", &event);
+        json!(serde_json::to_string(&event).unwrap())
+    };
+    let tool = |call: &str| {
+        event(json!({
+            "hook_event_name":"PreToolUse","session_id":"conversation-1","cwd":"/work",
+            "tool_name":"Bash","tool_use_id":call,"tool_input":{"command":"cargo test"}
+        }))
+    };
+    let (first_call, second_call) = (tool("call-9"), tool("call-10"));
+
+    let mut first = service();
+    assert_eq!(
+        first.runtime.invoke("held", vec![]).unwrap(),
+        json!(["prompt", "tool_result"]),
+        "a hydrated run keeps its prose and its final entry"
+    );
+    first
+        .runtime
+        .invoke("deliver", vec![first_call.clone(), json!(2000)])
+        .unwrap();
+    assert_eq!(stored_entries(), 4, "the new tool entry is stored in full");
+    assert_eq!(first.runtime.invoke("pending", vec![]).unwrap(), json!([]));
+    assert_eq!(
+        first.runtime.invoke("held", vec![]).unwrap(),
+        json!(["prompt", "tool_call"]),
+        "a persisted tool entry leaves the held run once it is no longer final"
+    );
+    assert_eq!(first.runtime.invoke("base", vec![]).unwrap(), json!(2));
+    first
+        .runtime
+        .invoke("deliver", vec![second_call, json!(2050)])
+        .unwrap();
+    assert_eq!(stored_entries(), 5);
+    first
+        .runtime
+        .invoke("deliver", vec![first_call.clone(), json!(2100)])
+        .unwrap();
+    assert_eq!(stored_entries(), 5, "a compacted redelivery is a duplicate");
+
+    let mut reloaded = service();
+    reloaded
+        .runtime
+        .invoke("deliver", vec![first_call, json!(2200)])
+        .unwrap();
+    assert_eq!(stored_entries(), 5, "a reloaded redelivery is a duplicate");
+    assert_eq!(
+        reloaded.runtime.invoke("held", vec![]).unwrap(),
+        json!(["prompt", "tool_call"])
+    );
+    let prompt = event(json!({
+        "hook_event_name":"UserPromptSubmit","session_id":"conversation-1","cwd":"/work",
+        "prompt":"Run the tests"
+    }));
+    reloaded
+        .runtime
+        .invoke("deliver", vec![prompt, json!(2300)])
+        .unwrap();
+    assert_eq!(
+        stored_entries(),
+        6,
+        "a repeated prompt after compacted tool entries is not the previous entry"
+    );
+}
+
 #[test]
 fn agent_service_actual_runtimes_match_reload_claim_and_released_run_ownership() {
     let _reference_trace = super::reference_trace::Scenario::new(

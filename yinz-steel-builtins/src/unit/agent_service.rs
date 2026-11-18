@@ -286,8 +286,12 @@ fn publishing_and_persistence_keep_long_histories_and_other_live_agents() {
             (define run (append-entry (as-map-get "runs" pane #f) "result" "new result" #f json-null 90000))
             (as-map-set! "runs" pane run) (as-map-set! "dirty-runs" (hash-ref run "id") run)) '(7 8))
           (as-publish! #t) (as-call "persist"))
+        ;; Stored tool entries are compacted; the prose history stays in memory.
         (define (retained?)
-          (equal? (take (hash-ref (as-map-get "runs" 7 #f) "entries") 8000) (hash-ref original "entries")))
+          (define prose (filter (lambda (entry) (not (member (hash-ref entry "kind") '("tool_call" "tool_result"))))
+              (hash-ref original "entries")))
+          (equal? (take (hash-ref (as-map-get "runs" 7 #f) "entries") (length prose)) prose))
+        (define (held-count) (length (hash-ref (as-map-get "runs" 7 #f) "entries")))
         (define (persisted) (as-get "persisted"))
         (define (dirty-count) (length (as-keys (as-get "dirty-runs"))))
         "#,
@@ -317,6 +321,11 @@ fn publishing_and_persistence_keep_long_histories_and_other_live_agents() {
         host.lock().unwrap().commands.clear();
         runtime.invoke("append-and-persist", vec![]).unwrap();
         assert_eq!(runtime.invoke("retained?", vec![]).unwrap(), true);
+        assert_eq!(
+            runtime.invoke("held-count", vec![]).unwrap(),
+            json!(1 + added),
+            "the stored tool history leaves memory; the prompt and new results stay"
+        );
         assert_eq!(runtime.invoke("dirty-count", vec![]).unwrap(), 0);
         assert_eq!(
             runtime.invoke("persisted", vec![]).unwrap(),

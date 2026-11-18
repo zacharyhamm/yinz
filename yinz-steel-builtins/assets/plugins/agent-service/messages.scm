@@ -1,5 +1,5 @@
 (require "./state.scm")
-(provide message-capture message-flush stop-event-id stop-duplicates? append-entry event-turn)
+(provide message-capture message-flush stop-event-id stop-duplicates? append-entry event-turn entry-exists?)
 (define (bytes text) (utf8-length text))
 (define (identity turn source) (string-append "message:" (yinz-json-string (list turn source))))
 (define (fallback turn text) (and (as-present? turn) (not (equal? turn "")) (string-append "stop:" (yinz-json-string (list turn (trim text))))))

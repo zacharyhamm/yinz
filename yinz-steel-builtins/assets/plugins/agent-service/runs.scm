@@ -6,6 +6,32 @@
 (define (owned-here? run)
   (and (equal? (hash-ref run "yinz_session_name") (as-get "session"))
     (member (hash-ref run "host_id") (list "" (as-get "host")))))
+;; Tool payloads are nearly all of a long run's bytes, and every hook event walks, compares
+;; and serializes the in-memory run. Once a tool entry is stored, memory keeps only its
+;; event id and revision for duplicate checks; prose stays because titles, summaries and
+;; message reconciliation read it. The final entry stays too: an id-less prose event is a
+;; duplicate only of the entry immediately before it.
+(define (tool-entry? entry) (member (hash-ref entry "kind") '("tool_call" "tool_result")))
+(define (compact run persisted)
+  (define entries (hash-ref run "entries"))
+  (define limit (if (pair? entries) (min persisted (- (hash-ref (car (reverse entries)) "revision") 1)) 0))
+  (define (stored? entry) (and (tool-entry? entry) (<= (hash-ref entry "revision") limit)))
+  (if (not (as-find stored? entries)) run
+    (let ((id (hash-ref run "id")))
+      (as-map-set! "tool-ids" id (foldl (lambda (entry ids)
+            (define event-id (as-field entry "event_id" json-null))
+            (if (and (stored? entry) (as-present? event-id)) (hash-insert ids event-id (hash-ref entry "revision")) ids))
+          (as-map-get "tool-ids" id (hash)) entries))
+      (hash-insert run "entries" (filter (lambda (entry) (not (stored? entry))) entries)))))
+;; The revision of the held or compacted entry with this event id, or #f.
+(define (recorded-revision run event-id)
+  (define held (entry-exists? run event-id))
+  (if held (hash-ref held "revision") (as-field (as-map-get "tool-ids" (hash-ref run "id") (hash)) event-id #f)))
+(define (compact-held! id)
+  (for-each (lambda (pane)
+      (define held (as-map-get "runs" pane #f))
+      (when (equal? (hash-ref held "id") id) (as-map-set! "runs" pane (compact held (as-map-get "persisted" id 0)))))
+    (as-sorted-ids (as-get "runs"))))
 (define (hydrate rows)
   (define runs (as-model "RunsFromRows" rows))
   (define revisions (foldl (lambda (row revisions)
@@ -23,7 +49,8 @@
               (define revision (hash-ref revisions id))
               (define stored (as-field current id #f))
               (and (as-present? stored) (= revision stored)
-                (list (hash-insert run "entries" (as-field entries id (hash-ref run "entries"))) revision))) runs)))
+                ;; Every hydrated entry is already stored.
+                (list (compact (hash-insert run "entries" (as-field entries id (hash-ref run "entries"))) (hash-ref run "revision")) revision))) runs)))
       ;; Each run validates independently; one concurrent write must not drop the others.
       (filter (lambda (snapshot) snapshot) snapshots))))
 (define (remember-run snapshot)
@@ -131,15 +158,14 @@
             (for-each (lambda (entry)
                 (when (> (hash-ref entry "revision") (hash-ref base "revision"))
                   (define event-id (as-field entry "event_id" json-null))
-                  (define duplicate (and (as-present? event-id)
-                      (as-find (lambda (old) (equal? (as-field old "event_id" json-null) event-id)) (hash-ref merged "entries"))))
+                  (define duplicate (and (as-present? event-id) (recorded-revision merged event-id)))
                   (unless duplicate
                     (define revision (+ 1 (hash-ref merged "revision")))
                     (set! merged (hash-insert (hash-insert merged "revision" revision) "entries"
                         (append (hash-ref merged "entries") (list (hash-insert entry "revision" revision))))))
                   (when (and (not obsolete-release) (= (hash-ref entry "revision") (hash-ref run "summarized_revision")))
                     (set! merged (hash-insert merged "summarized_revision"
-                        (if duplicate (hash-ref duplicate "revision") (hash-ref merged "revision"))))))) (hash-ref run "entries"))
+                        (if duplicate duplicate (hash-ref merged "revision"))))))) (hash-ref run "entries"))
             (remember-run snapshot)
             ;; The pending delta now belongs to the destination; a stale close must not follow it.
             (when obsolete-release
@@ -166,9 +192,10 @@
       (lambda () (yinz-data-apply "shared:yinz" mutations) #t) #f)
     (begin
       (as-map-set! "run-revisions" id (+ expected 1))
-      (as-map-set! "run-bases" id run)
       (when (pair? (hash-ref run "entries"))
         (as-map-set! "persisted" id (max previous (hash-ref (car (reverse (hash-ref run "entries"))) "revision"))))
+      (as-map-set! "run-bases" id (compact run (as-map-get "persisted" id 0)))
+      (compact-held! id)
       (as-map-remove! "dirty-runs" id) (as-map-remove! "released-runs" id) (as-map-remove! "adoptions" id))
     (when retry?
       (define merged (reconcile-run run))
@@ -178,7 +205,7 @@
     (for-each (lambda (run) (persist-run run #t)) (as-map-values "dirty-runs"))
     (define live (map (lambda (run) (hash-ref run "id")) (as-map-values "runs")))
     (for-each (lambda (name)
-        (as-map-prune! name (lambda (id value) (or (member id live) (as-map-get "dirty-runs" id #f))))) '("persisted" "run-revisions" "run-bases"))))
+        (as-map-prune! name (lambda (id value) (or (member id live) (as-map-get "dirty-runs" id #f))))) '("persisted" "run-revisions" "run-bases" "tool-ids"))))
 (define (drain)
   (define finished (as-get "finished-runs")) (as-set! "finished-runs" '())
   (for-each (lambda (id) (as-call "summarize-run" id)) finished))
@@ -238,7 +265,7 @@
         (define tool (as-field event "tool_capture" json-null))
         (when (as-present? tool)
           (define entry (as-model "ToolEntry" tool))
-          (unless (and (as-present? (car entry)) (as-find (lambda (old) (equal? (as-field old "event_id" json-null) (car entry))) (hash-ref run "entries")))
+          (unless (and (as-present? (car entry)) (recorded-revision run (car entry)))
             (set! run (append-entry run (caddr entry) (cadr entry) (car entry) tool now (as-field tool "worker_id" json-null) (event-turn run event)))))
         (define prose event)
         (when (as-present? tool)
@@ -253,7 +280,11 @@
           (define event-id (or (stop-event-id event text) (as-model "RunEventId" prose text)))
           (define duplicate (or (stop-duplicates? run event text)
               (if (as-present? event-id)
-                (as-find (lambda (old) (equal? (as-model "EntryEventId" old) event-id)) (hash-ref run "entries"))
+                ;; EntryEventId, crossing into the model only for a legacy prompt without an id.
+                (as-find (lambda (old)
+                    (define own (as-field old "event_id" json-null))
+                    (if (as-present? own) (equal? own event-id)
+                      (and (equal? (hash-ref old "kind") "prompt") (equal? (as-model "EntryEventId" old) event-id)))) (hash-ref run "entries"))
                 (and (pair? (hash-ref run "entries"))
                   (let ((last (car (reverse (hash-ref run "entries"))))) (and (equal? (hash-ref last "kind") entry-kind) (equal? (hash-ref last "text") text)))))))
           (unless duplicate (set! run (append-entry run entry-kind text event-id json-null now (hash-ref event "agent_id") (event-turn run event)))))
