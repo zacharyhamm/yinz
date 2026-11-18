@@ -156,7 +156,7 @@ impl Screen {
             }
         } else {
             for tab_id in reserved_tabs {
-                self.recover_pending_tab(tab_id)?;
+                self.recover_pending_tab(tab_id, None)?;
             }
         }
 
@@ -177,15 +177,20 @@ impl Screen {
     }
 
     /// Pending tabs can already hold panes moved or adopted before their layout arrives.
-    pub(super) fn recover_pending_tab(&mut self, tab_id: TabId) -> Result<()> {
+    pub(super) fn recover_pending_tab(
+        &mut self,
+        tab_id: TabId,
+        layout_failure: Option<(ClientId, &str)>,
+    ) -> Result<()> {
         if let Some(tab) = self.tabs.get_mut(&tab_id).filter(|tab| tab.is_pending()) {
             tab.fail_pending_agent_placements(
                 "destination layout failed; inspect the retained pane and tab before retrying",
             );
             if tab.get_all_pane_ids().is_empty() {
-                self.close_tab_by_id(tab_id)?;
+                self.teardown_tab(tab_id, false, layout_failure)?;
             } else {
                 tab.finish_pending_layout();
+                self.opening_layout_landed = true;
             }
         }
         Ok(())
@@ -350,8 +355,11 @@ impl Screen {
             client_id,
             blocking_terminal,
         );
-        if let Ok(Some(source)) = &applied {
-            pending.remove_client_plugin_output(*source);
+        if let Ok(source) = &applied {
+            self.opening_layout_landed = true;
+            if let Some(source) = source {
+                pending.remove_client_plugin_output(*source);
+            }
         }
         let layout_failed = applied.is_err();
         if let Err(error) = applied {
@@ -397,7 +405,8 @@ impl Screen {
             } else {
                 false
             };
-            self.recover_pending_tab(tab_id).non_fatal();
+            self.recover_pending_tab(tab_id, Some((client_id, &message)))
+                .non_fatal();
             for pane_id in &new_terminal_pane_ids {
                 if self.restore_staged_transfer_state(*pane_id) {
                     self.fire_agent_start_for_new_pane(*pane_id);

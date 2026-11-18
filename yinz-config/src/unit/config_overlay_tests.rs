@@ -1079,3 +1079,49 @@ fn underline_metrics_saved_comparison_rejects_indeterminate_theme_preload() {
         "{error}"
     );
 }
+
+#[test]
+fn native_startup_dimensions_overlay_contract() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = Config::from_kdl(
+        "terminal { initial_columns 80; initial_rows 24; padding 3; }",
+        None,
+    )
+    .unwrap();
+    for (name, text) in [
+        (
+            "40-invalid.kdl",
+            "terminal { initial_columns 9; initial_rows 1001; padding 99; }",
+        ),
+        ("30-rows.kdl", "terminal { initial_rows 33; }"),
+        ("20-columns.kdl", "terminal { initial_columns 110; }"),
+        ("10-columns.kdl", "terminal { initial_columns 95; }"),
+    ] {
+        std::fs::write(dir.path().join(name), text).unwrap();
+    }
+    let loaded = base.clone().with_overlay_dir(Some(dir.path()));
+    assert_eq!(loaded.terminal.initial_columns, Some(110));
+    assert_eq!(loaded.terminal.initial_rows, Some(33));
+    assert_eq!(loaded.terminal.padding, Some(3.0));
+
+    let path = Config::write_managed_fragment(
+        dir.path(),
+        "terminal { initial_columns 115; initial_rows 35; }",
+    )
+    .unwrap();
+    Config::write_managed_fragment(dir.path(), "terminal { initial_columns 120; }").unwrap();
+    let before = std::fs::read_to_string(&path).unwrap();
+    let saved = Config::from_kdl(&before, None).unwrap();
+    assert_eq!(saved.terminal.initial_columns, Some(120));
+    assert_eq!(saved.terminal.initial_rows, Some(35));
+    for fragment in [
+        "terminal { initial_columns 1; initial_rows 36; }",
+        "terminal { initial_columns 11; initial_columns 12; }",
+    ] {
+        assert!(Config::write_managed_fragment(dir.path(), fragment).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+    let loaded = base.with_overlay_dir(Some(dir.path()));
+    assert_eq!(loaded.terminal.initial_columns, Some(120));
+    assert_eq!(loaded.terminal.initial_rows, Some(35));
+}

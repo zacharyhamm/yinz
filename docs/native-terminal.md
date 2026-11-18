@@ -447,8 +447,63 @@ Font diagnostics go to the normal log, `$TMPDIR/yinz-<UID>/yinz-log/yinz.log`
 (`/tmp` when `TMPDIR` is unset).
 
 `startup_mode` accepts `windowed`, `maximized`, `fullscreen`, and `remember`.
-The last window size is stored in Yinz's cache. `cursor_style` accepts `block`,
-`bar`, and `underline`. `macos_option_as_alt` accepts `none`, `left`, `right`,
+Set either or both startup dimensions in the host configuration or a drop-in.
+
+```kdl
+terminal {
+    initial_columns 100
+    initial_rows 30
+}
+```
+
+Each setting accepts a whole number from 2 to 1000 cells. For each axis, an
+explicit `--cols` or `--rows` takes precedence, followed by the cached physical
+size in `remember` mode, the configured cell count, and the default of 120
+columns or 40 rows. A missing or invalid cache falls back to the configured
+size. The CLI startup mode takes precedence over the configured mode.
+
+Windowed startup adds padding to the requested cells at the display's measured
+scale. Wayland limits the correction to the inner size already granted by the
+compositor. At fractional scales Yinz fits cell-based axes to whole logical
+pixels and chooses the closest legal physical extent for each remembered axis.
+The grant can leave fewer cells than requested, even on a large display. X11
+waits briefly for initial window-manager placement before correcting at the
+observed scale. Subsequent moves and resizes use the live window geometry.
+Maximized and fullscreen extents follow the compositor or window manager.
+
+Very large windowed or remembered requests are reduced to fit drawable and
+cell limits. Yinz checks actual opening grants while placement or the correction
+is pending and reports a sizing error if a grant exceeds either limit. Session
+layouts must first fit the provisional grid of 120 by 40, or the explicit
+`--cols` and `--rows` values subject to the graphical cell limit. If Yinz
+rejects the initial layout for lack of room, retry with larger explicit
+`--rows` or `--cols`. The headless diagnostic uses its explicit flags or 120 by 40.
+
+Save these settings in the host configuration or a drop-in, or use
+`yinz action reconfigure --write`. Explicit axis values require a save even
+when they match the current values. An axes-only save affects new windows
+according to drop-in order and preserves the open window's viewport and content.
+A saved fragment with other live settings still applies those settings to the
+running session.
+
+Run the desktop fixture at an observed 1× scale and again at 2×. It reports the
+granted extent, scale, cell metrics and viewport containing the pane marker for
+each mode. The test checks Wayland's configured state and reads `_NET_WM_STATE`
+with `xprop` on X11. Confirm the mode independently in the desktop when that
+observation is unavailable, including on macOS.
+
+```sh
+cargo x test -p yinz --test native_terminal --run-ignored only --no-tests fail --no-capture -E 'test(=native_graphical_startup_fits_configured_grid)'
+```
+
+For exact-grid checks, arrange for floating windows with enough granted space
+for the configured cells and use a desktop that honors the requested modes.
+Set `YINZ_NATIVE_TEST_FLOATING=1` for that run. Windowed should settle at 100 by
+30. Remember should fit the saved 800 physical pixels in width, with the explicit
+30 rows checked independently. A tiling grant or a mode the desktop declines
+is reported as limited desktop coverage.
+
+`cursor_style` accepts `block`, `bar`, and `underline`. `macos_option_as_alt` accepts `none`, `left`, `right`,
 and `both`.
 
 Use Ctrl+Shift+C/V (Command+C/V on macOS) for copy/paste. Hold Shift while

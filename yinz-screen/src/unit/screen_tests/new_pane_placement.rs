@@ -281,7 +281,7 @@ fn deferred_startup_pane_is_closed_if_initial_destination_closes_or_fails() {
             .new_tab(tab, (vec![], vec![]), None, Some(client))
             .unwrap();
         if failed {
-            screen.recover_pending_tab(tab).unwrap();
+            screen.recover_pending_tab(tab, None).unwrap();
         } else {
             screen.close_tab_by_id(tab).unwrap();
         }

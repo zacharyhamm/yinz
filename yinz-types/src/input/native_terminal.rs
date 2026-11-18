@@ -58,6 +58,8 @@ pub struct TerminalConfig {
     pub opacity: Option<f32>,
     pub blur: Option<bool>,
     pub startup_mode: Option<StartupMode>,
+    pub initial_columns: Option<u16>,
+    pub initial_rows: Option<u16>,
     pub cursor_style: Option<CursorStyle>,
     pub macos_option_as_alt: Option<OptionAsAlt>,
     pub cursor_blink: Option<bool>,

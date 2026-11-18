@@ -28,10 +28,25 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
             }
             continue;
         }
-        if node.children().is_some()
-            || node.entries().len() != 1
-            || node.entries()[0].name().is_some()
+        let name = node.name().value();
+        let plain_positional = node.children().is_none()
+            && node.entries().len() == 1
+            && node.entries()[0].name().is_none();
+        if matches!(name, "initial_columns" | "initial_rows")
+            && (!plain_positional
+                || node.ty().is_some()
+                || node.entries()[0].ty().is_some()
+                || !node.entries()[0]
+                    .value()
+                    .as_i64()
+                    .is_some_and(|value| (2..=1000).contains(&value)))
         {
+            return Err(kdl_parsing_error!(
+                format!("terminal {name} must be a plain integer between 2 and 1000 cells"),
+                node
+            ));
+        }
+        if !plain_positional {
             return Err(kdl_parsing_error!(
                 format!("terminal {} takes one plain value", node.name().value()),
                 node

@@ -13,6 +13,8 @@ struct Watching {
 
 struct Publication {
     config: Config,
+    requires_live_reload: bool,
+    unchanged_managed_revision: Option<ManagedConfigRevision>,
     at: Instant,
 }
 
@@ -43,7 +45,9 @@ impl Watching {
                 Some(&config_dir),
                 move |config| {
                     received.lock().push(Publication {
-                        config,
+                        config: config.config,
+                        requires_live_reload: config.requires_live_reload,
+                        unchanged_managed_revision: config.unchanged_managed_revision,
                         at: Instant::now(),
                     });
                     async {}
@@ -838,4 +842,74 @@ fn empty_first_drop_in_directory_is_watched_before_a_later_file_write() {
     )
     .unwrap();
     watching.expect(Some(false), 6.0, None);
+}
+
+#[test]
+fn startup_axes_disk_observations_use_host_values_and_canonical_live_remainder() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let main = root.join("config.kdl");
+    let layouts = root.join("layouts");
+    let drop_ins = root.join("config.d");
+    std::fs::create_dir(&layouts).unwrap();
+    std::fs::create_dir(&drop_ins).unwrap();
+    let base = "default_layout \"test\"\nterminal { initial_columns 80; }\n";
+    std::fs::write(&main, base).unwrap();
+    std::fs::write(
+        layouts.join("test.kdl"),
+        "terminal { initial_columns 100; }\nlayout { pane; }\n",
+    )
+    .unwrap();
+    // A later drop-in shadows a managed rows save. The canonical config
+    // stays identical and that echo must still bypass live publication.
+    std::fs::write(
+        drop_ins.join("zz-shadow.kdl"),
+        "terminal { initial_rows 31; }",
+    )
+    .unwrap();
+    let watching = Watching::start(main, root.clone());
+    let managed = drop_ins.join("10-native.kdl");
+    let assert_observation = |axes_only| {
+        watching
+            .changes
+            .wait_until("canonical config publication", WAIT, |change| {
+                change
+                    .last()
+                    .filter(|change| axes_only || change.config.options.mouse_mode == Some(false))
+                    .map(|change| {
+                        assert_eq!(change.requires_live_reload, !axes_only);
+                        assert_eq!(change.config.terminal.initial_columns, Some(100));
+                    })
+            });
+        watching.clear();
+    };
+    let (_, revision) =
+        Config::write_managed_fragment_with_revision(&drop_ins, "terminal { initial_rows 32; }")
+            .unwrap();
+    watching
+        .changes
+        .wait_until("unchanged managed write revision", WAIT, |change| {
+            change
+                .last()
+                .filter(|change| change.unchanged_managed_revision.as_ref() == Some(&revision))
+                .map(|change| {
+                    assert!(change.requires_live_reload);
+                    assert_eq!(change.config.terminal.initial_rows, Some(31));
+                })
+        });
+    watching.clear();
+    std::fs::write(&managed, "terminal { initial_columns 90; }").unwrap();
+    assert_observation(true);
+
+    // Change the file without changing the canonical data.
+    std::fs::write(&managed, "terminal { initial_columns 90; } // duplicate").unwrap();
+    assert_observation(true);
+
+    // A real live change coalesced with another host-axis edit still publishes.
+    std::fs::write(
+        &managed,
+        "terminal { initial_columns 95; }\nmouse_mode false",
+    )
+    .unwrap();
+    assert_observation(false);
 }

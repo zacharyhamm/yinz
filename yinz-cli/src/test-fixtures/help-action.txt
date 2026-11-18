@@ -130,8 +130,10 @@ Commands:
   rename-session
   reconfigure                       Apply a KDL config fragment to the running session (options,
                                     keybinds, hooks, plugins). Give it as --kdl, --file, or on
-                                    stdin. Changing effective native terminal cell_width,
-                                    line_height, baseline_offset, underline_offset,
+                                    stdin. Explicit native terminal initial_columns and initial_rows
+                                    require --write or a host configuration edit, even when the
+                                    values already match. Changing effective native terminal
+                                    cell_width, line_height, baseline_offset, underline_offset,
                                     underline_thickness, ligatures/font_ligatures or font_features
                                     requires --write or editing the saved configuration/drop-in for
                                     file reload. An unsupported unsaved change refuses the entire

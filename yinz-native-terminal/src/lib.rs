@@ -47,14 +47,7 @@ pub fn run(
         "native terminal windows currently support local sessions; omit --remote"
     );
     if args.headless {
-        let connection = session::connect(
-            &args,
-            &opts,
-            yinz_types::pane_size::Size {
-                rows: args.rows as usize,
-                cols: args.cols as usize,
-            },
-        )?;
+        let connection = session::connect(&args, &opts, args.opening_size())?;
         session::headless(connection, &args)
     } else {
         window::run(args, opts)

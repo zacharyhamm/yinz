@@ -1,4 +1,66 @@
 use super::*;
+
+#[test]
+fn native_startup_dimensions_kdl_contract() {
+    for (fragment, columns, rows) in [
+        ("", None, None),
+        ("initial_columns 2;", Some(2), None),
+        ("initial_rows 1000;", None, Some(1000)),
+        ("initial_columns 1000; initial_rows 2;", Some(1000), Some(2)),
+    ] {
+        let config = Config::from_kdl(&format!("terminal {{ {fragment} }}"), None).unwrap();
+        assert_eq!(
+            (
+                config.terminal.initial_columns,
+                config.terminal.initial_rows
+            ),
+            (columns, rows)
+        );
+        let serialized = config.to_string(false).unwrap();
+        assert_eq!(
+            Config::from_kdl(&serialized, None).unwrap().terminal,
+            config.terminal
+        );
+    }
+    for key in ["initial_columns", "initial_rows"] {
+        for value in [
+            "-2", "0", "1", "1001", "65536", "2.0", "\"2\"", "(typed)2", "true",
+        ] {
+            let text = format!("terminal {{ {key} {value}; }}");
+            let ConfigError::KdlError(error) = Config::from_kdl(&text, None).unwrap_err() else {
+                panic!("expected a KDL diagnostic for {text}");
+            };
+            assert!(
+                error.error_message.contains(&format!(
+                    "{key} must be a plain integer between 2 and 1000 cells"
+                )),
+                "{error:?}"
+            );
+            let offset = error.offset.unwrap();
+            let len = error.len.unwrap();
+            assert!(text[offset..offset + len].contains(key), "{error:?}");
+        }
+        for fragment in [
+            format!("({key}){key} 2;"),
+            format!("{key} n=2;"),
+            format!("{key};"),
+            format!("{key} 2 3;"),
+            format!("{key} 2 {{ x; }};"),
+        ] {
+            let error = Config::from_kdl(&format!("terminal {{ {fragment} }}"), None).unwrap_err();
+            let detail = crate::editor::validation_error(error);
+            assert!(
+                detail.contains(key) && detail.contains("between 2 and 1000"),
+                "{detail}"
+            );
+        }
+        let text = format!("terminal {{ {key} 2; {key} 3; }}");
+        let error = Config::from_kdl(&text, None).unwrap_err();
+        assert!(crate::editor::validation_error(error)
+            .contains(&format!("duplicate terminal setting {key}")));
+    }
+}
+
 #[test]
 fn native_terminal_settings_merge_roundtrip_and_validate() {
     let base = Config::from_kdl(

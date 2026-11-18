@@ -1579,9 +1579,11 @@ mod ligature_reconfigure {
         pub(super) dir: tempfile::TempDir,
         pub(super) data: Arc<RwLock<Option<SessionMetaData>>>,
         pub(super) state: Arc<RwLock<SessionState>>,
-        screen: channels::Receiver<(ScreenInstruction, yinz_types::diagnostics::ErrorContext)>,
-        plugin: channels::Receiver<(PluginInstruction, yinz_types::diagnostics::ErrorContext)>,
-        pty: channels::Receiver<(PtyInstruction, yinz_types::diagnostics::ErrorContext)>,
+        pub(super) screen:
+            channels::Receiver<(ScreenInstruction, yinz_types::diagnostics::ErrorContext)>,
+        pub(super) plugin:
+            channels::Receiver<(PluginInstruction, yinz_types::diagnostics::ErrorContext)>,
+        pub(super) pty: channels::Receiver<(PtyInstruction, yinz_types::diagnostics::ErrorContext)>,
     }
 
     impl Fixture {
@@ -1632,10 +1634,9 @@ mod ligature_reconfigure {
 
         pub(super) fn snapshot(&self) -> String {
             self.with(|session| {
-                format!(
-                    "{:?} {:?}",
-                    session.session_configuration, session.pending_mouse_updates
-                )
+                let mut runtime = session.session_configuration.clone();
+                runtime.startup_axes_save = None;
+                format!("{runtime:?} {:?}", session.pending_mouse_updates)
             })
         }
 
@@ -2738,6 +2739,7 @@ mod underline_metrics_reconfigure {
                 &fixture.state,
                 &fixture.data,
             )
+            .map(|_| ())
             .map_err(|error| format!("{error:#}"))
         }
     }
@@ -3291,5 +3293,211 @@ mod underline_metrics_reconfigure {
             )
             .unwrap();
         }
+    }
+}
+
+#[test]
+fn native_startup_dimensions_unsaved_requires_write() {
+    use ligature_reconfigure::Fixture;
+
+    for clients in [&[CLIENT][..], &[][..]] {
+        for all in [false, true] {
+            let fixture = Fixture::new(clients, None);
+            let main = fixture.dir.path().join("config.kdl");
+            std::fs::write(&main, "terminal { initial_columns 80; }").unwrap();
+            let active = clients.first().copied().unwrap_or(ClientId::NONE);
+            fixture.with(|session| {
+                let mut layout_config = session
+                    .session_configuration
+                    .get_client_configuration(&active);
+                layout_config.terminal.initial_columns = Some(100);
+                session
+                    .session_configuration
+                    .set_client_runtime_configuration(active, layout_config);
+            });
+            let apply = |fragment: &str, write| {
+                if all {
+                    fixture
+                        .all(fragment, write)
+                        .error_message
+                        .map_or(Ok(()), Err)
+                } else {
+                    reconfigure_client(
+                        CLIENT,
+                        fragment.into(),
+                        write,
+                        &fixture.state,
+                        &fixture.data,
+                    )
+                    .map(|_| ())
+                    .map_err(|error| format!("{error:#}"))
+                }
+            };
+            let before = fixture.snapshot();
+            let equivalent = "terminal { initial_columns 100; }\nmouse_mode false";
+            for (fragment, keys) in [
+                (equivalent, &["initial_columns"][..]),
+                ("terminal { initial_rows 40; }", &["initial_rows"][..]),
+                (
+                    "terminal { initial_columns 120; initial_rows 40; }",
+                    &["initial_columns", "initial_rows"][..],
+                ),
+            ] {
+                let error = apply(fragment, false).unwrap_err();
+                for key in keys.iter().copied().chain([
+                    "--write",
+                    "configuration/drop-in",
+                    "entire fragment",
+                ]) {
+                    assert!(error.contains(key), "{error}");
+                }
+                assert_eq!(fixture.snapshot(), before);
+                fixture.assert_no_propagation();
+            }
+            let error =
+                apply("terminal { initial_rows 1001; }\nmouse_mode false", false).unwrap_err();
+            assert!(error.contains("between 2 and 1000"), "{error}");
+            let blocked = fixture.dir.path().join("config.d");
+            std::fs::write(&blocked, "not a directory").unwrap();
+            assert!(apply("terminal { initial_columns 100; }", true).is_err());
+            assert!(apply(equivalent, false).is_err());
+            assert_eq!(fixture.snapshot(), before);
+            assert!(matches!(
+                fixture.plugin.try_recv().unwrap().0,
+                PluginInstruction::FailedToWriteConfigToDisk { .. }
+            ));
+            std::fs::remove_file(&blocked).unwrap();
+
+            apply("terminal { initial_columns 100; }", true).unwrap();
+            let loaded = Config::load(Some(&main), Some(fixture.dir.path()), false).unwrap();
+            assert_eq!(loaded.terminal.initial_columns, Some(100));
+            assert_eq!(fixture.snapshot(), before);
+            apply("terminal { ligatures true; }\nmouse_mode false", false).unwrap();
+            fixture.with(|session| {
+                assert_eq!(
+                    session
+                        .session_configuration
+                        .get_client_configuration(&active)
+                        .options
+                        .mouse_mode,
+                    Some(false)
+                )
+            });
+        }
+    }
+}
+
+#[test]
+fn native_startup_dimensions_disk_publication() {
+    use ligature_reconfigure::Fixture;
+    use yinz_config::config::DiskConfigChange;
+
+    for clients in [&[CLIENT][..], &[][..]] {
+        let fixture = Fixture::new(clients, None);
+        let before = fixture.snapshot();
+        let mut disk = fixture.with(|session| session.session_configuration.saved_config.clone());
+        disk.terminal.initial_columns = Some(100);
+        assert_eq!(
+            fixture
+                .all("terminal { initial_columns 100; }", true)
+                .exit_status,
+            None
+        );
+        for _ in 0..2 {
+            fixture.with(|session| {
+                session.publish_disk_config(DiskConfigChange {
+                    config: disk.clone(),
+                    requires_live_reload: false,
+                    unchanged_managed_revision: None,
+                })
+            });
+            // A startup-only observation preserves live config, theme preview, and the pending editor echo.
+            assert_eq!(fixture.snapshot(), before);
+            assert!(
+                fixture.screen.is_empty() && fixture.plugin.is_empty() && fixture.pty.is_empty()
+            );
+        }
+        fixture.with(|session| {
+            let revision = session.session_configuration.startup_axes_save.clone();
+            assert!(revision.is_some());
+            for _ in 0..2 {
+                session.publish_disk_config(DiskConfigChange {
+                    config: disk.clone(),
+                    requires_live_reload: true,
+                    unchanged_managed_revision: revision.clone(),
+                });
+            }
+        });
+        assert_eq!(fixture.snapshot(), before);
+        assert!(fixture.screen.is_empty() && fixture.plugin.is_empty() && fixture.pty.is_empty());
+        fixture.with(|session| {
+            let ConfigurationTarget { client_id, .. } =
+                configuration_target(CLIENT, true, "test", &fixture.state)
+                    .unwrap()
+                    .unwrap();
+            let mut writer = session
+                .session_configuration
+                .get_client_configuration(&client_id);
+            writer.options.mouse_mode = Some(true);
+            session
+                .session_configuration
+                .set_client_runtime_configuration(client_id, writer);
+        });
+        // A coalesced rebind/editor echo may include new host axes. It still
+        // matches the previously applied live remainder, including repeated delivery.
+        let mut editor = disk.clone();
+        editor.options.default_cwd = Some(fixture.dir.path().into());
+        fixture.with(|session| {
+            let mut expected = editor.clone();
+            expected.terminal.initial_columns = None;
+            session.session_configuration.pending_editor_reload = Some(expected.clone());
+            for _ in 0..2 {
+                session.publish_disk_config(DiskConfigChange {
+                    config: editor.clone(),
+                    requires_live_reload: true,
+                    unchanged_managed_revision: None,
+                });
+            }
+            assert_eq!(
+                session.session_configuration.pending_editor_reload,
+                Some(expected)
+            );
+        });
+        assert!(fixture.screen.is_empty() && fixture.plugin.is_empty() && fixture.pty.is_empty());
+        disk.options.mouse_mode = Some(false);
+        fixture.with(|session| {
+            session.publish_disk_config(DiskConfigChange {
+                config: disk.clone(),
+                requires_live_reload: true,
+                unchanged_managed_revision: None,
+            })
+        });
+        assert!(matches!(
+            fixture.screen.try_recv().unwrap().0,
+            ScreenInstruction::Reconfigure { .. }
+        ));
+        let client = clients.first().copied().unwrap_or(ClientId::NONE);
+        fixture.with(|session| {
+            assert_eq!(
+                session
+                    .session_configuration
+                    .get_client_configuration(&client)
+                    .options
+                    .mouse_mode,
+                Some(false)
+            )
+        });
+        let mixed = fixture.all("terminal { initial_rows 33; }\nmouse_mode true", true);
+        assert_eq!(mixed.exit_status, None);
+        fixture.with(|session| {
+            assert_eq!(
+                session
+                    .session_configuration
+                    .get_client_configuration(&client)
+                    .options
+                    .mouse_mode,
+                Some(true)
+            )
+        });
     }
 }

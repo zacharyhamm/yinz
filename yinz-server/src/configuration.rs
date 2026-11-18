@@ -1,6 +1,6 @@
 //! Session configuration, live reconfiguration and persistence.
 use super::*;
-use yinz_config::config::watch_config_file_changes;
+use yinz_config::config::{watch_config_file_changes, ManagedConfigRevision};
 use yinz_config::screen_config::ApplicationThemeConfig;
 use yinz_types::input::native_terminal::TerminalConfig;
 use yinz_types::keys::KeyWithModifier;
@@ -114,6 +114,22 @@ impl UnderlineReconfigure {
     }
 }
 
+fn inspect_startup_axes(fragment: &str, write: bool) -> Result<bool> {
+    let (axes, axes_only) = Config::startup_axes_in_fragment(fragment)
+        .map_err(|error| anyhow!(yinz_config::editor::validation_error(error)))?;
+    let explicit: Vec<_> = ["initial_columns", "initial_rows"]
+        .into_iter()
+        .zip(axes)
+        .filter_map(|(name, value)| value.map(|_| name))
+        .collect();
+    anyhow::ensure!(
+        write || explicit.is_empty(),
+        "setting terminal {} requires a saved configuration: repeat action reconfigure with --write, or edit the host configuration/drop-in; the entire fragment was refused",
+        explicit.join(", ")
+    );
+    Ok(axes_only)
+}
+
 /// The feature list as the shaper sees it: omission and an empty list both mean
 /// none, and `calt` equals `+calt`. Order stays significant.
 fn effective_font_features(
@@ -174,6 +190,7 @@ impl BackgroundPluginConfiguration {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SessionConfiguration {
     pending_editor_reload: Option<Config>,
+    startup_axes_save: Option<ManagedConfigRevision>,
     editor_overrides: Vec<yinz_types::configuration::Patch>,
     editor_effective: HashMap<ClientId, Config>,
     runtime_config: HashMap<ClientId, Config>, // if present, overrides the saved_config
@@ -240,9 +257,16 @@ impl SessionConfiguration {
     /// already applied (an editor or keybinding save), the disk config becomes the session
     /// theme source.
     pub fn reload_saved_config(&mut self, config: Config) -> Vec<(ClientId, Config)> {
-        if self.pending_editor_reload.as_ref() != Some(&config) {
-            self.application_theme_source = Some(config.clone());
+        if let Some(expected) = &self.pending_editor_reload {
+            // Editor and rebind echoes can coalesce with an independent axes save.
+            let mut observed = config.clone();
+            observed.terminal.initial_columns = expected.terminal.initial_columns;
+            observed.terminal.initial_rows = expected.terminal.initial_rows;
+            if &observed == expected {
+                return vec![];
+            }
         }
+        self.application_theme_source = Some(config.clone());
         self.change_saved_config(config)
     }
     pub fn set_saved_configuration(&mut self, config: Config) {
@@ -571,6 +595,17 @@ impl SessionMetaData {
         }
     }
 
+    pub(super) fn publish_disk_config(&mut self, change: yinz_config::config::DiskConfigChange) {
+        let matches_axes_save = change.unchanged_managed_revision.is_some()
+            && change.unchanged_managed_revision == self.session_configuration.startup_axes_save;
+        if change.requires_live_reload && !matches_axes_save {
+            let changes = self
+                .session_configuration
+                .reload_saved_config(change.config);
+            self.propagate_configuration_changes(changes, true);
+        }
+    }
+
     /// Tell the plugins that a config write failed: the file, when one was reached, and why,
     /// when it is known.
     fn report_config_write_failure(&self, file_path: Option<PathBuf>, reason: Option<String>) {
@@ -661,7 +696,7 @@ pub(super) fn reconfigure_client(
     write_config_to_disk: bool,
     session_state: &Arc<RwLock<SessionState>>,
     session_data: &Arc<RwLock<Option<SessionMetaData>>>,
-) -> Result<()> {
+) -> Result<bool> {
     let Some(target) = configuration_target(
         client_id,
         write_config_to_disk,
@@ -669,12 +704,15 @@ pub(super) fn reconfigure_client(
         session_state,
     )?
     else {
-        return Ok(());
+        return Ok(false);
     };
+    if inspect_startup_axes(&config, write_config_to_disk)? {
+        return save_startup_axes(&config, session_data).map(|()| true);
+    }
     reconfigure_target(target, config, write_config_to_disk, session_data)?;
     // A session theme change can come without a per-client difference.
     with_session_mut(session_data, |session| session.publish_application_theme())?;
-    Ok(())
+    Ok(false)
 }
 
 fn reconfigure_target(
@@ -746,8 +784,11 @@ pub(super) fn reconfigure_all_clients(
     mut completion: Option<NotificationEnd>,
     session_state: &Arc<RwLock<SessionState>>,
     session_data: &Arc<RwLock<Option<SessionMetaData>>>,
-) {
-    let result = (|| -> Result<()> {
+) -> bool {
+    let result = (|| -> Result<bool> {
+        if inspect_startup_axes(&config, write_config_to_disk)? {
+            return save_startup_axes(&config, session_data).map(|()| true);
+        }
         let client_ids = session_state
             .read()
             .to_anyhow()
@@ -828,14 +869,18 @@ pub(super) fn reconfigure_all_clients(
         }
         // A session theme change can come without a per-client difference.
         with_session_mut(session_data, |session| session.publish_application_theme())?;
-        Ok(())
+        Ok(false)
     })();
-    if let Err(error) = result {
-        if let Some(completion) = completion.as_mut() {
-            completion.set_exit_status(1);
-            completion.set_error_message(format!("{error:#}"));
-        }
-        log::error!("reconfigure: {error:#}");
+    match result {
+        Ok(notify_disk_write) => notify_disk_write,
+        Err(error) => {
+            if let Some(completion) = completion.as_mut() {
+                completion.set_exit_status(1);
+                completion.set_error_message(format!("{error:#}"));
+            }
+            log::error!("reconfigure: {error:#}");
+            false
+        },
     }
 }
 
@@ -995,7 +1040,7 @@ fn save_rebound_keys(
         return Ok(());
     }
     match write_managed_config_fragment(session_data, &staged.fragment)? {
-        Ok(()) => {
+        Ok(_) => {
             with_session_mut(session_data, |session| {
                 if !target.save_only {
                     session.session_configuration = staged.configuration;
@@ -1126,7 +1171,7 @@ enum ConfigPersistence {
 fn write_managed_config_fragment(
     session_data: &Arc<RwLock<Option<SessionMetaData>>>,
     fragment: &str,
-) -> Result<std::result::Result<(), (Option<PathBuf>, String)>> {
+) -> Result<std::result::Result<ManagedConfigRevision, (Option<PathBuf>, String)>> {
     let config_dir = with_session(session_data, |session| session.config_dir.clone())?.flatten();
     Ok(write_fragment_in_config_dir(
         config_dir,
@@ -1144,10 +1189,10 @@ fn write_fragment_in_config_dir(
     config_dir: Option<PathBuf>,
     default_dir: impl FnOnce() -> Option<PathBuf>,
     fragment: &str,
-) -> std::result::Result<(), (Option<PathBuf>, String)> {
+) -> std::result::Result<ManagedConfigRevision, (Option<PathBuf>, String)> {
     match yinz_runtime::home::get_config_overlay_dir(config_dir.or_else(default_dir)) {
-        Some(dir) => Config::write_managed_fragment(&dir, fragment)
-            .map(|_| ())
+        Some(dir) => Config::write_managed_fragment_with_revision(&dir, fragment)
+            .map(|(_, revision)| revision)
             .map_err(|e| {
                 log::error!("Failed to persist the config fragment: {}", e);
                 (
@@ -1158,6 +1203,26 @@ fn write_fragment_in_config_dir(
         None => {
             log::error!("Failed to persist the config fragment: {NO_CONFIG_DIR_REASON}");
             Err((None, NO_CONFIG_DIR_REASON.to_owned()))
+        },
+    }
+}
+
+fn save_startup_axes(
+    fragment: &str,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+) -> Result<()> {
+    match write_managed_config_fragment(session_data, fragment)? {
+        Ok(revision) => {
+            with_session_mut(session_data, |session| {
+                session.session_configuration.startup_axes_save = Some(revision);
+            })?;
+            Ok(())
+        },
+        Err((path, reason)) => {
+            with_session(session_data, |session| {
+                session.report_config_write_failure(path, Some(reason.clone()))
+            })?;
+            Err(anyhow!("{reason}"))
         },
     }
 }

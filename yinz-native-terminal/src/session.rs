@@ -275,8 +275,17 @@ impl Recorder {
     }
 }
 
+pub(crate) fn exit_error(message: String) -> anyhow::Error {
+    if message.starts_with("Initial layout failed at ") {
+        anyhow!("{message}\nRetry with --rows or --cols to give the initial layout more room.")
+    } else {
+        anyhow!("{message}")
+    }
+}
+
 pub fn headless(mut connection: Connection, args: &TerminalArgs) -> Result<()> {
-    let mut state = TerminalState::new(args.rows as usize, args.cols as usize);
+    let size = args.opening_size();
+    let mut state = TerminalState::new(size.rows, size.cols);
     let mut recorder = Recorder::new(args.record.as_deref())?;
     let started = Instant::now();
     let finish = args
@@ -312,9 +321,16 @@ pub fn headless(mut connection: Connection, args: &TerminalArgs) -> Result<()> {
                 },
                 ServerToClientMsg::Exit {
                     exit_reason: yinz_ipc::ipc::ExitReason::Error(message),
-                } => anyhow::bail!("{message}"),
+                } => return Err(exit_error(message)),
                 ServerToClientMsg::Exit { .. } => break,
-                ServerToClientMsg::LogError { lines } => anyhow::bail!("{}", lines.join("\n")),
+                ServerToClientMsg::ConfigFileUpdated if args.record.is_some() => {
+                    log::info!("native recording received ConfigFileUpdated");
+                },
+                ServerToClientMsg::LogError { lines } => {
+                    for line in lines {
+                        log::error!("{line}");
+                    }
+                },
                 _ => {},
             }
         } else if finish.is_some_and(|finish| Instant::now() >= finish) {

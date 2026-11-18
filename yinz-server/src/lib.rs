@@ -717,6 +717,28 @@ fn handoff_session_switch(
     Ok(())
 }
 
+fn notify_config_file_updated(
+    mut os_input: &mut Box<dyn ServerOsApi>,
+    session_state: &Arc<RwLock<SessionState>>,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+) -> Result<()> {
+    let client_ids = session_state
+        .read()
+        .to_anyhow()
+        .context("access server session state")?
+        .interactive_client_ids();
+    for client_id in client_ids {
+        send_to_client!(
+            client_id,
+            os_input,
+            ServerToClientMsg::ConfigFileUpdated,
+            session_state,
+            session_data
+        );
+    }
+    Ok(())
+}
+
 /// Forward a plugin's session request to its acting client. A client that has left, or that
 /// predates session requests and would discard one unread, is never sent it: the plugin gets
 /// the reason at once instead of waiting out its timeout.
@@ -1081,6 +1103,7 @@ pub fn start_server_impl(
     let to_panic = shutdown.sender(to_panic);
     let session_data: Arc<RwLock<Option<SessionMetaData>>> = Arc::new(RwLock::new(None));
     let session_state = Arc::new(RwLock::new(SessionState::new()));
+    let mut first_opening_client = None;
     let mut startup_traces_waiting_for_first_render: HashMap<ClientId, std::time::Instant> =
         HashMap::new();
 
@@ -1519,74 +1542,54 @@ pub fn start_server_impl(
                         })
                     });
 
-                    let spawn_tabs = |tab_layout,
-                                      floating_panes_layout,
-                                      tab_name,
-                                      swap_layouts,
-                                      should_focus_tab|
-                     -> Result<()> {
-                        with_session(&session_data, |session| {
-                            session
-                                .senders
-                                .send_to_screen(ScreenInstruction::NewTab(
-                                    cwd.clone(),
-                                    default_shell.clone(),
-                                    tab_layout,
-                                    floating_panes_layout,
-                                    tab_name,
-                                    swap_layouts,
-                                    None,  // initial_panes
-                                    false, // block_on_first_terminal
-                                    should_focus_tab,
-                                    client_id,
-                                    None,
-                                ))
-                                .context("opening a tab for the first client")
-                                .non_fatal()
-                        })?;
-                        Ok(())
-                    };
-
                     if let Some(operation) = &cli_assets.update_target {
                         uuid::Uuid::parse_str(operation)
                             .context("invalid update target operation")?;
-                    } else if layout.has_tabs() {
-                        let focused_tab_index =
-                            layout.focused_tab_index().unwrap_or(TabPosition::new(0));
-                        for (tab_index, (tab_name, tab_layout, floating_panes_layout)) in
-                            layout.tabs().into_iter().enumerate()
-                        {
-                            let should_focus_tab = TabPosition::new(tab_index) == focused_tab_index;
-                            spawn_tabs(
-                                Some(tab_layout.clone()),
-                                floating_panes_layout.clone(),
-                                tab_name,
-                                (
-                                    Some(layout.swap_tiled_layouts.clone()),
-                                    Some(layout.swap_floating_layouts.clone()),
-                                ),
-                                should_focus_tab,
-                            )?;
-                        }
                     } else {
-                        let mut floating_panes =
-                            layout.template.map(|t| t.1).clone().unwrap_or_default();
-                        if should_launch_setup_wizard {
-                            // we only do this here (and only once) because otherwise it will be
-                            // intrusive
-                            let setup_wizard = setup_wizard_floating_pane();
-                            floating_panes.push(setup_wizard);
-                        }
-                        spawn_tabs(
-                            None,
-                            floating_panes,
-                            None,
-                            (
-                                Some(layout.swap_tiled_layouts.clone()),
-                                Some(layout.swap_floating_layouts.clone()),
-                            ),
-                            true,
-                        )?;
+                        first_opening_client = Some((client_id, cli_assets.terminal_window_size));
+                        use yinz_bus::screen::InitialTab;
+                        let focused = layout.focused_tab_index().unwrap_or(TabPosition::new(0));
+                        let tabs = if layout.has_tabs() {
+                            layout
+                                .tabs()
+                                .into_iter()
+                                .map(|(name, tiled, floating)| InitialTab {
+                                    name,
+                                    tiled: Some(tiled.clone()),
+                                    floating: floating.clone(),
+                                })
+                                .collect()
+                        } else {
+                            let mut floating = layout
+                                .template
+                                .as_ref()
+                                .map(|(_, floating)| floating.clone())
+                                .unwrap_or_default();
+                            if should_launch_setup_wizard {
+                                // The wizard is only added for the first client.
+                                floating.push(setup_wizard_floating_pane());
+                            }
+                            vec![InitialTab {
+                                name: None,
+                                tiled: None,
+                                floating,
+                            }]
+                        };
+                        with_session(&session_data, |session| {
+                            session
+                                .senders
+                                .send_to_screen(ScreenInstruction::OpenInitialTabs {
+                                    cwd,
+                                    default_shell,
+                                    tabs,
+                                    swap_tiled: layout.swap_tiled_layouts,
+                                    swap_floating: layout.swap_floating_layouts,
+                                    focused,
+                                    client_id,
+                                })
+                                .context("opening the first client's tabs")
+                                .non_fatal()
+                        })?;
                     }
                     with_session(&session_data, |session| {
                         session
@@ -2161,7 +2164,25 @@ pub fn start_server_impl(
                         );
                     }
                 },
-                ServerInstruction::Render(serialized_output) => {
+                ServerInstruction::Render(_) | ServerInstruction::OpeningLayoutFailed { .. } => {
+                    let (serialized_output, opening_failure) = match instruction {
+                        ServerInstruction::Render(output) => (output, None),
+                        ServerInstruction::OpeningLayoutFailed { client_id, cause } => {
+                            let failure = first_opening_client
+                                .filter(|(id, _)| *id == client_id)
+                                .map(|(_, grid)| {
+                                    (
+                                        client_id,
+                                        format!(
+                                    "Initial layout failed at {} columns by {} rows: {cause}",
+                                    grid.cols, grid.rows
+                                ),
+                                    )
+                                });
+                            (None, failure)
+                        },
+                        _ => unreachable!(),
+                    };
                     let client_ids = session_state
                         .read()
                         .to_anyhow()
@@ -2201,12 +2222,14 @@ pub fn start_server_impl(
                     } else {
                         // Keep IDs reserved for shutdown so plugin unload can finish.
                         for client_id in client_ids {
-                            let _ = os_input.send_to_client(
-                                client_id,
-                                ServerToClientMsg::Exit {
-                                    exit_reason: ExitReason::Normal,
+                            let exit_reason = match &opening_failure {
+                                Some((opening_client, message)) if *opening_client == client_id => {
+                                    ExitReason::Error(message.clone())
                                 },
-                            );
+                                _ => ExitReason::Normal,
+                            };
+                            let _ = os_input
+                                .send_to_client(client_id, ServerToClientMsg::Exit { exit_reason });
                             let _ = os_input.remove_client(client_id);
                         }
 
@@ -2606,51 +2629,40 @@ pub fn start_server_impl(
                     config,
                     write_config_to_disk,
                 } => {
-                    reconfigure_client(
+                    match reconfigure_client(
                         client_id,
                         config,
                         write_config_to_disk,
                         &session_state,
                         &session_data,
-                    )
-                    .non_fatal();
+                    ) {
+                        Ok(true) => notify_config_file_updated(
+                            &mut os_input,
+                            &session_state,
+                            &session_data,
+                        )?,
+                        Ok(false) => {},
+                        Err(error) => Err::<(), _>(error).non_fatal(),
+                    }
                 },
                 ServerInstruction::ReconfigureAllClients {
                     config,
                     write_config_to_disk,
                     completion,
                 } => {
-                    reconfigure_all_clients(
+                    if reconfigure_all_clients(
                         config,
                         write_config_to_disk,
                         completion,
                         &session_state,
                         &session_data,
-                    );
-                },
-                ServerInstruction::ConfigWrittenToDisk(new_config) => {
-                    with_session_mut(&session_data, |session| {
-                        let changes = session
-                            .session_configuration
-                            .reload_saved_config(new_config);
-                        let config_was_written_to_disk = true;
-                        session
-                            .propagate_configuration_changes(changes, config_was_written_to_disk);
-                    })?;
-                    let client_ids = session_state
-                        .read()
-                        .to_anyhow()
-                        .context("access server session state")?
-                        .interactive_client_ids();
-                    for client_id in client_ids {
-                        send_to_client!(
-                            client_id,
-                            os_input,
-                            ServerToClientMsg::ConfigFileUpdated,
-                            session_state,
-                            session_data
-                        );
+                    ) {
+                        notify_config_file_updated(&mut os_input, &session_state, &session_data)?;
                     }
+                },
+                ServerInstruction::ConfigWrittenToDisk(change) => {
+                    with_session_mut(&session_data, |session| session.publish_disk_config(change))?;
+                    notify_config_file_updated(&mut os_input, &session_state, &session_data)?;
                 },
                 ServerInstruction::RebindKeys {
                     client_id,

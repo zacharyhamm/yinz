@@ -1092,7 +1092,7 @@ fn failed_pending_agent_layout_reports_failure_without_deleting_the_pane() {
         .resolve_agent_tab(AgentPlacement::NewTab(None), Some(run("claude")), CLIENT)
         .unwrap();
     let completion = place_reserved_agent(&mut screen, 20, target.clone());
-    screen.recover_pending_tab(target.tab_id).unwrap();
+    screen.recover_pending_tab(target.tab_id, None).unwrap();
     let result = completion.blocking_recv().unwrap();
     assert!(result.error_message.unwrap().contains("layout failed"));
     assert!(result.affected_tab_id.is_none());

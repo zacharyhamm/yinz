@@ -1739,6 +1739,32 @@ pub fn screen_thread_main(
                     }
                     screen.render()?;
                 },
+                ScreenInstruction::OpenInitialTabs {
+                    cwd,
+                    default_shell,
+                    tabs,
+                    swap_tiled,
+                    swap_floating,
+                    focused,
+                    client_id,
+                } => {
+                    for (index, tab) in tabs.into_iter().enumerate() {
+                        screen.open_new_tab(
+                            cwd.clone(),
+                            default_shell.clone(),
+                            tab.tiled,
+                            tab.floating,
+                            tab.name,
+                            Some(swap_tiled.clone()),
+                            Some(swap_floating.clone()),
+                            None,
+                            false,
+                            yinz_types::internal_ids::TabPosition::new(index) == focused,
+                            client_id,
+                            None,
+                        )?;
+                    }
+                },
                 ScreenInstruction::NewTab(
                     cwd,
                     default_shell,
@@ -1812,7 +1838,7 @@ pub fn screen_thread_main(
                     }) {
                         break 'instruction;
                     }
-                    screen.recover_pending_tab(tab_id).non_fatal();
+                    screen.recover_pending_tab(tab_id, None).non_fatal();
                     screen.replay_events_waiting_for_layout(&mut pending);
                     if !screen.has_pending_tabs() {
                         screen

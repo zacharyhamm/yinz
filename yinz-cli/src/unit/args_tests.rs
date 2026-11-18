@@ -1,4 +1,43 @@
 use crate::actions::PathResolution;
+
+#[test]
+fn native_startup_dimensions_flags() {
+    let omitted = try_parse_cli(["yinz", "terminal"]).unwrap();
+    let explicit = try_parse_cli(["yinz", "terminal", "--cols", "120", "--rows", "40"]).unwrap();
+    let (Some(Command::Terminal(omitted)), Some(Command::Terminal(explicit))) =
+        (omitted.command, explicit.command)
+    else {
+        panic!("expected native terminal commands");
+    };
+    assert_eq!((omitted.cols, omitted.rows), (None, None));
+    assert_eq!((explicit.cols, explicit.rows), (Some(120), Some(40)));
+    assert_eq!(omitted.opening_size(), explicit.opening_size());
+    let extremes = try_parse_cli([
+        "yinz",
+        "terminal",
+        "--cols",
+        "1",
+        "--rows",
+        "4096",
+        "--startup-mode",
+        "remember",
+    ])
+    .unwrap();
+    let Some(Command::Terminal(extremes)) = extremes.command else {
+        panic!("expected native terminal command");
+    };
+    assert_eq!((extremes.cols, extremes.rows), (Some(1), Some(4096)));
+    assert_eq!(
+        extremes.startup_mode,
+        Some(yinz_types::input::native_terminal::StartupMode::Remember)
+    );
+    assert_eq!(omitted.startup_mode, None);
+    for flag in ["--cols", "--rows"] {
+        for value in ["0", "4097", "2.0"] {
+            assert!(try_parse_cli(["yinz", "terminal", flag, value]).is_err());
+        }
+    }
+}
 #[test]
 fn warp_tab_uses_tab_id() {
     use yinz_types::input::actions::Action;
@@ -542,6 +581,9 @@ fn reconfigure_help_explains_saved_native_settings_and_atomic_refusal() {
     let help = error.to_string();
     let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
     for guidance in [
+        "initial_columns and initial_rows",
+        "even when the values already match",
+        "apply to new windows",
         "cell_width",
         "line_height",
         "baseline_offset",
@@ -555,7 +597,7 @@ fn reconfigure_help_explains_saved_native_settings_and_atomic_refusal() {
         "including sibling settings",
         "Omissions and equivalent values remain valid runtime requests",
         "session's effective saved files",
-        "when their file reload succeeds and the edited layer wins",
+        "when file reload succeeds and the edited layer wins",
         "Writes the session's managed drop-in",
         "write failures are errors",
     ] {

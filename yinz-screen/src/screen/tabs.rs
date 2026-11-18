@@ -1061,7 +1061,7 @@ impl Screen {
         }
         self.replacement_pending = false;
         for tab_id in doomed {
-            self.teardown_tab(tab_id, !usable.is_empty())
+            self.teardown_tab(tab_id, !usable.is_empty(), None)
                 .context(err_context)?;
         }
         if confirm
@@ -1180,10 +1180,15 @@ impl Screen {
             self.deferred_tab_closes.insert(tab_id);
             return Ok(());
         }
-        self.teardown_tab(tab_id, false)
+        self.teardown_tab(tab_id, false, None)
     }
 
-    fn teardown_tab(&mut self, tab_id: TabId, preserve_guards: bool) -> Result<()> {
+    pub(super) fn teardown_tab(
+        &mut self,
+        tab_id: TabId,
+        preserve_guards: bool,
+        layout_failure: Option<(ClientId, &str)>,
+    ) -> Result<()> {
         let err_context = || format!("failed to close tab at index {tab_id:?}");
 
         if self
@@ -1348,9 +1353,18 @@ impl Screen {
             if self.migration_blocks_normal_work() {
                 return Ok(());
             }
+            let instruction = match layout_failure {
+                Some((client_id, cause)) if !self.opening_layout_landed => {
+                    ServerInstruction::OpeningLayoutFailed {
+                        client_id,
+                        cause: cause.to_owned(),
+                    }
+                },
+                _ => ServerInstruction::Render(None),
+            };
             self.bus
                 .senders
-                .send_to_server(ServerInstruction::Render(None))
+                .send_to_server(instruction)
                 .with_context(err_context)
         } else {
             let client_mode_infos_in_closed_tab = tab_to_close.drain_connected_clients(None);

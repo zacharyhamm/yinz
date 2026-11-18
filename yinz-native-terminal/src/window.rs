@@ -19,11 +19,13 @@ use glutin::context::PossiblyCurrentContext;
 use glutin::display::GetGlDisplay;
 use glutin::prelude::*;
 use glutin::surface::{Surface, SurfaceAttributesBuilder, SwapInterval, WindowSurface};
-use glutin_winit::{DisplayBuilder, GlWindow};
+use glutin_winit::DisplayBuilder;
+use std::num::NonZeroU32;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
+use winit::dpi::{LogicalSize, PhysicalSize, Size as WindowSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -101,7 +103,8 @@ struct App {
     paints: Paints,
     cache: GlyphCache,
     active_fonts: FontOptions,
-    reported_geometry: Option<Geometry>,
+    connection_geometry: ConnectionGeometry,
+    last_measured_geometry: Option<Geometry>,
     retained: RetainedScene,
     state: TerminalState,
     sender: Option<AttachedSender>,
@@ -127,7 +130,9 @@ struct App {
     next_blink: Instant,
     scale: f64,
     zoom: f32,
-    received_frame: bool,
+    startup_mode: StartupMode,
+    opening: Option<OpeningGeometry>,
+    recorded_window: Option<serde_json::Value>,
     started: Instant,
     error: Option<anyhow::Error>,
 }
@@ -193,7 +198,7 @@ impl PendingSwitch {
         let (tx, messages) = mpsc::sync_channel(2);
         let args = app.args.clone();
         let opts = app.opts.clone();
-        let size = app.grid_size();
+        let size = app.switch_grid(app.live_geometry()?);
         let wake_reader = app.wake_reader.clone();
         std::thread::Builder::new()
             .name("native-switch-reader".into())
@@ -300,14 +305,16 @@ impl PendingSwitch {
             .0
             .lock()
             .map_err(|_| anyhow!("destination IPC sender lock poisoned"))?;
-        for message in geometry
-            .into_iter()
-            .flat_map(|geometry| geometry.messages(None))
-            .chain([
-                ClientToServerMsg::HostTerminalFocusChanged { focused },
-                ClientToServerMsg::RenderFrameAck { seq },
-            ])
-        {
+        for message in [
+            ClientToServerMsg::HostTerminalFocusChanged { focused },
+            ClientToServerMsg::RenderFrameAck { seq },
+        ]
+        .into_iter()
+        .chain(
+            geometry
+                .into_iter()
+                .flat_map(|geometry| geometry.messages(None)),
+        ) {
             sender
                 .send_client_msg_until(message, self.deadline)
                 .context("confirm destination connection")?;
@@ -500,6 +507,8 @@ pub(crate) fn apply_settings(
     comparison.baseline_offset = next_settings.baseline_offset;
     comparison.underline_offset = next_settings.underline_offset;
     comparison.underline_thickness = next_settings.underline_thickness;
+    comparison.initial_columns = next_settings.initial_columns;
+    comparison.initial_rows = next_settings.initial_rows;
     if comparison != next_settings || *paints != next_paints {
         retained.mark_everything();
     }
@@ -575,6 +584,434 @@ struct Geometry {
     grid: Size,
 }
 
+const STARTUP_CELL_LIMIT: usize = 1_048_576;
+const STARTUP_PIXEL_LIMIT: usize = 33_177_600;
+const STARTUP_AXIS_LIMIT: u32 = 16_384;
+
+fn graphical_opening_size(args: &TerminalArgs) -> Size {
+    fit_size(args.opening_size(), STARTUP_CELL_LIMIT)
+}
+
+fn fit_size(size: Size, limit: usize) -> Size {
+    if size.rows as u64 * size.cols as u64 <= limit as u64 {
+        return size;
+    }
+    let cols =
+        ((limit as u64 * size.cols as u64 / size.rows as u64).isqrt() as usize).clamp(1, size.cols);
+    Size {
+        cols,
+        rows: (limit / cols).clamp(1, size.rows),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum StartupAxis {
+    Cells(u16),
+    Pixels(u32),
+}
+
+impl StartupAxis {
+    fn resolve(
+        cli: Option<u16>,
+        remembered: Option<u32>,
+        configured: Option<u16>,
+        default: u16,
+    ) -> Self {
+        cli.map(Self::Cells)
+            .or_else(|| remembered.map(Self::Pixels))
+            .unwrap_or_else(|| Self::Cells(configured.unwrap_or(default)))
+    }
+
+    fn extent(self, cell: u32, padding: u32) -> u32 {
+        match self {
+            Self::Cells(cells) => u32::from(cells)
+                .saturating_mul(cell)
+                .saturating_add(2 * padding),
+            Self::Pixels(pixels) => pixels,
+        }
+    }
+}
+
+struct StartupSize {
+    width: StartupAxis,
+    height: StartupAxis,
+}
+
+impl StartupSize {
+    fn resolve(
+        args: &TerminalArgs,
+        settings: &TerminalConfig,
+        remembered: Option<(u32, u32)>,
+    ) -> Self {
+        Self {
+            width: StartupAxis::resolve(
+                args.cols,
+                remembered.map(|size| size.0),
+                settings.initial_columns,
+                120,
+            ),
+            height: StartupAxis::resolve(
+                args.rows,
+                remembered.map(|size| size.1),
+                settings.initial_rows,
+                40,
+            ),
+        }
+    }
+
+    fn has_pixel_axis(&self) -> bool {
+        matches!(self.width, StartupAxis::Pixels(_))
+            || matches!(self.height, StartupAxis::Pixels(_))
+    }
+
+    fn extent(
+        &self,
+        metrics: crate::text::font::CellMetrics,
+        padding: u32,
+        ceiling: PhysicalSize<u32>,
+    ) -> PhysicalSize<u32> {
+        let width = self
+            .width
+            .extent(metrics.width, padding)
+            .clamp(1, ceiling.width);
+        let height = self
+            .height
+            .extent(metrics.height, padding)
+            .clamp(1, ceiling.height);
+        let pixels = fit_size(
+            Size {
+                cols: width as usize,
+                rows: height as usize,
+            },
+            STARTUP_PIXEL_LIMIT,
+        );
+        let width = pixels.cols as u32;
+        let height = pixels.rows as u32;
+        let Size { cols, rows } = Geometry::grid_size(width, height, padding, metrics);
+        let fitted = fit_size(Size { cols, rows }, STARTUP_CELL_LIMIT);
+        PhysicalSize::new(
+            if fitted.cols == cols {
+                width
+            } else {
+                width.min(fitted.cols as u32 * metrics.width + 2 * padding)
+            },
+            if fitted.rows == rows {
+                height
+            } else {
+                height.min(fitted.rows as u32 * metrics.height + 2 * padding)
+            },
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowBackend {
+    Wayland,
+    X11,
+    Mac,
+}
+
+struct StartupCorrection {
+    target: StartupSize,
+    hint: WindowSize,
+    wayland_ceiling: Option<LogicalSize<u32>>,
+}
+
+impl StartupCorrection {
+    fn observe_wayland_grant(&mut self, granted: PhysicalSize<u32>, scale: f64) {
+        if granted.width == 0 || granted.height == 0 {
+            return;
+        }
+        let logical = granted.to_logical::<u32>(scale);
+        self.wayland_ceiling = Some(self.wayland_ceiling.map_or(logical, |previous| {
+            LogicalSize::new(
+                previous.width.min(logical.width),
+                previous.height.min(logical.height),
+            )
+        }));
+    }
+
+    fn request(
+        &self,
+        granted: PhysicalSize<u32>,
+        monitor: PhysicalSize<u32>,
+        scale: f64,
+        padding: u32,
+        metrics: crate::text::font::CellMetrics,
+    ) -> Option<(WindowSize, PhysicalSize<u32>)> {
+        let bounds = if let Some(ceiling) = self.wayland_ceiling {
+            let ceiling = ceiling.to_physical::<u32>(scale);
+            PhysicalSize::new(
+                monitor
+                    .width
+                    .clamp(1, STARTUP_AXIS_LIMIT)
+                    .min(ceiling.width),
+                monitor
+                    .height
+                    .clamp(1, STARTUP_AXIS_LIMIT)
+                    .min(ceiling.height),
+            )
+        } else {
+            correction_bounds(granted, self.hint.to_physical(scale), monitor)
+        };
+        if bounds.width == 0 || bounds.height == 0 {
+            return None;
+        }
+        let measured = self.target.extent(metrics, padding, bounds);
+        let (request, expected) = if self.wayland_ceiling.is_some() {
+            let logical =
+                wayland_correction(&self.target, measured, bounds, padding, metrics, scale)?;
+            (
+                WindowSize::Logical(logical.cast()),
+                logical.to_physical(scale),
+            )
+        } else {
+            (WindowSize::Physical(measured), measured)
+        };
+        (expected != granted).then_some((request, expected))
+    }
+}
+
+const OPENING_QUIET: Duration = Duration::from_millis(120);
+const OPENING_PLACEMENT_LIMIT: Duration = Duration::from_millis(400);
+const OPENING_GRANT_LIMIT: Duration = Duration::from_millis(250);
+
+struct OpeningGeometry {
+    backend: WindowBackend,
+    phase: OpeningPhase,
+}
+
+enum OpeningPhase {
+    Placement {
+        correction: StartupCorrection,
+        quiet_until: Instant,
+        deadline: Instant,
+    },
+    Grant {
+        expected: PhysicalSize<u32>,
+        deadline: Instant,
+    },
+}
+
+impl OpeningGeometry {
+    fn new(backend: WindowBackend, correction: StartupCorrection, now: Instant) -> Self {
+        Self {
+            backend,
+            phase: OpeningPhase::Placement {
+                correction,
+                quiet_until: now + OPENING_QUIET,
+                deadline: now + OPENING_PLACEMENT_LIMIT,
+            },
+        }
+    }
+
+    fn placement_signal(&mut self, now: Instant) {
+        if self.backend == WindowBackend::X11
+            && let OpeningPhase::Placement {
+                quiet_until,
+                deadline,
+                ..
+            } = &mut self.phase
+        {
+            *quiet_until = (now + OPENING_QUIET).min(*deadline);
+        }
+    }
+
+    fn deadline(&self) -> Instant {
+        match self.phase {
+            OpeningPhase::Placement { deadline, .. } | OpeningPhase::Grant { deadline, .. } => {
+                deadline
+            },
+        }
+    }
+
+    fn wake_at(&self) -> Instant {
+        match self.phase {
+            OpeningPhase::Placement {
+                quiet_until,
+                deadline,
+                ..
+            } if self.backend == WindowBackend::X11 => quiet_until.min(deadline),
+            OpeningPhase::Placement { deadline, .. } | OpeningPhase::Grant { deadline, .. } => {
+                deadline
+            },
+        }
+    }
+
+    fn placement_ready(&self, now: Instant, output_ready: bool) -> bool {
+        matches!(self.phase, OpeningPhase::Placement { .. })
+            && (now >= self.wake_at()
+                || self.backend == WindowBackend::Mac
+                || (self.backend == WindowBackend::Wayland && output_ready))
+    }
+
+    fn validate(&self, extent: PhysicalSize<u32>, geometry: Geometry) -> Result<()> {
+        check_startup_extent(extent, geometry.grid)
+    }
+
+    fn grant_settled(&self, now: Instant, actual: PhysicalSize<u32>) -> bool {
+        matches!(self.phase, OpeningPhase::Grant { expected, deadline } if actual == expected || now >= deadline)
+    }
+}
+
+struct ConnectionGeometry {
+    seed: Size,
+    first_frame_deadline: Instant,
+    received_frame: bool,
+    reported: Option<Geometry>,
+}
+
+impl ConnectionGeometry {
+    fn new(seed: Size, now: Instant) -> Self {
+        Self {
+            seed,
+            first_frame_deadline: now + FIRST_FRAME_TIMEOUT,
+            received_frame: false,
+            reported: None,
+        }
+    }
+
+    fn switch_grid(&self, measured: Option<Geometry>) -> Size {
+        measured
+            .or(self.reported)
+            .map_or(self.seed, |geometry| geometry.grid)
+    }
+
+    fn messages(&self, geometry: Geometry) -> Vec<ClientToServerMsg> {
+        if self.received_frame {
+            geometry.messages(self.reported)
+        } else {
+            vec![]
+        }
+    }
+}
+
+fn startup_mode(args: &TerminalArgs, settings: &TerminalConfig) -> StartupMode {
+    args.startup_mode
+        .or(settings.startup_mode)
+        .unwrap_or_default()
+}
+
+fn remembered_size(mode: StartupMode, path: &std::path::Path) -> Option<(u32, u32)> {
+    if mode != StartupMode::Remember {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let size: (u32, u32) = serde_json::from_slice(&bytes).ok()?;
+    let valid = 100..=STARTUP_AXIS_LIMIT;
+    (valid.contains(&size.0) && valid.contains(&size.1)).then_some(size)
+}
+
+fn scaled_padding(settings: &TerminalConfig, scale: f64) -> u32 {
+    (f64::from(settings.padding.unwrap_or(0.0)) * scale).round() as u32
+}
+
+fn correction_bounds(
+    granted: PhysicalSize<u32>,
+    expected: PhysicalSize<u32>,
+    monitor: PhysicalSize<u32>,
+) -> PhysicalSize<u32> {
+    let ceiling = |granted: u32, hint: u32, monitor: u32| {
+        let limit = monitor.clamp(1, STARTUP_AXIS_LIMIT);
+        if granted > 0 && granted.saturating_add(1) < hint {
+            limit.min(granted)
+        } else {
+            limit
+        }
+    };
+    PhysicalSize::new(
+        ceiling(granted.width, expected.width, monitor.width),
+        ceiling(granted.height, expected.height, monitor.height),
+    )
+}
+
+// Winit uses whole logical pixels on Wayland. Prefer a cell-preserving
+// representation for cell axes and the nearest physical match for saved axes.
+fn wayland_correction(
+    target: &StartupSize,
+    size: PhysicalSize<u32>,
+    bounds: PhysicalSize<u32>,
+    padding: u32,
+    metrics: crate::text::font::CellMetrics,
+    scale: f64,
+) -> Option<LogicalSize<u32>> {
+    let physical = |logical: u32| {
+        LogicalSize::new(logical, logical)
+            .to_physical::<u32>(scale)
+            .width
+    };
+    let at_least = |pixels: u32| {
+        let logical = ((f64::from(pixels) - 0.5) / scale).ceil().max(1.0) as u32;
+        if physical(logical) < pixels {
+            logical + 1
+        } else {
+            logical
+        }
+    };
+    let at_most = |pixels: u32| {
+        let next = at_least(pixels + 1);
+        next - 1
+    };
+    let options = |axis, pixels, bound, cell: u32, cells: usize| {
+        let lower = at_most(pixels);
+        let preferred = match axis {
+            StartupAxis::Cells(_) => at_least((cells as u32 * cell + 2 * padding).min(pixels)),
+            StartupAxis::Pixels(_) => {
+                let upper = at_least(pixels);
+                if lower > 0 && pixels - physical(lower) <= physical(upper) - pixels {
+                    lower
+                } else {
+                    upper
+                }
+            },
+        };
+        [preferred.min(at_most(bound)), lower]
+    };
+    let grid = Geometry::grid_size(size.width, size.height, padding, metrics);
+    let widths = options(
+        target.width,
+        size.width,
+        bounds.width,
+        metrics.width,
+        grid.cols,
+    );
+    let heights = options(
+        target.height,
+        size.height,
+        bounds.height,
+        metrics.height,
+        grid.rows,
+    );
+    widths
+        .into_iter()
+        .flat_map(|width| heights.map(|height| LogicalSize::new(width, height)))
+        .find(|logical| {
+            let rounded: PhysicalSize<u32> = logical.to_physical(scale);
+            rounded.width <= bounds.width
+                && rounded.height <= bounds.height
+                && Geometry::calculate(rounded.width, rounded.height, padding, metrics)
+                    .is_some_and(|geometry| check_startup_extent(rounded, geometry.grid).is_ok())
+        })
+}
+
+fn client_sized(mode: StartupMode) -> bool {
+    matches!(mode, StartupMode::Windowed | StartupMode::Remember)
+}
+
+fn check_startup_extent(size: PhysicalSize<u32>, grid: Size) -> Result<()> {
+    if size.width > STARTUP_AXIS_LIMIT
+        || size.height > STARTUP_AXIS_LIMIT
+        || u64::from(size.width) * u64::from(size.height) > STARTUP_PIXEL_LIMIT as u64
+        || grid.rows * grid.cols > STARTUP_CELL_LIMIT
+    {
+        return Err(anyhow!(
+            "native startup window is {}×{} pixels ({}×{} cells), exceeding the supported startup extent",
+            size.width, size.height, grid.cols, grid.rows
+        ));
+    }
+    Ok(())
+}
+
 impl Geometry {
     fn calculate(
         width: u32,
@@ -590,13 +1027,22 @@ impl Geometry {
                 width: metrics.width as usize,
                 height: metrics.height as usize,
             },
-            grid: Size {
-                cols: (width.saturating_sub(2 * padding) / metrics.width.max(1)).clamp(1, 4096)
-                    as usize,
-                rows: (height.saturating_sub(2 * padding) / metrics.height.max(1)).clamp(1, 4096)
-                    as usize,
-            },
+            grid: Self::grid_size(width, height, padding, metrics),
         })
+    }
+
+    fn grid_size(
+        width: u32,
+        height: u32,
+        padding: u32,
+        metrics: crate::text::font::CellMetrics,
+    ) -> Size {
+        Size {
+            cols: (width.saturating_sub(2 * padding) / metrics.width.max(1)).clamp(1, 4096)
+                as usize,
+            rows: (height.saturating_sub(2 * padding) / metrics.height.max(1)).clamp(1, 4096)
+                as usize,
+        }
     }
 
     fn messages(self, previous: Option<Self>) -> Vec<ClientToServerMsg> {
@@ -680,7 +1126,7 @@ fn receive_message(
         },
         Some(Ok(ServerToClientMsg::Exit {
             exit_reason: ExitReason::Error(message),
-        })) => anyhow::bail!("{message}"),
+        })) => Err(session::exit_error(message)),
         Some(Ok(message)) => Ok(Some(message)),
         Some(Err(mpsc::TryRecvError::Disconnected)) => {
             anyhow::bail!("the native session connection closed unexpectedly")
@@ -704,17 +1150,20 @@ impl App {
             .context("load native terminal fonts")?;
         let now = Instant::now();
         let paints = paints_for(&config, &options);
+        let opening_size = graphical_opening_size(&args);
+        let startup_mode = startup_mode(&args, &config.terminal);
         Ok(Self {
             surfaces: None,
             wake_reader,
-            state: TerminalState::new(args.rows as usize, args.cols as usize),
+            state: TerminalState::new(opening_size.rows, opening_size.cols),
             args,
             opts,
             settings: config.terminal,
             paints,
             cache: GlyphCache::new(fonts),
             active_fonts,
-            reported_geometry: None,
+            connection_geometry: ConnectionGeometry::new(opening_size, now),
+            last_measured_geometry: None,
             retained: RetainedScene::new(),
             sender: None,
             messages: None,
@@ -739,21 +1188,16 @@ impl App {
             next_blink: now + Duration::from_millis(500),
             scale: 1.0,
             zoom: 1.0,
-            received_frame: false,
+            startup_mode,
+            opening: None,
+            recorded_window: None,
             started: now,
             error: None,
         })
     }
 
     fn open_connection(&mut self) -> Result<()> {
-        let connection = session::connect(
-            &self.args,
-            &self.opts,
-            Size {
-                rows: self.args.rows as usize,
-                cols: self.args.cols as usize,
-            },
-        )?;
+        let connection = session::connect(&self.args, &self.opts, self.connection_geometry.seed)?;
         let (tx, rx) = mpsc::sync_channel(2);
         let sender = AttachedSender(connection.sender);
         let wake_reader = self.wake_reader.clone();
@@ -783,32 +1227,46 @@ impl App {
     }
     fn open(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
         let metrics = self.cache.metrics();
+        let startup = self.startup_mode;
+        let remembered = remembered_size(startup, &window_state_path());
+        let target = StartupSize::resolve(&self.args, &self.settings, remembered);
+        #[cfg(target_os = "linux")]
+        let backend = if winit::platform::x11::ActiveEventLoopExtX11::is_x11(event_loop) {
+            WindowBackend::X11
+        } else {
+            WindowBackend::Wayland
+        };
+        #[cfg(not(target_os = "linux"))]
+        let backend = WindowBackend::Mac;
+        let physical_hint = backend == WindowBackend::X11 || target.has_pixel_axis();
+        let hint_limit = if physical_hint {
+            STARTUP_AXIS_LIMIT
+        } else {
+            4096
+        };
+        let hint = target.extent(
+            metrics,
+            self.padding(),
+            PhysicalSize::new(hint_limit, hint_limit),
+        );
         let mut attrs = WindowAttributes::default()
             .with_title("Yinz")
             .with_transparent(true)
-            .with_blur(self.settings.blur.unwrap_or(false))
-            .with_inner_size(winit::dpi::LogicalSize::new(
-                metrics.width * self.args.cols as u32,
-                metrics.height * self.args.rows as u32,
-            ));
-        let startup = self
-            .args
-            .startup_mode
-            .or(self.settings.startup_mode)
-            .unwrap_or_default();
+            .with_blur(self.settings.blur.unwrap_or(false));
+        let hint = if physical_hint {
+            WindowSize::Physical(hint)
+        } else {
+            WindowSize::Logical(LogicalSize::new(
+                f64::from(hint.width),
+                f64::from(hint.height),
+            ))
+        };
+        attrs = attrs.with_inner_size(hint);
         if startup == StartupMode::Maximized {
             attrs = attrs.with_maximized(true);
         }
         if startup == StartupMode::Fullscreen {
             attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(None)));
-        }
-        if startup == StartupMode::Remember
-            && let Ok(bytes) = std::fs::read(window_state_path())
-            && let Ok((width, height)) = serde_json::from_slice::<(u32, u32)>(&bytes)
-            && (100..=16384).contains(&width)
-            && (100..=16384).contains(&height)
-        {
-            attrs = attrs.with_inner_size(winit::dpi::PhysicalSize::new(width, height));
         }
         #[cfg(target_os = "linux")]
         {
@@ -841,6 +1299,20 @@ impl App {
             .map_err(|error| anyhow!("create native terminal window: {error}"))?;
         let window = window.context("windowing system did not create a native window")?;
         window.set_ime_allowed(true);
+        self.update_fonts(self.zoom, window.scale_factor());
+        let extent = window.inner_size();
+        if client_sized(startup) {
+            let mut correction = StartupCorrection {
+                target,
+                hint,
+                wayland_ceiling: None,
+            };
+            if backend == WindowBackend::Wayland {
+                correction.observe_wayland_grant(extent, window.scale_factor());
+            }
+            self.opening = Some(OpeningGeometry::new(backend, correction, Instant::now()));
+            self.last_measured_geometry = self.measure_geometry(extent)?;
+        }
         let raw_handle = window
             .window_handle()
             .context("get native window handle")?
@@ -853,9 +1325,12 @@ impl App {
             Platform::current(),
         )
         .context("create GPU context")?;
-        let attrs = window
-            .build_surface_attributes(SurfaceAttributesBuilder::new())
-            .context("describe GPU surface")?;
+        let width =
+            NonZeroU32::new(extent.width).context("zero native window width at creation")?;
+        let height =
+            NonZeroU32::new(extent.height).context("zero native window height at creation")?;
+        let attrs =
+            SurfaceAttributesBuilder::<WindowSurface>::new().build(raw_handle, width, height);
         let surface = unsafe { display.create_window_surface(&config, &attrs) }
             .context("create GPU surface")?;
         let context = context
@@ -869,7 +1344,6 @@ impl App {
             glow::Context::from_loader_function_cstr(|symbol| display.get_proc_address(symbol))
         };
         let renderer = Renderer::new(gl).context("initialize GPU renderer")?;
-        self.scale = window.scale_factor();
         self.pacer.follow_refresh(
             window
                 .current_monitor()
@@ -881,22 +1355,23 @@ impl App {
             surface,
             window,
         });
-        self.rebuild_fonts()?;
+        self.refresh_geometry()?;
         for message in crate::emulation::palette::seed_messages(&self.paints) {
             self.send(message)?;
         }
         Ok(())
     }
-    fn rebuild_fonts(&mut self) -> Result<()> {
-        self.change_scale(self.zoom, self.scale)
-    }
     fn change_scale(&mut self, zoom: f32, scale: f64) -> Result<()> {
+        self.update_fonts(zoom, scale);
+        self.refresh_geometry()
+    }
+    fn update_fonts(&mut self, zoom: f32, scale: f64) {
         let requested = effective_font_options(&self.settings, zoom, scale);
         let replacement = match prepare_fonts(&self.active_fonts, &requested) {
             Ok(replacement) => replacement,
             Err(error) => {
                 log::error!("retaining working native fonts: {error:#}");
-                return Ok(());
+                return;
             },
         };
         apply_fonts(
@@ -908,47 +1383,190 @@ impl App {
         );
         self.zoom = zoom;
         self.scale = scale;
-        self.refresh_geometry()
     }
-    fn resize(&mut self) -> Result<()> {
-        if let Some(surfaces) = &self.surfaces {
-            let size = surfaces.window.inner_size();
-            if size.width > 0 && size.height > 0 {
-                surfaces
-                    .window
-                    .resize_surface(&surfaces.surface, &surfaces.context);
-            }
-        }
-        self.refresh_geometry()
-    }
-    fn refresh_geometry(&mut self) -> Result<()> {
-        let Some(geometry) = self.geometry() else {
+    fn settle_opening(&mut self, now: Instant) -> Result<()> {
+        let (Some(opening), Some(surfaces)) = (&self.opening, &self.surfaces) else {
             return Ok(());
         };
+        let window = &surfaces.window;
+        let size = window.inner_size();
+        let scale = window.scale_factor();
+        let monitor = window.current_monitor();
+        if size.width == 0 || size.height == 0 {
+            // A hidden/minimized window can lack a usable new extent. The last
+            // validated sample is sufficient for the bounded opening fallback.
+            if now >= opening.deadline() && self.last_measured_geometry.is_some() {
+                self.opening = None;
+            }
+            return Ok(());
+        }
+        // Read the actual window after the event batch, including X11's monitor
+        // update and any backend-generated resize. Event payloads can be stale.
+        let scale_changed = self.scale != scale;
+        if scale_changed {
+            self.update_fonts(self.zoom, scale);
+        }
+        let padding = self.padding();
+        let metrics = self.cache.metrics();
+        self.measure_geometry(size)?;
+        let Some(opening) = &mut self.opening else {
+            return Ok(());
+        };
+        let Some(surfaces) = &self.surfaces else {
+            return Ok(());
+        };
+        let window = &surfaces.window;
+        let placement_ready = opening.placement_ready(now, monitor.is_some());
+        if let OpeningPhase::Placement { correction, .. } = &mut opening.phase {
+            if opening.backend == WindowBackend::Wayland {
+                correction.observe_wayland_grant(size, scale);
+            }
+            if !placement_ready {
+                return Ok(());
+            }
+            let monitor = monitor
+                .map(|monitor| monitor.size())
+                .unwrap_or(PhysicalSize::new(STARTUP_AXIS_LIMIT, STARTUP_AXIS_LIMIT));
+            if let Some((request, expected)) =
+                correction.request(size, monitor, scale, padding, metrics)
+            {
+                opening.phase = OpeningPhase::Grant {
+                    expected,
+                    deadline: now + OPENING_GRANT_LIMIT,
+                };
+                let _ = window.request_inner_size(request);
+                // Some backends grant synchronously. Use the observed extent
+                // even when they do not send a separate resize callback.
+                let granted = window.inner_size();
+                // Even a synchronous size can be followed by another backend
+                // configure. Keep the guard through the next event-loop batch.
+                return self.resize_to(granted);
+            }
+        } else if !opening.grant_settled(now, size) {
+            return Ok(());
+        }
+        self.resize_to(size)?;
+        self.opening = None;
+        Ok(())
+    }
+
+    fn record_window_observation(&mut self) {
+        if self.args.record.is_none()
+            || self.opening.is_some()
+            || !self.connection_geometry.received_frame
+        {
+            return;
+        }
+        let Some(surfaces) = &self.surfaces else {
+            return;
+        };
+        let window = &surfaces.window;
+        let extent = window.inner_size();
+        let metrics = self.cache.metrics();
+        let padding = self.padding();
+        let Some(geometry) = Geometry::calculate(extent.width, extent.height, padding, metrics)
+        else {
+            return;
+        };
+        let Ok(handle) = window.window_handle() else {
+            return;
+        };
+        use winit::raw_window_handle::RawWindowHandle;
+        let (backend, x11_id) = match handle.as_raw() {
+            RawWindowHandle::Wayland(_) => ("wayland", None),
+            RawWindowHandle::Xlib(handle) => ("x11", Some(format!("{:#x}", handle.window))),
+            RawWindowHandle::Xcb(handle) => ("x11", Some(format!("{:#x}", handle.window.get()))),
+            RawWindowHandle::AppKit(_) => ("macos", None),
+            _ => return,
+        };
+        let observation = serde_json::json!({
+            "backend": backend,
+            "x11_id": x11_id,
+            "output": window.current_monitor().is_some(),
+            "scale": window.scale_factor(),
+            "width": extent.width,
+            "height": extent.height,
+            "cell_width": metrics.width,
+            "cell_height": metrics.height,
+            "padding": padding,
+            "cols": geometry.grid.cols,
+            "rows": geometry.grid.rows,
+            // Winit's Wayland getters read the compositor's last configure.
+            // The fixture queries the applied EWMH properties separately on X11.
+            "maximized": backend == "wayland" && window.is_maximized(),
+            "fullscreen": backend == "wayland" && window.fullscreen().is_some(),
+        });
+        if self.recorded_window.as_ref() != Some(&observation) {
+            log::info!("native window observation {observation}");
+            self.recorded_window = Some(observation);
+        }
+    }
+
+    fn resize(&mut self) -> Result<()> {
+        if let Some(surfaces) = &self.surfaces {
+            self.resize_to(surfaces.window.inner_size())?;
+        }
+        Ok(())
+    }
+
+    fn resize_to(&mut self, size: PhysicalSize<u32>) -> Result<()> {
+        if let (Some(surfaces), Some(width), Some(height)) = (
+            &self.surfaces,
+            NonZeroU32::new(size.width),
+            NonZeroU32::new(size.height),
+        ) && let Some(geometry) = self.measure_geometry(size)?
+        {
+            surfaces.surface.resize(&surfaces.context, width, height);
+            self.publish_geometry(geometry)?;
+        }
+        Ok(())
+    }
+
+    fn measure_geometry(&self, size: PhysicalSize<u32>) -> Result<Option<Geometry>> {
+        let geometry = Geometry::calculate(
+            size.width,
+            size.height,
+            self.padding(),
+            self.cache.metrics(),
+        );
+        if let (Some(opening), Some(geometry)) = (&self.opening, geometry) {
+            opening.validate(size, geometry)?;
+        }
+        Ok(geometry)
+    }
+
+    fn refresh_geometry(&mut self) -> Result<()> {
+        let Some(geometry) = self.live_geometry()? else {
+            return Ok(());
+        };
+        self.publish_geometry(geometry)
+    }
+
+    fn publish_geometry(&mut self, geometry: Geometry) -> Result<()> {
+        self.last_measured_geometry = Some(geometry);
         self.state
             .set_cell_size(geometry.cell.width as u32, geometry.cell.height as u32);
-        for message in geometry.messages(self.reported_geometry) {
+        for message in self.connection_geometry.messages(geometry) {
             if let ClientToServerMsg::TerminalResize { new_size } = &message {
                 self.selection
                     .resizing(&self.state, new_size.rows, new_size.cols);
             }
             self.send(message)?;
         }
-        self.reported_geometry = Some(geometry);
+        if self.connection_geometry.received_frame {
+            self.connection_geometry.reported = Some(geometry);
+        }
         self.pacer.schedule();
         Ok(())
     }
-    fn geometry(&self) -> Option<Geometry> {
-        let size = self.surfaces.as_ref()?.window.inner_size();
-        Geometry::calculate(
-            size.width,
-            size.height,
-            self.padding(),
-            self.cache.metrics(),
-        )
+    fn live_geometry(&self) -> Result<Option<Geometry>> {
+        match &self.surfaces {
+            Some(surfaces) => self.measure_geometry(surfaces.window.inner_size()),
+            None => Ok(None),
+        }
     }
     fn padding(&self) -> u32 {
-        (self.settings.padding.unwrap_or(0.0) as f64 * self.scale).round() as u32
+        scaled_padding(&self.settings, self.scale)
     }
     fn cell(&self) -> (usize, usize) {
         pointer_cell(
@@ -1021,6 +1639,11 @@ impl App {
                     .context("apply native render frame")?;
                 self.recorder.frame(&frame)?;
                 self.send(ClientToServerMsg::RenderFrameAck { seq: applied.seq })?;
+                let first = !self.connection_geometry.received_frame;
+                self.connection_geometry.received_frame = true;
+                if first {
+                    self.refresh_geometry()?;
+                }
                 self.present_frame(applied);
             },
             ServerToClientMsg::Exit { .. } => event_loop.exit(),
@@ -1041,7 +1664,7 @@ impl App {
                 let reply = crate::host_reply::answer(
                     &query_bytes,
                     host_query_geometry(
-                        self.reported_geometry,
+                        self.connection_geometry.reported,
                         Size {
                             rows: self.state.size().rows,
                             cols: self.state.size().cols,
@@ -1058,7 +1681,7 @@ impl App {
                 })?;
             },
             ServerToClientMsg::QueryTerminalSize => {
-                self.reported_geometry = None;
+                self.connection_geometry.reported = None;
                 self.refresh_geometry()?;
             },
             // An initial ANSI repaint may already be queued before capability negotiation.
@@ -1069,7 +1692,6 @@ impl App {
     }
 
     fn present_frame(&mut self, applied: FrameApplied) {
-        self.received_frame = true;
         self.retained.mark(&applied.damage);
         if let Some(title) = self.state.take_title()
             && let Some(surfaces) = &self.surfaces
@@ -1115,11 +1737,9 @@ impl App {
         }
     }
 
-    fn grid_size(&self) -> Size {
-        Size {
-            rows: self.state.size().rows,
-            cols: self.state.size().cols,
-        }
+    fn switch_grid(&self, measured: Option<Geometry>) -> Size {
+        self.connection_geometry
+            .switch_grid(measured.or(self.last_measured_geometry))
     }
 
     fn show_switch_notice(&mut self, destination: &str, error: &anyhow::Error) {
@@ -1143,15 +1763,20 @@ impl App {
     }
 
     fn receive_switch(&mut self, id: u64, now: Instant) -> Result<()> {
-        let size = self.grid_size();
+        if !self
+            .pending_switch
+            .as_ref()
+            .is_some_and(|pending| pending.id == id)
+        {
+            return Ok(());
+        }
+        let geometry = self.live_geometry()?;
+        let size = self.switch_grid(geometry);
         let cell = self.cache.metrics();
-        let Some(pending) = self
+        let pending = self
             .pending_switch
             .as_mut()
-            .filter(|pending| pending.id == id)
-        else {
-            return Ok(());
-        };
+            .context("poll pending native switch")?;
         let was_opening = pending.opening.is_some();
         let first = match pending.poll(now, size, cell) {
             Ok(Some(first)) => first,
@@ -1166,7 +1791,6 @@ impl App {
                 return Ok(());
             },
         };
-        let geometry = self.geometry();
         let pending = self
             .pending_switch
             .take()
@@ -1184,7 +1808,12 @@ impl App {
         self.composition = Composition::new();
         self.mouse_mode = pending.mouse_mode;
         self.switch_notice = None;
-        self.reported_geometry = geometry;
+        self.connection_geometry = ConnectionGeometry::new(size, now);
+        self.connection_geometry.reported = geometry;
+        self.connection_geometry.received_frame = true;
+        if let Some(geometry) = geometry {
+            self.last_measured_geometry = Some(geometry);
+        }
         self.state = first.state;
         self.retained = RetainedScene::new();
         if let Some(surfaces) = &mut self.surfaces {
@@ -1215,6 +1844,13 @@ impl App {
     }
 
     fn draw(&mut self) -> Result<()> {
+        let extent = self
+            .surfaces
+            .as_ref()
+            .map(|surfaces| surfaces.window.inner_size());
+        if let Some(size) = extent {
+            self.measure_geometry(size)?;
+        }
         let preedit = self.composition.shown();
         self.retained.set_selection(self.selection.range());
         self.retained
@@ -1301,9 +1937,46 @@ impl App {
                 }
                 event_loop.exit();
             },
-            WindowEvent::Resized(_) => self.resize()?,
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                self.change_scale(self.zoom, scale_factor)?;
+            WindowEvent::Resized(_) => {
+                if let Some(opening) = &mut self.opening {
+                    opening.placement_signal(Instant::now());
+                    if opening.backend == WindowBackend::Wayland
+                        && let OpeningPhase::Placement { correction, .. } = &mut opening.phase
+                        && let Some(surfaces) = &self.surfaces
+                    {
+                        correction.observe_wayland_grant(
+                            surfaces.window.inner_size(),
+                            surfaces.window.scale_factor(),
+                        );
+                    }
+                }
+                self.resize()?;
+            },
+            WindowEvent::Moved(_) => {
+                if let Some(opening) = &mut self.opening {
+                    opening.placement_signal(Instant::now());
+                }
+            },
+            WindowEvent::ScaleFactorChanged {
+                scale_factor,
+                mut inner_size_writer,
+            } => {
+                if let Some(opening) = &mut self.opening {
+                    opening.placement_signal(Instant::now());
+                    if opening.backend == WindowBackend::X11
+                        && let Some(surfaces) = &self.surfaces
+                    {
+                        let size = surfaces.window.inner_size();
+                        if size.width > 0 && size.height > 0 {
+                            inner_size_writer
+                                .request_inner_size(size)
+                                .context("keep the opening X11 extent through monitor placement")?;
+                        }
+                    }
+                    self.update_fonts(self.zoom, scale_factor);
+                } else {
+                    self.change_scale(self.zoom, scale_factor)?;
+                }
             },
             WindowEvent::RedrawRequested => self.draw()?,
             WindowEvent::Focused(focused) => {
@@ -1630,8 +2303,18 @@ impl ApplicationHandler<u64> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if event_loop.exiting() {
+            return;
+        }
         let now = Instant::now();
-        if !self.received_frame && now.duration_since(self.started) >= FIRST_FRAME_TIMEOUT {
+        if let Err(error) = self.settle_opening(now) {
+            self.fail(error, event_loop);
+            return;
+        }
+        self.record_window_observation();
+        if !self.connection_geometry.received_frame
+            && now >= self.connection_geometry.first_frame_deadline
+        {
             self.fail(anyhow!("server did not send structured rendering; restart the session with this Yinz build"),event_loop);
             return;
         }
@@ -1659,6 +2342,15 @@ impl ApplicationHandler<u64> for App {
             self.pacer.schedule();
         }
         let mut wake = self.next_blink;
+        if let Some(opening) = &self.opening {
+            let deadline = opening.wake_at();
+            if deadline > now {
+                wake = wake.min(deadline);
+            }
+        }
+        if !self.connection_geometry.received_frame {
+            wake = wake.min(self.connection_geometry.first_frame_deadline);
+        }
         if let Some(pending) = &self.pending_switch {
             wake = wake.min(pending.deadline);
         }

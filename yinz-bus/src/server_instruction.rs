@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use crate::route::NotificationEnd;
 use crate::{ClientId, PaneId, PluginId};
-use yinz_config::config::Config;
+use yinz_config::config::DiskConfigChange;
 use yinz_runtime::errors::ErrorInstruction;
 use yinz_types::data::{InputMode, SessionConnection};
 use yinz_types::diagnostics::ServerContext;
@@ -46,6 +46,11 @@ pub enum ServerInstruction {
     SessionReply(ClientId, yinz_types::session_destination::Reply),
     FirstClientConnected(CliAssets, ClientId),
     Render(Option<HashMap<ClientId, String>>),
+    /// Final close after the initial layout failed before a usable tab landed.
+    OpeningLayoutFailed {
+        client_id: ClientId,
+        cause: String,
+    },
     ClipboardUpdate(HashMap<ClientId, String>),
     DesktopNotification(HashMap<ClientId, String>),
     RepaintComplete(ClientId),
@@ -113,7 +118,7 @@ pub enum ServerInstruction {
         write_config_to_disk: bool,
         completion: Option<NotificationEnd>,
     },
-    ConfigWrittenToDisk(Config),
+    ConfigWrittenToDisk(DiskConfigChange),
     RebindKeys {
         client_id: ClientId,
         keys_to_rebind: Vec<(InputMode, KeyWithModifier, Vec<Action>)>,
@@ -164,7 +169,8 @@ impl From<&ServerInstruction> for ServerContext {
             | ServerInstruction::StartSourceSessionUpdate(..)
             | ServerInstruction::SessionUpdateStatus(..) => ServerContext::ConnStatus,
             ServerInstruction::StructuredRenderSupport { .. }
-            | ServerInstruction::RenderFrames(..) => ServerContext::Render,
+            | ServerInstruction::RenderFrames(..)
+            | ServerInstruction::OpeningLayoutFailed { .. } => ServerContext::Render,
             ServerInstruction::ClipboardUpdate(..) => ServerContext::Render,
             ServerInstruction::DesktopNotification(..) => ServerContext::Render,
             ServerInstruction::RepaintComplete(..) => ServerContext::Render,

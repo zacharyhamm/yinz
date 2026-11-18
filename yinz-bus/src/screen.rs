@@ -56,6 +56,13 @@ use {
 /// Project probes finish outside the screen thread and are applied by version.
 pub type AgentEventProjectMemberships = BTreeMap<String, Result<Option<Vec<PaneId>>, String>>;
 
+#[derive(Debug, Clone)]
+pub struct InitialTab {
+    pub name: Option<String>,
+    pub tiled: Option<TiledPaneLayout>,
+    pub floating: Vec<FloatingPaneLayout>,
+}
+
 /// Instructions that can be sent to the [`Screen`].
 ///
 /// `IntoStaticStr` yields the variant name, which is what `From<&ScreenInstruction> for
@@ -310,6 +317,16 @@ pub enum ScreenInstruction {
     /// A default caption for a pane, as opposed to a name: see `WarpedPane::caption`.
     SetPaneCaption(PaneId, String),
     UndoRenamePane(ClientId, Option<NotificationEnd>),
+    /// Reserve the entire opening before any asynchronous layout can land or fail.
+    OpenInitialTabs {
+        cwd: Option<PathBuf>,
+        default_shell: Option<TerminalAction>,
+        tabs: Vec<InitialTab>,
+        swap_tiled: Vec<SwapTiledLayout>,
+        swap_floating: Vec<SwapFloatingLayout>,
+        focused: TabPosition,
+        client_id: ClientId,
+    },
     NewTab(
         Option<PathBuf>,
         Option<TerminalAction>,
@@ -1151,6 +1168,7 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::PaletteThemeSaved { .. } => ScreenContext::ToggleCommandPalette,
             ScreenInstruction::CommandPalette(..) => ScreenContext::ToggleCommandPalette,
             // The one instruction whose context is chosen by payload rather than by name.
+            ScreenInstruction::OpenInitialTabs { .. } => ScreenContext::NewTab,
             ScreenInstruction::Resize(.., strategy, _) => match strategy {
                 ResizeStrategy {
                     resize: Resize::Increase,

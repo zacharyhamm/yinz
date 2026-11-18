@@ -231,6 +231,7 @@ pin_context_to_instruction! {
         "AgentWorktreeResolved",
         "SetStructuredRenderSupport",
         "RenderFrameAck",
+        "OpenInitialTabs",
     ];
     only_special: [
         "HandlePtyBytes",
@@ -246,6 +247,7 @@ pin_context_to_instruction! {
         "ResizeDecreaseRight",
     ];
     targets: [
+        ("OpenInitialTabs", ScreenInstruction::OpenInitialTabs { cwd: None, default_shell: None, tabs: vec![], swap_tiled: vec![], swap_floating: vec![], focused: yinz_types::internal_ids::TabPosition::new(0), client_id: ClientId::new(1) }, "NewTab"),
         ("SetStructuredRenderSupport", ScreenInstruction::SetStructuredRenderSupport { client_id: ClientId::new(1), supported: true }, "Render"),
         ("RenderFrameAck", ScreenInstruction::RenderFrameAck { client_id: ClientId::new(1), seq: 1 }, "Render"),
         ("SessionMigration", ScreenInstruction::SessionMigration(crate::migration::ScreenRequest::Abort { operation: uuid::Uuid::nil().to_string(), reply: crossbeam::channel::bounded(1).0 }), "WarpTab"),
@@ -496,11 +498,12 @@ pin_context_to_instruction! {
     mod server;
     instruction: ServerInstruction;
     context: ServerContext;
-    special: ["StructuredRenderSupport", "RenderFrames", "UpdateClientReady", "StartSessionUpdate", "StartPrereleaseSessionUpdate", "StartSourceSessionUpdate", "SessionUpdateStatus", "UpdateRequest", "UpdateReply", "ClipboardUpdate", "DesktopNotification", "RepaintComplete", "ConfigurationEditor", "SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError", "SignalQuit", "ClientAttachFailed"];
+    special: ["StructuredRenderSupport", "RenderFrames", "OpeningLayoutFailed", "UpdateClientReady", "StartSessionUpdate", "StartPrereleaseSessionUpdate", "StartSourceSessionUpdate", "SessionUpdateStatus", "UpdateRequest", "UpdateReply", "ClipboardUpdate", "DesktopNotification", "RepaintComplete", "ConfigurationEditor", "SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError", "SignalQuit", "ClientAttachFailed"];
     only_special: ["NewClient", "AttachClient"];
     targets: [
         ("StructuredRenderSupport", ServerInstruction::StructuredRenderSupport { client_id: ClientId::new(1), supported: true }, "Render"),
         ("RenderFrames", ServerInstruction::RenderFrames(Default::default()), "Render"),
+        ("OpeningLayoutFailed", ServerInstruction::OpeningLayoutFailed { client_id: ClientId::new(1), cause: "layout rejected".into() }, "Render"),
         ("UpdateClientReady", ServerInstruction::UpdateClientReady { client: ClientId::new(1), operation: "operation".into(), source_client: ClientId::new(1) }, "ConnStatus"),
         ("StartSessionUpdate", ServerInstruction::StartSessionUpdate(ClientId::new(1)), "ConnStatus"),
         ("StartPrereleaseSessionUpdate", ServerInstruction::StartPrereleaseSessionUpdate(ClientId::new(1)), "ConnStatus"),

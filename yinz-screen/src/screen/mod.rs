@@ -644,6 +644,7 @@ pub(crate) struct Screen {
     /// An optional maximal amount of panes allowed per [`Tab`] in this [`Screen`] instance.
     max_panes: Option<usize>,
     /// A map between this [`Screen`]'s tabs and their ID/key.
+    opening_layout_landed: bool,
     tabs: BTreeMap<TabId, Tab>,
     /// Failed resizes can leave the display area updated before the layout is complete.
     tabs_needing_reflow: HashSet<TabId>,
@@ -1536,6 +1537,7 @@ impl Screen {
             animation_clock: None,
             agent_hook_flashes: HashMap::new(),
             global_last_active_tab_id: TabId::new(0),
+            opening_layout_landed: false,
             tabs: BTreeMap::new(),
             tabs_needing_reflow: HashSet::new(),
             has_created_tab: false,

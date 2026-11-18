@@ -109,8 +109,8 @@ fn switch_peer() -> (
 fn switch_app(opts: CliArgs) -> App {
     let args = TerminalArgs {
         session_name: Some("source".into()),
-        rows: 2,
-        cols: 18,
+        rows: Some(2),
+        cols: Some(18),
         ..Default::default()
     };
     let mut config = Config::default();
@@ -126,7 +126,7 @@ fn switch_app(opts: CliArgs) -> App {
     crate::testing::painter::Painter::apply(&mut app.state, |p| p.text(0, 0, "source content"));
     app.selection.start(0, 0);
     app.selection.extend(0, 5);
-    app.received_frame = true;
+    app.connection_geometry.received_frame = true;
     app
 }
 
@@ -277,7 +277,7 @@ fn native_switch_pending_escape_cancels_without_detaching_source() {
     app.focused = false;
     let reported_geometry = Geometry::calculate(768, 384, 0, app.cache.metrics());
     assert!(reported_geometry.is_some());
-    app.reported_geometry = reported_geometry;
+    app.connection_geometry.reported = reported_geometry;
     let geometry = app.state.geometry().clone();
     let now = Instant::now();
     let (opened, events) = begin_test_switch(&mut app, Some("destination"), now);
@@ -319,10 +319,10 @@ fn native_switch_pending_escape_cancels_without_detaching_source() {
 
     assert_eq!(app.connection_id, 0);
     assert_eq!(app.args.session_name.as_deref(), Some("source"));
-    assert_eq!(app.reported_geometry, reported_geometry);
+    assert_eq!(app.connection_geometry.reported, reported_geometry);
     assert_eq!(app.state.geometry(), &geometry);
     assert_eq!(app.state.screen().cell(0, 0).character(), 's');
-    assert!(app.received_frame);
+    assert!(app.connection_geometry.received_frame);
     assert!(!app.focused);
     assert_eq!(app.selection.range(), selection);
     assert_eq!(app.composition.shown(), composition);
@@ -465,7 +465,10 @@ fn native_switch_refusal_retains_source_and_supports_retry() {
         session::prepare_connection(
             &app.args,
             &app.opts,
-            app.grid_size(),
+            Size {
+                cols: app.state.size().cols,
+                rows: app.state.size().rows,
+            },
             Some(&target),
             &[("destination".into(), Duration::ZERO)],
         )
@@ -504,7 +507,10 @@ fn native_switch_refusal_retains_source_and_supports_retry() {
     let prepared = session::prepare_connection(
         &app.args,
         &app.opts,
-        app.grid_size(),
+        Size {
+            cols: app.state.size().cols,
+            rows: app.state.size().rows,
+        },
         Some(&target),
         &[("destination".into(), Duration::ZERO)],
     )
@@ -2344,6 +2350,741 @@ fn baseline_offset_saved_file_reload_retains_inline_images_through_full_apply() 
             assert_ne!(retained.flatten(), original);
         }
     }
+}
+
+#[test]
+fn native_startup_dimensions_seed_budget() {
+    use yinz_types::structured_render::{decode, FrameBuilder, WireCell};
+
+    for (cols, rows, expected) in [
+        (None, None, Some((120, 40))),
+        (Some(120), Some(40), Some((120, 40))),
+        (Some(4096), Some(1), Some((4096, 1))),
+        (Some(1024), Some(1024), Some((1024, 1024))),
+        (Some(1024), Some(1025), None),
+        (Some(2048), Some(2048), Some((1024, 1024))),
+        (Some(4096), Some(4096), Some((1024, 1024))),
+    ] {
+        let args = TerminalArgs {
+            cols,
+            rows,
+            ..Default::default()
+        };
+        let raw = args.opening_size();
+        assert_eq!(raw.cols, usize::from(cols.unwrap_or(120)));
+        assert_eq!(raw.rows, usize::from(rows.unwrap_or(40)));
+        let seed = graphical_opening_size(&args);
+        assert!((1..=raw.cols).contains(&seed.cols));
+        assert!((1..=raw.rows).contains(&seed.rows));
+        assert!(seed.cols * seed.rows <= STARTUP_CELL_LIMIT);
+        if let Some(expected) = expected {
+            assert_eq!((seed.cols, seed.rows), expected);
+        }
+    }
+
+    let args = TerminalArgs {
+        cols: Some(2048),
+        rows: Some(2048),
+        ..Default::default()
+    };
+    let seed = graphical_opening_size(&args);
+    let state = TerminalState::new(seed.rows, seed.cols);
+    for new_session in [true, false] {
+        let message = yinz_client::native_first_message(
+            &CliArgs::default(),
+            &Default::default(),
+            &Default::default(),
+            None,
+            None,
+            seed,
+            new_session,
+            true,
+            None,
+        );
+        let assets = match message {
+            ClientToServerMsg::FirstClientConnected { cli_assets } if new_session => cli_assets,
+            ClientToServerMsg::AttachClient { cli_assets, .. } if !new_session => cli_assets,
+            other => panic!("unexpected native handshake: {other:?}"),
+        };
+        assert_eq!(
+            assets.terminal_window_size,
+            Size {
+                cols: state.size().cols,
+                rows: state.size().rows
+            }
+        );
+    }
+
+    let mut frame = FrameBuilder::new(seed.cols as u16, seed.rows as u16, 1);
+    let cells = vec![
+        WireCell {
+            ch: 'x' as u32,
+            ..WireCell::BLANK
+        };
+        seed.cols
+    ];
+    for row in 0..seed.rows {
+        frame.push_row(row as u16, 0, &cells);
+    }
+    let bytes = frame.finish();
+    let view = decode(&bytes).unwrap();
+    assert_eq!(usize::from(view.header().cols), seed.cols);
+    assert_eq!(usize::from(view.header().rows), seed.rows);
+    assert_eq!(
+        view.rows().map(|(_, cells)| cells.len()).sum::<usize>(),
+        STARTUP_CELL_LIMIT
+    );
+    assert!(bytes.len() < yinz_ipc::MAX_IPC_FRAME_LEN);
+    assert!(bytes.capacity() < yinz_ipc::MAX_IPC_FRAME_LEN);
+}
+
+#[test]
+fn native_startup_dimensions_precedence() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("native-terminal-window.json");
+    let mut settings = TerminalConfig {
+        initial_columns: Some(100),
+        initial_rows: Some(30),
+        ..embedded_settings()
+    };
+    let args = TerminalArgs::default();
+    assert_eq!(startup_mode(&args, &settings), StartupMode::Windowed);
+    settings.startup_mode = Some(StartupMode::Remember);
+    assert_eq!(startup_mode(&args, &settings), StartupMode::Remember);
+    let extent = |args: &TerminalArgs, settings: &TerminalConfig| {
+        let metrics = effective_font_options(settings, 1.0, 1.0)
+            .stack(1.0)
+            .unwrap()
+            .metrics();
+        let remembered = remembered_size(startup_mode(args, settings), &path);
+        StartupSize::resolve(args, settings, remembered).extent(
+            metrics,
+            4,
+            PhysicalSize::new(STARTUP_AXIS_LIMIT, STARTUP_AXIS_LIMIT),
+        )
+    };
+    let cell_extent = |columns, rows| {
+        let metrics = effective_font_options(&settings, 1.0, 1.0)
+            .stack(1.0)
+            .unwrap()
+            .metrics();
+        PhysicalSize::new(metrics.width * columns + 8, metrics.height * rows + 8)
+    };
+    assert_eq!(extent(&args, &settings), cell_extent(100, 30));
+    for bad in ["{", "[800]", "[99,721]", "[800,16385]"] {
+        std::fs::write(&path, bad).unwrap();
+        assert_eq!(extent(&args, &settings), cell_extent(100, 30), "{bad}");
+    }
+    std::fs::write(&path, "[801,721]").unwrap();
+    assert_eq!(extent(&args, &settings), PhysicalSize::new(801, 721));
+    let windowed = TerminalArgs {
+        startup_mode: Some(StartupMode::Windowed),
+        ..args.clone()
+    };
+    assert_eq!(extent(&windowed, &settings), cell_extent(100, 30));
+    let columns = TerminalArgs {
+        cols: Some(120),
+        ..args.clone()
+    };
+    assert_eq!(
+        extent(&columns, &settings),
+        PhysicalSize::new(cell_extent(120, 40).width, 721)
+    );
+    let rows = TerminalArgs {
+        rows: Some(40),
+        ..args.clone()
+    };
+    assert_eq!(
+        extent(&rows, &settings),
+        PhysicalSize::new(801, cell_extent(120, 40).height)
+    );
+    let both = TerminalArgs {
+        cols: Some(120),
+        ..rows
+    };
+    assert_eq!(extent(&both, &settings), cell_extent(120, 40));
+    for (columns, rows, grid) in [
+        (None, None, (120, 40)),
+        (Some(100), None, (100, 40)),
+        (None, Some(30), (120, 30)),
+    ] {
+        let config = TerminalConfig {
+            initial_columns: columns,
+            initial_rows: rows,
+            ..settings.clone()
+        };
+        assert_eq!(extent(&windowed, &config), cell_extent(grid.0, grid.1));
+    }
+    assert_eq!(
+        args.opening_size(),
+        Size {
+            cols: 120,
+            rows: 40
+        }
+    );
+}
+
+#[test]
+fn native_startup_dimensions_geometry() {
+    let args = TerminalArgs::default();
+    let settings = TerminalConfig {
+        initial_columns: Some(100),
+        initial_rows: Some(30),
+        padding: Some(3.5),
+        cell_width: Some(1.375),
+        line_height: Some(1.275),
+        ..embedded_settings()
+    };
+    let target = StartupSize::resolve(&args, &settings, None);
+    let expected_grid = Size {
+        cols: 100,
+        rows: 30,
+    };
+    let monitor = PhysicalSize::new(4500, 2800);
+    for scale in [1.0, 1.25, 2.0] {
+        let cache = GlyphCache::new(
+            effective_font_options(&settings, 1.0, scale)
+                .stack(1.0)
+                .unwrap(),
+        );
+        let metrics = cache.metrics();
+        let padding = scaled_padding(&settings, scale);
+        let extent = target.extent(metrics, padding, monitor);
+        assert_eq!(
+            extent,
+            PhysicalSize::new(
+                100 * metrics.width + 2 * padding,
+                30 * metrics.height + 2 * padding
+            )
+        );
+        assert_eq!(
+            Geometry::calculate(extent.width, extent.height, padding, metrics)
+                .unwrap()
+                .grid,
+            expected_grid
+        );
+        let smaller =
+            PhysicalSize::new(extent.width - metrics.width, extent.height - metrics.height);
+        let ceiling = correction_bounds(smaller, extent, monitor);
+        let corrected = target.extent(metrics, padding, ceiling);
+        assert_eq!(corrected, smaller);
+        assert_eq!(
+            Geometry::calculate(corrected.width, corrected.height, padding, metrics)
+                .unwrap()
+                .grid,
+            Size { cols: 99, rows: 29 }
+        );
+    }
+    assert!(!client_sized(StartupMode::Fullscreen));
+    assert!(!client_sized(StartupMode::Maximized));
+    assert!(client_sized(StartupMode::Remember));
+    assert!(client_sized(StartupMode::Windowed));
+}
+
+#[test]
+fn native_startup_dimensions_remember_budget() {
+    let metrics = crate::text::font::CellMetrics {
+        width: 2,
+        height: 3,
+        baseline: 2,
+        underline_top: 2,
+        strikeout_top: 1,
+        stroke: 1,
+    };
+    let boundary = PhysicalSize::new(STARTUP_AXIS_LIMIT, STARTUP_AXIS_LIMIT);
+    let raw = PhysicalSize::new(7680, 4320);
+    let raw_grid = Geometry::grid_size(raw.width, raw.height, 0, metrics);
+    assert!(raw.width as usize * raw.height as usize <= STARTUP_PIXEL_LIMIT);
+    assert!(raw_grid.cols * raw_grid.rows > STARTUP_CELL_LIMIT);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("native-terminal-window.json");
+    std::fs::write(&path, "[7680,4320]").unwrap();
+    let remembered = remembered_size(StartupMode::Remember, &path);
+    assert_eq!(remembered, Some((7680, 4320)));
+    let settings = embedded_settings();
+    let args = TerminalArgs::default();
+    let target = StartupSize::resolve(&args, &settings, remembered);
+    let large_metrics = crate::text::font::CellMetrics {
+        width: 6,
+        height: 6,
+        ..metrics
+    };
+    let estimate = target.extent(large_metrics, 0, boundary);
+    assert_eq!(estimate, raw);
+    assert!(check_startup_extent(
+        estimate,
+        Geometry::grid_size(estimate.width, estimate.height, 0, large_metrics)
+    )
+    .is_ok());
+
+    let safe = |extent: PhysicalSize<u32>, padding| {
+        let geometry = Geometry::calculate(extent.width, extent.height, padding, metrics).unwrap();
+        check_startup_extent(extent, geometry.grid).unwrap();
+        geometry
+    };
+    let corrected = target.extent(metrics, 0, boundary);
+    assert!(corrected.width < raw.width && corrected.height < raw.height);
+    let geometry = safe(corrected, 0);
+    assert_eq!(geometry.messages(None).len(), 2);
+    let rounded = wayland_correction(&target, corrected, corrected, 0, metrics, 1.5)
+        .unwrap()
+        .to_physical(1.5);
+    assert!(rounded.width <= corrected.width && rounded.height <= corrected.height);
+    safe(rounded, 0);
+
+    let mixed = TerminalArgs {
+        cols: Some(4096),
+        ..args.clone()
+    };
+    let mixed = StartupSize::resolve(&mixed, &settings, remembered).extent(metrics, 8, boundary);
+    assert!(mixed.width < 4096 * metrics.width + 16);
+    safe(mixed, 8);
+    let residual =
+        StartupSize::resolve(&args, &settings, Some((801, 721))).extent(metrics, 8, boundary);
+    assert_eq!(residual, PhysicalSize::new(801, 721));
+    safe(residual, 8);
+
+    let insufficient = PhysicalSize::new(raw.width - 1, raw.height);
+    for extent in [raw, insufficient] {
+        assert!(check_startup_extent(
+            extent,
+            Geometry::grid_size(extent.width, extent.height, 0, metrics)
+        )
+        .is_err());
+    }
+}
+
+#[test]
+fn native_startup_dimensions_resize_order() {
+    let metrics = effective_font_options(&embedded_settings(), 1.0, 1.0)
+        .stack(1.0)
+        .unwrap()
+        .metrics();
+    let first = PhysicalSize::new(100 * metrics.width, 30 * metrics.height);
+    let geometry = Geometry::calculate(first.width, first.height, 0, metrics).unwrap();
+    let mut connection = ConnectionGeometry::new(
+        Size {
+            cols: 120,
+            rows: 40,
+        },
+        Instant::now(),
+    );
+    assert!(connection.messages(geometry).is_empty());
+    connection.received_frame = true;
+    let messages = connection.messages(geometry);
+    assert!(matches!(messages.as_slice(),
+        [ClientToServerMsg::TerminalPixelDimensions { pixel_dimensions }, ClientToServerMsg::TerminalResize { new_size }]
+            if pixel_dimensions.text_area_grid_size == Some(geometry.grid) && *new_size == geometry.grid
+    ));
+    assert!(geometry.messages(Some(geometry)).is_empty());
+    assert!(Geometry::calculate(0, first.height, 0, metrics).is_none());
+    let queued = PhysicalSize::new(first.width - metrics.width, first.height);
+    let resize = Geometry::calculate(queued.width, queued.height, 0, metrics).unwrap();
+    connection.reported = Some(geometry);
+    assert!(matches!(connection.messages(resize).as_slice(),
+        [ClientToServerMsg::TerminalPixelDimensions { .. }, ClientToServerMsg::TerminalResize { new_size }]
+            if *new_size == Size { cols: 99, rows: 30 }
+    ));
+}
+
+#[test]
+fn native_startup_dimensions_save_without_resize() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.kdl");
+    std::fs::write(
+        &path,
+        "terminal { system_fonts false; padding 4; initial_columns 80; initial_rows 24; }",
+    )
+    .unwrap();
+    let opts = CliArgs {
+        config: Some(path),
+        config_dir: Some(dir.path().into()),
+        ..Default::default()
+    };
+    let load = || {
+        yinz_cli::setup::Setup::config_without_layout(&opts)
+            .unwrap()
+            .0
+            .terminal
+    };
+    let mut settings = load();
+    assert_eq!(
+        (settings.initial_columns, settings.initial_rows),
+        (Some(80), Some(24))
+    );
+    let mut active = effective_font_options(&settings, 1.0, 1.0);
+    let mut cache = GlyphCache::new(active.stack(1.0).unwrap());
+    let mut retained = RetainedScene::new();
+    let mut paints = Paints::default();
+    let state = crate::testing::painter::Painter::state(4, 24, |painter| {
+        painter.text(0, 0, "startup marker")
+    });
+    let selection = Selection::at(0, 0).extended_to(0, 6);
+    let before_copy = selection.text(state.screen());
+    retained.set_selection(Some(selection));
+    let refresh = |retained: &mut RetainedScene, cache: &mut GlyphCache, paints: &Paints| {
+        retained.refresh(
+            SceneInputs {
+                state: &state,
+                phase: BlinkPhase::On,
+                paints,
+                cursor: CursorOptions::default(),
+                hovered_link: None,
+                preedit: None,
+            },
+            cache,
+        );
+    };
+    refresh(&mut retained, &mut cache, &paints);
+    let before_scene = retained.flatten();
+    let generation = cache.generation();
+    let metrics = cache.metrics();
+    let grant = PhysicalSize::new(800, 600);
+    let current = Geometry::calculate(
+        grant.width,
+        grant.height,
+        scaled_padding(&settings, 1.0),
+        metrics,
+    )
+    .unwrap();
+
+    yinz_config::config::Config::write_managed_fragment(
+        &dir.path().join("config.d"),
+        "terminal { initial_columns 100; initial_rows 30; }",
+    )
+    .unwrap();
+    let next = load();
+    let requested = effective_font_options(&next, 1.0, 1.0);
+    let update = prepare_fonts(&active, &requested).unwrap();
+    assert!(matches!(update, FontUpdate::Unchanged));
+    apply_fonts(&mut active, &mut cache, &mut retained, requested, update);
+    let next_paints = paints;
+    apply_settings(&mut settings, &mut paints, &mut retained, next, next_paints);
+    refresh(&mut retained, &mut cache, &paints);
+    assert!(!retained.rebuilt_everything());
+    assert_eq!(retained.flatten(), before_scene);
+    assert_eq!(cache.generation(), generation);
+    assert_eq!(selection.text(state.screen()), before_copy);
+    let padding = scaled_padding(&settings, 1.0);
+    let open_geometry =
+        Geometry::calculate(grant.width, grant.height, padding, cache.metrics()).unwrap();
+    assert!(open_geometry.messages(Some(current)).is_empty());
+    let new_extent = StartupSize::resolve(&TerminalArgs::default(), &settings, None).extent(
+        metrics,
+        padding,
+        PhysicalSize::new(4000, 3000),
+    );
+    assert_eq!(
+        Geometry::calculate(new_extent.width, new_extent.height, padding, metrics)
+            .unwrap()
+            .grid,
+        Size {
+            cols: 100,
+            rows: 30
+        }
+    );
+}
+
+#[test]
+fn native_startup_x11_placement_settles_before_geometry() {
+    let now = Instant::now();
+    let settings = TerminalConfig {
+        cell_width: Some(0.55),
+        padding: Some(4.0),
+        ..embedded_settings()
+    };
+    let metrics = |scale| {
+        effective_font_options(&settings, 1.0, scale)
+            .stack(1.0)
+            .unwrap()
+            .metrics()
+    };
+    let target = StartupSize::resolve(&TerminalArgs::default(), &settings, None);
+    let monitor = PhysicalSize::new(2560, 1440);
+    let hint = target.extent(metrics(1.0), 4, monitor);
+    assert_eq!(hint.width, 488);
+    let mut opening = OpeningGeometry::new(
+        WindowBackend::X11,
+        StartupCorrection {
+            target,
+            hint: WindowSize::Physical(hint),
+            wayland_ceiling: None,
+        },
+        now,
+    );
+    assert!(!opening.placement_ready(now, true));
+    let placed = now + OPENING_QUIET - Duration::from_millis(1);
+    opening.placement_signal(placed); // Moved, followed by the DPI event.
+    assert!(!opening.placement_ready(now + OPENING_QUIET, true));
+    let settled = opening.wake_at();
+    assert!(opening.placement_ready(settled, true));
+    let OpeningPhase::Placement { correction, .. } = &opening.phase else {
+        panic!("placement consumed early")
+    };
+    let (_, expected) = correction
+        .request(hint, monitor, 2.0, 8, metrics(2.0))
+        .unwrap();
+    // The writer leaves the physical extent at 488 during the DPI callback.
+    // The measured request uses 9px cells rather than Winit's ratio width of 976.
+    assert_eq!(expected.width, 1096);
+    opening.phase = OpeningPhase::Grant {
+        expected,
+        deadline: settled + OPENING_GRANT_LIMIT,
+    };
+    assert!(!opening.grant_settled(settled, hint));
+    assert!(opening.grant_settled(settled, expected));
+    assert!(opening.grant_settled(settled + OPENING_GRANT_LIMIT, hint));
+}
+
+#[test]
+fn native_startup_validates_late_opening_grants() {
+    let now = Instant::now();
+    let safe = PhysicalSize::new(800, 600);
+    let late = PhysicalSize::new(7680, 4320);
+    let metrics = crate::text::font::CellMetrics {
+        width: 2,
+        height: 3,
+        baseline: 2,
+        underline_top: 2,
+        strikeout_top: 1,
+        stroke: 1,
+    };
+    let measure =
+        |size: PhysicalSize<u32>| Geometry::calculate(size.width, size.height, 0, metrics).unwrap();
+    let opening = OpeningGeometry {
+        backend: WindowBackend::X11,
+        phase: OpeningPhase::Grant {
+            expected: late,
+            deadline: now + OPENING_GRANT_LIMIT,
+        },
+    };
+    let mut connection = ConnectionGeometry::new(
+        Size {
+            cols: 120,
+            rows: 40,
+        },
+        now,
+    );
+    let safe_geometry = measure(safe);
+    opening.validate(safe, safe_geometry).unwrap();
+    connection.received_frame = true;
+    assert_eq!(connection.messages(safe_geometry).len(), 2);
+    connection.reported = Some(safe_geometry);
+    assert!(!opening.grant_settled(now, safe));
+    assert!(opening.grant_settled(now, late));
+    assert!(opening.validate(late, measure(late)).is_err());
+    assert!(opening.grant_settled(opening.wake_at(), safe));
+    opening.validate(safe, safe_geometry).unwrap();
+    assert_eq!(connection.messages(measure(late)).len(), 2);
+    assert!(!client_sized(StartupMode::Fullscreen));
+    assert!(!client_sized(StartupMode::Maximized));
+}
+
+#[test]
+fn native_startup_wayland_configure_fit() {
+    let monitor = PhysicalSize::new(3840, 2160);
+    let mut settings = TerminalConfig {
+        cell_width: Some(0.55),
+        padding: Some(4.0),
+        ..embedded_settings()
+    };
+    let metrics = |settings: &TerminalConfig, scale| {
+        effective_font_options(settings, 1.0, scale)
+            .stack(1.0)
+            .unwrap()
+            .metrics()
+    };
+    let target = StartupSize::resolve(&TerminalArgs::default(), &settings, None);
+    let mut correction = StartupCorrection {
+        target,
+        hint: WindowSize::Logical(LogicalSize::new(488.0, 808.0)),
+        wayland_ceiling: None,
+    };
+    correction.observe_wayland_grant(PhysicalSize::new(488, 808), 1.0);
+    let actual = PhysicalSize::new(976, 1616);
+    let request = correction.request(actual, monitor, 2.0, 8, metrics(&settings, 2.0));
+    assert!(request.is_none_or(|(_, size)| size.width <= actual.width));
+    correction.observe_wayland_grant(PhysicalSize::new(960, 1616), 2.0);
+    assert_eq!(correction.wayland_ceiling.unwrap().width, 480);
+
+    settings.initial_columns = Some(100);
+    settings.cell_width = Some(1.2);
+    let target = StartupSize::resolve(&TerminalArgs::default(), &settings, None);
+    let scale = 1.75;
+    let metrics = metrics(&settings, scale);
+    assert_eq!(metrics.width, 17);
+    for (width, expected) in [(1715, (980, 100)), (1713, (970, 99))] {
+        let bounds = PhysicalSize::new(width, 1800);
+        let fitted = target.extent(metrics, 7, bounds);
+        let logical = wayland_correction(&target, fitted, bounds, 7, metrics, scale).unwrap();
+        let actual: PhysicalSize<u32> = logical.to_physical(scale);
+        assert!(actual.width <= width);
+        assert_eq!(
+            Geometry::grid_size(actual.width, actual.height, 7, metrics).cols,
+            expected.1
+        );
+        assert_eq!(logical.width, expected.0);
+    }
+    let cached = StartupSize {
+        width: StartupAxis::Pixels(1714),
+        ..target
+    };
+    let fitted = cached.extent(metrics, 7, monitor);
+    let logical = wayland_correction(&cached, fitted, monitor, 7, metrics, scale).unwrap();
+    assert_eq!(logical.width, 979); // Equally distant physical pixels favor the smaller grant.
+}
+
+#[test]
+fn native_startup_switch_uses_measured_geometry() {
+    let now = Instant::now();
+    let seed = Size {
+        cols: 120,
+        rows: 40,
+    };
+    let geometry = |cols| Geometry {
+        cell: SizeInPixels {
+            width: 8,
+            height: 20,
+        },
+        grid: Size { cols, rows: 30 },
+    };
+    let mut opening = OpeningGeometry::new(
+        WindowBackend::Wayland,
+        StartupCorrection {
+            target: StartupSize::resolve(&TerminalArgs::default(), &embedded_settings(), None),
+            hint: WindowSize::Logical(LogicalSize::new(800.0, 600.0)),
+            wayland_ceiling: Some(LogicalSize::new(800, 600)),
+        },
+        now,
+    );
+    assert!(!opening.placement_ready(now, false));
+    let mut previous = ConnectionGeometry::new(seed, now);
+    assert_eq!(previous.switch_grid(None), seed);
+    previous.received_frame = true;
+    previous.reported = Some(geometry(80));
+    assert_eq!(previous.switch_grid(None), geometry(80).grid);
+    let live = geometry(100);
+    let grid = previous.switch_grid(Some(live));
+    assert_eq!(grid, live.grid);
+    // The same choice is handed to both the new-session handshake and local state.
+    let ClientToServerMsg::FirstClientConnected { cli_assets } = yinz_client::native_first_message(
+        &CliArgs::default(),
+        &Default::default(),
+        &Default::default(),
+        None,
+        None,
+        grid,
+        true,
+        true,
+        None,
+    ) else {
+        panic!("expected create handshake")
+    };
+    let state = TerminalState::new(grid.rows, grid.cols);
+    assert_eq!(
+        cli_assets.terminal_window_size,
+        Size {
+            rows: state.size().rows,
+            cols: state.size().cols
+        }
+    );
+
+    let mut next = ConnectionGeometry::new(grid, now);
+    let resized_during_switch = geometry(101);
+    assert!(next.messages(resized_during_switch).is_empty());
+    assert!(!opening.placement_ready(now, false));
+    assert!(opening.placement_ready(now, true));
+    assert!(opening.placement_ready(opening.deadline(), false));
+    let expected = PhysicalSize::new(800, 600);
+    opening.phase = OpeningPhase::Grant {
+        expected,
+        deadline: now + OPENING_GRANT_LIMIT,
+    };
+    next.received_frame = true; // Only the destination's first applied and acknowledged frame opens this gate.
+    assert_eq!(next.messages(resized_during_switch).len(), 2);
+    next.reported = Some(resized_during_switch);
+    assert!(next.messages(resized_during_switch).is_empty());
+    assert!(opening.grant_settled(now, expected));
+}
+
+#[test]
+fn native_opening_layout_error_is_fatal() {
+    use yinz_ipc::ipc::ExitReason;
+    let (tx, rx) = mpsc::channel();
+    tx.send(ServerToClientMsg::LogError {
+        lines: vec!["recoverable layout failure".into()],
+    })
+    .unwrap();
+    assert!(receive_message(Some(&rx)).unwrap().is_none());
+    tx.send(ServerToClientMsg::Exit {
+        exit_reason: ExitReason::Normal,
+    })
+    .unwrap();
+    assert!(matches!(
+        receive_message(Some(&rx)).unwrap(),
+        Some(ServerToClientMsg::Exit {
+            exit_reason: ExitReason::Normal
+        })
+    ));
+    tx.send(ServerToClientMsg::Exit {
+        exit_reason: ExitReason::Error(
+            "Initial layout failed at 120 columns by 40 rows: Not enough room for panes".into(),
+        ),
+    })
+    .unwrap();
+    let reason = receive_message(Some(&rx)).unwrap_err().to_string();
+    assert!(reason.contains("Not enough room for panes") && reason.contains("--rows or --cols"));
+}
+
+#[test]
+fn native_reload_invalid_startup_axis_retains_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("config.kdl");
+    let opts = CliArgs {
+        config: Some(base.clone()),
+        config_dir: Some(dir.path().into()),
+        ..Default::default()
+    };
+    std::fs::write(
+        &base,
+        "terminal { initial_columns 80; initial_rows 24; padding 4; }",
+    )
+    .unwrap();
+    let mut live = load_native_config(&opts).unwrap().0.terminal;
+    let original = live.clone();
+    std::fs::write(
+        &base,
+        "// café\r\nterminal {\r\n    initial_rows 1001\r\n}\r\n",
+    )
+    .unwrap();
+    match load_native_config(&opts) {
+        Ok((config, _)) => live = config.terminal,
+        Err(error) => {
+            let error = error.to_string();
+            assert!(error.contains(&format!("{}:3:", base.display())), "{error}");
+            assert!(
+                error.contains("initial_rows") && error.contains("between 2 and 1000"),
+                "{error}"
+            );
+        },
+    }
+    assert_eq!(live, original);
+    std::fs::write(&base, "terminal { initial_columns 80; initial_rows 24; }").unwrap();
+    let drop_ins = dir.path().join("config.d");
+    std::fs::create_dir(&drop_ins).unwrap();
+    std::fs::write(
+        drop_ins.join("90-invalid.kdl"),
+        "terminal { initial_columns 81; initial_rows 1001; }",
+    )
+    .unwrap();
+    let (config, _) = load_native_config(&opts).unwrap();
+    assert_eq!(
+        (
+            config.terminal.initial_columns,
+            config.terminal.initial_rows
+        ),
+        (Some(80), Some(24))
+    );
 }
 
 #[cfg(unix)]

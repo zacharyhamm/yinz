@@ -229,7 +229,28 @@ impl ConfigError {
     pub fn diagnostic_message(&self) -> String {
         match self {
             Self::KdlError(error) => match &error.src {
-                Some(source) => format!("{}: {}", source.name(), error.error_message),
+                Some(source) => {
+                    let line = error
+                        .offset
+                        .and_then(|offset| source.inner().as_bytes().get(..offset))
+                        .map(|prefix| {
+                            1 + prefix
+                                .iter()
+                                .enumerate()
+                                .filter(|&(index, byte)| {
+                                    *byte == b'\r'
+                                        || (*byte == b'\n'
+                                            && index
+                                                .checked_sub(1)
+                                                .is_none_or(|i| prefix[i] != b'\r'))
+                                })
+                                .count()
+                        });
+                    match line {
+                        Some(line) => format!("{}:{line}: {}", source.name(), error.error_message),
+                        None => format!("{}: {}", source.name(), error.error_message),
+                    }
+                },
                 None => error.error_message.clone(),
             },
             _ => self.to_string(),
@@ -581,14 +602,14 @@ impl Config {
         if clean {
             return Config::from_default_assets();
         }
-        Self::load_layers(config_path, config_dir, mode, mode.reader())
+        Self::load_layers(config_path, config_dir, mode, mode.reader(), None)
     }
 
     /// Read the saved layers using regular files. I/O errors that could affect the
     /// winning configuration make the snapshot indeterminate.
     pub fn load_saved(config_path: Option<&Path>, config_dir: Option<&Path>) -> ConfigResult {
         let mode = ConfigRead::Saved;
-        Self::load_layers(config_path, config_dir, mode, mode.reader())
+        Self::load_layers(config_path, config_dir, mode, mode.reader(), None)
     }
 
     fn load_layers(
@@ -596,6 +617,7 @@ impl Config {
         config_dir: Option<&Path>,
         mode: ConfigRead,
         read_main: impl FnOnce(&Path) -> io::Result<String>,
+        managed_file: Option<&mut Option<ManagedConfigRevision>>,
     ) -> ConfigResult {
         // The config *directory*, whichever file is read: the drop-ins hang off it, so a
         // one-off `--config /somewhere/else.kdl` still gets the user's `config.d`, and never
@@ -619,7 +641,7 @@ impl Config {
         if let Some(path) = main {
             config = Config::from_path_with(path, Some(config), mode, read_main)?;
         }
-        config.load_overlay_dir(overlay_dir.as_deref(), mode)?;
+        config.load_overlay_dir(overlay_dir.as_deref(), mode, managed_file)?;
         config.resolve_plugin_repositories(config_path, config_dir.as_deref())
     }
 }
@@ -630,6 +652,18 @@ use yinz_runtime::consts::CONFIG_OVERLAY_DIR_NAME;
 /// reconfigure --write`, `yinz action set-hook --write`, a plugin's `reconfigure(kdl, true)`.
 /// A person's own config file is never rewritten for those.
 pub const MANAGED_CONFIG_FILE_NAME: &str = "yinz-managed.kdl";
+
+/// Exact contents of an atomic managed write, kept out of debug output.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ManagedConfigRevision(std::sync::Arc<String>);
+
+impl std::fmt::Debug for ManagedConfigRevision {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ManagedConfigRevision")
+            .finish_non_exhaustive()
+    }
+}
 
 /// What the first start writes to a missing `config.kdl`: comments only, no settings. The
 /// shipped defaults stay embedded, so a later release's defaults are not shadowed by a copy
@@ -734,7 +768,7 @@ impl Config {
     /// rather than failing the whole config: a bad managed write must not brick the session.
     /// `None`, or a folder that is not there, is no overlay.
     pub fn with_overlay_dir(mut self, overlay_dir: Option<&Path>) -> Config {
-        if let Err(error) = self.load_overlay_dir(overlay_dir, ConfigRead::Ordinary) {
+        if let Err(error) = self.load_overlay_dir(overlay_dir, ConfigRead::Ordinary, None) {
             log::error!(
                 "Failed to load config drop-ins: {}",
                 error.diagnostic_message()
@@ -747,6 +781,7 @@ impl Config {
         &mut self,
         overlay_dir: Option<&Path>,
         mode: ConfigRead,
+        mut managed_file: Option<&mut Option<ManagedConfigRevision>>,
     ) -> Result<(), ConfigError> {
         let Some(overlay_dir) = overlay_dir else {
             return Ok(());
@@ -811,8 +846,20 @@ impl Config {
                 );
                 continue;
             }
+            let revision = (managed_file.is_some()
+                && path
+                    .file_name()
+                    .is_some_and(|name| name == MANAGED_CONFIG_FILE_NAME))
+            .then(|| ManagedConfigRevision(std::sync::Arc::new(text.clone())));
             match Config::from_file_text(&path, text, Some(base), mode) {
-                Ok(layered) => *self = layered,
+                Ok(layered) => {
+                    *self = layered;
+                    if let Some(revision) = revision
+                        && let Some(observed) = &mut managed_file
+                    {
+                        **observed = Some(revision);
+                    }
+                },
                 Err(error @ ConfigError::IoPath(..)) if mode == ConfigRead::Saved => {
                     return Err(error);
                 },
@@ -823,6 +870,35 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    /// Inspect explicit startup axes in a reconfigure fragment, without inherited values.
+    pub fn startup_axes_in_fragment(
+        fragment: &str,
+    ) -> Result<([Option<u16>; 2], bool), ConfigError> {
+        let doc: kdl::KdlDocument = fragment.parse()?;
+        let mut blocks = doc
+            .nodes()
+            .iter()
+            .filter(|node| node.name().value() == "terminal");
+        let Some(block) = blocks.next() else {
+            return Ok(([None, None], false));
+        };
+        if blocks.next().is_some() {
+            // Keep the ordinary duplicate-block validation and diagnostic.
+            return Self::from_kdl(fragment, None).map(|_| ([None, None], false));
+        }
+        let terminal = crate::kdl::native_terminal::from_kdl(block)?;
+        let axes = [terminal.initial_columns, terminal.initial_rows];
+        let axes_only = axes != [None, None]
+            && doc.nodes().len() == 1
+            && block.children().is_some_and(|children| {
+                children
+                    .nodes()
+                    .iter()
+                    .all(|node| matches!(node.name().value(), "initial_columns" | "initial_rows"))
+            });
+        Ok((axes, axes_only))
     }
 
     /// Persist a KDL `fragment` into `<overlay_dir>/yinz-managed.kdl`, and answer the path.
@@ -837,6 +913,13 @@ impl Config {
     /// defaults before anything is written, and the write is atomic, so the file on disk is
     /// always one the loader accepts.
     pub fn write_managed_fragment(overlay_dir: &Path, fragment: &str) -> Result<PathBuf, String> {
+        Self::write_managed_fragment_with_revision(overlay_dir, fragment).map(|(path, _)| path)
+    }
+
+    pub fn write_managed_fragment_with_revision(
+        overlay_dir: &Path,
+        fragment: &str,
+    ) -> Result<(PathBuf, ManagedConfigRevision), String> {
         Self::write_managed_fragment_impl(overlay_dir, fragment, true, None, || Ok(()))
     }
 
@@ -848,6 +931,7 @@ impl Config {
         guard: impl FnOnce() -> Result<(), String>,
     ) -> Result<PathBuf, String> {
         Self::write_managed_fragment_impl(overlay_dir, fragment, false, None, guard)
+            .map(|(path, _)| path)
     }
 
     pub fn try_write_editor_fragment(
@@ -857,6 +941,7 @@ impl Config {
         guard: impl FnOnce() -> Result<(), String>,
     ) -> Result<PathBuf, String> {
         Self::write_managed_fragment_impl(overlay_dir, fragment, false, Some(base), guard)
+            .map(|(path, _)| path)
     }
 
     fn write_managed_fragment_impl(
@@ -865,7 +950,7 @@ impl Config {
         wait_for_lock: bool,
         base: Option<Config>,
         guard: impl FnOnce() -> Result<(), String>,
-    ) -> Result<PathBuf, String> {
+    ) -> Result<(PathBuf, ManagedConfigRevision), String> {
         use kdl::KdlDocument;
         use std::io::Write;
         let path = overlay_dir.join(MANAGED_CONFIG_FILE_NAME);
@@ -941,7 +1026,7 @@ impl Config {
         guard()?;
         tmp.persist(&path)
             .map_err(|e| format!("failed to replace {}: {e}", path.display()))?;
-        Ok(path)
+        Ok((path, ManagedConfigRevision(std::sync::Arc::new(text))))
     }
 
     pub fn terminal_theme_config(
@@ -1027,6 +1112,7 @@ impl Config {
             Err(e) => Err(e),
         }
     }
+
     pub fn config_file_path(
         config_path: Option<&Path>,
         config_dir: Option<&Path>,
@@ -1386,12 +1472,59 @@ impl Config {
     }
 }
 
+/// A canonical disk reload, classified against the watcher's previous disk view.
+#[derive(Clone, Debug)]
+pub struct DiskConfigChange {
+    pub config: Config,
+    pub requires_live_reload: bool,
+    // Present for an unchanged observation triggered by the managed drop-in.
+    pub unchanged_managed_revision: Option<ManagedConfigRevision>,
+}
+
+#[derive(PartialEq)]
+struct DiskConfigObservation {
+    host_axes: [Option<u16>; 2],
+    resolved: Config,
+    managed_revision: Option<ManagedConfigRevision>,
+}
+
+#[derive(Default)]
+struct DiskConfigHistory {
+    previous: Option<DiskConfigObservation>,
+    startup_axes_only: bool,
+}
+
+impl DiskConfigHistory {
+    fn observe(&mut self, next: DiskConfigObservation, managed_event: bool) -> DiskConfigChange {
+        let unchanged = self.previous.as_ref().is_some_and(|previous| {
+            previous.host_axes == next.host_axes && previous.resolved == next.resolved
+        });
+        self.startup_axes_only = self.previous.take().is_some_and(|mut previous| {
+            previous.resolved.terminal.initial_columns = next.resolved.terminal.initial_columns;
+            previous.resolved.terminal.initial_rows = next.resolved.terminal.initial_rows;
+            previous.resolved == next.resolved
+                && (previous.host_axes != next.host_axes || (unchanged && self.startup_axes_only))
+        });
+        let change = DiskConfigChange {
+            config: next.resolved.clone(),
+            requires_live_reload: !self.startup_axes_only,
+            unchanged_managed_revision: if unchanged && managed_event {
+                next.managed_revision.clone()
+            } else {
+                None
+            },
+        };
+        self.previous = Some(next);
+        change
+    }
+}
+
 pub async fn watch_config_file_changes<F, Fut>(
     config_file_path: PathBuf,
     config_dir: Option<&Path>,
     on_config_change: F,
 ) where
-    F: Fn(Config) -> Fut + Send + 'static,
+    F: Fn(DiskConfigChange) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send,
 {
     watch_config_file_changes_inner(
@@ -1414,7 +1547,7 @@ async fn watch_config_file_changes_inner<F, Fut>(
     on_main_lost: impl Fn() + Send,
     on_main_read: impl Fn(&str) + Send,
 ) where
-    F: Fn(Config) -> Fut + Send + 'static,
+    F: Fn(DiskConfigChange) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send,
 {
     use notify::{self, Config as WatcherConfig, Event, PollWatcher, RecursiveMode, Watcher};
@@ -1480,12 +1613,21 @@ async fn watch_config_file_changes_inner<F, Fut>(
         config_file_path: &Path,
         config_dir: Option<&Path>,
         main_text: &str,
-    ) -> Result<(Config, Option<PathBuf>), ReloadError> {
+    ) -> Result<(DiskConfigObservation, Option<PathBuf>), ReloadError> {
         let mode = ConfigRead::Checked;
-        let config = Config::load_layers(Some(config_file_path), config_dir, mode, |_| {
-            Ok(main_text.to_owned())
-        })
+        let mut managed_revision = None;
+        let config = Config::load_layers(
+            Some(config_file_path),
+            config_dir,
+            mode,
+            |_| Ok(main_text.to_owned()),
+            Some(&mut managed_revision),
+        )
         .map_err(ReloadError::Config)?;
+        let host_axes = [
+            config.terminal.initial_columns,
+            config.terminal.initial_rows,
+        ];
         let config_dir = config_dir.map(Path::to_path_buf);
         let mut config = merge_default_layout(config, config_dir.clone(), mode)
             .map_err(ReloadError::SelectedLayout)?
@@ -1497,7 +1639,14 @@ async fn watch_config_file_changes_inner<F, Fut>(
             home::get_theme_dir(config_dir.or_else(home::find_default_config_dir))
                 .filter(|dir| dir.exists())
         });
-        Ok((config, theme_dir))
+        Ok((
+            DiskConfigObservation {
+                host_axes,
+                resolved: config,
+                managed_revision,
+            },
+            theme_dir,
+        ))
     }
 
     fn expected_overlay_dir(config_dir: Option<&Path>) -> Option<PathBuf> {
@@ -1521,6 +1670,8 @@ async fn watch_config_file_changes_inner<F, Fut>(
         log::error!("Failed to reload config from {}: {error}", path.display());
     }
 
+    let mut disk_history = DiskConfigHistory::default();
+    let mut managed_event = false;
     let mut on_ready = Some(on_ready);
     let mut last_main = None;
     let mut dependency_retry_pending = false;
@@ -1539,7 +1690,12 @@ async fn watch_config_file_changes_inner<F, Fut>(
         };
         let watched_theme_dir = initial_main.as_ref().ok().and_then(|main| {
             match load_config_and_theme_dir(&config_file_path, config_dir, &main.text) {
-                Ok((_, theme_dir)) => theme_dir,
+                Ok((observation, theme_dir)) => {
+                    if disk_history.previous.is_none() {
+                        disk_history.previous = Some(observation);
+                    }
+                    theme_dir
+                },
                 Err(error) => {
                     // A theme directory cannot be discovered when a dependency is
                     // unusable. Retry through the same publication path.
@@ -1618,12 +1774,21 @@ async fn watch_config_file_changes_inner<F, Fut>(
                                 break false;
                             },
                             Some(Ok(event)) => {
+                                let overlay_event = watched_overlay_dir.as_ref().is_some_and(|directory| {
+                                    event.paths.iter().any(|path| {
+                                        path.starts_with(directory) && path.extension().is_some_and(|extension| extension == "kdl")
+                                    })
+                                });
                                 if !(event_is_in_theme_dir(&event, watched_theme_dir.as_deref())
-                                    || event_is_in_theme_dir(&event, watched_overlay_dir.as_deref()))
+                                    || overlay_event)
                                     || !(event.kind.is_remove() || event.kind.is_create() || event.kind.is_modify())
                                 {
                                     continue;
                                 }
+                                managed_event |= watched_overlay_dir.as_ref().is_some_and(|directory| {
+                                    let managed = directory.join(MANAGED_CONFIG_FILE_NAME);
+                                    event.paths.contains(&managed)
+                                });
                                 true
                             },
                         }
@@ -1646,6 +1811,7 @@ async fn watch_config_file_changes_inner<F, Fut>(
                                 }
                             }
                             // Register before loading so a racing write is read or observed.
+                            managed_event |= watched_overlay_dir.is_some();
                         }
                         (changed && !overlay_watch_failed) || dependency_retry_pending
                     },
@@ -1700,7 +1866,8 @@ async fn watch_config_file_changes_inner<F, Fut>(
                 };
             dependency_retry_pending = false;
             last_retry_diagnostic = None;
-            on_config_change(config).await;
+            on_config_change(disk_history.observe(config, std::mem::take(&mut managed_event)))
+                .await;
             if theme_dir != watched_theme_dir {
                 break false;
             }

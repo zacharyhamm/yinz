@@ -2382,7 +2382,9 @@ pub enum CliAction {
         name: String,
     },
     /// Apply a KDL config fragment to the running session (options, keybinds, hooks, plugins).
-    /// Give it as --kdl, --file, or on stdin. Changing effective native terminal cell_width,
+    /// Give it as --kdl, --file, or on stdin. Explicit native terminal initial_columns and initial_rows
+    /// require --write or a host configuration edit, even when the values already match.
+    /// Changing effective native terminal cell_width,
     /// line_height, baseline_offset, underline_offset, underline_thickness,
     /// ligatures/font_ligatures or font_features requires --write or editing the saved
     /// configuration/drop-in for file reload. An unsupported unsaved change refuses the entire
@@ -2397,10 +2399,12 @@ pub enum CliAction {
         /// A file holding the fragment
         #[clap(long, value_parser)]
         file: Option<PathBuf>,
-        /// Persist the change; required for effective native cell_width, line_height,
+        /// Persist the change. Required for explicit native initial_columns and initial_rows and
+        /// effective native cell_width, line_height,
         /// baseline_offset, underline_offset, underline_thickness, ligatures/font_ligatures
         /// or font_features changes. Writes the session's managed drop-in. Native windows apply
-        /// the change when their file reload succeeds and the edited layer wins.
+        /// the live change when file reload succeeds and the edited layer wins. Startup dimensions
+        /// apply to new windows.
         #[clap(long)]
         write: bool,
     },
@@ -2728,12 +2732,21 @@ pub struct TerminalArgs {
     pub headless: bool,
     #[clap(long, hide = true)]
     pub record: Option<std::path::PathBuf>,
-    #[clap(long, hide = true, default_value_t = 40, value_parser = clap::value_parser!(u16).range(1..=4096))]
-    pub rows: u16,
-    #[clap(long, hide = true, default_value_t = 120, value_parser = clap::value_parser!(u16).range(1..=4096))]
-    pub cols: u16,
+    #[clap(long, hide = true, value_parser = clap::value_parser!(u16).range(1..=4096))]
+    pub rows: Option<u16>,
+    #[clap(long, hide = true, value_parser = clap::value_parser!(u16).range(1..=4096))]
+    pub cols: Option<u16>,
     #[clap(long, hide = true)]
     pub duration_secs: Option<u64>,
+}
+
+impl TerminalArgs {
+    pub fn opening_size(&self) -> yinz_types::pane_size::Size {
+        yinz_types::pane_size::Size {
+            rows: usize::from(self.rows.unwrap_or(40)),
+            cols: usize::from(self.cols.unwrap_or(120)),
+        }
+    }
 }
 
 fn parse_native_startup_mode(
