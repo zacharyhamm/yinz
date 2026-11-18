@@ -9,7 +9,6 @@ use yinz_types::internal_ids::TerminalId;
 
 const TOAST_TOP_LEFT_CORNER: &str = "╭";
 const TOAST_BOTTOM_LEFT_CORNER: &str = "╰";
-const NOTIFICATION_RETURN_KEY: &[u8] = b"\x1b[24;4~"; // xterm Alt+Shift+F12
 
 fn notify(yinz: &TestSession, text: &str) {
     let exit_code = yinz.run_cli_action(CliAction::Notify {
@@ -66,7 +65,7 @@ fn notification_return_same_tab() {
             r#"
             notification_timeout 30
             keybinds {
-                unbind "Alt Shift F12";
+                unbind "Alt u";
                 normal { bind "Alt z" { ReturnFromNotification; }; }
             }
         "#,
@@ -158,55 +157,7 @@ fn notification_return_cross_tab() {
         "normal tab navigation revisits the destination",
         |snapshot| cursor_follows_label(snapshot, "Destination prompt"),
     );
-    return_and_check_input(&yinz, NOTIFICATION_RETURN_KEY, &origin, "Saved prompt");
-    yinz.quit();
-}
-
-#[test]
-fn notification_return_leaves_alt_u_as_terminal_input() {
-    let mut yinz = TestRunner::new(TERMINAL_SIZE)
-        .with_layout(LayoutInfo::Stringified(
-            r#"
-            layout {
-                pane split_direction="vertical" {
-                    pane name="Origin" focus=true
-                    pane name="Destination"
-                }
-            }
-        "#
-            .into(),
-        ))
-        .start();
-    let origin = label_terminal(&yinz, 0, "Origin prompt");
-    let destination = label_terminal(&yinz, 1, "Destination prompt");
-    yinz.wait_until("both panes have rendered", |grid| {
-        grid.contains("Destination prompt") && cursor_follows_label(grid, "Origin prompt")
-    });
-    for (pty, label, marker) in [
-        (&origin, "Origin prompt", "before"),
-        (&destination, "Destination prompt", "after"),
-    ] {
-        if pty.terminal_id() == destination.terminal_id() {
-            notify_target(&yinz, &destination);
-            yinz.wait_until("target is ready to activate", |grid| {
-                grid.contains("Alt+a to activate")
-            });
-            yinz.send_stdin(&keys::alt('a'));
-            yinz.wait_until("activation has saved another pane", |grid| {
-                cursor_follows_label(grid, "Destination prompt")
-            });
-        }
-        let start = pty.stdin_bytes().len();
-        let alt_u = keys::alt('u');
-        yinz.send_stdin(&alt_u);
-        pty.wait_for_stdin("Escape-u reaches the currently focused pane", |bytes| {
-            bytes.get(start..).is_some_and(|fresh| fresh == alt_u)
-        });
-        yinz.send_stdin(marker.as_bytes());
-        yinz.wait_until("the cursor remains in the same terminal", |grid| {
-            cursor_follows_label(grid, &format!("{label}{marker}"))
-        });
-    }
+    return_and_check_input(&yinz, &keys::alt('u'), &origin, "Saved prompt");
     yinz.quit();
 }
 
@@ -300,7 +251,7 @@ fn notification_return_cross_tab_uses_saved_pane_scroll_mode() {
             grid.status_bar_appears() && cursor_follows_label(grid, "Target prompt")
         });
 
-        yinz.send_stdin(NOTIFICATION_RETURN_KEY);
+        yinz.send_stdin(&keys::alt('u'));
         if origin_scrolled {
             yinz.wait_until("return restores the saved pane's Scroll mode", |grid| {
                 grid.contains("PgDn|PgUp") && scroll_offset_is(grid, "Saved pane", 1)

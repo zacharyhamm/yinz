@@ -32,7 +32,7 @@ fn latest_notification_binding_excludes_locked_and_select_and_roundtrips() {
 fn notification_return_defaults_and_custom_binding_roundtrip() {
     let shipped = Config::from_default_assets().unwrap();
     let example = Config::from_kdl(include_str!("../../../example/default.kdl"), None).unwrap();
-    let default_key = "Alt Shift F12".parse().unwrap();
+    let default_key = "Alt u".parse().unwrap();
     let custom_key = "Alt Shift u".parse().unwrap();
     let action = vec![Action::ReturnFromNotification];
     for config in [&shipped, &example] {
@@ -70,17 +70,11 @@ fn notification_return_defaults_and_custom_binding_roundtrip() {
                 Some(&vec![expected])
             );
         }
-        assert_eq!(
-            config
-                .keybinds
-                .get_actions_for_key_in_mode(&InputMode::Normal, &"Alt u".parse().unwrap()),
-            None
-        );
     }
 
     let remapped = Config::from_kdl(
         r#"keybinds {
-            unbind "Alt Shift F12";
+            unbind "Alt u";
             normal { bind "Alt Shift u" { ReturnFromNotification; }; }
         }"#,
         Some(shipped),

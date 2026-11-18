@@ -238,7 +238,7 @@ keybinds {
         bind "Ctrl Alt p" { ToggleCommandPalette; }
     }
     shared_except "locked" "select" "notifications" {
-        bind "Alt Shift F12" { ReturnFromNotification; }
+        bind "Alt u" { ReturnFromNotification; }
     }
     shared_except "locked" "select" {
         bind "Alt a" { ActivateLastNotification; }

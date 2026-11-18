@@ -8,7 +8,7 @@ does not move focus.
 
 Click a toast, press Enter on its history entry, or press **Alt+a** to
 activate the latest pending notification. When activation changes your focused
-pane, press **Alt+Shift+F12** to return to the pane you were using immediately before
+pane, press **Alt+u** to return to the pane you were using immediately before
 activation, even if it has moved to another tab. Ordinary navigation and
 repeated returns keep that pane saved until another activation moves your focus.
 If it has closed, your focus stays where it is. When Yinz shows “Layout loading.
@@ -19,22 +19,22 @@ becomes available.
 The default return shortcut is available outside Locked, Select and
 Notifications modes. Press Esc to leave the notification browser first.
 If your input is routed into a nested session, return to host input before
-using the host's shortcut. If your terminal or desktop intercepts
-**Alt+Shift+F12**, remap the action in your KDL keybinds.
+using the host's shortcut. Yinz uses **Alt+u** for this action in Normal mode,
+where it takes precedence over Readline's uppercase-word shortcut. To use
+**Alt+u** in your shell, unbind it in your KDL keybinds. You can bind
+`ReturnFromNotification` to another key in the same block.
 
 ```kdl
 keybinds {
-    unbind "Alt Shift F12"
+    unbind "Alt u"
     normal {
         bind "Alt z" { ReturnFromNotification; }
     }
 }
 ```
 
-Presets with a secondary modifier bind that modifier plus **Shift+F12**. For
-example, if your secondary modifier is Ctrl, use `unbind "Ctrl Shift F12"`
-in the remap. To remove an explicitly saved older binding, use
-`unbind "Alt u"` in the same keybinds block.
+Presets with a secondary modifier bind that modifier plus **u**. For example,
+if your secondary modifier is Ctrl, use `unbind "Ctrl u"` in the remap.
 
 Bind one policy plugin in your session configuration:
 

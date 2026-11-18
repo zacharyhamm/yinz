@@ -80,9 +80,7 @@
         bind \"" secondary-modifier " a\" { ActivateLastNotification; }
     }
     shared_except \"locked\" \"select\" \"notifications\" {
-        bind \"" secondary-modifier
-        (if (member "Shift" (split-whitespace secondary-modifier)) "" " Shift")
-        " F12\" { ReturnFromNotification; }
+        bind \"" secondary-modifier " u\" { ReturnFromNotification; }
     }
 "))
     "

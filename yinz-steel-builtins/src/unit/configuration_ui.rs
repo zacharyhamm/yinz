@@ -379,14 +379,7 @@ fn every_preset_parses_with_palette_agent_selection_and_notifications() {
         let config = Config::from_kdl(source, None).unwrap();
         let saved = Config::from_kdl(&config.to_string(false).unwrap(), None).unwrap();
         let key = |s: &str| -> KeyWithModifier { s.parse().unwrap() };
-        let return_key = if secondary
-            .split_whitespace()
-            .any(|modifier| modifier == "Shift")
-        {
-            key(&format!("{secondary} F12"))
-        } else {
-            key(&format!("{secondary} Shift F12"))
-        };
+        let return_key = key(&format!("{secondary} u"));
         for config in [&config, &saved] {
             for binding in ["w", "p", "l"] {
                 assert_eq!(

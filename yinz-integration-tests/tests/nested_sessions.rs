@@ -524,7 +524,7 @@ fn notification_return_restores_nested_key_ownership() {
         });
 
     let descended = nested.mark_host_to_guest();
-    nested.host.send_stdin(b"\x1b[24;4~"); // xterm Alt+Shift+F12
+    nested.host.send_stdin(&keys::alt('u'));
     nested.wait_for_host_to_descend_into_guest_after(descended);
     nested
         .guest
