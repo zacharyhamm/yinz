@@ -300,9 +300,16 @@ is selected. If a selected input is reported as unusable, restore a readable
 regular file or remove an optional input to use the layout's fallback before
 retrying. A graphical native window connected to a server from the same build
 keeps its source session active until the destination supplies its first
-structured frame. If the destination fails to open or render, the window shows
-the error and keeps the source available. Press Escape to dismiss the notice.
-Correct the reported input and use the same switch action again.
+structured frame. While you wait, the notice shows which session is opening
+and which session still receives ordinary input. A second switch request
+leaves the current attempt in progress. Press Escape without modifiers to
+cancel the pending attachment and keep the source open. A destination session
+that has already started opening may still be available later. Use the same
+switch action to try again.
+
+If the destination fails to open or render, the window shows the error and
+keeps the source available. Press Escape to dismiss the error notice. Correct
+the reported input and use the same switch action again.
 
 If the window cannot read its configuration on reload, it keeps its
 current settings and reports the error in the client log. After repairing a

@@ -180,6 +180,249 @@ fn destination_frame() -> ServerToClientMsg {
 }
 
 #[cfg(unix)]
+fn begin_test_switch(
+    app: &mut App,
+    name: Option<&str>,
+    now: Instant,
+) -> (
+    mpsc::Sender<Result<(String, AttachedSender)>>,
+    mpsc::Sender<ServerToClientMsg>,
+) {
+    let (opened, opening) = mpsc::channel();
+    let (events, messages) = mpsc::channel();
+    app.begin_switch(
+        SessionConnection {
+            name: name.map(Into::into),
+            ..Default::default()
+        },
+        |_, id, _, destination| {
+            Ok(PendingSwitch {
+                id,
+                deadline: now + FIRST_FRAME_TIMEOUT,
+                destination,
+                opening: Some(opening),
+                sender: None,
+                messages,
+                mouse_mode: true,
+                reload: false,
+            })
+        },
+    );
+    (opened, events)
+}
+
+#[cfg(unix)]
+#[test]
+fn native_switch_pending_notice_tracks_request_and_resolution() {
+    let mut app = switch_app(CliArgs::default());
+    let now = Instant::now();
+    let next_draw = now + app.pacer.interval();
+    let target = (768, 384);
+    let assert_overlay = |app: &mut App, text| {
+        let expected = notice_scene(Notice::Failure(text), &mut app.cache, target, 0);
+        assert_eq!(app.switch_overlay(target, 0), Some(expected));
+    };
+    app.pacer.drawn(now);
+    assert!(app.switch_overlay(target, 0).is_none());
+    let (opened, _events) = begin_test_switch(&mut app, None, now);
+    assert_eq!(app.pacer.decide(now), Decision::At(next_draw));
+    assert_overlay(
+        &mut app,
+        "Esc cancels\nOpening: a new session\nInput: source",
+    );
+
+    app.pacer.drawn(next_draw);
+    app.begin_switch(
+        SessionConnection {
+            name: Some("repeated request".into()),
+            ..Default::default()
+        },
+        |_, _, _, _| panic!("a second request must not start another switch"),
+    );
+    assert_eq!(app.next_connection_id, 2);
+    assert_eq!(app.pacer.decide(next_draw), Decision::Idle);
+    assert_overlay(
+        &mut app,
+        "Esc cancels\nOpening: a new session\nInput: source",
+    );
+
+    let (destination, _peer) = switch_peer();
+    opened.send(Ok(("resolved".into(), destination))).unwrap();
+    app.receive_switch(1, next_draw).unwrap();
+    let resolved_draw = next_draw + app.pacer.interval();
+    assert_eq!(app.pacer.decide(next_draw), Decision::At(resolved_draw));
+    assert_overlay(&mut app, "Esc cancels\nOpening: resolved\nInput: source");
+
+    app.pacer.drawn(resolved_draw);
+    let escape = keyboard::Press::new(Key::Named(NamedKey::Escape), ModifiersState::empty());
+    app.key_pressed(&escape, false).unwrap();
+    assert!(app.switch_overlay(target, 0).is_none());
+    assert_eq!(
+        app.pacer.decide(resolved_draw),
+        Decision::At(resolved_draw + app.pacer.interval())
+    );
+    let (_opened, _events) = begin_test_switch(&mut app, Some("named"), now);
+    assert_overlay(&mut app, "Esc cancels\nOpening: named\nInput: source");
+}
+
+#[cfg(unix)]
+#[test]
+fn native_switch_pending_escape_cancels_without_detaching_source() {
+    use winit::event::Ime;
+    use yinz_types::data::{BareKey, KeyModifier};
+
+    let mut app = switch_app(CliArgs::default());
+    let (source, mut source_peer) = switch_peer();
+    app.sender = Some(source);
+    app.focused = false;
+    let reported_geometry = Geometry::calculate(768, 384, 0, app.cache.metrics());
+    assert!(reported_geometry.is_some());
+    app.reported_geometry = reported_geometry;
+    let geometry = app.state.geometry().clone();
+    let now = Instant::now();
+    let (opened, events) = begin_test_switch(&mut app, Some("destination"), now);
+    let (destination, mut destination_peer) = switch_peer();
+    opened
+        .send(Ok(("destination".into(), destination)))
+        .unwrap();
+    app.receive_switch(1, now).unwrap();
+    events.send(destination_frame()).unwrap();
+
+    let modified = keyboard::Press::new(Key::Named(NamedKey::Escape), ModifiersState::SHIFT);
+    app.key_pressed(&modified, false).unwrap();
+    assert!(matches!(
+        source_peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::Key { key, .. }, _))
+            if key.bare_key == BareKey::Esc && key.key_modifiers.contains(&KeyModifier::Shift)
+    ));
+    assert!(app.pending_switch.is_some());
+    app.selection.start(0, 0);
+    app.selection.extend(0, 5);
+    let selection = app.selection.range();
+    let copied = app.selection.text(app.state.screen()).unwrap();
+    app.composition
+        .ime(Ime::Preedit("editing".into(), Some((0, 7))));
+    let composition = app.composition.shown();
+
+    let escape = keyboard::Press::new(Key::Named(NamedKey::Escape), ModifiersState::empty());
+    app.key_pressed(&escape, false).unwrap();
+    app.key_pressed(&escape, true).unwrap();
+    app.receive_switch(1, now).unwrap();
+    assert!(app.pending_switch.is_none());
+    assert!(app.switch_notice.is_none());
+    assert!(events.send(destination_frame()).is_err());
+    assert!(matches!(
+        destination_peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::ClientExited, _))
+    ));
+    assert!(destination_peer.recv_client_msg().is_eof());
+
+    assert_eq!(app.connection_id, 0);
+    assert_eq!(app.args.session_name.as_deref(), Some("source"));
+    assert_eq!(app.reported_geometry, reported_geometry);
+    assert_eq!(app.state.geometry(), &geometry);
+    assert_eq!(app.state.screen().cell(0, 0).character(), 's');
+    assert!(app.received_frame);
+    assert!(!app.focused);
+    assert_eq!(app.selection.range(), selection);
+    assert_eq!(app.composition.shown(), composition);
+    app.composition.ime(Ime::Disabled);
+    let copy = keyboard::Press::new(Key::Character("c".into()), ModifiersState::SUPER);
+    app.key_pressed(&copy, false).unwrap();
+    assert_eq!(app.get_clipboard().as_deref(), Some(copied.as_str()));
+    assert_eq!(app.selection.range(), selection);
+
+    let key = keyboard::Press::new(Key::Character("x".into()), ModifiersState::empty());
+    app.key_pressed(&key, false).unwrap();
+    assert!(matches!(
+        source_peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::Key { key, .. }, _)) if key.bare_key == BareKey::Char('x')
+    ));
+    app.key_pressed(&escape, false).unwrap();
+    assert!(matches!(
+        source_peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::Key { key, .. }, _))
+            if key.bare_key == BareKey::Esc && key.key_modifiers.is_empty()
+    ));
+    drop(app);
+    assert!(matches!(
+        source_peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::ClientExited, _))
+    ));
+    assert!(source_peer.recv_client_msg().is_eof());
+}
+
+#[cfg(unix)]
+#[test]
+fn native_switch_pending_escape_discards_late_open_and_allows_retry() {
+    use yinz_types::data::BareKey;
+
+    let mut app = switch_app(CliArgs::default());
+    let (source, mut source_peer) = switch_peer();
+    app.sender = Some(source);
+    let now = Instant::now();
+    let (old_opened, old_events) = begin_test_switch(&mut app, Some("canceled"), now);
+    let escape = keyboard::Press::new(Key::Named(NamedKey::Escape), ModifiersState::empty());
+    app.key_pressed(&escape, false).unwrap();
+
+    let (opened, events) = begin_test_switch(&mut app, Some("retry"), now);
+    app.key_pressed(&escape, true).unwrap();
+    assert_eq!(app.pending_switch.as_ref().unwrap().id, 2);
+    let (late, mut late_peer) = switch_peer();
+    let rejected = old_opened.send(Ok(("canceled".into(), late))).unwrap_err();
+    drop(rejected);
+    assert!(old_events.send(destination_frame()).is_err());
+    assert!(matches!(
+        late_peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::ClientExited, _))
+    ));
+    assert!(late_peer.recv_client_msg().is_eof());
+
+    let (retry, mut retry_peer) = switch_peer();
+    opened.send(Ok(("retry".into(), retry))).unwrap();
+    app.receive_switch(1, now + FIRST_FRAME_TIMEOUT).unwrap();
+    app.receive_switch(2, now).unwrap();
+    events.send(destination_frame()).unwrap();
+    app.receive_switch(1, now).unwrap();
+    assert_eq!(app.connection_id, 0);
+    app.receive_switch(2, now).unwrap();
+    app.receive_switch(1, now).unwrap();
+    assert_eq!(app.connection_id, 2);
+    assert_eq!(app.args.session_name.as_deref(), Some("retry"));
+    assert!(app.pending_switch.is_none());
+    assert!(app.switch_overlay((768, 384), 0).is_none());
+    assert_eq!(app.state.screen().cell(0, 0).character(), 'D');
+    assert!(matches!(
+        source_peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::ClientExited, _))
+    ));
+    assert!(source_peer.recv_client_msg().is_eof());
+    assert!(matches!(
+        retry_peer.recv_client_msg().msg(),
+        Some((
+            ClientToServerMsg::HostTerminalFocusChanged { focused: true },
+            _
+        ))
+    ));
+    assert!(matches!(
+        retry_peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::RenderFrameAck { seq: 9 }, _))
+    ));
+    app.key_pressed(&escape, false).unwrap();
+    assert!(matches!(
+        retry_peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::Key { key, .. }, _))
+            if key.bare_key == BareKey::Esc && key.key_modifiers.is_empty()
+    ));
+    drop(app);
+    assert!(matches!(
+        retry_peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::ClientExited, _))
+    ));
+    assert!(retry_peer.recv_client_msg().is_eof());
+}
+
+#[cfg(unix)]
 #[test]
 fn native_switch_refusal_retains_source_and_supports_retry() {
     use std::fs;
@@ -248,7 +491,9 @@ fn native_switch_refusal_retains_source_and_supports_retry() {
         app.selection.text(app.state.screen()).as_deref(),
         Some(copied.as_str())
     );
-    assert!(app.dismiss_switch_notice());
+    let escape = keyboard::Press::new(Key::Named(NamedKey::Escape), ModifiersState::empty());
+    app.key_pressed(&escape, false).unwrap();
+    assert!(app.switch_notice.is_none());
     assert_eq!(app.selection.range(), saved_selection);
     app.type_text("source input".into()).unwrap();
     assert!(

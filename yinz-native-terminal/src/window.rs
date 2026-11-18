@@ -9,7 +9,9 @@ use crate::render::atlas::GlyphCache;
 use crate::render::pacing::{Decision, Pacer};
 use crate::render::renderer::{Frame, Renderer};
 use crate::render::retained::RetainedScene;
-use crate::render::scene::{BlinkPhase, CursorOptions, SceneInputs};
+use crate::render::scene::{
+    notice_scene, BlinkPhase, CursorOptions, Notice, RowScene, SceneInputs,
+};
 use crate::session::{self, Recorder, Sender};
 use crate::text::font::{points_to_pixels, CellChange, FontOptions};
 use glutin::config::ConfigTemplateBuilder;
@@ -31,6 +33,7 @@ use yinz_cli::args::{CliArgs, TerminalArgs};
 use yinz_config::config::Config;
 use yinz_ipc::ipc::{ClientToServerMsg, ExitReason, PixelDimensions, ServerToClientMsg};
 use yinz_runtime::errors::prelude::*;
+use yinz_types::data::SessionConnection;
 use yinz_types::input::actions::Action;
 use yinz_types::input::native_terminal::{StartupMode, TerminalConfig};
 use yinz_types::input::options::Options;
@@ -107,6 +110,7 @@ struct App {
     next_connection_id: u64,
     pending_switch: Option<PendingSwitch>,
     switch_notice: Option<String>,
+    canceled_switch_escape: bool,
     recorder: Recorder,
     modifiers: ModifiersState,
     alt_keys: keyboard::AltKeys,
@@ -183,18 +187,14 @@ struct SwitchFrame {
 }
 
 impl PendingSwitch {
-    fn stage(
-        id: u64,
-        args: TerminalArgs,
-        opts: CliArgs,
-        size: Size,
-        target: yinz_types::data::SessionConnection,
-        destination: String,
-        wake_reader: ReaderWake,
-    ) -> Result<Self> {
+    fn stage(app: &App, id: u64, target: SessionConnection, destination: String) -> Result<Self> {
         let deadline = Instant::now() + FIRST_FRAME_TIMEOUT;
         let (opened_tx, opened_rx) = mpsc::sync_channel(1);
         let (tx, messages) = mpsc::sync_channel(2);
+        let args = app.args.clone();
+        let opts = app.opts.clone();
+        let size = app.grid_size();
+        let wake_reader = app.wake_reader.clone();
         std::thread::Builder::new()
             .name("native-switch-reader".into())
             .spawn(move || {
@@ -236,14 +236,10 @@ impl PendingSwitch {
 
     fn poll(
         &mut self,
-        id: u64,
         now: Instant,
         size: Size,
         cell: crate::text::font::CellMetrics,
     ) -> Result<Option<SwitchFrame>> {
-        if id != self.id {
-            return Ok(None);
-        }
         self.check_deadline(now)?;
         if let Some(opening) = &self.opening {
             match opening.try_recv() {
@@ -726,6 +722,7 @@ impl App {
             next_connection_id: 1,
             pending_switch: None,
             switch_notice: None,
+            canceled_switch_escape: false,
             recorder,
             clipboard: Arc::new(Mutex::new(clipboard())),
             modifiers: ModifiersState::empty(),
@@ -1028,7 +1025,7 @@ impl App {
             },
             ServerToClientMsg::Exit { .. } => event_loop.exit(),
             ServerToClientMsg::SwitchSession { connect_to_session } => {
-                self.begin_switch(connect_to_session);
+                self.begin_switch(connect_to_session, PendingSwitch::stage);
             },
             ServerToClientMsg::ClipboardUpdate { content } => {
                 if let Some(text) = crate::emulation::kitty::clipboard_update(&content) {
@@ -1094,7 +1091,11 @@ impl App {
         self.pacer.schedule();
     }
 
-    fn begin_switch(&mut self, target: yinz_types::data::SessionConnection) {
+    fn begin_switch(
+        &mut self,
+        target: SessionConnection,
+        stage: impl FnOnce(&Self, u64, SessionConnection, String) -> Result<PendingSwitch>,
+    ) {
         if self.pending_switch.is_some() {
             return;
         }
@@ -1104,19 +1105,12 @@ impl App {
             .name
             .as_ref()
             .map_or_else(|| "a new session".to_owned(), |name| format!("{name}"));
-        if self.switch_notice.take().is_some() {
-            self.pacer.schedule();
-        }
-        match PendingSwitch::stage(
-            id,
-            self.args.clone(),
-            self.opts.clone(),
-            self.grid_size(),
-            target,
-            destination.clone(),
-            self.wake_reader.clone(),
-        ) {
-            Ok(pending) => self.pending_switch = Some(pending),
+        match stage(self, id, target, destination.clone()) {
+            Ok(pending) => {
+                self.switch_notice = None;
+                self.pending_switch = Some(pending);
+                self.pacer.schedule();
+            },
             Err(error) => self.show_switch_notice(&destination, &error),
         }
     }
@@ -1151,12 +1145,22 @@ impl App {
     fn receive_switch(&mut self, id: u64, now: Instant) -> Result<()> {
         let size = self.grid_size();
         let cell = self.cache.metrics();
-        let Some(pending) = &mut self.pending_switch else {
+        let Some(pending) = self
+            .pending_switch
+            .as_mut()
+            .filter(|pending| pending.id == id)
+        else {
             return Ok(());
         };
-        let first = match pending.poll(id, now, size, cell) {
+        let was_opening = pending.opening.is_some();
+        let first = match pending.poll(now, size, cell) {
             Ok(Some(first)) => first,
-            Ok(None) => return Ok(()),
+            Ok(None) => {
+                if was_opening && pending.opening.is_none() {
+                    self.pacer.schedule();
+                }
+                return Ok(());
+            },
             Err(error) => {
                 self.switch_failed(&error);
                 return Ok(());
@@ -1192,6 +1196,22 @@ impl App {
             self.reload()?;
         }
         Ok(())
+    }
+
+    fn switch_overlay(&mut self, size: (u32, u32), padding: u32) -> Option<RowScene> {
+        let notice = if let Some(pending) = &self.pending_switch {
+            Notice::Pending {
+                destination: &pending.destination,
+                source: self
+                    .args
+                    .session_name
+                    .as_deref()
+                    .unwrap_or("current session"),
+            }
+        } else {
+            Notice::Failure(self.switch_notice.as_deref()?)
+        };
+        Some(notice_scene(notice, &mut self.cache, size, padding))
     }
 
     fn draw(&mut self) -> Result<()> {
@@ -1233,9 +1253,7 @@ impl App {
             return Ok(());
         };
         let padding = self.padding() as i32;
-        let notice = self.switch_notice.as_deref().map(|text| {
-            crate::render::scene::notice_scene(text, &mut self.cache, size, padding as u32)
-        });
+        let notice = self.switch_overlay(size, padding as u32);
         if let Some(surfaces) = &mut self.surfaces {
             surfaces.renderer.draw_retained(
                 &self.retained,
@@ -1326,10 +1344,6 @@ impl App {
                 is_synthetic: false,
                 ..
             } if event.state == ElementState::Pressed => {
-                if event.logical_key == Key::Named(NamedKey::Escape) && self.dismiss_switch_notice()
-                {
-                    return Ok(());
-                }
                 let press = keyboard::Press::of(
                     &event,
                     self.modifiers,
@@ -1339,58 +1353,7 @@ impl App {
                         self.alt_keys,
                     ),
                 );
-                if event.logical_key == Key::Named(NamedKey::Insert) && self.modifiers.shift_key() {
-                    if let Some(chars) = self.get_clipboard() {
-                        self.selection.clear();
-                        self.pacer.schedule();
-                        self.send(ClientToServerMsg::Paste(chars))?;
-                    }
-                    return Ok(());
-                }
-                if self.compose_key(&press)? {
-                    return Ok(());
-                }
-                let shortcut = (self.modifiers.control_key() && self.modifiers.shift_key())
-                    || self.modifiers.super_key();
-                if shortcut && let Key::Character(key) = &event.logical_key {
-                    match key.to_lowercase().as_str() {
-                        "c" => {
-                            if let Some(text) = self.selection.text(self.state.screen()) {
-                                self.set_clipboard(text);
-                                return Ok(());
-                            }
-                        },
-                        "v" => {
-                            if let Some(chars) = self.get_clipboard() {
-                                self.selection.clear();
-                                self.pacer.schedule();
-                                self.send(ClientToServerMsg::Paste(chars))?;
-                            }
-                            return Ok(());
-                        },
-                        "+" | "=" => {
-                            self.change_scale((self.zoom * 1.1).min(4.0), self.scale)?;
-                            return Ok(());
-                        },
-                        "-" | "_" => {
-                            self.change_scale((self.zoom / 1.1).max(0.25), self.scale)?;
-                            return Ok(());
-                        },
-                        "0" | ")" => {
-                            self.change_scale(1.0, self.scale)?;
-                            return Ok(());
-                        },
-                        _ => {},
-                    }
-                }
-                if event.logical_key == Key::Named(NamedKey::Escape) {
-                    self.selection.clear();
-                }
-                if let Some(message) = keyboard::key_message(&press) {
-                    self.selection.clear();
-                    self.pacer.schedule();
-                    self.send(message)?;
-                }
+                self.key_pressed(&press, event.repeat)?;
             },
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = (position.x, position.y);
@@ -1475,6 +1438,79 @@ impl App {
                 }
             },
             _ => {},
+        }
+        Ok(())
+    }
+    fn key_pressed(&mut self, press: &keyboard::Press, repeat: bool) -> Result<()> {
+        let escape = press.logical == Key::Named(NamedKey::Escape);
+        if escape {
+            // A retry can begin while the key that canceled the last switch is still held.
+            if repeat && self.canceled_switch_escape {
+                return Ok(());
+            }
+            if !repeat {
+                self.canceled_switch_escape = false;
+                if press.modifiers.is_empty() && self.pending_switch.take().is_some() {
+                    self.canceled_switch_escape = true;
+                    self.pacer.schedule();
+                    return Ok(());
+                }
+            }
+            if self.dismiss_switch_notice() {
+                return Ok(());
+            }
+        }
+        if press.logical == Key::Named(NamedKey::Insert) && press.modifiers.shift_key() {
+            if let Some(chars) = self.get_clipboard() {
+                self.selection.clear();
+                self.pacer.schedule();
+                self.send(ClientToServerMsg::Paste(chars))?;
+            }
+            return Ok(());
+        }
+        if self.compose_key(press)? {
+            return Ok(());
+        }
+        let shortcut = (press.modifiers.control_key() && press.modifiers.shift_key())
+            || press.modifiers.super_key();
+        if shortcut && let Key::Character(key) = &press.logical {
+            match key.to_lowercase().as_str() {
+                "c" => {
+                    if let Some(text) = self.selection.text(self.state.screen()) {
+                        self.set_clipboard(text);
+                        return Ok(());
+                    }
+                },
+                "v" => {
+                    if let Some(chars) = self.get_clipboard() {
+                        self.selection.clear();
+                        self.pacer.schedule();
+                        self.send(ClientToServerMsg::Paste(chars))?;
+                    }
+                    return Ok(());
+                },
+                "+" | "=" => {
+                    self.change_scale((self.zoom * 1.1).min(4.0), self.scale)?;
+                    return Ok(());
+                },
+                "-" | "_" => {
+                    self.change_scale((self.zoom / 1.1).max(0.25), self.scale)?;
+                    return Ok(());
+                },
+                "0" | ")" => {
+                    self.change_scale(1.0, self.scale)?;
+                    return Ok(());
+                },
+                _ => {},
+            }
+        }
+        if escape {
+            self.selection.clear();
+        }
+        if let Some(message) = keyboard::key_message(press) {
+            self.selection.clear();
+            self.pacer.schedule();
+            self.send(message)?;
         }
         Ok(())
     }

@@ -209,7 +209,7 @@ fn read_framebuffer(renderer: &Renderer) -> Vec<u8> {
 #[test]
 fn native_switch_notice_draws_and_dismisses_over_source_content() {
     use crate::emulation::selection::Selection;
-    use crate::render::scene::notice_scene;
+    use crate::render::scene::{notice_scene, Notice};
     use crate::testing::painter::{residency, Painter, Place};
     use crate::text::font::FontOptions;
 
@@ -231,7 +231,9 @@ fn native_switch_notice_draws_and_dismisses_over_source_content() {
         assert_eq!(baseline_offset_atlas_retry_pixel(&baseline, 1, 1), original);
         let target = (768, 384);
         let notice = notice_scene(
-            "Could not switch to destination. Esc dismisses.\nFix /work/layout.swap.kdl and retry.",
+            Notice::Failure(
+                "Could not switch to destination. Esc dismisses.\nFix /work/layout.swap.kdl and retry.",
+            ),
             &mut cache,
             target,
             0,
@@ -264,6 +266,96 @@ fn native_switch_notice_draws_and_dismisses_over_source_content() {
             draw_and_read(renderer, &retained, cache.atlases(), target),
             baseline
         );
+    });
+}
+
+#[test]
+fn native_switch_pending_notice_draws_and_clears_over_source_content() {
+    use crate::emulation::selection::Selection;
+    use crate::render::scene::{notice_scene, Notice};
+    use crate::testing::painter::{residency, Painter, Place};
+    use crate::text::font::FontOptions;
+
+    with_renderer(|renderer| {
+        let original = [0, 255, 0, 255];
+        let state = Painter::state(5, 48, |p| {
+            p.text(0, 4, "source content");
+            p.graphics(&[
+                residency(1, 8, 8, original),
+                Place::of(1, 8, 8).depth(1).record(),
+            ]);
+        });
+        let selection = Selection::at(0, 4).extended_to(0, 9);
+        let copied = selection.text(state.screen());
+        let mut cache = fixture_cache(&FontOptions::default());
+        let mut retained = RetainedScene::new();
+        retained.set_selection(Some(selection));
+        let mut baseline = font_pixels(renderer, &mut retained, &state, &mut cache);
+        let metrics = cache.metrics();
+        let inset = metrics.stroke.max(2);
+        let height = 384;
+        for (width, expected) in [
+            (
+                768,
+                "Esc cancels\nOpening: 中AB destination\nInput: source room",
+            ),
+            (
+                12 * metrics.width + 2 * inset,
+                "Esc cancels\nOpening: 中A\nInput: sourc",
+            ),
+            (8 * metrics.width + 2 * inset, "Esc\nOpening:\nInput: s"),
+        ] {
+            let target = (width, height);
+            if width != 768 {
+                baseline = draw_and_read(renderer, &retained, cache.atlases(), target);
+            }
+            assert_eq!(baseline_offset_atlas_retry_pixel(&baseline, 1, 1), original);
+            let notice = notice_scene(
+                Notice::Pending {
+                    destination: "中AB\ndestination",
+                    source: "source\u{2028}room",
+                },
+                &mut cache,
+                target,
+                0,
+            );
+            assert_eq!(
+                notice,
+                notice_scene(Notice::Failure(expected), &mut cache, target, 0)
+            );
+            renderer.draw_retained(
+                &retained,
+                cache.atlases(),
+                target,
+                Frame {
+                    notice: Some(&notice),
+                    ..Default::default()
+                },
+            );
+            let shown = read_framebuffer(renderer);
+            assert_eq!(
+                baseline_offset_atlas_retry_pixel(&shown, 1, 1),
+                [35, 29, 23, 255]
+            );
+            let panel = notice.rects[0];
+            assert_eq!(panel.height, 3 * metrics.height + 2 * inset);
+            assert!(panel.width <= width);
+            for row in 0..3 {
+                let top = inset + row * metrics.height;
+                assert!(
+                    (top..top + metrics.height).any(|y| {
+                        (inset..panel.width - inset)
+                            .any(|x| baseline_offset_atlas_retry_pixel(&shown, x, y)[0] > 100)
+                    }),
+                    "pending line {row} has no visible text at width {width}"
+                );
+            }
+            assert_eq!(selection.text(state.screen()), copied);
+            assert_eq!(
+                draw_and_read(renderer, &retained, cache.atlases(), target),
+                baseline
+            );
+        }
     });
 }
 

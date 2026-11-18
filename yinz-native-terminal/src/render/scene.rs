@@ -1,7 +1,8 @@
+use std::borrow::Cow;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use yinz_types::structured_render::{
     GeometryRecord, WireCell, WireColor, ATTR_BOLD, ATTR_DIM, ATTR_GROUP_CONTINUE, ATTR_HIDDEN,
     ATTR_ITALIC, ATTR_REVERSE, LINK_NONE, UNDERLINE_SHIFT, UNDERLINE_STRAIGHT,
@@ -89,14 +90,41 @@ impl RowScene {
     }
 }
 
+pub(crate) enum Notice<'a> {
+    Failure(&'a str),
+    Pending {
+        destination: &'a str,
+        source: &'a str,
+    },
+}
+
+fn notice_char_width(character: char) -> u32 {
+    character.width().unwrap_or(1).clamp(1, 2) as u32
+}
+
+fn push_pending_notice_line(text: &mut String, label: &str, name: &str, mut columns: u32) {
+    text.push('\n');
+    for character in label.chars().chain(name.chars()) {
+        let character = match character {
+            '\u{2028}' | '\u{2029}' => ' ',
+            character if character.is_control() => ' ',
+            character => character,
+        };
+        let width = notice_char_width(character);
+        if width > columns {
+            break;
+        }
+        text.push(character);
+        columns -= width;
+    }
+}
+
 pub(crate) fn notice_scene(
-    text: &str,
+    notice: Notice<'_>,
     cache: &mut GlyphCache,
     target: (u32, u32),
     padding: u32,
 ) -> RowScene {
-    use unicode_width::UnicodeWidthChar;
-
     let metrics = cache.metrics();
     let inset = metrics.stroke.max(2);
     let available = |pixels: u32| pixels.saturating_sub(2 * (padding + inset));
@@ -106,6 +134,23 @@ pub(crate) fn notice_scene(
     if columns < 2 || rows == 0 {
         return scene;
     }
+    let text = match notice {
+        Notice::Failure(text) => Cow::Borrowed(text),
+        Notice::Pending {
+            destination,
+            source,
+        } => {
+            let hint = match columns {
+                2 => "⎋",
+                3..=10 => "Esc",
+                _ => "Esc cancels",
+            };
+            let mut text = hint.to_owned();
+            push_pending_notice_line(&mut text, "Opening: ", destination, columns);
+            push_pending_notice_line(&mut text, "Input: ", source, columns);
+            Cow::Owned(text)
+        },
+    };
     let background = [35, 29, 23];
     let foreground = [255, 232, 200];
     let paint = CellPaint {
@@ -126,7 +171,7 @@ pub(crate) fn notice_scene(
             }
             continue;
         }
-        let width = character.width().unwrap_or(1).clamp(1, 2) as u32;
+        let width = notice_char_width(character);
         if column + width > columns {
             row += 1;
             column = 0;
