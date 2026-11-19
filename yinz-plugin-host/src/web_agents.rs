@@ -515,6 +515,7 @@ fn adapt(
         } => Ok(json!({"header":header,"markdown":markdown,"tool":tool})),
         HistoryReply::Run {
             mut header,
+            suppressed_result_revisions,
             activity_ranges,
             events,
             rows,
@@ -577,6 +578,7 @@ fn adapt(
                     "task":header.task,"project":header.project,"branch":header.branch,"session_id":header.session_id,"details":header.details},
                 "events":events,"earlier":action("earlier").is_some(),"next_from":next_from,
                 "previous_run":run_id("previous"),"origin_run":run_id("origin"),"resumable":false,
+                "suppressed_result_revisions":suppressed_result_revisions,
                 "activity_ranges":activity_ranges,"navigation":requests,"status":status}),
             )
         },

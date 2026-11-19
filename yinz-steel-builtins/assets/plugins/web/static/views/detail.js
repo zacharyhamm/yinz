@@ -386,23 +386,29 @@ export function DetailView({ env, route }) {
     intervalMs: env.config.poll.tail_ms,
     env,
     run: async ({ signal }) => {
-      const ticket = store.ticket(store.loaded ? 'received' : 'latest');
-      let r = await env.api.read(store.refreshRequest(), tz, { signal });
-      if (signal.aborted || visit.signal.aborted) return r;
-      let row;
-      if (r.ok && !env.api.stale(r)) {
-        const previous = store.meta.live && store.meta.live.ref;
-        const applied = applyHistory(ticket, r.data);
-        if (applied.applied) {
-          row = store.meta.live;
-          if (applied.retargeted) onRetarget(previous);
-          bump();
-        } else if (applied.reason === 'malformed') {
-          r = { ok: false, kind: 'malformed' };
+      for (;;) {
+        const ticket = store.ticket(store.loaded ? 'received' : 'latest');
+        let r = await env.api.read(store.refreshRequest(), tz, { signal });
+        if (signal.aborted || visit.signal.aborted) return r;
+        let row;
+        if (r.ok && !env.api.stale(r)) {
+          const previous = store.meta.live && store.meta.live.ref;
+          const applied = applyHistory(ticket, r.data);
+          if (applied.applied) {
+            row = store.meta.live;
+            if (applied.rebuild) {
+              bump();
+              continue; // Read the recreated archive from its initial page now.
+            }
+            if (applied.retargeted) onRetarget(previous);
+            bump();
+          } else if (applied.reason === 'malformed') {
+            r = { ok: false, kind: 'malformed' };
+          }
         }
+        finishStatusPoll(signal, r, row);
+        return r;
       }
-      finishStatusPoll(signal, r, row);
-      return r;
     },
   });
 

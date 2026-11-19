@@ -5900,6 +5900,7 @@ fn history_run(
             name: "Recorded run".into(),
             ..Default::default()
         },
+        suppressed_result_revisions: vec![],
         activity_ranges: vec![],
         events,
         rows,
@@ -8292,6 +8293,7 @@ fn peer_agent_quota_is_unavailable_without_local_usage_collection() {
                 step: request.step,
                 reply: Ok(AgentReply::History(HistoryReply::Run {
                     header: Default::default(),
+                    suppressed_result_revisions: vec![],
                     activity_ranges: vec![],
                     events: vec![],
                     rows: vec![],
@@ -8364,6 +8366,7 @@ fn agent_info_usage_and_prompt_are_scoped_to_the_selected_agent() {
                     step: request.step,
                     reply: Ok(AgentReply::History(HistoryReply::Run {
                         header: Default::default(),
+                        suppressed_result_revisions: vec![],
                         activity_ranges: vec![],
                         events: vec![],
                         rows: vec![],

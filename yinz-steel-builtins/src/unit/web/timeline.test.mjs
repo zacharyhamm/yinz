@@ -61,6 +61,7 @@ test('reopens a timeline with its older pages and delivery cursor while live sta
     navigation: { earlier, received: received(91) },
   }));
   assert.deepEqual(reopened.refreshRequest(), received(24));
+  const delayedDelivery = reopened.ticket('received');
   const closedRange = { start: c(20), end: c(24) };
   reopened.apply(reopened.ticket('received'), page({
     live: { id: view.agent },
@@ -68,6 +69,10 @@ test('reopens a timeline with its older pages and delivery cursor while live sta
     activity_ranges: [closedRange],
     navigation: { earlier, received: received(25) },
   }));
+  const delayed = reopened.apply(delayedDelivery, page({
+    live: { id: view.agent }, navigation: { received: received(6) },
+  }));
+  assert.equal(delayed.rebuild, undefined);
   assert.equal(reopened.confirmed, true);
   assert.equal(reopened.actionsEnabled, true);
   assert.deepEqual(reopened.items().map((item) => item.key), ['e1', 'e20', 't22', 'e24', 'e90']);
@@ -196,7 +201,7 @@ test('keeps cached history when the live agent is gone', () => {
   assert.deepEqual(reopened.refreshRequest(), received);
 });
 
-test('the cache keeps every opened timeline with a delivery cursor', () => {
+test('small timelines with delivery cursors share the cache budget', () => {
   const cache = new TimelineCache();
   const runs = Array.from({ length: 24 }, (_, i) => `run-${i}`);
   for (const run of runs) {
@@ -531,4 +536,92 @@ test('earlier is adopted only from older pages and the first page of a run', () 
   short.reset();
   short.apply(short.ticket('latest'), page({ events: [prose(9, 9)], navigation: { earlier: before(9), received: recv('run', 10) } }));
   assert.deepEqual(short.earlierRequest(), before(9));
+});
+
+function seedSnapshot(cache, run, { agent = null, tz = 'UTC', event = prose(100) } = {}) {
+  const view = { run, agent };
+  const store = cache.open(view, tz);
+  cache.apply(store, tz, store.ticket('latest'), page({
+    run, events: [event], navigation: { received: { op: 'history', ...view, after_revision: 101 } },
+  }));
+  return store;
+}
+
+test('rollback on the first restored delivery clears the run and fences pending reads', () => {
+  const cache = new TimelineCache();
+  const view = { run: 'run' };
+  seedSnapshot(cache, 'run');
+  seedSnapshot(cache, 'run', { agent: 'live' });
+  const store = cache.open(view, 'UTC');
+  const pending = store.ticket('earlier');
+  const delivery = store.ticket('received');
+  // A chronological tail can arrive first. Only delivery validates the saved cursor.
+  cache.apply(store, 'UTC', store.ticket('latest'), page({ events: [prose(5)] }));
+  const received = { op: 'history', ...view, after_revision: 6 };
+  const earlier = { op: 'history', ...view, before: c(4) };
+  const replacement = page({ events: [prose(4), prose(5)], navigation: { received, earlier } });
+  assert.equal(cache.apply(store, 'UTC', delivery, replacement).rebuild, true);
+  assert.equal(store.confirmed, false);
+  assert.deepEqual(store.events(), []);
+  assert.equal(cache.open({ ...view, agent: 'live' }, 'UTC').loaded, false);
+  assert.equal(cache.apply(store, 'UTC', pending, page({ events: [prose(99)] })).reason, 'fenced');
+  const initial = { op: 'history', ...view };
+  assert.deepEqual(store.refreshRequest(), initial);
+  // A failed rebuild leaves the next poll free to retry the initial read.
+  assert.equal(cache.apply(store, 'UTC', store.ticket('latest'), null).applied, false);
+  assert.deepEqual(store.refreshRequest(), initial);
+  cache.apply(store, 'UTC', store.ticket('latest'), replacement);
+  assert.deepEqual(store.events(), replacement.events);
+  assert.deepEqual(store.earlierRequest(), earlier);
+  assert.deepEqual(store.refreshRequest(), received);
+});
+
+test('an explicit unavailable reply evicts every binding and timezone for only the missing run', () => {
+  const cache = new TimelineCache();
+  seedSnapshot(cache, 'other');
+  seedSnapshot(cache, 'run', { agent: 'live' });
+  seedSnapshot(cache, 'run', { tz: 'America/Chicago' });
+  const store = seedSnapshot(cache, 'run');
+  cache.apply(store, 'UTC', store.ticket('received'), page({ status: 'No recorded history' }));
+  assert.equal(cache.open({ run: 'run', agent: 'live' }, 'UTC').loaded, false);
+  assert.equal(cache.open({ run: 'run' }, 'America/Chicago').loaded, false);
+  assert.equal(cache.open({ run: 'other' }, 'UTC').loaded, true);
+});
+
+test('reopening after completion repair produces the same events as a fresh visit', () => {
+  const cache = new TimelineCache();
+  const result = prose(100, null, 'result');
+  seedSnapshot(cache, 'run', { event: result });
+  const reopened = cache.open({ run: 'run' }, 'UTC');
+  const message = { ...prose(101), markdown: result.markdown };
+  const freshPage = page({
+    events: [message], suppressed_result_revisions: [100],
+    navigation: { received: { op: 'history', run: 'run', after_revision: 102 } },
+  });
+  // Delivery and the chronological tail can disagree about the same result.
+  cache.apply(reopened, 'UTC', reopened.ticket('received'), { ...freshPage, events: [result, message] });
+  const fresh = new TimelineStore({ run: 'run' });
+  fresh.apply(fresh.ticket('latest'), freshPage);
+  assert.deepEqual(reopened.events(), fresh.events());
+  assert.deepEqual(cache.open({ run: 'run' }, 'UTC').events(), [message]);
+});
+
+test('aggregate budget evicts whole least-recently-used snapshots and skips oversized views', () => {
+  // Two 1,000-character HTML bodies fit together, three exceed this budget.
+  const cache = new TimelineCache(6000);
+  const seed = (run) => seedSnapshot(cache, run, { event: { ...prose(100), html: 'x'.repeat(1000) } });
+  seed('aaa');
+  seed('bbb');
+  seed('bbb'); // replacing a snapshot charges only its current contents
+  assert.equal(cache.open({ run: 'aaa' }, 'UTC').loaded, true);
+  seed('ccc');
+  const evicted = cache.open({ run: 'bbb' }, 'UTC');
+  assert.deepEqual(evicted.events(), []);
+  assert.deepEqual(evicted.refreshRequest(), { op: 'history', run: 'bbb' });
+  assert.equal(cache.open({ run: 'aaa' }, 'UTC').loaded, true);
+  const active = seedSnapshot(cache, 'ccc', { event: { ...prose(100), html: 'x'.repeat(4000) } });
+  assert.equal(active.events().length, 1);
+  assert.equal(active.refreshRequest().after_revision, 101);
+  assert.equal(cache.open({ run: 'ccc' }, 'UTC').loaded, false);
+  assert.equal(cache.open({ run: 'aaa' }, 'UTC').loaded, true);
 });

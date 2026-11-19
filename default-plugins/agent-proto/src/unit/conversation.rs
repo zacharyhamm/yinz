@@ -130,7 +130,7 @@ fn completion_alternatives_are_suppressed_only_within_the_same_turn() {
             "same",
         ),
     ];
-    suppress_completions(&mut entries);
+    assert_eq!(suppress_completions(&mut entries), [2]);
     assert_eq!(
         entries.iter().map(|e| e.revision).collect::<Vec<_>>(),
         [1, 3, 4]
@@ -869,6 +869,7 @@ fn delivered_activity_neighbors_ignore_completion_alternatives() {
             .collect::<Vec<_>>(),
         [1, 5]
     );
+    assert_eq!(delivered.suppressed_result_revisions, [3]);
     let ranges = activity_ranges(&b, "run", Some("worker"), &delivered.entries).unwrap();
     assert_eq!(
         ranges,

@@ -987,6 +987,7 @@ fn palette_history_before_header_persistence_can_be_polled_again() {
     for action in &actions {
         let AgentReply::History(HistoryReply::Run {
             header,
+            suppressed_result_revisions,
             activity_ranges,
             events,
             rows,
@@ -998,6 +999,7 @@ fn palette_history_before_header_persistence_can_be_polled_again() {
         assert_eq!(header.name, "Recorded history unavailable");
         assert_eq!(header.details, "No recorded history");
         assert_eq!(status, "No recorded history");
+        assert!(suppressed_result_revisions.is_empty());
         assert!(activity_ranges.is_empty());
         assert!(events.is_empty());
         assert!(rows.is_empty());

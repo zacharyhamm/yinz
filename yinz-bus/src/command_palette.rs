@@ -342,6 +342,8 @@ pub struct HistoryEvent {
 pub enum HistoryReply {
     Run {
         header: HistoryHeader,
+        /// Result records superseded by messages in this conversation page.
+        suppressed_result_revisions: Vec<u64>,
         /// Replace cached activity intersecting these intervals before merging
         /// events. An interval with no event explicitly clears stale activity.
         activity_ranges: Vec<yinz_types::agent::history::Range>,

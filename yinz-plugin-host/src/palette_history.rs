@@ -78,6 +78,7 @@ fn unavailable_history() -> AgentReply {
             details: "No recorded history".into(),
             ..Default::default()
         },
+        suppressed_result_revisions: vec![],
         activity_ranges: vec![],
         events: vec![],
         rows: vec![],
@@ -531,6 +532,7 @@ pub(super) fn execute(
                     usage: None,
                     ..Default::default()
                 },
+                suppressed_result_revisions: vec![],
                 activity_ranges: vec![],
                 events,
                 rows,
@@ -604,10 +606,12 @@ fn conversation_refresh(
                 events,
                 rows,
                 activity_ranges,
+                suppressed_result_revisions,
                 ..
             }),
             AgentReply::History(HistoryReply::Run {
                 events: tail,
+                suppressed_result_revisions: tail_suppressed,
                 activity_ranges: tail_ranges,
                 rows: tail_rows,
                 ..
@@ -625,6 +629,9 @@ fn conversation_refresh(
             )?,
         ) {
             events.extend(tail);
+            suppressed_result_revisions.extend(tail_suppressed);
+            suppressed_result_revisions.sort_unstable();
+            suppressed_result_revisions.dedup();
             for range in tail_ranges {
                 if !activity_ranges.contains(&range) {
                     activity_ranges.push(range);
@@ -878,6 +885,7 @@ fn conversation_view(
                 .unwrap_or_default(),
             ..Default::default()
         },
+        suppressed_result_revisions: page.suppressed_result_revisions,
         activity_ranges,
         events,
         rows,

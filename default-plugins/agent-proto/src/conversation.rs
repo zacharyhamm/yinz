@@ -14,6 +14,7 @@ fn cursor(entry: &RunEntry) -> Cursor {
 }
 pub struct Page {
     pub entries: Vec<RunEntry>,
+    pub suppressed_result_revisions: Vec<u64>,
     pub shortened: Vec<u64>,
     pub earlier: Option<Cursor>,
     pub latest_received_revision: u64,
@@ -61,6 +62,7 @@ pub fn page(
     }
     let mut position = before;
     let mut entries = Vec::new();
+    let mut suppressed_result_revisions = Vec::new();
     loop {
         let current = match position {
             Some(c) => request.clone().filter(c.before()),
@@ -78,7 +80,7 @@ pub fn page(
                 .rev()
                 .filter(|entry| entry.worker().as_deref() == worker),
         );
-        suppress_completions(&mut entries);
+        suppressed_result_revisions.extend(suppress_completions(&mut entries));
         if entries.len() > 30 {
             break;
         }
@@ -98,6 +100,7 @@ pub fn page(
     Ok(Page {
         entries,
         shortened,
+        suppressed_result_revisions,
         earlier,
         latest_received_revision: latest,
     })
@@ -119,6 +122,7 @@ fn delivery(
         .limit(100);
     let mut from = after;
     let mut entries = Vec::new();
+    let mut suppressed_result_revisions = Vec::new();
     loop {
         let batch = read(
             backend,
@@ -134,7 +138,7 @@ fn delivery(
                 .into_iter()
                 .filter(|e| e.worker().as_deref() == worker),
         );
-        suppress_completions(&mut entries);
+        suppressed_result_revisions.extend(suppress_completions(&mut entries));
         if entries.len() > 30 {
             break;
         }
@@ -158,13 +162,14 @@ fn delivery(
     Ok(Page {
         entries,
         shortened,
+        suppressed_result_revisions,
         earlier: None,
         latest_received_revision: received,
     })
 }
 /// Alternative completion reports do not erase the retained raw record. Compare
 /// within the same worker and turn; never suppress identical text in distinct turns.
-pub fn suppress_completions(entries: &mut Vec<RunEntry>) {
+pub fn suppress_completions(entries: &mut Vec<RunEntry>) -> Vec<u64> {
     let messages: Vec<_> = entries
         .iter()
         .filter(|e| e.kind == RunEntryKind::Message)
@@ -175,9 +180,10 @@ pub fn suppress_completions(entries: &mut Vec<RunEntry>) {
         .filter(|e| e.kind == RunEntryKind::Prompt)
         .map(|e| (e.revision, e.worker()))
         .collect();
+    let mut suppressed = Vec::new();
     entries.retain(|e| {
-        e.kind != RunEntryKind::Result
-            || !messages.iter().any(|m| {
+        let redundant = e.kind == RunEntryKind::Result
+            && messages.iter().any(|m| {
                 m.worker() == e.worker()
                     && m.text.trim() == e.text.trim()
                     && match (&m.conversation_turn_id, &e.conversation_turn_id) {
@@ -191,8 +197,13 @@ pub fn suppress_completions(entries: &mut Vec<RunEntry>) {
                                 .any(|(r, w)| *r > lo && *r < hi && *w == e.worker())
                         },
                     }
-            })
+            });
+        if redundant {
+            suppressed.push(e.revision);
+        }
+        !redundant
     });
+    suppressed
 }
 
 /// Reconstruct both intervals around delivered prose, even when its neighbors
@@ -410,6 +421,7 @@ pub fn tools(
         entries,
         shortened,
         earlier,
+        suppressed_result_revisions: Vec::new(),
         latest_received_revision: 0,
     })
 }

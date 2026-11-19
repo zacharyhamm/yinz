@@ -403,6 +403,7 @@ fn web_agents_history_preserves_navigation_and_empty_activity_replacements() {
             markdown: "".into(),
             truncated: false,
         }],
+        suppressed_result_revisions: vec![],
         activity_ranges: vec![
             scope.clone(),
             Range {
@@ -584,6 +585,53 @@ fn history_navigation_page(
         assert!(event["request"].get("agent").is_none());
     }
     page
+}
+
+#[test]
+fn web_agents_refresh_reports_legacy_completion_repaired_since_last_visit() {
+    use agent_proto::agents::{rows, RunEntry, RunEntryKind};
+    let (_dir, data) = history_navigation_data();
+    let request = json!({"op":"history","run":"replacement"});
+    let mut entry = RunEntry {
+        revision: 5,
+        created_at_ms: Some(2_000_005),
+        kind: RunEntryKind::Result,
+        text: "repaired answer".into(),
+        worker_id: None,
+        conversation_turn_id: None,
+        event_id: None,
+        tool: None,
+    };
+    let save = |e: &RunEntry| {
+        data.plugin_data()
+            .apply(
+                project_data::store::SHARED,
+                &[rows::entry_mutation(
+                    "replacement",
+                    &yinz_runtime::host_identity::host_id(),
+                    e,
+                )],
+            )
+            .unwrap();
+    };
+    save(&entry);
+    let first = history_navigation_page(request.clone(), None, &data);
+    assert_eq!(
+        first["events"].as_array().unwrap().last().unwrap()["kind"],
+        "result"
+    );
+    entry.revision = 6;
+    entry.kind = RunEntryKind::Message;
+    save(&entry);
+    let catch_up = history_navigation_page(first["navigation"]["received"].clone(), None, &data);
+    let fresh = history_navigation_page(request, None, &data);
+    assert_eq!(fresh["suppressed_result_revisions"], json!([5]));
+    assert_eq!(catch_up["suppressed_result_revisions"], json!([5]));
+    assert!(fresh["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|e| e["revision"] != 5));
 }
 
 #[test]
@@ -883,6 +931,7 @@ fn web_agents_history_navigation_excludes_self_lineage_and_other_run_links() {
     let reply = HistoryReply::Run {
         header: Default::default(),
         events: vec![],
+        suppressed_result_revisions: vec![],
         activity_ranges: vec![],
         rows: ["previous", "origin", "latest", "other"]
             .into_iter()

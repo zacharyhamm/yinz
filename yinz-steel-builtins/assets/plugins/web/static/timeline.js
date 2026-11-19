@@ -32,10 +32,50 @@ function timelineKey({ run, agent = null }, tz) {
 
 /** Opened chat history for one authenticated app document. */
 export class TimelineCache {
+  // In insertion order, oldest snapshot first. Event payloads are immutable.
   #entries = new Map();
+  #eventBytes = new WeakMap();
+  #bytes = 0;
+  #budget;
+
+  constructor(budget = 4 * 1024 * 1024) {
+    this.#budget = budget;
+  }
+
+  #forget(key) {
+    const entry = this.#entries.get(key);
+    if (entry) {
+      this.#bytes -= entry.bytes;
+      this.#entries.delete(key);
+    }
+  }
+
+  #save(key, store) {
+    this.#forget(key);
+    const { run, earlier, received, cache: events } = store;
+    let bytes = 128 + 2 * (key.length + JSON.stringify([earlier, received]).length);
+    for (const event of events.values()) {
+      let size = this.#eventBytes.get(event);
+      if (size === undefined) {
+        size = 64 + 2 * JSON.stringify(event).length;
+        this.#eventBytes.set(event, size);
+      }
+      bytes += size;
+      if (bytes > this.#budget) return;
+    }
+    if (bytes > this.#budget) return;
+    while (this.#bytes + bytes > this.#budget) this.#forget(this.#entries.keys().next().value);
+    this.#entries.set(key, { run, events, earlier, received, bytes });
+    this.#bytes += bytes;
+  }
 
   open({ run, agent = null }, tz) {
-    const history = this.#entries.get(timelineKey({ run, agent }, tz));
+    const key = timelineKey({ run, agent }, tz);
+    const history = this.#entries.get(key);
+    if (history) {
+      this.#entries.delete(key);
+      this.#entries.set(key, history);
+    }
     return new TimelineStore({ run, agent, history });
   }
 
@@ -45,18 +85,20 @@ export class TimelineCache {
       ? this.#entries.get(timelineKey({ run, agent: store.agent }, tz)) : null;
     const result = store.apply(ticket, page, destination);
     if (!result.applied) return result;
-    const key = timelineKey(store, tz);
-    if (result.unavailable) {
-      this.#entries.delete(key);
+    if (result.unavailable || result.rebuild) {
+      for (const [key, snapshot] of this.#entries) {
+        if (snapshot.run === run) this.#forget(key);
+      }
     } else if (store.received) {
       // Merges replace the map, so snapshots can share it without copying events.
-      this.#entries.set(key, { events: store.cache, earlier: store.earlier, received: store.received });
+      this.#save(timelineKey(store, tz), store);
     }
     return result;
   }
 
   clear() {
     this.#entries.clear();
+    this.#bytes = 0;
   }
 }
 
@@ -194,28 +236,10 @@ export function displayItems(sorted, { run } = {}) {
  */
 export class TimelineStore {
   constructor({ run, agent = null, worker: scope = null, query = '', history = null }) {
-    this.run = run;
-    this.agent = agent || null;
     this.worker = scope;
     this.query = query;
-    this.gen = 0;
-    this.cache = history?.events ?? new Map();
-    this.earlier = history?.earlier ?? null;
-    this.received = history?.received ?? null;
-    this.navigation = {};
-    this.loaded = !!history;
-    this.confirmed = false;
-    this.meta = {
-      live: null,
-      header: null,
-      header_html: '',
-      details_html: '',
-      agent_gone: false,
-      previous_run: null,
-      origin_run: null,
-      status: '',
-      retargetedAt: null,
-    };
+    this.gen = -1;
+    this.reset({ run, agent, history });
   }
 
   initialRequest() {
@@ -246,7 +270,7 @@ export class TimelineStore {
   }
 
   ticket(kind) {
-    return { gen: this.gen, kind, run: this.run };
+    return { gen: this.gen, kind, run: this.run, after: this.received?.after_revision };
   }
 
   /** Fence in-flight reads and reset the timeline, optionally restoring a snapshot. */
@@ -260,6 +284,18 @@ export class TimelineStore {
     this.navigation = {};
     this.loaded = !!history;
     this.confirmed = false;
+    this.validateRestoredCursor = !!history;
+    this.meta = {
+      live: null,
+      header: null,
+      header_html: '',
+      details_html: '',
+      agent_gone: false,
+      previous_run: null,
+      origin_run: null,
+      status: '',
+      retargetedAt: null,
+    };
   }
 
   apply(ticket, page, destination = null) {
@@ -274,6 +310,14 @@ export class TimelineStore {
     const navigation = page.navigation && typeof page.navigation === 'object' ? page.navigation : {};
     const recv = navigation.received;
     const unavailable = page.status === NO_RECORDED_HISTORY && page.events.length === 0 && !recv;
+    const delivery = !switched && ticket.kind === 'received';
+    if (delivery && this.validateRestoredCursor && Number.isSafeInteger(recv?.after_revision)) {
+      if (recv.after_revision < ticket.after) {
+        this.reset();
+        return { applied: true, rebuild: true };
+      }
+      this.validateRestoredCursor = false;
+    }
     const previousRun = this.run;
     if (switched || unavailable) {
       this.reset({ run: page.run, history: unavailable ? null : destination });
@@ -284,7 +328,6 @@ export class TimelineStore {
     if (!older || unavailable) {
       // Latest and retarget replies show the chronological tail. A restored
       // delivery cursor still needs to catch up on revisions outside that page.
-      const delivery = !switched && ticket.kind === 'received';
       if (recv && (!this.received || (delivery && recv.after_revision >= this.received.after_revision))) {
         this.received = recv;
       }
@@ -303,6 +346,13 @@ export class TimelineStore {
       };
     }
     this.cache = mergeEvents(this.cache, page.events, page.activity_ranges, this.worker);
+    // Native suppression compares full text, worker and turn before rendering.
+    if (Array.isArray(page.suppressed_result_revisions)) {
+      for (const revision of page.suppressed_result_revisions) {
+        const key = `e${revision}`;
+        if (this.cache.get(key)?.kind === 'result') this.cache.delete(key);
+      }
+    }
     // A missing archive is confirmed, but the next successful reply starts anew.
     this.loaded = !unavailable;
     return { applied: true, retargeted: switched && previousRun !== null, unavailable };

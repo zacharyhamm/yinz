@@ -540,6 +540,7 @@ impl Screen {
                         details: "No recorded history".into(),
                         ..Default::default()
                     },
+                    suppressed_result_revisions: vec![],
                     activity_ranges: vec![],
                     events: vec![],
                     rows: vec![],
@@ -587,6 +588,7 @@ impl Screen {
             } => state.widget.open_agent_reader(header, markdown, tool),
             HistoryReply::Run {
                 mut header,
+                suppressed_result_revisions: _,
                 activity_ranges,
                 events,
                 rows,
@@ -1034,6 +1036,7 @@ impl Screen {
                         details: "No recorded history".into(),
                         ..Default::default()
                     },
+                    suppressed_result_revisions: vec![],
                     activity_ranges: vec![],
                     events: vec![],
                     rows: vec![],
