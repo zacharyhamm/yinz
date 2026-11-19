@@ -854,8 +854,21 @@ fn dialog_tracking_is_cleared_on_recovery_invalidation_and_closure() {
                 assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
                 screen.agent_write_for_test();
             },
-            "invalidate" => screen.invalidate_agent_lifecycle(PANE, "test"),
-            "close" => screen.close_pane_explicitly(PANE, None),
+            "invalidate" => {
+                screen.invalidate_agent_lifecycle(PANE, "test");
+                report(&mut screen, hook("Stop"));
+                assert!(!screen.agent_status_for_test().ready);
+            },
+            "close" => {
+                screen.agent_control(wait(AgentState::Idle), CLIENT);
+                assert!(replies(&messages, CLIENT).is_empty());
+                screen.close_pane_explicitly(PANE, None);
+                screen.refresh_agent_controls();
+                assert_eq!(
+                    replies(&messages, CLIENT)[0].outcome,
+                    AgentOutcome::TargetClosed
+                );
+            },
             "restart" => {
                 report(&mut screen, hook("SessionStart"));
                 report(&mut screen, hook("Stop"));
@@ -874,6 +887,8 @@ fn dialog_tracking_is_cleared_on_recovery_invalidation_and_closure() {
                 let mut start = hook("SessionStart");
                 start.codex_hooks_ready = Some(false);
                 report(&mut screen, start);
+                report(&mut screen, hook("Stop"));
+                assert!(!screen.agent_status_for_test().ready);
             },
             _ => unreachable!(),
         }
@@ -14492,8 +14507,16 @@ fn unavailable_notification_observation_preserves_worker_tool_wait_ownership() {
 #[test]
 fn unavailable_identified_notification_releases_only_its_processing_lifetime() {
     // R69-3: registry-only turn_over ends the observer without proving an answer.
-    for concurrent in [false, true] {
-        for budget in [false, true] {
+    // With independent work still running, the idle waiter cannot publish the
+    // intermediate answer. Check what a warp carries at each such boundary.
+    for (concurrent, handoff_after) in [
+        (false, None),
+        (true, None),
+        (true, Some("LAUNCH")),
+        (true, Some("REAL_ANSWER")),
+        (true, Some("LATER")),
+    ] {
+        'case: for budget in [false, true] {
             let (mut screen, mut messages, writes) = setup("claude");
             report_kind(&mut screen, "claude", hook("SessionStart"));
             screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
@@ -14570,16 +14593,43 @@ fn unavailable_identified_notification_releases_only_its_processing_lifetime() {
                 }
             );
             assert_eq!(screen.agent_status_for_test().background, concurrent);
-            assert_eq!(replies(&messages, CLIENT).is_empty(), concurrent);
-            // A second observer can still supply a real answer after observation loss.
             let mut late = sourced_stop("notice", "REAL_ANSWER");
             late.claude_notifications = accepted.claude_notifications;
-            report_kind(&mut screen, "claude", late.clone());
-            // A later human turn finishes normally without erasing independent work.
-            report_kind(&mut screen, "claude", steering_ack("later"));
-            report_kind(&mut screen, "claude", sourced_stop("later", "LATER"));
-            assert_eq!(screen.agent_status_for_test().background, concurrent);
-            report_kind(&mut screen, "claude", late);
+            for (reports, expected) in [
+                (vec![], "LAUNCH"),
+                (vec![late.clone()], "REAL_ANSWER"),
+                (
+                    vec![steering_ack("later"), sourced_stop("later", "LATER"), late],
+                    "LATER",
+                ),
+            ] {
+                for event in reports {
+                    report_kind(&mut screen, "claude", event);
+                    assert_eq!(screen.agent_status_for_test().background, concurrent);
+                }
+                if concurrent {
+                    assert!(replies(&messages, CLIENT).is_empty());
+                    if handoff_after == Some(expected) {
+                        let transfer = screen.capture_agent_tracking(PANE).unwrap();
+                        assert_eq!(
+                            transfer.lifecycle.unwrap().last_message.as_deref(),
+                            Some(expected)
+                        );
+                        assert_eq!(
+                            replies(&messages, CLIENT)[0].outcome,
+                            AgentOutcome::TargetChanged
+                        );
+                        continue 'case;
+                    }
+                } else if expected == "LAUNCH" {
+                    let responses = replies(&messages, CLIENT);
+                    assert_eq!(responses.len(), 1);
+                    assert_eq!(responses[0].outcome, AgentOutcome::Ok);
+                    assert_eq!(responses[0].message.as_deref(), Some(expected));
+                } else {
+                    assert_eq!(idle_message(&mut screen).as_deref(), Some(expected));
+                }
+            }
             if concurrent {
                 report_kind(
                     &mut screen,
@@ -14591,10 +14641,10 @@ fn unavailable_identified_notification_releases_only_its_processing_lifetime() {
                     identified_notice("other", "agent", "agent-tool", "other-run")
                         .claude_notifications;
                 report_kind(&mut screen, "claude", answer);
-                assert_eq!(
-                    replies(&messages, CLIENT).pop().unwrap().message.as_deref(),
-                    Some("FINAL_OTHER")
-                );
+                let responses = replies(&messages, CLIENT);
+                assert_eq!(responses.len(), 1);
+                assert_eq!(responses[0].outcome, AgentOutcome::Ok);
+                assert_eq!(responses[0].message.as_deref(), Some("FINAL_OTHER"));
             }
             assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
         }
@@ -18179,6 +18229,26 @@ fn issue85_wait_at(pane: PaneId, id: &str) -> AgentRequest {
     }
 }
 
+fn assert_survivor_has_no_retained_proof(
+    screen: &mut Screen,
+    messages: &CapturedClientMessages,
+    pane: PaneId,
+    submission: &str,
+) {
+    // WaitTurn prefers the live submission. Detach at the layout layer so a
+    // retained proof can only have come from the preceding explicit close.
+    screen
+        .tab_containing_pane_mut(pane)
+        .unwrap()
+        .extract_pane(pane, false)
+        .expect("survivor is still in the layout");
+    screen.agent_control(issue85_wait_at(pane, submission), CLIENT);
+    let responses = replies(messages, CLIENT);
+    assert_eq!(responses.len(), 1);
+    assert_eq!(responses[0].outcome, AgentOutcome::TargetClosed);
+    assert!(responses[0].retained_submission.is_none());
+}
+
 #[test]
 fn issue85_composed_close_checks_each_member_and_does_not_archive_survivors() {
     use yinz_types::multipane::{MultipaneDirection, MultipaneSplit};
@@ -18295,6 +18365,13 @@ fn issue85_composed_close_checks_each_member_and_does_not_archive_survivors() {
             _ => {},
         }
         replies(&messages, CLIENT);
+        assert_eq!(
+            screen
+                .tab_containing_pane(sibling)
+                .unwrap()
+                .explicit_close_pane_ids(sibling),
+            [sibling, PANE]
+        );
         screen.close_pane_explicitly(sibling, None);
         assert!(screen.get_pane_info(PANE).is_none());
         assert!(screen.get_pane_info(sibling).is_none());
@@ -18323,6 +18400,7 @@ fn issue85_composed_close_checks_each_member_and_does_not_archive_survivors() {
                 }
             }
         }
+        assert_survivor_has_no_retained_proof(&mut screen, &messages, unrelated, "unrelated");
         assert!(finish_paste(&writes).is_empty(), "{case}");
     }
 }
@@ -18356,11 +18434,19 @@ fn issue85_closing_lent_stand_in_does_not_archive_the_surviving_lender() {
         replies(&messages, CLIENT).pop().unwrap().outcome,
         AgentOutcome::Completed
     );
+    assert_eq!(
+        screen
+            .tab_containing_pane(stand_in)
+            .unwrap()
+            .explicit_close_pane_ids(stand_in),
+        [stand_in]
+    );
     screen.close_pane_explicitly(stand_in, None);
     assert!(screen
         .tab_containing_pane(PANE)
         .unwrap()
         .has_non_suppressed_pane_with_pid(&PANE));
+    assert_survivor_has_no_retained_proof(&mut screen, &messages, PANE, "lender");
     assert!(finish_paste(&writes).is_empty());
 }
 

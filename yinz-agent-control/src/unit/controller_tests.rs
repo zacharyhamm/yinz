@@ -549,6 +549,56 @@ fn hook(name: &str) -> super::HookEvent {
 }
 
 #[test]
+fn codex_cleanup_discards_pending_dialog_input() {
+    use yinz_types::keys::{BareKey, KeyWithModifier};
+
+    for cleanup in ["recover", "invalidate", "close", "restart", "unverified"] {
+        let mut agents = AgentController::default();
+        let mut host = RecordingHost::new();
+        let pane = host.pane;
+        host.live_input = true;
+        host.input_revision = 0;
+        host.current.kind = "codex".into();
+        observe(&mut agents, &host, &hook("SessionStart"));
+        host.current.state = AgentState::Waiting;
+        host.current.wait_needs_a_person = true;
+        observe(&mut agents, &host, &hook("PermissionRequest"));
+        let request = AgentRequest::SendKeys {
+            pane_id: pane,
+            expected_session_id: Some("old".into()),
+            keys: vec![KeyWithModifier::new(BareKey::Enter)],
+        };
+        assert!(agents
+            .handle(
+                &mut host,
+                request,
+                Reply::Client(ClientId::new(1)),
+                Instant::now(),
+            )
+            .is_none());
+        assert_eq!(host.replies.take()[0].outcome, AgentOutcome::Ok);
+        assert_eq!(agents.agent_dialog_inputs[&pane].input_revision, 1);
+
+        match cleanup {
+            "recover" => agents.finish_recovery(pane),
+            "invalidate" => agents.invalidate_agent_lifecycle(&host, pane, "test"),
+            "close" => agents.invalidate_agent_lifecycle(&host, pane, "pane_closed"),
+            "restart" => observe(&mut agents, &host, &hook("SessionStart")),
+            "unverified" => observe(
+                &mut agents,
+                &host,
+                &super::HookEvent {
+                    codex_hooks_ready: Some(false),
+                    ..hook("SessionStart")
+                },
+            ),
+            _ => unreachable!(),
+        }
+        assert!(!agents.agent_dialog_inputs.contains_key(&pane), "{cleanup}");
+    }
+}
+
+#[test]
 fn expiry_preserves_wait_ownership_and_run_identity_through_handoff() {
     use std::time::Duration;
     use yinz_types::agent::{
