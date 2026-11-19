@@ -3206,6 +3206,11 @@ impl Screen {
     }
 
     pub(crate) fn cleanup_closed_pane(&mut self, id: PaneId) {
+        self.cleanup_closed_pane_state(id);
+        self.refresh_agent_worktrees();
+    }
+
+    fn cleanup_closed_pane_state(&mut self, id: PaneId) {
         if let PaneId::Terminal(terminal) = id
             && let Some(gate) = self.core.bus.senders.launches.gate(terminal)
         {
@@ -3226,7 +3231,6 @@ impl Screen {
         if let PaneId::Plugin(plugin_id) = id {
             self.drop_quit_notice(plugin_id);
         }
-        self.refresh_agent_worktrees();
         self.clear_nested_guest(id);
         self.core.pane_output_activity.remove(&id);
     }

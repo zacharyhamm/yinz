@@ -201,7 +201,7 @@ impl Screen {
         );
         self.core.osc133_command_selection = osc133_command_selection;
         self.core.word_separators = word_separators;
-        self.nested.nested_session_handling = nested_session_handling;
+        self.nested.on_reconfigure(nested_session_handling);
         self.core.paste_buffer_read_enabled = dangerously_enable_paste_buffer_read;
         self.set_host_notification_protocol(host_notification_protocol);
         self.core
@@ -380,47 +380,11 @@ impl Screen {
         if self.palette.theme_preview.is_some() {
             return Ok(());
         }
-        if self.core.host_theme_dark_styling.is_some()
-            && self.core.host_theme_light_styling.is_some()
-        {
-            let theme = match mode {
-                HostTerminalThemeMode::Dark => self.core.host_theme_dark_styling,
-                HostTerminalThemeMode::Light => self.core.host_theme_light_styling,
-            };
-            if let Some(theme) = theme {
-                self.repaint_theme(theme)?;
-            }
-        }
-        Ok(())
+        self.core.repaint_theme_mode(mode)
     }
 
     pub(super) fn repaint_theme(&mut self, theme: Styling) -> Result<()> {
-        self.core.style.colors = theme;
-        self.core.default_mode_info.update_theme(theme);
-        for tab in self.core.tabs.values_mut() {
-            tab.update_terminal_theme(self.core.style.terminal);
-            tab.update_agent_theme_mapping(self.core.style.agent_theme_mapping);
-            tab.update_theme(theme);
-            tab.set_force_render();
-        }
-        let default_for_new = self.core.default_mode_info.clone();
-        for client in self.core.active_tab_ids.keys().copied() {
-            let mode_info = self
-                .core
-                .mode_info
-                .entry(client)
-                .or_insert_with(|| default_for_new.clone());
-            mode_info.update_theme(theme);
-            for tab in self.core.tabs.values_mut() {
-                tab.change_mode_info(mode_info.clone(), client);
-                tab.mark_active_pane_for_rerender(client);
-            }
-        }
-        for tab in self.core.tabs.values_mut() {
-            tab.update_input_modes()
-                .context("failed to propagate theme to plugins")?;
-        }
-        Ok(())
+        self.core.repaint_theme(theme)
     }
 
     /// Apply a manual host-terminal theme mode change requested via the CLI or a
@@ -533,5 +497,48 @@ impl Screen {
                 }
             },
         }
+    }
+}
+
+impl super::ScreenCore {
+    pub(super) fn repaint_theme_mode(&mut self, mode: HostTerminalThemeMode) -> Result<()> {
+        if self.host_theme_dark_styling.is_some() && self.host_theme_light_styling.is_some() {
+            let theme = match mode {
+                HostTerminalThemeMode::Dark => self.host_theme_dark_styling,
+                HostTerminalThemeMode::Light => self.host_theme_light_styling,
+            };
+            if let Some(theme) = theme {
+                self.repaint_theme(theme)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn repaint_theme(&mut self, theme: Styling) -> Result<()> {
+        self.style.colors = theme;
+        self.default_mode_info.update_theme(theme);
+        for tab in self.tabs.values_mut() {
+            tab.update_terminal_theme(self.style.terminal);
+            tab.update_agent_theme_mapping(self.style.agent_theme_mapping);
+            tab.update_theme(theme);
+            tab.set_force_render();
+        }
+        let default_for_new = self.default_mode_info.clone();
+        for client in self.active_tab_ids.keys().copied() {
+            let mode_info = self
+                .mode_info
+                .entry(client)
+                .or_insert_with(|| default_for_new.clone());
+            mode_info.update_theme(theme);
+            for tab in self.tabs.values_mut() {
+                tab.change_mode_info(mode_info.clone(), client);
+                tab.mark_active_pane_for_rerender(client);
+            }
+        }
+        for tab in self.tabs.values_mut() {
+            tab.update_input_modes()
+                .context("failed to propagate theme to plugins")?;
+        }
+        Ok(())
     }
 }

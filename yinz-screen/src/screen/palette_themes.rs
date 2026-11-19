@@ -86,21 +86,7 @@ impl Screen {
     }
 
     pub(super) fn cancel_theme_preview(&mut self, client: ClientId) {
-        if self
-            .palette
-            .theme_preview
-            .as_ref()
-            .is_none_or(|preview| preview.client != client)
-        {
-            return;
-        }
-        if let Some(preview) = self.palette.theme_preview.take() {
-            self.core.style.terminal = preview.original_terminal;
-            self.repaint_theme(preview.original).non_fatal();
-            if let Some(mode) = self.core.host_terminal_theme_mode {
-                self.repaint_theme_mode(mode).non_fatal();
-            }
-        }
+        self.palette.cancel_theme_preview(&mut self.core, client);
     }
 
     pub(crate) fn refresh_theme_preview(&mut self, client: ClientId) {
@@ -227,6 +213,29 @@ impl Screen {
                     state.widget.set_error(error);
                 }
             },
+        }
+    }
+}
+
+impl crate::screen::CommandPaletteController {
+    pub(super) fn cancel_theme_preview(
+        &mut self,
+        core: &mut crate::screen::ScreenCore,
+        client: ClientId,
+    ) {
+        if self
+            .theme_preview
+            .as_ref()
+            .is_none_or(|preview| preview.client != client)
+        {
+            return;
+        }
+        if let Some(preview) = self.theme_preview.take() {
+            core.style.terminal = preview.original_terminal;
+            core.repaint_theme(preview.original).non_fatal();
+            if let Some(mode) = core.host_terminal_theme_mode {
+                core.repaint_theme_mode(mode).non_fatal();
+            }
         }
     }
 }

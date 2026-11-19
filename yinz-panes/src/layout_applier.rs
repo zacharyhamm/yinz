@@ -1597,7 +1597,7 @@ impl<'a> LayoutApplier<'a> {
             .resize_pty_all_panes(&mut self.os_api)
             .with_context(err_context)
             .non_fatal();
-        self.tiled_panes.resize(new_screen_size);
+        self.tiled_panes.resize(new_screen_size).non_fatal();
     }
     pub fn offset_viewport(
         viewport: Rc<RefCell<Viewport>>,

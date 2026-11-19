@@ -418,7 +418,7 @@ impl Tab {
         self.tiled_panes.reapply_pane_frames();
         let display_area = *self.display_area.borrow();
         // as in `relayout_tiled_panes`, so that the layout passes through the constraint system
-        self.tiled_panes.resize(display_area);
+        self.tiled_panes.resize(display_area).non_fatal();
         // The base layout declares the tab bar's configured height; one tab group wants less.
         self.sync_tab_bar_height().non_fatal();
         if let Some(client_id) = client_id {
@@ -455,7 +455,7 @@ impl Tab {
         self.tiled_panes.reapply_pane_frames();
         let display_area = *self.display_area.borrow();
         // we do this so that the new swap layout has a chance to pass through the constraint system
-        self.tiled_panes.resize(display_area);
+        self.tiled_panes.resize(display_area).non_fatal();
         self.refresh_overlay_expansion();
         self.set_should_clear_display_before_rendering();
         self.set_force_render();

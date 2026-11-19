@@ -226,6 +226,12 @@ fn break_floating_pane_into_new_tab_resizes_its_pty_exactly_once() {
     yinz.wait_until("floating pane spawned", |grid_snapshot| {
         grid_snapshot.status_bar_appears() && grid_snapshot.contains("Pane #2")
     });
+    // A subsequent input write reaches the same FIFO writer after the screen turn's
+    // resize batch has been applied. Fence both ends of the measured history slice.
+    yinz.send_stdin(b"x");
+    floating_terminal.wait_for_stdin("writer finished floating placement", |stdin| {
+        stdin.ends_with(b"x")
+    });
     let resizes_before_break = floating_terminal.size_history().len();
 
     yinz.send_stdin(&keys::ctrl('t'));
@@ -239,8 +245,8 @@ fn break_floating_pane_into_new_tab_resizes_its_pty_exactly_once() {
     floating_terminal.wait_for_size("pane resized to its new tab", move |cols, rows| {
         (cols, rows) == expected_size
     });
-    // give any (unwanted) additional resize a chance to arrive before we assert
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    yinz.send_stdin(b"y");
+    floating_terminal.wait_for_stdin("writer finished tab break", |stdin| stdin.ends_with(b"y"));
     let resizes_while_breaking = floating_terminal
         .size_history()
         .split_off(resizes_before_break);

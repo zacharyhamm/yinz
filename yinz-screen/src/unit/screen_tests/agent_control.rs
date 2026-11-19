@@ -3689,7 +3689,7 @@ fn claude_permission_enter_clears_wait_before_tool_completion_in_every_placement
                 assert_eq!(busy.waiting_on, None);
                 assert_eq!(busy.detail, None);
                 assert!(!busy.wait_needs_a_person);
-                assert!(screen.agents.claude_permission_waits.is_empty());
+                assert!(screen.agents.claude.permission_waits.is_empty());
                 assert!(plugins.try_iter().any(|(instruction, _)| {
                     let PluginInstruction::Update(updates) = instruction else { return false };
                     updates.into_iter().any(|(_, _, event)| {
@@ -3752,7 +3752,7 @@ fn claude_permission_enter_ignores_other_waits_and_replaced_conversations() {
         }
         let waiting = screen.get_pane_info(PANE).unwrap().agent.unwrap();
         assert_eq!(waiting.state, AgentState::Waiting, "{case}");
-        assert!(screen.agents.claude_permission_waits.is_empty(), "{case}");
+        assert!(screen.agents.claude.permission_waits.is_empty(), "{case}");
         permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), true);
         assert_eq!(
             screen.get_pane_info(PANE).unwrap().agent,
@@ -3783,7 +3783,7 @@ fn claude_permission_enter_preserves_unrelated_worker_waits() {
         let waiting = screen.get_pane_info(PANE).unwrap().agent;
         permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), true);
         assert_eq!(screen.get_pane_info(PANE).unwrap().agent, waiting);
-        assert!(screen.agents.claude_permission_waits.is_empty());
+        assert!(screen.agents.claude.permission_waits.is_empty());
         assert!(screen.agents.agent_worker_waits.contains_key(&PANE));
         report_kind(
             &mut screen,
@@ -3861,7 +3861,7 @@ fn claude_permission_wait_requires_forwarded_enter_and_stays_with_its_pane() {
     screen.refresh_agent_controls();
     assert_eq!(screen.get_pane_info(PANE).unwrap().agent, waiting);
     screen.close_pane_explicitly(PANE, None);
-    assert!(screen.agents.claude_permission_waits.is_empty());
+    assert!(screen.agents.claude.permission_waits.is_empty());
 }
 
 #[test]
@@ -3883,13 +3883,13 @@ fn claude_permission_tracking_requires_an_accepted_state_report() {
         let (mut screen, _, _writes) = setup("claude");
         report_kind(&mut screen, "claude", hook("SessionStart"));
         report_kind(&mut screen, "claude", event);
-        assert!(screen.agents.claude_permission_waits.is_empty());
+        assert!(screen.agents.claude.permission_waits.is_empty());
     }
     let (mut screen, _, _writes) = setup("claude");
     report_kind(&mut screen, "claude", hook("SessionStart"));
     report_kind(&mut screen, "claude", hook("Interrupt"));
     report_kind(&mut screen, "claude", claude_permission_prompt());
-    assert!(screen.agents.claude_permission_waits.is_empty());
+    assert!(screen.agents.claude.permission_waits.is_empty());
 }
 
 #[test]
@@ -11864,7 +11864,7 @@ fn claude_background_permission_approval_restores_completed_parent_and_finishes_
                 assert!(!parent.wait_needs_a_person);
                 assert_eq!(lifecycle.claude_confirmation, Some(true));
                 assert!(screen.agent_status_for_test().background);
-                assert!(screen.agents.claude_permission_waits.is_empty());
+                assert!(screen.agents.claude.permission_waits.is_empty());
                 // Terminal Enter has no CLI consumption receipt; observe the empty composer
                 // so the idle wait also has independent evidence of input readiness.
                 draft_frame(&mut screen, "claude", "", 0, Instant::now());
@@ -12114,7 +12114,7 @@ fn claude_background_permission_new_callers_invalidate_old_completion_evidence()
                     screen.agent_status_for_test().agent.state,
                     AgentState::Waiting
                 );
-                assert!(screen.agents.claude_permission_waits.contains_key(&PANE));
+                assert!(screen.agents.claude.permission_waits.contains_key(&PANE));
             } else {
                 report_kind(
                     &mut screen,
@@ -13688,17 +13688,17 @@ fn claude_queued_prompt_recovery_preserves_permission_wait_and_event_state() {
     report_kind(&mut screen, "claude", claude_stop("prompt", "first", false));
     report_kind(&mut screen, "claude", claude_permission_prompt());
     let before = screen.get_pane_info(PANE).unwrap().agent.unwrap();
-    let revision = screen.agents.claude_permission_waits[&PANE].input_revision;
+    let revision = screen.agents.claude.permission_waits[&PANE].input_revision;
     let (sender, plugins) = channels::unbounded();
     screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     report_kind(&mut screen, "claude", recovered_prompt("queued", "prompt"));
     assert_eq!(screen.get_pane_info(PANE).unwrap().agent.unwrap(), before);
     assert_eq!(
-        screen.agents.claude_permission_waits[&PANE].input_revision,
+        screen.agents.claude.permission_waits[&PANE].input_revision,
         revision
     );
     assert_eq!(
-        screen.agents.claude_permission_waits[&PANE].conversation,
+        screen.agents.claude.permission_waits[&PANE].conversation,
         "conversation"
     );
     let lifecycle = screen
@@ -15652,7 +15652,7 @@ fn claude_same_source_resume_preserves_available_work_and_native_waits() {
             .worker_wait_tools
             .is_empty());
         assert!(!screen.agents.agent_worker_waits.contains_key(&PANE));
-        assert!(!screen.agents.claude_permission_waits.contains_key(&PANE));
+        assert!(!screen.agents.claude.permission_waits.contains_key(&PANE));
         assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
     }
 }
@@ -15835,12 +15835,12 @@ fn claude_same_source_resume_does_not_answer_the_current_parent_turn_or_permissi
         );
         assert_eq!(screen.agent_status_for_test().agent, before);
         assert_eq!(
-            screen.agents.claude_permission_waits.contains_key(&PANE),
+            screen.agents.claude.permission_waits.contains_key(&PANE),
             permission
         );
         report_kind(&mut screen, "claude", provider_resume(replacement_source()));
         assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
-        assert!(!screen.agents.claude_permission_waits.contains_key(&PANE));
+        assert!(!screen.agents.claude.permission_waits.contains_key(&PANE));
     }
 }
 
@@ -15964,7 +15964,7 @@ fn claude_permission_registry_overlays_parent_and_normalizes_late_reminders() {
         report_kind(&mut screen, "claude", reminder);
         assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
     }
-    assert!(screen.agents.claude_permission_waits.is_empty());
+    assert!(screen.agents.claude.permission_waits.is_empty());
     assert!(plugins.try_iter().all(|(instruction, _)| {
         let PluginInstruction::Update(updates) = instruction else { return true };
         updates.into_iter().all(|(_,_,event)| !matches!(event, Event::AgentEvent(event) if event.state == Some(AgentState::Waiting)))
@@ -16166,7 +16166,8 @@ fn claude_permission_registry_preserves_native_enter_release_ownership() {
                 let native = screen.agent_status_for_test().agent;
                 let wait = screen
                     .agents
-                    .claude_permission_waits
+                    .claude
+                    .permission_waits
                     .get(&PANE)
                     .unwrap()
                     .clone();
@@ -16182,7 +16183,8 @@ fn claude_permission_registry_preserves_native_enter_release_ownership() {
                     }
                     let retained = screen
                         .agents
-                        .claude_permission_waits
+                        .claude
+                        .permission_waits
                         .get(&PANE)
                         .expect("registry presentation must retain native Enter ownership");
                     assert_eq!(retained.conversation, wait.conversation);
@@ -16198,7 +16200,7 @@ fn claude_permission_registry_preserves_native_enter_release_ownership() {
                 finish_paste(&writes);
                 permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
                 assert_eq!(finish_paste(&writes), b"\r");
-                assert!(!screen.agents.claude_permission_waits.contains_key(&PANE));
+                assert!(!screen.agents.claude.permission_waits.contains_key(&PANE));
                 let expected = if confirmed {
                     AgentState::Idle
                 } else {
@@ -16234,9 +16236,9 @@ fn claude_permission_registry_preserves_native_enter_release_ownership() {
                 }));
                 // Presentation preservation must not retain ownership across replacement.
                 report_kind(&mut screen, "claude", claude_permission_prompt());
-                assert!(screen.agents.claude_permission_waits.contains_key(&PANE));
+                assert!(screen.agents.claude.permission_waits.contains_key(&PANE));
                 report_kind(&mut screen, "claude", provider_resume(replacement_source()));
-                assert!(!screen.agents.claude_permission_waits.contains_key(&PANE));
+                assert!(!screen.agents.claude.permission_waits.contains_key(&PANE));
             }
         }
     }
@@ -16258,7 +16260,8 @@ fn claude_permission_registry_native_enter_preserves_worker_question() {
     );
     let wait = screen
         .agents
-        .claude_permission_waits
+        .claude
+        .permission_waits
         .get(&PANE)
         .unwrap()
         .clone();
@@ -16268,11 +16271,11 @@ fn claude_permission_registry_native_enter_preserves_worker_question() {
         permission_sample(Status::Unavailable, 500_000),
     );
     assert_eq!(
-        screen.agents.claude_permission_waits.get(&PANE),
+        screen.agents.claude.permission_waits.get(&PANE),
         Some(&wait)
     );
     permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), true);
-    assert!(!screen.agents.claude_permission_waits.contains_key(&PANE));
+    assert!(!screen.agents.claude.permission_waits.contains_key(&PANE));
     let agent = screen.agent_status_for_test().agent;
     assert_eq!(agent.state, AgentState::Waiting);
     assert_eq!(agent.waiting_on.as_deref(), Some("a question"));
@@ -16752,7 +16755,7 @@ fn claude_permission_registry_recovery_passive_reports_do_not_answer_unacted_wai
                 claude_permission_prompt()
             },
         );
-        let native = screen.agents.claude_permission_waits.get(&PANE).cloned();
+        let native = screen.agents.claude.permission_waits.get(&PANE).cloned();
         let last_report = screen.agents.agent_lifecycle[&PANE].last_report;
         report_kind(
             &mut screen,
@@ -16760,7 +16763,7 @@ fn claude_permission_registry_recovery_passive_reports_do_not_answer_unacted_wai
             permission_sample(Status::Inactive, 500_001),
         );
         assert_eq!(
-            screen.agents.claude_permission_waits.get(&PANE),
+            screen.agents.claude.permission_waits.get(&PANE),
             native.as_ref()
         );
         assert_eq!(

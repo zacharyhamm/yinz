@@ -1284,19 +1284,7 @@ impl Screen {
             }
         }
         self.core.deferred_tab_closes.remove(&tab_id);
-        // An adopted group whose tab closes before its layout applied is never
-        // placed. Dropping the entry releases its warp hold.
-        if let Some((_, _, _, Some(response), _)) =
-            self.warp.pending_group_placements.remove(&tab_id)
-        {
-            let _ = response.send(Err(anyhow!(
-                "the tab for the adopted panes closed before they were placed"
-            )));
-        }
-        if let Some(response) = self.warp.pending_tab_adoptions.remove(&tab_id) {
-            let _ = response.send(Err(anyhow!("the adopted tab closed before placement")));
-        }
-        self.warp.pending_warp_relationships.remove(&tab_id);
+        self.warp.cancel_tab(tab_id);
         // Overlays keep their placement through the existing overlay relocation path.
         if preserve_guards {
             for (&plugin_id, notice) in &self.core.quit_notices {
@@ -1382,7 +1370,7 @@ impl Screen {
         // as they do when closed one at a time (`ScreenInstruction::ClosePane`). Left behind, a
         // guard nothing could lift would keep the session from ever ending.
         for p_id in &pane_ids {
-            self.cleanup_closed_pane(*p_id);
+            self.cleanup_closed_pane_state(*p_id);
         }
         // Nothing should be able to aim at this tab again: `toggle_tab` reads the history, and
         // an arrangement's memory of the project here would otherwise outlive the tab.
@@ -1421,6 +1409,7 @@ impl Screen {
             .with_context(err_context)
             .non_fatal();
         if self.core.tabs.is_empty() {
+            self.refresh_agent_worktrees();
             self.prune_tab_groups();
             self.core.active_tab_ids.clear();
             self.active_tabs_changed();
@@ -1450,14 +1439,19 @@ impl Screen {
                 .iter()
                 .map(|(client_id, _)| *client_id)
                 .min();
-            self.move_clients_from_closed_tab(client_mode_infos_in_closed_tab)
-                .with_context(err_context)?;
-            self.move_suppressed_panes_from_closed_tab(suppressed_panes, suppressed_respawns)
-                .with_context(err_context)?;
-            // After the clients, which is what wrote `overlay_client`'s destination into
-            // `active_tab_ids`, and before the resize and the state report below, so the tab they
-            // land in is measured and announced with them already in it.
-            self.move_overlay_panes_from_closed_tab(overlay_panes, overlay_client);
+            // Reconcile final live membership even if a relocation fails. Scanning
+            // during cleanup would evict cached roots for panes still in transit.
+            let relocated = self
+                .move_clients_from_closed_tab(client_mode_infos_in_closed_tab)
+                .and_then(|()| {
+                    self.move_suppressed_panes_from_closed_tab(
+                        suppressed_panes,
+                        suppressed_respawns,
+                    )
+                })
+                .map(|()| self.move_overlay_panes_from_closed_tab(overlay_panes, overlay_client));
+            self.refresh_agent_worktrees();
+            relocated.with_context(err_context)?;
             // Belt and braces, and it has to come before the visibility pass below.
             // `move_clients_from_closed_tab` only ever hears about the clients
             // `drain_connected_clients` handed it, so a client the closing tab did not count as

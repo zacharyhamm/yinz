@@ -675,11 +675,10 @@ pub(super) struct AgentController {
     pub(super) pending_terminal_states: HashMap<PaneId, String>,
     pub(super) warped_agent_inputs: HashMap<PaneId, TransferredInput>,
     pub(super) agent_lifecycle: HashMap<PaneId, Lifecycle>,
-    restored_claude_observers: yinz_agent_control::providers::claude_observer::RestoredObservers,
+    pub(super) claude: providers::ClaudeState,
     pub(super) agent_dialog_inputs: HashMap<PaneId, DialogInput>,
     pub(super) agent_clear_inputs: HashMap<PaneId, ClearInput>,
     pub(super) agent_worker_waits: HashMap<PaneId, WorkerWaits>,
-    pub(super) claude_permission_waits: HashMap<PaneId, PermissionWait>,
     /// Local hook activity, guarded by agent identity and sampled with monotonic frame time.
     pub(super) agent_hook_flashes: HashMap<PaneId, reports::HookFlash>,
 }

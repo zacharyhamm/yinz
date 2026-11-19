@@ -364,6 +364,29 @@ fn same_worktree_overlay_titles_follow_each_viewers_focus_and_clear_after_agent_
 }
 
 #[test]
+fn same_worktree_surviving_overlay_is_published_in_its_destination() {
+    let repo = repository();
+    let nested = repo.path().join("overlay");
+    std::fs::create_dir(&nested).unwrap();
+    let mut scene = Scene::new();
+    scene.add(
+        2,
+        NewPanePlacement::Overlay(yinz_types::data::OverlayPlacement::dismissible(None)),
+    );
+    scene.report(1, Some(agent(Some(repo.path()))));
+    scene.report(2, Some(agent(Some(&nested))));
+    scene.focus(1, CLIENT);
+    scene.wait_for_title("👯 [2]");
+    let destination = TabId::new(1);
+    new_tab(&mut scene.screen, 3, destination);
+    scene.report(3, Some(agent(Some(repo.path()))));
+    scene.screen.close_tab_by_id(TAB).unwrap();
+    let roots = &scene.screen.core.tabs[&destination].agent_worktrees;
+    assert!(roots.contains_key(&pane(3)));
+    assert_eq!(roots.get(&pane(2)), roots.get(&pane(3)));
+}
+
+#[test]
 fn same_worktree_stale_completion_after_directory_change_does_not_restore_indicator() {
     let repo = repository();
     let elsewhere = repository();

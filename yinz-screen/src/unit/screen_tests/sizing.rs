@@ -1454,6 +1454,42 @@ fn incomplete_reflow_retries_at_the_same_display_size() {
     assert!(!screen.core.tabs_needing_reflow.contains(&tab_id));
 }
 
+#[test]
+fn tiled_resize_send_failure_retries_inside_a_screen_transaction() {
+    use yinz_bus::os_input_output::ResizeCache;
+    let original = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let requested = Size { cols: 80, rows: 24 };
+    let tab = TabId::new(0);
+    let mut screen = create_non_mirrored_screen(original);
+    let (writer, receiver) = channels::unbounded();
+    let shutdown = Shutdown::default();
+    screen.core.bus.senders.to_pty_writer = Some(shutdown.sender(writer));
+    // Tabs clone these senders at construction. Keep all channels live except
+    // the writer that the tiled pane will lose after setup.
+    let (plugin, _plugin_rx) = channels::unbounded();
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin));
+    let (pty, _pty_rx) = channels::unbounded();
+    let (server, _server_rx) = channels::unbounded();
+    let (jobs, _jobs_rx) = channels::unbounded();
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(pty));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(server));
+    screen.core.bus.senders.to_background_jobs = Some(SenderWithContext::new(jobs));
+    screen.core.bus.senders.should_silently_fail = false;
+    new_tab(&mut screen, 1, tab);
+    drop(receiver);
+    screen.set_client_size(ClientId::new(1), requested).unwrap();
+    let _batch = ResizeCache::new(screen.core.bus.senders.clone());
+    assert!(screen.reflow_tab(tab).is_err());
+    assert!(screen.core.tabs_needing_reflow.contains(&tab));
+    assert_eq!(screen.core.tabs[&tab].get_display_area(), requested);
+    shutdown.begin();
+    screen.reflow_tab(tab).unwrap();
+    assert!(!screen.core.tabs_needing_reflow.contains(&tab));
+}
+
 /// Keeps a tab's PTY resizes failing while everything else it sends still gets through.
 fn fail_pty_resizes(screen: &mut Screen, tab_id: TabId) -> impl Sized + use<> {
     let (pty, pty_receiver) = channels::unbounded();

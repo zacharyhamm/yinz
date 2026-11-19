@@ -369,7 +369,7 @@ impl super::AgentController {
         self.agent_clear_inputs.remove(&pane);
         self.warped_agent_inputs.remove(&pane);
         self.agent_worker_waits.remove(&pane);
-        self.claude_permission_waits.remove(&pane);
+        self.claude.permission_waits.remove(&pane);
         let input_revision = (host.agent_input_revision(pane) == 0).then_some(0);
         let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) else {
             return false;

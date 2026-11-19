@@ -1013,6 +1013,21 @@ impl crate::screen::NestedSessionController {
 }
 
 impl super::NestedSessionController {
+    pub(super) fn disconnect_host(&mut self, client_id: ClientId) -> bool {
+        if self.nested_via_client_id != Some(client_id) {
+            return false;
+        }
+        self.nested_via_client_id = None;
+        self.nested_ancestry.clear();
+        self.host_descended = false;
+        self.host_descend_keys.clear();
+        true
+    }
+
+    pub(super) fn on_reconfigure(&mut self, handling: super::NestedSessionHandling) {
+        self.nested_session_handling = handling;
+    }
+
     pub(super) fn on_client_removed(
         &mut self,
         client_id: ClientId,

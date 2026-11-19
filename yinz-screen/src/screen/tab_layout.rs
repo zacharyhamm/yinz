@@ -507,9 +507,7 @@ impl Screen {
         self.refresh_agent_worktrees();
         self.sync_nested_guest_fullscreen_state();
         self.replay_events_waiting_for_layout(pending);
-        if let Some(response) = self.warp.pending_tab_adoptions.remove(&tab_id) {
-            let _ = response.send(Ok(()));
-        }
+        self.warp.complete_tab_adoption(tab_id);
 
         Ok(())
     }

@@ -1,4 +1,4 @@
-use super::super::*;
+use super::super::{reports::ReportDecision, *};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::screen::agent_control) struct ClaudeLifecycle {
@@ -341,5 +341,169 @@ impl super::super::AgentController {
                     && hook.prompt_id.is_some()
                     && lifecycle.prompt_id == hook.prompt_id
             })
+    }
+}
+
+#[derive(Default)]
+pub(in crate::screen) struct ClaudeState {
+    pub(in crate::screen) permission_waits: HashMap<PaneId, PermissionWait>,
+    pub(in crate::screen::agent_control) restored_observers:
+        yinz_agent_control::providers::claude_observer::RestoredObservers,
+}
+
+impl AgentController {
+    pub(in crate::screen) fn admit_claude_report(
+        &mut self,
+        host: &impl AgentHost,
+        report: &mut yinz_types::agent::report::AgentReport,
+        hook: &mut HookEvent,
+    ) -> Result<bool> {
+        let pane_id = report.pane_id;
+        if !self.accept_claude_source(host, pane_id, hook) {
+            return Ok(false);
+        }
+        if !self.accept_claude_permission(host, pane_id, hook) {
+            return Ok(false);
+        }
+        if let Some(event) = &mut report.event {
+            let mut raw: serde_json::Value =
+                serde_json::from_str(&event.raw).context("parse permission report")?;
+            if hook.claude_permission.is_some() || raw.get("_yinz_claude_permission").is_some() {
+                raw["_yinz_claude_permission"] = serde_json::to_value(&hook.claude_permission)
+                    .context("normalize permission sample")?;
+                *event = yinz_types::agent::AgentEvent::from_hook(
+                    "claude",
+                    event.pane_id,
+                    hook,
+                    serde_json::to_string(&raw)
+                        .context("serialize normalized permission report")?,
+                );
+            }
+        }
+        if hook.hook_event_name == yinz_types::agent::claude_permissions::EVENT
+            || (hook.hook_event_name == "Notification"
+                && hook.notification_type.as_deref() == Some("permission_prompt")
+                && hook.claude_permission.as_ref().is_some_and(|s| {
+                    s.status != yinz_types::agent::claude_permissions::Status::Unavailable
+                }))
+        {
+            report.state = yinz_types::agent::report::AgentReportState::Unchanged;
+        }
+        self.correlate_claude_terminal_hook(pane_id, hook);
+        Ok(true)
+    }
+}
+
+pub(in crate::screen) fn matches_report(
+    report: &yinz_types::agent::report::AgentReport,
+    hook: &HookEvent,
+) -> bool {
+    let pane_id = report.pane_id;
+    report.kind == "claude"
+        && report.event.as_ref().is_some_and(|event| {
+            event.kind == "claude"
+                && PaneId::Terminal(event.pane_id) == pane_id
+                && event.hook == hook.hook_event_name
+                && event.session_id.as_deref() == Some(hook.session_id.as_str())
+        })
+}
+
+impl AgentController {
+    pub(in crate::screen) fn filter_claude_report(
+        &mut self,
+        host: &impl AgentHost,
+        report: &yinz_types::agent::report::AgentReport,
+        hook: Option<&HookEvent>,
+    ) -> Result<ReportDecision> {
+        let pane_id = report.pane_id;
+        if let Some(hook) = hook.filter(|hook| hook.hook_event_name == "SubagentStop") {
+            // Worker Stops are useful archive evidence but cannot identify which execution
+            // ended; Claude's session registry decides background activity. Never pass them
+            // through activity or worker-wait reconciliation.
+            if self.has_agent_lifecycle(pane_id, "claude", &hook.session_id)
+                && hook.agent_id.as_deref().is_some_and(|id| !id.is_empty())
+                && report.event.as_ref().is_some_and(|event| {
+                    event.kind == "claude" && event.session_id.as_deref() == Some(&hook.session_id)
+                })
+            {
+                if !hook.archive_only {
+                    self.record_hook_activity(pane_id, Instant::now());
+                }
+                if let Some(event) = &report.event {
+                    let mut archived = hook.clone();
+                    archived.archive_only = true;
+                    let mut event = event.clone();
+                    event.state = None;
+                    event.raw = archived.broadcast_json(
+                        serde_json::to_string(&archived)
+                            .context("serialize archive-only Claude worker Stop")?,
+                    );
+                    return Ok(ReportDecision::Archive(event));
+                }
+            }
+            return Ok(ReportDecision::Ignore);
+        }
+        if let Some(hook) = hook.filter(|hook| {
+            !hook.is_worker()
+                && !hook.archive_only
+                && hook.hook_event_name == "UserPromptSubmit"
+                && hook.claude_recovered_after.is_none()
+                && self.ignore_claude_confirmation(pane_id, hook)
+        }) && let Some(event) = &report.event
+        {
+            self.correlate_recovered_claude_submit(host, event, hook);
+            return Ok(ReportDecision::Ignore);
+        }
+        // Older installed reporters can still send Idle for an ordinary Claude or Antigravity Stop.
+        // Correlate internal confirmations before applying or broadcasting any state.
+        if hook.is_some_and(|hook| {
+            self.ignore_claude_recovery(pane_id, hook)
+                || self.ignore_claude_confirmation(pane_id, hook)
+                || self.ignore_claude_worker(pane_id, hook)
+        }) {
+            log::debug!(
+                "agent report ignored report={:?} reason=claude_confirmation",
+                report.report_id
+            );
+            return Ok(ReportDecision::Ignore);
+        }
+        Ok(ReportDecision::Apply)
+    }
+}
+
+impl AgentController {
+    pub(in crate::screen) fn normalize_claude_state(
+        &self,
+        host: &impl AgentHost,
+        report: &mut yinz_types::agent::report::AgentReport,
+        hook: Option<&HookEvent>,
+    ) -> bool {
+        let pane_id = report.pane_id;
+        let recovered_wait = hook
+            .as_ref()
+            .filter(|hook| {
+                hook.claude_recovered_after.is_some() && hook.hook_event_name == "UserPromptSubmit"
+            })
+            .and_then(|_| host.pane_info(pane_id).and_then(|info| info.agent))
+            .filter(|agent| agent.state == AgentState::Waiting);
+        if let Some(waiting) = recovered_wait {
+            report.state = yinz_types::agent::report::AgentReportState::Set(waiting);
+            if let Some(event) = &mut report.event {
+                event.state = Some(AgentState::Waiting);
+            }
+            return true;
+        } else if hook
+            .as_ref()
+            .is_some_and(|hook| self.preserve_claude_start_state(pane_id, hook))
+        {
+            // Resuming the current process proves no foreground turn or native wait
+            // ended. A replacement has already retired its old parent before this point.
+            report.state = yinz_types::agent::report::AgentReportState::Unchanged;
+            if let Some(event) = &mut report.event {
+                event.state = None;
+            }
+            return true;
+        }
+        false
     }
 }

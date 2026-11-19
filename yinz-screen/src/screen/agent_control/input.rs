@@ -327,15 +327,7 @@ impl super::AgentController {
             return;
         }
         let revision = host.agent_input_revision(pane);
-        let pre_submit_dialog = status.agent.kind == "pi"
-            && status.agent.is_waiting_on_a_person()
-            && self.agent_controls.iter().any(|pending| {
-                pending.pane == pane
-                    && pending
-                        .prompt
-                        .as_ref()
-                        .is_some_and(PromptObservation::waiting_before_submit)
-            });
+        let pre_submit_dialog = self.pi_pre_submit_dialog(pane, &status.agent);
         let dialog = ((startup && !(provisional && providers::muse_composer(host, pane, false)))
             || status.agent.state == AgentState::Waiting)
             && (self

@@ -252,17 +252,6 @@ impl Screen {
         self.correlate_agent_submissions(event, hook)
     }
 
-    /// A recovered turn already has its lifecycle. Native evidence may still acknowledge
-    /// input, even after completion, without reopening that turn or publishing it twice.
-    pub(super) fn correlate_recovered_claude_submit(
-        &mut self,
-        event: &AgentEvent,
-        hook: &HookEvent,
-    ) {
-        self.agents
-            .correlate_recovered_claude_submit(&self.core, event, hook)
-    }
-
     fn correlate_agent_submissions(
         &mut self,
         event: &AgentEvent,
@@ -351,26 +340,6 @@ impl Screen {
 }
 
 impl Screen {
-    pub(in crate::screen) fn accept_claude_permission(
-        &mut self,
-        pane: PaneId,
-        hook: &mut HookEvent,
-    ) -> bool {
-        self.agents.accept_claude_permission(&self.core, pane, hook)
-    }
-}
-
-impl Screen {
-    /// Only native startup or a positive launch can establish a replacement provider.
-    /// Reject other incarnations before they can affect turns, input, waits or presentation.
-    pub(in crate::screen) fn accept_claude_source(
-        &mut self,
-        pane: PaneId,
-        hook: &HookEvent,
-    ) -> bool {
-        self.agents.accept_claude_source(&self.core, pane, hook)
-    }
-
     /// Called before confirmation filters/state application and again after lifecycle creation.
     pub(in crate::screen) fn retain_claude_evidence(&mut self, pane: PaneId, hook: &HookEvent) {
         if self.agents.retain_claude_evidence(pane, hook) {

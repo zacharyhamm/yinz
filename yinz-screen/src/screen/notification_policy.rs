@@ -93,12 +93,7 @@ impl Screen {
         plugin: Option<PluginId>,
         reason: Option<String>,
     ) -> Result<()> {
-        for pending in &mut self.notices.notification_policy.pending {
-            pending.fallback("policy_reconfigured");
-        }
-        self.notices.notification_policy.plugin = plugin;
-        self.notices.notification_policy.available = plugin.is_some();
-        self.notices.notification_policy.unavailable_reason = reason;
+        self.notices.notification_policy.reconfigure(plugin, reason);
         self.release_notification_assemblies("policy_reconfigured");
         self.commit_notifications()
     }
@@ -109,28 +104,19 @@ impl Screen {
         reason: String,
         disable: bool,
     ) -> Result<()> {
-        if self.notices.notification_policy.plugin != Some(plugin) {
+        if !self
+            .notices
+            .notification_policy
+            .unavailable(plugin, &reason, disable)
+        {
             return Ok(());
         }
-        for pending in &mut self.notices.notification_policy.pending {
-            pending.fallback(&reason);
-        }
-        self.notices.notification_policy.available = !disable;
-        self.notices.notification_policy.unavailable_reason = disable.then_some(reason.clone());
         self.release_notification_assemblies(&reason);
         self.commit_notifications()
     }
 
     fn release_notification_assemblies(&mut self, reason: &str) {
-        let mut raw = vec![];
-        for ((pane, _), assembly) in &mut self.notices.notification_policy.assemblies {
-            if !assembly.chunks.is_empty() {
-                raw.push((*pane, std::mem::take(&mut assembly.chunks)));
-                assembly.bytes = 0;
-                assembly.bypass = Some(reason.into());
-            }
-        }
-        for (pane, chunks) in raw {
+        for (pane, chunks) in self.notices.notification_policy.release_assemblies(reason) {
             self.deliver_desktop_notifications(chunks, pane);
         }
     }
@@ -215,60 +201,24 @@ impl Screen {
                 Event::NotificationReceived(original.clone()),
             )]))
             .context("publish notification arrival")?;
-        let policy = self.notices.notification_policy.plugin.filter(|id| {
-            self.notices.notification_policy.available && original.plugin_id != Some(*id)
-        });
-        let fallback =
-            fallback.or_else(|| self.notices.notification_policy.unavailable_reason.clone());
-        let mut pending = Pending {
+        let mut pending = self.notices.notification_policy.prepare(
             original,
             desktop,
             osc99_identity,
             on_click,
-            _completion: completion,
-            policy,
-            instance: None,
-            deadline: Instant::now() + POLICY_TIMEOUT,
-            decision: None,
+            completion,
             fallback,
-        };
-        let bytes = self
+        );
+        if self
             .notices
             .notification_policy
-            .pending
-            .iter()
-            .map(Pending::bytes)
-            .sum::<usize>()
-            + self
-                .notices
-                .notification_policy
-                .assemblies
-                .values()
-                .map(|a| a.bytes)
-                .sum::<usize>();
-        if self.notices.notification_policy.pending.len() >= MAX_PENDING
-            || bytes.saturating_add(pending.bytes()) > MAX_BYTES
+            .flush_overflow(&mut pending)
         {
-            for pending in &mut self.notices.notification_policy.pending {
-                pending.fallback("pending_overflow");
-            }
             self.commit_notifications()?;
-            pending.fallback("pending_overflow");
         }
-        if policy.is_none() || pending.fallback.is_some() {
-            pending.decision = Some(NotificationDecision::Pass);
-        } else if let Some(plugin) = policy {
-            self.core
-                .bus
-                .senders
-                .send_to_plugin(PluginInstruction::Update(vec![(
-                    Some(plugin),
-                    None,
-                    Event::NotificationRequested(pending.original.clone()),
-                )]))
-                .context("request notification policy")?;
-        }
-        self.notices.notification_policy.pending.push_back(pending);
+        self.notices
+            .notification_policy
+            .enqueue(pending, &self.core.bus.senders)?;
         self.commit_notifications()
     }
 
@@ -929,5 +879,95 @@ impl crate::screen::NotificationController {
                 NotificationDelivery::Desktop
             },
         }
+    }
+}
+
+impl NotificationPolicy {
+    fn reconfigure(&mut self, plugin: Option<PluginId>, reason: Option<String>) {
+        for pending in &mut self.pending {
+            pending.fallback("policy_reconfigured");
+        }
+        self.plugin = plugin;
+        self.available = plugin.is_some();
+        self.unavailable_reason = reason;
+    }
+    fn unavailable(&mut self, plugin: PluginId, reason: &str, disable: bool) -> bool {
+        if self.plugin != Some(plugin) {
+            return false;
+        }
+        for pending in &mut self.pending {
+            pending.fallback(reason);
+        }
+        self.available = !disable;
+        self.unavailable_reason = disable.then(|| reason.to_owned());
+        true
+    }
+    fn release_assemblies(&mut self, reason: &str) -> Vec<(TerminalId, Vec<PendingNotification>)> {
+        let mut raw = vec![];
+        for ((pane, _), assembly) in &mut self.assemblies {
+            if !assembly.chunks.is_empty() {
+                raw.push((*pane, std::mem::take(&mut assembly.chunks)));
+                assembly.bytes = 0;
+                assembly.bypass = Some(reason.into());
+            }
+        }
+        raw
+    }
+    fn prepare(
+        &self,
+        original: NotificationData,
+        desktop: Vec<PendingNotification>,
+        osc99_identity: Option<(String, bool)>,
+        on_click: Option<NotificationClick>,
+        completion: Option<NotificationEnd>,
+        fallback: Option<String>,
+    ) -> Pending {
+        let policy = self
+            .plugin
+            .filter(|id| self.available && original.plugin_id != Some(*id));
+        let fallback = fallback.or_else(|| self.unavailable_reason.clone());
+        Pending {
+            original,
+            desktop,
+            osc99_identity,
+            on_click,
+            _completion: completion,
+            policy,
+            instance: None,
+            deadline: Instant::now() + POLICY_TIMEOUT,
+            decision: None,
+            fallback,
+        }
+    }
+    fn flush_overflow(&mut self, pending: &mut Pending) -> bool {
+        let bytes = self.pending.iter().map(Pending::bytes).sum::<usize>()
+            + self.assemblies.values().map(|a| a.bytes).sum::<usize>();
+        if self.pending.len() >= MAX_PENDING || bytes.saturating_add(pending.bytes()) > MAX_BYTES {
+            for queued in &mut self.pending {
+                queued.fallback("pending_overflow");
+            }
+            pending.fallback("pending_overflow");
+            return true;
+        }
+        false
+    }
+    fn enqueue(
+        &mut self,
+        mut pending: Pending,
+        senders: &yinz_bus::thread_bus::ThreadSenders,
+    ) -> Result<()> {
+        if pending.policy.is_none() || pending.fallback.is_some() {
+            pending.decision = Some(NotificationDecision::Pass);
+        } else if let Some(plugin) = pending.policy {
+            senders
+                .send_to_plugin(PluginInstruction::Update(vec![(
+                    Some(plugin),
+                    None,
+                    Event::NotificationRequested(pending.original.clone()),
+                )]))
+                .context("request notification policy")?;
+        }
+        self.pending.push_back(pending);
+        Ok(())
     }
 }

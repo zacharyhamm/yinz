@@ -275,6 +275,7 @@ impl Screen {
             {
                 tab.forget_host_cursor_state(client);
                 tab.request_client_repaint(client, true);
+                self.permission_presentation_changed(client, presentation.offset());
             }
         }
         let surface = self.surface_size();

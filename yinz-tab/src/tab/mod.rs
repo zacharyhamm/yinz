@@ -2670,7 +2670,10 @@ impl Tab {
             .floating_panes
             .resize_pty_all_panes(&mut self.os_api)
             .with_context(err_context);
-        self.tiled_panes.resize(new_screen_size);
+        let tiled_ptys = self
+            .tiled_panes
+            .resize(new_screen_size)
+            .with_context(err_context);
         // after `tiled_panes.resize`, which is what updates the shared `display_area` cell the
         // surface is computed from. `FloatingPanes::reapply_overlay_coordinates` used to run from
         // inside `floating_panes.resize` above, and so re-resolved every overlay against the
@@ -2727,7 +2730,7 @@ impl Tab {
         // are the last thing that can move it.
         self.refresh_overlay_expansion();
         self.resize_all_stack_list_hidden_members();
-        floating_ptys.and(caching_resizes)
+        floating_ptys.and(tiled_ptys).and(caching_resizes)
     }
     /// Re-derive an overlay expansion against `self.viewport` as it is now.
     ///

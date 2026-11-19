@@ -95,40 +95,14 @@ impl Screen {
     /// is not, and splitting them keeps this function testable without either.
     pub(crate) fn open_context_menu(
         &mut self,
-        mut context: ContextMenuContext,
+        context: ContextMenuContext,
         client_id: ClientId,
     ) -> ContextMenuRequestId {
         self.close_command_palette(client_id);
-        let request_id = self.menus.next_context_menu_request_id;
-        self.menus.next_context_menu_request_id =
-            ContextMenuRequestId::new(self.menus.next_context_menu_request_id.get() + 1);
-        context.request_id = request_id;
-        context.client_id = client_id;
-
-        let anchor = Position::new(context.click.1 as i32, context.click.0 as u16);
-        // The one place the configured items enter a menu. The tab that fired this knows the pane
-        // and nothing about the configuration; filling them in here is what lets the fallback and
-        // the re-attachment below both work off the same list the plugin was shown.
-        context.items = self.menus.context_menu.items_for_plugin();
-        let configured = self.menus.context_menu.items().to_vec();
-        // Replacing an existing menu rather than stacking: two menus for one client have no
-        // meaning, and the old one's cells are repainted by the same force-render a close does.
-        if self.menus.context_menus.contains_key(&client_id) {
+        if self.menus.context_menu_is_open(client_id) {
             self.force_render_under_context_menu();
         }
-        self.menus.context_menus.insert(
-            client_id,
-            ContextMenuState {
-                request_id,
-                anchor,
-                pane_id: context.pane_id,
-                context,
-                plugin_id: None,
-                items: ContextMenuItems::AwaitingPlugin { configured },
-                selected: None,
-            },
-        );
-        request_id
+        self.menus.open(context, client_id)
     }
 
     /// Open a menu and ask the hook plugin what it should say.
@@ -238,7 +212,7 @@ impl Screen {
 
     /// Close this client's menu, if it has one. Returns whether there was one to close.
     pub(crate) fn close_context_menu(&mut self, client_id: ClientId) -> bool {
-        if self.menus.context_menus.remove(&client_id).is_none() {
+        if !self.menus.close(client_id) {
             return false;
         }
         self.force_render_under_context_menu();
@@ -794,5 +768,44 @@ impl super::ContextMenuController {
         let result = output.add_character_chunks_to_client(client_id, chunks, None);
         output.set_floating_panes_stack(previous_stack);
         result.context("failed to render context menu")
+    }
+}
+
+impl super::ContextMenuController {
+    fn open(
+        &mut self,
+        mut context: ContextMenuContext,
+        client_id: ClientId,
+    ) -> ContextMenuRequestId {
+        let request_id = self.next_context_menu_request_id;
+        self.next_context_menu_request_id =
+            ContextMenuRequestId::new(self.next_context_menu_request_id.get() + 1);
+        context.request_id = request_id;
+        context.client_id = client_id;
+
+        let anchor = Position::new(context.click.1 as i32, context.click.0 as u16);
+        // The one place the configured items enter a menu. The tab that fired this knows the pane
+        // and nothing about the configuration; filling them in here is what lets the fallback and
+        // the re-attachment below both work off the same list the plugin was shown.
+        context.items = self.context_menu.items_for_plugin();
+        let configured = self.context_menu.items().to_vec();
+        // Replacing an existing menu rather than stacking: two menus for one client have no
+        // meaning, and the old one's cells are repainted by the same force-render a close does.
+        self.context_menus.insert(
+            client_id,
+            ContextMenuState {
+                request_id,
+                anchor,
+                pane_id: context.pane_id,
+                context,
+                plugin_id: None,
+                items: ContextMenuItems::AwaitingPlugin { configured },
+                selected: None,
+            },
+        );
+        request_id
+    }
+    fn close(&mut self, client_id: ClientId) -> bool {
+        self.context_menus.remove(&client_id).is_some()
     }
 }

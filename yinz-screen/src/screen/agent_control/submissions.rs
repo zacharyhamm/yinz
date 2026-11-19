@@ -176,7 +176,7 @@ impl super::AgentController {
             || self.agent_clear_inputs.contains_key(&pane)
             || self.agent_draft_clears.contains_key(&pane)
             || self.agent_worker_waits.contains_key(&pane)
-            || self.claude_permission_waits.contains_key(&pane)
+            || self.claude.permission_waits.contains_key(&pane)
         {
             return None;
         }

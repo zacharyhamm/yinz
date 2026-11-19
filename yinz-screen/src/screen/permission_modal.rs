@@ -28,6 +28,7 @@ pub(super) struct PermissionModal {
 
 #[derive(PartialEq, Eq)]
 struct HitGeometry {
+    origin: (usize, usize),
     x: usize,
     y: usize,
     width: usize,
@@ -35,9 +36,10 @@ struct HitGeometry {
     rows: Vec<Option<usize>>,
 }
 
-impl From<&ContextMenuLayout> for HitGeometry {
-    fn from(layout: &ContextMenuLayout) -> Self {
+impl HitGeometry {
+    fn new(layout: &ContextMenuLayout, origin: (usize, usize)) -> Self {
         Self {
+            origin,
             x: layout.x,
             y: layout.y,
             width: layout.width,
@@ -126,9 +128,9 @@ impl PermissionModal {
         layout.y = viewport.y + viewport.rows.saturating_sub(layout.height()) / 2;
         (layout, selected)
     }
-    fn revalidate_press(&mut self, surface: Viewport) {
+    fn revalidate_press(&mut self, surface: Viewport, origin: (usize, usize)) {
         if let Some(Some((_, previous))) = &self.pressed
-            && *previous != HitGeometry::from(&self.layout(surface))
+            && *previous != HitGeometry::new(&self.layout(surface), origin)
         {
             self.pressed = Some(None);
         }
@@ -222,18 +224,44 @@ impl Screen {
             .context("answer plugin permission request")
             .non_fatal();
     }
+    fn permission_surface(&self, client: ClientId) -> Option<(Viewport, (usize, usize))> {
+        let surface = self.command_palette_surface(client)?;
+        let origin = self
+            .core
+            .client_sizes
+            .get(&client)
+            .map_or((0, 0), |terminal| {
+                crate::output::Presentation::centered_offset(
+                    *terminal,
+                    yinz_types::pane_size::Size {
+                        cols: surface.cols,
+                        rows: surface.rows,
+                    },
+                )
+            });
+        Some((surface, origin))
+    }
+
     pub(super) fn permission_modal_input(
         &mut self,
         key: &Option<KeyWithModifier>,
         client: ClientId,
     ) -> bool {
-        let surface = self.command_palette_surface(client);
+        let surface = self.permission_surface(client);
         let interactive = !self.core.watcher_clients.contains_key(&client);
         let action = self.permissions.key(client, key, interactive, surface);
         self.apply_permission_input(client, action)
     }
     pub(super) fn permission_modal_mouse(&mut self, event: &MouseEvent, client: ClientId) -> bool {
-        let surface = self.command_palette_surface(client);
+        // Mouse coordinates were translated through the last delivered presentation.
+        let origin = self
+            .core
+            .client_presentations
+            .get(&client)
+            .map_or((0, 0), |(_, presentation)| presentation.offset());
+        let surface = self
+            .command_palette_surface(client)
+            .map(|surface| (surface, origin));
         let interactive = !self.core.watcher_clients.contains_key(&client);
         let action = self.permissions.mouse(client, event, interactive, surface);
         self.apply_permission_input(client, action)
@@ -256,10 +284,29 @@ impl Screen {
     pub(super) fn permission_surfaces_changed(&mut self) {
         let clients: Vec<_> = self.permissions.permission_modal_clients().collect();
         for client in clients {
-            let surface = self.command_palette_surface(client);
+            let surface = self.permission_surface(client);
             self.permissions.surface_changed(client, surface);
         }
     }
+    pub(super) fn permission_presentation_changed(
+        &mut self,
+        client: ClientId,
+        origin: (usize, usize),
+    ) {
+        for modal in self
+            .permissions
+            .permission_modals
+            .iter_mut()
+            .filter(|m| m.client == Some(client))
+        {
+            if let Some(Some((_, geometry))) = &modal.pressed
+                && geometry.origin != origin
+            {
+                modal.pressed = Some(None);
+            }
+        }
+    }
+
     pub(super) fn prepare_permission_modal_render(
         &mut self,
     ) -> Vec<(ClientId, ContextMenuLayout, usize)> {
@@ -379,15 +426,15 @@ impl super::PermissionModalController {
 }
 
 impl super::PermissionModalController {
-    fn surface_changed(&mut self, client: ClientId, surface: Option<Viewport>) {
+    fn surface_changed(&mut self, client: ClientId, surface: Option<(Viewport, (usize, usize))>) {
         for modal in self
             .permission_modals
             .iter_mut()
             .filter(|modal| modal.client == Some(client))
         {
-            if let Some(surface) = surface {
+            if let Some((surface, origin)) = surface {
                 modal.set_scroll(modal.scroll, surface);
-                modal.revalidate_press(surface);
+                modal.revalidate_press(surface, origin);
             } else if modal.pressed.is_some() {
                 modal.pressed = Some(None);
             }
@@ -442,7 +489,7 @@ impl super::PermissionModalController {
         client: ClientId,
         key: &Option<KeyWithModifier>,
         interactive: bool,
-        surface: Option<Viewport>,
+        surface: Option<(Viewport, (usize, usize))>,
     ) -> ModalInput {
         if interactive {
             self.permission_last_client = Some(client);
@@ -462,7 +509,7 @@ impl super::PermissionModalController {
             let answer = match key.bare_key {
                 BareKey::Esc => Some(false),
                 BareKey::Enter => surface
-                    .filter(|surface| {
+                    .filter(|(surface, _)| {
                         modal
                             .layout(*surface)
                             .row_of_item(modal.selected(*surface))
@@ -475,14 +522,14 @@ impl super::PermissionModalController {
                         BareKey::Down => true,
                         _ => !modal.allow,
                     };
-                    if let Some(surface) = surface {
+                    if let Some((surface, origin)) = surface {
                         modal.show_selection(surface);
-                        modal.revalidate_press(surface);
+                        modal.revalidate_press(surface, origin);
                     }
                     None
                 },
                 BareKey::PageUp | BareKey::PageDown | BareKey::Home | BareKey::End => {
-                    if let Some(surface) = surface {
+                    if let Some((surface, _)) = surface {
                         let page = surface.rows.saturating_sub(2).max(1);
                         let scroll = match key.bare_key {
                             BareKey::PageUp => modal.scroll.saturating_sub(page),
@@ -506,7 +553,7 @@ impl super::PermissionModalController {
         client: ClientId,
         event: &MouseEvent,
         interactive: bool,
-        surface: Option<Viewport>,
+        surface: Option<(Viewport, (usize, usize))>,
     ) -> ModalInput {
         if self.permission_mouse_captures.contains(&client) {
             if event.event_type == MouseEventType::Release {
@@ -525,7 +572,7 @@ impl super::PermissionModalController {
             return ModalInput::Ignored;
         };
         if event.wheel_up || event.wheel_down {
-            if let Some(surface) = surface {
+            if let Some((surface, _)) = surface {
                 let scroll = if event.wheel_up {
                     modal.scroll.saturating_sub(1)
                 } else {
@@ -535,7 +582,8 @@ impl super::PermissionModalController {
             }
             return ModalInput::Redraw;
         }
-        let layout = surface.map(|surface| modal.layout(surface));
+        let origin = surface.map_or((0, 0), |(_, origin)| origin);
+        let layout = surface.map(|(surface, _)| modal.layout(surface));
         let hit = layout
             .as_ref()
             .and_then(|layout| context_menu_item_at(layout, event.position));
@@ -544,14 +592,17 @@ impl super::PermissionModalController {
             modal.pressed = Some(
                 hit.zip(layout.as_ref())
                     .filter(|_| event.left)
-                    .map(|(hit, layout)| (hit, HitGeometry::from(layout))),
+                    .map(|(hit, layout)| (hit, HitGeometry::new(layout, origin))),
             );
         }
         if event.event_type == MouseEventType::Release {
             let pressed = modal.pressed.take();
-            if let (Some(hit), Some(surface)) = (hit, surface)
+            if let (Some(hit), Some((surface, origin)), Some(layout)) =
+                (hit, surface, layout.as_ref())
                 && event.left
-                && pressed.flatten().is_some_and(|(index, _)| index == hit)
+                && pressed.flatten().is_some_and(|(index, pressed)| {
+                    index == hit && pressed == HitGeometry::new(layout, origin)
+                })
             {
                 let item_count = modal.items(surface).len();
                 let allow = hit == item_count - 1;

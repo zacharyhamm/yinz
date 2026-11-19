@@ -52,7 +52,7 @@ impl super::AgentController {
             self.agent_worker_waits.insert(pane, workers);
         }
         if let Some(permission) = tracking.permission_wait.filter(|_| live) {
-            self.claude_permission_waits.insert(pane, permission);
+            self.claude.permission_waits.insert(pane, permission);
         }
         if let Some(mut launch) = tracking.launch.take() {
             launch.pane_id = pane;
@@ -137,7 +137,7 @@ impl super::AgentController {
             lifecycle,
             dialog_input: self.agent_dialog_inputs.get(&pane).cloned(),
             worker_waits: self.agent_worker_waits.get(&pane).cloned(),
-            permission_wait: self.claude_permission_waits.get(&pane).cloned(),
+            permission_wait: self.claude.permission_waits.get(&pane).cloned(),
             launch: self.agent_launches.get(&pane).cloned(),
             submissions: self
                 .agent_submissions
@@ -286,7 +286,7 @@ impl super::AgentController {
                 // Apply identity first: changing it retires the destination's old OSC status.
                 // Absence is part of the snapshot too: SessionEnd may have cleared the source
                 // record while the destination command synthesized a new Busy record.
-                self.claude_permission_waits.remove(&pane);
+                self.claude.permission_waits.remove(&pane);
                 let staged = self.stage_agent(host, pane, agent, false, false);
                 (!matches!(staged, super::reports::AgentUpdate::Missing)).then_some(tracking)
             });
@@ -312,7 +312,7 @@ impl super::AgentController {
         pane: PaneId,
     ) {
         if !self.agent_lifecycle.contains_key(&pane) {
-            self.restored_claude_observers.enroll(host, pane);
+            self.claude.restored_observers.enroll(host, pane);
         }
     }
 
@@ -328,12 +328,12 @@ impl super::AgentController {
     ) -> Option<Option<AgentInfo>> {
         let orphan = !self.agent_lifecycle.contains_key(&pane)
             && !self.agent_worker_waits.contains_key(&pane)
-            && !self.claude_permission_waits.contains_key(&pane)
+            && !self.claude.permission_waits.contains_key(&pane)
             && self
                 .agent_submissions
                 .get(&pane)
                 .is_none_or(|submissions| submissions.iter().all(|s| s.result.is_some()));
-        self.restored_claude_observers.activity(
+        self.claude.restored_observers.activity(
             host,
             pane,
             generation,

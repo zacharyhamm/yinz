@@ -33,7 +33,7 @@ fn a_resize_a_stack_cannot_fit_leaves_the_panes_where_they_were() {
         "every pane should be a member of the stack"
     );
 
-    tab.tiled_panes.resize(Size { cols: 80, rows: 2 });
+    tab.tiled_panes.resize(Size { cols: 80, rows: 2 }).unwrap();
 
     assert_eq!(
         tiled_pane_geoms(&tab),
@@ -57,8 +57,8 @@ fn a_resize_after_a_refused_one_lays_the_stack_out_in_the_new_size() {
     let size = Size { cols: 80, rows: 20 };
     let mut tab = tab_with_a_three_pane_stack(size);
 
-    tab.tiled_panes.resize(Size { cols: 80, rows: 2 });
-    tab.tiled_panes.resize(Size { cols: 80, rows: 10 });
+    tab.tiled_panes.resize(Size { cols: 80, rows: 2 }).unwrap();
+    tab.tiled_panes.resize(Size { cols: 80, rows: 10 }).unwrap();
 
     let after = tiled_pane_geoms(&tab);
     let stack_rows: usize = after.iter().map(|(_, geom)| geom.rows.as_usize()).sum();

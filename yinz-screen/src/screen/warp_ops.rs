@@ -69,6 +69,26 @@ impl super::WarpController {
             .retain(|_, id| groups.contains_key(id));
     }
 
+    pub(super) fn cancel_tab(&mut self, tab_id: TabId) {
+        // An adopted group whose tab closes before its layout applied is never
+        // placed. Dropping the entry releases its warp hold.
+        if let Some((_, _, _, Some(response), _)) = self.pending_group_placements.remove(&tab_id) {
+            let _ = response.send(Err(anyhow!(
+                "the tab for the adopted panes closed before they were placed"
+            )));
+        }
+        if let Some(response) = self.pending_tab_adoptions.remove(&tab_id) {
+            let _ = response.send(Err(anyhow!("the adopted tab closed before placement")));
+        }
+        self.pending_warp_relationships.remove(&tab_id);
+    }
+
+    pub(super) fn complete_tab_adoption(&mut self, tab_id: TabId) {
+        if let Some(response) = self.pending_tab_adoptions.remove(&tab_id) {
+            let _ = response.send(Ok(()));
+        }
+    }
+
     pub(super) fn reject_layout(&mut self, tab_id: TabId, retained: bool, message: &str) {
         let group_receipt = self
             .pending_group_placements
@@ -624,7 +644,6 @@ impl Screen {
     }
 
     fn notify_warp_departure(&mut self, pane_id: PaneId) {
-        self.refresh_agent_worktrees();
         self.sync_nested_guest_fullscreen_state();
         if let PaneId::Terminal(terminal) = pane_id
             && let Some(gate) = self.core.bus.senders.launches.gate(terminal)
@@ -998,6 +1017,9 @@ impl Screen {
             agent: pane.agent_info().cloned(),
         });
         let removed = tab.extract_warp_panes(&[pane_id]);
+        if !removed.is_empty() {
+            self.refresh_agent_worktrees();
+        }
         for pane in removed {
             if payload.held.is_some() {
                 self.core
@@ -1320,6 +1342,10 @@ impl Screen {
             .get_mut(&tab_index)
             .ok_or_else(|| "warp tab disappeared".to_owned())?;
         let removed = tab.extract_warp_panes(&prepared.slots);
+        // Whole-tab departure reconciles once, after relocating surviving overlays.
+        if prepared.pane_group && !removed.is_empty() {
+            self.refresh_agent_worktrees();
+        }
         for pane in removed {
             let id = pane.pid();
             if matches!(id, PaneId::Terminal(t) if addresses.get(&t).is_some_and(|a| a.held.is_some()))

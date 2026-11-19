@@ -10,9 +10,13 @@ pub struct Presentation {
 
 impl Presentation {
     pub fn offset(self) -> (usize, usize) {
+        Self::centered_offset(self.terminal, self.content)
+    }
+
+    pub fn centered_offset(terminal: Size, content: Size) -> (usize, usize) {
         (
-            self.terminal.cols.saturating_sub(self.content.cols) / 2,
-            self.terminal.rows.saturating_sub(self.content.rows) / 2,
+            terminal.cols.saturating_sub(content.cols) / 2,
+            terminal.rows.saturating_sub(content.rows) / 2,
         )
     }
 

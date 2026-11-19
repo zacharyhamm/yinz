@@ -376,11 +376,7 @@ impl Screen {
                     .with_context(err_context),
             );
         }
-        if self.nested.nested_via_client_id == Some(client_id) {
-            self.nested.nested_via_client_id = None;
-            self.nested.nested_ancestry = vec![];
-            self.nested.host_descended = false;
-            self.nested.host_descend_keys = vec![];
+        if self.nested.disconnect_host(client_id) {
             self.update_all_clients_nesting_mode_info();
             self.broadcast_ancestry_update_to_guests();
         }

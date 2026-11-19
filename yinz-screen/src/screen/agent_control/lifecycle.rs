@@ -150,62 +150,8 @@ impl super::AgentController {
                 self.remove_agent_lifecycle(host, pane, "session_end");
                 self.agent_dialog_inputs.remove(&pane);
                 self.agent_worker_waits.remove(&pane);
-            } else if event.kind == "muse"
-                && event.session_id.is_none()
-                && hook.is_some_and(|hook| {
-                    hook.hook_event_name == "SessionStart"
-                        && hook.source.as_deref() != Some("compact")
-                        && hook.session_id.is_empty()
-                        && hook.muse_hooks_ready == Some(true)
-                        && yinz_types::agent::hook_state_for(&event.kind, hook).is_some()
-                })
-            {
-                // The launcher's startup announcement: verified hook wiring, but
-                // unpinned, because Muse speaks no session id until its first turn.
-                // Claimed by the marker alone - a provider hook never carries one.
-                let transferred = self.warped_agent_inputs.remove(&pane).map(|input| {
-                    (input.kind == "muse"
-                        && input.conversation.is_empty()
-                        && input.consumed == Some(true)
-                        && input.input_revision == host.agent_input_revision(pane))
-                    .then_some(input.input_revision)
-                });
-                let previous = self
-                    .agent_lifecycle
-                    .get(&pane)
-                    .filter(|previous| previous.kind == "muse" && previous.conversation.is_empty());
-                if previous.is_none() {
-                    log::debug!("agent lifecycle created pane={pane:?} kind=muse provisional=true");
-                }
-                let input_revision = clear_revision.or(dialog_revision).or(previous
-                    .map(|previous| previous.input_revision)
-                    .unwrap_or_else(|| {
-                        transferred
-                            .unwrap_or_else(|| (host.agent_input_revision(pane) == 0).then_some(0))
-                    }));
-                self.agent_lifecycle.insert(
-                    pane,
-                    Lifecycle {
-                        kind: "muse".to_owned(),
-                        conversation: String::new(),
-                        input_revision,
-                        last_report: Instant::now(),
-                        ended_turn: previous.and_then(|previous| previous.ended_turn.clone()),
-                        closeout_turn: None,
-                        last_message: None,
-                        prompt_id: None,
-                        previous_prompt_id: None,
-                        claude: providers::ClaudeLifecycle {
-                            activity: ClaudeActivity::default(),
-                            observed_at: previous
-                                .map_or_else(Instant::now, |l| l.claude.observed_at),
-                            confirmation: None,
-                            background: None,
-                            notifications: BTreeMap::new(),
-                        },
-                        agy: providers::AgyLifecycle::default(),
-                    },
-                );
+            } else if providers::muse::provisional_start(event, hook) {
+                self.bind_provisional_muse(host, pane, clear_revision.or(dialog_revision));
             } else if let Some(conversation) = event.session_id.as_ref().filter(|id| {
                 !id.is_empty()
                     && hook
@@ -255,23 +201,23 @@ impl super::AgentController {
                         // Claude starts a notification turn by itself; it consumes no input.
                         "UserPromptSubmit" if !notification => {
                             accepted_input_revision.or_else(|| {
-                                (event.kind == "agy"
-                                    && transferred.is_none()
-                                    && previous.is_none()
-                                    && host.agent_input_revision(pane) == 0)
-                                    .then_some(0)
+                                providers::agy::initial_prompt_revision(
+                                    &event.kind,
+                                    transferred,
+                                    previous,
+                                    host,
+                                    pane,
+                                )
                             })
                         },
                         "PreInvocation" if event.kind == "agy" => {
-                            accepted_input_revision.or_else(|| {
-                                previous
-                                    .map(|previous| previous.input_revision)
-                                    .unwrap_or_else(|| {
-                                        transferred.unwrap_or_else(|| {
-                                            (host.agent_input_revision(pane) == 0).then_some(0)
-                                        })
-                                    })
-                            })
+                            providers::agy::pre_invocation_revision(
+                                accepted_input_revision,
+                                transferred,
+                                previous,
+                                host,
+                                pane,
+                            )
                         },
                         // An uncorrelated acceptance may arrive after a newer draft. Tool progress
                         // and completion preserve consumption, including when it is unknown.
@@ -577,7 +523,7 @@ impl super::AgentController {
         self.agent_dialog_inputs.remove(&pane);
         self.agent_clear_inputs.remove(&pane);
         self.agent_worker_waits.remove(&pane);
-        self.claude_permission_waits.remove(&pane);
+        self.claude.permission_waits.remove(&pane);
         let mut keep = Vec::new();
         for pending in std::mem::take(&mut self.agent_controls) {
             // A command may reset/switch the conversation before its submit-write receipt.
@@ -626,7 +572,7 @@ impl super::AgentController {
         reason: &str,
     ) {
         self.warped_agent_inputs.remove(&pane);
-        self.restored_claude_observers.retire(pane);
+        self.claude.restored_observers.retire(pane);
         let previous = self.agent_lifecycle.remove(&pane);
         log::debug!(
             "agent lifecycle removed session={:?} pane={pane:?} reason={reason} previous={:?}",

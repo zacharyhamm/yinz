@@ -902,13 +902,24 @@ impl TiledPanes {
         self.reset_boundaries();
     }
     pub fn set_pane_frames(&mut self, pane_frame_style: PaneFrameStyle) {
+        self.apply_pane_frames(pane_frame_style).non_fatal();
+    }
+
+    fn apply_pane_frames(&mut self, pane_frame_style: PaneFrameStyle) -> Result<()> {
         self.pane_frame_style = pane_frame_style;
+        let mut result = Ok(());
         let frame_context = self.frame_context();
         for pane in self.panes.values_mut() {
             apply_frame(&frame_context, pane);
-            resize_pty!(pane, self.os_api, self.senders, self.character_cell_size).non_fatal();
+            result = result.and(resize_pty!(
+                pane,
+                self.os_api,
+                self.senders,
+                self.character_cell_size
+            ));
         }
         self.reset_boundaries();
+        result.context("resize tiled pane frames")
     }
     /// What `apply_frame` needs to know about the tab as a whole, gathered once:
     /// asking for the stacks' rectangles per pane would be quadratic.
@@ -1781,7 +1792,7 @@ impl TiledPanes {
     }
     pub fn force_resize(&mut self) {
         let display_area = *self.display_area.borrow();
-        self.resize(display_area);
+        self.resize(display_area).non_fatal();
     }
 
     fn tab_bar_resizes(&self, group_count: usize) -> impl Iterator<Item = (PaneId, PaneGeom)> + '_ {
@@ -1851,7 +1862,7 @@ impl TiledPanes {
         result.context("resize tab bar for tab groups")
     }
 
-    pub fn resize(&mut self, new_screen_size: Size) {
+    pub fn resize(&mut self, new_screen_size: Size) -> Result<()> {
         {
             if self.display_area_changed(new_screen_size) {
                 self.clear_tombstones();
@@ -1922,7 +1933,7 @@ impl TiledPanes {
             display_area.rows = rows;
             display_area.cols = cols;
         }
-        self.set_pane_frames(self.pane_frame_style);
+        self.apply_pane_frames(self.pane_frame_style)
     }
 
     pub fn resize_active_pane(
@@ -3166,7 +3177,7 @@ impl TiledPanes {
     fn rerun_layout_solver_and_rerender(&mut self) {
         self.set_force_render();
         let display_area = *self.display_area.borrow();
-        self.resize(display_area);
+        self.resize(display_area).non_fatal();
     }
 
     fn reenter_active_pane_fullscreen(&mut self, client_id: ClientId, covers_ui: bool) {

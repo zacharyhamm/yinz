@@ -44,6 +44,17 @@ impl Provider {
         }
     }
 
+    pub fn incomplete_stop(self, hook: &yinz_types::agent::HookEvent) -> bool {
+        hook.hook_event_name == "Stop"
+            && match self {
+                Self::Claude => {
+                    hook.claude_turn_complete != Some(true) && !hook.is_claude_interruption()
+                },
+                Self::Agy => hook.agy_turn_complete != Some(true),
+                _ => false,
+            }
+    }
+
     pub fn web_command(self, text: &str) -> bool {
         text.trim_start().starts_with('/')
             || match self {

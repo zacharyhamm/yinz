@@ -868,12 +868,32 @@ fn background_permission_waits_for_client_and_pane_in_either_order() {
 
 #[test]
 fn permission_press_resize_round_trip_before_frame() {
+    permission_press_resize_round_trip(false);
+}
+
+#[test]
+fn permission_press_resize_round_trip_with_pinned_tab() {
+    permission_press_resize_round_trip(true);
+}
+
+fn permission_press_resize_round_trip(pin_size: bool) {
     use yinz_types::mouse::MouseEvent;
     use yinz_types::position::Position;
     let (mut mock, renders, threads) = start();
+    if pin_size {
+        mock.to_screen
+            .send(ScreenInstruction::AddClient(
+                ClientId::new(2),
+                Size { cols: 80, ..SIZE },
+                None,
+                None,
+            ))
+            .unwrap();
+    }
     let mut permission =
         PluginPermission::new("round trip".into(), vec![PermissionType::RunCommands]);
     permission.request_id = 73;
+    permission.client_id = Some(CLIENT);
     mock.to_screen
         .send(ScreenInstruction::RequestPluginPermissions(
             PLUGIN, permission,
@@ -925,6 +945,11 @@ fn permission_press_resize_round_trip_before_frame() {
         mock.to_screen
             .send(ScreenInstruction::RecomputeTabSize(CLIENT, size))
             .unwrap();
+        if pin_size {
+            mock.to_screen
+                .send(ScreenInstruction::RenderToClients)
+                .unwrap();
+        }
     }
     mouse(MouseEvent::new_left_release_event(position));
     pane_info(&mock, pane);

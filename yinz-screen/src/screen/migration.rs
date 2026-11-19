@@ -44,6 +44,11 @@ pub(super) struct MigrationState {
     pending_host_drain: Option<Vec<(TerminalId, crate::os_input_output::ReleasedPane)>>,
 }
 
+struct ReleaseCompletion {
+    remove_tabs: Vec<(TabId, PreparedTabWarp)>,
+    receipts_lost: bool,
+}
+
 type PreparedSessionMigration = (
     SessionMigrationInventory,
     Vec<(TabId, PreparedTabWarp)>,
@@ -154,16 +159,6 @@ impl Screen {
             .context("preflight prepared terminals")
     }
 
-    fn migration_output_pending(&mut self) -> bool {
-        self.core.tabs.values_mut().any(|tab| {
-            tab.get_all_pane_ids().iter().any(|id| {
-                tab.get_pane_with_id_mut(*id)
-                    .and_then(|pane| pane.terminal_io_mut())
-                    .is_some_and(|pane| pane.is_forward_paused())
-            })
-        })
-    }
-
     /// The reader's final chunk can itself contain a host query. Keep processing
     /// its reply, then fence the resulting PTY writes before taking the snapshot.
     pub(super) fn advance_migration_drain(&mut self) {
@@ -172,7 +167,7 @@ impl Screen {
             .migration
             .as_ref()
             .is_some_and(|state| state.pending_host_drain.is_some())
-            || self.migration_output_pending()
+            || self.core.migration_output_pending()
         {
             return;
         }
@@ -361,84 +356,6 @@ impl Screen {
         }
     }
 
-    fn migration_tab_snapshot(
-        &self,
-        id: TabId,
-        prepared: &PreparedTabWarp,
-        addresses: &HashMap<TerminalId, crate::os_input_output::ReleasedPane>,
-    ) -> Result<MigrationTab> {
-        let tab = self
-            .core
-            .tabs
-            .get(&id)
-            .context("missing source tab during snapshot")?;
-        let mut terminal_states = Vec::new();
-        let mut serialize = |pane_id: &PaneId| -> Result<WarpedPane> {
-            let PaneId::Terminal(terminal) = pane_id else {
-                return Err(anyhow!("plugin occupies a terminal migration slot"));
-            };
-            let pane = tab
-                .get_pane_with_id(*pane_id)
-                .context("missing source terminal during snapshot")?;
-            let state = pane
-                .migration_state()
-                .map_err(|e| anyhow!("terminal_{terminal}: {e}"))?;
-            terminal_states.push((*pane_id, state));
-            let address = Self::warp_address(
-                addresses
-                    .get(terminal)
-                    .context("missing terminal recovery address")?
-                    .clone(),
-            )
-            .map_err(|e| anyhow!("{e}"))?;
-            Ok(WarpedPane {
-                held: address.held,
-                host_id: address.host_id,
-                control_socket: address.control_socket,
-                remote: address.remote,
-                caption: (!pane.has_explicit_title() && pane.custom_title().is_none())
-                    .then(|| pane.current_title()),
-                bracketed_paste: pane.supports_bracketed_paste(),
-                agent: self
-                    .core
-                    .tabs
-                    .get(&id)
-                    .and_then(|tab| tab.get_pane_with_id(*pane_id))
-                    .and_then(|p| p.agent_info().cloned()),
-                agent_input: self.warped_agent_input(*pane_id),
-                ..Default::default()
-            })
-        };
-        let tiled_panes = prepared
-            .tiled_panes
-            .iter()
-            .map(&mut serialize)
-            .collect::<Result<_>>()?;
-        let floating_panes = prepared
-            .floating_panes
-            .iter()
-            .map(&mut serialize)
-            .collect::<Result<_>>()?;
-        Ok(MigrationTab {
-            source_tab_id: id,
-            slots: prepared.slots.clone(),
-            terminal_states,
-            local_replay: vec![],
-            state: tab.migration_state().map_err(|e| anyhow!("{e}"))?,
-            payload: WarpedTab {
-                source_instance_id: Some(self.core.instance_id.to_string()),
-                relationships: prepared.relationships.clone(),
-                name: prepared.name.clone(),
-                user_named: prepared.user_named,
-                tiled_layout: prepared.tiled_layout.clone(),
-                floating_layout: prepared.floating_layout.clone(),
-                tiled_panes,
-                floating_panes,
-                hide_floating_panes: prepared.hide_floating_panes,
-            },
-        })
-    }
-
     fn remove_migration_tabs(&mut self, prepared: &[(TabId, PreparedTabWarp)]) {
         for (id, prepared) in prepared {
             if let Some(tab) = self.core.tabs.get_mut(id) {
@@ -549,22 +466,14 @@ impl Screen {
                         ownership: vec![],
                     };
                     migration::save_snapshot(&snapshot, &document)?;
-                    self.transfer.preparing_migration = None;
-                    self.transfer.migration = Some(MigrationState {
-                        operation: operation.clone(),
-                        path: snapshot,
-                        stage: Stage::Pausing,
-                        snapshot: document,
+                    self.transfer.begin_release(
+                        snapshot,
+                        document,
                         prepared,
-                        held: held.clone(),
+                        held,
                         deadline,
-                        release_reply: Some(reply.clone()),
-                        adoption_reply: None,
-                        finish_replies: vec![],
-                        pending_tabs: HashMap::new(),
-                        replay_tabs: Default::default(),
-                        pending_host_drain: None,
-                    });
+                        reply.clone(),
+                    );
                     self.core
                         .bus
                         .senders
@@ -581,7 +490,10 @@ impl Screen {
                         })
                         .context("quiesce plugin persistence")
                     {
-                        self.cancel_migration_preparation(format!("{error:#}"));
+                        self.transfer.cancel_migration_preparation(
+                            &self.core.bus.senders,
+                            format!("{error:#}"),
+                        );
                         return Ok(());
                     }
                     let senders = self.core.bus.senders.clone();
@@ -604,53 +516,8 @@ impl Screen {
                 }
             },
             ScreenRequest::PluginsPaused { operation, result } => {
-                let Some(mut state) = self.transfer.migration.take() else {
-                    return;
-                };
-                if state.operation != operation || state.stage != Stage::Pausing {
-                    self.transfer.migration = Some(state);
-                    return;
-                }
-                match result {
-                    Ok(()) => {
-                        let terminals = state
-                            .prepared
-                            .iter()
-                            .flat_map(|(_, tab)| tab.tiled_panes.iter().chain(&tab.floating_panes))
-                            .filter_map(|id| match id {
-                                PaneId::Terminal(id) => Some(*id),
-                                _ => None,
-                            })
-                            .collect();
-                        let instruction = PtyRequest::Pause {
-                            operation,
-                            terminals,
-                            held: state.held.clone(),
-                            deadline: state.deadline,
-                        };
-                        self.transfer.migration = Some(state);
-                        if let Err(error) = self
-                            .core
-                            .bus
-                            .senders
-                            .send_to_pty(PtyInstruction::SessionMigration(instruction))
-                            .context("pause session output readers")
-                        {
-                            self.cancel_migration_preparation(format!("{error:#}"));
-                        }
-                    },
-                    Err(error) => {
-                        self.resume_migration_plugins(&operation);
-                        self.core
-                            .bus
-                            .senders
-                            .session_update_quiesced
-                            .store(false, std::sync::atomic::Ordering::Release);
-                        if let Some(reply) = state.release_reply.take() {
-                            let _ = reply.send(Err(error));
-                        }
-                    },
-                }
+                self.transfer
+                    .plugins_paused(&self.core.bus.senders, operation, result);
             },
             ScreenRequest::ReadersPaused { operation, result } => {
                 let Some(state) = self.transfer.migration.as_ref() else {
@@ -690,151 +557,15 @@ impl Screen {
                 });
             },
             ScreenRequest::InputDrained { operation, result } => {
-                let Some(mut state) = self.transfer.migration.take() else {
-                    return;
-                };
-                if state.operation != operation || state.stage != Stage::Pausing {
-                    self.transfer.migration = Some(state);
-                    return;
-                }
-                if result.is_ok() && self.migration_output_pending() {
-                    state.pending_host_drain = result.ok();
-                    self.transfer.migration = Some(state);
-                    return;
-                }
-                let prepared = (|| {
-                    let addresses: HashMap<_, _> =
-                        result.map_err(|e| anyhow!("{e}"))?.into_iter().collect();
-                    anyhow::ensure!(
-                        Instant::now() < state.deadline,
-                        "migration expired before terminal ownership changed"
-                    );
-                    state.snapshot.tabs = state
-                        .prepared
-                        .iter()
-                        .map(|(id, tab)| self.migration_tab_snapshot(*id, tab, &addresses))
-                        .collect::<Result<_>>()?;
-                    state.snapshot.phase = MigrationPhase::Releasing;
-                    state.snapshot.ownership = addresses
-                        .keys()
-                        .map(|id| (PaneId::Terminal(*id), MigrationOwnership::Source))
-                        .collect();
-                    anyhow::ensure!(
-                        Instant::now() < state.deadline,
-                        "migration expired while serializing its terminals"
-                    );
-                    migration::save_snapshot(&state.path, &state.snapshot)?;
-                    Ok(addresses.keys().copied().collect())
-                })();
-                match prepared {
-                    Ok(terminals) => {
-                        state.stage = Stage::Releasing;
-                        let instruction = PtyRequest::Release {
-                            operation,
-                            terminals,
-                            held: state.held.clone(),
-                            deadline: state.deadline,
-                            path: state.path.clone(),
-                        };
-                        self.transfer.migration = Some(state);
-                        if let Err(error) = self
-                            .core
-                            .bus
-                            .senders
-                            .send_to_pty(PtyInstruction::SessionMigration(instruction))
-                            .context("release durably recorded session terminals")
-                        {
-                            // Sending failed, so no terminal ownership changed.
-                            // Revert the journal before allowing source actions.
-                            if let Some(state) = self.transfer.migration.as_mut() {
-                                state.stage = Stage::Pausing;
-                                state.snapshot.phase = MigrationPhase::Prepared;
-                                migration::save_snapshot(&state.path, &state.snapshot)
-                                    .context("record untouched source after send failure")
-                                    .non_fatal();
-                            }
-                            self.cancel_migration_preparation(format!("{error:#}"));
-                        }
-                    },
-                    Err(error) => {
-                        self.core
-                            .bus
-                            .senders
-                            .send_to_pty(PtyInstruction::SessionMigration(PtyRequest::Resume))
-                            .context("resume untouched source session")
-                            .non_fatal();
-                        self.resume_migration_plugins(&state.operation);
-                        self.core
-                            .bus
-                            .senders
-                            .session_update_quiesced
-                            .store(false, std::sync::atomic::Ordering::Release);
-                        if let Some(reply) = state.release_reply {
-                            let _ = reply.send(Err(format!("{error:#}")));
-                        }
-                    },
-                }
+                self.transfer
+                    .input_drained(&mut self.core, &self.agents, operation, result);
             },
             ScreenRequest::Released { operation, results } => {
-                let Some(mut state) = self.transfer.migration.take() else {
-                    return;
-                };
-                if state.operation != operation || state.stage != Stage::Releasing {
-                    self.transfer.migration = Some(state);
-                    return;
+                if let Some(release) = self.transfer.record_release(&operation, results) {
+                    self.remove_migration_tabs(&release.remove_tabs);
+                    self.transfer
+                        .finish_release(&operation, release.receipts_lost);
                 }
-                // PTY durably records each transition before reporting the batch.
-                // Retain those receipts rather than overwriting them with the
-                // screen's older pre-release snapshot.
-                let reloaded = migration::load_snapshot(&state.path, &operation);
-                let receipts_lost = reloaded.is_err();
-                match reloaded {
-                    Ok(document) => {
-                        state.snapshot = document;
-                        state.snapshot.errors.clear();
-                    },
-                    Err(error) => {
-                        state.snapshot.errors =
-                            vec![format!("reload terminal release receipts: {error:#}")];
-                    },
-                }
-                state
-                    .snapshot
-                    .errors
-                    .extend(results.into_iter().filter_map(|(id, result)| {
-                        result.err().map(|error| format!("terminal_{id}: {error}"))
-                    }));
-                if state.snapshot.errors.is_empty() {
-                    state.stage = Stage::Released;
-                    state.snapshot.phase = MigrationPhase::Released;
-                    // Keep the migration guard installed while closing the last
-                    // source tab; settle_tabs must not retire this server.
-                    let prepared = state.prepared.clone();
-                    self.transfer.migration = Some(state);
-                    self.remove_migration_tabs(&prepared);
-                    let Some(retained) = self.transfer.migration.take() else {
-                        return;
-                    };
-                    state = retained;
-                } else {
-                    state.stage = Stage::Recovery;
-                    state.snapshot.phase = MigrationPhase::Recovery;
-                }
-                // Without the PTY's durable receipts, this screen copy still
-                // records pre-release ownership; never write it over them.
-                let saved = if receipts_lost {
-                    Ok(())
-                } else {
-                    migration::save_snapshot(&state.path, &state.snapshot)
-                };
-                if let Some(reply) = state.release_reply.take() {
-                    let result=saved.and_then(|()| {
-                        anyhow::ensure!(state.stage==Stage::Released,"some terminal releases are uncertain; retain both servers and recover operation {} from {}",state.operation,state.path.display());
-                        Ok(state.snapshot.clone())
-                    }).map_err(|e|format!("{e:#}"));
-                    let _ = reply.send(result);
-                }
-                self.transfer.migration = Some(state);
             },
             ScreenRequest::Adopt {
                 operation,
@@ -973,21 +704,8 @@ impl Screen {
                         .senders
                         .session_update_quiesced
                         .store(true, std::sync::atomic::Ordering::Release);
-                    self.transfer.migration = Some(MigrationState {
-                        operation,
-                        path: snapshot.clone(),
-                        stage: Stage::Adopting,
-                        snapshot: document.clone(),
-                        prepared: vec![],
-                        held: HashMap::new(),
-                        deadline: Instant::now(),
-                        release_reply: None,
-                        adoption_reply: Some(reply.clone()),
-                        finish_replies: vec![],
-                        pending_tabs: HashMap::new(),
-                        replay_tabs: Default::default(),
-                        pending_host_drain: None,
-                    });
+                    self.transfer
+                        .begin_adoption(snapshot.clone(), document.clone(), reply.clone());
                     self.core
                         .bus
                         .senders
@@ -1099,81 +817,9 @@ impl Screen {
                     },
                 }
             },
-            ScreenRequest::Abort { operation, reply } => match self.transfer.migration.as_ref() {
-                None => {
-                    if self
-                        .transfer
-                        .preparing_migration
-                        .as_deref()
-                        .is_some_and(|active| active != operation)
-                    {
-                        let _ =
-                            reply.send(Err("a different session migration is preparing".into()));
-                    } else {
-                        self.transfer.preparing_migration = None;
-                        self.core
-                            .bus
-                            .senders
-                            .session_update_quiesced
-                            .store(false, std::sync::atomic::Ordering::Release);
-                        let _ = reply.send(Ok(()));
-                    }
-                },
-                Some(state) if state.operation != operation => {
-                    let _ = reply.send(Err("a different session migration is active".into()));
-                },
-                Some(state) if state.stage == Stage::Released && state.prepared.is_empty() => {
-                    // A lost handback acknowledgement must be retryable. Source
-                    // releases retain their prepared tabs and still require adoption.
-                    // The source may already have updated this shared snapshot;
-                    // a repeated destination acknowledgement must not rewrite it.
-                    let _ = reply.send(Ok(()));
-                },
-                Some(state) if state.stage == Stage::Pausing => {
-                    self.transfer.migration = None;
-                    self.core
-                        .bus
-                        .senders
-                        .send_to_pty(PtyInstruction::SessionMigration(PtyRequest::Resume))
-                        .context("resume cancelled source preparation")
-                        .non_fatal();
-                    self.resume_migration_plugins(&operation);
-                    self.core
-                        .bus
-                        .senders
-                        .session_update_quiesced
-                        .store(false, std::sync::atomic::Ordering::Release);
-                    let _ = reply.send(Ok(()));
-                },
-                Some(state)
-                    if matches!(
-                        state.stage,
-                        Stage::Adopting | Stage::Adopted | Stage::Recovery
-                    ) && state.prepared.is_empty() =>
-                {
-                    let sent = self
-                        .core
-                        .bus
-                        .senders
-                        .send_to_pty(PtyInstruction::SessionMigration(PtyRequest::Abort {
-                            operation,
-                            reply: reply.clone(),
-                        }))
-                        .context("release destination before source recovery");
-                    match sent {
-                        Ok(()) => {
-                            if let Some(state) = self.transfer.migration.as_mut() {
-                                state.stage = Stage::Recovering;
-                            }
-                        },
-                        Err(error) => {
-                            let _ = reply.send(Err(format!("{error:#}")));
-                        },
-                    }
-                },
-                Some(_) => {
-                    let _=reply.send(Err("source terminal ownership has changed or is changing; restore the durable snapshot before resuming".into()));
-                },
+            ScreenRequest::Abort { operation, reply } => {
+                self.transfer
+                    .abort(&self.core.bus.senders, operation, reply)
             },
             ScreenRequest::Aborted {
                 operation,
@@ -1226,12 +872,7 @@ impl Screen {
                 let _ = reply.send(result);
             },
             ScreenRequest::TabReplayed { operation, tab } => {
-                if let Some(state) = self.transfer.migration.as_mut()
-                    && state.operation == operation
-                    && state.stage == Stage::Adopting
-                {
-                    state.replay_tabs.remove(&tab);
-                }
+                self.transfer.tab_replayed(&operation, tab);
                 self.finish_migration_replay();
             },
             ScreenRequest::Rename {
@@ -1495,44 +1136,6 @@ impl Screen {
         }
     }
 
-    fn resume_migration_plugins(&self, operation: &str) {
-        let (reply, _) = std::sync::mpsc::channel();
-        self.core
-            .bus
-            .senders
-            .send_to_plugin(yinz_bus::plugins::PluginInstruction::ResumeAfterUpdate {
-                operation: operation.into(),
-                reply,
-            })
-            .context("resume plugins after session update")
-            .non_fatal();
-    }
-
-    fn cancel_migration_preparation(&mut self, error: String) {
-        let Some(mut state) = self.transfer.migration.take() else {
-            return;
-        };
-        if state.stage != Stage::Pausing {
-            self.transfer.migration = Some(state);
-            return;
-        }
-        self.core
-            .bus
-            .senders
-            .send_to_pty(PtyInstruction::SessionMigration(PtyRequest::Resume))
-            .context("resume untouched migration source")
-            .non_fatal();
-        self.resume_migration_plugins(&state.operation);
-        self.core
-            .bus
-            .senders
-            .session_update_quiesced
-            .store(false, std::sync::atomic::Ordering::Release);
-        if let Some(reply) = state.release_reply.take() {
-            let _ = reply.send(Err(error));
-        }
-    }
-
     fn restore_migration_client(
         &mut self,
         focus: &ClientFocus,
@@ -1632,33 +1235,10 @@ impl Screen {
     }
 
     fn finish_migration_replay(&mut self) {
-        let Some(mut state) = self.transfer.migration.take() else {
-            return;
-        };
-        if state.stage != Stage::Adopting
-            || !state.pending_tabs.is_empty()
-            || !state.replay_tabs.is_empty()
-        {
-            self.transfer.migration = Some(state);
-            return;
-        }
-        let result: Result<()> = (|| {
-            self.restore_migration_focus(&state.snapshot.inventory, &state.snapshot.mapping)?;
-            state.stage = Stage::Adopted;
-            state.snapshot.phase = MigrationPhase::Adopted;
-            migration::save_snapshot(&state.path, &state.snapshot)?;
-            Ok(())
-        })();
-        self.transfer.migration = Some(state);
-        match result {
-            Err(error) => self.transfer.fail_migration_adoption(format!("{error:#}")),
-            Ok(()) => {
-                if let Some(state) = self.transfer.migration.as_mut()
-                    && let Some(reply) = state.adoption_reply.take()
-                {
-                    let _ = reply.send(Ok(state.snapshot.mapping.clone()));
-                }
-            },
+        if let Some(state) = self.transfer.take_replayed_adoption() {
+            let focus =
+                self.restore_migration_focus(&state.snapshot.inventory, &state.snapshot.mapping);
+            self.transfer.finish_replay(state, focus);
         }
     }
 
@@ -1959,6 +1539,511 @@ impl super::MigrationController {
         } else {
             self.migration_deferred.push_back(event);
             None
+        }
+    }
+}
+
+fn resume_migration_plugins(senders: &yinz_bus::thread_bus::ThreadSenders, operation: &str) {
+    let (reply, _) = std::sync::mpsc::channel();
+    senders
+        .send_to_plugin(yinz_bus::plugins::PluginInstruction::ResumeAfterUpdate {
+            operation: operation.into(),
+            reply,
+        })
+        .context("resume plugins after session update")
+        .non_fatal();
+}
+
+impl super::MigrationController {
+    fn begin_release(
+        &mut self,
+        path: PathBuf,
+        document: SessionMigrationSnapshot,
+        prepared: Vec<(TabId, PreparedTabWarp)>,
+        held: HashMap<TerminalId, HeldTerminal>,
+        deadline: Instant,
+        reply: Reply<SessionMigrationSnapshot>,
+    ) {
+        self.preparing_migration = None;
+        self.migration = Some(MigrationState {
+            operation: document.operation.clone(),
+            path,
+            stage: Stage::Pausing,
+            snapshot: document,
+            prepared,
+            held,
+            deadline,
+            release_reply: Some(reply),
+            adoption_reply: None,
+            finish_replies: vec![],
+            pending_tabs: HashMap::new(),
+            replay_tabs: Default::default(),
+            pending_host_drain: None,
+        });
+    }
+
+    fn begin_adoption(
+        &mut self,
+        path: PathBuf,
+        document: SessionMigrationSnapshot,
+        reply: Reply<SessionMigrationMap>,
+    ) {
+        self.migration = Some(MigrationState {
+            operation: document.operation.clone(),
+            path,
+            stage: Stage::Adopting,
+            snapshot: document,
+            prepared: vec![],
+            held: HashMap::new(),
+            deadline: Instant::now(),
+            release_reply: None,
+            adoption_reply: Some(reply),
+            finish_replies: vec![],
+            pending_tabs: HashMap::new(),
+            replay_tabs: Default::default(),
+            pending_host_drain: None,
+        });
+    }
+
+    fn record_release(
+        &mut self,
+        operation: &str,
+        results: Vec<(
+            TerminalId,
+            Result<yinz_bus::warp::ReleasedPaneForWarp, String>,
+        )>,
+    ) -> Option<ReleaseCompletion> {
+        let state = self
+            .migration
+            .as_mut()
+            .filter(|s| s.operation == operation && s.stage == Stage::Releasing)?;
+        // PTY durably records each transition before reporting the batch.
+        // Retain those receipts rather than overwriting them with the
+        // screen's older pre-release snapshot.
+        let reloaded = migration::load_snapshot(&state.path, operation);
+        let receipts_lost = reloaded.is_err();
+        match reloaded {
+            Ok(document) => {
+                state.snapshot = document;
+                state.snapshot.errors.clear();
+            },
+            Err(error) => {
+                state.snapshot.errors =
+                    vec![format!("reload terminal release receipts: {error:#}")];
+            },
+        }
+        state
+            .snapshot
+            .errors
+            .extend(results.into_iter().filter_map(|(id, result)| {
+                result.err().map(|error| format!("terminal_{id}: {error}"))
+            }));
+        let remove_tabs = if state.snapshot.errors.is_empty() {
+            state.stage = Stage::Released;
+            state.snapshot.phase = MigrationPhase::Released;
+            state.prepared.clone()
+        } else {
+            state.stage = Stage::Recovery;
+            state.snapshot.phase = MigrationPhase::Recovery;
+            vec![]
+        };
+        Some(ReleaseCompletion {
+            remove_tabs,
+            receipts_lost,
+        })
+    }
+
+    fn finish_release(&mut self, operation: &str, receipts_lost: bool) {
+        let Some(state) = self.migration.as_mut().filter(|s| s.operation == operation) else {
+            return;
+        };
+        // Without the PTY's durable receipts, this screen copy still
+        // records pre-release ownership; never write it over them.
+        let saved = if receipts_lost {
+            Ok(())
+        } else {
+            migration::save_snapshot(&state.path, &state.snapshot)
+        };
+        if let Some(reply) = state.release_reply.take() {
+            let result=saved.and_then(|()| {
+                        anyhow::ensure!(state.stage==Stage::Released,"some terminal releases are uncertain; retain both servers and recover operation {} from {}",state.operation,state.path.display());
+                        Ok(state.snapshot.clone())
+                    }).map_err(|e|format!("{e:#}"));
+            let _ = reply.send(result);
+        }
+    }
+
+    fn take_pausing(&mut self, operation: &str) -> Option<MigrationState> {
+        self.migration
+            .take_if(|s| s.operation == operation && s.stage == Stage::Pausing)
+    }
+
+    fn release_terminals(
+        &mut self,
+        mut state: MigrationState,
+        terminals: Vec<TerminalId>,
+    ) -> PtyRequest {
+        state.stage = Stage::Releasing;
+        let instruction = PtyRequest::Release {
+            operation: state.operation.clone(),
+            terminals,
+            held: state.held.clone(),
+            deadline: state.deadline,
+            path: state.path.clone(),
+        };
+        self.migration = Some(state);
+        instruction
+    }
+
+    fn revert_unsent_release(&mut self) {
+        // Sending failed, so no terminal ownership changed.
+        // Revert the journal before allowing source actions.
+        if let Some(state) = self.migration.as_mut() {
+            state.stage = Stage::Pausing;
+            state.snapshot.phase = MigrationPhase::Prepared;
+            migration::save_snapshot(&state.path, &state.snapshot)
+                .context("record untouched source after send failure")
+                .non_fatal();
+        }
+    }
+
+    fn abort(
+        &mut self,
+        senders: &yinz_bus::thread_bus::ThreadSenders,
+        operation: String,
+        reply: Reply<()>,
+    ) {
+        match self.migration.as_ref() {
+            None => {
+                if self
+                    .preparing_migration
+                    .as_deref()
+                    .is_some_and(|active| active != operation)
+                {
+                    let _ = reply.send(Err("a different session migration is preparing".into()));
+                } else {
+                    self.preparing_migration = None;
+                    senders
+                        .session_update_quiesced
+                        .store(false, std::sync::atomic::Ordering::Release);
+                    let _ = reply.send(Ok(()));
+                }
+            },
+            Some(state) if state.operation != operation => {
+                let _ = reply.send(Err("a different session migration is active".into()));
+            },
+            Some(state) if state.stage == Stage::Released && state.prepared.is_empty() => {
+                // A lost handback acknowledgement must be retryable. Source
+                // releases retain their prepared tabs and still require adoption.
+                // The source may already have updated this shared snapshot;
+                // a repeated destination acknowledgement must not rewrite it.
+                let _ = reply.send(Ok(()));
+            },
+            Some(state) if state.stage == Stage::Pausing => {
+                self.migration = None;
+                senders
+                    .send_to_pty(PtyInstruction::SessionMigration(PtyRequest::Resume))
+                    .context("resume cancelled source preparation")
+                    .non_fatal();
+                resume_migration_plugins(senders, &operation);
+                senders
+                    .session_update_quiesced
+                    .store(false, std::sync::atomic::Ordering::Release);
+                let _ = reply.send(Ok(()));
+            },
+            Some(state)
+                if matches!(
+                    state.stage,
+                    Stage::Adopting | Stage::Adopted | Stage::Recovery
+                ) && state.prepared.is_empty() =>
+            {
+                let sent = senders
+                    .send_to_pty(PtyInstruction::SessionMigration(PtyRequest::Abort {
+                        operation,
+                        reply: reply.clone(),
+                    }))
+                    .context("release destination before source recovery");
+                match sent {
+                    Ok(()) => {
+                        if let Some(state) = self.migration.as_mut() {
+                            state.stage = Stage::Recovering;
+                        }
+                    },
+                    Err(error) => {
+                        let _ = reply.send(Err(format!("{error:#}")));
+                    },
+                }
+            },
+            Some(_) => {
+                let _=reply.send(Err("source terminal ownership has changed or is changing; restore the durable snapshot before resuming".into()));
+            },
+        }
+    }
+
+    fn tab_replayed(&mut self, operation: &str, tab: TabId) {
+        if let Some(state) = self.migration.as_mut()
+            && state.operation == operation
+            && state.stage == Stage::Adopting
+        {
+            state.replay_tabs.remove(&tab);
+        }
+    }
+}
+
+impl super::ScreenCore {
+    fn migration_output_pending(&mut self) -> bool {
+        self.tabs.values_mut().any(|tab| {
+            tab.get_all_pane_ids().iter().any(|id| {
+                tab.get_pane_with_id_mut(*id)
+                    .and_then(|pane| pane.terminal_io_mut())
+                    .is_some_and(|pane| pane.is_forward_paused())
+            })
+        })
+    }
+
+    fn migration_tab_snapshot(
+        &self,
+        agents: &super::AgentController,
+        id: TabId,
+        prepared: &PreparedTabWarp,
+        addresses: &HashMap<TerminalId, crate::os_input_output::ReleasedPane>,
+    ) -> Result<MigrationTab> {
+        let tab = self
+            .tabs
+            .get(&id)
+            .context("missing source tab during snapshot")?;
+        let mut terminal_states = Vec::new();
+        let mut serialize = |pane_id: &PaneId| -> Result<WarpedPane> {
+            let PaneId::Terminal(terminal) = pane_id else {
+                return Err(anyhow!("plugin occupies a terminal migration slot"));
+            };
+            let pane = tab
+                .get_pane_with_id(*pane_id)
+                .context("missing source terminal during snapshot")?;
+            let state = pane
+                .migration_state()
+                .map_err(|e| anyhow!("terminal_{terminal}: {e}"))?;
+            terminal_states.push((*pane_id, state));
+            let address = Screen::warp_address(
+                addresses
+                    .get(terminal)
+                    .context("missing terminal recovery address")?
+                    .clone(),
+            )
+            .map_err(|e| anyhow!("{e}"))?;
+            Ok(WarpedPane {
+                held: address.held,
+                host_id: address.host_id,
+                control_socket: address.control_socket,
+                remote: address.remote,
+                caption: (!pane.has_explicit_title() && pane.custom_title().is_none())
+                    .then(|| pane.current_title()),
+                bracketed_paste: pane.supports_bracketed_paste(),
+                agent: self
+                    .tabs
+                    .get(&id)
+                    .and_then(|tab| tab.get_pane_with_id(*pane_id))
+                    .and_then(|p| p.agent_info().cloned()),
+                agent_input: agents.warped_agent_input(self, *pane_id),
+                ..Default::default()
+            })
+        };
+        let tiled_panes = prepared
+            .tiled_panes
+            .iter()
+            .map(&mut serialize)
+            .collect::<Result<_>>()?;
+        let floating_panes = prepared
+            .floating_panes
+            .iter()
+            .map(&mut serialize)
+            .collect::<Result<_>>()?;
+        Ok(MigrationTab {
+            source_tab_id: id,
+            slots: prepared.slots.clone(),
+            terminal_states,
+            local_replay: vec![],
+            state: tab.migration_state().map_err(|e| anyhow!("{e}"))?,
+            payload: WarpedTab {
+                source_instance_id: Some(self.instance_id.to_string()),
+                relationships: prepared.relationships.clone(),
+                name: prepared.name.clone(),
+                user_named: prepared.user_named,
+                tiled_layout: prepared.tiled_layout.clone(),
+                floating_layout: prepared.floating_layout.clone(),
+                tiled_panes,
+                floating_panes,
+                hide_floating_panes: prepared.hide_floating_panes,
+            },
+        })
+    }
+}
+
+impl super::MigrationController {
+    fn cancel_migration_preparation(
+        &mut self,
+        senders: &yinz_bus::thread_bus::ThreadSenders,
+        error: String,
+    ) {
+        let Some(mut state) = self.migration.take() else {
+            return;
+        };
+        if state.stage != Stage::Pausing {
+            self.migration = Some(state);
+            return;
+        }
+        senders
+            .send_to_pty(PtyInstruction::SessionMigration(PtyRequest::Resume))
+            .context("resume untouched migration source")
+            .non_fatal();
+        resume_migration_plugins(senders, &state.operation);
+        senders
+            .session_update_quiesced
+            .store(false, std::sync::atomic::Ordering::Release);
+        if let Some(reply) = state.release_reply.take() {
+            let _ = reply.send(Err(error));
+        }
+    }
+
+    fn plugins_paused(
+        &mut self,
+        senders: &yinz_bus::thread_bus::ThreadSenders,
+        operation: String,
+        result: Result<(), String>,
+    ) {
+        let Some(mut state) = self.take_pausing(&operation) else {
+            return;
+        };
+        match result {
+            Ok(()) => {
+                let terminals = state
+                    .prepared
+                    .iter()
+                    .flat_map(|(_, tab)| tab.tiled_panes.iter().chain(&tab.floating_panes))
+                    .filter_map(|id| match id {
+                        PaneId::Terminal(id) => Some(*id),
+                        _ => None,
+                    })
+                    .collect();
+                let instruction = PtyRequest::Pause {
+                    operation,
+                    terminals,
+                    held: state.held.clone(),
+                    deadline: state.deadline,
+                };
+                self.migration = Some(state);
+                if let Err(error) = senders
+                    .send_to_pty(PtyInstruction::SessionMigration(instruction))
+                    .context("pause session output readers")
+                {
+                    self.cancel_migration_preparation(senders, format!("{error:#}"));
+                }
+            },
+            Err(error) => {
+                resume_migration_plugins(senders, &operation);
+                senders
+                    .session_update_quiesced
+                    .store(false, std::sync::atomic::Ordering::Release);
+                if let Some(reply) = state.release_reply.take() {
+                    let _ = reply.send(Err(error));
+                }
+            },
+        }
+    }
+    fn input_drained(
+        &mut self,
+        core: &mut super::ScreenCore,
+        agents: &super::AgentController,
+        operation: String,
+        result: Result<Vec<(TerminalId, crate::os_input_output::ReleasedPane)>, String>,
+    ) {
+        let Some(mut state) = self.take_pausing(&operation) else {
+            return;
+        };
+        if result.is_ok() && core.migration_output_pending() {
+            state.pending_host_drain = result.ok();
+            self.migration = Some(state);
+            return;
+        }
+        let prepared = (|| {
+            let addresses: HashMap<_, _> =
+                result.map_err(|e| anyhow!("{e}"))?.into_iter().collect();
+            anyhow::ensure!(
+                Instant::now() < state.deadline,
+                "migration expired before terminal ownership changed"
+            );
+            state.snapshot.tabs = state
+                .prepared
+                .iter()
+                .map(|(id, tab)| core.migration_tab_snapshot(agents, *id, tab, &addresses))
+                .collect::<Result<_>>()?;
+            state.snapshot.phase = MigrationPhase::Releasing;
+            state.snapshot.ownership = addresses
+                .keys()
+                .map(|id| (PaneId::Terminal(*id), MigrationOwnership::Source))
+                .collect();
+            anyhow::ensure!(
+                Instant::now() < state.deadline,
+                "migration expired while serializing its terminals"
+            );
+            migration::save_snapshot(&state.path, &state.snapshot)?;
+            Ok(addresses.keys().copied().collect())
+        })();
+        match prepared {
+            Ok(terminals) => {
+                let instruction = self.release_terminals(state, terminals);
+                if let Err(error) = core
+                    .bus
+                    .senders
+                    .send_to_pty(PtyInstruction::SessionMigration(instruction))
+                    .context("release durably recorded session terminals")
+                {
+                    self.revert_unsent_release();
+                    self.cancel_migration_preparation(&core.bus.senders, format!("{error:#}"));
+                }
+            },
+            Err(error) => {
+                core.bus
+                    .senders
+                    .send_to_pty(PtyInstruction::SessionMigration(PtyRequest::Resume))
+                    .context("resume untouched source session")
+                    .non_fatal();
+                resume_migration_plugins(&core.bus.senders, &state.operation);
+                core.bus
+                    .senders
+                    .session_update_quiesced
+                    .store(false, std::sync::atomic::Ordering::Release);
+                if let Some(reply) = state.release_reply {
+                    let _ = reply.send(Err(format!("{error:#}")));
+                }
+            },
+        }
+    }
+}
+
+impl super::MigrationController {
+    fn take_replayed_adoption(&mut self) -> Option<MigrationState> {
+        self.migration.take_if(|state| {
+            state.stage == Stage::Adopting
+                && state.pending_tabs.is_empty()
+                && state.replay_tabs.is_empty()
+        })
+    }
+
+    fn finish_replay(&mut self, mut state: MigrationState, focus: Result<()>) {
+        let saved = focus.and_then(|()| {
+            state.stage = Stage::Adopted;
+            state.snapshot.phase = MigrationPhase::Adopted;
+            migration::save_snapshot(&state.path, &state.snapshot)
+        });
+        let state = self.migration.insert(state);
+        match saved {
+            Err(error) => self.fail_migration_adoption(format!("{error:#}")),
+            Ok(()) => {
+                if let Some(reply) = state.adoption_reply.take() {
+                    let _ = reply.send(Ok(state.snapshot.mapping.clone()));
+                }
+            },
         }
     }
 }

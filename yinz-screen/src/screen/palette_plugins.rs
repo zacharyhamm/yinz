@@ -361,38 +361,6 @@ impl Screen {
         self.refresh_plugin_palette(client, false);
     }
 
-    pub(super) fn dismiss_plugin_palette(
-        &mut self,
-        client: ClientId,
-        state: &mut CommandPaletteState,
-    ) {
-        state.cancel_requests(&self.core.bus.senders, client);
-        let owners: HashSet<_> = state
-            .plugins
-            .results
-            .keys()
-            .map(|key| key.0.clone())
-            .chain(
-                state
-                    .plugins
-                    .views
-                    .values()
-                    .map(|view| view.provider.0.clone()),
-            )
-            .collect();
-        for owner in owners {
-            deliver(
-                &self.core.bus.senders,
-                &owner,
-                client,
-                Message::Dismiss {
-                    opening: state.plugins.opening,
-                },
-                None,
-            );
-        }
-    }
-
     pub(super) fn refresh_plugin_palette(&mut self, client: ClientId, debounce: bool) {
         self.remove_unavailable_palette_providers();
         let Some(state) = self.palette.command_palettes.get_mut(&client) else {
@@ -1327,5 +1295,38 @@ impl Screen {
         }
         state.sections(&self.palette.palette_providers);
         true
+    }
+}
+
+impl CommandPaletteState {
+    pub(super) fn dismiss_plugin_palette(
+        &mut self,
+        senders: &yinz_bus::thread_bus::ThreadSenders,
+        client: ClientId,
+    ) {
+        self.cancel_requests(senders, client);
+        let owners: HashSet<_> = self
+            .plugins
+            .results
+            .keys()
+            .map(|key| key.0.clone())
+            .chain(
+                self.plugins
+                    .views
+                    .values()
+                    .map(|view| view.provider.0.clone()),
+            )
+            .collect();
+        for owner in owners {
+            deliver(
+                senders,
+                &owner,
+                client,
+                Message::Dismiss {
+                    opening: self.plugins.opening,
+                },
+                None,
+            );
+        }
     }
 }

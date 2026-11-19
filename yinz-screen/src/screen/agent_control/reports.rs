@@ -37,7 +37,7 @@ impl super::AgentController {
         preserve_shutdown: bool,
     ) -> AgentUpdate {
         if remember_parent {
-            self.claude_permission_waits.remove(&pane_id);
+            self.claude.permission_waits.remove(&pane_id);
         }
         // Read before the write: which hooks a change fires is a question about the edge, and the
         // pane only answers whether anything changed.
@@ -232,7 +232,7 @@ impl super::AgentController {
         }
     }
     pub(in crate::screen) fn retire_restored_observer(&mut self, pane: PaneId) {
-        self.restored_claude_observers.retire(pane);
+        self.claude.restored_observers.retire(pane);
     }
 }
 
@@ -548,7 +548,7 @@ impl super::AgentController {
             workers = None;
         }
         let permission_wait = if notification_report || hook.is_some_and(HookEvent::is_worker) {
-            self.claude_permission_waits.remove(&pane)
+            self.claude.permission_waits.remove(&pane)
         } else {
             hook.filter(|hook| {
                 report.kind == "claude"
@@ -623,7 +623,7 @@ impl super::AgentController {
             .then(|| self.agent_clear_inputs.remove(&pane))
             .flatten();
         if !preserve_shutdown {
-            self.claude_permission_waits.remove(&pane);
+            self.claude.permission_waits.remove(&pane);
         }
         let result = !matches!(
             self.stage_agent(
@@ -636,7 +636,7 @@ impl super::AgentController {
             reports::AgentUpdate::Missing
         );
         if result && let Some(wait) = permission_wait {
-            self.claude_permission_waits.insert(pane, wait);
+            self.claude.permission_waits.insert(pane, wait);
         }
         if let Some(input) = startup_input {
             self.agent_dialog_inputs.insert(pane, input);
@@ -649,4 +649,10 @@ impl super::AgentController {
         }
         Ok(result)
     }
+}
+
+pub(in crate::screen) enum ReportDecision {
+    Apply,
+    Ignore,
+    Archive(AgentEvent),
 }

@@ -2255,9 +2255,11 @@ fn warping_a_visible_stack_member_removes_the_whole_list() {
             )
         })
         .collect();
+    let scans = screen.core.worktree_scans.get();
     let payload = screen
         .take_released_tab_for_warp(tab_id, released, prepared)
         .expect("transfer");
+    assert_eq!(screen.core.worktree_scans.get() - scans, 1);
     assert!(payload.relationships.is_some());
     assert!(slots
         .iter()

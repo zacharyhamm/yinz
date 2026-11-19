@@ -240,42 +240,8 @@ impl Screen {
         self.take_command_palette(client_id).is_some()
     }
 
-    fn release_palette_input(&self, client_id: ClientId) {
-        self.palette
-            .release_palette_input(&self.core.bus.senders, client_id)
-    }
-
     fn take_command_palette(&mut self, client_id: ClientId) -> Option<CommandPaletteState> {
-        let mut state = self.palette.command_palettes.remove(&client_id)?;
-        if state.selection.captures_mouse() {
-            self.palette
-                .command_palette_mouse_captures
-                .insert(client_id);
-        }
-        state.selection.clear();
-        self.cancel_theme_preview(client_id);
-        state.backing = TranslucentOverlayBacking::default();
-        state.watcher_backing = TranslucentOverlayBacking::default();
-        state.painted = None;
-        state.quota_image = None;
-        state.agents.cancel();
-        self.dismiss_plugin_palette(client_id, &mut state);
-        self.release_palette_input(client_id);
-        if self.palette.command_palettes.is_empty() {
-            self.core
-                .bus
-                .senders
-                .send_to_background_jobs(
-                    yinz_bus::background_jobs::BackgroundJob::WatchCommandPaletteSessions(false),
-                )
-                .non_fatal();
-        }
-        // Also restores clipped graphics and any cells exposed by a tab switch.
-        for tab in self.core.tabs.values_mut() {
-            tab.set_should_clear_display_before_rendering();
-            tab.set_force_render();
-        }
-        Some(state)
+        self.palette.take_command_palette(&mut self.core, client_id)
     }
 
     pub(super) fn dismiss_stale_command_palettes(&mut self) {
@@ -2152,5 +2118,41 @@ impl super::CommandPaletteController {
                 .context("failed to restore input mode when closing command palette")
                 .non_fatal();
         }
+    }
+}
+
+impl super::CommandPaletteController {
+    fn take_command_palette(
+        &mut self,
+        core: &mut super::ScreenCore,
+        client_id: ClientId,
+    ) -> Option<CommandPaletteState> {
+        let mut state = self.command_palettes.remove(&client_id)?;
+        if state.selection.captures_mouse() {
+            self.command_palette_mouse_captures.insert(client_id);
+        }
+        state.selection.clear();
+        self.cancel_theme_preview(core, client_id);
+        state.backing = TranslucentOverlayBacking::default();
+        state.watcher_backing = TranslucentOverlayBacking::default();
+        state.painted = None;
+        state.quota_image = None;
+        state.agents.cancel();
+        state.dismiss_plugin_palette(&core.bus.senders, client_id);
+        self.release_palette_input(&core.bus.senders, client_id);
+        if self.command_palettes.is_empty() {
+            core.bus
+                .senders
+                .send_to_background_jobs(
+                    yinz_bus::background_jobs::BackgroundJob::WatchCommandPaletteSessions(false),
+                )
+                .non_fatal();
+        }
+        // Also restores clipped graphics and any cells exposed by a tab switch.
+        for tab in core.tabs.values_mut() {
+            tab.set_should_clear_display_before_rendering();
+            tab.set_force_render();
+        }
+        Some(state)
     }
 }

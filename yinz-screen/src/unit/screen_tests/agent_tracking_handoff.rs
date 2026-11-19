@@ -1062,7 +1062,7 @@ fn warp_tracking_completed_parent_background_permission_restores_idle_after_appr
                     finish_paste(&writes);
                     permission_key(&mut source, KeyWithModifier::new(BareKey::Enter), cli);
                     assert_eq!(finish_paste(&writes), b"\r");
-                    assert!(source.agents.claude_permission_waits.is_empty());
+                    assert!(source.agents.claude.permission_waits.is_empty());
                     assert_eq!(
                         claude_lifecycle(&source)
                             .claude

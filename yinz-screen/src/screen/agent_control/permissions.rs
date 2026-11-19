@@ -224,7 +224,7 @@ impl super::AgentController {
     pub(in crate::screen) fn take_permission_waits(
         &mut self,
     ) -> std::collections::HashMap<PaneId, PermissionWait> {
-        std::mem::take(&mut self.claude_permission_waits)
+        std::mem::take(&mut self.claude.permission_waits)
     }
     pub(in crate::screen) fn advance_permission_wait(
         &mut self,
@@ -253,7 +253,7 @@ impl super::AgentController {
         }
         let enter_revision = host.agent_enter_revision(pane);
         if enter_revision <= wait.input_revision {
-            self.claude_permission_waits.insert(pane, wait);
+            self.claude.permission_waits.insert(pane, wait);
             return None;
         }
         // Enter infers an answer, but an anonymous background permission prompt must

@@ -45,7 +45,7 @@ fn a_screen_smaller_than_the_chrome_leaves_the_viewport_inside_it() {
         "the chrome should have taken three of the twenty rows"
     );
 
-    tab.tiled_panes.resize(Size { cols: 80, rows: 2 });
+    tab.tiled_panes.resize(Size { cols: 80, rows: 2 }).unwrap();
 
     let viewport = *tab.viewport.borrow();
     assert!(
@@ -68,7 +68,7 @@ fn a_resize_the_screen_has_room_for_keeps_the_chrome_insets() {
     let mut tab = tab_with_three_rows_of_chrome(size);
     tab.tiled_panes.set_pane_frames(PaneFrameStyle::Titles);
 
-    tab.tiled_panes.resize(Size { cols: 80, rows: 10 });
+    tab.tiled_panes.resize(Size { cols: 80, rows: 10 }).unwrap();
     let expected = Viewport {
         x: 0,
         y: 1,
@@ -82,7 +82,7 @@ fn a_resize_the_screen_has_room_for_keeps_the_chrome_insets() {
     );
 
     let display_area = *tab.display_area.borrow();
-    tab.tiled_panes.resize(display_area);
+    tab.tiled_panes.resize(display_area).unwrap();
     assert_eq!(
         *tab.viewport.borrow(),
         expected,
