@@ -111,7 +111,7 @@ class Fixture {
     this.header = 'short'; // short | long | absent | wrapped | custom
     this.live = {};
     this.usage = null;
-    this.fail = new Map(); // path -> {mode:'abort'|'hold'|'reply', times, status, headers, body}
+    this.fail = new Map(); // path -> {mode:'abort'|'hold'|'reply', times, matches?, status, headers, body}
     this.held = [];
     this.log = [];
     this.problems = [];
@@ -393,7 +393,7 @@ async function handle(context, route, fx) {
       return;
     }
     const fail = fx.fail.get(entry.path);
-    if (fail && fail.times > 0) {
+    if (fail && fail.times > 0 && (!fail.matches || fail.matches(entry))) {
       fail.times -= 1;
       if (fail.mode === 'abort') return await route.abort('failed');
       if (fail.mode === 'hold') {
@@ -2982,6 +2982,79 @@ async function readerPrepend(open) {
   check(olderReads() === reads, 'an exhausted timeline read older pages again');
 }
 
+async function cachedTimelineRevisit(open) {
+  const { page, fx } = await open();
+  const historyPath = '/api/history';
+  const timelineEvent = (revision) => `#timeline [data-key="e${revision}"]`;
+  const cardLink = (agent) => `${cardSelector(agent)} .agent-open-area`;
+  const backToList = async () => {
+    await domClick(page, '#detail-back');
+    await until('returned to the agent list', () => exists(page, cardLink(AGENT_ID)));
+  };
+
+  fx.live.state = 'idle';
+  fx.rows = [row(fx, AGENT_ID, 'idle'), row(fx, 'live:dev:8', 'busy')];
+  await openList(page);
+  await domClick(page, cardLink(AGENT_ID));
+  await until('first chat timeline', () => exists(page, timelineEvent(45)));
+  await domClick(page, '#timeline-earlier');
+  await until('older page in the first chat', () => exists(page, timelineEvent(1)));
+  await backToList();
+  await domClick(page, cardLink('live:dev:8'));
+  await textUntil(page, '#timeline', 'Stored run-8 message 5', 'second chat timeline');
+  check(!(await exists(page, timelineEvent(45))), 'second chat rendered the first chat’s messages');
+  await backToList();
+
+  fx.latest = 46;
+  fx.fail.set(historyPath, {
+    mode: 'hold', times: 1,
+    matches: ({ query }) => query.get('run') === 'run-7',
+  });
+  await domClick(page, cardLink(AGENT_ID));
+  await until('held history refresh for the reopened chat', () => fx.held.length === 1);
+  check(await exists(page, timelineEvent(45)) && await exists(page, timelineEvent(1)),
+    'reopened chat did not render both cached pages before its first response');
+  check(!(await exists(page, timelineEvent(46))), 'held delivery appeared before its response');
+  check(!(await exists(page, '#composer-input')) && !(await exists(page, '#overflow-button')),
+    'cached history enabled live controls before verification');
+  const refresh = fx.log.findLast(({ path, query }) => path === historyPath && query.get('run') === 'run-7');
+  check(refresh.query.get('after_revision') === '46' && !refresh.query.has('before')
+    && refresh.query.get('agent') === AGENT_ID, 'reopened chat did not resume its bound delivery cursor');
+
+  const [status, json] = fixtureReply(fx, refresh);
+  await fx.held.shift().fulfill({ status, json });
+  await until('new message and verified controls', async () =>
+    await exists(page, timelineEvent(46)) && await exists(page, '#composer-input'));
+  check(await page.locator(timelineEvent(46)).count() === 1, 'delivered message was duplicated');
+  check(await exists(page, timelineEvent(1)) && await exists(page, timelineEvent(45)),
+    'delivery replaced cached history');
+  check(!(await exists(page, '#timeline-earlier')), 'delivery restored an exhausted older-history cursor');
+
+  await backToList();
+  const timezone = 'America/Chicago';
+  await page.evaluate((timeZone) => {
+    const resolvedOptions = Intl.DateTimeFormat.prototype.resolvedOptions;
+    Intl.DateTimeFormat.prototype.resolvedOptions = function () {
+      return { ...resolvedOptions.call(this), timeZone };
+    };
+  }, timezone);
+  fx.fail.set(historyPath, {
+    mode: 'hold', times: 1,
+    matches: ({ query }) => query.get('run') === 'run-7',
+  });
+  await domClick(page, cardLink(AGENT_ID));
+  await until('held history request after the timezone change', () => fx.held.length === 1);
+  const newVisit = fx.log.findLast(({ path, query }) => path === historyPath && query.get('run') === 'run-7');
+  check(newVisit.query.get('tz') === timezone, 'reopened chat did not send the new timezone');
+  check(!newVisit.query.has('after_revision') && !newVisit.query.has('before'), 'reopened chat reused the old timezone’s cursors');
+  check(!(await exists(page, '#timeline .event')), 'reopened chat rendered the old timezone’s history');
+
+  const [newStatus, newJson] = fixtureReply(fx, newVisit);
+  await fx.held.shift().fulfill({ status: newStatus, json: newJson });
+  await until('new timezone history and older-page control', async () =>
+    await exists(page, timelineEvent(46)) && await exists(page, '#timeline-earlier'));
+}
+
 async function newMessages(open) {
   const { page, fx } = await open();
   await openDetail(page);
@@ -3361,6 +3434,7 @@ async function main() {
   await scenario('Timeline response spinner for a peer without a recorded run', (open) => peerTimelineHandoff(open, false));
   await scenario('Timeline response spinner confirmation while hidden', hiddenTimelineConfirmation);
   await scenario('readers and prepend keeps the reading anchor', readerPrepend);
+  await scenario('cached timeline renders while a reopened chat catches up', cachedTimelineRevisit);
   await scenario('new-message anchoring (pinned vs reading)', newMessages);
   await scenario('hidden document pauses polling; foreground refreshes immediately', hiddenForeground);
   await scenario('offline banner, backoff and Retry-After without request storms', offlineRetryAfter);

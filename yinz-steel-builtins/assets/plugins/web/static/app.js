@@ -1,6 +1,6 @@
 // Entry point for `/`: bootstrap config, credentials, session check and routing.
 import {
-  KEYS, readBootstrapConfig, safeStorage, createTokenStore, createApi, clientTimezone, describeError,
+  KEYS, readBootstrapConfig, safeStorage, createTokenStore, createApi, describeError,
   saveReturn, setNotice, takeNotice, logoutNotice, createPoller,
 } from './api.js';
 import { createSubmissions } from './submission.js';
@@ -9,17 +9,20 @@ import { html, render, useState, useEffect, cx } from './views/ui.js';
 import { ListView } from './views/list.js';
 import { DetailView } from './views/detail.js';
 import { createPush, registerWorker } from './push.js';
+import { TimelineCache } from './timeline.js';
 
 const config = readBootstrapConfig(document);
 const local = safeStorage(() => window.localStorage);
 const session = safeStorage(() => window.sessionStorage);
 const tokens = createTokenStore({ local, session });
+const timelines = new TimelineCache();
 let leaving = false;
 
 /** Keep the route (drafts are already persisted) and go to /login. */
 function toLogin(notice) {
   if (leaving) return;
   leaving = true;
+  timelines.clear();
   saveReturn(session, window.location.hash);
   if (notice) setNotice(session, notice);
   // Let in-flight continuations persist their state before navigating.
@@ -94,7 +97,7 @@ function App({ initialNotice }) {
     api,
     config,
     local,
-    tz: clientTimezone(),
+    timelines,
     submissions,
     visibility,
     notice,

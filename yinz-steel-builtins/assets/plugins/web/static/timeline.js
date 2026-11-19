@@ -17,13 +17,48 @@
 //
 // One intentional difference from HistoryCache: the `earlier` cursor is taken only
 // from older pages and from the first page of a run, never from a later refresh or
-// delivery. Native delivery replies repeat the newest page's `earlier` row
-// (palette_history::conversation_refresh), which describes a boundary the cache
-// already reaches; adopting it after history is exhausted would offer
-// "Load earlier" again and walk back over pages already loaded.
+// delivery, including after restoring a cached timeline. Native delivery replies
+// repeat the newest page's `earlier` row (palette_history::conversation_refresh),
+// which describes a boundary the cache already reaches. Adopting it after
+// history is exhausted would offer "Load earlier" again.
 
 export const TOOL_KINDS = new Set(['tool_call', 'tool_result']);
 export const TOOLS_PAGE_REVISIONS = 30;
+const NO_RECORDED_HISTORY = 'No recorded history';
+
+function timelineKey({ run, agent = null }, tz) {
+  return JSON.stringify([run, agent, tz]);
+}
+
+/** Opened chat history for one authenticated app document. */
+export class TimelineCache {
+  #entries = new Map();
+
+  open({ run, agent = null }, tz) {
+    const history = this.#entries.get(timelineKey({ run, agent }, tz));
+    return new TimelineStore({ run, agent, history });
+  }
+
+  apply(store, tz, ticket, page) {
+    const run = page?.run;
+    const destination = typeof run === 'string' && run !== store.run
+      ? this.#entries.get(timelineKey({ run, agent: store.agent }, tz)) : null;
+    const result = store.apply(ticket, page, destination);
+    if (!result.applied) return result;
+    const key = timelineKey(store, tz);
+    if (result.unavailable) {
+      this.#entries.delete(key);
+    } else if (store.received) {
+      // Merges replace the map, so snapshots can share it without copying events.
+      this.#entries.set(key, { events: store.cache, earlier: store.earlier, received: store.received });
+    }
+    return result;
+  }
+
+  clear() {
+    this.#entries.clear();
+  }
+}
 
 function at(c) {
   return c && c.created_at_ms !== undefined ? c.created_at_ms : null;
@@ -158,17 +193,18 @@ export function displayItems(sorted, { run } = {}) {
  * ticket; tickets from before a retarget or reset are fenced.
  */
 export class TimelineStore {
-  constructor({ run, agent = null, worker: scope = null, query = '' }) {
+  constructor({ run, agent = null, worker: scope = null, query = '', history = null }) {
     this.run = run;
     this.agent = agent || null;
     this.worker = scope;
     this.query = query;
     this.gen = 0;
-    this.cache = new Map();
-    this.earlier = null;
-    this.received = null;
+    this.cache = history?.events ?? new Map();
+    this.earlier = history?.earlier ?? null;
+    this.received = history?.received ?? null;
     this.navigation = {};
-    this.loaded = false;
+    this.loaded = !!history;
+    this.confirmed = false;
     this.meta = {
       live: null,
       header: null,
@@ -213,48 +249,46 @@ export class TimelineStore {
     return { gen: this.gen, kind, run: this.run };
   }
 
-  /** Abandon all in-flight reads and cached content (navigation or auth change). */
-  reset({ run = this.run, agent = this.agent } = {}) {
+  /** Fence in-flight reads and reset the timeline, optionally restoring a snapshot. */
+  reset({ run = this.run, agent = this.agent, history = null } = {}) {
     this.gen += 1;
     this.run = run;
     this.agent = agent || null;
-    this.cache = new Map();
-    this.earlier = null;
-    this.received = null;
+    this.cache = history?.events ?? new Map();
+    this.earlier = history?.earlier ?? null;
+    this.received = history?.received ?? null;
     this.navigation = {};
-    this.loaded = false;
+    this.loaded = !!history;
+    this.confirmed = false;
   }
 
-  apply(ticket, page) {
+  apply(ticket, page, destination = null) {
     if (!ticket || ticket.gen !== this.gen) return { applied: false, reason: 'fenced' };
     if (!page || typeof page !== 'object' || typeof page.run !== 'string' || !Array.isArray(page.events)) {
       return { applied: false, reason: 'malformed' };
     }
     const older = ticket.kind === 'earlier';
-    let retargeted = false;
-    let switched = false;
-    if (page.retargeted === true || page.run !== this.run) {
-      // An older page can never belong to a replacement run.
-      if (older) return { applied: false, reason: 'fenced' };
-      const previousRun = this.run;
-      this.gen += 1;
-      this.run = page.run;
-      this.cache = new Map();
-      this.earlier = null;
-      this.received = null;
-      this.navigation = {};
-      retargeted = previousRun !== null;
-      switched = true;
-      this.meta.retargetedAt = previousRun;
-    }
+    const switched = page.retargeted === true || page.run !== this.run;
+    // An older page can never belong to a replacement run.
+    if (older && switched) return { applied: false, reason: 'fenced' };
     const navigation = page.navigation && typeof page.navigation === 'object' ? page.navigation : {};
+    const recv = navigation.received;
+    const unavailable = page.status === NO_RECORDED_HISTORY && page.events.length === 0 && !recv;
+    const previousRun = this.run;
+    if (switched || unavailable) {
+      this.reset({ run: page.run, history: unavailable ? null : destination });
+      if (switched) this.meta.retargetedAt = previousRun;
+    }
     // See the header: later non-older pages carry the newest page's stale boundary.
-    if (older || switched || !this.loaded) this.earlier = navigation.earlier || null;
-    if (!older) {
-      const recv = navigation.received;
-      if (recv && (!this.received || retargeted || !(recv.after_revision < this.received.after_revision))) {
+    if (!unavailable && (older || !this.loaded)) this.earlier = navigation.earlier || null;
+    if (!older || unavailable) {
+      // Latest and retarget replies show the chronological tail. A restored
+      // delivery cursor still needs to catch up on revisions outside that page.
+      const delivery = !switched && ticket.kind === 'received';
+      if (recv && (!this.received || (delivery && recv.after_revision >= this.received.after_revision))) {
         this.received = recv;
       }
+      this.confirmed = true;
       this.navigation = navigation;
       this.meta = {
         ...this.meta,
@@ -269,8 +303,9 @@ export class TimelineStore {
       };
     }
     this.cache = mergeEvents(this.cache, page.events, page.activity_ranges, this.worker);
-    this.loaded = true;
-    return { applied: true, retargeted };
+    // A missing archive is confirmed, but the next successful reply starts anew.
+    this.loaded = !unavailable;
+    return { applied: true, retargeted: switched && previousRun !== null, unavailable };
   }
 
   events() {

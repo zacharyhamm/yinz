@@ -1,8 +1,8 @@
 // Agent detail (#/a/<id>?run=…&tab=…): Timeline | Screen | Details, composer and sheets.
 import {
-  describeError, freshnessText, SCREEN_TEXT_SIZES, normalizeScreenView, readScreenView, writeScreenView,
+  clientTimezone, describeError, freshnessText, SCREEN_TEXT_SIZES, normalizeScreenView, readScreenView, writeScreenView,
 } from '../api.js';
-import { TimelineStore, ToolsReader } from '../timeline.js';
+import { ToolsReader } from '../timeline.js';
 import { sameTarget, targetOf, validTarget } from '../submission.js';
 import { controlTarget, detailHash, detailListRow, isPeerDetail, isScopedPeer } from '../app-route.js';
 import {
@@ -142,11 +142,11 @@ function ReaderBody({ reader, error, loading }) {
   </div>`;
 }
 
-function EventReaderSheet({ env, item, onClose }) {
+function EventReaderSheet({ env, item, tz, onClose }) {
   const [state, setState] = useState({ loading: true, reader: null, error: null });
   useEffect(() => {
     const controller = new AbortController();
-    env.api.read(item.request, env.tz, { signal: controller.signal }).then((r) => {
+    env.api.read(item.request, tz, { signal: controller.signal }).then((r) => {
       if (controller.signal.aborted) return;
       setState(r.ok ? { loading: false, reader: r.data, error: null } : { loading: false, reader: null, error: describeError(r) });
     });
@@ -157,7 +157,7 @@ function EventReaderSheet({ env, item, onClose }) {
   <//>`;
 }
 
-function ToolsReaderSheet({ env, item, onClose }) {
+function ToolsReaderSheet({ env, item, tz, onClose }) {
   const reader = useMemo(() => new ToolsReader(item.request), []);
   const [, setVersion] = useState(0);
   const [state, setState] = useState({ loading: false, error: null });
@@ -167,7 +167,7 @@ function ToolsReaderSheet({ env, item, onClose }) {
     controller.current = new AbortController();
     setState({ loading: true, error: null });
     const ticket = reader.ticket();
-    const r = await env.api.read(request, env.tz, { signal: controller.current.signal });
+    const r = await env.api.read(request, tz, { signal: controller.current.signal });
     const aborted = controller.current.signal.aborted;
     controller.current = null;
     if (aborted) return;
@@ -317,7 +317,13 @@ export function DetailView({ env, route }) {
   const scoped = isPeerDetail(route.id);
   const recoverScoped = route.bind && isScopedPeer(route.id);
   const identity = route.bind ? `a:${route.id}:${route.run ? 'run' : 'none'}` : `r:${route.run}`;
-  const store = useMemo(() => (route.run ? new TimelineStore({ run: route.run, agent: route.bind ? route.id : null }) : null), [identity]);
+  const { store, tz } = useMemo(() => {
+    if (!route.run) return { store: null, tz: null };
+    const tz = clientTimezone();
+    const store = env.timelines.open({ run: route.run, agent: route.bind ? route.id : null }, tz);
+    return { store, tz };
+  }, [identity]);
+  const visit = useMemo(() => new AbortController(), [store]);
   const [version, setVersion] = useState(0);
   const bump = () => setVersion((v) => v + 1);
   const [tab, setTabState] = useState(route.tab);
@@ -342,6 +348,15 @@ export function DetailView({ env, route }) {
   const [sending, setSending] = useState(null);
   const [awaitingStatus, setAwaitingStatus] = useState(null);
   const now = useNow(1000);
+
+  useLayoutEffect(() => () => {
+    visit.abort();
+    earlierController.current?.abort();
+  }, [visit]);
+
+  function applyHistory(ticket, page) {
+    return env.timelines.apply(store, tz, ticket, page);
+  }
 
   const clearAwaitingStatus = useCallback((confirmation) => {
     setAwaitingStatus((current) => current === confirmation ? null : current);
@@ -372,11 +387,12 @@ export function DetailView({ env, route }) {
     env,
     run: async ({ signal }) => {
       const ticket = store.ticket(store.loaded ? 'received' : 'latest');
-      let r = await env.api.read(store.refreshRequest(), env.tz, { signal });
+      let r = await env.api.read(store.refreshRequest(), tz, { signal });
+      if (signal.aborted || visit.signal.aborted) return r;
       let row;
-      if (!signal.aborted && r.ok && !env.api.stale(r)) {
+      if (r.ok && !env.api.stale(r)) {
         const previous = store.meta.live && store.meta.live.ref;
-        const applied = store.apply(ticket, r.data);
+        const applied = applyHistory(ticket, r.data);
         if (applied.applied) {
           row = store.meta.live;
           if (applied.retargeted) onRetarget(previous);
@@ -416,7 +432,7 @@ export function DetailView({ env, route }) {
   const candidate = controlTarget(live);
   const currentRef = candidate?.id === route.id ? candidate : null;
   const actions = route.bind && !!currentRef && !meta.agent_gone && !peerRejected;
-  const unavailable = meta.agent_gone || peerRejected || ((store?.loaded || list?.data) && !currentRef);
+  const unavailable = meta.agent_gone || peerRejected || ((store?.confirmed || list?.data) && !currentRef);
   const lookup = store ? tail : list;
   const stale = lookup && ['offline', 'retrying', 'error'].includes(lookup.status);
   const scopedRecovery = recoverScoped && (unavailable || (!currentRef && stale));
@@ -496,7 +512,7 @@ export function DetailView({ env, route }) {
   }, [currentRef?.id, currentRef?.kind, currentRef?.session_id]);
 
   // Default tab once, when the agent state is first known (waiting -> Screen).
-  const known = store ? store.loaded : !!listRow;
+  const known = store ? store.confirmed : !!listRow;
   useEffect(() => {
     if (!tab && known) setTabState(chooseTab(route, live));
   }, [known]);
@@ -514,10 +530,6 @@ export function DetailView({ env, route }) {
     run: ({ signal }) => env.api.get(`/api/usage?${new URLSearchParams({ agent: route.id })}`, { signal }),
   });
 
-  useEffect(() => () => {
-    if (earlierController.current) earlierController.current.abort();
-  }, [identity]);
-
   async function loadEarlier() {
     const request = store && store.earlierRequest();
     if (!request || earlierController.current) return;
@@ -525,23 +537,26 @@ export function DetailView({ env, route }) {
     earlierController.current = controller;
     setLoadingEarlier(true);
     const ticket = store.ticket('earlier');
-    const r = await env.api.read(request, env.tz, { signal: controller.signal });
+    const r = await env.api.read(request, tz, { signal: controller.signal });
+    if (visit.signal.aborted) return;
     if (earlierController.current === controller) earlierController.current = null;
     setLoadingEarlier(false);
-    if (controller.signal.aborted) return;
-    if (r.ok && !env.api.stale(r)) store.apply(ticket, r.data);
-    else if (!r.ok && r.status !== 401) env.toast(`Could not load earlier messages: ${describeError(r)}`);
-    bump();
+    if (controller.signal.aborted || env.api.stale(r)) return;
+    if (r.ok) {
+      if (applyHistory(ticket, r.data).applied) bump();
+    } else if (r.status !== 401) env.toast(`Could not load earlier messages: ${describeError(r)}`);
   }
 
   async function followLatest() {
     if (!store) return;
     const ticket = store.ticket('latest');
-    const r = await env.api.read(store.latestRequest(), env.tz);
-    if (r.ok && !env.api.stale(r)) {
+    const r = await env.api.read(store.latestRequest(), tz, { signal: visit.signal });
+    if (visit.signal.aborted || env.api.stale(r)) return;
+    if (r.ok) {
       const previous = store.meta.live && store.meta.live.ref;
-      const applied = store.apply(ticket, r.data);
-      if (applied.applied) observePeerActivity(store.meta.live);
+      const applied = applyHistory(ticket, r.data);
+      if (!applied.applied) return;
+      observePeerActivity(store.meta.live);
       if (applied.retargeted) onRetarget(previous);
       memory.atBottom = true;
       setTabState('timeline');
@@ -630,7 +645,7 @@ export function DetailView({ env, route }) {
     </div>
     <main class=${cx('detail-body', stale && 'is-stale')} id="main">
       <div id=${`panel-${activeTab}`} role="tabpanel" aria-labelledby=${`tab-${activeTab}`} class="panel">
-        ${activeTab === 'timeline' ? html`<${Timeline} items=${items} memory=${memory} loaded=${!store || store.loaded} waitingForAgent=${waitingForAgent} layoutKey=${informationOpen} beforeResize=${beforeResize}
+        ${activeTab === 'timeline' ? html`<${Timeline} items=${items} memory=${memory} loaded=${!store || store.loaded || store.confirmed} waitingForAgent=${waitingForAgent} layoutKey=${informationOpen} beforeResize=${beforeResize}
           earlier=${store && !!store.earlierRequest()} loadingEarlier=${loadingEarlier} onEarlier=${loadEarlier}
           onTools=${(item) => setSheet({ type: 'tools', item })} onEvent=${(item) => setSheet({ type: 'event', item })} />` : null}
         ${activeTab === 'screen' ? html`<${ScreenPanel} env=${env} target=${actions ? currentRef : null} enabled=${actions} layoutKey=${informationOpen} beforeResize=${beforeResize}
@@ -658,7 +673,7 @@ export function DetailView({ env, route }) {
       message="This sends a single Esc key to the agent's terminal. It is not retried automatically."
       confirmLabel="Send Esc" confirmId="action-interrupt-confirm" onClose=${() => setSheet(null)} onConfirm=${interrupt} />` : null}
     ${actions && sheet?.type === 'keys' ? html`<${KeysSheet} env=${env} target=${currentRef} onClose=${() => setSheet(null)} onTargetGone=${onTargetGone} />` : null}
-    ${sheet && sheet.type === 'tools' ? html`<${ToolsReaderSheet} env=${env} item=${sheet.item} onClose=${() => setSheet(null)} />` : null}
-    ${sheet && sheet.type === 'event' ? html`<${EventReaderSheet} env=${env} item=${sheet.item} onClose=${() => setSheet(null)} />` : null}
+    ${sheet && sheet.type === 'tools' ? html`<${ToolsReaderSheet} env=${env} item=${sheet.item} tz=${tz} onClose=${() => setSheet(null)} />` : null}
+    ${sheet && sheet.type === 'event' ? html`<${EventReaderSheet} env=${env} item=${sheet.item} tz=${tz} onClose=${() => setSheet(null)} />` : null}
   </div>`;
 }

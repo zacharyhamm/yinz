@@ -11,7 +11,7 @@ import { staticUrl } from './fakes.mjs';
 
 const {
   compareCursor, rangeOverlaps, rangeContains, mergeEvents, displayItems, sortEvents,
-  TimelineStore, ToolsReader,
+  TimelineCache, TimelineStore, ToolsReader,
 } = await import(staticUrl('timeline.js'));
 const { requestUrl } = await import(staticUrl('api.js'));
 
@@ -28,6 +28,189 @@ const group = (revision, range, tool_calls, created_at_ms = null) => ({
 const page = (fields) => ({
   run: 'run', retargeted: false, agent_gone: false, live: null, header: {}, events: [], earlier: false, next_from: null,
   previous_run: null, origin_run: null, resumable: false, status: '', navigation: {}, activity_ranges: [], ...fields,
+});
+
+test('reopens a timeline with its older pages and delivery cursor while live state awaits confirmation', () => {
+  const cache = new TimelineCache();
+  const view = { run: 'run', agent: 'live:local:7' };
+  const received = (after_revision) => ({ op: 'history', ...view, after_revision });
+  const earlier = { op: 'history', ...view, before: c(20) };
+  const openRange = { start: c(20), end: null };
+  const first = cache.open(view, 'UTC');
+  assert.equal(first.loaded, false);
+  assert.deepEqual(first.refreshRequest(), { op: 'history', ...view });
+  cache.apply(first, 'UTC', first.ticket('latest'), page({
+    live: { id: view.agent },
+    events: [prose(20), group(21, openRange, 2)],
+    navigation: { earlier, received: received(24) },
+  }));
+  cache.apply(first, 'UTC', first.ticket('earlier'), page({ events: [prose(1)] }));
+
+  const reopened = cache.open(view, 'UTC');
+  assert.equal(reopened.loaded, true);
+  assert.equal(reopened.confirmed, false);
+  assert.equal(reopened.actionsEnabled, false);
+  assert.deepEqual(reopened.items().map((item) => item.key), ['e1', 'e20', 't21']);
+  assert.equal(reopened.earlierRequest(), null);
+  assert.deepEqual(reopened.refreshRequest(), received(24));
+
+  // The chronological tail may be newer than the supported delivery batch.
+  reopened.apply(reopened.ticket('latest'), page({
+    live: { id: view.agent },
+    events: [prose(90)],
+    navigation: { earlier, received: received(91) },
+  }));
+  assert.deepEqual(reopened.refreshRequest(), received(24));
+  const closedRange = { start: c(20), end: c(24) };
+  reopened.apply(reopened.ticket('received'), page({
+    live: { id: view.agent },
+    events: [prose(20), group(22, closedRange, 3), prose(24)],
+    activity_ranges: [closedRange],
+    navigation: { earlier, received: received(25) },
+  }));
+  assert.equal(reopened.confirmed, true);
+  assert.equal(reopened.actionsEnabled, true);
+  assert.deepEqual(reopened.items().map((item) => item.key), ['e1', 'e20', 't22', 'e24', 'e90']);
+  assert.equal(reopened.earlierRequest(), null);
+  assert.deepEqual(reopened.refreshRequest(), received(25));
+  assert.deepEqual(first.items().map((item) => item.key), ['e1', 'e20', 't21']);
+});
+
+test('cached history is scoped to the run, live binding and timezone across a retarget', () => {
+  const cache = new TimelineCache();
+  const view = { run: 'run', agent: 'live:local:7' };
+  const first = cache.open(view, 'UTC');
+  cache.apply(first, 'UTC', first.ticket('latest'), page({
+    events: [prose(7)], navigation: { received: { op: 'history', ...view, after_revision: 8 } },
+  }));
+  assert.equal(cache.open({ run: view.run }, 'UTC').loaded, false);
+  assert.equal(cache.open({ ...view, agent: 'live:local:8' }, 'UTC').loaded, false);
+  assert.equal(cache.open(view, 'America/Chicago').loaded, false);
+
+  const replacement = { ...view, run: 'replacement' };
+  assert.equal(cache.open(replacement, 'UTC').loaded, false);
+  const reopened = cache.open(view, 'UTC');
+  cache.apply(reopened, 'UTC', reopened.ticket('received'), page({
+    run: replacement.run, retargeted: true, events: [prose(2)],
+    navigation: { received: { op: 'history', ...replacement, after_revision: 3 } },
+  }));
+  assert.deepEqual(cache.open(view, 'UTC').events().map((event) => event.revision), [7]);
+  assert.deepEqual(cache.open(replacement, 'UTC').events().map((event) => event.revision), [2]);
+
+  cache.clear();
+  assert.equal(cache.open(view, 'UTC').loaded, false);
+  assert.equal(cache.open(replacement, 'UTC').loaded, false);
+});
+
+test('retarget merges into the destination snapshot and continues its delivery stream', () => {
+  const cache = new TimelineCache();
+  const source = { run: 'run', agent: 'live:local:7' };
+  const target = { ...source, run: 'replacement' };
+  const request = (view, cursor) => ({ op: 'history', ...view, ...cursor });
+  const earlier = request(target, { before: c(10) });
+  const received = request(target, { after_revision: 26 });
+
+  const first = cache.open(target, 'UTC');
+  cache.apply(first, 'UTC', first.ticket('latest'), page({
+    run: target.run, events: [prose(25)],
+    navigation: { earlier: request(target, { before: c(25) }), received },
+  }));
+  cache.apply(first, 'UTC', first.ticket('earlier'), page({
+    run: target.run, events: [prose(10)], navigation: { earlier },
+  }));
+
+  const store = cache.open(source, 'UTC');
+  cache.apply(store, 'UTC', store.ticket('latest'), page({
+    events: [prose(900)], navigation: { received: request(source, { after_revision: 901 }) },
+  }));
+  const stale = store.ticket('earlier');
+  const result = cache.apply(store, 'UTC', store.ticket('received'), page({
+    run: target.run, retargeted: true, events: [prose(40)],
+    navigation: { earlier: request(target, { before: c(40) }), received: request(target, { after_revision: 41 }) },
+  }));
+  assert.equal(result.retargeted, true);
+  assert.deepEqual(store.events().map((event) => event.revision), [10, 25, 40]);
+  assert.deepEqual(store.earlierRequest(), earlier);
+  assert.deepEqual(store.refreshRequest(), received);
+  assert.deepEqual(cache.apply(store, 'UTC', stale, page({ events: [prose(890)] })), { applied: false, reason: 'fenced' });
+
+  const reopened = cache.open(target, 'UTC');
+  assert.deepEqual(reopened.events(), store.events());
+  assert.deepEqual(reopened.earlierRequest(), earlier);
+  assert.deepEqual(reopened.refreshRequest(), received);
+  const next = request(target, { after_revision: 28 });
+  cache.apply(reopened, 'UTC', reopened.ticket('received'), page({
+    run: target.run, events: [prose(27)], navigation: { received: next },
+  }));
+  assert.deepEqual(reopened.events().map((event) => event.revision), [10, 25, 27, 40]);
+  assert.deepEqual(reopened.refreshRequest(), next);
+  assert.deepEqual(cache.open(source, 'UTC').events().map((event) => event.revision), [900]);
+});
+
+test('evicts explicit unavailable history and starts fresh if the archive returns', () => {
+  const cache = new TimelineCache();
+  const view = { run: 'run' };
+  const request = { op: 'history', ...view };
+  const first = cache.open(view, 'UTC');
+  cache.apply(first, 'UTC', first.ticket('latest'), page({
+    events: [prose(20)], navigation: { earlier: { ...request, before: c(20) }, received: { ...request, after_revision: 21 } },
+  }));
+  const store = cache.open(view, 'UTC');
+  const stale = store.ticket('earlier');
+  const missing = cache.apply(store, 'UTC', store.ticket('received'), page({ status: 'No recorded history' }));
+  assert.equal(missing.applied, true);
+  assert.equal(store.confirmed, true);
+  assert.equal(store.meta.status, 'No recorded history');
+  assert.deepEqual(store.events(), []);
+  assert.equal(store.earlierRequest(), null);
+  assert.deepEqual(store.refreshRequest(), request);
+  assert.equal(cache.apply(store, 'UTC', stale, page({ events: [prose(19)] })).reason, 'fenced');
+
+  const reopened = cache.open(view, 'UTC');
+  assert.equal(reopened.loaded, false);
+  assert.deepEqual(reopened.events(), []);
+  assert.deepEqual(reopened.refreshRequest(), request);
+
+  const earlier = { ...request, before: c(30) };
+  const received = { ...request, after_revision: 31 };
+  cache.apply(store, 'UTC', store.ticket('latest'), page({ events: [prose(30)], navigation: { earlier, received } }));
+  assert.deepEqual(store.events().map((event) => event.revision), [30]);
+  assert.deepEqual(store.earlierRequest(), earlier);
+  assert.deepEqual(store.refreshRequest(), received);
+  assert.deepEqual(cache.open(view, 'UTC').events(), store.events());
+});
+
+test('keeps cached history when the live agent is gone', () => {
+  const cache = new TimelineCache();
+  const view = { run: 'run', agent: 'live:local:7' };
+  const first = cache.open(view, 'UTC');
+  const received = { op: 'history', ...view, after_revision: 21 };
+  cache.apply(first, 'UTC', first.ticket('latest'), page({ events: [prose(20)], navigation: { received } }));
+
+  const store = cache.open(view, 'UTC');
+  cache.apply(store, 'UTC', store.ticket('received'), page({ agent_gone: true, navigation: { received } }));
+  assert.equal(store.meta.agent_gone, true);
+  assert.deepEqual(store.events(), [prose(20)]);
+  const reopened = cache.open(view, 'UTC');
+  assert.deepEqual(reopened.events(), store.events());
+  assert.deepEqual(reopened.refreshRequest(), received);
+});
+
+test('the cache keeps every opened timeline with a delivery cursor', () => {
+  const cache = new TimelineCache();
+  const runs = Array.from({ length: 24 }, (_, i) => `run-${i}`);
+  for (const run of runs) {
+    const store = cache.open({ run }, 'UTC');
+    cache.apply(store, 'UTC', store.ticket('latest'), page({
+      run, navigation: { received: { op: 'history', run, after_revision: 1 } },
+    }));
+  }
+  const unavailable = cache.open({ run: 'missing' }, 'UTC');
+  cache.apply(unavailable, 'UTC', unavailable.ticket('latest'), page({ run: 'missing', status: 'No recorded history' }));
+  assert.equal(cache.open({ run: 'missing' }, 'UTC').loaded, false);
+  for (const run of runs) {
+    assert.equal(cache.open({ run }, 'UTC').loaded, true, run);
+  }
 });
 
 test('Range::overlaps parity: exclusive prose boundaries, open ends, workers independent', () => {
