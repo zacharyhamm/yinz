@@ -543,15 +543,13 @@ fn visible_and_hidden_plugin_companions_keep_their_launch_configuration() {
             .unwrap();
         let (tx, rx) = crossbeam::channel::bounded(1);
         if let Some(placement) = placement {
-            screen.warp.pending_group_placements.insert(
+            screen.warp.queue_group_placement(
                 destination_id,
-                (
-                    placement,
-                    Some(TabId::new(1)),
-                    ClientId::new(1),
-                    Some(tx),
-                    None,
-                ),
+                placement,
+                Some(TabId::new(1)),
+                ClientId::new(1),
+                Some(tx),
+                None,
             );
         }
         screen
@@ -1344,17 +1342,15 @@ fn closing_a_pending_group_tab_releases_its_warp_hold() {
     let (to_screen, receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
     screen.core.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
     let (response, response_rx) = crossbeam::channel::unbounded();
-    screen.warp.pending_group_placements.insert(
+    screen.warp.queue_group_placement(
         TabId::new(1),
-        (
-            yinz_types::data::WarpPlacement::FocusedTab,
-            Some(TabId::new(0)),
-            ClientId::new(1),
-            Some(response),
-            Some(yinz_bus::warp::PaneWarpHold::new(
-                screen.core.bus.senders.clone(),
-            )),
-        ),
+        yinz_types::data::WarpPlacement::FocusedTab,
+        Some(TabId::new(0)),
+        ClientId::new(1),
+        Some(response),
+        Some(yinz_bus::warp::PaneWarpHold::new(
+            screen.core.bus.senders.clone(),
+        )),
     );
     screen.close_tab_by_id(TabId::new(1)).expect("close tab");
     assert!(screen.warp.pending_group_placements.is_empty());
@@ -3231,15 +3227,13 @@ fn warp_floating_stack_requires_room_for_headers_and_content() {
             .unwrap()
             .position_and_size();
         let (tx, rx) = crossbeam::channel::bounded(1);
-        screen.warp.pending_group_placements.insert(
+        screen.warp.queue_group_placement(
             source_id,
-            (
-                yinz_types::data::WarpPlacement::Floating,
-                Some(target_id),
-                ClientId::new(1),
-                Some(tx),
-                None,
-            ),
+            yinz_types::data::WarpPlacement::Floating,
+            Some(target_id),
+            ClientId::new(1),
+            Some(tx),
+            None,
         );
         screen
             .finish_warp_group(source_id, &slots, &relationships)

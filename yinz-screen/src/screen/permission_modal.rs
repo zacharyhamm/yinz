@@ -288,25 +288,6 @@ impl Screen {
             self.permissions.surface_changed(client, surface);
         }
     }
-    pub(super) fn permission_presentation_changed(
-        &mut self,
-        client: ClientId,
-        origin: (usize, usize),
-    ) {
-        for modal in self
-            .permissions
-            .permission_modals
-            .iter_mut()
-            .filter(|m| m.client == Some(client))
-        {
-            if let Some(Some((_, geometry))) = &modal.pressed
-                && geometry.origin != origin
-            {
-                modal.pressed = Some(None);
-            }
-        }
-    }
-
     pub(super) fn prepare_permission_modal_render(
         &mut self,
     ) -> Vec<(ClientId, ContextMenuLayout, usize)> {
@@ -377,6 +358,20 @@ impl crate::screen::PermissionModalController {
 }
 
 impl super::PermissionModalController {
+    pub(super) fn presentation_changed(&mut self, client: ClientId, origin: (usize, usize)) {
+        for modal in self
+            .permission_modals
+            .iter_mut()
+            .filter(|m| m.client == Some(client))
+        {
+            if let Some(Some((_, geometry))) = &modal.pressed
+                && geometry.origin != origin
+            {
+                modal.pressed = Some(None);
+            }
+        }
+    }
+
     pub(super) fn on_client_removed(&mut self, client_id: ClientId) {
         self.permission_mouse_captures.remove(&client_id);
     }

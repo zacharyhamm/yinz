@@ -128,40 +128,18 @@ impl Screen {
         plugin: PluginId,
         instance: PluginInstanceId,
     ) -> Result<()> {
-        let Some(pending) = self
+        if self
             .notices
             .notification_policy
-            .pending
-            .iter_mut()
-            .find(|p| p.original.id == id)
-        else {
-            return Ok(());
-        };
-        if pending.policy != Some(plugin)
-            || pending.instance != Some(instance)
-            || pending.decision.is_some()
-            || Instant::now() >= pending.deadline
+            .resolve(id, decision, plugin, instance)
         {
-            return Ok(());
+            self.commit_notifications()?;
         }
-        if let NotificationDecision::Replace { title, body, .. } = &decision
-            && title.as_ref().unwrap_or(&pending.original.title).len()
-                + body.as_ref().unwrap_or(&pending.original.body).len()
-                > MAX_NOTIFICATION_REPLACEMENT_BYTES
-        {
-            pending.fallback("replacement_too_large");
-            return self.commit_notifications();
-        }
-        pending.decision = Some(decision);
-        self.commit_notifications()
+        Ok(())
     }
 
     pub(super) fn expire_notification_requests(&mut self, now: Instant) -> Result<()> {
-        for pending in &mut self.notices.notification_policy.pending {
-            if pending.decision.is_none() && now >= pending.deadline {
-                pending.fallback("policy_timeout");
-            }
-        }
+        self.notices.notification_policy.expire(now);
         self.commit_notifications()
     }
 
@@ -240,7 +218,7 @@ impl Screen {
         for notification in notifications {
             // Agent state is derived from original content, before policy changes.
             let (title, body) = notification.title_and_body();
-            super::agent_control::providers::codex::plan_prompt(&self.core, &title, &body, pane)
+            yinz_agent_control::providers::codex::plan_prompt(&self.core, &title, &body, pane)
                 .and_then(|report| {
                     if let Some(report) = report {
                         super::agent_reports::apply_queued_agent_report(
@@ -576,16 +554,7 @@ impl Screen {
 
     fn commit_notifications(&mut self) -> Result<()> {
         let mut changed = false;
-        while self
-            .notices
-            .notification_policy
-            .pending
-            .front()
-            .is_some_and(|p| p.decision.is_some())
-        {
-            let Some(mut pending) = self.notices.notification_policy.pending.pop_front() else {
-                break;
-            };
+        while let Some(mut pending) = self.notices.notification_policy.pop_ready() {
             let decision = pending
                 .decision
                 .take()
@@ -883,6 +852,47 @@ impl crate::screen::NotificationController {
 }
 
 impl NotificationPolicy {
+    fn pop_ready(&mut self) -> Option<Pending> {
+        self.pending.pop_front_if(|p| p.decision.is_some())
+    }
+
+    fn resolve(
+        &mut self,
+        id: NotificationId,
+        decision: NotificationDecision,
+        plugin: PluginId,
+        instance: PluginInstanceId,
+    ) -> bool {
+        let Some(pending) = self.pending.iter_mut().find(|p| p.original.id == id) else {
+            return false;
+        };
+        if pending.policy != Some(plugin)
+            || pending.instance != Some(instance)
+            || pending.decision.is_some()
+            || Instant::now() >= pending.deadline
+        {
+            return false;
+        }
+        if let NotificationDecision::Replace { title, body, .. } = &decision
+            && title.as_ref().unwrap_or(&pending.original.title).len()
+                + body.as_ref().unwrap_or(&pending.original.body).len()
+                > MAX_NOTIFICATION_REPLACEMENT_BYTES
+        {
+            pending.fallback("replacement_too_large");
+            return true;
+        }
+        pending.decision = Some(decision);
+        true
+    }
+
+    fn expire(&mut self, now: Instant) {
+        for pending in &mut self.pending {
+            if pending.decision.is_none() && now >= pending.deadline {
+                pending.fallback("policy_timeout");
+            }
+        }
+    }
+
     fn reconfigure(&mut self, plugin: Option<PluginId>, reason: Option<String>) {
         for pending in &mut self.pending {
             pending.fallback("policy_reconfigured");

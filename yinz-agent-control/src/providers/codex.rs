@@ -55,3 +55,14 @@ pub fn plan_prompt(
         kind: "codex".into(),
     }))
 }
+
+pub fn duplicate_bootstrap(
+    hook: Option<&yinz_types::agent::HookEvent>,
+    has_session: impl FnOnce(&str) -> bool,
+) -> bool {
+    hook.is_some_and(|hook| {
+        hook.hook_event_name == "SessionStart"
+            && hook.codex_hooks_ready == Some(true)
+            && has_session(&hook.session_id)
+    })
+}

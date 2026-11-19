@@ -1,11 +1,7 @@
 use super::*;
 
 impl super::AgentController {
-    pub(in crate::screen) fn event_submission(
-        &self,
-        pane: PaneId,
-        hook: &HookEvent,
-    ) -> Option<String> {
+    pub fn event_submission(&self, pane: PaneId, hook: &HookEvent) -> Option<String> {
         self.agent_controls
             .iter()
             .find(|pending| {
@@ -20,7 +16,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn submission(&self, pane: PaneId, id: &str) -> Option<&Submission> {
+    pub(in crate::controller) fn submission(&self, pane: PaneId, id: &str) -> Option<&Submission> {
         self.agent_submissions
             .get(&pane)?
             .iter()
@@ -29,7 +25,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn submission_mut(
+    pub(in crate::controller) fn submission_mut(
         &mut self,
         pane: PaneId,
         id: &str,
@@ -42,7 +38,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn record_submission(
+    pub(in crate::controller) fn record_submission(
         &mut self,
         pending: &Pending,
         result: Option<SubmissionResult>,
@@ -78,7 +74,9 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn protected_submissions(&self) -> BTreeMap<PaneId, BTreeSet<String>> {
+    pub(in crate::controller) fn protected_submissions(
+        &self,
+    ) -> BTreeMap<PaneId, BTreeSet<String>> {
         let mut protected: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
         for pending in &self.agent_controls {
             if pending.prompt.is_none()
@@ -96,7 +94,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn prune_agent_submissions(
+    pub(in crate::controller) fn prune_agent_submissions(
         &mut self,
         protected: &BTreeMap<PaneId, BTreeSet<String>>,
     ) {
@@ -107,12 +105,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn retain_closed_agent(
-        &mut self,
-        host: &impl AgentHost,
-        pane: PaneId,
-        now: Instant,
-    ) {
+    pub fn retain_closed_agent(&mut self, host: &impl AgentHost, pane: PaneId, now: Instant) {
         if host.pane_info(pane).is_some() {
             let revision = host.agent_input_revision(pane);
             self.closed_agent_submissions
@@ -156,7 +149,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn closed_agent_proof(
+    pub(in crate::controller) fn closed_agent_proof(
         &self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -213,7 +206,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn prune_closed_agents(&mut self, now: Instant) {
+    pub(in crate::controller) fn prune_closed_agents(&mut self, now: Instant) {
         const RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
         const CAPACITY: usize = 1024;
         while self

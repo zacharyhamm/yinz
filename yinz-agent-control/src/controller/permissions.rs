@@ -2,7 +2,7 @@
 use super::*;
 use yinz_types::agent::claude_permissions::{Overlay, Status, DETAIL, EVENT, LEASE_MS};
 
-pub(in crate::screen) fn owned_notification(hook: &HookEvent) -> bool {
+pub(in crate::controller) fn owned_notification(hook: &HookEvent) -> bool {
     hook.hook_event_name == "Notification"
         && hook.notification_type.as_deref() == Some("permission_prompt")
         && hook
@@ -12,7 +12,11 @@ pub(in crate::screen) fn owned_notification(hook: &HookEvent) -> bool {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn overlay_claude_permission(&self, pane: PaneId, agent: &mut AgentInfo) {
+    pub(in crate::controller) fn overlay_claude_permission(
+        &self,
+        pane: PaneId,
+        agent: &mut AgentInfo,
+    ) {
         if agent.kind == "claude"
             && agent.state != AgentState::Exited
             && self.agent_lifecycle.get(&pane).is_some_and(|l| {
@@ -32,7 +36,7 @@ impl super::AgentController {
             agent.wait_needs_a_person = true;
         }
     }
-    pub(in crate::screen) fn release_claude_permission(&mut self, pane: PaneId) {
+    pub(in crate::controller) fn release_claude_permission(&mut self, pane: PaneId) {
         if let Some(overlay) = self
             .agent_lifecycle
             .get_mut(&pane)
@@ -44,7 +48,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn accept_claude_permission(
+    pub(in crate::controller) fn accept_claude_permission(
         &mut self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -118,7 +122,7 @@ impl super::AgentController {
         true
     }
 
-    pub(in crate::screen) fn claude_visible(
+    pub(in crate::controller) fn claude_visible(
         &self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -175,7 +179,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn notification_permission_panes(&self) -> Vec<PaneId> {
+    pub(in crate::controller) fn notification_permission_panes(&self) -> Vec<PaneId> {
         self.agent_lifecycle
             .iter()
             .filter(|(_, lifecycle)| {
@@ -188,7 +192,7 @@ impl super::AgentController {
             .map(|(pane, _)| *pane)
             .collect()
     }
-    pub(in crate::screen) fn advance_notification_permission(
+    pub(in crate::controller) fn advance_notification_permission(
         &mut self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -221,12 +225,12 @@ impl super::AgentController {
         let parent = lifecycle.claude.activity.parent.clone()?;
         Some(parent)
     }
-    pub(in crate::screen) fn take_permission_waits(
+    pub(in crate::controller) fn take_permission_waits(
         &mut self,
     ) -> std::collections::HashMap<PaneId, PermissionWait> {
         std::mem::take(&mut self.claude.permission_waits)
     }
-    pub(in crate::screen) fn advance_permission_wait(
+    pub(in crate::controller) fn advance_permission_wait(
         &mut self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -281,7 +285,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn permission_activity(
+    pub(in crate::controller) fn permission_activity(
         &self,
         pane: PaneId,
         mut visible: AgentInfo,

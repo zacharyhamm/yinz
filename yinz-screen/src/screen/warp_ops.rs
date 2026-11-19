@@ -50,7 +50,52 @@ pub(super) const TAB_WARP_SCREEN_RESERVE: std::time::Duration =
 pub(super) const PANE_WARP_SCREEN_RESERVE: std::time::Duration =
     std::time::Duration::from_millis(500);
 
+pub(super) struct GroupPlacement {
+    placement: WarpPlacement,
+    target: Option<TabId>,
+    client: ClientId,
+    response: Option<crossbeam::channel::Sender<Result<()>>>,
+    // Keeps the source session open through tab removal and the ownership reply.
+    _hold: Option<yinz_bus::warp::PaneWarpHold>,
+}
+
+impl GroupPlacement {
+    fn finish(self, result: Result<()>) -> Result<()> {
+        if let Some(response) = self.response {
+            let _ = response.send(result);
+            Ok(())
+        } else {
+            result
+        }
+    }
+}
+
 impl super::WarpController {
+    pub(super) fn queue_group_placement(
+        &mut self,
+        tab: TabId,
+        placement: WarpPlacement,
+        target: Option<TabId>,
+        client: ClientId,
+        response: Option<crossbeam::channel::Sender<Result<()>>>,
+        hold: Option<yinz_bus::warp::PaneWarpHold>,
+    ) {
+        self.pending_group_placements.insert(
+            tab,
+            GroupPlacement {
+                placement,
+                target,
+                client,
+                response,
+                _hold: hold,
+            },
+        );
+    }
+
+    fn take_group_placement(&mut self, tab: TabId) -> Option<GroupPlacement> {
+        self.pending_group_placements.remove(&tab)
+    }
+
     pub(super) fn has_in_flight_work(&self) -> bool {
         !self.pending_warps.is_empty()
             || !self.pending_tab_warps.is_empty()
@@ -72,7 +117,11 @@ impl super::WarpController {
     pub(super) fn cancel_tab(&mut self, tab_id: TabId) {
         // An adopted group whose tab closes before its layout applied is never
         // placed. Dropping the entry releases its warp hold.
-        if let Some((_, _, _, Some(response), _)) = self.pending_group_placements.remove(&tab_id) {
+        if let Some(GroupPlacement {
+            response: Some(response),
+            ..
+        }) = self.take_group_placement(tab_id)
+        {
             let _ = response.send(Err(anyhow!(
                 "the tab for the adopted panes closed before they were placed"
             )));
@@ -91,9 +140,8 @@ impl super::WarpController {
 
     pub(super) fn reject_layout(&mut self, tab_id: TabId, retained: bool, message: &str) {
         let group_receipt = self
-            .pending_group_placements
-            .remove(&tab_id)
-            .and_then(|(_, _, _, response, _)| response);
+            .take_group_placement(tab_id)
+            .and_then(|group| group.response);
         self.pending_warp_relationships.remove(&tab_id);
         let tab_receipt = self.pending_tab_adoptions.remove(&tab_id);
         for receipt in group_receipt.into_iter().chain(tab_receipt) {
@@ -671,12 +719,10 @@ impl Screen {
         relationships: &yinz_types::data::WarpRelationships,
     ) -> Result<()> {
         use crate::tab::{AcceptedPane, ExtractedPanePlacement, SuppressedPane};
-        // `_hold` keeps a rollback's source session open until the group is placed.
-        let Some((placement, target, client_id, response_channel, _hold)) =
-            self.warp.pending_group_placements.remove(&tab_id)
-        else {
+        let Some(group) = self.warp.take_group_placement(tab_id) else {
             return Ok(());
         };
+        let (placement, target, client_id) = (group.placement, group.target, group.client);
         let result = (|| {
             if placement == WarpPlacement::NewTab {
                 return Ok(());
@@ -762,12 +808,7 @@ impl Screen {
             let tab_id = self.tab_containing_pane(*pane_id).map(|tab| tab.id);
             self.agents.relocate_launch(*pane_id, tab_id);
         }
-        if let Some(response_channel) = response_channel {
-            let _ = response_channel.send(result);
-            Ok(())
-        } else {
-            result
-        }
+        group.finish(result)
     }
 
     pub(super) fn prepare_pane_group(
@@ -1434,6 +1475,11 @@ impl Screen {
             self.clear_nested_guest(pane_id);
         }
         self.close_tab_by_id(tab_index).non_fatal();
+        if self.core.deferred_tab_closes.contains(&tab_index) {
+            // Teardown will publish again after relocation. Until then this tab
+            // is still visible, with the released panes already removed.
+            self.refresh_agent_worktrees();
+        }
     }
 
     /// Give an adopted supervisor a pane in this session.
@@ -1888,9 +1934,13 @@ impl Screen {
             .with_context(err_context)?;
 
         if let Some(placement) = placement {
-            self.warp.pending_group_placements.insert(
+            self.warp.queue_group_placement(
                 tab_index,
-                (placement, target, client_id, response_channel, hold),
+                placement,
+                target,
+                client_id,
+                response_channel,
+                hold,
             );
         } else if let Some(response) = response_channel {
             self.warp.pending_tab_adoptions.insert(tab_index, response);

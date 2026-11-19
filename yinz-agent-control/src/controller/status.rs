@@ -1,7 +1,7 @@
 use super::*;
 
 impl super::AgentController {
-    pub(in crate::screen) fn agent_status(
+    pub fn agent_status(
         &self,
         host: &impl AgentHost,
         pane_id: PaneId,
@@ -136,7 +136,7 @@ impl super::AgentController {
         })
     }
 
-    pub(in crate::screen) fn detected_agent_status(
+    pub(in crate::controller) fn detected_agent_status(
         &self,
         host: &impl AgentHost,
         pane_id: PaneId,

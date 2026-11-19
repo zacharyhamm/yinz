@@ -1,13 +1,13 @@
 use super::*;
 
-pub(in crate::screen) struct AgentClose {
-    pub(in crate::screen) pane: PaneId,
+pub struct AgentClose {
+    pub pane: PaneId,
     client: Reply,
-    worker: Option<yinz_agent_control::close_completed::ApprovedClose>,
+    worker: Option<crate::close_completed::ApprovedClose>,
 }
 
 impl AgentClose {
-    pub(in crate::screen) fn controller(pane: PaneId, client: Reply) -> Self {
+    pub(in crate::controller) fn controller(pane: PaneId, client: Reply) -> Self {
         Self {
             pane,
             client,
@@ -15,12 +15,7 @@ impl AgentClose {
         }
     }
 
-    pub(in crate::screen) fn finish(
-        self,
-        agents: &super::AgentController,
-        host: &impl AgentHost,
-        survived: bool,
-    ) {
+    pub fn finish(self, agents: &super::AgentController, host: &impl AgentHost, survived: bool) {
         if let Some(worker) = self.worker {
             match worker.finish(survived) {
                 Ok(response) => agents.agent_reply(host, &self.client, response),
@@ -48,7 +43,7 @@ impl AgentClose {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn close_completed(
+    pub(in crate::controller) fn close_completed(
         &self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -57,7 +52,7 @@ impl super::AgentController {
         expected_session_id: Option<String>,
         submission_id: String,
     ) -> Option<AgentClose> {
-        use yinz_agent_control::close_completed::{authorize, OutstandingWork};
+        use crate::close_completed::{authorize, OutstandingWork};
         let mut pending = self
             .agent_controls
             .iter()

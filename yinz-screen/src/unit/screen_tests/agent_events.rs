@@ -1229,7 +1229,10 @@ fn lifecycle_pending_projects_retry_without_invalidation() {
             let before = Instant::now();
             screen.apply_agent_event_projects(version, BTreeMap::from([("yinz".into(), Ok(None))]));
             assert!(events(&mut screen, &messages).is_empty());
-            let timeout = screen.agents.agent_control_deadline().unwrap();
+            let timeout = screen
+                .agents
+                .agent_control_deadline_at(std::time::Instant::now())
+                .unwrap();
             assert!(timeout <= Duration::from_millis(100));
             screen.retry_agent_event_projects(before);
             assert!(probe().is_none());
@@ -1282,7 +1285,10 @@ fn lifecycle_pending_projects_retry_without_invalidation() {
         screen.agents.remove_subscriber(WATCHER);
         screen.retry_agent_event_projects(Instant::now() + Duration::from_secs(1));
         assert!(probe().is_none());
-        assert!(screen.agents.agent_control_deadline().is_none());
+        assert!(screen
+            .agents
+            .agent_control_deadline_at(std::time::Instant::now())
+            .is_none());
     }
 }
 
@@ -1329,7 +1335,10 @@ fn lifecycle_waits_for_all_requested_projects_and_cancels_pending_subscriptions(
     screen.retry_agent_event_projects(Instant::now() + Duration::from_secs(1));
     assert!(probe().is_none());
     assert!(events(&mut screen, &messages).is_empty());
-    assert!(screen.agents.agent_control_deadline().is_none());
+    assert!(screen
+        .agents
+        .agent_control_deadline_at(std::time::Instant::now())
+        .is_none());
 }
 
 #[test]
@@ -1402,10 +1411,11 @@ fn lifecycle_identified_notification_gap_never_publishes_idle() {
     assert_eq!(
         screen
             .agents
-            .agent_lifecycle
-            .get(&PANE)
+            .inspect_pane(PANE)
+            .lifecycle()
             .unwrap()
-            .last_message_for_test(),
+            .last_message
+            .as_deref(),
         Some("FINAL")
     );
 }

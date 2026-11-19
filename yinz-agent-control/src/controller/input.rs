@@ -1,7 +1,7 @@
 use super::*;
 
 impl super::AgentController {
-    pub(in crate::screen) fn deliver_agent_prompt(
+    pub(in crate::controller) fn deliver_agent_prompt(
         &mut self,
         host: &mut impl AgentHost,
         mut pending: Pending,
@@ -70,7 +70,7 @@ impl super::AgentController {
         }
     }
 
-    pub(in crate::screen) fn start_draft_clear(
+    pub(in crate::controller) fn start_draft_clear(
         &mut self,
         host: &mut impl AgentHost,
         pane: PaneId,
@@ -156,7 +156,7 @@ impl super::AgentController {
         );
     }
 
-    pub(in crate::screen) fn begin_draft_clear(
+    pub(in crate::controller) fn begin_draft_clear(
         &mut self,
         host: &mut impl AgentHost,
         pane: PaneId,
@@ -216,7 +216,7 @@ impl super::AgentController {
         self.agent_draft_clears.insert(pane, operation);
     }
 
-    pub(in crate::screen) fn write_draft_stage(
+    pub(in crate::controller) fn write_draft_stage(
         &mut self,
         host: &mut impl AgentHost,
         pane: PaneId,
@@ -248,7 +248,7 @@ impl super::AgentController {
         }
     }
 
-    pub(in crate::screen) fn prompt_replaces_input(
+    pub(in crate::controller) fn prompt_replaces_input(
         &self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -261,7 +261,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn send_agent_keys(
+    pub(in crate::controller) fn send_agent_keys(
         &mut self,
         host: &mut impl AgentHost,
         pane: PaneId,
@@ -398,7 +398,7 @@ impl super::AgentController {
         }
     }
 
-    pub(in crate::screen) fn submit_prompt(
+    pub(in crate::controller) fn submit_prompt(
         &mut self,
         host: &mut impl AgentHost,
         pane: PaneId,

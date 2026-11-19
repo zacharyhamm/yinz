@@ -244,9 +244,7 @@ impl Screen {
         // No force-render: the client is going, and the cells its menu occupied belong to a screen
         // nobody is looking at any more.
         self.menus.on_client_removed(client_id);
-        self.close_command_palette(client_id);
-        self.disconnect_palette_client(client_id);
-        self.palette.on_client_removed(client_id);
+        self.palette.on_client_removed(&mut self.core, client_id);
         self.set_client_dimmed(client_id, false, None);
         self.nested
             .on_client_removed(client_id, &self.core.bus.senders);

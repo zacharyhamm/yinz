@@ -1,7 +1,7 @@
 use super::*;
 
 impl super::AgentController {
-    pub(in crate::screen) fn recover_agent(
+    pub(in crate::controller) fn recover_agent(
         &mut self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -70,7 +70,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn begin_recovery(
+    pub(in crate::controller) fn begin_recovery(
         &mut self,
         pane: PaneId,
         revision: u64,
@@ -108,7 +108,7 @@ impl super::AgentController {
             self.agent_worker_waits.remove(&pane);
         }
     }
-    pub(in crate::screen) fn finish_recovery(&mut self, pane: PaneId) {
+    pub(in crate::controller) fn finish_recovery(&mut self, pane: PaneId) {
         if let Some(submissions) = self.agent_submissions.get_mut(&pane) {
             for submission in submissions
                 .iter_mut()
@@ -130,10 +130,10 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn clearing_panes(&self) -> Vec<PaneId> {
+    pub fn clearing_panes(&self) -> Vec<PaneId> {
         self.agent_draft_clears.keys().copied().collect()
     }
-    pub(in crate::screen) fn advance_draft_clear(
+    pub(in crate::controller) fn advance_draft_clear(
         &mut self,
         host: &mut impl AgentHost,
         pane: PaneId,

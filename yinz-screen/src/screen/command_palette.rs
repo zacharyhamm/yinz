@@ -2100,7 +2100,10 @@ impl crate::screen::CommandPaletteController {
 }
 
 impl super::CommandPaletteController {
-    pub(super) fn on_client_removed(&mut self, client_id: ClientId) {
+    pub(super) fn on_client_removed(&mut self, core: &mut super::ScreenCore, client_id: ClientId) {
+        self.take_command_palette(core, client_id);
+        self.palette_providers
+            .disconnect(&core.bus.senders, client_id);
         self.command_palette_mouse_captures.remove(&client_id);
         self.client_projects.remove(&client_id);
     }

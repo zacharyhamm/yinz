@@ -1,7 +1,7 @@
 use super::*;
 
 impl super::AgentController {
-    pub(in crate::screen) fn restart_agent_pane(
+    pub fn restart_agent_pane(
         &mut self,
         host: &mut impl AgentHost,
         pane_id: PaneId,

@@ -1,13 +1,16 @@
 mod close_completed;
+pub mod dispatch;
 mod events;
 mod handoff;
-pub(super) use yinz_agent_control::host;
+use crate::host;
 mod input;
 mod lifecycle;
-pub(super) mod reports;
+mod reports;
+use crate::worktrees;
 use host::AgentHost;
-use yinz_agent_control::worktrees;
-pub(super) mod providers;
+pub use reports::AgentUpdate;
+use reports::ReportDecision;
+mod providers;
 mod status;
 mod submissions;
 use providers::Provider;
@@ -16,12 +19,11 @@ mod read;
 mod recover;
 mod request;
 mod restart;
-pub(super) use close_completed::AgentClose;
-pub(super) use request::Completion;
+pub use close_completed::AgentClose;
+use request::Completion;
 mod permissions;
 mod wait;
 // Agent control is serialized with state reports and terminal input on the screen thread.
-use crate::ClientId;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 use yinz_runtime::errors::prelude::*;
@@ -30,22 +32,23 @@ use yinz_types::agent::control::{
     AgentReadiness, AgentRequest, AgentResponse, AgentStatus, NotReadyReason, PromptDelivery,
     PromptObservation, MAX_PROMPT_BYTES, MAX_TIMEOUT_MS,
 };
-pub(super) use yinz_types::agent::tracking::{
+use yinz_types::agent::tracking::{
     ClaudeActivity, ClaudeNotification, ClaudeTurn, DialogInput, LifecycleState, PermissionWait,
     Submission, SubmissionResult, WorkerWaits,
 };
 use yinz_types::agent::{AgentEvent, AgentInfo, AgentSource, AgentState, HookEvent};
+use yinz_types::internal_ids::ClientId;
 use yinz_types::keys::{BareKey, KeyWithModifier};
 use yinz_types::pane_id::PaneId;
 
 #[derive(Clone, Debug)]
-pub(super) enum Reply {
+pub enum Reply {
     Client(ClientId),
     Host(std::sync::mpsc::Sender<AgentResponse>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Lifecycle {
+struct Lifecycle {
     kind: String,
     conversation: String,
     prompt_id: Option<String>,
@@ -54,7 +57,7 @@ pub(super) struct Lifecycle {
     agy: providers::AgyLifecycle,
     input_revision: Option<u64>,
     /// When the last hook from this pane arrived, worker and stateless hooks included.
-    pub(super) last_report: Instant,
+    last_report: Instant,
     /// The provider turn last reported as interrupted or failed, until the next prompt. Codex
     /// finishes a cancelled turn's tool call after its `Interrupt`, and that hook must not make
     /// the idle agent busy again. `Stop` is not an end here: a blocking Stop hook continues
@@ -66,23 +69,8 @@ pub(super) struct Lifecycle {
 }
 
 impl Lifecycle {
-    pub(super) fn event_background(&self) -> bool {
+    fn event_background(&self) -> bool {
         self.claude.background.is_some() || self.claude.activity.obligations.active()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn claude_background_for_test(&self) -> Option<&str> {
-        self.claude.background.as_deref()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn last_message_for_test(&self) -> Option<&str> {
-        self.last_message.as_deref()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn handoff_for_test(&self) -> LifecycleState {
-        self.handoff()
     }
 
     /// The notification turn a Claude hook belongs to, by its prompt ID.
@@ -155,14 +143,14 @@ impl From<LifecycleState> for Lifecycle {
 
 /// Input evidence carried without a lifecycle (including provisional startup).
 /// None records unknown consumption and remains unknown across repeated warps.
-pub(super) struct TransferredInput {
+struct TransferredInput {
     kind: String,
     conversation: String,
     input_revision: u64,
     consumed: Option<bool>,
 }
 
-pub(super) struct ClearInput {
+struct ClearInput {
     kind: String,
     conversation: String,
     input_revision: u64,
@@ -172,10 +160,10 @@ pub(super) struct ClearInput {
 
 /// How long an agent must go without reporting after input before an interrupted recovery may
 /// reset it to idle, so recovery cannot overtake a hook that is still on its way.
-pub(super) const RECOVER_QUIET: Duration = Duration::from_secs(3);
+const RECOVER_QUIET: Duration = Duration::from_secs(3);
 
 /// One conversation retains a small recent result window; replacing it releases its history.
-pub(super) const SUBMISSION_HISTORY_LIMIT: usize = 32;
+const SUBMISSION_HISTORY_LIMIT: usize = 32;
 
 /// Keep the recent admission window independently of older unresolved claims.
 fn prune_submissions(
@@ -193,12 +181,12 @@ fn prune_submissions(
     });
 }
 
-pub(super) struct Pending {
+struct Pending {
     client: Option<Reply>,
     pane: PaneId,
     kind: String,
     conversation: Option<String>,
-    pub(super) deadline: Option<Instant>,
+    deadline: Option<Instant>,
     input_revision: u64,
     prompt: Option<PromptObservation>,
     command: bool,
@@ -241,7 +229,7 @@ fn deadline(now: Instant, timeout_ms: u64) -> Option<Instant> {
         .then(|| now + Duration::from_millis(timeout_ms))
 }
 
-pub(super) struct DraftClear {
+struct DraftClear {
     client: Option<Reply>,
     agent: AgentInfo,
     revision: u64,
@@ -288,14 +276,7 @@ fn passive_claude_permission(event: &AgentEvent, hook: Option<&HookEvent>) -> bo
 }
 
 impl AgentController {
-    #[cfg(test)]
-    pub(crate) fn claude_background_pending_for_test(&self) -> bool {
-        self.claude_background_pending(PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(
-            7,
-        )))
-    }
-    pub(in crate::screen) fn agent_control_deadline(&self) -> Option<Duration> {
-        let now = Instant::now();
+    pub fn agent_control_deadline_at(&self, now: Instant) -> Option<Duration> {
         self.agent_controls
             .iter()
             .flat_map(|pending| {
@@ -330,12 +311,7 @@ impl AgentController {
 }
 
 impl AgentController {
-    pub(in crate::screen) fn agent_reply(
-        &self,
-        host: &impl AgentHost,
-        reply: &Reply,
-        mut response: AgentResponse,
-    ) {
+    fn agent_reply(&self, host: &impl AgentHost, reply: &Reply, mut response: AgentResponse) {
         response.server_instance = Some(yinz_bus::agent_launch::server_instance().to_owned());
         let client = match reply {
             Reply::Client(client) => *client,
@@ -347,7 +323,7 @@ impl AgentController {
         host.send_control_reply(client, response);
     }
 
-    pub(in crate::screen) fn finish_agent_control(
+    fn finish_agent_control(
         &mut self,
         host: &impl AgentHost,
         pending: &Pending,
@@ -527,7 +503,7 @@ impl AgentController {
 }
 
 impl AgentController {
-    pub(in crate::screen) fn agent_result(
+    fn agent_result(
         &self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -540,7 +516,7 @@ impl AgentController {
         response
     }
 
-    pub(in crate::screen) fn reject_control(
+    fn reject_control(
         &self,
         host: &impl AgentHost,
         client: &Reply,
@@ -565,7 +541,7 @@ impl AgentController {
         self.agent_reply(host, client, response);
     }
 
-    pub(in crate::screen) fn closeout_fence(
+    fn closeout_fence(
         &self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -647,8 +623,12 @@ impl AgentController {
     }
 }
 
+#[cfg(feature = "test-support")]
+#[path = "unit/screen_fixture.rs"]
+pub mod screen_fixture;
+
 #[cfg(test)]
-#[path = "../unit/agent_controller_tests.rs"]
+#[path = "unit/controller_tests.rs"]
 mod controller_tests;
 /// Pane identity and observations staged before asynchronous pane creation.
 type PendingAgentTracking = (
@@ -657,28 +637,45 @@ type PendingAgentTracking = (
 );
 
 #[derive(Default)]
-pub(super) struct AgentController {
-    pub(super) agent_events: events::AgentEvents,
-    pub(super) agent_worktrees: worktrees::Worktrees,
-    pub(super) agent_controls: Vec<Pending>,
-    pub(super) agent_draft_clears: HashMap<PaneId, DraftClear>,
-    pub(super) agent_terminal_claims: HashMap<PaneId, (u64, String, String)>,
-    pub(super) closed_agent_submissions: std::collections::VecDeque<(
+pub struct AgentController {
+    agent_events: events::AgentEvents,
+    agent_worktrees: worktrees::Worktrees,
+    agent_controls: Vec<Pending>,
+    agent_draft_clears: HashMap<PaneId, DraftClear>,
+    agent_terminal_claims: HashMap<PaneId, (u64, String, String)>,
+    closed_agent_submissions: std::collections::VecDeque<(
         std::time::Instant,
         yinz_types::agent::control::RetainedSubmission,
         u64, // Input revision frozen before normal provider shutdown.
         Option<yinz_types::agent::claude_notifications::Source>,
     )>,
-    pub(super) agent_submissions: HashMap<PaneId, std::collections::VecDeque<Submission>>,
-    pub(super) agent_launches: HashMap<PaneId, yinz_types::agent::SpawnedAgent>,
-    pub(super) pending_agent_tracking: HashMap<PaneId, PendingAgentTracking>,
-    pub(super) pending_terminal_states: HashMap<PaneId, String>,
-    pub(super) warped_agent_inputs: HashMap<PaneId, TransferredInput>,
-    pub(super) agent_lifecycle: HashMap<PaneId, Lifecycle>,
-    pub(super) claude: providers::ClaudeState,
-    pub(super) agent_dialog_inputs: HashMap<PaneId, DialogInput>,
-    pub(super) agent_clear_inputs: HashMap<PaneId, ClearInput>,
-    pub(super) agent_worker_waits: HashMap<PaneId, WorkerWaits>,
+    agent_submissions: HashMap<PaneId, std::collections::VecDeque<Submission>>,
+    agent_launches: HashMap<PaneId, yinz_types::agent::SpawnedAgent>,
+    pending_agent_tracking: HashMap<PaneId, PendingAgentTracking>,
+    pending_terminal_states: HashMap<PaneId, String>,
+    warped_agent_inputs: HashMap<PaneId, TransferredInput>,
+    agent_lifecycle: HashMap<PaneId, Lifecycle>,
+    claude: providers::ClaudeState,
+    agent_dialog_inputs: HashMap<PaneId, DialogInput>,
+    agent_clear_inputs: HashMap<PaneId, ClearInput>,
+    agent_worker_waits: HashMap<PaneId, WorkerWaits>,
     /// Local hook activity, guarded by agent identity and sampled with monotonic frame time.
-    pub(super) agent_hook_flashes: HashMap<PaneId, reports::HookFlash>,
+    agent_hook_flashes: HashMap<PaneId, reports::HookFlash>,
+}
+
+impl AgentController {
+    pub fn refresh_agent_worktrees(&mut self, host: &mut impl AgentHost) {
+        self.agent_worktrees.refresh_agent_worktrees(host);
+    }
+
+    pub fn resolve_agent_worktree(
+        &mut self,
+        host: &mut impl AgentHost,
+        cwd: std::path::PathBuf,
+        generation: u64,
+        root: Option<std::path::PathBuf>,
+    ) -> bool {
+        self.agent_worktrees
+            .resolve_agent_worktree(host, cwd, generation, root)
+    }
 }

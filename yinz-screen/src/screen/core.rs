@@ -1,6 +1,6 @@
-use super::agent_control::host::{AgentHost, PaneInput, PreparedRestart};
 use super::*;
 use crate::plugins::HookFiring;
+use yinz_agent_control::host::{AgentHost, PaneInput, PreparedRestart};
 use yinz_types::data::HookPayload;
 use yinz_types::input::hooks::HookPoint;
 
@@ -41,9 +41,7 @@ impl AgentHost for ScreenCore {
             }
         }
     }
-    fn restored_observer(
-        &self,
-    ) -> Option<super::agent_control::host::RestoredObserverRegistration> {
+    fn restored_observer(&self) -> Option<yinz_agent_control::host::RestoredObserverRegistration> {
         Some((
             self.restored_observer.clone()?,
             self.bus.senders.to_screen.clone()?,

@@ -56,7 +56,7 @@ impl AgentHost for RecordingHost {
         0
     }
     fn pane_info(&self, pane: PaneId) -> Option<PaneInfo> {
-        Some(PaneInfo {
+        (pane == self.pane).then(|| PaneInfo {
             id: pane,
             agent: Some(self.current.clone()),
             ..Default::default()
@@ -391,4 +391,114 @@ fn surviving_closeout_target_receives_one_refusal() {
         replies[0].message.as_deref(),
         Some("Controller pane could not be closed")
     );
+}
+
+#[test]
+fn closed_submission_retention_keeps_the_newest_1024_and_expires_at_one_day() {
+    use std::time::Duration;
+    use yinz_types::agent::control::{PromptDelivery, RetainedSubmission};
+    let mut agents = AgentController::default();
+    let mut host = RecordingHost::new();
+    let closed_pane = PaneId::Terminal(TerminalId::new(8));
+    let now = Instant::now();
+    for index in 0..=1024 {
+        let proof = RetainedSubmission {
+            server_instance: "test-instance".into(),
+            session: host.session_name().into(),
+            pane_id: closed_pane,
+            kind: host.current.kind.clone(),
+            cwd: "/work".into(),
+            conversation_id: "old".into(),
+            submission_id: format!("submission-{index}"),
+            turn_id: None,
+            prompt_id: "prompt".into(),
+            acknowledged: true,
+            prompt_delivery: PromptDelivery::Started,
+            outcome: AgentOutcome::Completed,
+            message: Some("DONE".into()),
+            answered: true,
+            quiescent: true,
+        };
+        agents
+            .closed_agent_submissions
+            .push_back((now, proof, 4, None));
+    }
+    for (id, age, outcome) in [
+        ("submission-0", 86399, AgentOutcome::TargetClosed),
+        ("submission-1", 86399, AgentOutcome::Completed),
+        ("submission-1", 86400, AgentOutcome::TargetClosed),
+    ] {
+        let request = AgentRequest::WaitTurn {
+            pane_id: closed_pane,
+            expected_session_id: Some("old".into()),
+            submission_id: id.into(),
+            timeout_ms: 1,
+        };
+        assert!(agents
+            .handle(
+                &mut host,
+                request,
+                Reply::Client(ClientId::from(1)),
+                now + Duration::from_secs(age),
+            )
+            .is_none());
+        let replies = host.replies.take();
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].outcome, outcome);
+        assert_eq!(replies[0].submission_id.as_deref(), Some(id));
+        if age < 86400 {
+            assert_eq!(agents.closed_agent_submissions.len(), 1024);
+            assert_eq!(
+                agents.closed_agent_submissions[0].1.submission_id,
+                "submission-1"
+            );
+        }
+    }
+    assert!(agents.closed_agent_submissions.is_empty());
+}
+
+#[test]
+fn claude_permission_wait_requires_the_waiting_conversation_and_keeps_its_input_revision() {
+    use yinz_types::agent::HookEvent;
+
+    let mut agents = AgentController::default();
+    let host = RecordingHost::new();
+    let pane = host.pane;
+    let waiting = AgentInfo {
+        state: AgentState::Waiting,
+        ..host.current.clone()
+    };
+    let mut hook = HookEvent {
+        hook_event_name: "Notification".into(),
+        notification_type: Some("permission_prompt".into()),
+        session_id: "other".into(),
+        ..Default::default()
+    };
+    for (conversation, agent, accepted) in [
+        ("other", &waiting, false),
+        ("old", &host.current, false),
+        ("old", &waiting, true),
+    ] {
+        hook.session_id = conversation.into();
+        let wait = agents.claude.report_permission_wait(
+            &host,
+            pane,
+            "claude",
+            Some(&hook),
+            Some(agent),
+            false,
+        );
+        assert_eq!(wait.is_some(), accepted);
+        agents.claude.restore_permission_wait(pane, wait);
+    }
+    let expected = agents.claude.permission_waits[&pane].clone();
+    assert_eq!(expected.conversation, "old");
+    assert_eq!(expected.input_revision, host.agent_input_revision(pane));
+
+    let notice = agents
+        .claude
+        .report_permission_wait(&host, pane, "claude", None, None, true);
+    assert!(agents.claude.permission_waits.is_empty());
+    agents.claude.restore_permission_wait(pane, notice);
+    assert_eq!(agents.claude.permission_waits.get(&pane), Some(&expected));
 }

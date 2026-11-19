@@ -1465,8 +1465,7 @@ fn tiled_resize_send_failure_retries_inside_a_screen_transaction() {
     let tab = TabId::new(0);
     let mut screen = create_non_mirrored_screen(original);
     let (writer, receiver) = channels::unbounded();
-    let shutdown = Shutdown::default();
-    screen.core.bus.senders.to_pty_writer = Some(shutdown.sender(writer));
+    screen.core.bus.senders.to_pty_writer = Some(SenderWithContext::new(writer));
     // Tabs clone these senders at construction. Keep all channels live except
     // the writer that the tiled pane will lose after setup.
     let (plugin, _plugin_rx) = channels::unbounded();
@@ -1481,13 +1480,14 @@ fn tiled_resize_send_failure_retries_inside_a_screen_transaction() {
     new_tab(&mut screen, 1, tab);
     drop(receiver);
     screen.set_client_size(ClientId::new(1), requested).unwrap();
-    let _batch = ResizeCache::new(screen.core.bus.senders.clone());
-    assert!(screen.reflow_tab(tab).is_err());
-    assert!(screen.core.tabs_needing_reflow.contains(&tab));
-    assert_eq!(screen.core.tabs[&tab].get_display_area(), requested);
-    shutdown.begin();
-    screen.reflow_tab(tab).unwrap();
-    assert!(!screen.core.tabs_needing_reflow.contains(&tab));
+    // Each reflow runs in a fresh instruction. The second one can only
+    // observe the disconnected writer if it retries at the same geometry.
+    for _ in 0..2 {
+        let _batch = ResizeCache::new(screen.core.bus.senders.clone());
+        assert!(screen.reflow_tab(tab).is_err());
+        assert!(screen.core.tabs_needing_reflow.contains(&tab));
+        assert_eq!(screen.core.tabs[&tab].get_display_area(), requested);
+    }
 }
 
 /// Keeps a tab's PTY resizes failing while everything else it sends still gets through.

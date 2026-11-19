@@ -728,55 +728,24 @@ impl Screen {
                 path,
                 reply,
             } => {
-                let Some(mut state) = self.transfer.migration.take() else {
-                    let _ = reply.send(Err("destination migration disappeared".into()));
+                let Some((mut state, tabs)) =
+                    self.transfer.adoption_result(*snapshot, result, &reply)
+                else {
                     return;
                 };
-                if state.operation != snapshot.operation {
-                    self.transfer.migration = Some(state);
-                    let _ = reply.send(Err("stale session adoption result".into()));
-                    return;
-                }
-                match result {
-                    Err(error) => {
-                        state.stage = Stage::Recovery;
-                        state.snapshot = *snapshot;
-                        self.transfer.migration = Some(state);
-                        let _ = reply.send(Err(error));
-                    },
-                    Ok(adopted) => {
-                        state.snapshot = (*snapshot).clone();
-                        let mut error = None;
-                        for (tab, panes) in snapshot.tabs.iter().zip(adopted) {
-                            let destination = tab.source_tab_id;
-                            state.pending_tabs.insert(destination, tab.clone());
-                            state.replay_tabs.insert(destination);
-                            state
-                                .snapshot
-                                .mapping
-                                .tabs
-                                .push((tab.source_tab_id, destination));
-                            if let Err(e) = self.place_adopted_tab_at(
-                                tab.payload.clone(),
-                                panes,
-                                client,
-                                true,
-                                None,
-                                None,
-                                None,
-                                Some(destination),
-                            ) {
-                                error = Some(e);
-                                break;
-                            }
-                        }
-                        state.path = path;
-                        self.transfer.migration = Some(state);
-                        if let Some(error) = error {
-                            self.transfer.fail_migration_adoption(format!("{error:#}"));
-                        }
-                    },
-                }
+                let placement = state.place_adopted_tabs(tabs, |tab, panes| {
+                    self.place_adopted_tab_at(
+                        tab.payload.clone(),
+                        panes,
+                        client,
+                        true,
+                        None,
+                        None,
+                        None,
+                        Some(tab.source_tab_id),
+                    )
+                });
+                self.transfer.finish_placing_tabs(state, path, placement);
             },
             ScreenRequest::SourceReconciled {
                 operation,
@@ -785,36 +754,15 @@ impl Screen {
                 reply,
                 result,
             } => {
-                let Some(mut state) = self.transfer.migration.take() else {
-                    let _ = reply.send(Err(
-                        "source migration disappeared during reconciliation".into()
-                    ));
-                    return;
-                };
-                if state.operation != operation || state.stage != Stage::Recovering {
-                    self.transfer.migration = Some(state);
-                    let _ = reply.send(Err("stale source reconciliation result".into()));
-                    return;
-                }
-                match result {
-                    Err(error) => {
-                        state.stage = Stage::Recovery;
-                        self.transfer.migration = Some(state);
-                        let _ = reply.send(Err(error));
-                    },
-                    Ok(snapshot) => {
-                        state.snapshot = *snapshot;
-                        state.stage = Stage::Released;
-                        let prepared = state.prepared.clone();
-                        self.transfer.migration = Some(state);
-                        self.remove_migration_tabs(&prepared);
-                        self.session_migration(ScreenRequest::Adopt {
-                            operation,
-                            snapshot: path,
-                            client,
-                            reply,
-                        });
-                    },
+                if let Some(prepared) = self.transfer.source_reconciled(&operation, result, &reply)
+                {
+                    self.remove_migration_tabs(&prepared);
+                    self.session_migration(ScreenRequest::Adopt {
+                        operation,
+                        snapshot: path,
+                        client,
+                        reply,
+                    });
                 }
             },
             ScreenRequest::Abort { operation, reply } => {
@@ -826,20 +774,13 @@ impl Screen {
                 result,
                 reply,
             } => {
-                let Some(mut state) = self.transfer.migration.take() else {
-                    let _ =
-                        reply.send(Err("destination migration disappeared during abort".into()));
+                let Some(state) = self.transfer.begin_handback_completion(&operation, &reply)
+                else {
                     return;
                 };
-                if state.operation != operation {
-                    self.transfer.migration = Some(state);
-                    let _ = reply.send(Err("stale migration abort".into()));
-                    return;
-                }
-                let result = result.and_then(|()| {
-                    // The PTY thread acknowledged every handback before any
-                    // source can re-adopt. Remove only the destination's pane
-                    // objects; ClosePane on a live terminal would kill it.
+                if result.is_ok() {
+                    // PTY acknowledged handback. Detach the destination's pane objects
+                    // without sending ClosePane to the live terminals.
                     let ids: Vec<_> = self.core.tabs.keys().copied().collect();
                     for id in ids {
                         if let Some(tab) = self.core.tabs.get_mut(&id) {
@@ -851,25 +792,8 @@ impl Screen {
                     }
                     self.core.active_tab_ids.clear();
                     self.active_tabs_changed();
-                    state.pending_tabs.clear();
-                    state.snapshot.phase = MigrationPhase::Released;
-                    state.snapshot.errors.clear();
-                    state.snapshot.mapping = Default::default();
-                    for (_, owner) in &mut state.snapshot.ownership {
-                        *owner = MigrationOwnership::Released;
-                    }
-                    migration::save_snapshot(&state.path, &state.snapshot)
-                        .map_err(|e| format!("{e:#}"))?;
-                    state.stage = Stage::Released;
-                    Ok(())
-                });
-                // Remain quiescent: delayed plugin/layout replies must not
-                // re-create panes after they have been given back.
-                if result.is_err() {
-                    state.stage = Stage::Recovery;
                 }
-                self.transfer.migration = Some(state);
-                let _ = reply.send(result);
+                self.transfer.finish_handback(state, result, reply);
             },
             ScreenRequest::TabReplayed { operation, tab } => {
                 self.transfer.tab_replayed(&operation, tab);
@@ -2045,5 +1969,137 @@ impl super::MigrationController {
                 }
             },
         }
+    }
+}
+
+impl MigrationState {
+    fn place_adopted_tabs(
+        &mut self,
+        adopted: Vec<yinz_bus::pty::AdoptedTabPanes>,
+        mut place: impl FnMut(&MigrationTab, yinz_bus::pty::AdoptedTabPanes) -> Result<()>,
+    ) -> Result<()> {
+        for (tab, panes) in self.snapshot.tabs.iter().zip(adopted) {
+            let destination = tab.source_tab_id;
+            self.pending_tabs.insert(destination, tab.clone());
+            self.replay_tabs.insert(destination);
+            self.snapshot
+                .mapping
+                .tabs
+                .push((tab.source_tab_id, destination));
+            place(tab, panes)?;
+        }
+        Ok(())
+    }
+}
+
+impl super::MigrationController {
+    fn adoption_result(
+        &mut self,
+        snapshot: SessionMigrationSnapshot,
+        result: Result<Vec<yinz_bus::pty::AdoptedTabPanes>, String>,
+        reply: &Reply<SessionMigrationMap>,
+    ) -> Option<(MigrationState, Vec<yinz_bus::pty::AdoptedTabPanes>)> {
+        let Some(state) = self.migration.as_mut() else {
+            let _ = reply.send(Err("destination migration disappeared".into()));
+            return None;
+        };
+        if state.operation != snapshot.operation {
+            let _ = reply.send(Err("stale session adoption result".into()));
+            return None;
+        }
+        state.snapshot = snapshot;
+        match result {
+            Ok(tabs) => self.migration.take().map(|state| (state, tabs)),
+            Err(error) => {
+                state.stage = Stage::Recovery;
+                let _ = reply.send(Err(error));
+                None
+            },
+        }
+    }
+
+    fn finish_placing_tabs(
+        &mut self,
+        mut state: MigrationState,
+        path: PathBuf,
+        result: Result<()>,
+    ) {
+        state.path = path;
+        self.migration = Some(state);
+        if let Err(error) = result {
+            self.fail_migration_adoption(format!("{error:#}"));
+        }
+    }
+
+    fn source_reconciled(
+        &mut self,
+        operation: &str,
+        result: Result<Box<SessionMigrationSnapshot>, String>,
+        reply: &Reply<SessionMigrationMap>,
+    ) -> Option<Vec<(TabId, PreparedTabWarp)>> {
+        let Some(state) = self.migration.as_mut() else {
+            let _ = reply.send(Err(
+                "source migration disappeared during reconciliation".into()
+            ));
+            return None;
+        };
+        if state.operation != operation || state.stage != Stage::Recovering {
+            let _ = reply.send(Err("stale source reconciliation result".into()));
+            return None;
+        }
+        match result {
+            Err(error) => {
+                state.stage = Stage::Recovery;
+                let _ = reply.send(Err(error));
+                None
+            },
+            Ok(snapshot) => {
+                state.snapshot = *snapshot;
+                state.stage = Stage::Released;
+                Some(state.prepared.clone())
+            },
+        }
+    }
+
+    fn begin_handback_completion(
+        &mut self,
+        operation: &str,
+        reply: &Reply<()>,
+    ) -> Option<MigrationState> {
+        match &self.migration {
+            None => {
+                let _ = reply.send(Err("destination migration disappeared during abort".into()));
+            },
+            Some(state) if state.operation != operation => {
+                let _ = reply.send(Err("stale migration abort".into()));
+            },
+            Some(_) => return self.migration.take(),
+        }
+        None
+    }
+
+    fn finish_handback(
+        &mut self,
+        mut state: MigrationState,
+        result: Result<(), String>,
+        reply: Reply<()>,
+    ) {
+        let result = result.and_then(|()| {
+            state.pending_tabs.clear();
+            state.snapshot.phase = MigrationPhase::Released;
+            state.snapshot.errors.clear();
+            state.snapshot.mapping = Default::default();
+            for (_, owner) in &mut state.snapshot.ownership {
+                *owner = MigrationOwnership::Released;
+            }
+            migration::save_snapshot(&state.path, &state.snapshot).map_err(|e| format!("{e:#}"))
+        });
+        state.stage = if result.is_ok() {
+            Stage::Released
+        } else {
+            Stage::Recovery
+        };
+        self.migration = Some(state);
+        let _ = reply.send(result);
     }
 }

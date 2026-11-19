@@ -387,6 +387,45 @@ fn same_worktree_surviving_overlay_is_published_in_its_destination() {
 }
 
 #[test]
+fn same_worktree_departures_are_published_while_warped_tab_close_is_deferred() {
+    let repo = repository();
+    let mut scene = Scene::new();
+    scene.add(2, NewPanePlacement::default());
+    scene.report(1, Some(agent(Some(repo.path()))));
+    scene.report(2, Some(agent(Some(repo.path()))));
+    scene.wait_for_title("👯 [1]");
+    assert_eq!(scene.screen.core.tabs[&TAB].agent_worktrees.len(), 2);
+    scene
+        .screen
+        .new_tab(TabId::new(1), (vec![], vec![]), None, Some(CLIENT))
+        .unwrap();
+    let scans = scene.screen.core.worktree_scans.get();
+    let (tab, ids, prepared) = scene
+        .screen
+        .check_tab_can_be_warped(Some(TAB), CLIENT)
+        .unwrap();
+    let released = ids
+        .into_iter()
+        .map(|id| {
+            let host = ReleasedPtyHost {
+                host_id: yinz_types::internal_ids::SupervisorId::new(format!("host-{id}")),
+                host_pid: yinz_types::internal_ids::ProcessId::new(1),
+                control_socket: Some(PathBuf::from(format!("/tmp/warp-{id}.sock"))),
+            };
+            (id, Ok(released_for_warp(ReleasedPane::Local(host))))
+        })
+        .collect();
+    let payload = scene
+        .screen
+        .take_released_tab_for_warp(tab, released, prepared)
+        .unwrap();
+    assert_eq!(payload.tiled_panes.len(), 2);
+    assert!(scene.screen.core.deferred_tab_closes.contains(&TAB));
+    assert!(scene.screen.core.tabs[&TAB].agent_worktrees.is_empty());
+    assert_eq!(scene.screen.core.worktree_scans.get(), scans + 1);
+}
+
+#[test]
 fn same_worktree_stale_completion_after_directory_change_does_not_restore_indicator() {
     let repo = repository();
     let elsewhere = repository();

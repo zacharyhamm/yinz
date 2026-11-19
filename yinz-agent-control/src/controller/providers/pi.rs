@@ -1,7 +1,7 @@
 use super::super::*;
 
 impl AgentController {
-    pub(in crate::screen::agent_control) fn pi_pre_submit_dialog(
+    pub(in crate::controller) fn pi_pre_submit_dialog(
         &self,
         pane: PaneId,
         agent: &AgentInfo,

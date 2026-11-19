@@ -37,6 +37,13 @@ impl Provider {
         }
     }
 
+    pub fn closeout_id(self, hook: &yinz_types::agent::HookEvent) -> Option<&str> {
+        match self {
+            Self::Claude => hook.prompt_id.as_deref(),
+            _ => hook.turn_id.as_deref(),
+        }
+    }
+
     pub fn turn_key<T>(self, turn: T, prompt: T) -> T {
         match self {
             Self::Claude | Self::Agy => prompt,

@@ -154,60 +154,29 @@ impl Screen {
         plugin_id: Option<PluginId>,
         client_id: ClientId,
     ) {
-        let Some(menu) = self.menus.context_menus.get_mut(&client_id) else {
-            return;
-        };
-        if menu.request_id != request_id {
-            return;
-        }
-        // The plugin was handed items with ids and no actions, so this is where the behaviour goes
-        // back on. Matching against what *this menu* was opened with rather than the live config:
-        // the two are normally the same, but a menu should do what it offered when it opened.
-        let configured = match &menu.items {
-            ContextMenuItems::AwaitingPlugin { configured } => configured,
-            ContextMenuItems::Ready(_) => {
-                // An answer to a menu that is already drawn - a second answer, or one that lost the
-                // race to the timeout. Either way the user is looking at, and may already be
-                // pressing, the list this would replace.
-                return;
-            },
-        };
-        let items = reattach_actions(configured, items);
-        menu.selected = None;
-        menu.items = ContextMenuItems::Ready(items);
-        // Remembered so a selection goes back to whoever offered it. `None` here is the plugin
-        // thread answering from the configuration, which is nobody.
-        menu.plugin_id = plugin_id;
-        // An answer of nothing at all is a plugin saying "no menu here", not an empty box.
-        if menu.items.visible().is_empty() {
-            self.close_context_menu(client_id);
-        }
-        self.render().non_fatal();
+        self.complete_context_menu(request_id, client_id, Some((items, plugin_id)));
     }
 
-    /// The plugin did not answer in time. Show what the configuration declared.
     pub(crate) fn context_menu_timed_out(
         &mut self,
         request_id: ContextMenuRequestId,
         client_id: ClientId,
     ) {
-        let Some(menu) = self.menus.context_menus.get_mut(&client_id) else {
-            return;
-        };
-        if menu.request_id != request_id {
-            return;
+        self.complete_context_menu(request_id, client_id, None);
+    }
+
+    fn complete_context_menu(
+        &mut self,
+        request_id: ContextMenuRequestId,
+        client_id: ClientId,
+        answer: Option<(Vec<ContextMenuItem>, Option<PluginId>)>,
+    ) {
+        if self.menus.complete(request_id, client_id, answer) {
+            if !self.menus.context_menu_is_open(client_id) {
+                self.force_render_under_context_menu();
+            }
+            self.render().non_fatal();
         }
-        let ContextMenuItems::AwaitingPlugin { configured } = &menu.items else {
-            // The plugin answered between the timer firing and this running. Its answer wins.
-            return;
-        };
-        // `Ready` rather than a fallback state of its own: nothing replaces this list either, so
-        // there is nothing left for the distinction to decide.
-        menu.items = ContextMenuItems::Ready(configured.clone());
-        if menu.items.visible().is_empty() {
-            self.close_context_menu(client_id);
-        }
-        self.render().non_fatal();
     }
 
     /// Close this client's menu, if it has one. Returns whether there was one to close.
@@ -805,6 +774,38 @@ impl super::ContextMenuController {
         );
         request_id
     }
+    /// Only the first answer (or timeout) for the currently open request wins.
+    fn complete(
+        &mut self,
+        request_id: ContextMenuRequestId,
+        client_id: ClientId,
+        answer: Option<(Vec<ContextMenuItem>, Option<PluginId>)>,
+    ) -> bool {
+        let Some(menu) = self
+            .context_menus
+            .get_mut(&client_id)
+            .filter(|m| m.request_id == request_id)
+        else {
+            return false;
+        };
+        let ContextMenuItems::AwaitingPlugin { configured } = &menu.items else {
+            return false;
+        };
+        let items = if let Some((items, plugin_id)) = answer {
+            menu.selected = None;
+            menu.plugin_id = plugin_id;
+            reattach_actions(configured, items)
+        } else {
+            configured.clone()
+        };
+        if items.is_empty() {
+            self.close(client_id);
+        } else {
+            menu.items = ContextMenuItems::Ready(items);
+        }
+        true
+    }
+
     fn close(&mut self, client_id: ClientId) -> bool {
         self.context_menus.remove(&client_id).is_some()
     }

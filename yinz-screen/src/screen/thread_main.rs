@@ -185,7 +185,9 @@ pub fn screen_thread_main(
         }
         let deadline = if !screen.migration_blocks_normal_work() {
             [
-                screen.agents.agent_control_deadline(),
+                screen
+                    .agents
+                    .agent_control_deadline_at(std::time::Instant::now()),
                 screen.notices.notification_deadline(),
                 screen.sync_output_deadline(),
             ]

@@ -1,6 +1,6 @@
 use super::*;
 use yinz_types::agent::control::valid_web_identity;
-pub(in crate::screen) enum Completion {
+pub(in crate::controller) enum Completion {
     Close(close_completed::AgentClose),
     Refresh,
     Recover {
@@ -19,7 +19,7 @@ pub(in crate::screen) enum Completion {
     },
 }
 impl super::AgentController {
-    pub(in crate::screen) fn handle(
+    pub(in crate::controller) fn handle(
         &mut self,
         host: &mut impl AgentHost,
         request: AgentRequest,
@@ -612,7 +612,7 @@ impl super::AgentController {
         self.agent_reply(host, client, response);
         None
     }
-    pub(in crate::screen) fn verify_web_peer_focus(
+    pub(in crate::controller) fn verify_web_peer_focus(
         &self,
         host: &impl AgentHost,
         expected_instance: &str,

@@ -939,15 +939,13 @@ fn failed_new_layout_reports_error_preserves_focus_and_keeps_adopted_terminals()
                 .pending_tab_adoptions
                 .insert(pending_tab, receipt_tx);
         } else {
-            screen.warp.pending_group_placements.insert(
+            screen.warp.queue_group_placement(
                 pending_tab,
-                (
-                    yinz_types::data::WarpPlacement::NewTab,
-                    None,
-                    client_id,
-                    Some(receipt_tx),
-                    None,
-                ),
+                yinz_types::data::WarpPlacement::NewTab,
+                None,
+                client_id,
+                Some(receipt_tx),
+                None,
             );
         }
         let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();

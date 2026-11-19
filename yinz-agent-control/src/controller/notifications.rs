@@ -1,7 +1,5 @@
 use super::*;
-use yinz_agent_control::providers::claude_notifications::{
-    drain_wait, ingest, settle_drained, TurnFacts,
-};
+use crate::providers::claude_notifications::{drain_wait, ingest, settle_drained, TurnFacts};
 use yinz_types::agent::claude_notifications::{Answer, Evidence};
 
 /// The newest turn the screen has accepted for this lifecycle.
@@ -50,7 +48,7 @@ fn release_notification_observation(lifecycle: &mut Lifecycle, prompt: &str) {
 }
 
 /// Drop a failed processing entry once its independently known native wait releases.
-pub(in crate::screen) fn prune_released_notification_waits(lifecycle: &mut Lifecycle) {
+pub(in crate::controller) fn prune_released_notification_waits(lifecycle: &mut Lifecycle) {
     lifecycle.claude.notifications.retain(|_, notification| {
         !notification.observation_unavailable
             || notification.waiting.is_some()
@@ -59,7 +57,7 @@ pub(in crate::screen) fn prune_released_notification_waits(lifecycle: &mut Lifec
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn preserve_claude_start_state(
+    pub(in crate::controller) fn preserve_claude_start_state(
         &self,
         pane: PaneId,
         hook: &HookEvent,
@@ -79,7 +77,7 @@ impl super::AgentController {
             })
     }
     /// When the screen must wake to settle a drained obligation whose grace is running.
-    pub(in crate::screen) fn claude_drain_at(&self) -> Option<Instant> {
+    pub(in crate::controller) fn claude_drain_at(&self) -> Option<Instant> {
         self.agent_lifecycle
             .values()
             .filter_map(|lifecycle| {
@@ -91,7 +89,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn retain_claude_evidence(
+    pub(in crate::controller) fn retain_claude_evidence(
         &mut self,
         pane: PaneId,
         hook: &HookEvent,
@@ -250,7 +248,10 @@ impl super::AgentController {
         }
         false
     }
-    pub(in crate::screen) fn expire_claude_observations(&mut self, now: Instant) -> Vec<PaneId> {
+    pub(in crate::controller) fn expire_claude_observations(
+        &mut self,
+        now: Instant,
+    ) -> Vec<PaneId> {
         let mut changed = Vec::new();
         for (pane, lifecycle) in &mut self.agent_lifecycle {
             let permission_active = lifecycle
@@ -297,7 +298,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn accept_claude_source(
+    pub(in crate::controller) fn accept_claude_source(
         &mut self,
         host: &impl AgentHost,
         pane: PaneId,

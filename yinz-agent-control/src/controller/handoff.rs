@@ -30,7 +30,7 @@ impl super::AgentController {
             !info.is_held && !info.exited && tracking.agent.state != AgentState::Exited
         });
         let destination = host.agent_input_revision(pane);
-        yinz_agent_control::handoff::remap_input(&mut tracking, destination);
+        crate::handoff::remap_input(&mut tracking, destination);
         if live && tracking.lifecycle.is_none() {
             self.warped_agent_inputs.insert(
                 pane,
@@ -75,7 +75,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn capture_agent_tracking(
+    pub fn capture_agent_tracking(
         &mut self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -149,7 +149,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn warped_agent_input(
+    pub fn warped_agent_input(
         &self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -191,7 +191,7 @@ impl super::AgentController {
         })
     }
 
-    pub(in crate::screen) fn restore_warped_agent_input(
+    pub fn restore_warped_agent_input(
         &mut self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -233,52 +233,37 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn stage_transfer_identity(
-        &mut self,
-        pane: PaneId,
-        tracking: super::PendingAgentTracking,
-    ) {
+    pub fn stage_transfer_identity(&mut self, pane: PaneId, tracking: super::PendingAgentTracking) {
         self.pending_agent_tracking.insert(pane, tracking);
     }
-    pub(in crate::screen) fn stage_terminal_state(&mut self, pane: PaneId, state: String) {
+    pub fn stage_terminal_state(&mut self, pane: PaneId, state: String) {
         self.pending_terminal_states.insert(pane, state);
     }
-    pub(in crate::screen) fn has_staged_terminal(&self, pane: PaneId) -> bool {
+    pub fn has_staged_terminal(&self, pane: PaneId) -> bool {
         self.pending_terminal_states.contains_key(&pane)
     }
-    pub(in crate::screen) fn discard_staged_transfer(&mut self, pane: PaneId) {
+    pub fn discard_staged_transfer(&mut self, pane: PaneId) {
         self.pending_terminal_states.remove(&pane);
         self.pending_agent_tracking.remove(&pane);
     }
-    pub(in crate::screen) fn register_spawn(&mut self, agent: yinz_types::agent::SpawnedAgent) {
+    pub fn register_spawn(&mut self, agent: yinz_types::agent::SpawnedAgent) {
         self.agent_launches.insert(agent.pane_id, agent);
     }
-    pub(in crate::screen) fn forget_launch(&mut self, pane: PaneId) {
+    pub fn forget_launch(&mut self, pane: PaneId) {
         self.agent_launches.remove(&pane);
     }
-    pub(in crate::screen) fn relocate_launch(
-        &mut self,
-        pane: PaneId,
-        tab: Option<yinz_types::internal_ids::TabId>,
-    ) {
+    pub fn relocate_launch(&mut self, pane: PaneId, tab: Option<yinz_types::internal_ids::TabId>) {
         if let Some(launch) = self.agent_launches.get_mut(&pane) {
             launch.tab_id = tab;
         }
     }
-    pub(in crate::screen) fn launch_matches(
-        &self,
-        agent: &yinz_types::agent::SpawnedAgent,
-    ) -> bool {
+    pub fn launch_matches(&self, agent: &yinz_types::agent::SpawnedAgent) -> bool {
         self.agent_launches.get(&agent.pane_id) == Some(agent)
     }
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn restore_transfer_state(
-        &mut self,
-        host: &mut impl AgentHost,
-        pane: PaneId,
-    ) -> bool {
+    pub fn restore_transfer_state(&mut self, host: &mut impl AgentHost, pane: PaneId) -> bool {
         let restored = self
             .pending_agent_tracking
             .remove(&pane)
@@ -306,17 +291,13 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn observe_restored_claude(
-        &mut self,
-        host: &impl AgentHost,
-        pane: PaneId,
-    ) {
+    pub fn observe_restored_claude(&mut self, host: &impl AgentHost, pane: PaneId) {
         if !self.agent_lifecycle.contains_key(&pane) {
             self.claude.restored_observers.enroll(host, pane);
         }
     }
 
-    pub(in crate::screen) fn restored_claude_activity(
+    pub fn restored_claude_activity(
         &mut self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -347,7 +328,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn staged_transfers(&self) -> impl Iterator<Item = PaneId> + '_ {
+    pub fn staged_transfers(&self) -> impl Iterator<Item = PaneId> + '_ {
         self.pending_agent_tracking.keys().copied()
     }
 }

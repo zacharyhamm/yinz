@@ -329,30 +329,25 @@ impl CommandPaletteState {
     }
 }
 
-impl Screen {
-    pub(crate) fn disconnect_palette_client(&mut self, client: ClientId) {
+impl Registry {
+    pub(super) fn disconnect(
+        &mut self,
+        senders: &yinz_bus::thread_bus::ThreadSenders,
+        client: ClientId,
+    ) {
         let owners: HashSet<_> = self
-            .palette
-            .palette_providers
             .providers
             .keys()
             .map(|(owner, _)| owner.clone())
             .collect();
         for owner in owners {
-            deliver(
-                &self.core.bus.senders,
-                &owner,
-                client,
-                Message::Disconnect,
-                None,
-            );
+            deliver(senders, &owner, client, Message::Disconnect, None);
         }
-        self.palette
-            .palette_providers
-            .closed
-            .retain(|(_, origin, _), _| *origin != client);
+        self.closed.retain(|(_, origin, _), _| *origin != client);
     }
+}
 
+impl Screen {
     pub(super) fn open_plugin_palette(&mut self, client: ClientId) {
         self.palette.palette_providers.next_opening += 1;
         if let Some(state) = self.palette.command_palettes.get_mut(&client) {

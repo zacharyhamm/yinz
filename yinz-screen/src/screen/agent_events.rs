@@ -2,10 +2,9 @@ use super::Screen;
 use crate::ClientId;
 use std::time::Instant;
 use yinz_ipc::ipc::EventSubscription;
-use yinz_types::{
-    agent::{AgentEvent, HookEvent},
-    pane_id::PaneId,
-};
+#[cfg(test)]
+use yinz_types::agent::{AgentEvent, HookEvent};
+use yinz_types::pane_id::PaneId;
 #[cfg(test)]
 use {serde_json::Value, yinz_types::agent::control::AgentOutcome};
 impl Screen {
@@ -33,6 +32,7 @@ impl Screen {
             .retire_agent_event_pane(&self.core, pane, event_type)
     }
 
+    #[cfg(test)]
     pub(super) fn observe_agent_event(
         &mut self,
         event: &AgentEvent,

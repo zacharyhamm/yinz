@@ -8,6 +8,9 @@ description = "Agent control, provider input and worktree tracking for Yinz"
 [lints]
 workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 log = { workspace = true }
 yinz-bus = { path = "../yinz-bus", version = "0.1.2-alpha.23" }

@@ -28,7 +28,7 @@
 //! - `active_tab_ids: BTreeMap<ClientId, TabId>`: Maps clients to active tab ID
 //! - `tab_history: BTreeMap<ClientId, Vec<TabId>>`: History of tab IDs per client
 
-mod agent_control;
+use yinz_agent_control::controller as agent_control;
 mod agent_dispatch;
 mod agent_events;
 mod agent_reports;
@@ -563,15 +563,6 @@ pub(crate) struct ParkedPaneWarp {
     pub(crate) client_id: ClientId,
 }
 
-/// Where a warped-in group goes, and who is told once placement completes.
-type PendingGroupPlacement = (
-    yinz_types::data::WarpPlacement,
-    Option<TabId>,
-    ClientId,
-    Option<crossbeam::channel::Sender<Result<()>>>,
-    Option<yinz_bus::warp::PaneWarpHold>,
-);
-
 /// Each Deno isolate has its own registration; Wasm subscribers have no generation.
 type PaneOutputSubscriber = (PluginId, ClientId, Option<u64>);
 
@@ -712,7 +703,7 @@ struct WarpController {
     /// serialization finished, which is exactly what the reserve exists to rule
     /// out.
     pending_pane_groups: HashMap<TabId, (ParkedPaneWarp, PreparedTabWarp, std::time::Instant)>,
-    pending_group_placements: HashMap<TabId, PendingGroupPlacement>,
+    pending_group_placements: HashMap<TabId, warp_ops::GroupPlacement>,
     pending_tab_adoptions: HashMap<TabId, crossbeam::channel::Sender<Result<()>>>,
     pending_warp_relationships: HashMap<TabId, yinz_types::data::WarpRelationships>,
     pending_tab_warps: HashMap<

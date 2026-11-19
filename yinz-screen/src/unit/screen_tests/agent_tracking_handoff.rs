@@ -589,7 +589,11 @@ fn warp_tracking_claude_background_and_waits_survive_transfer() {
         "claude",
         claude_worker("SubagentStop", "worker"),
     );
-    assert!(destination.agents.agent_worker_waits[&PANE]
+    assert!(destination
+        .agents
+        .inspect_pane(PANE)
+        .workers()
+        .unwrap()
         .waits
         .contains_key("worker"));
     report_kind(
@@ -1003,7 +1007,13 @@ fn warp_tracking_failed_notification_observer_keeps_native_permission_ownership(
                 report_kind(&mut destination, "claude", steering_ack("later"));
                 report_kind(&mut destination, "claude", sourced_stop("later", "LATER"));
                 assert_eq!(
-                    destination.agents.agent_lifecycle[&PANE].last_message_for_test(),
+                    destination
+                        .agents
+                        .inspect_pane(PANE)
+                        .lifecycle()
+                        .unwrap()
+                        .last_message
+                        .as_deref(),
                     Some("LATER")
                 );
             }
@@ -1062,7 +1072,7 @@ fn warp_tracking_completed_parent_background_permission_restores_idle_after_appr
                     finish_paste(&writes);
                     permission_key(&mut source, KeyWithModifier::new(BareKey::Enter), cli);
                     assert_eq!(finish_paste(&writes), b"\r");
-                    assert!(source.agents.claude.permission_waits.is_empty());
+                    assert!(source.agents.inspect_pane(PANE).permission().is_none());
                     assert_eq!(
                         claude_lifecycle(&source)
                             .claude
@@ -1145,8 +1155,8 @@ fn warp_tracking_finalizes_requests_and_retains_launch_and_submission_history() 
         snapshot.launch.unwrap().branch.as_deref(),
         Some("task-branch")
     );
-    assert!(source.agents.agent_controls.is_empty());
-    assert!(destination.agents.agent_controls.is_empty());
+    assert_eq!(source.agents.pending_control_count(), 0);
+    assert_eq!(destination.agents.pending_control_count(), 0);
     let (reply, result) = std::sync::mpsc::channel();
     destination.agent_control_at(
         AgentRequest::WaitTurn {
@@ -1326,7 +1336,7 @@ fn warp_tracking_does_not_resume_partial_prompt_delivery() {
     source.agent_control_with_clear(prompt(true), CLIENT, &writes);
     // The writer has not acknowledged the paste and no submit key may be resumed.
     let mut destination = transfer(&mut source, "codex");
-    assert!(destination.agents.agent_controls.is_empty());
+    assert_eq!(destination.agents.pending_control_count(), 0);
     assert_eq!(
         destination
             .capture_agent_tracking(PANE)
@@ -1432,13 +1442,13 @@ fn warp_tracking_preserves_provider_adoption_and_rejects_retired_source_reports(
             "claude",
             provider_resume(notification_source()),
         );
-        assert!(destination.agents.claude_background_pending_for_test());
+        assert!(destination.agents.inspect_pane(PANE).background());
         report_kind(
             &mut destination,
             "claude",
             provider_resume(replacement_source()),
         );
-        assert!(!destination.agents.claude_background_pending_for_test());
+        assert!(!destination.agents.inspect_pane(PANE).background());
         report_kind(
             &mut destination,
             "claude",
@@ -1456,7 +1466,7 @@ fn warp_tracking_preserves_provider_adoption_and_rejects_retired_source_reports(
             sourced_stop("new", "OLD"),
         ] {
             report_kind(&mut next, "claude", old);
-            assert!(!next.agents.claude_background_pending_for_test());
+            assert!(!next.agents.inspect_pane(PANE).background());
             assert_eq!(claude_lifecycle(&next).last_message.as_deref(), Some("NEW"));
             assert_eq!(
                 claude_lifecycle(&next).claude.obligations.source,
@@ -1562,7 +1572,7 @@ fn restored_claude_registry_reconciles_orphan_without_completing_a_turn() {
         report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
         screen
             .agents
-            .remove_agent_lifecycle(&screen.core, PANE, "test orphan");
+            .invalidate_agent_lifecycle(&screen.core, PANE, "test orphan");
         let run = screen
             .tab_containing_pane(PANE)
             .unwrap()
@@ -1658,7 +1668,7 @@ fn restored_claude_registry_rejects_superseded_observations() {
         report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
         screen
             .agents
-            .remove_agent_lifecycle(&screen.core, PANE, "test orphan");
+            .invalidate_agent_lifecycle(&screen.core, PANE, "test orphan");
         let info = screen.get_pane_info(PANE).unwrap();
         let expected = info.agent.unwrap();
         let revision = screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE);
@@ -1731,7 +1741,7 @@ fn restored_claude_observer_retires_after_authoritative_report() {
         report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
         screen
             .agents
-            .remove_agent_lifecycle(&screen.core, PANE, "test orphan");
+            .invalidate_agent_lifecycle(&screen.core, PANE, "test orphan");
         let mut initial = screen.get_pane_info(PANE).unwrap().agent.unwrap();
         initial.run_id = Some("restored-run".into());
         initial.detail = Some("original activity".into());
@@ -1779,7 +1789,7 @@ fn restored_claude_observer_survives_report_deferred_for_absent_pane() {
     report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
     screen
         .agents
-        .remove_agent_lifecycle(&screen.core, PANE, "test orphan");
+        .invalidate_agent_lifecycle(&screen.core, PANE, "test orphan");
     let info = screen.get_pane_info(PANE).unwrap();
     let revision = screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE);
     let generation = enroll_restored_claude(&mut screen);
@@ -1810,7 +1820,7 @@ fn restored_claude_observation_starts_for_pane_and_tab_adoption_without_tracking
         report_kind(&mut source, "claude", hook("UserPromptSubmit"));
         source
             .agents
-            .remove_agent_lifecycle(&source.core, PANE, "test orphan");
+            .invalidate_agent_lifecycle(&source.core, PANE, "test orphan");
         let (registrations, calls) = std::sync::mpsc::channel();
         let observer: crate::RestoredAgentObserver =
             std::sync::Arc::new(move |terminal, session, _| {

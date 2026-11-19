@@ -1,7 +1,7 @@
 use super::*;
 
 impl super::AgentController {
-    pub(in crate::screen) fn observe_control_hook(
+    pub fn observe_control_hook(
         &mut self,
         host: &impl AgentHost,
         event: &AgentEvent,
@@ -12,32 +12,8 @@ impl super::AgentController {
         }
         let pane = PaneId::Terminal(event.pane_id);
         let parent = hook.is_some_and(|hook| !hook.is_worker());
-        // A notification turn's confirmation never speaks for the caller's prompt.
-        let claude_notification_stop = parent
-            && hook.is_some_and(|hook| {
-                hook.claude_turn_complete.is_some()
-                    && self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
-                        lifecycle.kind == "claude"
-                            && lifecycle.conversation == hook.session_id
-                            && lifecycle.claude_notification(hook).is_some()
-                    })
-            });
-        if parent
-            && event.kind == "claude"
-            && !claude_notification_stop
-            && hook.is_some_and(|hook| hook.claude_turn_complete == Some(false))
-            && let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane)
-            && hook.is_some_and(|hook| hook.prompt_id == lifecycle.prompt_id)
-        {
-            lifecycle.claude.confirmation = Some(false);
-        }
-        if parent
-            && event.kind == "agy"
-            && hook.is_some_and(|hook| hook.agy_turn_complete == Some(false))
-            && let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane)
-        {
-            lifecycle.agy = providers::AgyLifecycle::from_confirmation(Some(false));
-        }
+        let claude_notification_stop = self.observe_claude_confirmation(pane, event, hook, parent);
+        self.observe_agy_confirmation(pane, event, hook, parent);
         let mut clear_revision = None;
         let clear_started = host.pane_info(pane).is_some_and(|info| {
             info.agent.is_some_and(|agent| {
@@ -224,29 +200,12 @@ impl super::AgentController {
                         _ => previous.and_then(|previous| previous.input_revision),
                     });
                 let ended_turn = match event.hook.as_str() {
-                    "Interrupt" | "StopFailure"
-                        if event.kind == "claude"
-                            && hook.is_some_and(|hook| {
-                                hook.prompt_id.is_some()
-                                    && previous.is_some_and(|l| {
-                                        l.prompt_id.is_some() && hook.prompt_id != l.prompt_id
-                                    })
-                            }) =>
-                    {
-                        previous.and_then(|previous| previous.ended_turn.clone())
+                    "Interrupt" | "StopFailure" | "Stop" if event.kind == "claude" => {
+                        providers::claude::ended_turn(previous, &event.hook, hook)
                     },
                     "Interrupt" | "StopFailure" => hook
-                        .and_then(|hook| hook.turn_id.clone())
-                        .filter(|turn| !turn.is_empty()),
-                    "Stop"
-                        if event.kind == "claude"
-                            && hook.is_some_and(|hook| {
-                                hook.is_claude_interruption()
-                                    && previous.is_some_and(|l| hook.prompt_id == l.prompt_id)
-                            }) =>
-                    {
-                        hook.and_then(|hook| hook.turn_id.clone())
-                    },
+                        .and_then(|h| h.turn_id.clone())
+                        .filter(|id| !id.is_empty()),
                     "UserPromptSubmit" if !notification => None,
                     "PreInvocation" => None,
                     _ => previous.and_then(|previous| previous.ended_turn.clone()),
@@ -260,14 +219,9 @@ impl super::AgentController {
                         last_report: Instant::now(),
                         ended_turn,
                         closeout_turn: if event.hook == "UserPromptSubmit" && !notification {
-                            hook.and_then(|hook| {
-                                if event.kind == "claude" {
-                                    hook.prompt_id.clone()
-                                } else {
-                                    hook.turn_id.clone()
-                                }
-                            })
-                            .filter(|id| !id.is_empty())
+                            hook.and_then(|hook| Provider::for_kind(&event.kind).closeout_id(hook))
+                                .map(str::to_owned)
+                                .filter(|id| !id.is_empty())
                         } else {
                             previous.and_then(|previous| previous.closeout_turn.clone())
                         },
@@ -288,46 +242,13 @@ impl super::AgentController {
                                 previous.previous_prompt_id.clone()
                             }
                         }),
-                        claude: providers::ClaudeLifecycle {
-                            activity: previous
-                                .map(|previous| previous.claude.activity.clone())
-                                .unwrap_or_default(),
-                            observed_at: previous
-                                .map_or_else(Instant::now, |l| l.claude.observed_at),
-                            confirmation: if notification
-                                || claude_notification_stop
-                                || (event.kind == "claude"
-                                    && hook.is_some_and(|hook| {
-                                        (hook.claude_turn_complete.is_some()
-                                            || matches!(
-                                                hook.hook_event_name.as_str(),
-                                                "StopFailure" | "Interrupt"
-                                            ))
-                                            && hook.prompt_id.is_some()
-                                            && previous.is_some_and(|l| {
-                                                l.prompt_id.is_some()
-                                                    && l.prompt_id != hook.prompt_id
-                                            })
-                                    })) {
-                                previous.and_then(|previous| previous.claude.confirmation)
-                            } else if event.hook == "UserPromptSubmit" {
-                                None
-                            } else if event.kind == "claude"
-                                && (matches!(event.hook.as_str(), "StopFailure" | "Interrupt")
-                                    || hook.is_some_and(HookEvent::is_claude_interruption))
-                            {
-                                Some(true)
-                            } else {
-                                hook.and_then(|hook| hook.claude_turn_complete).or_else(|| {
-                                    previous.and_then(|previous| previous.claude.confirmation)
-                                })
-                            },
-                            background: previous
-                                .and_then(|previous| previous.claude.background.clone()),
-                            notifications: previous
-                                .map(|previous| previous.claude.notifications.clone())
-                                .unwrap_or_default(),
-                        },
+                        claude: providers::ClaudeLifecycle::after_hook(
+                            previous,
+                            event,
+                            hook,
+                            notification,
+                            claude_notification_stop,
+                        ),
                         agy: previous.map(|l| l.agy).unwrap_or_default().after_hook(
                             &event.kind,
                             &event.hook,
@@ -349,7 +270,7 @@ impl super::AgentController {
 impl super::AgentController {
     /// Carry a plugin's run binding into the presentation snapshots kept for `agent`, so a
     /// later republish of either snapshot neither restores an old run nor revives an unbound one.
-    pub(in crate::screen) fn rebind_agent_parent_runs(&mut self, pane: PaneId, agent: &AgentInfo) {
+    pub fn rebind_agent_parent_runs(&mut self, pane: PaneId, agent: &AgentInfo) {
         let same =
             |parent: &AgentInfo| parent.kind == agent.kind && parent.session_id == agent.session_id;
         if let Some(parent) = self
@@ -373,7 +294,7 @@ impl super::AgentController {
 impl super::AgentController {
     /// Whether this hook is work from a turn that already ended by interruption or failure,
     /// such as the tool call Codex finishes after an Esc. Hooks without a turn id never are.
-    pub(in crate::screen) fn is_after_ended_turn(
+    pub(in crate::controller) fn is_after_ended_turn(
         &self,
         pane: PaneId,
         kind: &str,
@@ -397,7 +318,7 @@ impl super::AgentController {
 impl super::AgentController {
     /// Track Claude notification turns and completed turn text. Completions must be tracked
     /// before pending operations are answered; notifications need an initialized lifecycle.
-    pub(in crate::screen) fn track_agent_turn(
+    pub(in crate::controller) fn track_agent_turn(
         &mut self,
         pane: PaneId,
         event: &AgentEvent,
@@ -412,92 +333,19 @@ impl super::AgentController {
             return;
         };
         if event.kind == "claude" {
-            if event.hook == "UserPromptSubmit" {
-                if let Some(id) = hook.prompt_id.as_ref().filter(|id| !id.is_empty())
-                    && !lifecycle.claude.activity.turns.contains_key(id)
-                {
-                    lifecycle.claude.activity.sequence += 1;
-                    lifecycle.claude.activity.turns.insert(
-                        id.clone(),
-                        ClaudeTurn {
-                            confirmation: None,
-                            awaiting_native_submit: hook.claude_recovered_after.is_some(),
-                            sequence: lifecycle.claude.activity.sequence,
-                        },
-                    );
-                }
-            } else if matches!(event.hook.as_str(), "StopFailure" | "Interrupt")
-                || hook.is_claude_interruption()
-            {
-                if let Some(turn) = hook
-                    .prompt_id
-                    .as_ref()
-                    .and_then(|id| lifecycle.claude.activity.turns.get_mut(id))
-                {
-                    // Retain a terminal tombstone: neither a duplicate acceptance nor a
-                    // detached observer's late confirmation may reopen this prompt.
-                    turn.confirmation = Some(true);
-                }
-            } else if let Some(complete) = hook.claude_turn_complete
-                && let Some(turn) = hook
-                    .prompt_id
-                    .as_ref()
-                    .and_then(|id| lifecycle.claude.activity.turns.get_mut(id))
-            {
-                turn.confirmation = Some(complete);
+            providers::claude::track_turn(lifecycle, event, hook, notification);
+        } else {
+            match event.hook.as_str() {
+                "UserPromptSubmit" => lifecycle.last_message = None,
+                "Stop" | "StopFailure" => lifecycle.last_message = event.last_message.clone(),
+                _ => {},
             }
-        }
-        if notification {
-            if let Some(prompt) = hook.prompt_id.clone().filter(|id| !id.is_empty()) {
-                lifecycle.claude.notifications.insert(
-                    prompt,
-                    ClaudeNotification {
-                        observation_unavailable: false,
-                        waiting: None,
-                        permission_revision: None,
-                    },
-                );
-            }
-            return;
-        }
-        match event.hook.as_str() {
-            "UserPromptSubmit" => {
-                lifecycle.last_message = None;
-            },
-            "Stop" if event.kind == "claude" => {
-                let Some(complete) = hook.claude_turn_complete else {
-                    return;
-                };
-                if !complete {
-                    // An observer timeout does not prove notification processing stopped.
-                    return;
-                }
-                if let Some(prompt) = &hook.prompt_id {
-                    lifecycle.claude.notifications.remove(prompt);
-                }
-                let sequence = hook
-                    .prompt_id
-                    .as_ref()
-                    .and_then(|id| lifecycle.claude.activity.turns.get(id))
-                    .map_or(0, |turn| turn.sequence);
-                if sequence >= lifecycle.claude.activity.message_sequence {
-                    lifecycle.claude.activity.message_sequence = sequence;
-                    lifecycle.last_message = event.last_message.clone();
-                }
-            },
-            "StopFailure"
-                if event.kind == "claude"
-                    && hook.prompt_id.is_some()
-                    && lifecycle.prompt_id.is_some()
-                    && hook.prompt_id != lifecycle.prompt_id => {},
-            "Stop" | "StopFailure" => lifecycle.last_message = event.last_message.clone(),
-            _ => {},
         }
     }
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn invalidate_agent_lifecycle(
+    pub fn invalidate_agent_lifecycle(
         &mut self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -565,7 +413,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn remove_agent_lifecycle(
+    pub(in crate::controller) fn remove_agent_lifecycle(
         &mut self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -585,12 +433,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn has_agent_lifecycle(
-        &self,
-        pane: PaneId,
-        kind: &str,
-        conversation: &str,
-    ) -> bool {
+    pub fn has_agent_lifecycle(&self, pane: PaneId, kind: &str, conversation: &str) -> bool {
         self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
             lifecycle.kind == kind && lifecycle.conversation == conversation
         })

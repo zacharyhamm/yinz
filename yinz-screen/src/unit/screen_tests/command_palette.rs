@@ -7615,8 +7615,7 @@ fn palette_completion_notifications_are_scoped_and_readable() {
                     });
                 },
                 "disconnect" => {
-                    screen.close_command_palette(CLIENT);
-                    screen.disconnect_palette_client(CLIENT);
+                    screen.palette.on_client_removed(&mut screen.core, CLIENT);
                 },
                 _ => {},
             }

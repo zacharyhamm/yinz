@@ -1,5 +1,6 @@
 //! The agent host contract and provider observations shared with the screen thread.
 pub mod close_completed;
+pub mod controller;
 pub mod handoff;
 pub mod host;
 pub mod journal;

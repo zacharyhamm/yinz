@@ -1,7 +1,7 @@
 use super::*;
 
 impl super::AgentController {
-    pub(in crate::screen) fn advance_pending_controls(
+    pub(in crate::controller) fn advance_pending_controls(
         &mut self,
         host: &mut impl AgentHost,
         now: Instant,
@@ -315,7 +315,7 @@ impl super::AgentController {
         self.prune_agent_submissions(&self.protected_submissions());
     }
 
-    pub(in crate::screen) fn correlate_agent_submissions(
+    pub(in crate::controller) fn correlate_agent_submissions(
         &mut self,
         host: &impl AgentHost,
         event: &AgentEvent,
@@ -542,7 +542,7 @@ impl super::AgentController {
         completed
     }
 
-    pub(in crate::screen) fn correlate_recovered_claude_submit(
+    pub(in crate::controller) fn correlate_recovered_claude_submit(
         &mut self,
         host: &impl AgentHost,
         event: &AgentEvent,
@@ -587,11 +587,7 @@ impl super::AgentController {
         self.correlate_agent_submissions(host, event, Some(hook));
     }
 
-    pub(in crate::screen) fn detach_agent_controls(
-        &mut self,
-        host: &impl AgentHost,
-        client: ClientId,
-    ) {
+    pub fn detach_agent_controls(&mut self, host: &impl AgentHost, client: ClientId) {
         for operation in self.agent_draft_clears.values_mut() {
             if matches!(operation.client, Some(Reply::Client(id)) if id == client) {
                 operation.client = None;

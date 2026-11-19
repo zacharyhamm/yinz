@@ -1,20 +1,20 @@
 //! Session-local, ordered lifecycle facts. Socket I/O remains in the client writers.
 use super::host::AgentHost;
-use crate::ClientId;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::{Duration, Instant};
 use yinz_ipc::ipc::EventSubscription;
 use yinz_types::agent::control::{AgentOutcome, PromptObservation};
 use yinz_types::agent::{AgentEvent, HookEvent};
+use yinz_types::internal_ids::ClientId;
 use yinz_types::pane_id::PaneId;
 
-use yinz_agent_control::journal::{canonicalize, EventJournal, EVENTS};
+use crate::journal::{canonicalize, EventJournal, EVENTS};
 
 use yinz_types::agent::tracking::{EventTrackingHandoff, ObservedAgentTurn as Turn};
 
-pub(in crate::screen) struct AgentEvents {
-    pub(in crate::screen) dirty: bool,
+pub(in crate::controller) struct AgentEvents {
+    pub(in crate::controller) dirty: bool,
     journal: EventJournal,
     generation: u64,
     panes: BTreeMap<PaneId, Value>,
@@ -50,7 +50,7 @@ impl Default for AgentEvents {
 }
 
 impl AgentEvents {
-    pub(in crate::screen) fn remove(&mut self, client: ClientId) {
+    pub fn remove(&mut self, client: ClientId) {
         self.journal.remove(client);
         self.project_pending.remove(&client);
         self.prune_projects();
@@ -72,7 +72,7 @@ impl AgentEvents {
         }
     }
 
-    pub(in crate::screen) fn deadline(&self) -> Option<Duration> {
+    pub(in crate::controller) fn deadline(&self) -> Option<Duration> {
         self.journal
             .has_pending()
             .then_some(Duration::from_millis(10))
@@ -86,7 +86,7 @@ impl AgentEvents {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn invalidate_agent_event_projects(&mut self, host: &impl AgentHost) {
+    pub fn invalidate_agent_event_projects(&mut self, host: &impl AgentHost) {
         self.agent_events.project_version += 1;
         self.agent_events.project_ready = false;
         self.refresh_agent_event_projects(host);
@@ -94,7 +94,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn agent_event_tracking(&self, pane: PaneId) -> EventTrackingHandoff {
+    pub(in crate::controller) fn agent_event_tracking(&self, pane: PaneId) -> EventTrackingHandoff {
         let state = self.agent_events.panes.get(&pane);
         let mut uncertain: Vec<_> = self
             .agent_events
@@ -121,7 +121,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn refresh_agent_events(&mut self, host: &impl AgentHost) {
+    pub fn refresh_agent_events(&mut self, host: &impl AgentHost) {
         self.agent_events.dirty = false;
         let current: BTreeMap<_, _> = host.pane_ids().into_iter()
             .filter(|pane| matches!(pane, PaneId::Terminal(_)))
@@ -209,7 +209,7 @@ impl super::AgentController {
         }
     }
 
-    pub(in crate::screen) fn refresh_agent_event_projects(&mut self, host: &impl AgentHost) {
+    pub fn refresh_agent_event_projects(&mut self, host: &impl AgentHost) {
         if self.agent_events.projects.is_empty() {
             return;
         }
@@ -241,7 +241,7 @@ impl super::AgentController {
         }
     }
 
-    pub(in crate::screen) fn publish_agent_event(
+    pub fn publish_agent_event(
         &mut self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -269,7 +269,7 @@ impl super::AgentController {
             .publish(host, pane, event_type, pane_sequence, event, projects);
     }
 
-    pub(in crate::screen) fn retire_agent_event_pane(
+    pub fn retire_agent_event_pane(
         &mut self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -282,7 +282,7 @@ impl super::AgentController {
         self.agent_events.dirty = true;
     }
 
-    pub(in crate::screen) fn agent_observation_uncertain(
+    pub fn agent_observation_uncertain(
         &mut self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -315,7 +315,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn restore_agent_event_tracking(
+    pub(in crate::controller) fn restore_agent_event_tracking(
         &mut self,
         host: &impl AgentHost,
         pane: PaneId,
@@ -337,7 +337,7 @@ impl super::AgentController {
         }
     }
 
-    pub(in crate::screen) fn subscribe_agent_events(
+    pub fn subscribe_agent_events(
         &mut self,
         host: &impl AgentHost,
         client: ClientId,
@@ -378,11 +378,11 @@ impl super::AgentController {
         );
     }
 
-    pub(in crate::screen) fn flush_agent_events(&mut self, host: &impl AgentHost) {
+    pub fn flush_agent_events(&mut self, host: &impl AgentHost) {
         self.agent_events.journal.flush(host);
     }
 
-    pub(in crate::screen) fn observe_agent_event(
+    pub fn observe_agent_event(
         &mut self,
         host: &impl AgentHost,
         event: &AgentEvent,
@@ -510,11 +510,7 @@ impl super::AgentController {
         }
     }
 
-    pub(in crate::screen) fn retry_agent_event_projects(
-        &mut self,
-        host: &impl AgentHost,
-        now: Instant,
-    ) {
+    pub fn retry_agent_event_projects(&mut self, host: &impl AgentHost, now: Instant) {
         self.agent_events.prune_projects();
         if self.agent_events.project_retry.is_some_and(|at| now >= at) {
             self.agent_events.project_retry = None;
@@ -522,7 +518,7 @@ impl super::AgentController {
         }
     }
 
-    pub(in crate::screen) fn apply_agent_event_projects(
+    pub fn apply_agent_event_projects(
         &mut self,
         host: &impl AgentHost,
         version: u64,
@@ -601,13 +597,13 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub(in crate::screen) fn event_snapshot_dirty(&self) -> bool {
+    pub fn event_snapshot_dirty(&self) -> bool {
         self.agent_events.dirty
     }
-    pub(in crate::screen) fn invalidate_event_snapshot(&mut self) {
+    pub fn invalidate_event_snapshot(&mut self) {
         self.agent_events.dirty = true;
     }
-    pub(in crate::screen) fn remove_subscriber(&mut self, client: ClientId) {
+    pub fn remove_subscriber(&mut self, client: ClientId) {
         self.agent_events.remove(client);
     }
 }
