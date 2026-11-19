@@ -426,9 +426,9 @@ argument syntax depend on the target provider and its installed commands.
 Other providers currently reject web slash input with an unsupported message.
 Ordinary messages continue to use prompt submission.
 
-Commands require an idle agent with no outstanding submissions. **Command sent**
-confirms delivery of input and the submit key, not provider acceptance or task
-completion. Check **Screen** for unknown-command errors, argument validation,
+Commands require an idle agent with no outstanding submissions. The composer
+returns to idle once Yinz delivers the input and submit key. Check **Screen**
+for unknown-command errors, argument validation,
 mode changes or dialogs; use the key controls to answer dialogs. Commands such
 as `/new`, `/clear` or conversation selectors may replace the conversation; the
 app refreshes the target and never redirects a saved submission to a replacement.

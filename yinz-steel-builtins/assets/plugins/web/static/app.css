@@ -417,7 +417,6 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
   padding: 6px calc(6px + var(--safe-right)) calc(6px + var(--safe-bottom)) calc(6px + var(--safe-left));
 }
 .detail-page .composer-input { padding: 9px 10px; }
-.detail-page .composer-input::placeholder { color: var(--muted); opacity: 1; }
 /* In reduced Screen space the complete draft scrolls inside a one-line input;
    the dock remains scrollable for submission feedback and recovery actions. */
 @media (max-height: 600px) {

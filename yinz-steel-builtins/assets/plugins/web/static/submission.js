@@ -63,7 +63,7 @@ export function promptProblem(text) {
 }
 
 function emptyRecord(target) {
-  return { v: RECORD_VERSION, target: targetOf(target), draft: '', pending: null, lastFailure: null, commandNotice: null, incompatible: null, adopted: null };
+  return { v: RECORD_VERSION, target: targetOf(target), draft: '', pending: null, lastFailure: null, incompatible: null, adopted: null };
 }
 
 function normalize(raw, target) {
@@ -83,7 +83,6 @@ function normalize(raw, target) {
     };
     if (p.state === 'sending') rec.pending.message = 'The page reloaded before the outcome arrived.';
   }
-  rec.commandNotice = typeof raw.commandNotice === 'string' ? raw.commandNotice : null;
   if (raw.lastFailure && typeof raw.lastFailure === 'object') {
     rec.lastFailure = { message: String(raw.lastFailure.message || ''), submission_id: raw.lastFailure.submission_id ?? null };
   }
@@ -118,8 +117,7 @@ export function classifyPromptResult(result, id) {
     return { state: 'unknown', message: `${UNKNOWN_TEXT}. The reply did not match this submission.` };
   }
   const { outcome } = response;
-  if (outcome === 'command_sent') return { state: 'command_sent', message: native || 'Command sent. Check pane output for errors or dialogs; completion is not verified.', outcome };
-  if (outcome === 'submitted') return { state: 'submitted', message: null, outcome };
+  if (outcome === 'submitted' || outcome === 'command_sent') return { state: outcome, message: null, outcome };
   if (outcome === 'rejected') return { state: 'failed', message: native || 'The agent rejected the prompt.', outcome };
   const notSent = response.prompt_delivery === 'not_sent';
   const started = response.prompt_delivery === 'started';
@@ -136,7 +134,6 @@ export function recordView(rec) {
   if (rec.incompatible) return { state: 'incompatible', message: rec.incompatible.reason, replacement: rec.incompatible.replacement };
   if (rec.pending) return { state: rec.pending.state, message: rec.pending.message, submission_id: rec.pending.submission_id, text: rec.pending.text };
   if (rec.lastFailure) return { state: 'failed', message: rec.lastFailure.message };
-  if (rec.commandNotice) return { state: 'command_sent', message: rec.commandNotice };
   return { state: 'idle' };
 }
 
@@ -151,7 +148,7 @@ export function createSubmissions({ storage, api, uuid = () => globalThis.crypto
   function write(rec) {
     const key = targetKey(rec.target);
     memory.set(key, rec);
-    const empty = !rec.draft && !rec.pending && !rec.incompatible && !rec.lastFailure && !rec.commandNotice;
+    const empty = !rec.draft && !rec.pending && !rec.incompatible && !rec.lastFailure;
     const result = empty ? storage.remove(key) : storage.set(key, JSON.stringify(rec));
     if (result.ok) persistErrors.delete(key);
     else persistErrors.set(key, result.error || 'denied');
@@ -198,7 +195,6 @@ export function createSubmissions({ storage, api, uuid = () => globalThis.crypto
       : classifyPromptResult(result, id);
     const record = update(target, (rec) => {
       if (c.state === 'submitted' || c.state === 'command_sent') {
-        rec.commandNotice = c.state === 'command_sent' ? c.message : null;
         rec.pending = null;
         rec.lastFailure = null;
         if (rec.draft === text) rec.draft = '';
@@ -235,7 +231,7 @@ export function createSubmissions({ storage, api, uuid = () => globalThis.crypto
       return persistErrors.get(targetKey(target)) || null;
     },
     setDraft(target, text) {
-      const rec = update(target, (r) => ({ ...r, draft: String(text), commandNotice: null }));
+      const rec = update(target, (r) => ({ ...r, draft: String(text) }));
       return { ok: !persistErrors.has(targetKey(target)), record: rec };
     },
     /** Why Send is unavailable, or null. */
@@ -252,7 +248,7 @@ export function createSubmissions({ storage, api, uuid = () => globalThis.crypto
       if (problem) return { ok: false, reason: problem };
       const before = load(target);
       const attempt = { submission_id: uuid(), text: before.draft, state: 'sending', attempts: 1, created_ms: now(), message: null };
-      const rec = { ...before, pending: attempt, lastFailure: null, commandNotice: null };
+      const rec = { ...before, pending: attempt, lastFailure: null };
       if (!write(rec)) {
         // Never send without a durable safety record; keep the draft visible.
         memory.set(targetKey(target), before);
@@ -287,7 +283,7 @@ export function createSubmissions({ storage, api, uuid = () => globalThis.crypto
      * for a replaced identity cannot be sent anywhere, so it is removed entirely.
      */
     discard(target) {
-      return update(target, (r) => ({ ...r, draft: r.incompatible ? '' : r.draft, pending: null, lastFailure: null, commandNotice: null, incompatible: null, adopted: null }));
+      return update(target, (r) => ({ ...r, draft: r.incompatible ? '' : r.draft, pending: null, lastFailure: null, incompatible: null, adopted: null }));
     },
     discardUnavailable(target, field) {
       const rec = load(target);
@@ -299,7 +295,7 @@ export function createSubmissions({ storage, api, uuid = () => globalThis.crypto
       if (field === 'shared' && rec.pending.text !== rec.draft) return rec;
       return update(target, (r) => field === 'shared' || !r.draft
         ? emptyRecord(target)
-        : { ...r, pending: null, lastFailure: null, commandNotice: null });
+        : { ...r, pending: null, lastFailure: null });
     },
     /**
      * Explicit user decision after a retarget left this identity's record disabled:

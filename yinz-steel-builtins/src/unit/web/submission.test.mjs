@@ -362,7 +362,7 @@ test('prompt validation mirrors native rules without a request', async () => {
   assert.equal(KEYS.submissionPrefix, 'yinz.web.v1.submission:');
 });
 
-test('command delivery has distinct feedback and clears only the matching unchanged draft', async () => {
+test('command delivery returns the composer to idle and preserves edits made while sending', async () => {
   const { subs, fetch } = setup();
   subs.setDraft(A, '/custom:review arguments\nmore');
   const held = fetch.hold();
@@ -375,8 +375,7 @@ test('command delivery has distinct feedback and clears only the matching unchan
   assert.equal(result.classification.state, 'command_sent');
   assert.equal(subs.get(A).pending, null);
   assert.equal(subs.get(A).draft, 'next prompt');
-  assert.equal(subs.view(A).state, 'command_sent');
-  assert.match(subs.view(A).message, /not verified/);
+  assert.deepEqual(subs.view(A), { state: 'idle' });
   const mismatch = classifyPromptResult({ ok: true, data: { response: { outcome: 'command_sent', submission_id: 'wrong' } } }, 'uuid-1');
   assert.equal(mismatch.state, 'unknown');
 });

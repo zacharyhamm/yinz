@@ -153,7 +153,6 @@ export function Composer({ env, live, target, enabled, onTargetChanged }) {
       <p class="submission-message">${view.message}</p>
       <div class="submission-actions"><button type="button" class="link-button" onClick=${() => env.submissions.dismissFailure(target)}>Dismiss</button></div>
     </div>` : null}
-    ${view.state === 'command_sent' ? html`<p class="submission-panel" id="submission-command" role="status">${view.message}</p>` : null}
     ${sending ? html`<p class="submission-panel submission-sending" id="submission-sending" role="status">Sending… waiting for delivery or prompt confirmation.</p>` : null}
     ${reason ? html`<p class="composer-reason" id="composer-reason">${reason}</p>` : null}
     ${problem && problem !== sendProblem ? html`<p class="composer-reason error-text" role="alert">${problem}</p>` : null}
@@ -161,8 +160,7 @@ export function Composer({ env, live, target, enabled, onTargetChanged }) {
       <button type="button" class="icon-button" id="composer-prompts" aria-label="Past prompts" aria-haspopup="dialog"
         disabled=${blocked} onClick=${() => setPrompts(true)}>☰</button>
       <label class="visually-hidden" for="composer-input">Prompt</label>
-      <textarea id="composer-input" class="composer-input" rows=${rowsFor(draft)} value=${draft}
-        placeholder=${blocked ? 'Prompting unavailable' : 'Message the agent or enter /command arguments'} disabled=${blocked}
+      <textarea id="composer-input" class="composer-input" rows=${rowsFor(draft)} value=${draft} disabled=${blocked}
         autocomplete="off" autocapitalize="sentences" spellcheck="true"
         onInput=${(e) => target && env.submissions.setDraft(target, e.currentTarget.value)}></textarea>
       <button type="button" class=${cx('button', 'button-primary', 'composer-send')} id="composer-send"
