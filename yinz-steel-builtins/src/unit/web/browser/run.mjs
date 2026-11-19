@@ -2451,15 +2451,18 @@ async function olderPeerHistory(open) {
     for (const key of await card.locator('.quick-key').all()) check(await key.isDisabled(), 'older peer key was enabled');
   }
   for (const link of ['.agent-open-area', '.agent-open']) {
+    const start = fx.log.length;
     await page.locator(cardSelector(old.id)).locator(link).click();
     await textUntil(page, '#timeline', 'Stored older-run message', 'older waiting card opens stored Timeline');
+    // A reopened timeline can render cached text before its history request arrives.
+    await until('stored history request for ' + link, () => fx.log.slice(start).some(({ path }) => path === '/api/history'));
     check(await page.getAttribute('#tab-timeline', 'aria-selected') === 'true', 'stored link selected Screen');
     check(await page.locator('#tab-screen').isDisabled() && !(await exists(page, '#composer-input')), 'stored route enabled controls');
     await domClick(page, '#detail-back');
     await until('return to older cards', () => exists(page, cardSelector(old.id)));
   }
-  const reads = fx.log.filter(({ path, query }) => path === '/api/history' && query.get('run') === old.run);
-  check(reads.length >= 2 && reads.every(({ query }) => !query.has('agent')), 'stored fallback did a live lookup');
+  const reads = fx.log.filter(({ path }) => path === '/api/history');
+  check(reads.every(({ query }) => query.get('run') === old.run && !query.has('agent')), 'stored fallback did not request only the stored run');
   check(!fx.log.some(({ path }) => path.startsWith('/api/agent/')), 'older peer issued a live request');
   await page.locator(cardSelector(published.id)).locator('.agent-open').click();
   await until('valid waiting peer uses Screen', () => fx.bodies('/api/agent/screen').some((body) => body.agent.id === published.detail_id));
