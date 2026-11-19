@@ -998,7 +998,7 @@ identity, source confinement, generation ownership or permissions.
 | `(yinz-html-escape string)` | Escape text; the returned string remains ordinary text, so inserting it as a child escapes it again. |
 | `(yinz-html-raw string)` | Explicit trusted markup, for plugin-authored constants only. Never pass agent output, hashes, request data or Markdown to this escape hatch. |
 | `(yinz-html-json-script id value)` | Trusted inert `application/json` script. JSON escapes `< > &` and U+2028/U+2029, including closing-script text. Read with `JSON.parse(element.textContent)`. |
-| `(yinz-markdown->html string)` | Trusted safe Markdown HTML; input at most 1 MiB. Raw HTML becomes escaped text, images become alt text, links retain only HTTP/HTTPS/mailto, relative paths and fragments with `rel="noopener noreferrer"`. |
+| `(yinz-markdown->html string)` | Trusted safe Markdown HTML (CommonMark plus GFM strikethrough and tables); input at most 1 MiB. Raw HTML becomes escaped text, images become alt text, links retain only HTTP/HTTPS/mailto, relative paths and fragments with `rel="noopener noreferrer"`, and table alignment uses CSS classes without inline styles. |
 | `(yinz-html-form attrs child ...)` | Fetch-driven semantic form with fixed `method="post"` and required root-relative action. Submission overrides are refused. |
 
 Construction and emission enforce depth 64 (including fragments and reused
@@ -1274,7 +1274,7 @@ receives `(next . args)`.
 | `agent-list` | list of rows | the rows unchanged; may filter, reorder or add `badges: [{text,tone}]` |
 | `agent-row` | row | `div.agent-row` with glyph, title, status, provider/project/branch, badges and a nonblank reply preview (up to 160 Unicode characters plus a truncation ellipsis, displayed in at most three list lines). Every card has a state badge. The default row marks its redundant status text for hiding, and custom status text remains visible. The row keeps the native reply preview field. Open the timeline or message reader for the full reply. |
 | `agent-header` | `{live, header}` | `header.agent-header` with name, status, task and metadata |
-| `event-body` | event | sanitized Markdown (escaped `<pre>` above 1 MiB); escaped `pre.event-tool` for `tool_call`/`tool_result` kinds and ranged activity |
+| `event-body` | event | sanitized Markdown (escaped `<pre>` above 1 MiB or when rendered HTML exceeds 4 MiB); escaped `pre.event-tool` for `tool_call`/`tool_result` kinds and ranged activity |
 | `reader` | `{header, markdown, tool}` | `article.reader` with Markdown and the tool text in an escaped `<pre>` |
 | `details` | `{details}` | `pre.details` |
 | `screen` | `{text}` | `pre.screen` |

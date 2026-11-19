@@ -521,11 +521,27 @@ pub(crate) fn register(engine: &mut Engine) {
             if s.len() > 1024 * 1024 {
                 return Err(error("Markdown exceeds 1 MiB"));
             }
-            let html = yinz_tile_markdown::html::render_safe(s);
-            if html.len() > MAX {
-                return Err(error("HTML exceeds 4 MiB"));
-            }
+            let html = yinz_tile_markdown::html::render_safe_bounded(s, MAX)
+                .ok_or_else(|| error("HTML exceeds 4 MiB"))?;
             Ok(TrustedHtml(html))
+        },
+    );
+    engine.register_fn(
+        "%web-markdown->html",
+        |value: SteelVal, max_bytes: SteelVal| -> Result<SteelVal> {
+            let s = string(&value)?;
+            let limit = match max_bytes {
+                SteelVal::IntV(n) if n <= 0 => 0,
+                SteelVal::IntV(n) => usize::try_from(n).unwrap_or(MAX).min(MAX),
+                _ => return Err(error("expected an integer budget")),
+            };
+            if s.len() > 1024 * 1024 || limit == 0 {
+                return Ok(SteelVal::BoolV(false));
+            }
+            match yinz_tile_markdown::html::render_safe_bounded(s, limit) {
+                Some(html) => TrustedHtml(html).into_steelval(),
+                None => Ok(SteelVal::BoolV(false)),
+            }
         },
     );
 }

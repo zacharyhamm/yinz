@@ -11,6 +11,15 @@
 (define %web-app-keys
   '("esc" "enter" "tab" "up" "down" "left" "right" "backspace" "y" "n" "1" "2" "3" "4" "5" "6" "7" "8" "9"))
 (define %web-app-max-revision "9223372036854775807")
+(define %web-app-max-response-bytes 4194304)
+(define %web-app-max-html-bytes 4194304)
+(define %web-app-markdown-wrap-raw (utf8-length "<div class=\"markdown\"></div>"))
+(define %web-app-markdown-wrap-json (- (%web-json-string-bytes "<div class=\"markdown\"></div>") 2))
+(define %web-app-reader-wrap-raw (utf8-length "<article class=\"reader\"></article>"))
+(define %web-app-reader-wrap-json (- (%web-json-string-bytes "<article class=\"reader\"></article>") 2))
+(define %web-app-markdown-budget #f)
+(define %web-app-markdown-plain #f)
+(define %web-app-markdown-used #f)
 
 ;; ---------------------------------------------------------------- validation
 ;; Parsers return the decoded value or %web-app-bad; messages never echo input.
@@ -170,21 +179,103 @@
 
 ;; Enrichment adds only documented *html fields to native payloads.
 (define (%web-app-html hook . arguments) (yinz-html (apply yinz-web-hook (cons hook arguments))))
+(define (%web-app-json-inner-bytes text) (- (%web-json-string-bytes text) 2))
+(define (%web-app-with-markdown-state budget plain thunk)
+  (define saved-budget %web-app-markdown-budget)
+  (define saved-plain %web-app-markdown-plain)
+  (define saved-used %web-app-markdown-used)
+  (define (restore)
+    (set! %web-app-markdown-budget saved-budget)
+    (set! %web-app-markdown-plain saved-plain)
+    (set! %web-app-markdown-used saved-used))
+  (set! %web-app-markdown-budget budget)
+  (set! %web-app-markdown-plain plain)
+  (set! %web-app-markdown-used #f)
+  (with-handler (lambda (failure) (restore) (raise-error failure))
+    (define result (thunk))
+    (define used %web-app-markdown-used)
+    (restore)
+    (cons result used)))
 (define (%web-app-agents payload)
   (define rows (yinz-web-hook "agent-list" (hash-ref payload "agents")))
   (hash-insert payload "agents"
     (map (lambda (row) (hash-insert row "html" (%web-app-html "agent-row" row))) rows)))
 (define (%web-app-page payload)
   (define header (hash-ref payload "header"))
-  (define events (map (lambda (event) (hash-insert event "html" (%web-app-html "event-body" event)))
-      (hash-ref payload "events")))
+  (define header-html (%web-app-html "agent-header" (hash "live" (hash-ref payload "live") "header" header)))
+  (define details-html (%web-app-html "details" (hash "details" (hash-ref header "details"))))
+  (define raw-events (hash-ref payload "events"))
+  (define skeleton
+    (hash-insert
+      (hash-insert
+        (hash-insert payload "events" (map (lambda (event) (hash-insert event "html" "")) raw-events))
+        "header_html" header-html)
+      "details_html" details-html))
+  (define remaining (- %web-app-max-response-bytes (utf8-length (yinz-json-string skeleton))))
+  (define entries
+    (let loop ((rest raw-events) (acc '()))
+      (if (null? rest)
+        (reverse acc)
+        (let* ((event (car rest))
+            (attempt (%web-app-with-markdown-state (max 0 remaining) #f
+                (lambda () (%web-app-html "event-body" event))))
+            (html (car attempt))
+            (used-markdown (cdr attempt))
+            (cost (%web-app-json-inner-bytes html)))
+          (if (and used-markdown (> cost remaining))
+            (let* ((fallback (car (%web-app-with-markdown-state 0 #t
+                    (lambda () (%web-app-html "event-body" event)))))
+                (fallback-cost (%web-app-json-inner-bytes fallback)))
+              (if (< fallback-cost cost)
+                (begin
+                  (set! remaining (- remaining fallback-cost))
+                  (loop (cdr rest) (cons (vector event fallback fallback-cost #f) acc)))
+                (begin
+                  (set! remaining (- remaining cost))
+                  (loop (cdr rest) (cons (vector event html cost #f) acc)))))
+            (begin
+              (set! remaining (- remaining cost))
+              (loop (cdr rest) (cons (vector event html cost used-markdown) acc))))))))
+  (when (< remaining 0)
+    (define candidates
+      (sort (filter (lambda (entry) (vector-ref entry 3)) entries)
+        (lambda (a b) (> (vector-ref a 2) (vector-ref b 2)))))
+    (let loop ((rest candidates))
+      (when (and (< remaining 0) (pair? rest))
+        (define entry (car rest))
+        (define old-cost (vector-ref entry 2))
+        (define fallback
+          (car (%web-app-with-markdown-state 0 #t
+              (lambda () (%web-app-html "event-body" (vector-ref entry 0))))))
+        (define fallback-cost (%web-app-json-inner-bytes fallback))
+        (when (< fallback-cost old-cost)
+          (vector-set! entry 1 fallback)
+          (vector-set! entry 2 fallback-cost)
+          (vector-set! entry 3 #f)
+          (set! remaining (+ remaining (- old-cost fallback-cost))))
+        (loop (cdr rest)))))
+  (define events
+    (map (lambda (entry) (hash-insert (vector-ref entry 0) "html" (vector-ref entry 1))) entries))
   (hash-insert
-    (hash-insert (hash-insert payload "events" events)
-      "header_html" (%web-app-html "agent-header" (hash "live" (hash-ref payload "live") "header" header)))
-    "details_html" (%web-app-html "details" (hash "details" (hash-ref header "details")))))
+    (hash-insert (hash-insert payload "events" events) "header_html" header-html)
+    "details_html" details-html))
 (define (%web-app-reader payload)
-  (hash-insert payload "html" (%web-app-html "reader"
-      (hash "header" (hash-ref payload "header") "markdown" (hash-ref payload "markdown") "tool" (hash-ref payload "tool")))))
+  (define context
+    (hash "header" (hash-ref payload "header") "markdown" (hash-ref payload "markdown") "tool" (hash-ref payload "tool")))
+  (define base-bytes (utf8-length (yinz-json-string (hash-insert payload "html" ""))))
+  (define remaining (- %web-app-max-response-bytes base-bytes))
+  (define attempt
+    (%web-app-with-markdown-state (max 0 remaining) #f
+      (lambda () (%web-app-html "reader" context))))
+  (define html (car attempt))
+  (define used-markdown (cdr attempt))
+  (define cost (%web-app-json-inner-bytes html))
+  (define final-html
+    (if (and used-markdown (> cost remaining))
+      (let ((fallback (car (%web-app-with-markdown-state 0 #t (lambda () (%web-app-html "reader" context))))))
+        (if (< (%web-app-json-inner-bytes fallback) cost) fallback html))
+      html))
+  (hash-insert payload "html" final-html))
 (define (%web-app-screen-html payload)
   (define output (%async-get (hash-ref payload "response") "output" ""))
   (hash-insert payload "html" (%web-app-html "screen" (hash "text" (if (string? output) output "")))))
@@ -221,10 +312,30 @@
 (define (%web-app-string value) (if (string? value) value ""))
 (define (%web-app-join separator values)
   (string-join (filter (lambda (value) (not (equal? value ""))) (map %web-app-string values)) separator))
-(define (%web-app-markdown text)
-  (if (<= (utf8-length text) 1048576)
-    (yinz-h "div" (hash "class" "markdown") (yinz-markdown->html text))
+(define (%web-app-markdown-within text chrome-raw chrome-json)
+  (define raw-limit (- %web-app-max-html-bytes chrome-raw %web-app-markdown-wrap-raw))
+  (define response-budget
+    (and %web-app-markdown-budget (- %web-app-markdown-budget chrome-json)))
+  (define render-limit
+    (if response-budget
+      (min raw-limit (- response-budget %web-app-markdown-wrap-json))
+      raw-limit))
+  (define rendered
+    (and (not %web-app-markdown-plain)
+      (> render-limit 0)
+      (<= (utf8-length text) 1048576)
+      (%web-markdown->html text render-limit)))
+  (define node
+    (and rendered
+      (with-handler (lambda (_) #f) (yinz-h "div" (hash "class" "markdown") rendered))))
+  (define fits?
+    (and node
+      (or (not response-budget)
+        (<= (%web-app-json-inner-bytes (yinz-html node)) response-budget))))
+  (if fits?
+    (begin (set! %web-app-markdown-used #t) node)
     (yinz-h "pre" (hash "class" "markdown") text)))
+(define (%web-app-markdown text) (%web-app-markdown-within text 0 0))
 (define (%web-app-head context)
   (append
     (list (yinz-h "meta" (hash "charset" "utf-8"))
@@ -314,10 +425,18 @@
     (%web-app-markdown markdown)))
 (define (%web-app-reader-body context)
   (define tool (%web-app-string (hash-ref context "tool")))
+  (define header-node (yinz-h "h2" (hash) (%web-app-string (hash-ref context "header"))))
+  (define tool-node (and (not (equal? tool "")) (yinz-h "pre" (hash "class" "reader-tool") tool)))
+  (define header-html (yinz-html header-node))
+  (define tool-html (if tool-node (yinz-html tool-node) ""))
+  (define chrome-raw (+ %web-app-reader-wrap-raw (utf8-length header-html) (utf8-length tool-html)))
+  (define chrome-json
+    (+ %web-app-reader-wrap-json (%web-app-json-inner-bytes header-html)
+      (%web-app-json-inner-bytes tool-html)))
   (yinz-h "article" (hash "class" "reader")
-    (yinz-h "h2" (hash) (%web-app-string (hash-ref context "header")))
-    (%web-app-markdown (%web-app-string (hash-ref context "markdown")))
-    (and (not (equal? tool "")) (yinz-h "pre" (hash "class" "reader-tool") tool))))
+    header-node
+    (%web-app-markdown-within (%web-app-string (hash-ref context "markdown")) chrome-raw chrome-json)
+    tool-node))
 (define (%web-app-hooks)
   (yinz-web-hook-define "document" %web-app-document)
   (yinz-web-hook-define "head" %web-app-head)

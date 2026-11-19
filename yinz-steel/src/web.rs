@@ -210,6 +210,21 @@ fn unique_keys(text: String) -> bool {
     let mut input = serde_json::Deserializer::from_str(&text);
     Unique.deserialize(&mut input).is_ok() && input.end().is_ok()
 }
+/// Exact UTF-8 byte length of `serde_json::to_string(text)` without allocating.
+fn json_string_bytes(value: SteelVal) -> Result<usize> {
+    let SteelVal::StringV(text) = value else {
+        return Err(err("expected a string"));
+    };
+    let mut len = 2usize;
+    for &byte in text.as_bytes() {
+        len = len.saturating_add(match byte {
+            b'"' | b'\\' | 0x08 | 0x0c | b'\n' | b'\r' | b'\t' => 2,
+            0x00..=0x1f => 6,
+            _ => 1,
+        });
+    }
+    Ok(len)
+}
 pub(crate) fn register(engine: &mut Engine, diagnostics: Arc<Mutex<Diagnostics>>) {
     engine.register_fn("%web-diagnostic", move |value: SteelVal| {
         // Best effort only: diagnostic saturation must never fail a handled request.
@@ -220,6 +235,7 @@ pub(crate) fn register(engine: &mut Engine, diagnostics: Arc<Mutex<Diagnostics>>
             records.dropped = true;
         }
     });
+    engine.register_fn("%web-json-string-bytes", json_string_bytes);
     engine.register_fn("%web-json-unique-keys?", unique_keys);
     engine.register_fn("%web-validate-response", validate);
     engine.register_fn("%web-raise", |message: String| -> Result<SteelVal> {

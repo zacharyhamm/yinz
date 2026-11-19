@@ -75,6 +75,33 @@ fn html_bounds_raw_markdown_fragments_and_native_graphs() {
     assert!(!md.contains("<script>"));
     assert!(!md.contains("href="));
     assert!(!md.contains("<img"));
+    r.eval(r#"(define tbl (yinz-html (yinz-markdown->html "| Name | Count |\n| :--- | ---: |\n| <script>x</script> | 42 |\n")))"#).unwrap();
+    let tbl = r.value("tbl").unwrap();
+    let tbl = tbl.as_str().unwrap();
+    assert!(tbl.contains("<div class=\"table-wrap\"><table>"), "{tbl}");
+    assert!(
+        tbl.contains("<th scope=\"col\" class=\"align-left\">Name</th>"),
+        "{tbl}"
+    );
+    assert!(
+        tbl.contains("<th scope=\"col\" class=\"align-right\">Count</th>"),
+        "{tbl}"
+    );
+    assert!(tbl.contains("&lt;script&gt;x&lt;/script&gt;"), "{tbl}");
+    assert!(tbl.contains("<td class=\"align-right\">42</td>"), "{tbl}");
+    assert!(!tbl.contains("<script>"), "{tbl}");
+    assert!(!tbl.contains("style="), "{tbl}");
+
+    // A ~3.6 KiB wide table expands past the 4 MiB HTML budget and must be rejected.
+    let header = format!("{}|\n", "|a".repeat(512));
+    let sep = format!("{}|\n", "|:-".repeat(512));
+    let rows = "x\n".repeat(512);
+    let table_bomb = format!("{header}{sep}{rows}");
+    assert!(table_bomb.len() < 4096);
+    let err = r
+        .eval(&format!("(yinz-markdown->html {table_bomb:?})"))
+        .unwrap_err();
+    assert!(err.to_string().contains("HTML exceeds 4 MiB"), "{err}");
 }
 
 #[test]

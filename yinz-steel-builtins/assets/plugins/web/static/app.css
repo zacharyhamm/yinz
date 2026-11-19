@@ -324,9 +324,20 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 .event.kind-question { border-color: var(--waiting); }
 .event-meta { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
 .event-kind { font-weight: 600; }
+.event-body { min-width: 0; }
 .event-body > :first-child { margin-top: 0; }
 .event-body > :last-child { margin-bottom: 0; }
 .event-body pre { background: var(--surface-2); padding: 8px; border-radius: 8px; overflow-x: auto; }
+.markdown { min-width: 0; }
+.markdown .table-wrap { max-width: 100%; overflow-x: auto; margin: 8px 0; }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown table { border-collapse: collapse; font-size: 14px; line-height: 1.4; overflow-wrap: normal; }
+.markdown th, .markdown td { padding: 6px 10px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
+.markdown th { background: var(--surface-2); font-weight: 600; }
+.markdown th.align-left, .markdown td.align-left { text-align: left; }
+.markdown th.align-center, .markdown td.align-center { text-align: center; }
+.markdown th.align-right, .markdown td.align-right { text-align: right; }
 .event-read { margin-top: 4px; }
 .tools-item { align-self: flex-start; }
 .tools-group {
@@ -411,8 +422,9 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 .detail-screen.screen-wrap pre.screen { white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; }
 .details-html pre.details, pre.details { margin: 0; padding: 10px; border-radius: 10px; background: var(--surface-2); }
 .details-nav { display: flex; flex-wrap: wrap; gap: 8px; }
-.reader { display: grid; gap: 8px; }
+.reader { display: grid; gap: 8px; min-width: 0; }
 .reader-header { font-weight: 600; }
+.reader-body { min-width: 0; }
 .reader-body pre { background: var(--surface-2); padding: 8px; border-radius: 8px; overflow-x: auto; }
 
 /* Composer: thumb zone, safe-area padding, 16 px text so iOS does not zoom. */
