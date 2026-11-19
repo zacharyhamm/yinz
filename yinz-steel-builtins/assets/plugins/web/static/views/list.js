@@ -233,8 +233,10 @@ export function ListView({ env }) {
         <button type="button" class="icon-button" id="menu-button" aria-label="Menu" aria-haspopup="dialog" onClick=${() => setMenu(true)}>⋯</button>
       </div>
       <div class="header-sub">
-        <${Freshness} id="list-freshness" state=${state} now=${now} />
-        ${data && typeof data.session === 'string' ? html`<span class="serving-session" id="list-session">Session ${data.session}</span>` : null}
+        <div class="header-status">
+          <${Freshness} id="list-freshness" state=${state} now=${now} />
+          ${data && typeof data.session === 'string' ? html`<span class="serving-session" id="list-session">Session ${data.session}</span>` : null}
+        </div>
         <button type="button" class="link-button" id="list-refresh" onClick=${() => refresh()}>Refresh</button>
         ${waitingCount ? html`<button type="button" class="button next-waiting" id="list-next-waiting"
           onClick=${() => nextWaiting()}>Next waiting agent</button>` : null}

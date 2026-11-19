@@ -384,8 +384,10 @@ and isolated List labels independently of the browser fixtures.
 Detail checks use the same header object to generate short and long escaped
 default markup, with additional
 missing, wrapped and custom hook variants. At exact 320×640 and 390×844 CSS
-viewports in both themes, the collapsed header (including tabs) must be ≤120px,
+viewports in both themes, the collapsed header (including tabs) must be ≤96px,
 the idle empty-draft composer ≤64px, and the healthy timeline ≥450px/650px.
+At 393×852, both the default and eight-key Screen layouts fit in one row with
+fully visible labels and 44px touch targets.
 These budgets exclude actual safe-area insets and warning/submission panels.
 The runner verifies media emulation again after native login/navigation.
 

@@ -1037,13 +1037,52 @@ async function phoneLayout(open, width) {
   await noInjection(page);
 }
 
+async function iphoneScreenKeys(open, customKeys) {
+  const { page, fx } = await open({ viewport: { width: 393, height: 852 } });
+  if (customKeys) {
+    // Supply a custom bootstrap as soon as parsing finishes, before app.js runs.
+    await page.addInitScript((keys) => {
+      document.addEventListener('readystatechange', () => {
+        const node = document.getElementById('yinz-config');
+        if (document.readyState === 'interactive' && node) {
+          node.textContent = JSON.stringify({ ...JSON.parse(node.textContent), quick_keys: keys });
+        }
+      });
+    }, customKeys);
+  }
+  await openDetail(page);
+  await page.click('#tab-screen');
+  await until('screen content', () => exists(page, '#screen pre.screen'));
+  const { header } = await detailGeometry(page);
+  check(header <= 96, `393px collapsed header is ${header}px tall`);
+  const keys = await page.locator('.screen-keys .quick-key').evaluateAll((buttons) => buttons.map((button) => {
+    const box = button.getBoundingClientRect();
+    const range = document.createRange();
+    range.selectNodeContents(button);
+    const label = range.getBoundingClientRect();
+    return { key: button.dataset.key, top: box.top, labelFits: label.left >= box.left && label.right <= box.right };
+  }));
+  const expected = customKeys || ['1', '2', '3', 'enter', 'esc', 'up', 'down'];
+  check(JSON.stringify(keys.map((k) => k.key)) === JSON.stringify(expected), 'wrong Screen quick keys');
+  check(keys.every((k) => k.top === keys[0].top && k.labelFits), `393px key row: ${JSON.stringify(keys)}`);
+  await touchTargets(page, '393px Screen');
+  await noHorizontalOverflow(page, '393px Screen');
+  await noClippedControls(page, '393px Screen');
+  fs.mkdirSync(RESULTS_DIR, { recursive: true });
+  await page.screenshot({ path: path.join(RESULTS_DIR, `screen-393-${keys.length}-keys.png`), mask: [page.locator('#composer-input')] });
+  await page.click('.screen-keys [data-key="enter"]');
+  await until('Screen Enter delivered', () => fx.count('/api/agent/keys') === 1);
+  check(JSON.stringify(fx.bodies('/api/agent/keys')[0]) === JSON.stringify({ agent: REF7, keys: ['enter'] }),
+    'Screen Enter sent the wrong key or target');
+}
+
 async function detailGeometry(page) {
   return page.evaluate(() => {
     const height = (s) => document.querySelector(s)?.getBoundingClientRect().height || 0;
     return { width: innerWidth, height: innerHeight, dark: matchMedia('(prefers-color-scheme: dark)').matches,
       header: height('#detail-header'), timeline: height('#timeline'), composer: height('.composer-dock'),
-      safeTop: parseFloat(getComputedStyle(document.getElementById('detail-header')).paddingTop) - 6,
-      safeBottom: parseFloat(getComputedStyle(document.querySelector('.composer-dock')).paddingBottom) - 6 };
+      safeTop: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-top')),
+      safeBottom: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-bottom')) };
   });
 }
 
@@ -1182,7 +1221,7 @@ async function compactDetail(open, width, scheme) {
     const g = await detailGeometry(page);
     check(g.width === width && g.height === height && g.dark === (scheme === 'dark'), 'wrong detail viewport/theme');
     check(g.safeTop === 0 && g.safeBottom === 0, 'budget fixture requires zero emulated safe-area insets');
-    check(g.header <= 120 && g.composer <= 64, `detail chrome too tall: ${JSON.stringify(g)}`);
+    check(g.header <= 96 && g.composer <= 64, `detail chrome too tall: ${JSON.stringify(g)}`);
     if (width !== 1024) check(g.timeline >= (width === 320 ? 450 : 650), `timeline budget failed: ${JSON.stringify(g)}`);
     fs.mkdirSync(RESULTS_DIR, { recursive: true });
     fs.writeFileSync(path.join(RESULTS_DIR, `final-${width}-${scheme}-${variant}.json`), JSON.stringify(g, null, 2));
@@ -1818,6 +1857,29 @@ async function detailFallbacks(open) {
   check(await exists(page, '#composer-input'), 'no-run live composer missing');
 }
 
+async function cachedAgentList(open) {
+  const { page, fx } = await open({ viewport: { width: 375, height: 480 } });
+  const sparse = { ...row(fx, 'live:dev:8', 'idle'), html: '' };
+  fx.rows = [row(fx, AGENT_ID, 'waiting'), sparse];
+  await openList(page);
+  const link = page.locator(`${cardSelector(sparse.id)} .agent-open-area`);
+  const height = await link.evaluate((el) => el.getBoundingClientRect().height);
+  check(height >= 56, `empty agent-row hook left a ${height}px Open link`);
+
+  const message = FILLER.repeat(3).slice(0, 300);
+  fx.fail.set('/api/agents', { mode: 'reply', times: Infinity, status: 503,
+    body: { error: { code: 'busy', message } } });
+  await textUntil(page, '#list-freshness', message, 'long retry message after list poll');
+  const status = await page.locator('#list-header .header-status').boundingBox();
+  for (const id of ['#list-refresh', '#list-next-waiting']) {
+    const action = await page.locator(id).boundingBox();
+    check(action && action.y >= status.y + status.height, `${id} crowds the stale status`);
+  }
+  const href = await link.getAttribute('href');
+  await link.click();
+  await until('cached card opens', () => hashOf(page) === href);
+}
+
 async function compactAgentList(open, width, scheme) {
   const { page, fx } = await open({ viewport: { width, height: 844 }, colorScheme: scheme });
   const longReply = FILLER.repeat(6).slice(0, 512);
@@ -1845,6 +1907,7 @@ async function compactAgentList(open, width, scheme) {
     };
     const contrast = (a, b) => (Math.max(luminance(a), luminance(b)) + 0.05) / (Math.min(luminance(a), luminance(b)) + 0.05);
     return {
+      header: document.getElementById('list-header').getBoundingClientRect().height,
       height: card.getBoundingClientRect().height, replyHeight: reply.getBoundingClientRect().height,
       lineHeight: parseFloat(rs.lineHeight), titleSize: ts.fontSize, replySize: rs.fontSize,
       titleColour: ts.color, replyColour: rs.color, titleContrast: contrast(ts.color, cs.backgroundColor),
@@ -1852,6 +1915,7 @@ async function compactAgentList(open, width, scheme) {
       clamp: rs.webkitLineClamp,
     };
   }, reference);
+  if (width >= 390) check(metrics.header <= 96, `Agents header too tall: ${metrics.header}px at ${width}px`);
   check(metrics.titleColour !== metrics.replyColour, 'task and response colours are identical');
   check(metrics.titleContrast >= 4.5 && metrics.replyContrast >= 4.5, `low text contrast: ${JSON.stringify(metrics)}`);
   check(metrics.titleSize === '16px' && metrics.replySize === '14px', 'unexpected title/reply typography');
@@ -3395,10 +3459,14 @@ async function main() {
   await scenario('remembered login across tabs and contexts', rememberedLogin);
   await scenario('phone layout 320px: overflow, touch targets, text-only server strings', (open) => phoneLayout(open, 320));
   await scenario('phone layout 390px: overflow, touch targets, text-only server strings', (open) => phoneLayout(open, 390));
+  await scenario('iPhone 16 Screen key row with defaults', (open) => iphoneScreenKeys(open));
+  await scenario('iPhone 16 Screen key row with eight keys', (open) =>
+    iphoneScreenKeys(open, ['esc', 'tab', 'enter', 'backspace', 'up', 'down', 'left', 'right']));
   for (const width of [320, 390]) {
     for (const scheme of ['light', 'dark']) await scenario(`compact agent list ${width}px ${scheme}`, (open) => compactAgentList(open, width, scheme));
   }
   await scenario('compact agent list 1024px desktop', (open) => compactAgentList(open, 1024, 'light'));
+  await scenario('short phone viewport with a long retry and sparse cached card', cachedAgentList);
   await scenario('Agents group membership, fallback and poll updates', groupedAgentList);
   await scenario('Agents peer group ownership during session name reuse', peerGroupOwnership);
   await scenario('Agents peer focus across republication: card area', (open) => peerFocusAcrossRepublication(open, '.agent-open-area'));
