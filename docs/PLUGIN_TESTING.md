@@ -371,10 +371,11 @@ The browser fixture mirrors the default agent-row and agent-header structures
 and is paired with the real Scheme route tests for preview boundaries, Unicode, escaping and raw
 field preservation. The authenticated production HTTP test covers group
 metadata from a live Screen and a group rename. Browser list checks cover
-session-scoped ordering, missing metadata, wrapped labels, per-card state,
-global attention counts and focus through poll reordering. They also cover
-compact previews, contrast, density, actions and focus at 320px and 390px in
-both color schemes, plus a desktop smoke and successful empty-list recovery.
+session-scoped group pages, picker ordering, missing metadata, wrapped labels,
+page history, reload and sign-in return. They also cover per-card state,
+global attention counts, focus through poll reordering, compact previews,
+contrast, density and actions at 320px and 390px in both color schemes,
+plus a desktop smoke and successful empty-list recovery.
 Focused peer cases cover checkpoint republication with the original legacy
 identity reused by another peer, both Open affordances, quick keys, and a
 same-target retry after reloading unavailable draft recovery. The waiting-agent

@@ -5,7 +5,7 @@ import {
 } from './api.js';
 import { createSubmissions } from './submission.js';
 import { parseHash, entryState } from './app-route.js';
-import { html, render, useState, useEffect, cx } from './views/ui.js';
+import { html, render, useState, useEffect, useLayoutEffect, cx } from './views/ui.js';
 import { ListView } from './views/list.js';
 import { DetailView } from './views/detail.js';
 import { createPush, registerWorker } from './push.js';
@@ -62,30 +62,61 @@ window.addEventListener('storage', (event) => {
 });
 
 const submissions = createSubmissions({ storage: session, api });
-// Mark each history entry (see entryState) before the router reacts to it.
+// Keep the offsets per history entry so revisiting a group can have its own position.
+const listScroll = new Map();
 let lastEntry = null;
+let lastHash = window.location.hash;
 function markEntry() {
   const next = entryState(window.history.state, lastEntry);
   lastEntry = next.lastIndex;
-  if (!next.changed) return;
+  if (!next.changed) return false;
+  // A new entry after Back can reuse the index of a discarded Forward entry.
+  listScroll.delete(lastEntry);
   try {
     window.history.replaceState(next.state, '', window.location.href);
   } catch {
     // Without the marker the back button falls back to replacing the entry.
   }
+  return true;
 }
 markEntry();
-window.addEventListener('hashchange', markEntry);
 
 function App({ initialNotice }) {
   useEffect(() => { push.sync().catch(() => {}); }, []);
   const [route, setRoute] = useState(parseHash(window.location.hash));
   const [toast, setToast] = useState(null);
   const [notice, setNoticeText] = useState(initialNotice);
-  useEffect(() => {
-    const onHash = () => setRoute(parseHash(window.location.hash));
+  useLayoutEffect(() => {
+    let outgoingScroll;
+    let sameHashFrame = 0;
+    function onHash() {
+      window.cancelAnimationFrame(sameHashFrame);
+      sameHashFrame = 0;
+      const capturedScroll = outgoingScroll;
+      outgoingScroll = undefined;
+      const hash = window.location.hash;
+      if (hash === lastHash && window.history.state?.yinzIndex === lastEntry) return;
+      const previousEntry = lastEntry;
+      const pushed = markEntry();
+      const top = capturedScroll ?? (pushed ? window.scrollY : undefined);
+      if (top !== undefined && parseHash(lastHash).view === 'list') listScroll.set(previousEntry, top);
+      lastHash = hash;
+      setRoute({ ...parseHash(hash), navigation: { pushed, scrollTop: listScroll.get(lastEntry) } });
+    }
+    function onPop() {
+      // Native restoration runs after popstate, while the outgoing group is still rendered.
+      outgoingScroll = window.scrollY;
+      // Traversing multiple entries can land on the same URL without a hashchange.
+      if (window.location.hash === lastHash) sameHashFrame = window.requestAnimationFrame(onHash);
+    }
+    window.addEventListener('popstate', onPop);
     window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
+    onHash();
+    return () => {
+      window.cancelAnimationFrame(sameHashFrame);
+      window.removeEventListener('popstate', onPop);
+      window.removeEventListener('hashchange', onHash);
+    };
   }, []);
   useEffect(() => {
     if (!toast) return undefined;
@@ -109,6 +140,7 @@ function App({ initialNotice }) {
     replaceHash: (hash) => {
       if (window.location.hash === hash) return;
       window.history.replaceState(window.history.state, '', hash);
+      lastHash = window.location.hash;
       setRoute(parseHash(hash));
     },
     canGoBack: () => !!window.history.state && window.history.state.yinzBack === true,
@@ -119,7 +151,7 @@ function App({ initialNotice }) {
   };
   const key = route.view === 'detail' ? `${route.bind ? 'a' : 'r'}:${route.id}:${route.bind ? (route.run ? 'run' : 'none') : route.run}` : 'list';
   return html`<div class="app">
-    ${route.view === 'detail' ? html`<${DetailView} key=${key} env=${env} route=${route} />` : html`<${ListView} env=${env} />`}
+    ${route.view === 'detail' ? html`<${DetailView} key=${key} env=${env} route=${route} />` : html`<${ListView} env=${env} groupKey=${route.groupKey} navigation=${route.navigation} />`}
     <div class=${cx('toast', toast && 'toast-visible')} id="toast" role="status" aria-live="polite">${toast ? toast.text : ''}</div>
   </div>`;
 }

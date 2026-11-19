@@ -114,6 +114,7 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
   padding: calc(2px + var(--safe-top)) calc(8px + var(--safe-right)) 2px calc(8px + var(--safe-left));
 }
 #list-header { position: sticky; top: 0; z-index: 5; }
+#switch-group { font-size: 14px; padding-inline: 4px; }
 .header-row { display: flex; align-items: center; gap: 4px; min-height: var(--tap); }
 .header-title { font-size: 18px; font-weight: 700; flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .header-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
@@ -152,6 +153,9 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 .section-count { font-weight: 600; color: var(--muted); }
 .section-session { display: block; font-size: 13px; font-weight: 400; color: var(--muted); }
 .section-session-spelling { white-space: break-spaces; }
+.group-links { display: grid; gap: 6px; }
+.group-link { display: block; text-align: start; overflow-wrap: anywhere; }
+.group-link[aria-current="page"] { border-color: var(--accent); background: var(--surface-2); }
 .agent-cards { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .agent-card {
   background: var(--surface); border: 1px solid var(--border); border-left: 5px solid var(--idle);

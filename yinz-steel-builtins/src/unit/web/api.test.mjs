@@ -6,12 +6,33 @@ import path from 'node:path';
 import { FakeClock, FakeFetch, LogStorage, STATIC_DIR, flush, response, staticUrl } from './fakes.mjs';
 
 const api = await import(staticUrl('api.js'));
-const { cardDetail, controlTarget, detailHash, detailListRow, parseHash } = await import(staticUrl('app-route.js'));
+const { cardDetail, controlTarget, detailHash, detailListRow, groupHash, parseHash } = await import(staticUrl('app-route.js'));
 const {
   KEYS, createApi, createPoller, createTokenStore, safeStorage, requestUrl, parseRetryAfter,
   describeError, normalizeConfig, saveReturn, takeReturn, logoutNotice, freshnessText,
   SCREEN_TEXT_SIZES, normalizeScreenView, readScreenView, writeScreenView,
 } = api;
+
+test('group routes round trip session-scoped IDs and fallback buckets', () => {
+  const session = ' dev  界🙂/?# ';
+  const keys = [[session, 0], [session, 0xffffffff], ['peer', 0], [session, null], [null, null]];
+  const urls = keys.map((key) => groupHash(JSON.stringify(key)));
+  assert.equal(new Set(urls).size, keys.length);
+  const storage = safeStorage(() => new LogStorage());
+  for (const [index, hash] of urls.entries()) {
+    assert.deepEqual(parseHash(hash), { view: 'list', groupKey: JSON.stringify(keys[index]) });
+    assert.equal(saveReturn(storage, hash), true);
+    assert.equal(takeReturn(storage), hash);
+  }
+});
+
+test('malformed group routes open Agents home', () => {
+  const invalid = [[null, 0], ['', 0], [' ', null], [42, null], ['dev', -1], ['dev', 1.5],
+    ['dev', 0x100000000], ['dev', '0'], ['dev'], ['dev', 0, 'extra'], { session: 'dev', id: 0 }];
+  for (const hash of ['#/g/', '#/g/%xx', '#/g/garbage', ...invalid.map((key) => groupHash(JSON.stringify(key)))]) {
+    assert.deepEqual(parseHash(hash), { view: 'list' });
+  }
+});
 
 test('peer cards use a scoped selection and a stripped selector allows only stored history', () => {
   const detailId = `peer-detail:v1:${'a'.repeat(64)}`;

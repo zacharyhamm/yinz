@@ -30,7 +30,7 @@ function releaseScroll() {
   if (openCount === 0) document.body.classList.remove('scroll-locked');
 }
 
-export function Sheet({ id, title, onClose, children, footer, wide = false }) {
+export function Sheet({ id, title, onClose, children, footer, wide = false, fallbackFocusRef }) {
   const panel = useRef(null);
   const titleId = `${id}-title`;
   const closeRef = useRef(onClose);
@@ -71,7 +71,8 @@ export function Sheet({ id, title, onClose, children, footer, wide = false }) {
     return () => {
       document.removeEventListener('keydown', onKey, true);
       releaseScroll();
-      if (opener && typeof opener.focus === 'function' && document.contains(opener)) opener.focus({ preventScroll: true });
+      const target = opener?.isConnected && typeof opener.focus === 'function' ? opener : fallbackFocusRef?.current;
+      if (target?.isConnected) target.focus({ preventScroll: true });
     };
   }, []);
   return html`<div class="sheet-layer">

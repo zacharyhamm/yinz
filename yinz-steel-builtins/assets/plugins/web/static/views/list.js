@@ -1,8 +1,8 @@
-// Agents list (#/): session-scoped tab groups with labelled state indicators.
+// Agents pages: one session-scoped tab group at a time.
 import { describeError, freshnessText } from '../api.js';
 import { html, useState, useEffect, useLayoutEffect, useRef, usePoller, useNow, ServerHtml, RowBadges, stateLabel, QuickKeys, Banner, Freshness, responseText, cx } from './ui.js';
 import { Sheet, ConfirmSheet } from './sheets.js';
-import { cardDetail, controlTarget, detailHash, isScopedPeer } from '../app-route.js';
+import { cardDetail, controlTarget, detailHash, groupHash, isScopedPeer, validGroupId } from '../app-route.js';
 import { Notifications } from './notifications.js';
 
 function nonblank(value) {
@@ -19,7 +19,7 @@ function groupAgents(agents) {
     const session = nonblank(row.tab_group_session) ? row.tab_group_session
       : nonblank(row.session) ? row.session : null;
     const id = row.tab_group?.id;
-    const hasGroup = session !== null && Number.isInteger(id) && id >= 0 && id <= 0xffffffff;
+    const hasGroup = session !== null && validGroupId(id);
     const key = JSON.stringify([session, hasGroup ? id : null]);
     if (!groups.has(key)) {
       const name = hasGroup
@@ -57,6 +57,14 @@ function sessionMarkers(groups) {
     [...owners].sort().forEach((owner, index) => markers.set(owner, `${index + 1} of ${owners.size}`));
   }
   return markers;
+}
+
+function GroupLabel({ group, marker }) {
+  const { name, session, id, showId, rows } = group;
+  return html`<span class="section-name">${name}</span>
+    <span class="section-count">${` · ${rows.length} ${rows.length === 1 ? 'agent' : 'agents'}`}</span>
+    <span class="section-session">${session === null ? 'Owning session unknown'
+      : html`${marker ? `${marker} · ` : ''}Session <span class=${marker ? 'section-session-spelling' : null}>${session}</span>${showId ? ` · Group ${id}` : ''}`}</span>`;
 }
 
 function cardKeys(config) {
@@ -123,6 +131,17 @@ function restoreCardFocus(main, header, focus) {
   }
 }
 
+// Return the scroll adjustment for a link outside the sheet body's scrollport.
+function hiddenGroupLinkOffset(link, body) {
+  const rect = link.getBoundingClientRect();
+  if (!rect.height || !body.clientHeight) return null;
+  const top = body.getBoundingClientRect().top + body.clientTop;
+  const bottom = top + body.clientHeight;
+  if (rect.bottom <= top) return rect.top - top;
+  if (rect.top >= bottom) return Math.min(rect.top - top, rect.bottom - bottom);
+  return 0;
+}
+
 function AgentCard({ row, session, href, identity, env, onKeys, onNext, busy }) {
   const waiting = row.state === 'waiting';
   const content = html`<${ServerHtml} html=${row.html} class="card-html" />
@@ -142,9 +161,10 @@ function AgentCard({ row, session, href, identity, env, onKeys, onNext, busy }) 
   </li>`;
 }
 
-export function ListView({ env }) {
+export function ListView({ env, groupKey, navigation }) {
   const now = useNow(1000);
   const [menu, setMenu] = useState(false);
+  const [picker, setPicker] = useState(false);
   const [confirmAll, setConfirmAll] = useState(false);
   const [busyKeys, setBusyKeys] = useState({});
   const [state, refresh] = usePoller({
@@ -157,34 +177,92 @@ export function ListView({ env }) {
     },
   });
   const data = state && state.data;
+  const hasData = !!data;
   const agents = data ? data.agents.filter((a) => a && typeof a.id === 'string') : [];
   const waiting = data && data.counts && Number.isInteger(data.counts.waiting) ? data.counts.waiting : agents.filter((a) => a.state === 'waiting').length;
   const groups = groupAgents(agents);
   const markers = sessionMarkers(groups);
+  const selected = groupKey === undefined
+    ? groups.find((group) => group.session === data?.session && group.id === 0) ?? groups[0]
+    : groups.find((group) => group.key === groupKey);
+  const pageKey = groupKey ?? selected?.key;
   const cards = new Map();
   const bindings = new Map();
-  const waitingCount = agents.reduce((count, row) => {
+  for (const row of agents) {
     const route = cardDetail(row, data.session);
     const href = route && detailHash(route);
     const target = controlTarget(row, data.session);
     const binding = target ? JSON.stringify(target) : null;
     if (binding) bindings.set(binding, (bindings.get(binding) || 0) + 1);
     cards.set(row, { href, target, binding, scoped: route?.bind && isScopedPeer(route.id) ? route.id : null });
-    return count + Number(!!href && row.state === 'waiting');
-  }, 0);
+  }
+  const waitingAgents = groups.flatMap((group) => group.rows
+    .filter((row) => row.state === 'waiting' && cards.get(row).href)
+    .map((row) => {
+      const { binding, href } = cards.get(row);
+      return { row, key: group.key, identity: bindings.get(binding) === 1 ? binding : href };
+    }));
+  const pageWaiting = waitingAgents.filter((agent) => agent.key === pageKey);
   const header = useRef(null);
   const main = useRef(null);
   const previousJump = useRef(null);
+  const pendingJump = useRef(null);
+  const previousPage = useRef(pageKey);
+  const handledNavigation = useRef(null);
   const previousData = useRef(null);
-  const focus = data && data !== previousData.current && main.current
+  // Capture focus before reconciliation, while the old cards and picker links still exist.
+  const dataChanged = data && data !== previousData.current;
+  const cardFocus = dataChanged && pageKey === previousPage.current && main.current
     ? captureCardFocus(main.current, header.current)
     : null;
+  const pickerSheet = dataChanged && picker ? document.getElementById('sheet-groups') : null;
+  const pickerBody = pickerSheet?.querySelector('.sheet-body');
+  const focusedGroup = pickerBody?.querySelector('.group-link:focus');
+  const pickerHref = focusedGroup?.getAttribute('href');
+  const pickerLinkWasVisible = focusedGroup && hiddenGroupLinkOffset(focusedGroup, pickerBody) === 0;
 
-  // Capture before reconciliation, while the old card and its position still exist.
+  useLayoutEffect(() => {
+    if (groupKey === undefined && pageKey !== undefined) env.replaceHash(groupHash(pageKey));
+  }, [groupKey, pageKey]);
+
   useLayoutEffect(() => {
     previousData.current = data;
-    restoreCardFocus(main.current, header.current, focus);
-  }, [data]);
+    restoreCardFocus(main.current, header.current, cardFocus);
+    const active = document.activeElement;
+    if (!pickerHref || !pickerBody.isConnected || (active !== document.body && active !== focusedGroup)) return;
+    const link = [...pickerBody.querySelectorAll('.group-link')]
+      .find((candidate) => candidate.getAttribute('href') === pickerHref);
+    if (!link) {
+      pickerSheet.querySelector('.sheet-close')?.focus({ preventScroll: true });
+      return;
+    }
+    if (active !== link) link.focus({ preventScroll: true });
+    if (pickerLinkWasVisible && document.activeElement === link) {
+      const offset = hiddenGroupLinkOffset(link, pickerBody);
+      if (offset) pickerBody.scrollBy({ top: offset, behavior: 'instant' });
+    }
+  }, [data, pageKey]);
+
+  useLayoutEffect(() => {
+    const previous = previousPage.current;
+    previousPage.current = pageKey;
+    if (groupKey === undefined || !navigation || handledNavigation.current === navigation) return;
+    const { pushed, scrollTop } = navigation;
+    // Back from Detail may remount the list and need a fresh response before it can scroll.
+    if (scrollTop !== undefined && !hasData) return;
+    handledNavigation.current = navigation;
+    const jump = pendingJump.current;
+    pendingJump.current = null;
+    if (pushed || scrollTop !== undefined) window.scrollTo({ top: pushed ? 0 : scrollTop, behavior: 'instant' });
+    if (pageKey === previous || picker || menu || confirmAll) return;
+    if (pushed && jump?.key === pageKey) {
+      const matching = pageWaiting.filter((agent) => agent.identity === jump.identity);
+      const exactRow = matching.find((agent) => agent.row === jump.row);
+      const candidate = exactRow ?? (matching.length === 1 ? matching[0] : null);
+      if (candidate && revealWaiting(candidate)) return;
+    }
+    main.current.focus({ preventScroll: true });
+  }, [pageKey, groupKey, navigation, hasData]);
 
   useEffect(() => {
     document.title = waiting > 0 ? `(${waiting}) ${env.config.title}` : env.config.title;
@@ -208,28 +286,61 @@ export function ListView({ env }) {
     refresh();
   }
 
-  function nextWaiting(fromCard) {
-    const links = [...main.current.querySelectorAll(`${CARD_SELECTOR}.card-waiting > a.agent-open-area`)];
-    const identities = links.map((link) => {
-      const card = link.closest('.agent-card');
-      return card.dataset.agentRef || link.getAttribute('href');
-    });
-    const previous = fromCard ? links.findIndex((link) => link.closest('.agent-card') === fromCard)
-      : identities.indexOf(previousJump.current);
-    const ambiguous = !fromCard && previous !== identities.lastIndexOf(previousJump.current);
-    const index = ambiguous ? 0 : (previous + 1) % links.length;
-    const link = links[index];
-    if (!link) return;
-    previousJump.current = identities[index];
+  function revealWaiting(agent) {
+    const links = main.current.querySelectorAll(`${CARD_SELECTOR}.card-waiting > a.agent-open-area`);
+    const link = links[pageWaiting.indexOf(agent)];
+    if (!link) return false;
     link.focus({ preventScroll: true });
     const offset = revealOffset(link, header.current);
     if (offset) window.scrollBy({ top: offset, behavior: 'instant' });
+    return true;
+  }
+
+  function nextWaiting(fromRow) {
+    const matches = fromRow ? (agent) => agent.row === fromRow
+      : (agent) => agent.identity === previousJump.current;
+    const previous = waitingAgents.findIndex(matches);
+    const ambiguous = !fromRow && previous !== waitingAgents.findLastIndex(matches);
+    const index = ambiguous ? 0 : (previous + 1) % waitingAgents.length;
+    const agent = waitingAgents[index];
+    if (!agent) return;
+    previousJump.current = agent.identity;
+    if (agent.key === pageKey) revealWaiting(agent);
+    else {
+      pendingJump.current = agent;
+      env.pushHash(groupHash(agent.key));
+    }
+  }
+
+  function renderGroup(group) {
+    const { key, session, rows } = group;
+    const occurrences = new Map();
+    return html`<section key=${key} class="agent-section" aria-labelledby="agent-group-title">
+      <h2 class="section-title" id="agent-group-title">
+        <${GroupLabel} group=${group} marker=${markers.get(session)} />
+      </h2>
+      <ul class="agent-cards">
+        ${rows.map((row) => {
+          const { href, binding, scoped } = cards.get(row);
+          const identity = bindings.get(binding) === 1 ? binding : null;
+          const cardKey = JSON.stringify(identity
+            ? [scoped || row.id, identity] : [row.id, scoped, href]);
+          const occurrence = occurrences.get(cardKey) || 0;
+          occurrences.set(cardKey, occurrence + 1);
+          return html`<${AgentCard} key=${JSON.stringify([cardKey, occurrence])} row=${row} session=${session} href=${href}
+            identity=${identity} env=${env} onKeys=${sendKey} busy=${!!busyKeys[identity]}
+            onNext=${href && row.state === 'waiting' && waitingAgents.length > 1 ? () => nextWaiting(row) : null} />`;
+        })}
+      </ul>
+    </section>`;
   }
 
   return html`<div class="page list-page">
     <header class="app-header" id="list-header" ref=${header}>
       <div class="header-row">
         <h1 class="header-title">Agents${waiting > 0 ? html` · <span class="need-count">${waiting} need you</span>` : null}</h1>
+        ${groups.length > (selected ? 1 : 0) ? html`<button type="button" class="link-button" id="switch-group"
+          aria-haspopup="dialog" onClick=${() => setPicker(true)}>Switch group</button>` : null}
         <button type="button" class="icon-button" id="menu-button" aria-label="Menu" aria-haspopup="dialog" onClick=${() => setMenu(true)}>⋯</button>
       </div>
       <div class="header-sub">
@@ -238,43 +349,25 @@ export function ListView({ env }) {
           ${data && typeof data.session === 'string' ? html`<span class="serving-session" id="list-session">Session ${data.session}</span>` : null}
         </div>
         <button type="button" class="link-button" id="list-refresh" onClick=${() => refresh()}>Refresh</button>
-        ${waitingCount ? html`<button type="button" class="button next-waiting" id="list-next-waiting"
+        ${waitingAgents.length ? html`<button type="button" class="button next-waiting" id="list-next-waiting"
           onClick=${() => nextWaiting()}>Next waiting agent</button>` : null}
       </div>
     </header>
     ${env.notice ? html`<${Banner} id="banner-notice" tone="info" actions=${html`<button type="button" class="link-button" onClick=${env.clearNotice}>Dismiss</button>`}>${env.notice}<//>` : null}
-    <main class=${cx('list-main', state && ['offline', 'retrying', 'error'].includes(state.status) && 'is-stale')} id="main" ref=${main}>
+    <main class=${cx('list-main', state && ['offline', 'retrying', 'error'].includes(state.status) && 'is-stale')} id="main" tabindex="-1" ref=${main}>
       ${state && state.error && ['offline', 'retrying', 'error'].includes(state.status) ? html`<${Banner} id="banner-offline" tone="warn">${freshnessText(state, now)}<//>` : null}
       ${!data && (!state || state.loading) ? html`<p class="empty">Loading agents…</p>` : null}
-      ${data && !agents.length ? html`<p class="empty" id="list-empty">No agents are running.</p>` : null}
-      ${groups.map(({ key, name, session, id, showId, rows }, index) => {
-        const marker = markers.get(session);
-        const sessionLabel = session === null ? 'Owning session unknown'
-          : html`${marker ? `${marker} · ` : ''}Session <span class=${marker ? 'section-session-spelling' : null}>${session}</span>${showId ? ` · Group ${id}` : ''}`;
-        const occurrences = new Map();
-        return html`<section key=${key} class="agent-section" aria-labelledby=${`agent-group-${index}`}>
-          <h2 class="section-title" id=${`agent-group-${index}`}>
-            <span class="section-name">${name}</span>
-            <span class="section-count">${` · ${rows.length} ${rows.length === 1 ? 'agent' : 'agents'}`}</span>
-            <span class="section-session">${sessionLabel}</span>
-          </h2>
-          <ul class="agent-cards">
-            ${rows.map((row) => {
-              const { href, binding, scoped } = cards.get(row);
-              const identity = binding && bindings.get(binding) === 1 ? binding : null;
-              const cardKey = JSON.stringify(identity
-                ? [scoped || row.id, identity] : [row.id, scoped, href]);
-              const occurrence = occurrences.get(cardKey) || 0;
-              occurrences.set(cardKey, occurrence + 1);
-              return html`<${AgentCard} key=${JSON.stringify([cardKey, occurrence])} row=${row} session=${session} href=${href}
-                identity=${identity} env=${env} onKeys=${sendKey} busy=${!!busyKeys[identity]}
-                onNext=${href && row.state === 'waiting' && waitingCount > 1
-                  ? (event) => nextWaiting(event.currentTarget.closest('.agent-card')) : null} />`;
-            })}
-          </ul>
-        </section>`;
-      })}
+      ${data && !selected ? html`<p class="empty" id="list-empty">${groupKey === undefined ? 'No agents are running.' : 'No agents in this group.'}</p>` : null}
+      ${selected ? renderGroup(selected) : null}
     </main>
+    ${picker ? html`<${Sheet} id="sheet-groups" title="Switch group" onClose=${() => setPicker(false)} fallbackFocusRef=${main}>
+      <nav class="group-links" aria-label="Tab groups">
+        ${groups.map((group) => html`<a key=${group.key} class="button group-link" href=${groupHash(group.key)}
+          aria-current=${group.key === pageKey ? 'page' : null} onClick=${() => setPicker(false)}>
+          <${GroupLabel} group=${group} marker=${markers.get(group.session)} />
+        </a>`)}
+      </nav>
+    <//>` : null}
     ${menu ? html`<${Sheet} id="sheet-menu" title="Menu" onClose=${() => setMenu(false)}>
       <div class="menu-list">
         <${Notifications} push=${env.push} />

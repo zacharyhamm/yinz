@@ -1,5 +1,6 @@
 // Hash routes (DOM-free):
-//   #/                                         agents list
+//   #/                                         default agents page
+//   #/g/<encoded JSON [session, group id]>       tab-group agents page
 //   #/a/<encodeURIComponent(id)>?run=<run>&tab=timeline|screen|details[&bind=0]
 // `bind=0` marks stored-run browsing (previous/original run links), which reads
 // the run without the live agent binding. Routes never carry credentials.
@@ -54,8 +55,32 @@ export function detailListRow(rows, id, servingSession) {
   return matches.length === 1 ? matches[0] : null;
 }
 
+export function validGroupId(id) {
+  return Number.isInteger(id) && id >= 0 && id <= 0xffffffff;
+}
+
+export function groupHash(key) {
+  return `#/g/${encodeURIComponent(key)}`;
+}
+
 export function parseHash(hash) {
   const text = typeof hash === 'string' ? hash : '';
+  const group = /^#\/g\/([^/?#]+)$/.exec(text);
+  if (group) {
+    try {
+      const key = JSON.parse(decodeURIComponent(group[1]));
+      if (Array.isArray(key) && key.length === 2) {
+        const [session, id] = key;
+        const hasSession = typeof session === 'string' && session.trim() !== '';
+        if ((hasSession || session === null) && (id === null || (hasSession && validGroupId(id)))) {
+          return { view: 'list', groupKey: JSON.stringify(key) };
+        }
+      }
+    } catch {
+      // Invalid group links open Agents home.
+    }
+    return { view: 'list' };
+  }
   const m = /^#\/a\/([^?]+)(?:\?(.*))?$/.exec(text);
   if (!m) return { view: 'list' };
   let id;

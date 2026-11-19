@@ -621,6 +621,17 @@ async function openList(page) {
   await until('agent cards', () => exists(page, 'li.agent-card'));
 }
 
+const groupRoute = (session, id) => `#/g/${encodeURIComponent(JSON.stringify([session, id]))}`;
+
+async function switchGroup(page, session, id) {
+  const hash = groupRoute(session, id);
+  if (hashOf(page) === hash) return;
+  await page.click('#switch-group');
+  await page.locator(`#sheet-groups a[href="${hash}"]`).click();
+  await until('selected group page', async () =>
+    hashOf(page) === hash && await activeId(page) === 'main' && await exists(page, '.agent-section'));
+}
+
 async function noInjection(page) {
   const r = await page.evaluate(() => ({ xss: window.__yinzXss, imgs: document.querySelectorAll('img[src="x"]').length }));
   check(r.xss === undefined && r.imgs === 0, `injected markup became DOM (xss=${r.xss}, img=${r.imgs})`);
@@ -977,11 +988,14 @@ async function phoneLayout(open, width) {
   await noClippedControls(page, `login ${width}px`);
   await signIn(page);
   await until('agent cards', () => exists(page, 'li.agent-card'));
-  check(await page.locator('.agent-section').count() === 2, 'default groups should be separate by owning session');
+  check(await page.locator('.agent-section').count() === 1, 'the list rendered multiple groups');
   await noHorizontalOverflow(page, `list ${width}px`);
   await touchTargets(page, `list ${width}px`);
   await noClippedControls(page, `list ${width}px`);
-  check((await textOf(page, 'li.agent-card[data-agent-id="live:peer:9"]')).includes('session peer'), 'peer session chip missing');
+  await switchGroup(page, 'peer', 0);
+  check((await textOf(page, cardSelector('live:peer:9'))).includes('session peer'), 'peer session chip missing');
+  check(!(await exists(page, cardSelector(AGENT_ID))), 'the serving session appeared on the peer page');
+  await switchGroup(page, 'browser-check', 0);
   // Agent titles arrive as server-escaped row html; the title also reaches toasts as text.
   check((await textOf(page, cardSelector(AGENT_ID))).includes('<img src=x'), 'escaped title text not shown');
   await domClick(page, 'li.agent-card[data-agent-id="live:dev:7"] .quick-key[data-key="1"]');
@@ -1923,12 +1937,9 @@ async function compactAgentList(open, width, scheme) {
   check(metrics.text === `${longReply.slice(0, 160)}…`, 'long preview lost its character cap or ellipsis cue');
   check(metrics.height < (width === 320 ? 240 : 220), `reference card too tall: ${metrics.height}px at ${width}px`);
   check(await textOf(page, `${cardSelector(AGENT_ID)} .agent-reply`) === 'Ready for your review.', 'short reply changed');
-  check(await textOf(page, `${cardSelector('live:peer:9')} .agent-reply`) === 'Upstream preview…', 'upstream truncation cue missing');
-  check(JSON.stringify(await page.locator('.list-main .state-text:visible').allTextContents()) === JSON.stringify(['Needs you', 'Working', 'Idle']), 'card state badges missing or reordered');
+  check(JSON.stringify(await page.locator('.list-main .state-text:visible').allTextContents()) === JSON.stringify(['Needs you', 'Working']), 'card state badges missing or reordered');
   check(await page.getByRole('link', { name: 'Open Review the change, Needs you', exact: true }).count() === 1, 'card link label omits the agent state');
   check(await page.locator('.list-main .agent-status:visible').count() === 0, 'duplicate default status visible through a wrapper');
-  for (const sel of ['.custom-row .badge', '.badge-focused', '.badge-peer', '.badge-host', '.agent-glyph']) check(await exists(page, sel), `missing context ${sel}`);
-  check((await textOf(page, '.custom-row .badges')).includes('<custom context>'), 'custom badge was not preserved as text');
   check(await page.evaluate(() => getComputedStyle(document.querySelector('.card-needs-person')).borderLeftColor !== getComputedStyle(document.querySelector('.card-busy')).borderLeftColor), 'needs-person emphasis lost');
   await noHorizontalOverflow(page, `compact list ${width}px ${scheme}`);
   await noClippedControls(page, `compact list ${width}px ${scheme}`);
@@ -1936,6 +1947,13 @@ async function compactAgentList(open, width, scheme) {
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
   await page.screenshot({ path: path.join(RESULTS_DIR, `compact-list-${width}-${scheme}.png`), fullPage: true });
   console.log(`compact list ${width}px ${scheme}: card ${metrics.height}px; reply ${metrics.replyHeight}px; title/reply contrast ${metrics.titleContrast.toFixed(2)}/${metrics.replyContrast.toFixed(2)}`);
+
+  await switchGroup(page, 'peer', 0);
+  check(await textOf(page, `${cardSelector('live:peer:9')} .agent-reply`) === 'Upstream preview…', 'upstream truncation cue missing');
+  check(await textOf(page, '.list-main .state-text') === 'Idle', 'peer card state badge missing');
+  for (const sel of ['.custom-row .badge', '.badge-focused', '.badge-peer', '.badge-host', '.agent-glyph']) check(await exists(page, sel), `missing context ${sel}`);
+  check((await textOf(page, '.custom-row .badges')).includes('<custom context>'), 'custom badge was not preserved as text');
+  await switchGroup(page, 'browser-check', 0);
 
   // Keyboard focus must remain visible and Enter must activate the card itself.
   await page.focus('#list-refresh');
@@ -1995,7 +2013,7 @@ async function compactAgentList(open, width, scheme) {
   fx.rows = [];
   await domClick(page, '#list-refresh');
   await until('successful empty list', () => exists(page, '#list-empty'));
-  check(await textOf(page, '#list-empty') === 'No agents are running.', 'empty-list explanation missing');
+  check(await textOf(page, '#list-empty') === 'No agents in this group.', 'empty group explanation missing');
   check(!(await exists(page, '.agent-section')) && !(await exists(page, '#banner-offline')), 'empty list retained cards or an error');
   fx.rows = null;
   await domClick(page, '#list-refresh');
@@ -2030,10 +2048,12 @@ async function groupedAgentList(open) {
   const alsoUnavailable = row(fx, 'live:unavailable:13', 'idle', { session: 'unavailable', current_session: false, tab_group: null });
   const unnamed = row(fx, 'live:dev:14', 'idle', { tab_group: { id: 2, name: ' ' } });
   second.html = second.html.replace(' data-redundant-state="idle"', '').replace('>idle</span>', '>Awaiting a deploy</span>');
-  fx.rows = [first, second, peer, busy, secondBusy, peerLong, missing, fallbackName, peerMissing,
+  fx.rows = [peer, first, second, busy, secondBusy, peerLong, missing, fallbackName, peerMissing,
     ownerless, invalid, alsoOwnerless, unnamed, unavailable, alsoUnavailable];
   fx.counts = { waiting: 4, busy: 2, idle: 10 };
   await openList(page);
+  const home = groupRoute('browser-check', 0);
+  check(hashOf(page) === home, 'Agents home did not choose the serving session default');
   const sections = () => page.locator('.agent-section').evaluateAll((nodes) => nodes.map((node) => {
     const heading = document.getElementById(node.getAttribute('aria-labelledby'));
     if (!heading || heading !== node.querySelector('h2')) throw new Error('invalid group heading association');
@@ -2043,52 +2063,218 @@ async function groupedAgentList(open) {
       [...node.querySelectorAll('.agent-card')].map((card) => card.dataset.agentId),
     ];
   }));
-  const expected = [
-    [name, 'Session browser-check · Group 0', [first.id, busy.id]],
-    [name, 'Session browser-check · Group 1', [second.id, secondBusy.id]],
-    [name, 'Session peer', [peer.id]],
-    [longName, 'Session peer', [peerLong.id]],
-    ['Tab group unavailable', 'Session browser-check', [missing.id, invalid.id]],
-    ['Tab group unavailable', 'Session browser-check · Group 3', [fallbackName.id]],
-    ['Tab group unavailable', 'Session peer', [peerMissing.id]],
-    ['Tab group unavailable', 'Owning session unknown', [ownerless.id, alsoOwnerless.id]],
-    ['Unnamed tab group', 'Session browser-check', [unnamed.id]],
-    ['Tab group unavailable', 'Session unavailable', [unavailable.id, alsoUnavailable.id]],
+  const pages = [
+    [['peer', 0], [name, 'Session peer', [peer.id]]],
+    [['browser-check', 0], [name, 'Session browser-check · Group 0', [first.id, busy.id]]],
+    [['browser-check', 1], [name, 'Session browser-check · Group 1', [second.id, secondBusy.id]]],
+    [['peer', 0xffffffff], [longName, 'Session peer', [peerLong.id]]],
+    [['browser-check', null], ['Tab group unavailable', 'Session browser-check', [missing.id, invalid.id]]],
+    [['browser-check', 3], ['Tab group unavailable', 'Session browser-check · Group 3', [fallbackName.id]]],
+    [['peer', null], ['Tab group unavailable', 'Session peer', [peerMissing.id]]],
+    [[null, null], ['Tab group unavailable', 'Owning session unknown', [ownerless.id, alsoOwnerless.id]]],
+    [['browser-check', 2], ['Unnamed tab group', 'Session browser-check', [unnamed.id]]],
+    [['unavailable', null], ['Tab group unavailable', 'Session unavailable', [unavailable.id, alsoUnavailable.id]]],
   ];
-  check(JSON.stringify(await sections()) === JSON.stringify(expected), 'incorrect ordered group membership');
-  for (const label of [
-    `${name} · 2 agents Session browser-check · Group 0`,
-    `${name} · 2 agents Session browser-check · Group 1`,
-    `${name} · 1 agent Session peer`,
-    'Tab group unavailable · 2 agents Session browser-check',
-    'Tab group unavailable · 1 agent Session browser-check · Group 3',
-    'Tab group unavailable · 1 agent Session peer',
-    'Tab group unavailable · 2 agents Owning session unknown',
-    'Tab group unavailable · 2 agents Session unavailable',
-  ]) {
+  await page.focus('#switch-group');
+  await page.keyboard.press('Enter');
+  await sheetReady(page, 'sheet-groups', 'group picker holds focus');
+  const links = page.locator('#sheet-groups .group-link');
+  const hashes = await links.evaluateAll((nodes) => nodes.map((link) => link.hash));
+  check(JSON.stringify(hashes) === JSON.stringify(pages.map(([key]) => groupRoute(...key))), 'picker order or group identities are incorrect');
+  check(await page.locator('#sheet-groups [aria-current="page"]').getAttribute('href') === home, 'picker omitted current page');
+  await noHorizontalOverflow(page, 'group picker at 320px');
+  await touchTargets(page, 'group picker at 320px');
+  await page.keyboard.press('Escape');
+  await until('picker closes and restores focus', async () => await activeId(page) === 'switch-group');
+  check(await page.locator(`${cardSelector(busy.id)} .agent-status`).isVisible(), 'hook-supplied status hidden');
+  for (const [key, expected] of pages) {
+    await switchGroup(page, ...key);
+    check(JSON.stringify(await sections()) === JSON.stringify([expected]), 'incorrect group page membership');
+    const [title, owner, rows] = expected;
+    const label = `${title} · ${rows.length} ${rows.length === 1 ? 'agent' : 'agents'} ${owner}`;
     check(await page.getByRole('heading', { name: label, exact: true }).count() === 1, `wrong accessible heading: ${label}`);
     check(await page.getByRole('region', { name: label, exact: true }).count() === 1, `wrong accessible region: ${label}`);
+    await noHorizontalOverflow(page, 'tab group labels at 320px');
   }
+  await switchGroup(page, 'browser-check', 0);
+  await switchGroup(page, 'browser-check', 1);
+  const secondHash = groupRoute('browser-check', 1);
+  await page.evaluate(() => history.back());
+  await until('Back restores the default group', async () => hashOf(page) === home && await exists(page, cardSelector(first.id)));
+  await page.evaluate(() => history.forward());
+  await until('Forward restores the second group', async () => hashOf(page) === secondHash && await exists(page, cardSelector(second.id)));
+  await page.reload();
+  await until('reload restores the second group', async () => hashOf(page) === secondHash && await exists(page, cardSelector(second.id)));
   check(await page.locator('.section-title').first().evaluate((el) => getComputedStyle(el).textTransform) === 'none', 'group name case changed');
   check(await textOf(page, '.need-count') === '4 need you' && (await page.title()).startsWith('(4) '), 'global attention was recomputed from visible rows');
-  check(await page.locator(`${cardSelector(busy.id)} .agent-status`).isVisible(), 'hook-supplied status hidden');
   check(await page.locator(`${cardSelector(second.id)} .agent-status`).isVisible(), 'custom markup status hidden');
-  await noHorizontalOverflow(page, 'tab group labels at 320px');
   await noInjection(page);
-
-  const peerLink = page.locator(`${cardSelector(peer.id)} .agent-open-area`);
-  await peerLink.focus();
-  fx.rows = [peer, ...fx.rows.filter((r) => r !== peer)];
-  const reordered = [expected[2], expected[0], expected[1], ...expected.slice(3)];
-  await until('poll reorders tab groups', async () => JSON.stringify(await sections()) === JSON.stringify(reordered));
-  check(await peerLink.evaluate((el) => document.activeElement === el), 'section reorder lost keyboard focus');
 
   const renamedGroup = { id: 0, name: 'Review Complete' };
   const local = [first, second, busy, secondBusy];
   fx.rows = [peer, ...local.map((r) => ({ ...r, tab_group: renamedGroup })), peerLong];
-  const moved = [expected[2], [renamedGroup.name, 'Session browser-check', local.map((r) => r.id)], expected[3]];
   await domClick(page, '#list-refresh');
-  await until('poll shows renamed group and moved card', async () => JSON.stringify(await sections()) === JSON.stringify(moved));
+  await textUntil(page, '#list-empty', 'No agents in this group.', 'selected group disappears');
+  check(hashOf(page) === secondHash, 'an empty group redirected');
+  const restored = row(fx, 'live:dev:19', 'idle', { tab_group: second.tab_group });
+  fx.rows = [...fx.rows, restored];
+  await until('selected group recovers', () => exists(page, cardSelector(restored.id)));
+  check(hashOf(page) === secondHash, 'group recovery changed the URL');
+  const moved = [renamedGroup.name, 'Session browser-check', local.map((r) => r.id)];
+  await switchGroup(page, 'browser-check', 0);
+  check(JSON.stringify(await sections()) === JSON.stringify([moved]), 'rename or group move did not update the default page');
+  check(hashOf(page) === home, 'rename changed the default group URL');
+}
+
+async function groupHistoryScroll(open) {
+  const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
+  const session = 'browser-check';
+  const groups = ['First', 'Second', 'Short'].map((name, id) => ({ id, name }));
+  const cards = groups.map((tab_group, index) =>
+    Array.from({ length: index === 2 ? 1 : 16 }, (_, i) =>
+      row(fx, `live:dev:${30 + index * 20 + i}`, 'idle', { tab_group })));
+  fx.rows = cards.flat();
+  await openList(page);
+
+  function expectOffset(id, top, description) {
+    return until(description, async () =>
+      hashOf(page) === groupRoute(session, id) &&
+      await exists(page, cardSelector(cards[id][0].id)) &&
+      await page.evaluate((top) => Math.abs(window.scrollY - top) <= 1, top));
+  }
+  async function scrollGroup(id, top) {
+    await page.evaluate((top) => window.scrollTo({ top, behavior: 'instant' }), top);
+    await expectOffset(id, top, 'the fixture scrolls to the requested offset');
+  }
+  async function traverse(delta, id, top, description) {
+    await page.evaluate((delta) => history.go(delta), delta);
+    await expectOffset(id, top, description);
+  }
+
+  await expectOffset(0, 0, 'Agents opens at the top of the first group');
+  await scrollGroup(0, 500);
+  await switchGroup(page, session, 1);
+  await expectOffset(1, 0, 'a new selection opens at the top of another long group');
+  await scrollGroup(1, 1000);
+  await switchGroup(page, session, 2);
+  await expectOffset(2, 0, 'a new selection opens at the top of a short group');
+  await traverse(-1, 1, 1000, 'Back restores the second group from a short page');
+  await traverse(-1, 0, 500, 'Back restores the first group');
+  await traverse(1, 1, 1000, 'Forward restores the second group');
+  await traverse(1, 2, 0, 'Forward restores the short group');
+
+  await switchGroup(page, session, 1);
+  await expectOffset(1, 0, 'a new entry for a visited group starts at the top');
+  await scrollGroup(1, 650);
+  await traverse(-2, 1, 1000, 'a history jump to the same group restores the older entry');
+  await traverse(2, 1, 650, 'a history jump forward restores the newer entry');
+}
+
+async function groupDialogFocus(open) {
+  const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
+  const first = row(fx, AGENT_ID, 'idle', { tab_group: { id: 0, name: 'First' } });
+  const second = row(fx, 'live:dev:8', 'idle', { tab_group: { id: 1, name: 'Second' } });
+  const third = row(fx, 'live:dev:9', 'idle', { tab_group: { id: 2, name: 'Third' } });
+  fx.rows = [first, third, second];
+  await openList(page);
+
+  const picker = '#sheet-groups';
+  const links = page.locator(`${picker} .group-link`);
+  const route = (id) => groupRoute('browser-check', id);
+  const groupLink = (id) => page.locator(`${picker} a[href="${route(id)}"]`);
+  const isFocused = (control) => control.evaluateAll(([el]) => el === document.activeElement);
+  const waitForGroup = (agent) => until(`group ${agent.tab_group.name} is rendered`, async () =>
+    hashOf(page) === route(agent.tab_group.id) && await exists(page, cardSelector(agent.id)));
+
+  await page.click('#switch-group');
+  check(await links.last().getAttribute('href') === route(1), 'the second group must start last in the picker');
+  await groupLink(1).focus();
+  fx.rows = [second, first, third];
+  await until('the poll moves the focused group to first', async () =>
+    await links.first().getAttribute('href') === route(1));
+  check(await isFocused(groupLink(1)), 'the poll dropped focus from the reordered group link');
+  await page.keyboard.press('Enter');
+  await waitForGroup(second);
+  check(!(await exists(page, picker)) && await activeId(page) === 'main', 'selecting a group did not close the picker and focus the page');
+
+  await page.focus('#switch-group');
+  await page.keyboard.press('Enter');
+  await sheetReady(page, 'sheet-groups', 'the picker opens from the keyboard');
+  for (const id of [1, 0, 2]) {
+    await page.keyboard.press('Tab');
+    check(await isFocused(groupLink(id)), 'Tab did not reach the next group link');
+  }
+  const focusedGeometry = () => groupLink(2).evaluate((link) => {
+    const body = link.closest('.sheet-body');
+    const rect = link.getBoundingClientRect();
+    const top = body.getBoundingClientRect().top + body.clientTop;
+    return {
+      focused: link === document.activeElement,
+      visible: rect.bottom > top && rect.top < top + body.clientHeight,
+      sheetTop: body.scrollTop,
+      pageTop: window.scrollY,
+    };
+  });
+  const beforeInsertion = await focusedGeometry();
+  check(beforeInsertion.focused && beforeInsertion.visible, 'the focused group should start visible');
+  const inserted = Array.from({ length: 20 }, (_, i) =>
+    row(fx, `live:dev:${30 + i}`, 'idle', { tab_group: { id: 10 + i, name: `Added ${i}` } }));
+  fx.rows = [...inserted, second, first, third];
+  await until('the poll inserts groups above the focused link', async () => await links.count() === inserted.length + 3);
+  const afterInsertion = await focusedGeometry();
+  check(afterInsertion.focused && afterInsertion.visible && afterInsertion.sheetTop > 0,
+    'the poll clipped the focused group link');
+  check(afterInsertion.pageTop === beforeInsertion.pageTop, 'revealing the group link scrolled the page');
+
+  await page.locator(`${picker} .sheet-body`).evaluate((body) => { body.scrollTop = 0; });
+  const scrolledAway = await focusedGeometry();
+  check(scrolledAway.focused && !scrolledAway.visible && scrolledAway.sheetTop === 0,
+    'the picker fixture did not scroll the focused link out of view');
+  fx.rows = [...inserted, second, first, { ...third, tab_group: { ...third.tab_group, name: 'Third renamed' } }];
+  await textUntil(page, `${picker} a[href="${route(2)}"] .section-name`, 'Third renamed', 'poll renames the hidden group');
+  const afterRename = await focusedGeometry();
+  check(afterRename.focused && !afterRename.visible && afterRename.sheetTop === 0,
+    'the poll undid manual scrolling in the picker');
+
+  fx.rows = [second, first];
+  await until('the poll removes the focused group', async () => await links.count() === 2);
+  check(await isFocused(page.locator(`${picker} .sheet-close`)), 'the removed group did not return focus to Close');
+  await page.keyboard.press('Enter');
+  await until('Close dismisses the picker', async () => !(await exists(page, picker)));
+
+  for (const [opener, sheet, selector] of [
+    ['#switch-group', picker, `.group-link[href="${route(1)}"]`],
+    ['#menu-button', '#sheet-menu', '#logout-all'],
+    ['#menu-button', '#sheet-logout-all', '[data-autofocus]'],
+  ]) {
+    await page.click(opener);
+    if (sheet === '#sheet-logout-all') await page.click('#logout-all');
+    const control = page.locator(`${sheet} ${selector}`);
+    await control.focus();
+    await page.evaluate(() => history.back());
+    await waitForGroup(first);
+    check(await isFocused(control), `Back moved focus out of ${sheet} or off its active control`);
+    await page.evaluate(() => history.forward());
+    await waitForGroup(second);
+    check(await isFocused(control), `Forward moved focus out of ${sheet} or off its active control`);
+    await page.keyboard.press('Escape');
+    await until(`Escape dismisses ${sheet}`, async () => !(await exists(page, sheet)));
+  }
+
+  for (const dismiss of ['Escape', 'Close']) {
+    fx.rows = [second, first];
+    await until('the other group brings the picker opener back', () => exists(page, '#switch-group'));
+    await page.focus('#switch-group');
+    await page.keyboard.press('Enter');
+    await sheetReady(page, 'sheet-groups', 'the picker opens with both groups');
+    fx.rows = [second];
+    await until('the poll removes the picker opener', async () =>
+      !(await exists(page, '#switch-group')) && await links.count() === 1);
+    if (dismiss === 'Escape') await page.keyboard.press('Escape');
+    else await page.locator(`${picker} .sheet-close`).click();
+    await until(`${dismiss} dismisses the picker and focuses Agents main`, async () =>
+      !(await exists(page, picker)) && await activeId(page) === 'main');
+  }
 }
 
 async function peerGroupOwnership(open) {
@@ -2136,11 +2322,17 @@ async function peerGroupOwnership(open) {
     ['Tab group unavailable', 'Session new-name', [[missing.id, missing.title, 'session new-name']]],
     ['Tab group unavailable', 'Session old-name', [[replacementMissing.id, replacementMissing.title, 'session old-name']]],
   ];
-  await until('poll separates the renamed peer and the reused name', async () => JSON.stringify(await sections()) === JSON.stringify(expected));
+  await until('the reused name shows its own page', async () => JSON.stringify(await sections()) === JSON.stringify([expected[1]]));
+  check(hashOf(page) === groupRoute('old-name', 0), 'peer rename changed the URL of the selected page');
+  check(await oldNode.evaluate((el) => !el.isConnected), 'the replacement reused the original quick key');
+  check(await page.evaluate(() => document.activeElement === document.body), 'the replacement inherited focus');
+  for (const [owner, id, index] of [['new-name', null, 2], ['old-name', null, 3], ['new-name', 0, 0]]) {
+    await switchGroup(page, owner, id);
+    check(JSON.stringify(await sections()) === JSON.stringify([expected[index]]), 'mixed peer rows across pages');
+  }
   const sourceRegion = region('Source default', 'new-name');
   const currentKey = sourceRegion.getByRole('button', { name: 'Key 1', exact: true });
-  check(await oldNode.evaluate((el) => !el.isConnected), 'cache owner change did not replace the original quick key');
-  check(await currentKey.evaluate((el) => document.activeElement === el), 'focus did not follow the original peer conversation');
+  await currentKey.focus();
 
   const sourceSection = await sourceRegion.elementHandle();
   // Enter posts the old guarded identity even though the visible owner is the new name.
@@ -2250,12 +2442,14 @@ async function scopedPeerDetails(open) {
   await until('same peer keeps its edited draft and pending attempt', async () =>
     (await valueOf(page, '#composer-input')) === 'Original edited draft' && await exists(page, '#submission-retry'));
   await domClick(page, '#detail-back');
+  await switchGroup(page, 'old-peer', 0);
   await openCard('Replacement', 'old-peer');
   await textUntil(page, '#detail-header .header-title', replacement.title, 'replacement title');
   check(await valueOf(page, '#composer-input') === '', 'replacement inherited the original draft');
   check(!(await exists(page, '#submission-retry, .stale-submissions')), 'replacement inherited the original attempt');
   await page.locator('#composer-input').fill('Replacement draft');
   await domClick(page, '#detail-back');
+  await switchGroup(page, 'new-peer', 0);
   await openCard('Source', 'new-peer');
   await until('original keeps its draft across navigation', async () =>
     (await valueOf(page, '#composer-input')) === 'Original edited draft' && await exists(page, '#submission-retry'));
@@ -2464,6 +2658,7 @@ async function olderPeerHistory(open) {
   const reads = fx.log.filter(({ path }) => path === '/api/history');
   check(reads.every(({ query }) => query.get('run') === old.run && !query.has('agent')), 'stored fallback did not request only the stored run');
   check(!fx.log.some(({ path }) => path.startsWith('/api/agent/')), 'older peer issued a live request');
+  await switchGroup(page, 'new-peer', 0);
   await page.locator(cardSelector(published.id)).locator('.agent-open').click();
   await until('valid waiting peer uses Screen', () => fx.bodies('/api/agent/screen').some((body) => body.agent.id === published.detail_id));
   check(await page.getAttribute('#tab-screen', 'aria-selected') === 'true', 'valid waiting route lost Screen');
@@ -2480,13 +2675,12 @@ async function nextWaitingAgent(open) {
   await openList(page);
   const shortcut = page.locator('#list-next-waiting');
   const card = (row) => page.locator(cardSelector(row.id));
-  const focused = async (row) => {
-    check(await card(row).locator('.agent-open-area').evaluate((el) => {
+  const focused = (row) => until(`jump focuses and reveals ${row.id}`, async () =>
+    await exists(page, cardSelector(row.id)) && card(row).locator('.agent-open-area').evaluate((el) => {
       const rect = el.getBoundingClientRect();
       return document.activeElement === el && rect.top >= document.querySelector('#list-header').getBoundingClientRect().bottom - 1 &&
         rect.bottom <= innerHeight + 1;
-    }), `jump did not focus and reveal ${row.id}`);
-  };
+    }));
   const next = async (from, to) => {
     await page.keyboard.press('Tab');
     check(await card(from).locator('.card-waiting-next').evaluate((el) => document.activeElement === el),
@@ -2499,20 +2693,28 @@ async function nextWaitingAgent(open) {
   await page.keyboard.press('Enter');
   await focused(first);
   await next(first, second);
+  check(hashOf(page) === groupRoute('browser-check', 1) && !(await exists(page, cardSelector(first.id))), 'cross-group jump did not switch pages');
   await next(second, first);
   await noHorizontalOverflow(page, 'adjacent waiting control at phone width');
   fx.rows = [second, first, ...idle];
-  await until('poll reverses waiting groups', async () => await page.locator('.section-name').first().textContent() === 'Second');
+  await page.click('#switch-group');
+  await until('poll reverses waiting groups in the picker', async () =>
+    (await page.locator('#sheet-groups .group-link').evaluateAll((links) => links[0]?.hash)) === groupRoute('browser-check', 1));
+  check(hashOf(page) === groupRoute('browser-check', 0), 'group reordering switched the current page');
+  await page.keyboard.press('Escape');
+  await card(first).locator('.agent-open-area').focus();
   await next(first, second);
   await page.keyboard.press('Enter');
   await until('ordinary Enter opens the focused card', async () => decodeURIComponent(await hashOf(page)).includes(second.id));
   await domClick(page, '#detail-back');
-  await until('return to Agents', () => exists(page, '#list-next-waiting'));
+  await until('return to the same Agents page', async () =>
+    hashOf(page) === groupRoute('browser-check', 1) && await exists(page, cardSelector(second.id)));
   fx.rows = [first, ...idle];
-  await until('removal hides all adjacent buttons', async () => !(await exists(page, '.card-waiting-next')));
+  await until('removal empties the group page', () => exists(page, '#list-empty'));
   await shortcut.focus();
   await page.keyboard.press('Enter');
   await focused(first);
+  check(!(await exists(page, '.card-waiting-next')), 'a single waiting agent retained the adjacent shortcut');
   fx.rows = idle;
   await until('shortcut hides when no rendered waiting card remains', async () => !(await shortcut.count()));
   check(await textOf(page, '.need-count') === '5 need you', 'hook-hidden waiting cards changed the native count');
@@ -2526,36 +2728,39 @@ async function whitespaceSessionHeadings(open) {
   fx.rows = [first, second];
   await openList(page);
 
-  const headings = page.locator('.section-title');
-  const assertHeadings = async (expected) => {
-    const visible = await headings.allInnerTexts();
+  const assertLabels = async (expected) => {
+    const links = page.locator('#sheet-groups .group-link');
+    const visible = await links.allInnerTexts();
     check(new Set(visible).size === 2, 'the two headings look identical');
     for (const [index, [marker, session]] of expected.entries()) {
       const accessible = `Default · 1 agent ${marker} · Session build team`;
-      check(await page.getByRole('heading', { name: accessible, exact: true }).count() === 1, `wrong accessible heading: ${accessible}`);
-      check(await page.getByRole('region', { name: accessible, exact: true }).count() === 1, `wrong accessible region: ${accessible}`);
+      check(await page.getByRole('link', { name: accessible, exact: true }).count() === 1, `wrong accessible group link: ${accessible}`);
       check(visible[index].includes(`${marker} · Session ${session}`), `visible heading lost its marker or literal spacing: ${JSON.stringify(visible[index])}`);
-      check(await headings.nth(index).locator('.section-session-spelling').textContent() === session, 'the literal session name changed');
+      check(await links.nth(index).locator('.section-session-spelling').textContent() === session, 'the literal session name changed');
     }
     await noHorizontalOverflow(page, 'whitespace-colliding session headings at 320px');
   };
   const expected = [['2 of 2', first.session], ['1 of 2', second.session]];
-  await assertHeadings(expected);
+  await page.click('#switch-group');
+  await assertLabels(expected);
   fx.rows = [second, first];
-  await until('poll reverses the section order', async () =>
-    await page.locator('.agent-card').first().getAttribute('data-agent-id') === second.id);
-  await assertHeadings(expected.slice().reverse());
+  await until('poll reverses the picker order', async () =>
+    await page.locator('#sheet-groups .group-link').first().getAttribute('href') === groupRoute(second.session, 0));
+  await assertLabels(expected.slice().reverse());
+  await page.getByRole('link', { name: 'Default · 1 agent 1 of 2 · Session build team', exact: true }).click();
+  await until('picker opens the distinct owning session', async () =>
+    hashOf(page) === groupRoute(second.session, 0) && await exists(page, cardSelector(second.id)));
 }
 
 async function agentListPollFocus(open) {
   const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
   const initial = { id: 0, name: 'Initial group' };
   const destination = { id: 1, name: 'Destination' };
-  const tallGroup = { id: 2, name: 'Tall group' };
+  const other = row(fx, 'live:dev:9', 'idle', { tab_group: { id: 2, name: 'Other group' } });
   const agent = row(fx, AGENT_ID, 'waiting', { tab_group: initial });
   const neighbor = row(fx, 'live:dev:8', 'idle', { tab_group: destination });
-  const tall = Array.from({ length: 14 }, (_, i) => row(fx, `live:dev:${20 + i}`, 'idle', { tab_group: tallGroup }));
-  fx.rows = [agent, neighbor, ...tall];
+  const tall = Array.from({ length: 14 }, (_, i) => row(fx, `live:dev:${20 + i}`, 'idle', { tab_group: destination }));
+  fx.rows = [agent, neighbor, ...tall, other];
   await openList(page);
 
   const quickKey = page.locator(cardSelector(agent.id)).getByRole('button', { name: 'Key 1', exact: true });
@@ -2576,20 +2781,22 @@ async function agentListPollFocus(open) {
   await assertFocusedInView('initial quick key');
   const oldKey = await quickKey.elementHandle();
   const moved = { ...agent, tab_group: destination };
-  fx.rows = [moved, neighbor, ...tall];
-  await until('automatic poll moves the focused agent', () =>
-    quickKey.evaluate((el) => el.closest('.agent-section').querySelector('.section-name').textContent === 'Destination'));
+  fx.rows = [moved, neighbor, ...tall, other];
+  await until('automatic poll moves the focused agent off the page', () => exists(page, '#list-empty'));
+  check(hashOf(page) === groupRoute('browser-check', 0), 'poll navigated to the destination page');
   check(await oldKey.evaluate((el) => !el.isConnected), 'the group move did not replace the control');
-  const beforeReorder = await assertFocusedInView('replacement quick key');
+  check(await page.evaluate(() => document.activeElement === document.body), 'focus moved to another control');
+  await switchGroup(page, 'browser-check', destination.id);
+  await quickKey.focus();
+  const beforeReorder = await assertFocusedInView('destination quick key');
   const movedKey = await quickKey.elementHandle();
 
-  const promoted = [row(fx, tall[0].id, 'waiting', { tab_group: tallGroup }), ...tall.slice(1)];
-  fx.rows = [...promoted, moved, neighbor];
-  await until('automatic poll promotes the tall group', async () =>
-    await page.locator('.section-name').first().textContent() === tallGroup.name);
-  const afterReorder = await assertFocusedInView('quick key after group promotion');
-  check(await movedKey.evaluate((el) => document.activeElement === el), 'group promotion replaced the focused node');
-  check(afterReorder.documentTop - beforeReorder.documentTop > beforeReorder.viewport, 'competing group did not displace the quick key far enough');
+  fx.rows = [other, ...tall, moved, neighbor];
+  await until('automatic poll reorders the cards on the selected page', async () =>
+    await page.locator('.agent-card').first().getAttribute('data-agent-id') === tall[0].id);
+  const afterReorder = await assertFocusedInView('quick key after card reorder');
+  check(await movedKey.evaluate((el) => document.activeElement === el), 'card reorder replaced the focused node');
+  check(afterReorder.documentTop - beforeReorder.documentTop > beforeReorder.viewport, 'card reorder did not displace the quick key far enough');
   await page.keyboard.press('Enter');
   await until('focused quick key posts', () => fx.count('/api/agent/keys', 'POST') === 1);
   await until('quick key completes', () => quickKey.isEnabled());
@@ -2600,10 +2807,10 @@ async function agentListPollFocus(open) {
   await page.evaluate(() => window.scrollTo(0, 0));
   const scrolledAway = await geometry();
   check(scrolledAway.active && !scrolledAway.visible && scrolledAway.scroll === 0, 'manual scroll did not move the key out of view');
-  const renamed = { ...moved, tab_group: { ...destination, name: 'Destination renamed' } };
-  fx.rows = [...promoted, renamed, neighbor];
-  await until('poll applies rename while scrolled away', () => quickKey.evaluate((el) =>
-    el.closest('.agent-section').querySelector('.section-name').textContent === 'Destination renamed'));
+  const renamed = { ...destination, name: 'Destination renamed' };
+  fx.rows = [other, ...[...tall, moved, neighbor].map((agent) => ({ ...agent, tab_group: renamed }))];
+  await until('poll applies rename while scrolled away', () => quickKey.evaluate((el, name) =>
+    el.closest('.agent-section').querySelector('.section-name').textContent === name, renamed.name));
   const afterManualScroll = await geometry();
   check(afterManualScroll.active && !afterManualScroll.visible && afterManualScroll.scroll === 0, 'poll undid manual scrolling');
 }
@@ -2611,30 +2818,28 @@ async function agentListPollFocus(open) {
 async function agentListPollFocusGuards(open) {
   const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
   const original = row(fx, AGENT_ID, 'waiting');
-  const nextGroup = { id: 1, name: 'Destination' };
-  const waitingInDestination = { ...original, tab_group: nextGroup };
   const quickKey = page.locator(cardSelector(original.id)).getByRole('button', { name: 'Key 1', exact: true });
   const hasBodyFocus = () => page.evaluate(() => document.activeElement === document.body);
   fx.rows = [original];
   await openList(page);
 
   await quickKey.focus();
-  fx.rows = [{ ...row(fx, original.id, 'busy'), tab_group: nextGroup }];
+  fx.rows = [row(fx, original.id, 'busy')];
   await until('poll removes quick key from working agent', async () => await quickKey.count() === 0);
   check(await hasBodyFocus(), 'focus moved to a different control when the quick key disappeared');
 
   fx.rows = [original];
   await until('poll restores waiting agent', () => quickKey.isEnabled());
   await quickKey.focus();
-  fx.rows = [{ ...waitingInDestination, ref: null }];
-  await until('poll renders disabled quick key in destination', () => quickKey.isDisabled());
+  fx.rows = [{ ...original, ref: null }];
+  await until('poll renders disabled quick key', () => quickKey.isDisabled());
   check(await hasBodyFocus(), 'focus moved to a disabled replacement');
 
-  fx.rows = [waitingInDestination];
-  await until('poll enables destination quick key', () => quickKey.isEnabled());
+  fx.rows = [original];
+  await until('poll enables quick key', () => quickKey.isEnabled());
   await quickKey.focus();
   const priorKey = await quickKey.elementHandle();
-  fx.rows = [{ ...waitingInDestination, ref: REF7B, run: 'run-7b' }];
+  fx.rows = [{ ...original, ref: REF7B, run: 'run-7b' }];
   await until('poll publishes replacement conversation in the same card', () =>
     page.locator(cardSelector(original.id)).getByRole('link', { name: 'Open', exact: true })
       .evaluate((el) => el.hash.includes('run-7b')));
@@ -2654,14 +2859,15 @@ async function agentListPollFocusOutsideCards(open) {
   const refresh = page.getByRole('button', { name: 'Refresh', exact: true });
   await refresh.focus();
   fx.rows = [{ ...customRow, tab_group: nextGroup }];
-  await until('poll moves card while Refresh is focused', async () => await textOf(page, '.section-name') === nextGroup.name);
+  await until('poll moves card off the page while Refresh is focused', () => exists(page, '#list-empty'));
   check(await refresh.evaluate((el) => document.activeElement === el), 'poll stole focus from the header');
 
+  await switchGroup(page, 'browser-check', nextGroup.id);
   const hook = page.locator('.hook-focus');
   await hook.focus();
   check(await hook.evaluate((el) => document.activeElement === el), 'hook control did not receive focus');
   fx.rows = [customRow];
-  await until('poll moves the card with custom content', async () => await textOf(page, '.section-name') === 'Default');
+  await until('poll moves the card with custom content off the page', () => exists(page, '#list-empty'));
   check(await page.evaluate(() => document.activeElement === document.body), 'poll restored focus to hook content');
 }
 
@@ -3403,7 +3609,8 @@ async function backThroughHistory(open) {
   const opened = await page.evaluate(() => history.length);
   const detail = hashOf(page);
   await domClick(page, '#detail-back');
-  await until('back to the list', async () => hashOf(page) === '#/' && exists(page, 'li.agent-card'));
+  const home = groupRoute('browser-check', 0);
+  await until('back to the list', async () => hashOf(page) === home && await exists(page, 'li.agent-card'));
   const after = await page.evaluate(() => history.length);
   check(after === opened, `back added history entries (${opened} -> ${after})`);
   await page.evaluate(() => history.forward());
@@ -3414,7 +3621,7 @@ async function backThroughHistory(open) {
   await until('deep-linked detail', () => exists(page, '#detail-back'));
   const deep = await page.evaluate(() => history.length);
   await domClick(page, '#detail-back');
-  await until('list after deep-link back', async () => hashOf(page) === '#/' && exists(page, 'li.agent-card'));
+  await until('list after deep-link back', async () => hashOf(page) === home && await exists(page, 'li.agent-card'));
   const replaced = await page.evaluate(() => history.length);
   check(replaced === deep, `deep-link back changed history length (${deep} -> ${replaced})`);
 }
@@ -3425,6 +3632,7 @@ async function logoutFlows(open) {
   const { page } = await open();
   await openApp(page, '#/', { remember: true });
   await until('agent cards', () => exists(page, 'li.agent-card'));
+  await switchGroup(page, 'peer', 0);
   await domClick(page, '#menu-button');
   await until('menu', () => exists(page, '#logout'));
   await domClick(page, '#logout');
@@ -3433,7 +3641,8 @@ async function logoutFlows(open) {
   const cleared = await tokenStores(page);
   check(!cleared.local && !cleared.session, 'logout kept a token');
   await signIn(page, { remember: true });
-  await until('agent cards', () => exists(page, 'li.agent-card'));
+  await until('sign-in returns to the group page', async () =>
+    hashOf(page) === groupRoute('peer', 0) && await exists(page, cardSelector('live:peer:9')));
   await domClick(page, '#menu-button');
   await until('menu', () => exists(page, '#logout-all'));
   await domClick(page, '#logout-all');
@@ -3471,6 +3680,8 @@ async function main() {
   await scenario('compact agent list 1024px desktop', (open) => compactAgentList(open, 1024, 'light'));
   await scenario('short phone viewport with a long retry and sparse cached card', cachedAgentList);
   await scenario('Agents group membership, fallback and poll updates', groupedAgentList);
+  await scenario('Agents group scroll through history', groupHistoryScroll);
+  await scenario('Agents group dialog focus through polls and history', groupDialogFocus);
   await scenario('Agents peer group ownership during session name reuse', peerGroupOwnership);
   await scenario('Agents peer focus across republication: card area', (open) => peerFocusAcrossRepublication(open, '.agent-open-area'));
   await scenario('Agents peer focus across republication: Open', (open) => peerFocusAcrossRepublication(open, '.agent-open'));
