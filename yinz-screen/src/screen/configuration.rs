@@ -25,11 +25,16 @@ impl Screen {
         keybinds: Keybinds,
         client_id: ClientId,
     ) -> Result<()> {
-        if config.session_is_mirrored && !self.session_is_mirrored {
+        if config.session_is_mirrored && !self.core.session_is_mirrored {
             // Move clients independently before mirrored tab switches assume they all share
             // one tab. Prefer the caller's focus, then the lowest connected client ID.
-            let mut clients: Vec<ClientId> =
-                self.connected_clients.borrow().iter().copied().collect();
+            let mut clients: Vec<ClientId> = self
+                .core
+                .connected_clients
+                .borrow()
+                .iter()
+                .copied()
+                .collect();
             clients.sort_unstable_by_key(|id| (*id != client_id, *id));
             let shared_focus = clients.iter().find_map(|id| {
                 self.get_active_tab(*id)
@@ -127,37 +132,47 @@ impl Screen {
         let should_support_arrow_fonts = !simplified_ui;
         let disable_kitty_keyboard_protocol = !support_kitty_keyboard_protocol;
 
-        if let Some(client) = self.theme_preview.as_ref().map(|preview| preview.client) {
+        if let Some(client) = self
+            .palette
+            .theme_preview
+            .as_ref()
+            .map(|preview| preview.client)
+        {
             self.close_command_palette(client);
         }
-        self.themes = themes;
-        self.terminal_themes = terminal_themes;
-        self.style.agent_theme_mapping = agent_theme_mapping;
-        self.theme_name = theme_name;
-        self.theme_dark_name = theme_dark_name;
-        self.theme_light_name = theme_light_name;
+        self.core.themes = themes;
+        self.core.terminal_themes = terminal_themes;
+        self.core.style.agent_theme_mapping = agent_theme_mapping;
+        self.core.theme_name = theme_name;
+        self.core.theme_dark_name = theme_dark_name;
+        self.core.theme_light_name = theme_light_name;
         self.set_pane_animations(pane_animations);
         self.set_agent_double_escape(agent_double_escape);
-        self.host_theme_dark_styling = host_theme_dark;
-        self.host_theme_light_styling = host_theme_light;
-        self.arrow_fonts = should_support_arrow_fonts;
+        self.core.host_theme_dark_styling = host_theme_dark;
+        self.core.host_theme_light_styling = host_theme_light;
+        self.core.arrow_fonts = should_support_arrow_fonts;
 
-        self.overlay_tab_plugins = overlay_tab_plugins;
-        self.plugin_aliases = plugin_aliases;
+        self.core.overlay_tab_plugins = overlay_tab_plugins;
+        self.core.plugin_aliases = plugin_aliases;
         // global configuration
-        self.style.colors = theme;
-        self.default_mode_info.max_agent_width = Some(max_agent_width);
-        self.default_mode_info.tab_groups = Some(tab_groups);
-        self.default_mode_info.update_theme(theme);
-        self.default_mode_info
+        self.core.style.colors = theme;
+        self.core.default_mode_info.max_agent_width = Some(max_agent_width);
+        self.core.default_mode_info.tab_groups = Some(tab_groups);
+        self.core.default_mode_info.update_theme(theme);
+        self.core
+            .default_mode_info
             .update_rounded_corners(rounded_corners);
         // `default_mode_info` is the fallback used by `change_mode` for
         // clients that don't yet have a per-client `mode_info` entry, so its
         // keybinds and base mode must be kept in sync with reconfigures.
-        self.default_mode_info.update_keybinds(keybinds.clone());
-        self.default_mode_info.update_default_mode(new_default_mode);
-        self.default_shell = default_shell.clone().unwrap_or_else(get_default_shell);
-        self.default_shell_action = default_shell.clone().map(|shell| {
+        self.core
+            .default_mode_info
+            .update_keybinds(keybinds.clone());
+        self.core
+            .default_mode_info
+            .update_default_mode(new_default_mode);
+        self.core.default_shell = default_shell.clone().unwrap_or_else(get_default_shell);
+        self.core.default_shell_action = default_shell.clone().map(|shell| {
             TerminalAction::RunCommand(RunCommand {
                 command: shell,
                 cwd: default_cwd.clone(),
@@ -165,77 +180,83 @@ impl Screen {
                 ..Default::default()
             })
         });
-        self.default_editor = default_editor.clone().or_else(get_default_editor);
-        self.auto_layout = auto_layout;
-        self.copy_options.command = copy_command.clone();
-        self.copy_options.copy_on_select = copy_on_select;
-        self.pane_frame_style = pane_frame_style;
-        self.max_agent_width = max_agent_width;
-        self.advanced_mouse_actions = advanced_mouse_actions;
-        self.mouse_scroll_resize = mouse_scroll_resize;
-        self.mouse_hover_effects = mouse_hover_effects;
-        self.visual_bell = visual_bell;
-        self.focus_follows_mouse = focus_follows_mouse;
-        self.mouse_click_through = mouse_click_through;
-        self.context_menu_on_right_click = context_menu_on_right_click;
-        self.context_menu_override_agent_mouse = context_menu_override_agent_mouse;
+        self.core.default_editor = default_editor.clone().or_else(get_default_editor);
+        self.core.auto_layout = auto_layout;
+        self.core.copy_options.command = copy_command.clone();
+        self.core.copy_options.copy_on_select = copy_on_select;
+        self.core.pane_frame_style = pane_frame_style;
+        self.core.max_agent_width = max_agent_width;
+        self.core.advanced_mouse_actions = advanced_mouse_actions;
+        self.core.mouse_scroll_resize = mouse_scroll_resize;
+        self.core.mouse_hover_effects = mouse_hover_effects;
+        self.core.visual_bell = visual_bell;
+        self.core.focus_follows_mouse = focus_follows_mouse;
+        self.core.mouse_click_through = mouse_click_through;
         // Menus already open keep the list they opened with - `set_context_menu_items` says why -
         // so nothing here has to repaint. The next right-click picks these up.
-        self.context_menu = context_menu;
-        self.osc133_command_selection = osc133_command_selection;
-        self.word_separators = word_separators;
-        self.nested_session_handling = nested_session_handling;
-        self.paste_buffer_read_enabled = dangerously_enable_paste_buffer_read;
+        self.menus.on_reconfigure(
+            context_menu,
+            context_menu_on_right_click,
+            context_menu_override_agent_mouse,
+        );
+        self.core.osc133_command_selection = osc133_command_selection;
+        self.core.word_separators = word_separators;
+        self.nested.nested_session_handling = nested_session_handling;
+        self.core.paste_buffer_read_enabled = dangerously_enable_paste_buffer_read;
         self.set_host_notification_protocol(host_notification_protocol);
-        self.default_mode_info
+        self.core
+            .default_mode_info
             .update_arrow_fonts(should_support_arrow_fonts);
-        self.default_mode_info
+        self.core
+            .default_mode_info
             .update_hide_session_name(hide_session_name);
         {
-            *self.stacked_resize.borrow_mut() = stacked_resize;
+            *self.core.stacked_resize.borrow_mut() = stacked_resize;
         }
         {
-            *self.stacked_pane_list.borrow_mut() = stacked_pane_list;
+            *self.core.stacked_pane_list.borrow_mut() = stacked_pane_list;
         }
-        self.agent_pane_min_size = agent_pane_min_size;
+        self.core.agent_pane_min_size = agent_pane_min_size;
         if let Some(copy_clipboard) = copy_clipboard {
-            self.copy_options.clipboard = copy_clipboard;
+            self.core.copy_options.clipboard = copy_clipboard;
         }
         // read when they are next needed: a layout dump, a toast, the next focus change
-        self.session_serialization = session_serialization;
-        self.serialize_pane_viewport = serialize_pane_viewport;
-        self.scrollback_lines_to_serialize = scrollback_lines_to_serialize;
-        self.session_is_mirrored = session_is_mirrored;
-        self.notification_position = notification_position;
-        self.notification_timeout_secs = notification_timeout_secs;
-        if self.default_layout_name != default_layout_name || self.layout_dir != layout_dir {
-            self.default_layout_name = default_layout_name;
-            self.layout_dir = layout_dir;
+        self.core.session_serialization = session_serialization;
+        self.core.serialize_pane_viewport = serialize_pane_viewport;
+        self.core.scrollback_lines_to_serialize = scrollback_lines_to_serialize;
+        self.core.session_is_mirrored = session_is_mirrored;
+        self.notices
+            .on_reconfigure(notification_position, notification_timeout_secs);
+        if self.core.default_layout_name != default_layout_name
+            || self.core.layout_dir != layout_dir
+        {
+            self.core.default_layout_name = default_layout_name;
+            self.core.layout_dir = layout_dir;
             self.restart_layout_watcher();
         }
         // read every frame by the output
-        self.styled_underlines = styled_underlines;
-        self.background_opacity = background_opacity;
-        self.osc8_hyperlinks = osc8_hyperlinks;
-        self.explicitly_disable_kitty_keyboard_protocol = disable_kitty_keyboard_protocol;
+        self.core.styled_underlines = styled_underlines;
+        self.core.background_opacity = background_opacity;
+        self.core.osc8_hyperlinks = osc8_hyperlinks;
+        self.core.explicitly_disable_kitty_keyboard_protocol = disable_kitty_keyboard_protocol;
         let kitty_graphics_support_changed =
-            self.support_kitty_graphics_protocol != support_kitty_graphics_protocol;
-        self.support_kitty_graphics_protocol = support_kitty_graphics_protocol;
-        for mode in self.mode_info.values_mut() {
+            self.core.support_kitty_graphics_protocol != support_kitty_graphics_protocol;
+        self.core.support_kitty_graphics_protocol = support_kitty_graphics_protocol;
+        for mode in self.core.mode_info.values_mut() {
             mode.max_agent_width = Some(max_agent_width);
             mode.tab_groups = Some(tab_groups);
         }
         // Closing a preview above already returned `style.terminal` to the baseline block.
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             tab.update_tab_groups(tab_groups)?;
-            tab.update_terminal_theme(self.style.terminal);
-            tab.update_agent_theme_mapping(self.style.agent_theme_mapping);
+            tab.update_terminal_theme(self.core.style.terminal);
+            tab.update_agent_theme_mapping(self.core.style.agent_theme_mapping);
             tab.update_theme(theme);
             tab.update_rounded_corners(rounded_corners);
             tab.update_default_shell(default_shell.clone());
-            tab.update_default_editor(self.default_editor.clone());
+            tab.update_default_editor(self.core.default_editor.clone());
             tab.update_auto_layout(auto_layout);
-            tab.update_copy_options(&self.copy_options);
+            tab.update_copy_options(&self.core.copy_options);
             tab.set_pane_frames(pane_frame_style);
             tab.max_agent_width = max_agent_width;
             tab.update_arrow_fonts(should_support_arrow_fonts);
@@ -246,7 +267,10 @@ impl Screen {
             tab.update_mouse_click_through(mouse_click_through);
             tab.update_context_menu_on_right_click(context_menu_on_right_click);
             tab.update_context_menu_override_agent_mouse(context_menu_override_agent_mouse);
-            tab.update_selection_options(osc133_command_selection, self.word_separators.clone());
+            tab.update_selection_options(
+                osc133_command_selection,
+                self.core.word_separators.clone(),
+            );
             tab.update_session_is_mirrored(session_is_mirrored);
             tab.update_render_options(styled_underlines, osc8_hyperlinks);
             tab.update_background_opacity(background_opacity);
@@ -258,7 +282,7 @@ impl Screen {
         }
         // Clear hover state when disabled
         if !mouse_hover_effects {
-            for tab in self.tabs.values_mut() {
+            for tab in self.core.tabs.values_mut() {
                 tab.clear_mouse_hover_state();
             }
         }
@@ -266,15 +290,16 @@ impl Screen {
         // client specific configuration
         if self.connected_clients_contains(&client_id) {
             let mode_info = self
+                .core
                 .mode_info
                 .entry(client_id)
-                .or_insert_with(|| self.default_mode_info.clone());
+                .or_insert_with(|| self.core.default_mode_info.clone());
             mode_info.update_keybinds(keybinds);
             mode_info.update_default_mode(new_default_mode);
             mode_info.update_theme(theme);
             mode_info.update_arrow_fonts(should_support_arrow_fonts);
             mode_info.update_hide_session_name(hide_session_name);
-            for tab in self.tabs.values_mut() {
+            for tab in self.core.tabs.values_mut() {
                 tab.change_mode_info(mode_info.clone(), client_id);
                 tab.mark_active_pane_for_rerender(client_id);
             }
@@ -282,7 +307,7 @@ impl Screen {
 
         // this needs to be done separately at the end because it applies some of the above changes
         // and propagates them to plugins
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             tab.update_input_modes()?;
         }
         self.broadcast_nested_shortcuts();
@@ -299,8 +324,8 @@ impl Screen {
     /// `explicit_theme_hue` or a manual `SetDarkTheme` / `SetLightTheme`
     /// outranks the host terminal.
     pub fn update_host_terminal_theme_mode(&mut self, mode: HostTerminalThemeMode) -> Result<()> {
-        self.last_host_reported_theme_mode = Some(mode);
-        if matches!(self.theme_policy, ThemePolicy::Pinned(_)) {
+        self.core.last_host_reported_theme_mode = Some(mode);
+        if matches!(self.core.theme_policy, ThemePolicy::Pinned(_)) {
             return Ok(());
         }
         self.apply_theme_mode(mode)
@@ -319,17 +344,23 @@ impl Screen {
         let err_context = || "Failed to update host terminal theme mode".to_string();
 
         // dedupe
-        if self.host_terminal_theme_mode == Some(mode) {
+        if self.core.host_terminal_theme_mode == Some(mode) {
             return Ok(());
         }
-        self.host_terminal_theme_mode = Some(mode);
+        self.core.host_terminal_theme_mode = Some(mode);
         self.repaint_theme_mode(mode)?;
-        if let Some(client) = self.theme_preview.as_ref().map(|preview| preview.client) {
+        if let Some(client) = self
+            .palette
+            .theme_preview
+            .as_ref()
+            .map(|preview| preview.client)
+        {
             self.refresh_theme_preview(client);
         }
 
         // fan out the plugin event
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_plugin(PluginInstruction::Update(vec![(
                 None,
@@ -346,13 +377,15 @@ impl Screen {
     /// push it into every tab and client, without announcing a mode change to anyone.
     /// The pane palette stays on the application baseline.
     pub(super) fn repaint_theme_mode(&mut self, mode: HostTerminalThemeMode) -> Result<()> {
-        if self.theme_preview.is_some() {
+        if self.palette.theme_preview.is_some() {
             return Ok(());
         }
-        if self.host_theme_dark_styling.is_some() && self.host_theme_light_styling.is_some() {
+        if self.core.host_theme_dark_styling.is_some()
+            && self.core.host_theme_light_styling.is_some()
+        {
             let theme = match mode {
-                HostTerminalThemeMode::Dark => self.host_theme_dark_styling,
-                HostTerminalThemeMode::Light => self.host_theme_light_styling,
+                HostTerminalThemeMode::Dark => self.core.host_theme_dark_styling,
+                HostTerminalThemeMode::Light => self.core.host_theme_light_styling,
             };
             if let Some(theme) = theme {
                 self.repaint_theme(theme)?;
@@ -362,27 +395,28 @@ impl Screen {
     }
 
     pub(super) fn repaint_theme(&mut self, theme: Styling) -> Result<()> {
-        self.style.colors = theme;
-        self.default_mode_info.update_theme(theme);
-        for tab in self.tabs.values_mut() {
-            tab.update_terminal_theme(self.style.terminal);
-            tab.update_agent_theme_mapping(self.style.agent_theme_mapping);
+        self.core.style.colors = theme;
+        self.core.default_mode_info.update_theme(theme);
+        for tab in self.core.tabs.values_mut() {
+            tab.update_terminal_theme(self.core.style.terminal);
+            tab.update_agent_theme_mapping(self.core.style.agent_theme_mapping);
             tab.update_theme(theme);
             tab.set_force_render();
         }
-        let default_for_new = self.default_mode_info.clone();
-        for client in self.active_tab_ids.keys().copied() {
+        let default_for_new = self.core.default_mode_info.clone();
+        for client in self.core.active_tab_ids.keys().copied() {
             let mode_info = self
+                .core
                 .mode_info
                 .entry(client)
                 .or_insert_with(|| default_for_new.clone());
             mode_info.update_theme(theme);
-            for tab in self.tabs.values_mut() {
+            for tab in self.core.tabs.values_mut() {
                 tab.change_mode_info(mode_info.clone(), client);
                 tab.mark_active_pane_for_rerender(client);
             }
         }
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             tab.update_input_modes()
                 .context("failed to propagate theme to plugins")?;
         }
@@ -411,7 +445,7 @@ impl Screen {
             return Ok(());
         }
         self.pin_application_mode(mode);
-        self.theme_policy = ThemePolicy::Pinned(mode);
+        self.core.theme_policy = ThemePolicy::Pinned(mode);
         self.apply_theme_mode(mode)?;
         self.render()
     }
@@ -422,7 +456,7 @@ impl Screen {
         &mut self,
         completion_tx: &mut Option<NotificationEnd>,
     ) -> Result<()> {
-        let next = match self.style.application.mode {
+        let next = match self.core.style.application.mode {
             HostTerminalThemeMode::Dark => HostTerminalThemeMode::Light,
             HostTerminalThemeMode::Light => HostTerminalThemeMode::Dark,
         };
@@ -435,13 +469,15 @@ impl Screen {
     /// session would sit on the unrelated static `theme` until the first host
     /// report. This is a default, not a pin: a later host report still wins.
     pub(super) fn resolve_default_theme_mode(&mut self) -> Result<()> {
-        if self.host_terminal_theme_mode.is_some() {
+        if self.core.host_terminal_theme_mode.is_some() {
             return Ok(());
         }
-        if !matches!(self.theme_policy, ThemePolicy::Auto) {
+        if !matches!(self.core.theme_policy, ThemePolicy::Auto) {
             return Ok(());
         }
-        if self.host_theme_dark_styling.is_some() && self.host_theme_light_styling.is_some() {
+        if self.core.host_theme_dark_styling.is_some()
+            && self.core.host_theme_light_styling.is_some()
+        {
             self.apply_theme_mode(HostTerminalThemeMode::Dark)?;
         }
         Ok(())
@@ -455,14 +491,14 @@ impl Screen {
     /// the `CSI ?997;n` DSR announce a *change* of mode, and re-sending them on every config
     /// reload would make every opted-in app re-run its theme hooks for nothing.
     pub(super) fn reapply_effective_theme_mode(&mut self) -> Result<()> {
-        let known_mode = match self.theme_policy {
+        let known_mode = match self.core.theme_policy {
             ThemePolicy::Pinned(mode) => Some(mode),
-            ThemePolicy::Auto => self.host_terminal_theme_mode,
+            ThemePolicy::Auto => self.core.host_terminal_theme_mode,
         };
         let Some(mode) = known_mode else {
             return Ok(());
         };
-        if self.host_terminal_theme_mode == Some(mode) {
+        if self.core.host_terminal_theme_mode == Some(mode) {
             self.repaint_theme_mode(mode)?;
             self.render()?;
         } else {
@@ -481,17 +517,17 @@ impl Screen {
         &mut self,
         explicit_theme_hue: Option<ThemeHue>,
     ) -> Result<()> {
-        self.configured_explicit_theme_hue = explicit_theme_hue;
-        self.host_terminal_theme_mode = None;
+        self.core.configured_explicit_theme_hue = explicit_theme_hue;
+        self.core.host_terminal_theme_mode = None;
         match explicit_theme_hue {
             Some(hue) => {
                 let mode = HostTerminalThemeMode::from(hue);
-                self.theme_policy = ThemePolicy::Pinned(mode);
+                self.core.theme_policy = ThemePolicy::Pinned(mode);
                 self.apply_theme_mode(mode)
             },
             None => {
-                self.theme_policy = ThemePolicy::Auto;
-                match self.last_host_reported_theme_mode {
+                self.core.theme_policy = ThemePolicy::Auto;
+                match self.core.last_host_reported_theme_mode {
                     Some(mode) => self.apply_theme_mode(mode),
                     None => Ok(()),
                 }

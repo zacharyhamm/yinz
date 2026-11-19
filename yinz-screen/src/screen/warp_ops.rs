@@ -50,13 +50,49 @@ pub(super) const TAB_WARP_SCREEN_RESERVE: std::time::Duration =
 pub(super) const PANE_WARP_SCREEN_RESERVE: std::time::Duration =
     std::time::Duration::from_millis(500);
 
+impl super::WarpController {
+    pub(super) fn has_in_flight_work(&self) -> bool {
+        !self.pending_warps.is_empty()
+            || !self.pending_tab_warps.is_empty()
+            || !self.pending_pane_groups.is_empty()
+            || !self.pending_group_placements.is_empty()
+            || self.in_flight_pane_warps != 0
+            || !self.pending_tab_adoptions.is_empty()
+            || !self.pending_warp_relationships.is_empty()
+    }
+
+    pub(super) fn retain_destination_groups(
+        &mut self,
+        groups: &std::collections::BTreeMap<u32, super::tab_groups::TabGroup>,
+    ) {
+        self.warped_tab_groups
+            .retain(|_, id| groups.contains_key(id));
+    }
+
+    pub(super) fn reject_layout(&mut self, tab_id: TabId, retained: bool, message: &str) {
+        let group_receipt = self
+            .pending_group_placements
+            .remove(&tab_id)
+            .and_then(|(_, _, _, response, _)| response);
+        self.pending_warp_relationships.remove(&tab_id);
+        let tab_receipt = self.pending_tab_adoptions.remove(&tab_id);
+        for receipt in group_receipt.into_iter().chain(tab_receipt) {
+            let _ = receipt.send(if retained {
+                Ok(())
+            } else {
+                Err(anyhow!(message.to_owned()))
+            });
+        }
+    }
+}
+
 impl Screen {
     pub(super) fn restore_held_pane(
         &mut self,
         id: PaneId,
         held: &yinz_types::data::HeldTerminal,
     ) -> bool {
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             if let Some(pane) = tab.get_pane_with_id_mut(id) {
                 // This restores an already-held snapshot; a newly observed exit uses HoldPane.
                 let agent = pane.agent_info().cloned();
@@ -78,6 +114,7 @@ impl Screen {
         let mut held = HashMap::new();
         for id in ids {
             if let Some(pane) = self
+                .core
                 .tabs
                 .values()
                 .find_map(|tab| tab.get_pane_with_id(PaneId::Terminal(*id)))
@@ -90,7 +127,7 @@ impl Screen {
             }
         }
         for id in ids {
-            for tab in self.tabs.values_mut() {
+            for tab in self.core.tabs.values_mut() {
                 if let Some(pane) = tab.get_pane_with_id_mut(PaneId::Terminal(*id)) {
                     pane.set_warp_pending(true);
                 }
@@ -101,6 +138,7 @@ impl Screen {
 
     fn warp_failure(&self, id: TerminalId, reason: String) -> String {
         let pane = self
+            .core
             .tabs
             .values()
             .find_map(|tab| tab.get_pane_with_id(PaneId::Terminal(id)));
@@ -117,6 +155,7 @@ impl Screen {
     fn validate_held_release(&self, id: TerminalId, released: &ReleasedPane) -> Result<(), String> {
         if let ReleasedPane::Held(held) = released {
             let current = self
+                .core
                 .tabs
                 .values()
                 .find_map(|tab| tab.get_pane_with_id(PaneId::Terminal(id)))
@@ -169,7 +208,8 @@ impl Screen {
         // caller that has stopped waiting, so the tab stays where it
         // is and its panes are held and told why — visible, and
         // recoverable — below.
-        if let Some((parked, prepared, deadline)) = self.pending_pane_groups.remove(&tab_index) {
+        if let Some((parked, prepared, deadline)) = self.warp.pending_pane_groups.remove(&tab_index)
+        {
             if Instant::now() < deadline {
                 let result = self
                     .take_released_tab_for_warp(tab_index, released, prepared)
@@ -188,7 +228,8 @@ impl Screen {
                         if matches!(released.pane, ReleasedPane::Held(_)) {
                             continue;
                         }
-                        self.bus
+                        self.core
+                            .bus
                             .senders
                             .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
                                 terminal_id,
@@ -203,7 +244,7 @@ impl Screen {
             self.finish_held_warp(terminal_ids);
             return;
         }
-        let still_waiting = match self.pending_tab_warps.remove(&tab_index) {
+        let still_waiting = match self.warp.pending_tab_warps.remove(&tab_index) {
             Some((_, _, deadline)) if Instant::now() >= deadline => None,
             other => other,
         };
@@ -244,7 +285,8 @@ impl Screen {
                     if matches!(released.pane, ReleasedPane::Held(_)) {
                         continue;
                     }
-                    self.bus
+                    self.core
+                        .bus
                         .senders
                         .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
                             terminal_id,
@@ -284,8 +326,8 @@ impl Screen {
                     ));
                     return Ok(());
                 }
-                if self.pending_pane_groups.contains_key(&tab_index)
-                    || self.pending_tab_warps.contains_key(&tab_index)
+                if self.warp.pending_pane_groups.contains_key(&tab_index)
+                    || self.warp.pending_tab_warps.contains_key(&tab_index)
                 {
                     let _ = response_channel
                         .send(Err("this tab already has a warp in progress".into()));
@@ -322,9 +364,11 @@ impl Screen {
                         return Ok(());
                     },
                 };
-                self.pending_tab_warps
+                self.warp
+                    .pending_tab_warps
                     .insert(tab_index, (response_channel, prepared, deadline));
-                self.bus
+                self.core
+                    .bus
                     .senders
                     .send_to_pty(PtyInstruction::ReleaseTerminalsForWarp {
                         held,
@@ -355,7 +399,7 @@ impl Screen {
         // and a log line as the only record. A caller past its
         // deadline has stopped waiting; the pane stays where it is,
         // held and told why.
-        let still_waiting = match self.pending_warps.remove(&terminal_id) {
+        let still_waiting = match self.warp.pending_warps.remove(&terminal_id) {
             Some((_, deadline)) if Instant::now() >= deadline => None,
             other => other,
         };
@@ -377,7 +421,8 @@ impl Screen {
             if let Ok(released) = released
                 && !matches!(released.pane, ReleasedPane::Held(_))
             {
-                self.bus
+                self.core
+                    .bus
                     .senders
                     .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
                         terminal_id,
@@ -419,7 +464,8 @@ impl Screen {
         );
         let (response_channel, _) = crossbeam::channel::unbounded();
         let (placed, _) = crossbeam::channel::unbounded();
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_pty(PtyInstruction::AdoptTerminal {
                 payload,
@@ -440,10 +486,10 @@ impl Screen {
         placement: WarpPlacement,
         client_id: ClientId,
     ) -> super::ParkedPaneWarp {
-        self.in_flight_pane_warps += 1;
+        self.warp.in_flight_pane_warps += 1;
         super::ParkedPaneWarp {
             response_channel,
-            hold: yinz_bus::warp::PaneWarpHold::new(self.bus.senders.clone()),
+            hold: yinz_bus::warp::PaneWarpHold::new(self.core.bus.senders.clone()),
             placement,
             client_id,
         }
@@ -475,8 +521,8 @@ impl Screen {
                     ));
                     return Ok(());
                 }
-                if self.pending_pane_groups.contains_key(&tab_index)
-                    || self.pending_tab_warps.contains_key(&tab_index)
+                if self.warp.pending_pane_groups.contains_key(&tab_index)
+                    || self.warp.pending_tab_warps.contains_key(&tab_index)
                 {
                     let _ = response_channel
                         .answer(Err("this tab already has a warp in progress".into()));
@@ -504,9 +550,11 @@ impl Screen {
                     },
                 };
                 let parked = self.park_pane_warp(response_channel, placement, client_id);
-                self.pending_pane_groups
+                self.warp
+                    .pending_pane_groups
                     .insert(tab_index, (parked, prepared, deadline));
-                self.bus
+                self.core
+                    .bus
                     .senders
                     .send_to_pty(PtyInstruction::ReleaseTerminalsForWarp {
                         held,
@@ -554,8 +602,11 @@ impl Screen {
                     },
                 };
                 let parked = self.park_pane_warp(response_channel, placement, client_id);
-                self.pending_warps.insert(terminal_id, (parked, deadline));
-                self.bus
+                self.warp
+                    .pending_warps
+                    .insert(terminal_id, (parked, deadline));
+                self.core
+                    .bus
                     .senders
                     .send_to_pty(PtyInstruction::ReleaseTerminalForWarp {
                         held: held.get(&terminal_id).cloned(),
@@ -574,14 +625,17 @@ impl Screen {
     }
 
     fn notify_warp_departure(&mut self, pane_id: PaneId) {
+        self.refresh_agent_worktrees();
+        self.sync_nested_guest_fullscreen_state();
         if let PaneId::Terminal(terminal) = pane_id
-            && let Some(gate) = self.bus.senders.launches.gate(terminal)
+            && let Some(gate) = self.core.bus.senders.launches.gate(terminal)
         {
             gate.departed();
         }
         self.invalidate_agent_lifecycle(pane_id, "warped");
-        self.agent_launches.remove(&pane_id);
-        self.bus
+        self.agents.forget_launch(pane_id);
+        self.core
+            .bus
             .senders
             .send_to_plugin(PluginInstruction::Update(vec![(
                 None,
@@ -601,7 +655,7 @@ impl Screen {
         use crate::tab::{AcceptedPane, ExtractedPanePlacement, SuppressedPane};
         // `_hold` keeps a rollback's source session open until the group is placed.
         let Some((placement, target, client_id, response_channel, _hold)) =
-            self.pending_group_placements.remove(&tab_id)
+            self.warp.pending_group_placements.remove(&tab_id)
         else {
             return Ok(());
         };
@@ -609,10 +663,11 @@ impl Screen {
             if placement == WarpPlacement::NewTab {
                 return Ok(());
             }
-            let Some(target) = target.filter(|id| self.tabs.contains_key(id)) else {
+            let Some(target) = target.filter(|id| self.core.tabs.contains_key(id)) else {
                 return Ok(());
             };
             let source = self
+                .core
                 .tabs
                 .get_mut(&tab_id)
                 .context("missing adopted group tab")?;
@@ -630,6 +685,7 @@ impl Screen {
                 ExtractedPanePlacement::Tiled
             };
             let destination = self
+                .core
                 .tabs
                 .get_mut(&target)
                 .context("missing warp destination")?;
@@ -637,6 +693,7 @@ impl Screen {
                 AcceptedPane::Accepted => {},
                 AcceptedPane::NoRoom(root) => {
                     let source = self
+                        .core
                         .tabs
                         .get_mut(&tab_id)
                         .context("missing group recovery tab")?;
@@ -685,9 +742,7 @@ impl Screen {
         })();
         for pane_id in slots {
             let tab_id = self.tab_containing_pane(*pane_id).map(|tab| tab.id);
-            if let Some(launch) = self.agent_launches.get_mut(pane_id) {
-                launch.tab_id = tab_id;
-            }
+            self.agents.relocate_launch(*pane_id, tab_id);
         }
         if let Some(response_channel) = response_channel {
             let _ = response_channel.send(result);
@@ -706,6 +761,7 @@ impl Screen {
             .or_else(|| self.active_pane_id(client_id))
             .ok_or_else(|| "no pane is focused".to_owned())?;
         let (tab_id, tab) = self
+            .core
             .tabs
             .iter()
             .find(|(_, tab)| tab.get_pane_with_id(pane_id).is_some())
@@ -826,6 +882,7 @@ impl Screen {
         };
 
         let tab = self
+            .core
             .tabs
             .values()
             .find(|tab| tab.get_pane_with_id(pane_id).is_some())
@@ -904,6 +961,7 @@ impl Screen {
         let agent_input = self.warped_agent_input(pane_id);
         let agent_tracking = self.capture_agent_tracking(pane_id);
         let tab = self
+            .core
             .tabs
             .values_mut()
             .find(|tab| tab.get_pane_with_id(pane_id).is_some())
@@ -943,7 +1001,8 @@ impl Screen {
         let removed = tab.extract_warp_panes(&[pane_id]);
         for pane in removed {
             if payload.held.is_some() {
-                self.bus
+                self.core
+                    .bus
                     .senders
                     .send_to_pty(PtyInstruction::CloseDepartedPane(pane.pid()))
                     .non_fatal();
@@ -966,7 +1025,7 @@ impl Screen {
     /// are left for later: which socket each supervisor ended up on, and what was
     /// on each pane's screen once its reader had stopped.
     ///
-    /// `tab_index` is a **stable tab id**, not a display position — `self.tabs` is
+    /// `tab_index` is a **stable tab id**, not a display position — `self.core.tabs` is
     /// keyed by id, and the focused-tab default below reads `active_tab_ids`. The
     /// name is historical; a caller that hands over a position addresses whichever
     /// tab owns that number as an id, which diverges the moment a tab closes.
@@ -978,12 +1037,14 @@ impl Screen {
         let tab_index = match tab_index {
             Some(tab_index) => tab_index,
             None => self
+                .core
                 .active_tab_ids
                 .get(&client_id)
                 .copied()
                 .ok_or_else(|| "no tab is focused".to_owned())?,
         };
         let tab = self
+            .core
             .tabs
             .get(&tab_index)
             .ok_or_else(|| format!("there is no tab {tab_index} in this session"))?;
@@ -1150,7 +1211,8 @@ impl Screen {
                     if let Ok(released) = result
                         && !matches!(released.pane, ReleasedPane::Held(_))
                     {
-                        self.bus
+                        self.core
+                            .bus
                             .senders
                             .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
                                 terminal_id: *terminal_id,
@@ -1195,6 +1257,7 @@ impl Screen {
             })
             .collect();
         let tab = self
+            .core
             .tabs
             .get(&tab_index)
             .ok_or_else(|| format!("tab {tab_index} vanished while it was being released"))?;
@@ -1253,6 +1316,7 @@ impl Screen {
             prepared.floating_panes.iter().map(warped_pane).collect();
 
         let tab = self
+            .core
             .tabs
             .get_mut(&tab_index)
             .ok_or_else(|| "warp tab disappeared".to_owned())?;
@@ -1261,7 +1325,8 @@ impl Screen {
             let id = pane.pid();
             if matches!(id, PaneId::Terminal(t) if addresses.get(&t).is_some_and(|a| a.held.is_some()))
             {
-                self.bus
+                self.core
+                    .bus
                     .senders
                     .send_to_pty(PtyInstruction::CloseDepartedPane(id))
                     .non_fatal();
@@ -1269,7 +1334,8 @@ impl Screen {
             self.notify_warp_departure(id);
             if let PaneId::Plugin(plugin_id) = id {
                 self.drop_quit_notice(plugin_id);
-                self.bus
+                self.core
+                    .bus
                     .senders
                     .send_to_pty(PtyInstruction::ClosePane(id, None))
                     .non_fatal();
@@ -1281,7 +1347,7 @@ impl Screen {
         }
 
         Ok(Box::new(WarpedTab {
-            source_instance_id: (!prepared.pane_group).then(|| self.instance_id.to_string()),
+            source_instance_id: (!prepared.pane_group).then(|| self.core.instance_id.to_string()),
             relationships: prepared.relationships,
             name: prepared.name,
             user_named: prepared.user_named,
@@ -1308,7 +1374,7 @@ impl Screen {
     /// re-homed would leave them in another tab with their supervisors handed away.
     pub(super) fn empty_and_close_tab(&mut self, tab_index: TabId) {
         let mut emptied = vec![];
-        if let Some(tab) = self.tabs.get_mut(&tab_index) {
+        if let Some(tab) = self.core.tabs.get_mut(&tab_index) {
             // Hidden stack-list members first: closing a list's *visible* member
             // promotes a hidden one into the grid, so sweeping the tiled panes
             // while members were still parked would keep handing the sweep panes
@@ -1420,7 +1486,7 @@ impl Screen {
                 },
                 _ => None,
             };
-            if let Some(tab) = tab_id.and_then(|id| self.tabs.get(&id)) {
+            if let Some(tab) = tab_id.and_then(|id| self.core.tabs.get(&id)) {
                 tab.reserve_warp_terminal_state(state)?;
             }
         }
@@ -1428,15 +1494,16 @@ impl Screen {
             payload.agent_input = None;
         }
         if let Some(state) = payload.terminal_state.take() {
-            self.pending_terminal_states.insert(pane_id, state);
+            self.agents.stage_terminal_state(pane_id, state);
             payload.contents = None;
             payload.agent_theme = None;
         }
-        self.pending_agent_tracking.insert(
+        self.agents.stage_transfer_identity(
             pane_id,
             (payload.agent.take(), payload.agent_tracking.take()),
         );
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_screen(ScreenInstruction::NewPane(
                 pane_id,
@@ -1453,14 +1520,16 @@ impl Screen {
         // Checked straight after `NewPane`, before the replayed exit queued below
         // can close the pane legitimately and make it look unplaced.
         if let Some(finish) = finish.take() {
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_screen(ScreenInstruction::AdoptedPaneFinished(finish))
                 .with_context(err_context)?;
         }
 
         if let Some(client_id) = focus_client {
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_screen(ScreenInstruction::FocusPaneWithId(
                     pane_id, false, false, client_id, None,
@@ -1469,7 +1538,8 @@ impl Screen {
         }
 
         if let Some(caption) = payload.caption {
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_screen(ScreenInstruction::SetPaneCaption(pane_id, caption))
                 .with_context(err_context)?;
@@ -1478,7 +1548,7 @@ impl Screen {
         // The transferred screen first, then whatever the supervisor caught during
         // the hand-off, then live output. `NewPane` is ahead of these on the same
         // channel, and `pending_events_waiting_for_pane` would buffer them anyway.
-        let replay = if self.pending_terminal_states.contains_key(&pane_id) {
+        let replay = if self.agents.has_staged_terminal(pane_id) {
             buffered
         } else {
             warp_replay_with_theme(
@@ -1488,11 +1558,13 @@ impl Screen {
                 buffered,
             )
         };
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_screen(ScreenInstruction::PtyBytes(terminal_id, replay))
             .with_context(err_context)?;
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_screen(ScreenInstruction::WarpReplayFinished(terminal_id))
             .with_context(err_context)?;
@@ -1509,32 +1581,28 @@ impl Screen {
             } else {
                 terminal_exit_instruction(pane_id, exit_status, cmd, hold_on_close)
             };
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_screen(instruction)
                 .with_context(err_context)?;
         }
         if request_redraw {
             if let Some(input) = payload.agent_input {
-                self.bus
+                self.core
+                    .bus
                     .senders
                     .send_to_screen(ScreenInstruction::RestoreWarpedAgentInput(pane_id, input))
                     .with_context(err_context)?;
             }
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_screen(ScreenInstruction::RequestPaneRedraw(terminal_id))
                 .context("failed to request redraw for adopted pane")
                 .non_fatal();
         }
         Ok(())
-    }
-
-    pub(super) fn finish_pane_warp(&mut self) {
-        match self.in_flight_pane_warps.checked_sub(1) {
-            Some(remaining) => self.in_flight_pane_warps = remaining,
-            None => log::warn!("a pane warp finished that was never started"),
-        }
     }
 
     /// Runs straight after the `NewPane` that `place_adopted_pane` queued. An
@@ -1550,6 +1618,7 @@ impl Screen {
         } = finish;
         let pane_id = PaneId::Terminal(terminal_id);
         if self
+            .core
             .tabs
             .values()
             .any(|tab| tab.get_pane_with_id(pane_id).is_some())
@@ -1557,9 +1626,9 @@ impl Screen {
             let _ = placed.send(Ok(()));
             return;
         }
-        self.pending_agent_tracking.remove(&pane_id);
-        self.pending_terminal_states.remove(&pane_id);
-        self.bus
+        self.agents.discard_staged_transfer(pane_id);
+        self.core
+            .bus
             .senders
             .send_to_pty(PtyInstruction::GiveBackAdoptedTerminal {
                 terminal_id,
@@ -1590,7 +1659,7 @@ impl Screen {
         should_change_focus_to_new_tab: bool,
     ) -> Result<TabId> {
         let err_context = || "failed to open a tab for an adopted pane".to_string();
-        let default_layout = self.default_layout.clone();
+        let default_layout = self.core.default_layout.clone();
         let tab_index = self.get_new_tab_id();
         let swap_layouts = (
             default_layout.swap_tiled_layouts.clone(),
@@ -1601,10 +1670,11 @@ impl Screen {
         self.assign_tab_group(tab_index, Some(client_id));
         let (mut tiled_panes_layout, floating_panes_layout) = default_layout.new_tab();
         tiled_panes_layout.ignore_run_instruction(invoked_with);
-        if let Some(tab) = self.tabs.get_mut(&tab_index) {
+        if let Some(tab) = self.core.tabs.get_mut(&tab_index) {
             tab.agent_tab_cleanup_allowed = !should_change_focus_to_new_tab;
         }
         let lifetime = self
+            .core
             .tabs
             .get(&tab_index)
             .context("missing new agent tab")?
@@ -1618,6 +1688,7 @@ impl Screen {
                 stack_controller: None,
             });
         let dispatched = self
+            .core
             .bus
             .senders
             .send_to_plugin(PluginInstruction::NewTab(
@@ -1693,10 +1764,10 @@ impl Screen {
         let err_context = || "failed to place an adopted tab".to_string();
         let tab_index = preserved_id.unwrap_or_else(|| self.get_new_tab_id());
         anyhow::ensure!(
-            !self.tabs.contains_key(&tab_index),
+            !self.core.tabs.contains_key(&tab_index),
             "adopted tab ID {tab_index} is occupied"
         );
-        let default_layout = self.default_layout.clone();
+        let default_layout = self.core.default_layout.clone();
         let swap_layouts = (
             default_layout.swap_tiled_layouts.clone(),
             default_layout.swap_floating_layouts.clone(),
@@ -1717,21 +1788,21 @@ impl Screen {
             if !is_rollback {
                 if let Some(id) = source_group
                     .as_ref()
-                    .and_then(|source| self.warped_tab_groups.get(source).copied())
+                    .and_then(|source| self.warp.warped_tab_groups.get(source).copied())
                     .or_else(|| {
-                        self.tab_groups.keys().copied().find(|id| {
+                        self.core.tab_groups.keys().copied().find(|id| {
                             self.tab_group_name(*id).as_deref() == Some(group.name.as_str())
                         })
                     })
                 {
                     group.id = id;
                 } else {
-                    group.id =
-                        u32::try_from(self.next_tab_group_id).context("tab group IDs exhausted")?;
-                    self.next_tab_group_id += 1;
+                    group.id = u32::try_from(self.core.next_tab_group_id)
+                        .context("tab group IDs exhausted")?;
+                    self.core.next_tab_group_id += 1;
                 }
             }
-            if let Some(existing) = self.tab_groups.get(&group.id) {
+            if let Some(existing) = self.core.tab_groups.get(&group.id) {
                 group.name = existing.name.clone();
             }
         }
@@ -1743,16 +1814,17 @@ impl Screen {
         )?;
         self.restore_tab_group(tab_index, &tiled_layout);
         if let (Some(source), Some(group)) = (source_group, &tiled_layout.tab_group) {
-            self.warped_tab_groups.insert(source, group.id);
+            self.warp.warped_tab_groups.insert(source, group.id);
         }
         // A name the tab was born with elsewhere is only a fallback here, as it was there;
         // a rename the user made there still holds.
-        if let Some(tab) = self.tabs.get_mut(&tab_index) {
+        if let Some(tab) = self.core.tabs.get_mut(&tab_index) {
             tab.set_user_named(payload.user_named);
         }
 
         if let Some(relationships) = payload.relationships {
-            self.pending_warp_relationships
+            self.warp
+                .pending_warp_relationships
                 .insert(tab_index, relationships);
         }
         // Set the terminals aside for this tab *before* asking for it. The
@@ -1765,14 +1837,16 @@ impl Screen {
             self.adopted_terminals(payload.tiled_panes, adopted.tiled),
             self.adopted_terminals(payload.floating_panes, adopted.floating),
         );
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_pty(PtyInstruction::ClaimAdoptedTab {
                 tab_index,
                 terminals,
             })
             .with_context(err_context)?;
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_plugin(PluginInstruction::NewTab(
                 None,
@@ -1789,12 +1863,12 @@ impl Screen {
             .with_context(err_context)?;
 
         if let Some(placement) = placement {
-            self.pending_group_placements.insert(
+            self.warp.pending_group_placements.insert(
                 tab_index,
                 (placement, target, client_id, response_channel, hold),
             );
         } else if let Some(response) = response_channel {
-            self.pending_tab_adoptions.insert(tab_index, response);
+            self.warp.pending_tab_adoptions.insert(tab_index, response);
         }
 
         Ok(())
@@ -1818,7 +1892,7 @@ impl Screen {
                 if pane.agent_tracking.is_some() {
                     pane.agent_input = None;
                 }
-                self.pending_agent_tracking.insert(
+                self.agents.stage_transfer_identity(
                     PaneId::Terminal(adopted.terminal_id),
                     (pane.agent.take(), pane.agent_tracking.take()),
                 );
@@ -1826,8 +1900,8 @@ impl Screen {
                 // caught during the hand-off — the same order a single adopted
                 // pane is replayed in, and the same order it happened in.
                 let replay = if let Some(state) = pane.terminal_state.take() {
-                    self.pending_terminal_states
-                        .insert(PaneId::Terminal(adopted.terminal_id), state);
+                    self.agents
+                        .stage_terminal_state(PaneId::Terminal(adopted.terminal_id), state);
                     adopted.buffered
                 } else {
                     warp_replay_with_theme(
@@ -1923,5 +1997,14 @@ pub(super) fn capture_terminal_for_warp(
                 pane.current_title()
             )),
         ),
+    }
+}
+
+impl crate::screen::WarpController {
+    pub(in crate::screen) fn finish_pane_warp(&mut self) {
+        match self.in_flight_pane_warps.checked_sub(1) {
+            Some(remaining) => self.in_flight_pane_warps = remaining,
+            None => log::warn!("a pane warp finished that was never started"),
+        }
     }
 }

@@ -47,13 +47,13 @@ impl Screen {
         mut completion_tx: Option<NotificationEnd>,
     ) -> Result<()> {
         let swap_layouts = (
-            self.default_layout.swap_tiled_layouts.clone(),
-            self.default_layout.swap_floating_layouts.clone(),
+            self.core.default_layout.swap_tiled_layouts.clone(),
+            self.core.default_layout.swap_floating_layouts.clone(),
         );
         let client_id = match client_id {
             None => None,
-            Some(client_id) if self.active_tab_ids.contains_key(&client_id) => Some(client_id),
-            Some(_) => self.active_tab_ids.keys().next().copied(),
+            Some(client_id) if self.core.active_tab_ids.contains_key(&client_id) => Some(client_id),
+            Some(_) => self.core.active_tab_ids.keys().next().copied(),
         };
         if let Some(client_id) = client_id
             && let Ok(tab_exists) = self.go_to_tab_name(tab_name.clone(), client_id)
@@ -61,7 +61,7 @@ impl Screen {
             self.render()?;
             if tab_exists {
                 // Tab already exists - find its ID and set in completion
-                if let Some(existing_tab) = self.tabs.values().find(|t| t.name == tab_name)
+                if let Some(existing_tab) = self.core.tabs.values().find(|t| t.name == tab_name)
                     && let Some(c) = completion_tx.as_mut()
                 {
                     c.set_affected_tab_id(existing_tab.id)
@@ -73,21 +73,24 @@ impl Screen {
                 // The name was typed in the command that asked for the tab.
                 let user_named = !tab_name.is_empty();
                 self.new_tab(tab_index, swap_layouts, Some(tab_name), Some(client_id))?;
-                if let Some(tab) = self.tabs.get_mut(&tab_index) {
+                if let Some(tab) = self.core.tabs.get_mut(&tab_index) {
                     tab.set_user_named(user_named);
                 }
-                self.bus.senders.send_to_plugin(PluginInstruction::NewTab(
-                    None,
-                    default_shell,
-                    None,
-                    None,
-                    tab_index,
-                    None,  // initial_panes
-                    false, // block_on_first_terminal
-                    should_change_focus_to_new_tab,
-                    client_id,
-                    completion_tx,
-                ))?;
+                self.core
+                    .bus
+                    .senders
+                    .send_to_plugin(PluginInstruction::NewTab(
+                        None,
+                        default_shell,
+                        None,
+                        None,
+                        tab_index,
+                        None,  // initial_panes
+                        false, // block_on_first_terminal
+                        should_change_focus_to_new_tab,
+                        client_id,
+                        completion_tx,
+                    ))?;
                 return Ok(()); // so we don't get to the completion signalling below
             }
         }
@@ -118,9 +121,10 @@ impl Screen {
             None
         };
         let resolved_swap_layouts = (
-            swap_tiled_layouts.unwrap_or_else(|| self.default_layout.swap_tiled_layouts.clone()),
+            swap_tiled_layouts
+                .unwrap_or_else(|| self.core.default_layout.swap_tiled_layouts.clone()),
             swap_floating_layouts
-                .unwrap_or_else(|| self.default_layout.swap_floating_layouts.clone()),
+                .unwrap_or_else(|| self.core.default_layout.swap_floating_layouts.clone()),
         );
         self.new_tab(
             tab_index,
@@ -133,21 +137,24 @@ impl Screen {
             self.restore_tab_group(tab_index, layout);
         }
         let user_named = Screen::tab_name_is_users(tab_name.as_deref(), layout.as_ref());
-        if let Some(tab) = self.tabs.get_mut(&tab_index) {
+        if let Some(tab) = self.core.tabs.get_mut(&tab_index) {
             tab.set_user_named(user_named);
         }
-        self.bus.senders.send_to_plugin(PluginInstruction::NewTab(
-            cwd,
-            default_shell,
-            layout,
-            (!floating_panes_layout.is_empty()).then_some(floating_panes_layout),
-            tab_index,
-            initial_panes,
-            block_on_first_terminal,
-            should_change_focus_to_new_tab,
-            client_id,
-            completion_tx,
-        ))?;
+        self.core
+            .bus
+            .senders
+            .send_to_plugin(PluginInstruction::NewTab(
+                cwd,
+                default_shell,
+                layout,
+                (!floating_panes_layout.is_empty()).then_some(floating_panes_layout),
+                tab_index,
+                initial_panes,
+                block_on_first_terminal,
+                should_change_focus_to_new_tab,
+                client_id,
+                completion_tx,
+            ))?;
         Ok(())
     }
 
@@ -196,7 +203,7 @@ impl Screen {
                 (id, layout)
             })
             .collect();
-        let mut tabs_to_close: HashSet<TabId> = self.tabs.keys().copied().collect();
+        let mut tabs_to_close: HashSet<TabId> = self.core.tabs.keys().copied().collect();
         let mut processed_tab_layouts = Vec::new();
         for (tab_id, mut layout) in tab_layouts {
             let tab_id = match tab_id {
@@ -219,6 +226,7 @@ impl Screen {
             };
             tabs_to_close.remove(&tab_id);
             let tab = self
+                .core
                 .tabs
                 .get_mut(&tab_id)
                 .context("override tab is missing")?;
@@ -233,7 +241,8 @@ impl Screen {
             processed_tab_layouts.push((tab_id, layout));
         }
 
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_plugin(PluginInstruction::OverrideLayout(
                 cwd,
@@ -253,7 +262,7 @@ impl Screen {
     }
 
     pub(super) fn get_new_tab_id(&self) -> TabId {
-        if let Some(id) = self.tabs.keys().last() {
+        if let Some(id) = self.core.tabs.keys().last() {
             TabId::new(id.get() + 1)
         } else {
             TabId::new(0)
@@ -264,12 +273,12 @@ impl Screen {
     ///
     /// Use this when you have a tab ID from active_tab_ids, tab_history, or tab.id.
     pub(super) fn get_tab_by_id(&self, id: TabId) -> Option<&Tab> {
-        self.tabs.get(&id)
+        self.core.tabs.get(&id)
     }
 
     /// Gets a mutable tab by its stable ID (BTreeMap key).
     pub(super) fn get_tab_by_id_mut(&mut self, id: TabId) -> Option<&mut Tab> {
-        self.tabs.get_mut(&id)
+        self.core.tabs.get_mut(&id)
     }
 
     /// Whether any tab is still waiting for its layout to land. A tab is pending from its
@@ -278,7 +287,7 @@ impl Screen {
     /// tabs themselves, so a tab made off the `NewTab` instruction - for a warped or an agent
     /// pane - counts too, and a pending tab closed before its layout lands stops counting.
     pub(super) fn has_pending_tabs(&self) -> bool {
-        self.tabs.values().any(Tab::is_pending)
+        self.core.tabs.values().any(Tab::is_pending)
     }
 
     /// Gets the tab holding `pane_id`, if any.
@@ -287,9 +296,7 @@ impl Screen {
     /// the screen thread; before this existed it was spelled out as a `for` loop over
     /// `has_pane_with_pid` at eighty-odd sites.
     pub(super) fn tab_containing_pane(&self, pane_id: PaneId) -> Option<&Tab> {
-        self.tabs
-            .values()
-            .find(|tab| tab.has_pane_with_pid(&pane_id))
+        self.core.tab_containing_pane(pane_id)
     }
 
     /// The stable id of the tab holding `pane_id`.
@@ -305,9 +312,7 @@ impl Screen {
 
     /// The mutable half of [`Screen::tab_containing_pane`].
     pub(super) fn tab_containing_pane_mut(&mut self, pane_id: PaneId) -> Option<&mut Tab> {
-        self.tabs
-            .values_mut()
-            .find(|tab| tab.has_pane_with_pid(&pane_id))
+        self.core.tab_containing_pane_mut(pane_id)
     }
 
     /// The tab holding `pane_id` as an overlay, if any.
@@ -317,11 +322,15 @@ impl Screen {
     /// `suppressed_panes`, and running an overlay through the second would drop the kind and
     /// coordinates that make it one.
     pub(super) fn tab_containing_overlay(&self, pane_id: PaneId) -> Option<&Tab> {
-        self.tabs.values().find(|tab| tab.pane_is_overlay(pane_id))
+        self.core
+            .tabs
+            .values()
+            .find(|tab| tab.pane_is_overlay(pane_id))
     }
 
     pub(super) fn tab_containing_overlay_mut(&mut self, pane_id: PaneId) -> Option<&mut Tab> {
-        self.tabs
+        self.core
+            .tabs
             .values_mut()
             .find(|tab| tab.pane_is_overlay(pane_id))
     }
@@ -341,7 +350,7 @@ impl Screen {
 
     /// Gets a mutable tab by its display position (0-based).
     pub(super) fn get_tab_by_position_mut(&mut self, position: TabPosition) -> Option<&mut Tab> {
-        self.tabs.values_mut().find(|t| t.position == position)
+        self.core.tabs.values_mut().find(|t| t.position == position)
     }
 
     /// Gets any one tab, for operations that need *a* tab rather than a specific one.
@@ -349,14 +358,15 @@ impl Screen {
     /// This is the lowest-id tab, which is not necessarily the leftmost one. Callers
     /// that want the leftmost tab want `get_tab_by_position_mut(0)`.
     pub fn first_tab_mut(&mut self) -> Option<&mut Tab> {
-        self.tabs.values_mut().next()
+        self.core.tabs.values_mut().next()
     }
 
     /// Gets the stable ID of the tab at the given display position.
     ///
     /// Use this to convert position → ID for BTreeMap lookups.
     pub(super) fn get_tab_id_at_position(&self, position: TabPosition) -> Option<TabId> {
-        self.tabs
+        self.core
+            .tabs
             .values()
             .find(|t| t.position == position)
             .map(|t| t.id)
@@ -366,7 +376,7 @@ impl Screen {
     ///
     /// Use this to convert ID → position for user-facing operations.
     pub(super) fn get_tab_position_by_id(&self, id: TabId) -> Option<TabPosition> {
-        self.tabs.get(&id).map(|t| t.position)
+        self.core.tabs.get(&id).map(|t| t.position)
     }
 
     fn move_clients_from_closed_tab(
@@ -375,7 +385,7 @@ impl Screen {
     ) -> Result<()> {
         let err_context = || "failed to move clients from closed tab".to_string();
 
-        if self.tabs.is_empty() {
+        if self.core.tabs.is_empty() {
             Err::<(), _>(anyhow!(
                 "No tabs left, cannot move clients: {:?} from closed tab",
                 client_ids_and_mode_infos
@@ -386,10 +396,11 @@ impl Screen {
             return Ok(());
         }
         let first_tab_index = self
+            .core
             .tabs
             .values()
             .find(|tab| !tab.is_pending() && tab.has_selectable_panes())
-            .or_else(|| self.tabs.values().find(|tab| !tab.is_pending()))
+            .or_else(|| self.core.tabs.values().find(|tab| !tab.is_pending()))
             .map(|tab| tab.id)
             .context("screen contained no tabs")
             .with_context(err_context)?;
@@ -399,11 +410,12 @@ impl Screen {
             // only once a tab has actually taken the client: the two have to agree, and a client
             // pointed at a tab that did not take it receives no frames and reaches nothing.
             let group_destination = self.closed_tab_group_destination(client_id);
-            let client_tab_history = self.tab_history.entry(client_id).or_default();
+            let client_tab_history = self.core.tab_history.entry(client_id).or_default();
             let previous_tab = group_destination
                 .or_else(|| client_tab_history.pop())
                 .filter(|id| {
-                    self.tabs
+                    self.core
+                        .tabs
                         .get(id)
                         .is_some_and(|tab| !tab.is_pending() && tab.has_selectable_panes())
                 });
@@ -413,7 +425,7 @@ impl Screen {
             let mode_info = Some(client_mode_info);
             let mut landed = false;
             for candidate in candidates {
-                let Some(tab) = self.tabs.get_mut(&candidate) else {
+                let Some(tab) = self.core.tabs.get_mut(&candidate) else {
                     continue;
                 };
                 if tab.is_pending() {
@@ -439,14 +451,15 @@ impl Screen {
                 // Nothing took it, so leaving a stale entry behind would strand it. Dropped
                 // instead: `Screen::add_client` rebuilds the mapping from scratch on a reattach.
                 log::error!("no tab would take client {client_id} from the closed tab");
-                self.active_tab_ids.remove(&client_id);
+                self.core.active_tab_ids.remove(&client_id);
+                self.active_tabs_changed();
             }
         }
         // The plugins in a tab a client just landed in last heard about that client's
         // mode when it left, if ever - `update_input_modes` only covers the connected
         // clients, and the ones that just arrived were not among them until now.
         for destination_tab_id in destination_tab_ids {
-            if let Some(destination_tab) = self.tabs.get_mut(&destination_tab_id) {
+            if let Some(destination_tab) = self.core.tabs.get_mut(&destination_tab_id) {
                 destination_tab
                     .update_input_modes()
                     .with_context(err_context)?;
@@ -466,14 +479,16 @@ impl Screen {
     ) -> Result<()> {
         let err_context = || "Failed to move suppressed panes from closed tab";
         let first_tab_index = self
+            .core
             .tabs
             .values()
             .find(|tab| !tab.is_pending() && tab.has_selectable_panes())
-            .or_else(|| self.tabs.values().find(|tab| !tab.is_pending()))
+            .or_else(|| self.core.tabs.values().find(|tab| !tab.is_pending()))
             .map(|tab| tab.id)
             .context("screen contains no tabs")
             .with_context(err_context)?;
         let destination = self
+            .core
             .tabs
             .get_mut(&first_tab_index)
             .with_context(err_context)?;
@@ -521,16 +536,23 @@ impl Screen {
             return;
         }
         let destination_tab_id = client
-            .and_then(|client_id| self.active_tab_ids.get(&client_id).copied())
-            .filter(|tab_id| self.tabs.get(tab_id).is_some_and(|tab| !tab.is_pending()))
+            .and_then(|client_id| self.core.active_tab_ids.get(&client_id).copied())
+            .filter(|tab_id| {
+                self.core
+                    .tabs
+                    .get(tab_id)
+                    .is_some_and(|tab| !tab.is_pending())
+            })
             .or_else(|| {
-                self.tabs
+                self.core
+                    .tabs
                     .values()
                     .find(|tab| !tab.is_pending() && tab.has_selectable_panes())
                     .map(|tab| tab.id)
             })
             .or_else(|| {
-                self.tabs
+                self.core
+                    .tabs
                     .values()
                     .find(|tab| !tab.is_pending())
                     .map(|tab| tab.id)
@@ -569,9 +591,14 @@ impl Screen {
         client: ClientId,
         destination: TabId,
     ) -> TabTransition {
-        let source = self.active_tab_ids.get(&client).copied();
-        let affected: Vec<_> = if self.session_is_mirrored {
-            self.connected_clients.borrow().iter().copied().collect()
+        let source = self.core.active_tab_ids.get(&client).copied();
+        let affected: Vec<_> = if self.core.session_is_mirrored {
+            self.core
+                .connected_clients
+                .borrow()
+                .iter()
+                .copied()
+                .collect()
         } else {
             vec![client]
         };
@@ -580,9 +607,9 @@ impl Screen {
             .map(|id| (*id, self.get_active_pane_id(id)))
             .collect();
         let clients = source
-            .and_then(|source| self.tabs.get_mut(&source))
+            .and_then(|source| self.core.tabs.get_mut(&source))
             .map(|tab| {
-                let clients = tab.drain_connected_clients(if self.session_is_mirrored {
+                let clients = tab.drain_connected_clients(if self.core.session_is_mirrored {
                     None
                 } else {
                     Some(vec![client])
@@ -597,7 +624,7 @@ impl Screen {
         // Leave the shared overlay with any remaining viewers. After the last client detaches,
         // it can follow without carrying the departing clients' keyboard focus.
         let overlay = source
-            .and_then(|source| self.tabs.get(&source))
+            .and_then(|source| self.core.tabs.get(&source))
             .filter(|tab| tab.has_no_connected_clients())
             .and_then(|tab| {
                 tab.pane_tabs_infos().find(|info| {
@@ -607,8 +634,8 @@ impl Screen {
                             .is_some_and(|pane| !pane.is_suppressed)
                 })
             });
-        if let Some(info) =
-            overlay.filter(|_| source != Some(destination) && self.tabs.contains_key(&destination))
+        if let Some(info) = overlay
+            .filter(|_| source != Some(destination) && self.core.tabs.contains_key(&destination))
         {
             self.break_multiple_panes_to_tab_with_id(
                 vec![info.pane_id],
@@ -619,7 +646,7 @@ impl Screen {
             .context("failed to move overlay tab group")
             .non_fatal();
         }
-        if clients.is_some() || self.session_is_mirrored {
+        if clients.is_some() || self.core.session_is_mirrored {
             for id in affected {
                 self.update_client_tab_focus(id, destination);
             }
@@ -638,6 +665,7 @@ impl Screen {
     ) -> Result<()> {
         if let Some(clients) = transition.clients.take() {
             let tab = self
+                .core
                 .tabs
                 .get_mut(&transition.destination)
                 .context("failed to find destination tab")?;
@@ -660,29 +688,37 @@ impl Screen {
         Ok(())
     }
 
+    pub(super) fn active_tabs_changed(&mut self) {
+        self.dismiss_stale_command_palettes();
+        self.assign_permission_modals();
+        self.permission_surfaces_changed();
+    }
+
     pub(super) fn update_client_tab_focus(&mut self, client_id: ClientId, new_tab_index: TabId) {
         if let Some(group) = self
+            .core
             .tab_group_ids
             .get(&new_tab_index)
-            .and_then(|id| self.tab_groups.get_mut(id))
+            .and_then(|id| self.core.tab_groups.get_mut(id))
         {
             group.preferred = Some(new_tab_index);
         }
-        match self.active_tab_ids.remove(&client_id) {
+        match self.core.active_tab_ids.remove(&client_id) {
             Some(old_active_index) => {
-                self.active_tab_ids.insert(client_id, new_tab_index);
+                self.core.active_tab_ids.insert(client_id, new_tab_index);
                 if old_active_index != new_tab_index {
                     self.close_command_palette(client_id);
                     self.repaint_after_leaving_tab(client_id, old_active_index, new_tab_index);
                 }
-                let client_tab_history = self.tab_history.entry(client_id).or_default();
+                let client_tab_history = self.core.tab_history.entry(client_id).or_default();
                 client_tab_history.retain(|&e| e != new_tab_index);
                 client_tab_history.push(old_active_index);
             },
             None => {
-                self.active_tab_ids.insert(client_id, new_tab_index);
+                self.core.active_tab_ids.insert(client_id, new_tab_index);
             },
         }
+        self.active_tabs_changed();
         self.clear_bell_for_focused_pane(client_id);
     }
 
@@ -706,11 +742,12 @@ impl Screen {
         entered_tab_id: TabId,
     ) {
         let left_tab_painted_outside_viewport = self
+            .core
             .tabs
             .get(&left_tab_id)
             .is_some_and(|tab| tab.has_floating_panes_outside_viewport());
-        let client_size = self.client_sizes.get(&client_id).copied();
-        let Some(tab) = self.tabs.get_mut(&entered_tab_id) else {
+        let client_size = self.core.client_sizes.get(&client_id).copied();
+        let Some(tab) = self.core.tabs.get_mut(&entered_tab_id) else {
             return;
         };
         let tab_size = tab.get_display_area();
@@ -737,7 +774,12 @@ impl Screen {
                 .context("failed to size tab for arriving client")
                 .non_fatal();
         }
-        if let Some(tab) = self.tabs.values_mut().find(|tab| tab.position == position) {
+        if let Some(tab) = self
+            .core
+            .tabs
+            .values_mut()
+            .find(|tab| tab.position == position)
+        {
             let recovered = match tab
                 .recover_suppressed_terminal_for_navigation(client_id)
                 .context("failed to recover hidden terminal on tab navigation")
@@ -789,7 +831,7 @@ impl Screen {
         )
         };
 
-        if let Some(new_tab) = self.tabs.values().find(|t| t.position == new_tab_pos) {
+        if let Some(new_tab) = self.core.tabs.values().find(|t| t.position == new_tab_pos) {
             match self.get_active_tab(client_id) {
                 Ok(current_tab) => {
                     // If new active tab is same as the current one, do nothing.
@@ -801,7 +843,7 @@ impl Screen {
                     let new_tab_index = new_tab.id;
                     let destination_focus =
                         if matches!(pane_to_focus, Some(TabSwitchPaneFocus::Notification { .. }))
-                            && !self.session_is_mirrored
+                            && !self.core.session_is_mirrored
                         {
                             self.notification_tab_focus(new_tab_index)
                         } else {
@@ -833,15 +875,16 @@ impl Screen {
                         },
                         None => {},
                     }
-                    if update_mode_infos && let Some(tab) = self.tabs.get_mut(&new_tab_index) {
+                    if update_mode_infos && let Some(tab) = self.core.tabs.get_mut(&new_tab_index) {
                         tab.update_input_modes().with_context(err_context)?;
                     }
 
                     // Clear tab bell notification for the newly active tab
-                    if let Some(new_tab) = self.tabs.get_mut(&new_tab_index) {
+                    if let Some(new_tab) = self.core.tabs.get_mut(&new_tab_index) {
                         let tab_id = new_tab.id;
                         new_tab.clear_tab_bell_notification();
                         let _ = self
+                            .core
                             .bus
                             .senders
                             .send_to_background_jobs(BackgroundJob::StopFlashTabBell(tab_id));
@@ -885,7 +928,7 @@ impl Screen {
         name: String,
         client_id: ClientId,
     ) -> Result<bool> {
-        match self.tabs.values().find(|t| t.name == name) {
+        match self.core.tabs.values().find(|t| t.name == name) {
             Some(new_tab) => {
                 self.navigate_to_tab(new_tab.position, None, true, client_id)?;
                 Ok(true)
@@ -979,49 +1022,59 @@ impl Screen {
             return Ok(());
         }
         let err_context = "failed to settle tabs";
-        for (client, tab_id) in &self.active_tab_ids {
-            if let Some(tab) = self.tabs.get_mut(tab_id) {
+        for (client, tab_id) in &self.core.active_tab_ids {
+            if let Some(tab) = self.core.tabs.get_mut(tab_id) {
                 tab.ensure_selectable_focus(*client).context(err_context)?;
             }
         }
         let usable: Vec<TabId> = self
+            .core
             .tabs
             .values()
             .filter(|tab| {
                 !tab.is_pending()
                     && tab.has_selectable_panes()
-                    && !self.deferred_tab_closes.contains(&tab.id)
+                    && !self.core.deferred_tab_closes.contains(&tab.id)
             })
             .map(|tab| tab.id)
             .collect();
-        if usable.is_empty() && self.in_flight_pane_warps > 0 {
+        if usable.is_empty() && self.warp.in_flight_pane_warps > 0 {
             return Ok(());
         }
-        let another_destination = usable.iter().any(|id| Some(*id) != self.replacement_tab);
+        let another_destination = usable
+            .iter()
+            .any(|id| Some(*id) != self.core.replacement_tab);
         let doomed: Vec<TabId> = self
+            .core
             .tabs
             .values()
             .filter(|tab| {
                 !tab.is_pending()
-                    && !self.pending_arrangement.as_ref().is_some_and(|pending| {
-                        pending.destinations.values().any(|id| *id == tab.id)
-                    })
-                    && (self.deferred_tab_closes.contains(&tab.id)
+                    && !self
+                        .core
+                        .pending_arrangement
+                        .as_ref()
+                        .is_some_and(|pending| {
+                            pending.destinations.values().any(|id| *id == tab.id)
+                        })
+                    && (self.core.deferred_tab_closes.contains(&tab.id)
                         || (!tab.agent_tab_waiting_for_pane
                             && !tab.has_selectable_panes()
                             && (!tab.has_live_terminal()
                                 || usable.is_empty()
-                                || (self.replacement_pending && !another_destination))))
+                                || (self.core.replacement_pending && !another_destination))))
             })
             .map(|tab| tab.id)
             .collect();
         // Relocate clients from retained hidden-work tabs. Teardown uses tab history for closing tabs.
         if let Some(destination) = usable.first().copied() {
             let stranded: Vec<_> = self
+                .core
                 .active_tab_ids
                 .iter()
                 .filter_map(|(client, id)| {
-                    self.tabs
+                    self.core
+                        .tabs
                         .get(id)
                         .filter(|tab| {
                             !tab.is_pending() && !tab.has_selectable_panes() && !doomed.contains(id)
@@ -1030,13 +1083,13 @@ impl Screen {
                 })
                 .collect();
             for client in stranded {
-                let position = self.tabs[&destination].position;
+                let position = self.core.tabs[&destination].position;
                 self.switch_active_tab(position, None, true, client)
                     .context(err_context)?;
             }
         }
         if doomed.is_empty() {
-            self.replacement_pending = false;
+            self.core.replacement_pending = false;
             return Ok(());
         }
         if usable.is_empty() {
@@ -1044,29 +1097,29 @@ impl Screen {
             if self.has_pending_tabs() {
                 return Ok(());
             }
-            if self.replacement_pending && self.replacement_tab.is_some() {
+            if self.core.replacement_pending && self.core.replacement_tab.is_some() {
                 // A layout with no usable pane must not cause an endless spawn loop.
-                self.replacement_pending = false;
+                self.core.replacement_pending = false;
             } else if self.quit_is_guarded() {
-                if let Some(client_id) = self.active_tab_ids.keys().copied().min() {
+                if let Some(client_id) = self.core.active_tab_ids.keys().copied().min() {
                     self.open_replacement_tab(client_id).context(err_context)?;
                 }
                 return Ok(());
             }
         }
-        let confirm = self.replacement_pending && !another_destination;
+        let confirm = self.core.replacement_pending && !another_destination;
         // A client can detach while its replacement loads; keep the confirmation for reattach.
-        if confirm && self.quit_is_guarded() && self.active_tab_ids.is_empty() {
+        if confirm && self.quit_is_guarded() && self.core.active_tab_ids.is_empty() {
             return Ok(());
         }
-        self.replacement_pending = false;
+        self.core.replacement_pending = false;
         for tab_id in doomed {
             self.teardown_tab(tab_id, !usable.is_empty(), None)
                 .context(err_context)?;
         }
         if confirm
             && self.quit_is_guarded()
-            && let Some(client_id) = self.active_tab_ids.keys().copied().min()
+            && let Some(client_id) = self.core.active_tab_ids.keys().copied().min()
         {
             self.confirm_quit(client_id, true, None)
                 .context(err_context)
@@ -1082,18 +1135,19 @@ impl Screen {
         let err_context = || format!("failed to open a replacement tab for client {client_id}");
         let tab_id = self.get_new_tab_id();
         let swap_layouts = (
-            self.default_layout.swap_tiled_layouts.clone(),
-            self.default_layout.swap_floating_layouts.clone(),
+            self.core.default_layout.swap_tiled_layouts.clone(),
+            self.core.default_layout.swap_floating_layouts.clone(),
         );
         self.new_tab(tab_id, swap_layouts, None, Some(client_id))
             .with_context(err_context)?;
-        self.replacement_tab = Some(tab_id);
-        self.replacement_pending = true;
-        self.bus
+        self.core.replacement_tab = Some(tab_id);
+        self.core.replacement_pending = true;
+        self.core
+            .bus
             .senders
             .send_to_plugin(PluginInstruction::NewTab(
                 None,
-                self.default_shell_action.clone(),
+                self.core.default_shell_action.clone(),
                 None,
                 None,
                 tab_id,
@@ -1123,14 +1177,14 @@ impl Screen {
         if tab.stands_in_for_a_pane(pane_id).is_some() {
             return None;
         }
-        if Some(tab.id) != self.replacement_tab && tab.multipane_info(pane_id).is_none() {
+        if Some(tab.id) != self.core.replacement_tab && tab.multipane_info(pane_id).is_none() {
             return None;
         }
         if !matches!(pane_id, PaneId::Terminal(_)) || !tab.has_pane_with_pid(&pane_id) {
             return None;
         }
         tab.pane_run_command(pane_id)
-            .or_else(|| match &self.default_shell_action {
+            .or_else(|| match &self.core.default_shell_action {
                 Some(TerminalAction::RunCommand(command)) => Some(command.clone()),
                 _ => Some(RunCommand {
                     command: crate::pty::get_default_shell(),
@@ -1144,14 +1198,14 @@ impl Screen {
         tab_id: TabId,
         client_id: Option<ClientId>,
     ) -> Result<()> {
-        if !self.tabs.contains_key(&tab_id) {
+        if !self.core.tabs.contains_key(&tab_id) {
             return Ok(());
         }
         let client_id = client_id.or_else(|| self.get_first_client_id());
-        let has_destination = self
-            .tabs
-            .values()
-            .any(|other| other.id != tab_id && !other.is_pending() && other.has_selectable_panes());
+        let has_destination =
+            self.core.tabs.values().any(|other| {
+                other.id != tab_id && !other.is_pending() && other.has_selectable_panes()
+            });
         if !has_destination {
             if self.quit_is_guarded() {
                 if let Some(client_id) = client_id {
@@ -1160,7 +1214,7 @@ impl Screen {
                 return Ok(());
             }
             if self.has_pending_tabs() {
-                self.deferred_tab_closes.insert(tab_id);
+                self.core.deferred_tab_closes.insert(tab_id);
                 return Ok(());
             }
         }
@@ -1170,14 +1224,19 @@ impl Screen {
     pub(super) fn close_tab_by_id(&mut self, tab_id: TabId) -> Result<()> {
         // Keep clients and preserved panes attached until relocation has a loaded destination.
         // Pending sources still close immediately so failed layouts cannot block settlement.
-        if self.tabs.get(&tab_id).is_some_and(|tab| !tab.is_pending())
-            && self.tabs.len() > 1
+        if self
+            .core
+            .tabs
+            .get(&tab_id)
+            .is_some_and(|tab| !tab.is_pending())
+            && self.core.tabs.len() > 1
             && self
+                .core
                 .tabs
                 .values()
                 .all(|tab| tab.id == tab_id || tab.is_pending())
         {
-            self.deferred_tab_closes.insert(tab_id);
+            self.core.deferred_tab_closes.insert(tab_id);
             return Ok(());
         }
         self.teardown_tab(tab_id, false, None)
@@ -1192,16 +1251,18 @@ impl Screen {
         let err_context = || format!("failed to close tab at index {tab_id:?}");
 
         if self
+            .core
             .pending_arrangement
             .as_ref()
             .is_some_and(|pending| pending.destinations.values().any(|id| *id == tab_id))
         {
-            self.pending_arrangement = None;
+            self.core.pending_arrangement = None;
             self.arrangement_notice(
                 "Arrange panes: destination closed; arrangement cancelled".into(),
             );
         }
         let closing_panes = self
+            .core
             .tabs
             .get(&tab_id)
             .map(|tab| tab.get_all_pane_ids())
@@ -1209,29 +1270,31 @@ impl Screen {
         for pane in closing_panes {
             self.retain_closed_agent(pane, std::time::Instant::now());
         }
-        let mut tab_to_close = self.tabs.remove(&tab_id).with_context(err_context)?;
-        self.tabs_needing_reflow.remove(&tab_id);
-        if self.departed_followed_tab_id == Some(tab_id) {
-            self.departed_followed_tab_id = self.tabs.keys().next().copied();
-            for watcher in self.watcher_clients.values_mut() {
+        let mut tab_to_close = self.core.tabs.remove(&tab_id).with_context(err_context)?;
+        self.core.tabs_needing_reflow.remove(&tab_id);
+        if self.core.departed_followed_tab_id == Some(tab_id) {
+            self.core.departed_followed_tab_id = self.core.tabs.keys().next().copied();
+            for watcher in self.core.watcher_clients.values_mut() {
                 watcher.set_force_render();
             }
         }
-        self.deferred_tab_closes.remove(&tab_id);
+        self.core.deferred_tab_closes.remove(&tab_id);
         // An adopted group whose tab closes before its layout applied is never
         // placed. Dropping the entry releases its warp hold.
-        if let Some((_, _, _, Some(response), _)) = self.pending_group_placements.remove(&tab_id) {
+        if let Some((_, _, _, Some(response), _)) =
+            self.warp.pending_group_placements.remove(&tab_id)
+        {
             let _ = response.send(Err(anyhow!(
                 "the tab for the adopted panes closed before they were placed"
             )));
         }
-        if let Some(response) = self.pending_tab_adoptions.remove(&tab_id) {
+        if let Some(response) = self.warp.pending_tab_adoptions.remove(&tab_id) {
             let _ = response.send(Err(anyhow!("the adopted tab closed before placement")));
         }
-        self.pending_warp_relationships.remove(&tab_id);
+        self.warp.pending_warp_relationships.remove(&tab_id);
         // Overlays keep their placement through the existing overlay relocation path.
         if preserve_guards {
-            for (&plugin_id, notice) in &self.quit_notices {
+            for (&plugin_id, notice) in &self.core.quit_notices {
                 let id = PaneId::Plugin(plugin_id);
                 if notice.guard && tab_to_close.overlay_placement_for(id).is_none() {
                     tab_to_close.suppress_pane(id, None);
@@ -1262,12 +1325,12 @@ impl Screen {
         // Only when a tab survives: with none left the session is ending anyway (see the
         // `Render(None)` below), and an overlay extracted with nowhere to go would be a plugin
         // left running with no pane and nothing told about it.
-        let mut overlay_panes = match self.tabs.is_empty() {
+        let mut overlay_panes = match self.core.tabs.is_empty() {
             true => vec![],
             false => tab_to_close.extract_overlay_panes(),
         };
         if preserve_guards {
-            for (&plugin_id, notice) in &self.quit_notices {
+            for (&plugin_id, notice) in &self.core.quit_notices {
                 let id = PaneId::Plugin(plugin_id);
                 if notice.guard
                     && tab_to_close.pane_is_overlay(id)
@@ -1281,7 +1344,7 @@ impl Screen {
         // with every pane behind it, preserving their restoration links. With no
         // destination left, every pane closes, including parked panes and overlays.
         let mut suppressed_panes = tab_to_close.extract_suppressed_panes();
-        let mut closing: HashSet<_> = if self.tabs.is_empty() {
+        let mut closing: HashSet<_> = if self.core.tabs.is_empty() {
             pane_ids.iter().copied().collect()
         } else {
             tab_to_close.get_all_pane_ids().into_iter().collect()
@@ -1318,21 +1381,25 @@ impl Screen {
         }
         // Nothing should be able to aim at this tab again: `toggle_tab` reads the history, and
         // an arrangement's memory of the project here would otherwise outlive the tab.
-        for history in self.tab_history.values_mut() {
+        for history in self.core.tab_history.values_mut() {
             history.retain(|id| *id != tab_id);
         }
-        self.arrangement_projects.remove(&tab_id);
-        if self.replacement_tab == Some(tab_id) {
-            self.replacement_tab = None;
+        self.core.arrangement_projects.remove(&tab_id);
+        if self.core.replacement_tab == Some(tab_id) {
+            self.core.replacement_tab = None;
         }
 
-        let _ = self.bus.senders.send_to_plugin(PluginInstruction::Update(
-            pane_ids
-                .iter()
-                .copied()
-                .map(|p_id| (None, None, Event::PaneClosed(p_id)))
-                .collect(),
-        ));
+        let _ = self
+            .core
+            .bus
+            .senders
+            .send_to_plugin(PluginInstruction::Update(
+                pane_ids
+                    .iter()
+                    .copied()
+                    .map(|p_id| (None, None, Event::PaneClosed(p_id)))
+                    .collect(),
+            ));
 
         // Notify pane render subscribers of each closed pane
         for p_id in &pane_ids {
@@ -1342,19 +1409,21 @@ impl Screen {
         // below we don't check the result of sending the CloseTab instruction to the pty thread
         // because this might be happening when the app is closing, at which point the pty thread
         // has already closed and this would result in an error
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_pty(PtyInstruction::CloseTab(pane_ids))
             .with_context(err_context)
             .non_fatal();
-        if self.tabs.is_empty() {
+        if self.core.tabs.is_empty() {
             self.prune_tab_groups();
-            self.active_tab_ids.clear();
+            self.core.active_tab_ids.clear();
+            self.active_tabs_changed();
             if self.migration_blocks_normal_work() {
                 return Ok(());
             }
             let instruction = match layout_failure {
-                Some((client_id, cause)) if !self.opening_layout_landed => {
+                Some((client_id, cause)) if !self.core.opening_layout_landed => {
                     ServerInstruction::OpeningLayoutFailed {
                         client_id,
                         cause: cause.to_owned(),
@@ -1362,7 +1431,8 @@ impl Screen {
                 },
                 _ => ServerInstruction::Render(None),
             };
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_server(instruction)
                 .with_context(err_context)
@@ -1398,8 +1468,8 @@ impl Screen {
             self.reconcile_client_tabs().with_context(err_context)?;
             self.prune_tab_groups();
             let visible_tab_indices: HashSet<TabId> =
-                self.active_tab_ids.values().copied().collect();
-            for t in self.tabs.values_mut() {
+                self.core.active_tab_ids.values().copied().collect();
+            for t in self.core.tabs.values_mut() {
                 if visible_tab_indices.contains(&t.id) {
                     t.set_force_render();
                     t.visible(true).with_context(err_context)?;
@@ -1434,10 +1504,12 @@ impl Screen {
     /// With `Tab::add_client` total it should find nothing; it says so loudly if it does.
     fn reconcile_client_tabs(&mut self) -> Result<()> {
         let stranded: Vec<ClientId> = self
+            .core
             .active_tab_ids
             .iter()
             .filter(|(client_id, tab_id)| {
-                self.tabs
+                self.core
+                    .tabs
                     .get(tab_id)
                     .map(|tab| !tab.has_connected_client(client_id))
                     .unwrap_or(true)
@@ -1455,10 +1527,11 @@ impl Screen {
             .into_iter()
             .map(|client_id| {
                 let mode_info = self
+                    .core
                     .mode_info
                     .get(&client_id)
                     .cloned()
-                    .unwrap_or_else(|| self.default_mode_info.clone());
+                    .unwrap_or_else(|| self.core.default_mode_info.clone());
                 (client_id, mode_info)
             })
             .collect();
@@ -1474,6 +1547,7 @@ impl Screen {
         match client_id {
             Some(client_id) => {
                 let active_tab_index = *self
+                    .core
                     .active_tab_ids
                     .get(&client_id)
                     .with_context(err_context)?;

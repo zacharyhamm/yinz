@@ -14,7 +14,7 @@ fn kitty_probe_before_first_layout_reaches_plugins() {
     assert!(!screen.connected_clients_contains(&CLIENT_1));
     screen.update_kitty_graphics_support(CLIENT_1, true);
     assert_eq!(
-        screen.kitty_host_capabilities.borrow().get(&CLIENT_1),
+        screen.core.kitty_host_capabilities.borrow().get(&CLIENT_1),
         Some(&true)
     );
 
@@ -48,6 +48,7 @@ fn kitty_query_replies_ok_when_capable_client_connected() {
     screen.update_kitty_graphics_support(crate::ClientId::new(1), true);
     assert_eq!(
         screen
+            .core
             .kitty_host_capabilities
             .borrow()
             .get(&ClientId::new(1)),
@@ -78,6 +79,7 @@ fn kitty_query_replies_enotsupported_when_no_capable_client() {
     screen.update_kitty_graphics_support(crate::ClientId::new(1), false);
     assert_eq!(
         screen
+            .core
             .kitty_host_capabilities
             .borrow()
             .get(&ClientId::new(1)),
@@ -109,6 +111,7 @@ fn kitty_query_is_ignored_when_the_protocol_is_disabled_in_the_config() {
     screen.update_kitty_graphics_support(crate::ClientId::new(1), true);
     assert_eq!(
         screen
+            .core
             .kitty_host_capabilities
             .borrow()
             .get(&ClientId::new(1)),
@@ -239,6 +242,7 @@ fn a_capability_reply_for_a_departed_client_is_ignored() {
 
     assert_eq!(
         screen
+            .core
             .kitty_host_capabilities
             .borrow()
             .get(&ClientId::new(2)),
@@ -246,7 +250,7 @@ fn a_capability_reply_for_a_departed_client_is_ignored() {
         "a departed client must not be recorded"
     );
     assert!(
-        !screen.mode_info.contains_key(&ClientId::new(2)),
+        !screen.core.mode_info.contains_key(&ClientId::new(2)),
         "a departed client must not come back as a phantom in the mode_info map"
     );
     // ...and the aggregate still reflects only the client that is actually here.
@@ -321,6 +325,7 @@ fn primary_da_advertises_sixel_when_capable_client_connected() {
     screen.update_sixel_support(crate::ClientId::new(1), true);
     assert_eq!(
         screen
+            .core
             .sixel_host_capabilities
             .borrow()
             .get(&ClientId::new(1)),
@@ -351,6 +356,7 @@ fn primary_da_omits_sixel_when_no_capable_client() {
     screen.update_sixel_support(crate::ClientId::new(1), false);
     assert_eq!(
         screen
+            .core
             .sixel_host_capabilities
             .borrow()
             .get(&ClientId::new(1)),
@@ -594,6 +600,7 @@ fn synchronized_output_support_reported_before_the_client_is_added_still_takes_e
     screen.add_client(ClientId::new(2)).expect("TEST");
     assert_eq!(
         screen
+            .core
             .synchronized_output_capabilities
             .borrow()
             .get(&ClientId::new(2)),
@@ -619,6 +626,7 @@ fn synchronized_output_support_does_not_outlive_the_client_that_reported_it() {
     screen.remove_client(ClientId::new(2)).expect("TEST");
     assert_eq!(
         screen
+            .core
             .synchronized_output_capabilities
             .borrow()
             .get(&ClientId::new(2)),
@@ -646,6 +654,7 @@ fn a_watchers_synchronized_output_support_is_recorded_and_dropped_with_the_watch
         .expect("TEST");
     assert_eq!(
         screen
+            .core
             .synchronized_output_capabilities
             .borrow()
             .get(&ClientId::new(2)),
@@ -656,6 +665,7 @@ fn a_watchers_synchronized_output_support_is_recorded_and_dropped_with_the_watch
     screen.remove_watcher_client(ClientId::new(2));
     assert_eq!(
         screen
+            .core
             .synchronized_output_capabilities
             .borrow()
             .get(&ClientId::new(2)),
@@ -677,7 +687,7 @@ fn a_watcher_reporting_synchronized_output_support_asks_for_a_full_frame() {
     screen.add_client(ClientId::new(1)).expect("TEST");
     screen.add_watcher_client(ClientId::new(2)).expect("TEST");
     screen.add_watcher_client(ClientId::new(3)).expect("TEST");
-    for watcher_state in screen.watcher_clients.values_mut() {
+    for watcher_state in screen.core.watcher_clients.values_mut() {
         watcher_state.clear_force_render();
     }
 
@@ -686,6 +696,7 @@ fn a_watcher_reporting_synchronized_output_support_asks_for_a_full_frame() {
         .expect("TEST");
     assert!(
         screen
+            .core
             .watcher_clients
             .values()
             .all(|watcher_state| watcher_state.should_force_render()),
@@ -698,7 +709,7 @@ fn late_kitty_capability_repaints_retained_images_for_each_client() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
     screen.add_client(ClientId::new(2)).unwrap();
-    *screen.character_cell_size.borrow_mut() = Some(SizeInPixels {
+    *screen.core.character_cell_size.borrow_mut() = Some(SizeInPixels {
         width: 23,
         height: 43,
     });
@@ -1080,7 +1091,7 @@ fn watcher_geometry_is_cleared_before_its_id_is_reused_by_an_interactive_client(
     assert!(screen.cell_pixel_size(reused).is_some());
     screen.remove_watcher_client(reused);
     assert_eq!(screen.cell_pixel_size(reused), None);
-    assert!(!screen.client_pixel_dimensions.contains_key(&reused));
+    assert!(!screen.core.client_pixel_dimensions.contains_key(&reused));
     capture.drain_plugin_updates();
     screen.add_client(reused).unwrap();
     screen
@@ -1107,8 +1118,8 @@ fn terminal_placement_reports_content_geometry_with_known_or_unknown_pixels() {
     );
     new_tab(&mut screen, 1, TabId::new(0));
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(tx));
-    let pane = screen.tabs[&TabId::new(0)]
+    screen.core.bus.senders.to_pty_writer = Some(SenderWithContext::new(tx));
+    let pane = screen.core.tabs[&TabId::new(0)]
         .get_active_pane(CLIENT_1)
         .unwrap();
     let PaneId::Terminal(id) = pane.pid() else {
@@ -1123,7 +1134,7 @@ fn terminal_placement_reports_content_geometry_with_known_or_unknown_pixels() {
             height: 20,
         }),
     ] {
-        *screen.character_cell_size.borrow_mut() = cell;
+        *screen.core.character_cell_size.borrow_mut() = cell;
         let mut pending = HashMap::from([(id, 42)]);
         screen
             .confirm_terminal_placements(&mut pending, &Default::default())
@@ -1156,8 +1167,8 @@ fn collapsed_stack_placement_has_usable_startup_geometry_without_changing_conten
         true,
         true,
     );
-    *screen.stacked_pane_list.borrow_mut() = false;
-    screen.pane_frame_style = PaneFrameStyle::Full;
+    *screen.core.stacked_pane_list.borrow_mut() = false;
+    screen.core.pane_frame_style = PaneFrameStyle::Full;
     let tab_id = TabId::new(0);
     screen
         .new_tab(tab_id, (vec![], vec![]), None, Some(CLIENT_1))
@@ -1179,19 +1190,19 @@ fn collapsed_stack_placement_has_usable_startup_geometry_without_changing_conten
     let pane_id = [TerminalId::new(1), TerminalId::new(2)]
         .into_iter()
         .find(|id| {
-            screen.tabs[&tab_id]
+            screen.core.tabs[&tab_id]
                 .get_pane_with_id(PaneId::Terminal(*id))
                 .unwrap()
                 .get_content_rows()
                 == 0
         })
         .expect("a collapsed member with no content rows");
-    let cols = screen.tabs[&tab_id]
+    let cols = screen.core.tabs[&tab_id]
         .get_pane_with_id(PaneId::Terminal(pane_id))
         .unwrap()
         .get_content_columns() as u16;
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_pty_writer = Some(SenderWithContext::new(tx));
     for cell in [
         None,
         Some(SizeInPixels {
@@ -1199,7 +1210,7 @@ fn collapsed_stack_placement_has_usable_startup_geometry_without_changing_conten
             height: 20,
         }),
     ] {
-        *screen.character_cell_size.borrow_mut() = cell;
+        *screen.core.character_cell_size.borrow_mut() = cell;
         let mut pending = HashMap::from([(pane_id, 42)]);
         screen
             .confirm_terminal_placements(&mut pending, &Default::default())
@@ -1219,7 +1230,7 @@ fn collapsed_stack_placement_has_usable_startup_geometry_without_changing_conten
         assert_eq!(size.width_in_pixels, cell.map(|_| cols * 10));
         assert_eq!(size.height_in_pixels, cell.map(|_| 20));
         assert_eq!(
-            screen.tabs[&tab_id]
+            screen.core.tabs[&tab_id]
                 .get_pane_with_id(PaneId::Terminal(pane_id))
                 .unwrap()
                 .get_content_rows(),
@@ -1227,13 +1238,14 @@ fn collapsed_stack_placement_has_usable_startup_geometry_without_changing_conten
         );
     }
     screen
+        .core
         .tabs
         .get_mut(&tab_id)
         .unwrap()
         .focus_pane_with_id(PaneId::Terminal(pane_id), false, false, CLIENT_1)
         .unwrap();
     assert!(
-        screen.tabs[&tab_id]
+        screen.core.tabs[&tab_id]
             .get_pane_with_id(PaneId::Terminal(pane_id))
             .unwrap()
             .get_content_rows()

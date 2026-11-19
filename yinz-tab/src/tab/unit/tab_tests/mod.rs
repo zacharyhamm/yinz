@@ -7,8 +7,8 @@ use crate::tab::CopyOptions;
 use crate::{panes::PaneId, thread_bus::ThreadSenders, ClientId};
 use std::path::PathBuf;
 use yinz_bus::os_input_output::{
-    ClientTransport, RemotePanes, ServerEnvironment, TerminalIo, TerminalProcesses,
-    TerminalSupervision,
+    ClientTransport, RemotePanes, ServerEnvironment, SupervisorThemeHooks, TerminalIo,
+    TerminalProcesses, TerminalSupervision,
 };
 use yinz_runtime::channels::{unbounded, Receiver, SenderWithContext};
 use yinz_runtime::errors::prelude::*;
@@ -38,6 +38,8 @@ use {
 
 #[derive(Clone)]
 struct FakeInputOutput {}
+
+impl SupervisorThemeHooks for FakeInputOutput {}
 
 impl TerminalIo for FakeInputOutput {
     fn set_terminal_size_using_terminal_id(

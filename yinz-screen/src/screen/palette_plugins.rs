@@ -332,23 +332,31 @@ impl CommandPaletteState {
 impl Screen {
     pub(crate) fn disconnect_palette_client(&mut self, client: ClientId) {
         let owners: HashSet<_> = self
+            .palette
             .palette_providers
             .providers
             .keys()
             .map(|(owner, _)| owner.clone())
             .collect();
         for owner in owners {
-            deliver(&self.bus.senders, &owner, client, Message::Disconnect, None);
+            deliver(
+                &self.core.bus.senders,
+                &owner,
+                client,
+                Message::Disconnect,
+                None,
+            );
         }
-        self.palette_providers
+        self.palette
+            .palette_providers
             .closed
             .retain(|(_, origin, _), _| *origin != client);
     }
 
     pub(super) fn open_plugin_palette(&mut self, client: ClientId) {
-        self.palette_providers.next_opening += 1;
-        if let Some(state) = self.command_palettes.get_mut(&client) {
-            state.plugins.opening = self.palette_providers.next_opening;
+        self.palette.palette_providers.next_opening += 1;
+        if let Some(state) = self.palette.command_palettes.get_mut(&client) {
+            state.plugins.opening = self.palette.palette_providers.next_opening;
         }
         self.refresh_plugin_palette(client, false);
     }
@@ -358,7 +366,7 @@ impl Screen {
         client: ClientId,
         state: &mut CommandPaletteState,
     ) {
-        state.cancel_requests(&self.bus.senders, client);
+        state.cancel_requests(&self.core.bus.senders, client);
         let owners: HashSet<_> = state
             .plugins
             .results
@@ -374,7 +382,7 @@ impl Screen {
             .collect();
         for owner in owners {
             deliver(
-                &self.bus.senders,
+                &self.core.bus.senders,
                 &owner,
                 client,
                 Message::Dismiss {
@@ -387,13 +395,13 @@ impl Screen {
 
     pub(super) fn refresh_plugin_palette(&mut self, client: ClientId, debounce: bool) {
         self.remove_unavailable_palette_providers();
-        let Some(state) = self.command_palettes.get_mut(&client) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client) else {
             return;
         };
         if state.agents.owns_view(state.widget.view) || state.agents.pending() {
             return;
         }
-        state.cancel_requests(&self.bus.senders, client);
+        state.cancel_requests(&self.core.bus.senders, client);
         // Discard forward history and its closures when returning to an earlier view.
         let discarded: Vec<_> = state
             .plugins
@@ -405,7 +413,7 @@ impl Screen {
         for view in discarded {
             if let Some(nested) = state.plugins.views.remove(&view) {
                 state.release(
-                    &self.bus.senders,
+                    &self.core.bus.senders,
                     client,
                     &nested.provider,
                     &Reply::View {
@@ -426,8 +434,8 @@ impl Screen {
             state
                 .plugins
                 .results
-                .retain(|key, _| self.palette_providers.providers.contains_key(key));
-            for (key, provider) in &self.palette_providers.providers {
+                .retain(|key, _| self.palette.palette_providers.providers.contains_key(key));
+            for (key, provider) in &self.palette.palette_providers.providers {
                 if key.0.client_id.is_none_or(|owner| owner == client)
                     && !provider.unavailable.load(Ordering::Acquire)
                 {
@@ -440,14 +448,14 @@ impl Screen {
             false
         };
         state.widget.pending = dynamic;
-        state.sections(&self.palette_providers);
+        state.sections(&self.palette.palette_providers);
         if !dynamic {
             return;
         }
         let opening = state.plugins.opening;
         let revision = state.plugins.revision;
         if debounce {
-            let senders = self.bus.senders.clone();
+            let senders = self.core.bus.senders.clone();
             crate::global_async_runtime::get_tokio_runtime().spawn(async move {
                 tokio::time::sleep(Duration::from_millis(150)).await;
                 senders
@@ -466,7 +474,7 @@ impl Screen {
 
     fn discover_plugin_palette(&mut self, client: ClientId, opening: u64, revision: u64) -> bool {
         let changed = self.remove_unavailable_palette_providers();
-        let Some(state) = self.command_palettes.get_mut(&client) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client) else {
             return changed;
         };
         if state.plugins.opening != opening || state.plugins.revision != revision {
@@ -494,10 +502,11 @@ impl Screen {
         };
         for (provider, source) in requests {
             state.request(
-                &self.bus.senders,
+                &self.core.bus.senders,
                 client,
                 provider,
-                self.client_timezones
+                self.core
+                    .client_timezones
                     .get(&client)
                     .and_then(|zone| zone.report().map(str::to_owned)),
                 None,
@@ -508,12 +517,12 @@ impl Screen {
     }
 
     pub(super) fn plugin_palette_outcome(&mut self, client: ClientId, outcome: &Outcome) -> bool {
-        let Some(state) = self.command_palettes.get_mut(&client) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client) else {
             return false;
         };
         if *outcome == Outcome::Cancel {
-            state.cancel_requests(&self.bus.senders, client);
-            state.sections(&self.palette_providers);
+            state.cancel_requests(&self.core.bus.senders, client);
+            state.sections(&self.palette.palette_providers);
             return true;
         }
         let (id, values) = match outcome {
@@ -578,6 +587,7 @@ impl Screen {
         };
         if state.widget.busy
             || self
+                .palette
                 .palette_providers
                 .providers
                 .get(&provider)
@@ -585,12 +595,13 @@ impl Screen {
         {
             return true;
         }
-        state.cancel_requests(&self.bus.senders, client);
+        state.cancel_requests(&self.core.bus.senders, client);
         state.request(
-            &self.bus.senders,
+            &self.core.bus.senders,
             client,
             provider,
-            self.client_timezones
+            self.core
+                .client_timezones
                 .get(&client)
                 .and_then(|zone| zone.report().map(str::to_owned)),
             Some(Execution {
@@ -600,7 +611,7 @@ impl Screen {
             }),
             None,
         );
-        state.sections(&self.palette_providers);
+        state.sections(&self.palette.palette_providers);
         true
     }
 
@@ -615,18 +626,23 @@ impl Screen {
                 revision,
                 labels,
             } => {
-                if let Some(state) = self.command_palettes.get_mut(&client) {
+                if let Some(state) = self.palette.command_palettes.get_mut(&client) {
                     state.agents.apply_labels(opening, revision, labels);
                 }
                 true
             },
             Instruction::Refresh { client, scope } => {
-                if self.command_palettes.get(&client).is_some_and(|state| {
-                    state.plugins.opening == scope.opening
-                        && state.widget.view == scope.view
-                        && state.plugins.revision == scope.revision
-                        && !state.widget.busy
-                }) {
+                if self
+                    .palette
+                    .command_palettes
+                    .get(&client)
+                    .is_some_and(|state| {
+                        state.plugins.opening == scope.opening
+                            && state.widget.view == scope.view
+                            && state.plugins.revision == scope.revision
+                            && !state.widget.busy
+                    })
+                {
                     self.refresh_plugin_palette(client, false);
                     return true;
                 }
@@ -657,7 +673,8 @@ impl Screen {
                 generation,
                 matches,
             } => {
-                self.prompt_library_matches(client, opening, view, generation, matches);
+                self.palette
+                    .prompt_library_matches(client, opening, view, generation, matches);
                 true
             },
             Instruction::UsageReply {
@@ -666,7 +683,8 @@ impl Screen {
                 view,
                 usage,
             } => {
-                self.palette_usage_reply(client, opening, view, usage);
+                self.palette
+                    .palette_usage_reply(client, opening, view, usage);
                 true
             },
             Instruction::HistoryTick {
@@ -699,6 +717,7 @@ impl Screen {
                 generation,
             } => {
                 let keys: Vec<_> = self
+                    .palette
                     .palette_providers
                     .providers
                     .keys()
@@ -711,9 +730,12 @@ impl Screen {
                 for key in keys {
                     changed |= self.remove_palette_provider(&key);
                 }
-                self.palette_providers.closed.retain(|(owner, _, _), _| {
-                    owner.plugin_id != plugin_id || owner.generation != generation
-                });
+                self.palette
+                    .palette_providers
+                    .closed
+                    .retain(|(owner, _, _), _| {
+                        owner.plugin_id != plugin_id || owner.generation != generation
+                    });
                 changed
             },
             Instruction::Command {
@@ -729,7 +751,7 @@ impl Screen {
                 }
                 match command {
                     Command::Suspend { scope, suspended } => {
-                        let Some(state) = self.command_palettes.get_mut(&client) else {
+                        let Some(state) = self.palette.command_palettes.get_mut(&client) else {
                             return false;
                         };
                         if !state
@@ -742,7 +764,7 @@ impl Screen {
                         }
                         // Keep the server's saved mode until the palette actually closes.
                         state.set_suspended(suspended);
-                        for tab in self.tabs.values_mut() {
+                        for tab in self.core.tabs.values_mut() {
                             tab.set_should_clear_display_before_rendering();
                             tab.set_force_render();
                         }
@@ -754,13 +776,13 @@ impl Screen {
                         registration,
                         static_actions,
                     } => {
-                        if self.palette_providers.providers.iter().any(
+                        if self.palette.palette_providers.providers.iter().any(
                             |((existing, _), provider)| *existing == owner && provider.id == id,
                         ) {
                             return false;
                         }
                         let owning_client = owner.client_id;
-                        self.palette_providers.providers.insert(
+                        self.palette.palette_providers.providers.insert(
                             (owner, registration),
                             Provider {
                                 id,
@@ -770,6 +792,7 @@ impl Screen {
                             },
                         );
                         let clients: Vec<_> = self
+                            .palette
                             .command_palettes
                             .iter()
                             .filter(|(client, state)| {
@@ -792,14 +815,15 @@ impl Screen {
                         self.palette_reply(owner, client, scope, result, false)
                     },
                     Command::Close { scope } => {
-                        if let Some(state) = self.command_palettes.get_mut(&client)
+                        if let Some(state) = self.palette.command_palettes.get_mut(&client)
                             && let Some(index) = state.plugins.pending.iter().position(|p| {
                                 p.execution && p.provider.0 == owner && p.scope == scope
                             })
                         {
                             let pending = state.plugins.pending.remove(index);
                             pending.active.store(false, Ordering::Release);
-                            self.palette_providers
+                            self.palette
+                                .palette_providers
                                 .closed
                                 .insert((owner, client, scope), pending.label);
                             self.close_command_palette(client);
@@ -814,6 +838,7 @@ impl Screen {
 
     pub(super) fn remove_unavailable_palette_providers(&mut self) -> bool {
         let keys: Vec<_> = self
+            .palette
             .palette_providers
             .providers
             .iter()
@@ -829,12 +854,13 @@ impl Screen {
 
     fn remove_palette_provider(&mut self, key: &ProviderKey) -> bool {
         let mut changed = false;
-        self.palette_providers.providers.remove(key);
-        self.palette_providers
+        self.palette.palette_providers.providers.remove(key);
+        self.palette
+            .palette_providers
             .closed
             .retain(|(owner, _, scope), _| *owner != key.0 || scope.registration != key.1);
         let mut restored = Vec::new();
-        for (client, state) in &mut self.command_palettes {
+        for (client, state) in &mut self.palette.command_palettes {
             if !state.plugins.results.contains_key(key)
                 && !state
                     .plugins
@@ -848,7 +874,7 @@ impl Screen {
             changed = true;
             if let Some(results) = state.plugins.results.remove(key) {
                 state.release(
-                    &self.bus.senders,
+                    &self.core.bus.senders,
                     *client,
                     key,
                     &Reply::Actions {
@@ -862,9 +888,10 @@ impl Screen {
                 .values()
                 .any(|view| view.provider == *key)
             {
-                state.cancel_requests(&self.bus.senders, *client);
+                state.cancel_requests(&self.core.bus.senders, *client);
                 state.set_suspended(false);
-                self.bus
+                self.core
+                    .bus
                     .senders
                     .send_to_server(yinz_bus::ServerInstruction::SetCommandPaletteOpen(
                         *client, true,
@@ -874,7 +901,7 @@ impl Screen {
                 state.widget.reset_to_root();
                 for (_, nested) in std::mem::take(&mut state.plugins.views) {
                     state.release(
-                        &self.bus.senders,
+                        &self.core.bus.senders,
                         *client,
                         &nested.provider,
                         &Reply::View {
@@ -893,7 +920,7 @@ impl Screen {
                     }
                     p.active.store(false, Ordering::Release);
                     deliver(
-                        &self.bus.senders,
+                        &self.core.bus.senders,
                         &key.0,
                         *client,
                         Message::Cancel {
@@ -912,7 +939,7 @@ impl Screen {
                         .values()
                         .any(|r| r.status.as_deref() == Some("Loading…"));
             }
-            state.sections(&self.palette_providers);
+            state.sections(&self.palette.palette_providers);
         }
         for client in restored {
             self.refresh_plugin_palette(client, false);
@@ -929,14 +956,15 @@ impl Screen {
         timeout: bool,
     ) -> bool {
         if !timeout
-            && let Some(label) =
-                self.palette_providers
-                    .closed
-                    .remove(&(owner.clone(), client, scope.clone()))
+            && let Some(label) = self.palette.palette_providers.closed.remove(&(
+                owner.clone(),
+                client,
+                scope.clone(),
+            ))
         {
             if let Ok(reply) = &result {
                 deliver(
-                    &self.bus.senders,
+                    &self.core.bus.senders,
                     &owner,
                     client,
                     Message::Release {
@@ -962,7 +990,8 @@ impl Screen {
                     format!("Could not {}: {error}", label.to_lowercase())
                 },
             };
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_screen(ScreenInstruction::Notify(
                     message,
@@ -974,10 +1003,10 @@ impl Screen {
                 .non_fatal();
             return true;
         }
-        let Some(state) = self.command_palettes.get_mut(&client) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client) else {
             if let Ok(reply) = result {
                 deliver(
-                    &self.bus.senders,
+                    &self.core.bus.senders,
                     &owner,
                     client,
                     Message::Release {
@@ -995,7 +1024,7 @@ impl Screen {
         else {
             if let Ok(reply) = result {
                 state.release(
-                    &self.bus.senders,
+                    &self.core.bus.senders,
                     client,
                     &(owner, scope.registration),
                     &reply,
@@ -1007,7 +1036,7 @@ impl Screen {
         pending.active.store(false, Ordering::Release);
         if timeout {
             deliver(
-                &self.bus.senders,
+                &self.core.bus.senders,
                 &owner,
                 client,
                 Message::Cancel {
@@ -1019,7 +1048,7 @@ impl Screen {
         if let Ok(reply) = &result
             && let Err(error) = reply.validate()
         {
-            state.release(&self.bus.senders, client, &pending.provider, reply);
+            state.release(&self.core.bus.senders, client, &pending.provider, reply);
             result = Err(error);
         }
         if let Ok(reply) = &result
@@ -1038,7 +1067,7 @@ impl Screen {
                 })
                 .unwrap_or(&[]);
             if let Err(error) = wire::validate_table(columns, actions) {
-                state.release(&self.bus.senders, client, &pending.provider, reply);
+                state.release(&self.core.bus.senders, client, &pending.provider, reply);
                 result = Err(error);
             }
         }
@@ -1046,7 +1075,7 @@ impl Screen {
         state.widget.pending = state.plugins.pending.iter().any(|p| !p.execution);
         if pending.execution {
             if let Ok(reply @ Reply::Actions { .. }) = &result {
-                state.release(&self.bus.senders, client, &pending.provider, reply);
+                state.release(&self.core.bus.senders, client, &pending.provider, reply);
                 result = Err("Action returned an invalid palette reply".into());
             }
             let notification = match &result {
@@ -1065,7 +1094,8 @@ impl Screen {
                 _ => None,
             };
             if let Some(message) = notification {
-                self.bus
+                self.core
+                    .bus
                     .senders
                     .send_to_screen(ScreenInstruction::Notify(
                         message,
@@ -1200,7 +1230,7 @@ impl Screen {
                 },
                 Err(error) => state.widget.set_error(error),
                 Ok(reply) => {
-                    state.release(&self.bus.senders, client, &pending.provider, &reply);
+                    state.release(&self.core.bus.senders, client, &pending.provider, &reply);
                     state
                         .widget
                         .set_error("Action returned an invalid palette reply".into());
@@ -1225,7 +1255,7 @@ impl Screen {
                     };
                     if let Some(old) = old {
                         deliver(
-                            &self.bus.senders,
+                            &self.core.bus.senders,
                             &owner,
                             client,
                             Message::Release {
@@ -1255,7 +1285,7 @@ impl Screen {
                 },
                 result => {
                     if let Ok(reply) = &result {
-                        state.release(&self.bus.senders, client, &pending.provider, reply);
+                        state.release(&self.core.bus.senders, client, &pending.provider, reply);
                     }
                     let error = result
                         .err()
@@ -1283,7 +1313,7 @@ impl Screen {
                 ..
             })
         ) {
-            let senders = self.bus.senders.clone();
+            let senders = self.core.bus.senders.clone();
             crate::global_async_runtime::get_tokio_runtime().spawn(async move {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 senders
@@ -1295,7 +1325,7 @@ impl Screen {
                     .non_fatal();
             });
         }
-        state.sections(&self.palette_providers);
+        state.sections(&self.palette.palette_providers);
         true
     }
 }

@@ -13,7 +13,8 @@ impl Screen {
     }
 
     fn multipane_member(&self, id: MultipaneId) -> Option<PaneId> {
-        self.tabs
+        self.core
+            .tabs
             .values()
             .flat_map(|tab| {
                 tab.get_all_pane_ids()
@@ -65,12 +66,13 @@ impl Screen {
                 .is_some_and(|tab| tab.remove_multipane_member(slot));
             if removed {
                 self.cleanup_closed_pane(slot);
-                self.bus
+                self.core
+                    .bus
                     .senders
                     .send_to_pty(PtyInstruction::ClosePane(slot, None))
                     .context("failed to free a given-up multipane slot")
                     .non_fatal();
-                let clients: Vec<ClientId> = self.active_tab_ids.keys().copied().collect();
+                let clients: Vec<ClientId> = self.core.active_tab_ids.keys().copied().collect();
                 for client_id in clients {
                     self.sync_scroll_mode_on_focus(client_id)?;
                 }

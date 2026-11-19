@@ -155,7 +155,7 @@ impl Screen {
             drop(completion_tx);
             return Ok(());
         }
-        if self.destroyed_panes.contains(&id) && self.tab_containing_pane(id).is_none() {
+        if self.core.destroyed_panes.contains(&id) && self.tab_containing_pane(id).is_none() {
             drop(completion_tx);
         } else if client_id.is_some() || completion_tx.is_some() {
             if self.tab_containing_pane(id).is_some() {
@@ -188,12 +188,14 @@ impl Screen {
             }
             // Natural process exit still owes the PTY its resource cleanup.
             let _ = self
+                .core
                 .bus
                 .senders
                 .send_to_pty(PtyInstruction::ClosePane(id, None));
         }
 
-        let connected_client_ids: Vec<ClientId> = self.active_tab_ids.keys().copied().collect();
+        let connected_client_ids: Vec<ClientId> =
+            self.core.active_tab_ids.keys().copied().collect();
         for connected_client_id in connected_client_ids {
             self.sync_scroll_mode_on_focus(connected_client_id)?;
         }
@@ -301,11 +303,14 @@ impl Screen {
                         result
                     },
                 };
-                self.bus.senders.send_to_server(ServerInstruction::Log(
-                    vec![dump],
-                    cli_client_id.unwrap_or(client_id),
-                    completion_tx,
-                ))?;
+                self.core
+                    .bus
+                    .senders
+                    .send_to_server(ServerInstruction::Log(
+                        vec![dump],
+                        cli_client_id.unwrap_or(client_id),
+                        completion_tx,
+                    ))?;
             },
         }
         Ok(())
@@ -355,7 +360,7 @@ impl Screen {
                 && let Some(controller) = c.agent_tab.as_ref().and_then(|t| t.stack_controller)
             {
                 if let Some(tab_id) = self.tab_id_containing_pane(controller)
-                    && let Some(tab) = self.tabs.get(&tab_id)
+                    && let Some(tab) = self.core.tabs.get(&tab_id)
                 {
                     let target = crate::route::AgentTabPlacement {
                         tab_id,
@@ -374,8 +379,8 @@ impl Screen {
                 let live = target
                     .stack_controller
                     .is_none_or(|owner| self.tab_id_containing_pane(owner) == Some(target.tab_id))
-                    && !self.deferred_tab_closes.contains(&target.tab_id)
-                    && self.tabs.get(&target.tab_id).is_some_and(|tab| {
+                    && !self.core.deferred_tab_closes.contains(&target.tab_id)
+                    && self.core.tabs.get(&target.tab_id).is_some_and(|tab| {
                         target
                             .lifetime
                             .ptr_eq(&std::sync::Arc::downgrade(&tab.agent_tab_lifetime))
@@ -395,7 +400,7 @@ impl Screen {
             }
         }
         // The CLI can spawn before the initial NewTab arrives from the plugin thread.
-        if !self.has_created_tab
+        if !self.core.has_created_tab
             && matches!(
                 client_or_tab_index,
                 ClientTabIndexOrPaneId::ClientId(_) | ClientTabIndexOrPaneId::ClientIdNoFocus(_)
@@ -463,7 +468,7 @@ impl Screen {
                 ClientTabIndexOrPaneId::PaneId(id)
                 | ClientTabIndexOrPaneId::PaneIdOrClient(id, _) => self.tab_id_containing_pane(id),
             };
-            if let Some(tab) = tab_id.and_then(|id| self.tabs.get(&id)) {
+            if let Some(tab) = tab_id.and_then(|id| self.core.tabs.get(&id)) {
                 c.agent_tab
                     .get_or_insert_with(|| yinz_bus::route::AgentTabPlacement {
                         tab_id: tab.id,
@@ -478,6 +483,7 @@ impl Screen {
         {
             client_or_tab_index = ClientTabIndexOrPaneId::TabIndexNoFocus(destination.tab_id);
             if self
+                .core
                 .tabs
                 .get(&destination.tab_id)
                 .is_some_and(|tab| tab.is_pending())
@@ -510,34 +516,38 @@ impl Screen {
             .as_ref()
             .and_then(|c| c.agent_tab.as_ref())
             .filter(|target| target.created)
-            .and_then(|target| self.tabs.get(&target.tab_id))
+            .and_then(|target| self.core.tabs.get(&target.tab_id))
             .filter(|tab| tab.agent_tab_cleanup_allowed && tab.get_all_pane_ids().is_empty())
             .map(|tab| tab.id);
         let mut separate_worker = false;
         if let Some(key) = worker_stack {
             let mut live: Vec<_> = self
+                .core
                 .agent_worker_stacks
                 .get(&key)
                 .cloned()
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|pane| {
-                    self.tabs
+                    self.core
+                        .tabs
                         .get(&key.1)
                         .is_some_and(|tab| tab.can_anchor_tiled_stack(*pane))
                 })
                 .collect();
             let lifetime_matches =
-                self.agent_worker_regions
+                self.core
+                    .agent_worker_regions
                     .get(&key)
                     .is_some_and(|(lifetime, _)| {
-                        self.tabs.get(&key.1).is_some_and(|tab| {
+                        self.core.tabs.get(&key.1).is_some_and(|tab| {
                             lifetime.ptr_eq(&std::sync::Arc::downgrade(&tab.agent_tab_lifetime))
                         })
                     });
             if !lifetime_matches
                 || live.first().is_some_and(|root| {
                     let group = self
+                        .core
                         .tabs
                         .get_mut(&key.1)
                         .map(|tab| tab.worker_region_members(*root))
@@ -546,10 +556,10 @@ impl Screen {
                 })
             {
                 live.clear();
-                self.agent_worker_regions.remove(&key);
+                self.core.agent_worker_regions.remove(&key);
             }
             if live.is_empty() {
-                self.agent_worker_regions.remove(&key);
+                self.core.agent_worker_regions.remove(&key);
             }
             if let Some(root) = live.first() {
                 new_pane_placement = NewPanePlacement::Stacked {
@@ -563,7 +573,7 @@ impl Screen {
                     borderless: None,
                 };
             }
-            self.agent_worker_stacks.insert(key, live);
+            self.core.agent_worker_stacks.insert(key, live);
         }
         let mut placed_in: Option<TabId> = None;
         let insertion = (|| -> Result<()> {
@@ -600,7 +610,7 @@ impl Screen {
                     };
                     let should_focus_pane = requesting_client.map_or_else(
                         || matches!(client_or_tab_index, ClientTabIndexOrPaneId::TabIndex(_)),
-                        |client| self.active_tab_ids.get(&client) == Some(&tab_index),
+                        |client| self.core.active_tab_ids.get(&client) == Some(&tab_index),
                     );
                     // Some placements (directional split, stacked without a
                     // target pane) need a client_id to know which pane to
@@ -618,15 +628,16 @@ impl Screen {
                     let client_id = if requesting_client.is_some() {
                         requesting_client
                     } else if needs_client_id {
-                        self.active_tab_ids
+                        self.core
+                            .active_tab_ids
                             .iter()
                             .find(|(_, tid)| **tid == tab_index)
                             .map(|(cid, _)| *cid)
-                            .or_else(|| self.active_tab_ids.keys().next().copied())
+                            .or_else(|| self.core.active_tab_ids.keys().next().copied())
                     } else {
                         None
                     };
-                    if let Some(active_tab) = self.tabs.get_mut(&tab_index) {
+                    if let Some(active_tab) = self.core.tabs.get_mut(&tab_index) {
                         if let Some((controller, _)) = worker_stack {
                             let anchor = if separate_worker {
                                 if active_tab.can_anchor_tiled_stack(controller)
@@ -645,7 +656,8 @@ impl Screen {
                                     })?
                                 }
                             } else {
-                                self.agent_worker_stacks
+                                self.core
+                                    .agent_worker_stacks
                                     .get(&(controller, tab_index))
                                     .and_then(|v| v.first())
                                     .copied()
@@ -774,12 +786,17 @@ impl Screen {
             if let Some(completion) = completion_tx.as_mut() {
                 completion.set_error_message(format!("cannot place agent pane: {error:#}"));
             }
-            if !self.tabs.values().any(|tab| tab.has_pane_with_pid(&pid)) {
+            if !self
+                .core
+                .tabs
+                .values()
+                .any(|tab| tab.has_pane_with_pid(&pid))
+            {
                 self.forget_unplaced_pane(pid, format!("cannot place pane: {error:#}"));
             }
             return Err(error);
         }
-        if let Some(tab) = empty_launch_tab.and_then(|id| self.tabs.get_mut(&id))
+        if let Some(tab) = empty_launch_tab.and_then(|id| self.core.tabs.get_mut(&id))
             && tab.get_all_pane_ids() == vec![pid]
         {
             // Only this admitted reservation touched the empty launch-created tab in this
@@ -788,6 +805,7 @@ impl Screen {
         }
         if worker_stack.is_some()
             && !self
+                .core
                 .tabs
                 .values()
                 .any(|tab| tab.can_anchor_tiled_stack(pid))
@@ -798,26 +816,34 @@ impl Screen {
         }
         if let Some(key) = worker_stack
             && self
+                .core
                 .tabs
                 .values()
                 .any(|tab| tab.can_anchor_tiled_stack(pid))
             && self.tab_id_containing_pane(pid) == Some(key.1)
         {
-            self.agent_worker_stacks.entry(key).or_default().push(pid);
+            self.core
+                .agent_worker_stacks
+                .entry(key)
+                .or_default()
+                .push(pid);
         }
         if let Some(key) = worker_stack
-            && let Some(tab) = self.tabs.get(&key.1)
+            && let Some(tab) = self.core.tabs.get(&key.1)
         {
-            self.agent_worker_regions.entry(key).or_insert_with(|| {
-                (
-                    std::sync::Arc::downgrade(&tab.agent_tab_lifetime),
-                    yinz_bus::agent_launch::new_incarnation(),
-                )
-            });
+            self.core
+                .agent_worker_regions
+                .entry(key)
+                .or_insert_with(|| {
+                    (
+                        std::sync::Arc::downgrade(&tab.agent_tab_lifetime),
+                        yinz_bus::agent_launch::new_incarnation(),
+                    )
+                });
         }
         if let (Some(gate), Some(tab_id), PaneId::Terminal(terminal)) =
             (&managed_gate, placed_in, pid)
-            && let Some(tab) = self.tabs.get(&tab_id)
+            && let Some(tab) = self.core.tabs.get(&tab_id)
         {
             gate.admit(yinz_types::agent::launch::LaunchSlot {
                 pane_id: pid,
@@ -826,18 +852,19 @@ impl Screen {
                 tab_incarnation: tab.agent_tab_incarnation.clone(),
                 controller: worker_stack.map(|key| key.0),
                 worker_region: worker_stack.and_then(|key| {
-                    self.agent_worker_regions
+                    self.core
+                        .agent_worker_regions
                         .get(&key)
                         .map(|(_, id)| id.clone())
                 }),
                 placement_generation: terminal.get() as u64,
             });
             if let Some(target) = completion_tx.as_ref().and_then(|c| c.agent_tab.clone()) {
-                self.managed_reservations.insert(terminal, target);
+                self.core.managed_reservations.insert(terminal, target);
             }
         }
         if let Some(completion) = completion_tx.take()
-            && let Some(tab) = placed_in.and_then(|id| self.tabs.get_mut(&id))
+            && let Some(tab) = placed_in.and_then(|id| self.core.tabs.get_mut(&id))
         {
             if tab.has_pane_with_pid(&pid) {
                 tab.complete_agent_placement(pid, completion);
@@ -846,7 +873,7 @@ impl Screen {
             }
         }
         if let (Some(hold_for_command), Some(tab_id)) = (hold_for_command, placed_in)
-            && let Some(tab) = self.tabs.get_mut(&tab_id)
+            && let Some(tab) = self.core.tabs.get_mut(&tab_id)
         {
             let is_first_run = true;
             tab.hold_pane(pid, None, is_first_run, hold_for_command);
@@ -867,6 +894,8 @@ impl Screen {
         // Before the replay: a pane that exited before the screen created it starts,
         // and then exits, in that order.
         self.restore_staged_transfer_state(pid);
+        self.refresh_agent_worktrees();
+        self.sync_nested_guest_fullscreen_state();
         self.fire_agent_start_for_new_pane(pid);
         if let Some(pending_events) = pending.waiting_for_pane.remove(&pid) {
             for event in pending_events {
@@ -886,11 +915,12 @@ impl Screen {
         pending: &mut PendingEvents,
     ) -> Result<()> {
         self.mark_subscriber_pane_dirty(PaneId::Terminal(pid));
-        self.pane_output_activity
+        self.core
+            .pane_output_activity
             .insert(PaneId::Terminal(pid), Instant::now());
         let mut vte_bytes = Some(vte_bytes);
         {
-            for tab in self.tabs.values_mut() {
+            for tab in self.core.tabs.values_mut() {
                 if tab.has_terminal_pid(pid) {
                     if let Some(bytes) = vte_bytes.take() {
                         if let Some(yinz_types::input::layout::Run::Command(command)) = tab
@@ -899,10 +929,10 @@ impl Screen {
                             && let Some(origin) = &command.originating_plugin
                         {
                             for ((plugin, client, generation), filter) in
-                                &self.pane_output_subscriptions
+                                &self.core.pane_output_subscriptions
                             {
                                 if filter.iter().all(|(k, v)| origin.context.get(k) == Some(v)) {
-                                    let _ = self.bus.senders.send_to_plugin(
+                                    let _ = self.core.bus.senders.send_to_plugin(
                                         PluginInstruction::for_plugin_event(
                                             *plugin,
                                             *client,

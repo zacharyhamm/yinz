@@ -7,8 +7,8 @@ use interprocess::local_socket::Stream as LocalSocketStream;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use yinz_bus::os_input_output::{
-    ClientTransport, RemotePanes, ServerEnvironment, TerminalIo, TerminalProcesses,
-    TerminalSupervision,
+    ClientTransport, RemotePanes, ServerEnvironment, SupervisorThemeHooks, TerminalIo,
+    TerminalProcesses, TerminalSupervision,
 };
 use yinz_ipc::ipc::{ClientToServerMsg, IpcReceiverWithContext, ServerToClientMsg};
 use yinz_runtime::errors::prelude::*;
@@ -30,6 +30,8 @@ pub(crate) struct CapturingOs {
     pub(crate) fail_client: Option<ClientId>,
     pub(crate) removed_clients: Watched<Vec<ClientId>>,
 }
+
+impl SupervisorThemeHooks for CapturingOs {}
 
 impl TerminalIo for CapturingOs {
     fn set_terminal_size_using_terminal_id(

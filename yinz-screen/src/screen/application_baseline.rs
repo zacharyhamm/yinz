@@ -64,14 +64,14 @@ impl Screen {
     /// A session-wide theme change from the server: the only way configuration
     /// reaches the application baseline after startup.
     pub fn set_application_theme_config(&mut self, config: ApplicationThemeConfig) -> Result<()> {
-        if config == self.application_theme {
+        if config == self.core.application_theme {
             return Ok(());
         }
         // A changed explicit hue outranks an earlier manual pin, as it does for chrome.
-        if config.explicit_theme_hue != self.application_theme.explicit_theme_hue {
-            self.application_pin = None;
+        if config.explicit_theme_hue != self.core.application_theme.explicit_theme_hue {
+            self.core.application_pin = None;
         }
-        self.application_theme = config;
+        self.core.application_theme = config;
         self.refresh_application_baseline();
         self.render()
             .context("failed to render after an application theme change")
@@ -82,20 +82,20 @@ impl Screen {
     /// applications that opted in with `CSI ? 2031 h`.
     pub(super) fn refresh_application_baseline(&mut self) {
         let (baseline, render) =
-            resolve_application_baseline(&self.application_theme, self.application_pin);
-        let previous_mode = self.style.application.mode;
-        if self.style.application != baseline {
-            self.style.application = baseline;
-            for tab in self.tabs.values_mut() {
+            resolve_application_baseline(&self.core.application_theme, self.core.application_pin);
+        let previous_mode = self.core.style.application.mode;
+        if self.core.style.application != baseline {
+            self.core.style.application = baseline;
+            for tab in self.core.tabs.values_mut() {
                 tab.update_application_baseline(baseline);
             }
         }
-        if let Some(preview) = self.theme_preview.as_mut() {
+        if let Some(preview) = self.palette.theme_preview.as_mut() {
             // The preview keeps rendering its own block; cancel and save return to this one.
             preview.original_terminal = render;
             let client = preview.client;
             self.refresh_theme_preview(client);
-        } else if self.style.terminal != render {
+        } else if self.core.style.terminal != render {
             self.set_render_terminal(render);
         }
         if previous_mode != baseline.mode {
@@ -105,8 +105,8 @@ impl Screen {
 
     /// Render panes with `terminal`, without touching chrome.
     pub(super) fn set_render_terminal(&mut self, terminal: Option<TerminalTheme>) {
-        self.style.terminal = terminal;
-        for tab in self.tabs.values_mut() {
+        self.core.style.terminal = terminal;
+        for tab in self.core.tabs.values_mut() {
             tab.update_terminal_theme(terminal);
             tab.set_force_render();
         }
@@ -114,18 +114,18 @@ impl Screen {
 
     /// Pin the baseline mode (`SetDarkTheme` / `SetLightTheme` / `ToggleTheme`).
     pub(super) fn pin_application_mode(&mut self, mode: HostTerminalThemeMode) {
-        self.application_pin = Some(mode);
+        self.core.application_pin = Some(mode);
         self.refresh_application_baseline();
     }
 
     /// Whether the session theme defines a dark/light pair, the gate for manual pins.
     pub(super) fn application_theme_has_pair(&self) -> bool {
-        self.application_theme.pair.is_some()
+        self.core.application_theme.pair.is_some()
     }
 
     fn announce_application_mode(&mut self, mode: HostTerminalThemeMode) {
         let mut pty_writes: Vec<(Vec<u8>, TerminalId)> = vec![];
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             for pane_id in tab.get_all_pane_ids() {
                 if let PaneId::Terminal(terminal_id) = pane_id
                     && let Some(pane) = tab
@@ -141,6 +141,7 @@ impl Screen {
         }
         for (bytes, terminal_id) in pty_writes {
             let _ = self
+                .core
                 .bus
                 .senders
                 .send_to_pty_writer(PtyWriteInstruction::Write(bytes, terminal_id, None));
@@ -154,7 +155,7 @@ impl Screen {
         query: &crate::host_query::HostQuery,
     ) -> Option<Vec<u8>> {
         use crate::host_query::HostQuery;
-        let baseline = self.style.application;
+        let baseline = self.core.style.application;
         let body = |(r, g, b): (u8, u8, u8)| {
             let expand = |c: u8| (c as u16) * 0x0101;
             format!("rgb:{:04x}/{:04x}/{:04x}", expand(r), expand(g), expand(b))

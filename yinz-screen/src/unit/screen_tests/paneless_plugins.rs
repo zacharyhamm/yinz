@@ -49,9 +49,9 @@ impl Harness {
     fn new() -> Self {
         let mut screen = create_new_screen(SIZE, false, false);
         let (to_pty, pty): ChannelWithContext<PtyInstruction> = channels::unbounded();
-        screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+        screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
         let (to_plugin, plugin): ChannelWithContext<PluginInstruction> = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
         new_tab(&mut screen, 1, TabId::new(0));
         Harness {
             screen,
@@ -177,6 +177,7 @@ fn a_paneless_plugin_loses_its_layout_slot_without_a_pty_close() {
     assert!(
         harness
             .screen
+            .core
             .render_blocker
             .blocking_plugins
             .contains_key(&PLUGIN),
@@ -193,12 +194,14 @@ fn a_paneless_plugin_loses_its_layout_slot_without_a_pty_close() {
     );
     assert!(!harness
         .screen
+        .core
         .render_blocker
         .blocking_plugins
         .contains_key(&PLUGIN));
-    assert!(harness.screen.paneless_plugins.contains_key(&PLUGIN));
+    assert!(harness.screen.core.paneless_plugins.contains_key(&PLUGIN));
     assert!(harness
         .screen
+        .core
         .tabs
         .get(&LAYOUT_TAB)
         .is_some_and(|tab| tab.has_pane_with_pid(&PaneId::Terminal(TerminalId::new(2)))));
@@ -219,6 +222,7 @@ fn a_layout_landing_after_the_plugin_went_paneless_drops_its_slot() {
         assert!(
             !harness
                 .screen
+                .core
                 .render_blocker
                 .blocking_plugins
                 .contains_key(&PLUGIN),
@@ -261,6 +265,7 @@ fn an_override_layout_drops_the_slot_of_a_paneless_plugin() {
 
     assert!(harness
         .screen
+        .core
         .tabs
         .get(&LAYOUT_TAB)
         .is_some_and(|tab| tab.has_pane_with_pid(&PaneId::Terminal(TerminalId::new(2)))));
@@ -287,7 +292,7 @@ fn output_parked_for_a_paneless_plugin_is_dropped() {
     harness.paneless(PLUGIN);
 
     assert!(!harness.pending.waiting_for_pane.contains_key(&pane));
-    assert!(harness.screen.destroyed_panes.contains(&pane));
+    assert!(harness.screen.core.destroyed_panes.contains(&pane));
     assert!(
         !closes_pty_pane(&harness.pty_instructions(), PLUGIN),
         "parked output is no request to close the plugin"
@@ -406,6 +411,7 @@ fn unloading_a_headless_plugin_clears_only_its_quit_notice() {
         }
         assert!(harness
             .screen
+            .core
             .destroyed_panes
             .contains(&PaneId::Plugin(PLUGIN)));
         harness
@@ -439,7 +445,7 @@ fn an_unloaded_plugin_loses_its_orphan_pane_subscriptions_and_intercepts() {
     let (placed, _rx) = harness.add_plugin(PLUGIN);
     assert!(placed && harness.has_pane(PLUGIN));
     for plugin in [PLUGIN, other] {
-        harness.screen.background_plugin_subscriptions.insert(
+        harness.screen.core.background_plugin_subscriptions.insert(
             (plugin, CLIENT),
             HashSet::from([yinz_types::data::EventType::PaneUpdate]),
         );
@@ -454,10 +460,11 @@ fn an_unloaded_plugin_loses_its_orphan_pane_subscriptions_and_intercepts() {
         !closes_pty_pane(&harness.pty_instructions(), PLUGIN),
         "the plugin is already unloaded"
     );
-    assert!(harness.screen.unloaded_plugins.contains(&PLUGIN));
+    assert!(harness.screen.core.unloaded_plugins.contains(&PLUGIN));
     assert_eq!(
         harness
             .screen
+            .core
             .background_plugin_subscriptions
             .keys()
             .copied()
@@ -492,9 +499,10 @@ fn an_add_plugin_after_paneless_restores_the_pane() {
     let (placed, rx) = harness.add_plugin(PLUGIN);
 
     assert!(placed && harness.has_pane(PLUGIN));
-    assert!(!harness.screen.paneless_plugins.contains_key(&PLUGIN));
+    assert!(!harness.screen.core.paneless_plugins.contains_key(&PLUGIN));
     assert!(!harness
         .screen
+        .core
         .destroyed_panes
         .contains(&PaneId::Plugin(PLUGIN)));
     assert_eq!(answer(rx).affected_pane_id, Some(PaneId::Plugin(PLUGIN)));
@@ -517,11 +525,11 @@ fn a_headless_reload_without_a_client_falls_back_to_a_surviving_tab() {
             let (placed, rx) = harness.add_plugin_at(PLUGIN, origin, client);
 
             assert!(placed && harness.has_pane(PLUGIN));
-            let tab = harness.screen.tabs.get(&TabId::new(1)).unwrap();
+            let tab = harness.screen.core.tabs.get(&TabId::new(1)).unwrap();
             assert!(tab
                 .get_floating_panes()
                 .any(|(id, _)| *id == PaneId::Plugin(PLUGIN)));
-            assert!(!harness.screen.paneless_plugins.contains_key(&PLUGIN));
+            assert!(!harness.screen.core.paneless_plugins.contains_key(&PLUGIN));
             assert!(harness.pending.waiting_for_client.is_empty());
             assert_eq!(harness.screen.get_active_pane_id(&CLIENT), focused);
             assert_eq!(answer(rx).affected_pane_id, Some(PaneId::Plugin(PLUGIN)));
@@ -544,12 +552,14 @@ fn a_headless_reload_without_a_client_keeps_a_live_original_tab() {
         assert!(placed && harness.has_pane(PLUGIN));
         assert!(harness
             .screen
+            .core
             .tabs
             .get(&LAYOUT_TAB)
             .unwrap()
             .has_plugin(PLUGIN));
         assert!(!harness
             .screen
+            .core
             .tabs
             .get(&TabId::new(0))
             .unwrap()
@@ -576,25 +586,33 @@ fn assert_reload_waits_when_no_tab_survives(client: Option<ClientId>) {
         .plugin_resolving(PLUGIN, headless_run(), None);
     harness
         .screen
+        .core
         .destroyed_panes
         .insert(PaneId::Plugin(PLUGIN));
     harness
         .screen
+        .core
         .background_plugin_subscriptions
         .insert((PLUGIN, CLIENT), HashSet::from([EventType::PaneUpdate]));
 
     let (placed, mut rx) = harness.add_plugin_at(PLUGIN, Some(TabId::new(0)), client);
 
     assert!(!placed && !harness.has_pane(PLUGIN));
-    assert!(!harness.screen.paneless_plugins.contains_key(&PLUGIN));
-    assert!(!harness.screen.failed_paneless_plugins.contains(&PLUGIN));
-    assert!(!harness.screen.resolving_plugins.contains_key(&PLUGIN));
+    assert!(!harness.screen.core.paneless_plugins.contains_key(&PLUGIN));
     assert!(!harness
         .screen
+        .core
+        .failed_paneless_plugins
+        .contains(&PLUGIN));
+    assert!(!harness.screen.core.resolving_plugins.contains_key(&PLUGIN));
+    assert!(!harness
+        .screen
+        .core
         .destroyed_panes
         .contains(&PaneId::Plugin(PLUGIN)));
     assert!(!harness
         .screen
+        .core
         .background_plugin_subscriptions
         .contains_key(&(PLUGIN, CLIENT)));
     assert!(matches!(
@@ -649,10 +667,10 @@ fn assert_reload_waits_when_no_tab_survives(client: Option<ClientId>) {
         )
         .unwrap());
     assert!(harness.has_pane(PLUGIN));
-    assert!(harness.screen.tabs[&LAYOUT_TAB]
+    assert!(harness.screen.core.tabs[&LAYOUT_TAB]
         .get_floating_panes()
         .any(|(id, _)| *id == PaneId::Plugin(PLUGIN)));
-    assert!(!harness.screen.paneless_plugins.contains_key(&PLUGIN));
+    assert!(!harness.screen.core.paneless_plugins.contains_key(&PLUGIN));
     assert!(harness.pending.waiting_for_client.is_empty());
     assert_eq!(answer(rx).affected_pane_id, Some(PaneId::Plugin(PLUGIN)));
 }
@@ -809,7 +827,7 @@ fn a_deferred_reload_is_cancelled_when_the_plugin_becomes_headless_again() {
     let (placed, mut rx) = harness.add_plugin_at(PLUGIN, Some(TabId::new(0)), None);
 
     assert!(!placed && !harness.has_pane(PLUGIN));
-    assert!(!harness.screen.paneless_plugins.contains_key(&PLUGIN));
+    assert!(!harness.screen.core.paneless_plugins.contains_key(&PLUGIN));
     assert!(matches!(
         harness.pending.waiting_for_client.as_slice(),
         [ScreenInstruction::AddPlugin(_, _, _, _, _, None, id, ..)] if *id == PLUGIN
@@ -822,7 +840,7 @@ fn a_deferred_reload_is_cancelled_when_the_plugin_becomes_headless_again() {
     harness.paneless(PLUGIN);
 
     assert!(harness.pending.waiting_for_client.is_empty());
-    assert!(harness.screen.paneless_plugins.contains_key(&PLUGIN));
+    assert!(harness.screen.core.paneless_plugins.contains_key(&PLUGIN));
     let result = answer(rx);
     assert_eq!(result.affected_pane_id, Some(PaneId::Plugin(PLUGIN)));
     assert_eq!(
@@ -844,7 +862,7 @@ fn a_deferred_reload_is_cancelled_when_the_plugin_becomes_headless_again() {
         .unwrap();
 
     assert!(!harness.has_pane(PLUGIN));
-    assert!(harness.screen.paneless_plugins.contains_key(&PLUGIN));
+    assert!(harness.screen.core.paneless_plugins.contains_key(&PLUGIN));
     assert!(harness.pending.waiting_for_client.is_empty());
 }
 
@@ -999,7 +1017,7 @@ fn a_headless_launch_is_answered_once_the_screen_records_the_plugin() {
         .plugin_paneless(PLUGIN, headless_run(), Some(launch), &mut harness.pending)
         .unwrap();
     assert_eq!(answer(rx).affected_pane_id, Some(PaneId::Plugin(PLUGIN)));
-    assert!(harness.screen.paneless_plugins.contains_key(&PLUGIN));
+    assert!(harness.screen.core.paneless_plugins.contains_key(&PLUGIN));
     harness.pty_instructions();
     let again = launch_or_focus(&mut harness, headless_run());
     assert!(!loads_another(&harness.pty_instructions()));
@@ -1050,7 +1068,7 @@ fn a_plugin_resolving_its_repository_is_not_loaded_twice() {
         .unwrap();
     assert!(closes_pty_pane(&harness.pty_instructions(), PLUGIN));
     assert_eq!(answer(closed).error_message, None);
-    assert!(!harness.screen.resolving_plugins.contains_key(&PLUGIN));
+    assert!(!harness.screen.core.resolving_plugins.contains_key(&PLUGIN));
 
     // Whatever it turns out to be ends the record: a pane, no pane, or a failure.
     for outcome in ["pane", "paneless", "failed"] {
@@ -1065,7 +1083,7 @@ fn a_plugin_resolving_its_repository_is_not_loaded_twice() {
             _ => harness.screen.plugin_failed(plugin),
         }
         assert!(
-            !harness.screen.resolving_plugins.contains_key(&plugin),
+            !harness.screen.core.resolving_plugins.contains_key(&plugin),
             "{outcome}"
         );
         harness.pty_instructions();
@@ -1251,6 +1269,7 @@ fn a_paneless_pane_tab_child_takes_the_failure_path() {
     assert!(!harness.has_pane(PLUGIN));
     let slot = harness
         .screen
+        .core
         .tabs
         .get(&TabId::new(0))
         .and_then(|tab| tab.pane_tabs_info(info.id))
@@ -1370,7 +1389,7 @@ fn a_deferred_reload_is_cancelled_when_the_plugin_unloads() {
 
     let (placed, mut rx) = harness.add_plugin_at(PLUGIN, Some(TabId::new(0)), None);
     assert!(!placed && !harness.has_pane(PLUGIN));
-    assert!(!harness.screen.paneless_plugins.contains_key(&PLUGIN));
+    assert!(!harness.screen.core.paneless_plugins.contains_key(&PLUGIN));
     assert_eq!(harness.pending.waiting_for_client.len(), 1);
     assert!(matches!(
         rx.try_recv(),
@@ -1398,7 +1417,7 @@ fn a_paneless_report_after_the_unload_is_ignored() {
 
     harness.paneless(PLUGIN);
 
-    assert!(!harness.screen.paneless_plugins.contains_key(&PLUGIN));
+    assert!(!harness.screen.core.paneless_plugins.contains_key(&PLUGIN));
     harness.pty_instructions();
     harness
         .screen
@@ -1487,6 +1506,7 @@ fn an_unload_of_the_shown_pane_tab_keeps_the_container_usable() {
         let shown = |harness: &Harness| {
             harness
                 .screen
+                .core
                 .tabs
                 .get(&TabId::new(0))
                 .and_then(|tab| tab.pane_tabs_info(info.id))
@@ -1496,6 +1516,7 @@ fn an_unload_of_the_shown_pane_tab_keeps_the_container_usable() {
         if close_before_unload {
             harness
                 .screen
+                .core
                 .tabs
                 .get_mut(&TabId::new(0))
                 .unwrap()
@@ -1580,9 +1601,10 @@ fn a_mounted_plugin_pane_that_goes_paneless_leaves_its_pane_tab_and_keeps_runnin
         "a headless plugin is not unloaded"
     );
     assert!(!closes_pty_pane(&harness.pty_instructions(), PLUGIN));
-    assert!(harness.screen.paneless_plugins.contains_key(&PLUGIN));
+    assert!(harness.screen.core.paneless_plugins.contains_key(&PLUGIN));
     let tabs = harness
         .screen
+        .core
         .tabs
         .get(&TabId::new(0))
         .and_then(|tab| tab.pane_tabs_info(info.id))
@@ -1625,7 +1647,7 @@ fn a_blank_pane_tab_slot_keeps_its_id_for_the_container_after_the_plugin_goes_he
 
     harness.paneless(PLUGIN);
 
-    assert!(harness.screen.paneless_plugins.contains_key(&PLUGIN));
+    assert!(harness.screen.core.paneless_plugins.contains_key(&PLUGIN));
     assert!(harness.has_pane(PLUGIN), "the container keeps the id");
     assert!(
         !harness.screen.closes_by_unloading(PLUGIN),
@@ -1665,7 +1687,7 @@ fn a_reload_reclaims_its_blank_tiled_pane_tab_without_creating_a_duplicate() {
         .screen
         .pane_tab_loaded(mounted.id, 1, 0, Ok((sibling, headless_run())))
         .unwrap();
-    let tab = harness.screen.tabs.get_mut(&LAYOUT_TAB).unwrap();
+    let tab = harness.screen.core.tabs.get_mut(&LAYOUT_TAB).unwrap();
     tab.focus_pane_with_id(pane, false, false, CLIENT).unwrap();
     let geometry = tab.get_pane_with_id(pane).unwrap().current_geom();
     let original = tab.pane_tabs_info(mounted.id).unwrap();
@@ -1678,6 +1700,7 @@ fn a_reload_reclaims_its_blank_tiled_pane_tab_without_creating_a_duplicate() {
     assert_eq!(
         harness
             .screen
+            .core
             .tabs
             .values()
             .flat_map(|tab| tab.get_all_pane_ids())
@@ -1685,7 +1708,7 @@ fn a_reload_reclaims_its_blank_tiled_pane_tab_without_creating_a_duplicate() {
             .count(),
         1
     );
-    let tab = harness.screen.tabs.get_mut(&LAYOUT_TAB).unwrap();
+    let tab = harness.screen.core.tabs.get_mut(&LAYOUT_TAB).unwrap();
     let restored = tab.pane_tabs_info(mounted.id).unwrap();
     assert_eq!(restored.pane_id, pane);
     assert_eq!(restored.active, original.active);
@@ -1726,7 +1749,7 @@ fn a_reload_that_declares_a_pane_again_leaves_the_background_registry() {
     let other = PluginId::new(8);
     harness.paneless(PLUGIN);
     for plugin in [PLUGIN, other] {
-        harness.screen.background_plugin_subscriptions.insert(
+        harness.screen.core.background_plugin_subscriptions.insert(
             (plugin, CLIENT),
             HashSet::from([yinz_types::data::EventType::PaneUpdate]),
         );
@@ -1738,6 +1761,7 @@ fn a_reload_that_declares_a_pane_again_leaves_the_background_registry() {
     assert_eq!(
         harness
             .screen
+            .core
             .background_plugin_subscriptions
             .keys()
             .copied()
@@ -1752,7 +1776,7 @@ fn a_reload_that_declares_a_pane_again_leaves_the_background_registry() {
 #[test]
 fn an_add_plugin_for_a_plugin_that_was_never_headless_keeps_its_registration() {
     let mut harness = Harness::new();
-    harness.screen.background_plugin_subscriptions.insert(
+    harness.screen.core.background_plugin_subscriptions.insert(
         (PLUGIN, CLIENT),
         HashSet::from([yinz_types::data::EventType::PaneUpdate]),
     );
@@ -1762,6 +1786,7 @@ fn an_add_plugin_for_a_plugin_that_was_never_headless_keeps_its_registration() {
     assert!(placed);
     assert!(harness
         .screen
+        .core
         .background_plugin_subscriptions
         .contains_key(&(PLUGIN, CLIENT)));
 }
@@ -1775,7 +1800,7 @@ impl Harness {
         use yinz_types::multipane::*;
         let children = [PaneId::Plugin(OWNER), child];
         let placement = OverlayPlacement::dismissible(None);
-        let tab = self.screen.tabs.get_mut(&TabId::new(0)).unwrap();
+        let tab = self.screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
         for pane in children {
             tab.new_pane(
                 pane,
@@ -1845,12 +1870,13 @@ fn a_given_up_multipane_slot_leaves_its_owner_alone_in_the_container() {
     );
     assert!(harness
         .screen
+        .core
         .tabs
         .get(&TabId::new(0))
         .unwrap()
         .pane_is_overlay(owner));
     assert_eq!(harness.screen.active_pane_id(CLIENT), Some(owner));
-    assert!(harness.screen.destroyed_panes.contains(&slot));
+    assert!(harness.screen.core.destroyed_panes.contains(&slot));
     let pty = harness.pty_instructions();
     assert!(
         matches!(pty.as_slice(), [PtyInstruction::ClosePane(closed, _)] if *closed == slot),
@@ -1872,8 +1898,8 @@ fn a_multipane_child_that_goes_paneless_leaves_its_container_without_a_pty_close
     assert!(harness.has_pane(OWNER));
     assert_eq!(harness.multipane_of(owner), None);
     assert_eq!(harness.screen.active_pane_id(CLIENT), Some(owner));
-    assert!(harness.screen.destroyed_panes.contains(&child));
-    assert!(harness.screen.paneless_plugins.contains_key(&PLUGIN));
+    assert!(harness.screen.core.destroyed_panes.contains(&child));
+    assert!(harness.screen.core.paneless_plugins.contains_key(&PLUGIN));
     assert!(
         harness.pty_instructions().is_empty(),
         "a headless plugin is not unloaded"
@@ -1895,6 +1921,7 @@ fn a_given_up_slot_outside_a_multipane_closes_as_usual() {
     };
     harness
         .screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -1948,6 +1975,7 @@ fn a_pane_tab_child_in_a_multipane_slot_that_goes_paneless_keeps_the_container()
     };
     let info = harness
         .screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -1965,7 +1993,7 @@ fn a_pane_tab_child_in_a_multipane_slot_that_goes_paneless_keeps_the_container()
 
     harness.paneless(PLUGIN);
 
-    let tab = harness.screen.tabs.get(&TabId::new(0)).unwrap();
+    let tab = harness.screen.core.tabs.get(&TabId::new(0)).unwrap();
     let tabs = tab.pane_tabs_info(info.id).expect("the pane tabs survive");
     assert_eq!(
         tabs.pane_id, child,
@@ -1978,7 +2006,7 @@ fn a_pane_tab_child_in_a_multipane_slot_that_goes_paneless_keeps_the_container()
         Some([owner, child]),
         "the container keeps its place in the multipane"
     );
-    assert!(harness.screen.paneless_plugins.contains_key(&PLUGIN));
+    assert!(harness.screen.core.paneless_plugins.contains_key(&PLUGIN));
     assert!(
         !closes_pty_pane(&harness.pty_instructions(), PLUGIN),
         "a headless plugin is not unloaded"
@@ -2222,7 +2250,7 @@ fn successful_reload_refreshes_headless_locations_without_losing_alias_metadata(
         harness
             .screen
             .update_plugin_location(PLUGIN, resolved.location.clone());
-        let updated = &harness.screen.paneless_plugins[&PLUGIN];
+        let updated = &harness.screen.core.paneless_plugins[&PLUGIN];
         let mut expected = original.clone();
         expected.location = resolved.location.clone();
         assert_eq!(updated.get_run_plugin().unwrap(), expected);
@@ -2242,6 +2270,6 @@ fn successful_reload_refreshes_headless_locations_without_losing_alias_metadata(
         harness
             .screen
             .update_plugin_location(PLUGIN, resolved.location.clone());
-        assert!(!harness.screen.paneless_plugins.contains_key(&PLUGIN));
+        assert!(!harness.screen.core.paneless_plugins.contains_key(&PLUGIN));
     }
 }

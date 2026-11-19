@@ -13,18 +13,19 @@ fn detached_background_plugins_receive_current_panes_and_tabs() {
     new_tab(&mut screen, 1, TabId::new(0));
     let client = ClientId::new(1);
     screen.remove_client(client).unwrap();
-    assert!(screen.active_tab_ids.is_empty());
+    assert!(screen.core.active_tab_ids.is_empty());
     let plugin = PluginId::new(99);
-    screen.background_plugin_subscriptions.insert(
+    screen.core.background_plugin_subscriptions.insert(
         (plugin, client),
         HashSet::from([EventType::PaneUpdate, EventType::TabUpdate]),
     );
-    screen.background_plugin_subscriptions.insert(
+    screen.core.background_plugin_subscriptions.insert(
         (PluginId::new(100), client),
         HashSet::from([EventType::Timer]),
     );
     let (sender, receiver) = channels::unbounded();
     screen
+        .core
         .bus
         .senders
         .replace_to_plugin(SenderWithContext::new(sender));
@@ -57,7 +58,7 @@ fn detached_background_plugins_receive_current_panes_and_tabs() {
 fn a_pane_manifest_carries_the_pane_cwd() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.terminal_cwds.insert(
+    screen.core.terminal_cwds.insert(
         crate::TerminalId::new(1),
         std::path::PathBuf::from("/work/agent"),
     );
@@ -79,7 +80,7 @@ fn a_pane_manifest_carries_the_pane_cwd() {
 fn a_plugin_pane_has_no_cwd() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.terminal_cwds.insert(
+    screen.core.terminal_cwds.insert(
         crate::TerminalId::new(1),
         std::path::PathBuf::from("/work/agent"),
     );
@@ -153,7 +154,7 @@ fn reloaded_plugin_location_updates_existing_panes_and_preserves_alias_configura
             for alias in [false, true] {
                 let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
                 let (plugin_sender, _plugin_receiver) = channels::unbounded();
-                screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_sender));
+                screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_sender));
                 new_tab(&mut screen, 1, TabId::new(0));
                 let mut original = RunPlugin {
                     location: RunPluginLocation::File("/plugins/v1.scm".into()),

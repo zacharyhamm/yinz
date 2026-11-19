@@ -149,7 +149,12 @@ fn main() {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         });
-        yinz_server::start_server_impl(Box::new(os), socket, true);
+        yinz_server::start_server_impl(
+            Some(commands::restored_agent_observer(&os)),
+            Box::new(os),
+            socket,
+            true,
+        );
         return;
     }
     // A pty-host supervisor is spawned once per pane, so it branches before the

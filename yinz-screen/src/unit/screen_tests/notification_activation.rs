@@ -13,12 +13,12 @@ fn setup() -> (Screen, ClientId, Viewport, Instant) {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 30 });
     let client = ClientId::new(1);
     new_tab(&mut screen, 1, TabId::new(0));
-    let mut mode = screen.default_mode_info.clone();
+    let mut mode = screen.core.default_mode_info.clone();
     mode.keybinds = Config::from_default_assets()
         .unwrap()
         .keybinds
         .to_keybinds_vec();
-    screen.mode_info.insert(client, mode);
+    screen.core.mode_info.insert(client, mode);
     screen
         .receive_toast(
             "done".into(),
@@ -29,7 +29,7 @@ fn setup() -> (Screen, ClientId, Viewport, Instant) {
         )
         .unwrap();
     let now = Instant::now() + Duration::from_secs(1);
-    screen.pinned_now = Some(now);
+    screen.core.pinned_now = Some(now);
     let viewport = Viewport {
         x: 0,
         y: 0,
@@ -41,9 +41,10 @@ fn setup() -> (Screen, ClientId, Viewport, Instant) {
 
 fn bind(screen: &mut Screen, client: ClientId, keys: &[KeyWithModifier]) {
     screen
+        .core
         .mode_info
         .entry(client)
-        .or_insert_with(|| screen.default_mode_info.clone())
+        .or_insert_with(|| screen.core.default_mode_info.clone())
         .keybinds = vec![(
         InputMode::Normal,
         keys.iter()
@@ -107,7 +108,7 @@ fn assert_parked_notification_activation(arriving_rows: usize) {
     let fallback = PaneId::Terminal(TerminalId::new(2));
     let origin = PaneId::Terminal(TerminalId::new(3));
     new_tab(&mut screen, 1, target_tab);
-    let tab = screen.tabs.get_mut(&target_tab).unwrap();
+    let tab = screen.core.tabs.get_mut(&target_tab).unwrap();
     tab.rename_pane(b"Parked".to_vec(), parked).unwrap();
     tab.new_pane(
         fallback,
@@ -137,14 +138,14 @@ fn assert_parked_notification_activation(arriving_rows: usize) {
     assert_eq!(screen.active_pane_id(client), Some(origin));
     screen.set_client_size(client, arrival_size).unwrap();
     screen.resize_to_clients().unwrap();
-    assert_eq!(screen.tabs[&target_tab].size, small);
+    assert_eq!(screen.core.tabs[&target_tab].size, small);
     let server = screen_wired_to_server(&mut screen);
 
     let now = Instant::now();
-    screen.pinned_now = Some(now);
+    screen.core.pinned_now = Some(now);
     activate_target(&mut screen, client, parked, now);
 
-    let tab = &screen.tabs[&target_tab];
+    let tab = &screen.core.tabs[&target_tab];
     assert_eq!(tab.size, arrival_size);
     assert_eq!(tab.get_viewport().rows, arriving_rows);
     assert_eq!(tab.get_viewport().cols, arrival_size.cols);
@@ -166,7 +167,10 @@ fn assert_parked_notification_activation(arriving_rows: usize) {
         parked
     };
     assert_eq!(screen.active_pane_id(client), Some(final_focus));
-    assert_eq!(screen.notification_return_panes.get(&client), Some(&origin));
+    assert_eq!(
+        screen.notices.notification_return_panes.get(&client),
+        Some(&origin)
+    );
     let published: Vec<_> = server
         .try_iter()
         .filter_map(|(instruction, _)| match instruction {
@@ -203,6 +207,7 @@ fn notification_return_cross_tab_publishes_final_scroll_mode() {
 
             for (pane_id, scrolled) in [(origin, origin_scrolled), (remembered, !origin_scrolled)] {
                 let pane = screen
+                    .core
                     .tabs
                     .get_mut(&origin_tab)
                     .unwrap()
@@ -279,8 +284,14 @@ fn cross_tab_notification_focus_publishes_shared_layer_changes_for_a_destination
         })
         .collect();
     assert_eq!(peer_updates, [(floating, target, false)]);
-    assert_eq!(screen.notification_return_panes.get(&client), Some(&origin));
-    assert!(!screen.notification_return_panes.contains_key(&other));
+    assert_eq!(
+        screen.notices.notification_return_panes.get(&client),
+        Some(&origin)
+    );
+    assert!(!screen
+        .notices
+        .notification_return_panes
+        .contains_key(&other));
 }
 
 #[test]
@@ -299,6 +310,7 @@ fn notification_return_uses_actual_focus_when_the_target_cannot_take_it() {
     activate_target(&mut screen, client, second, now);
     assert_eq!(screen.active_pane_id(client), Some(second));
     screen
+        .core
         .tabs
         .get_mut(&second_tab)
         .unwrap()
@@ -331,7 +343,10 @@ fn notification_return_uses_actual_focus_when_the_target_cannot_take_it() {
     // First establish a different saved origin so that recording the switch is observable.
     activate_target(&mut screen, client, second, now);
     activate_target(&mut screen, client, first, now);
-    assert_eq!(screen.notification_return_panes.get(&client), Some(&second));
+    assert_eq!(
+        screen.notices.notification_return_panes.get(&client),
+        Some(&second)
+    );
     activate_target(&mut screen, client, refused, now);
     assert_eq!(screen.active_pane_id(client), Some(second));
     screen.return_from_notification(client).unwrap();
@@ -356,8 +371,14 @@ fn notification_return_slots_are_isolated_and_cleared_when_leaving_interactive_u
         .unwrap();
     activate_target(&mut screen, client, third, now);
     activate_target(&mut screen, other, third, now);
-    assert_eq!(screen.notification_return_panes.get(&client), Some(&first));
-    assert_eq!(screen.notification_return_panes.get(&other), Some(&second));
+    assert_eq!(
+        screen.notices.notification_return_panes.get(&client),
+        Some(&first)
+    );
+    assert_eq!(
+        screen.notices.notification_return_panes.get(&other),
+        Some(&second)
+    );
 
     activate_target(&mut screen, other, third, now);
     screen
@@ -385,17 +406,26 @@ fn notification_return_slots_are_isolated_and_cleared_when_leaving_interactive_u
         )
         .unwrap();
     screen.activate_last_notification(other, now);
-    assert_eq!(screen.notification_return_panes.get(&other), Some(&second));
+    assert_eq!(
+        screen.notices.notification_return_panes.get(&other),
+        Some(&second)
+    );
 
     screen.add_watcher_client(client).unwrap();
-    assert!(!screen.notification_return_panes.contains_key(&client));
+    assert!(!screen
+        .notices
+        .notification_return_panes
+        .contains_key(&client));
     activate_target(&mut screen, client, first, now);
-    assert!(!screen.notification_return_panes.contains_key(&client));
+    assert!(!screen
+        .notices
+        .notification_return_panes
+        .contains_key(&client));
     screen.remove_watcher_client(client);
     screen.return_from_notification(other).unwrap();
     assert_eq!(screen.active_pane_id(other), Some(second));
     screen.remove_client(other).unwrap();
-    assert!(screen.notification_return_panes.is_empty());
+    assert!(screen.notices.notification_return_panes.is_empty());
 }
 
 #[test]
@@ -451,16 +481,20 @@ fn notification_return_leaves_unavailable_panes_in_place() {
     assert_eq!(screen.active_pane_id(client), Some(origin));
     activate_target(&mut screen, client, target, now);
     screen
+        .core
         .tabs
         .get_mut(&origin_tab)
         .unwrap()
         .suppress_pane(origin, Some(client));
     screen.return_from_notification(client).unwrap();
     assert_eq!(screen.active_pane_id(client), Some(target));
-    assert!(screen.tabs[&origin_tab].has_pane_with_pid(&origin));
-    assert!(screen.tabs[&origin_tab].rendered_pane(origin).is_none());
+    assert!(screen.core.tabs[&origin_tab].has_pane_with_pid(&origin));
+    assert!(screen.core.tabs[&origin_tab]
+        .rendered_pane(origin)
+        .is_none());
 
     screen
+        .core
         .tabs
         .get_mut(&origin_tab)
         .unwrap()
@@ -478,7 +512,10 @@ fn notification_return_leaves_unavailable_panes_in_place() {
     screen.close_pane_explicitly(origin, None);
     screen.return_from_notification(client).unwrap();
     assert_eq!(screen.active_pane_id(client), Some(target));
-    assert!(!screen.notification_return_panes.contains_key(&client));
+    assert!(!screen
+        .notices
+        .notification_return_panes
+        .contains_key(&client));
 }
 
 fn assert_mock_focus(mock: &MockScreen, tab_id: TabId, pane_id: PaneId) {
@@ -798,23 +835,26 @@ fn notification_return_retry_cue_refreshes_expires_and_clears_after_success() {
     let mut grid = grid_for_render_snapshot(Size { cols: 80, rows: 30 });
     let cue = "Layout loading. Try the return shortcut again.";
     screen.return_from_notification(client).unwrap();
-    let first_deadline = screen.notification_return_retry_until[&client];
+    let first_deadline = screen.notices.notification_return_retry_until[&client];
     assert!(render_frame_into(&mut screen, &server, client, &mut grid).contains(cue));
 
-    screen.pinned_now = Some(now + Duration::from_secs(1));
+    screen.core.pinned_now = Some(now + Duration::from_secs(1));
     screen.return_from_notification(client).unwrap();
-    let refreshed_deadline = screen.notification_return_retry_until[&client];
+    let refreshed_deadline = screen.notices.notification_return_retry_until[&client];
     assert!(refreshed_deadline > first_deadline);
-    screen.pinned_now = Some(first_deadline);
+    screen.core.pinned_now = Some(first_deadline);
     assert!(render_frame_into(&mut screen, &server, client, &mut grid).contains(cue));
-    screen.pinned_now = Some(refreshed_deadline);
+    screen.core.pinned_now = Some(refreshed_deadline);
     screen.on_animation_tick(refreshed_deadline).unwrap();
     let expired = render_frame_into(&mut screen, &server, client, &mut grid);
     assert!(
         !expired.is_empty() && !expired.contains(cue),
         "cue cells must repaint on expiry"
     );
-    assert!(!screen.notification_return_retry_until.contains_key(&client));
+    assert!(!screen
+        .notices
+        .notification_return_retry_until
+        .contains_key(&client));
     assert_eq!(screen.active_pane_id(client), Some(target));
 
     screen.return_from_notification(client).unwrap();
@@ -835,7 +875,7 @@ fn notification_return_retry_cue_refreshes_expires_and_clears_after_success() {
 fn notification_return_retry_cue_blocks_covered_history_input() {
     let size = Size { cols: 80, rows: 24 };
     let mut screen = create_non_mirrored_screen(size);
-    screen.notification_position = NotificationPosition::TopRight;
+    screen.notices.notification_position = NotificationPosition::TopRight;
     let client = ClientId::new(1);
     let tab = TabId::new(0);
     let pending_tab = TabId::new(1);
@@ -844,14 +884,14 @@ fn notification_return_retry_cue_blocks_covered_history_input() {
     new_tab(&mut screen, 1, tab);
     add_pane_to_tab(&mut screen, tab, target, false);
     let now = Instant::now() + Duration::from_secs(1);
-    screen.pinned_now = Some(now);
+    screen.core.pinned_now = Some(now);
     activate_target(&mut screen, client, target, now);
     screen
         .new_tab(pending_tab, (vec![], vec![]), None, None)
         .unwrap();
 
     let (plugin_tx, plugin_rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
     screen
         .receive_toast(
             "expanded history ".repeat(120),
@@ -879,6 +919,7 @@ fn notification_return_retry_cue_blocks_covered_history_input() {
 
     let viewport = screen.notification_browser_viewport(client).unwrap();
     let (cue, cue_lines) = screen
+        .notices
         .notification_return_retry_layout(viewport, now, client)
         .unwrap();
     let frame = screen.notification_browser_frame(client, viewport).unwrap();
@@ -901,17 +942,20 @@ fn notification_return_retry_cue_blocks_covered_history_input() {
     };
 
     screen.handle_mouse_event(MouseEvent::new_left_press_event(cell), client);
-    assert!(screen.notification_mouse_captures.contains(&client));
-    let deadline = screen.notification_return_retry_until[&client];
-    screen.pinned_now = Some(deadline);
+    assert!(screen.notices.notification_mouse_captures.contains(&client));
+    let deadline = screen.notices.notification_return_retry_until[&client];
+    screen.core.pinned_now = Some(deadline);
     screen.on_animation_tick(deadline).unwrap();
     screen.handle_mouse_event(MouseEvent::new_left_release_event(cell), client);
-    assert!(!screen.notification_mouse_captures.contains(&client));
+    assert!(!screen.notices.notification_mouse_captures.contains(&client));
     assert!(screen.notification_browser_is_visible(client));
     let frame = screen.notification_browser_frame(client, viewport).unwrap();
     assert_eq!(frame.ids[frame.selected], id);
     assert_eq!(screen.active_pane_id(client), Some(target));
-    assert_eq!(screen.notification_return_panes.get(&client), Some(&origin));
+    assert_eq!(
+        screen.notices.notification_return_panes.get(&client),
+        Some(&origin)
+    );
     assert_eq!(screen.pending_notification().unwrap().info.id, id);
     assert!(payloads().is_empty());
 
@@ -988,15 +1032,21 @@ fn activation_hint_uses_current_clients_direct_binding_in_stable_order() {
         .footer
         .is_some());
     // A binding reachable only through a mode switch is not a direct activation shortcut.
-    screen.mode_info.get_mut(&client).unwrap().keybinds.push((
-        InputMode::Locked,
-        vec![(
-            a,
-            vec![Action::SwitchToMode {
-                input_mode: InputMode::Normal,
-            }],
-        )],
-    ));
+    screen
+        .core
+        .mode_info
+        .get_mut(&client)
+        .unwrap()
+        .keybinds
+        .push((
+            InputMode::Locked,
+            vec![(
+                a,
+                vec![Action::SwitchToMode {
+                    input_mode: InputMode::Normal,
+                }],
+            )],
+        ));
     screen
         .change_mode(InputMode::Locked, Some(InputMode::Normal), client)
         .unwrap();
@@ -1082,7 +1132,7 @@ fn pending_activation_consumes_newest_first_across_clients_during_exit() {
             NotificationId::new(id)
         );
         screen.activate_last_notification(clicker, now);
-        assert!(!screen.notification_history[id as usize].pending);
+        assert!(!screen.notices.notification_history[id as usize].pending);
         assert!(screen
             .notification_layout(viewport, now, client)
             .iter()
@@ -1100,20 +1150,24 @@ fn pending_activation_consumes_newest_first_across_clients_during_exit() {
         Some(PaneId::Terminal(TerminalId::new(1)))
     );
     assert!(screen.pending_notification().is_none());
-    assert!(screen.notifications.iter().all(|n| n.is_dismissing()));
+    assert!(screen
+        .notices
+        .notifications
+        .iter()
+        .all(|n| n.is_dismissing()));
     screen.activate_last_notification(other, now);
     assert_eq!(
         screen.get_active_pane_id(&other),
         Some(PaneId::Terminal(TerminalId::new(2)))
     );
-    assert_eq!(screen.notification_history.len(), 3);
+    assert_eq!(screen.notices.notification_history.len(), 3);
 }
 
 #[test]
 fn expired_callbacks_and_pane_targets_remain_pending_but_information_does_not() {
     let (mut screen, client, _, now) = setup();
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     for (text, pane) in [
         ("callback only", None),
         (
@@ -1145,9 +1199,9 @@ fn expired_callbacks_and_pane_targets_remain_pending_but_information_does_not() 
             .unwrap();
     }
     let expired = now + Duration::from_secs(3600);
-    screen.pinned_now = Some(expired);
+    screen.core.pinned_now = Some(expired);
     screen.reap_settled_notifications(expired);
-    assert!(screen.notifications.is_empty());
+    assert!(screen.notices.notifications.is_empty());
     for id in (0..3).rev() {
         assert_eq!(
             screen.pending_notification().unwrap().info.id,
@@ -1165,7 +1219,7 @@ fn expired_callbacks_and_pane_targets_remain_pending_but_information_does_not() 
         .collect();
     assert_eq!(payloads, ["closed pane callback", "callback only"]);
     assert!(screen.pending_notification().is_none());
-    assert_eq!(screen.notification_history.len(), 4);
+    assert_eq!(screen.notices.notification_history.len(), 4);
 }
 
 #[test]
@@ -1233,11 +1287,11 @@ fn clicking_or_browsing_an_older_notification_consumes_only_that_entry() {
             ));
             assert!(screen.handle_pane_notification_click(&click, viewport, client, now));
         } else {
-            screen.open_notification_browser(client);
+            screen.notices.open_notification_browser(client);
             screen.move_notification_selection(Direction::Down, client);
             screen.activate_selected_notification(client, now);
         }
-        assert!(!screen.notification_history[0].pending);
+        assert!(!screen.notices.notification_history[0].pending);
         assert_eq!(
             screen.pending_notification().unwrap().info.id,
             NotificationId::new(1)
@@ -1247,14 +1301,14 @@ fn clicking_or_browsing_an_older_notification_consumes_only_that_entry() {
         assert_eq!(screen.active_pane_id(client), Some(origin));
         screen.activate_last_notification(client, now);
         assert!(screen.pending_notification().is_none());
-        screen.open_notification_browser(client);
+        screen.notices.open_notification_browser(client);
         screen.move_notification_selection(Direction::Down, client);
         screen.activate_selected_notification(client, now);
         assert_eq!(
             screen.get_active_pane_id(&client),
             Some(PaneId::Terminal(TerminalId::new(1)))
         );
-        assert_eq!(screen.notification_history.len(), 2);
+        assert_eq!(screen.notices.notification_history.len(), 2);
     }
 }
 
@@ -1275,8 +1329,11 @@ fn footer_geometry_agrees_for_render_damage_cursor_and_click_for_each_client() {
     let other_rect = screen.notification_cell_rects(viewport, now, other)[0];
     assert_eq!(rect.rows, other_rect.rows + 1);
     assert!(rect.cols > other_rect.cols);
-    assert_eq!(screen.last_notification_fill[&client], vec![rect]);
-    assert_eq!(screen.last_notification_fill[&other], vec![other_rect]);
+    assert_eq!(screen.notices.last_notification_fill[&client], vec![rect]);
+    assert_eq!(
+        screen.notices.last_notification_fill[&other],
+        vec![other_rect]
+    );
     let mut output = Output::default();
     output.set_notification_rects(
         [client, other]
@@ -1290,7 +1347,7 @@ fn footer_geometry_agrees_for_render_damage_cursor_and_click_for_each_client() {
     let click = MouseEvent::new_left_press_event(Position::new(y as i32, x as u16));
     assert!(!screen.handle_pane_notification_click(&click, viewport, other, now));
     assert!(screen.handle_pane_notification_click(&click, viewport, client, now));
-    assert!(screen.notifications[0].is_dismissing());
+    assert!(screen.notices.notifications[0].is_dismissing());
 }
 
 #[test]
@@ -1325,11 +1382,11 @@ fn consuming_a_toast_transfers_hint_without_jumping_and_repairs_exposed_cells() 
         NotificationPosition::BottomRight,
     ] {
         let (mut screen, client, viewport, now) = setup();
-        screen.notification_position = corner;
+        screen.notices.notification_position = corner;
         screen
             .receive_toast("newer".into(), None, None, None, None)
             .unwrap();
-        for notification in &mut screen.notifications {
+        for notification in &mut screen.notices.notifications {
             notification.y_offset = Tween::settled(0.0);
         }
         let receiver = screen_wired_to_server(&mut screen);
@@ -1372,8 +1429,8 @@ fn footer_keeps_message_limit_and_stack_displacement_in_all_corners() {
         NotificationPosition::BottomRight,
     ] {
         let (mut screen, client, viewport, now) = setup();
-        screen.notification_position = corner;
-        screen.notifications[0].text = "row\n".repeat(20);
+        screen.notices.notification_position = corner;
+        screen.notices.notifications[0].text = "row\n".repeat(20);
         let layout = &screen.notification_layout(viewport, now, client)[0];
         assert_eq!(layout.lines.len(), MAX_NOTIFICATION_TEXT_ROWS);
         assert_eq!(layout.height(), MAX_NOTIFICATION_TEXT_ROWS + 3);
@@ -1383,20 +1440,20 @@ fn footer_keeps_message_limit_and_stack_displacement_in_all_corners() {
             layout.x,
             layout.y,
             layout.width,
-            &screen.style,
+            &screen.core.style,
             1.0,
         );
         assert_eq!(chunks.len(), layout.height());
         // Pin a surviving toast at rest, then transfer the footer as a new toast arrives.
-        screen.notifications[0].y_offset = Tween::settled(0.0);
-        let old_id = screen.notifications[0].id;
+        screen.notices.notifications[0].y_offset = Tween::settled(0.0);
+        let old_id = screen.notices.notifications[0].id;
         let before = screen.notification_layout(viewport, now, client)[0].y;
         let arrival = now + Duration::from_millis(16);
         screen.with_notification_stack_change(arrival, |screen| {
-            let mut record = screen.notification_history.last().unwrap().clone();
+            let mut record = screen.notices.notification_history.last().unwrap().clone();
             record.info.id = NotificationId::new(99);
-            screen.notification_history.push(record);
-            screen.notifications.insert(
+            screen.notices.notification_history.push(record);
+            screen.notices.notifications.insert(
                 0,
                 crate::screen::Notification::new(
                     NotificationId::new(99),

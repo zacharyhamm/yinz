@@ -6,132 +6,97 @@ use std::time::Instant;
 use yinz_bus::command_palette::HistoryHeader;
 use yinz_bus::web::{WebAgentRef, WebFocusError, WebLiveAgent, WebLiveHeader};
 use yinz_runtime::errors::prelude::*;
-use yinz_types::agent::control::{
-    peer_web_detail_id, valid_web_identity, valid_web_peer_instance, AgentOutcome,
-};
-use yinz_types::agent::AgentState;
+use yinz_types::agent::control::{peer_web_detail_id, valid_web_peer_instance};
 use yinz_types::internal_ids::SessionName;
-use yinz_types::pane_id::PaneId;
 
 impl Screen {
     pub(super) fn web_live_agents(&mut self, reply: crossbeam::channel::Sender<Vec<WebLiveAgent>>) {
-        let instance = self.instance_id.to_string();
+        let instance = self.core.instance_id.to_string();
         let mut local_groups = HashMap::new();
-        let agents = self
-            .live_agents_with_tabs()
-            .into_iter()
-            .filter_map(|(live, tab)| {
-                let presentation = live.presentation()?;
-                let current_session = matches!(tab, LiveAgentTab::Local(_));
-                let (tab_group_session, tab_group, peer_instance) = match tab {
-                    LiveAgentTab::Local(tab) => (
-                        &self.session_name,
-                        self.tab_group_ids.get(&tab).and_then(|&id| {
-                            local_groups
-                                .entry(id)
-                                .or_insert_with(|| self.tab_group_info(tab))
-                                .clone()
-                        }),
-                        None,
-                    ),
-                    // A renamed socket can be discovered before the checkpoint name changes.
-                    LiveAgentTab::Peer {
-                        socket_name,
-                        session,
-                        position,
-                    } if session.web_peer_instance.as_deref() != Some(instance.as_str()) => (
-                        socket_name,
-                        session
-                            .tabs
-                            .iter()
-                            .find(|tab| tab.position == position)
-                            .and_then(|tab| tab.group.clone()),
-                        session
-                            .web_peer_instance
-                            .as_deref()
-                            .filter(|value| valid_web_peer_instance(value))
-                            .map(str::to_owned),
-                    ),
-                    LiveAgentTab::Peer { .. } => return None,
-                };
-                let (glyph, status, _) = yinz_panes::ui::agent_title::status(presentation.state);
-                let mut header = HistoryHeader::default();
-                live.header_overlay(&mut header, None);
-                Some(WebLiveAgent {
-                    id: live.id(),
-                    session: live.session.clone(),
-                    tab_group_session: tab_group_session.clone(),
-                    tab_group,
-                    current_session,
-                    peer_instance,
-                    run: live.run(),
-                    label_source: live.label_source(),
-                    provider: presentation.provider,
-                    activity: presentation.activity,
-                    host: presentation.host,
-                    pane_label: presentation.pane_id,
-                    glyph,
-                    status,
-                    focused: current_session
-                        && self
-                            .active_tab_ids
-                            .keys()
-                            .any(|client| self.get_active_pane_id(client) == Some(live.pane.id)),
-                    selectable: live.pane.is_selectable,
-                    suppressed: live.pane.is_suppressed,
-                    usage_unavailable: live.usage_unavailable(&self.session_name),
-                    details: live.text(),
-                    header: WebLiveHeader {
-                        name: header.name,
-                        status: header.status,
-                        location: header.location,
-                        task: header.task,
-                        project: header.project,
-                        session_id: live
-                            .metadata
-                            .get("agent-session")
-                            .map(|id| format!("session {id}")),
-                    },
-                    pane: live.pane,
-                    metadata: live.metadata,
+        let agents =
+            self.live_agents_with_tabs()
+                .into_iter()
+                .filter_map(|(live, tab)| {
+                    let presentation = live.presentation()?;
+                    let current_session = matches!(tab, LiveAgentTab::Local(_));
+                    let (tab_group_session, tab_group, peer_instance) = match tab {
+                        LiveAgentTab::Local(tab) => (
+                            &self.core.session_name,
+                            self.core.tab_group_ids.get(&tab).and_then(|&id| {
+                                local_groups
+                                    .entry(id)
+                                    .or_insert_with(|| self.tab_group_info(tab))
+                                    .clone()
+                            }),
+                            None,
+                        ),
+                        // A renamed socket can be discovered before the checkpoint name changes.
+                        LiveAgentTab::Peer {
+                            socket_name,
+                            session,
+                            position,
+                        } if session.web_peer_instance.as_deref() != Some(instance.as_str()) => (
+                            socket_name,
+                            session
+                                .tabs
+                                .iter()
+                                .find(|tab| tab.position == position)
+                                .and_then(|tab| tab.group.clone()),
+                            session
+                                .web_peer_instance
+                                .as_deref()
+                                .filter(|value| valid_web_peer_instance(value))
+                                .map(str::to_owned),
+                        ),
+                        LiveAgentTab::Peer { .. } => return None,
+                    };
+                    let (glyph, status, _) =
+                        yinz_panes::ui::agent_title::status(presentation.state);
+                    let mut header = HistoryHeader::default();
+                    live.header_overlay(&mut header, None);
+                    Some(WebLiveAgent {
+                        id: live.id(),
+                        session: live.session.clone(),
+                        tab_group_session: tab_group_session.clone(),
+                        tab_group,
+                        current_session,
+                        peer_instance,
+                        run: live.run(),
+                        label_source: live.label_source(),
+                        provider: presentation.provider,
+                        activity: presentation.activity,
+                        host: presentation.host,
+                        pane_label: presentation.pane_id,
+                        glyph,
+                        status,
+                        focused: current_session
+                            && self.core.active_tab_ids.keys().any(|client| {
+                                self.get_active_pane_id(client) == Some(live.pane.id)
+                            }),
+                        selectable: live.pane.is_selectable,
+                        suppressed: live.pane.is_suppressed,
+                        usage_unavailable: live.usage_unavailable(&self.core.session_name),
+                        details: live.text(),
+                        header: WebLiveHeader {
+                            name: header.name,
+                            status: header.status,
+                            location: header.location,
+                            task: header.task,
+                            project: header.project,
+                            session_id: live
+                                .metadata
+                                .get("agent-session")
+                                .map(|id| format!("session {id}")),
+                        },
+                        pane: live.pane,
+                        metadata: live.metadata,
+                    })
                 })
-            })
-            .collect();
+                .collect();
         reply
             .send(agents)
             .map_err(|_| anyhow!("web reply receiver dropped"))
             .non_fatal();
-    }
-
-    pub(super) fn verify_web_peer_focus(
-        &self,
-        expected_instance: &str,
-        pane_id: PaneId,
-        kind: &str,
-        conversation: &str,
-    ) -> AgentOutcome {
-        if expected_instance != self.instance_id.to_string()
-            || !valid_web_identity(kind)
-            || !valid_web_identity(conversation)
-        {
-            return AgentOutcome::TargetChanged;
-        }
-        let Some(pane) = self.get_pane_info(pane_id) else {
-            return AgentOutcome::TargetNotFound;
-        };
-        let Some(agent) = pane.agent else {
-            return AgentOutcome::TargetChanged;
-        };
-        if agent.kind != kind || agent.session_id.as_deref() != Some(conversation) {
-            return AgentOutcome::TargetChanged;
-        }
-        if pane.exited || agent.state == AgentState::Exited {
-            return AgentOutcome::TargetExited;
-        }
-        if !pane.is_selectable || pane.is_suppressed {
-            return AgentOutcome::Rejected;
-        }
-        AgentOutcome::Ok
     }
 
     pub(super) fn web_focus_agent(
@@ -143,7 +108,7 @@ impl Screen {
         reply: crossbeam::channel::Sender<Result<(), WebFocusError>>,
     ) {
         let result = (|| {
-            let own_instance = self.instance_id.to_string();
+            let own_instance = self.core.instance_id.to_string();
             let mut matches = self
                 .live_agents_with_tabs()
                 .into_iter()
@@ -172,7 +137,7 @@ impl Screen {
             }
             drop(matches);
             let socket_name = match tab {
-                LiveAgentTab::Local(_) => &self.session_name,
+                LiveAgentTab::Local(_) => &self.core.session_name,
                 LiveAgentTab::Peer { socket_name, .. } => socket_name,
             };
             if *socket_name != owner {
@@ -199,6 +164,7 @@ impl Screen {
                 .get_active_pane_id(&client)
                 .ok_or(WebFocusError::NoTerminal)?;
             let tab = *self
+                .core
                 .active_tab_ids
                 .get(&client)
                 .ok_or(WebFocusError::NoTerminal)?;
@@ -211,7 +177,8 @@ impl Screen {
                         "Terminal layout is not ready; retry".into(),
                     ));
                 }
-                self.bus
+                self.core
+                    .bus
                     .senders
                     .send_to_plugin(yinz_bus::plugins::PluginInstruction::UserInput {
                         client_id: client,

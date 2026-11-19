@@ -46,13 +46,14 @@ impl Screen {
             self.tab_id_containing_pane(pane_id)
                 .with_context(|| format!("Pane with id {pane_id:?} not found"))
         } else if let Some(tab_id) = explicit_tab_id {
-            self.tabs
+            self.core
+                .tabs
                 .contains_key(&tab_id)
                 .then_some(tab_id)
                 .with_context(|| format!("Tab with id {tab_id} not found"))
         } else {
             self.client_to_act_for(client_id)
-                .and_then(|client_id| self.active_tab_ids.get(&client_id).copied())
+                .and_then(|client_id| self.core.active_tab_ids.get(&client_id).copied())
                 .context("No active tab found - cannot launch plugin")
         };
         match destination {
@@ -85,23 +86,26 @@ impl Screen {
         completion_tx: Option<NotificationEnd>,
         overlay_placement: Option<OverlayPlacement>,
     ) -> Result<()> {
-        self.bus.senders.send_to_pty(PtyInstruction::FillPluginCwd(
-            Some(should_float),
-            should_open_in_place,
-            close_replaced_pane,
-            None,
-            run_plugin,
-            tab_index,
-            pane_id_to_replace,
-            client_id,
-            Size::default(),
-            skip_cache,
-            cwd,
-            if no_focus { Some(false) } else { None },
-            None,
-            completion_tx,
-            overlay_placement,
-        ))
+        self.core
+            .bus
+            .senders
+            .send_to_pty(PtyInstruction::FillPluginCwd(
+                Some(should_float),
+                should_open_in_place,
+                close_replaced_pane,
+                None,
+                run_plugin,
+                tab_index,
+                pane_id_to_replace,
+                client_id,
+                Size::default(),
+                skip_cache,
+                cwd,
+                if no_focus { Some(false) } else { None },
+                None,
+                completion_tx,
+                overlay_placement,
+            ))
     }
 
     /// Asks the pty thread to resolve a cwd for a plugin and load it, replacing `pane_id_to_replace`
@@ -319,7 +323,8 @@ impl Screen {
             },
         };
         // A failed send drops the completion, which answers the caller unconfirmed.
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_plugin(PluginInstruction::OpenPluginPaneInPlaceOfPaneId {
                 pane_id,
@@ -360,7 +365,7 @@ impl Screen {
     ) -> Result<bool> {
         // Plugin ids are never reused, so this is a late answer to a load that is already gone
         // (a git plugin can resolve after its unload).
-        if self.unloaded_plugins.contains(&plugin_id) {
+        if self.core.unloaded_plugins.contains(&plugin_id) {
             if let Some(completion) = completion_tx.as_mut() {
                 completion.set_exit_status(1);
                 completion.set_error_message("plugin unloaded before its pane was placed".into());
@@ -368,15 +373,16 @@ impl Screen {
             return Ok(false);
         }
         // Clear headless state before parking so the reload's initialization can wait for its pane.
-        let was_headless = self.paneless_plugins.remove(&plugin_id).is_some();
+        let was_headless = self.core.paneless_plugins.remove(&plugin_id).is_some();
         if was_headless {
             // A pane in a tab must no longer hear every other tab through the background registry.
-            self.background_plugin_subscriptions
+            self.core
+                .background_plugin_subscriptions
                 .retain(|(subscriber, _), _| *subscriber != plugin_id);
         }
-        self.failed_paneless_plugins.remove(&plugin_id);
-        self.resolving_plugins.remove(&plugin_id);
-        self.destroyed_panes.remove(&PaneId::Plugin(plugin_id));
+        self.core.failed_paneless_plugins.remove(&plugin_id);
+        self.core.resolving_plugins.remove(&plugin_id);
+        self.core.destroyed_panes.remove(&PaneId::Plugin(plugin_id));
         let restored_pane_tab = match self.tab_containing_pane_mut(PaneId::Plugin(plugin_id)) {
             Some(tab) if was_headless => tab
                 .restore_pane_tab_plugin(plugin_id)
@@ -387,12 +393,12 @@ impl Screen {
         // The launch tab may be gone, and a replay no longer has headless state to fall back on.
         let tab_index = if client_id.is_none() && (was_headless || tab_index.is_none()) {
             tab_index
-                .filter(|tab| self.tabs.contains_key(tab))
-                .or_else(|| self.tabs.keys().next().copied())
+                .filter(|tab| self.core.tabs.contains_key(tab))
+                .or_else(|| self.core.tabs.keys().next().copied())
         } else {
             tab_index
         };
-        if !restored_pane_tab && self.active_tab_ids.is_empty() && tab_index.is_none() {
+        if !restored_pane_tab && self.core.active_tab_ids.is_empty() && tab_index.is_none() {
             pending
                 .waiting_for_client
                 .push(ScreenInstruction::AddPlugin(
@@ -512,7 +518,7 @@ impl Screen {
                 .non_fatal();
             }
         } else if let Some(active_tab) =
-            tab_index.and_then(|tab_index| self.tabs.get_mut(&tab_index))
+            tab_index.and_then(|tab_index| self.core.tabs.get_mut(&tab_index))
         {
             // An explicit tab remains usable after its CLI client disconnects.
             active_tab.new_pane(
@@ -542,7 +548,7 @@ impl Screen {
             Err::<(), _>(anyhow!("Tab index not found: {:?}", tab_index)).non_fatal();
         }
         let pane_id = PaneId::Plugin(plugin_id);
-        let plugin_exists = self.tabs.values().any(|tab| tab.has_plugin(plugin_id));
+        let plugin_exists = self.core.tabs.values().any(|tab| tab.has_plugin(plugin_id));
         if plugin_exists && let Some(pending_events) = pending.waiting_for_pane.remove(&pane_id) {
             replay_pending_plugin_events(self, pending_events)?;
         }
@@ -588,23 +594,26 @@ impl Screen {
             NewPanePlacement::Overlay(overlay) => Some(overlay.clone()),
             _ => None,
         };
-        self.bus.senders.send_to_pty(PtyInstruction::FillPluginCwd(
-            should_float,
-            should_be_opened_in_place,
-            false, // close_replaced_pane
-            pane_title,
-            run_plugin,
-            tab_index,
-            None,
-            client_id,
-            size,
-            skip_cache,
-            cwd,
-            should_focus_plugin,
-            placement.floating_pane_coordinates(),
-            completion_tx,
-            overlay_placement,
-        ))?;
+        self.core
+            .bus
+            .senders
+            .send_to_pty(PtyInstruction::FillPluginCwd(
+                should_float,
+                should_be_opened_in_place,
+                false, // close_replaced_pane
+                pane_title,
+                run_plugin,
+                tab_index,
+                None,
+                client_id,
+                size,
+                skip_cache,
+                cwd,
+                should_focus_plugin,
+                placement.floating_pane_coordinates(),
+                completion_tx,
+                overlay_placement,
+            ))?;
         Ok(())
     }
 }
@@ -629,7 +638,7 @@ impl Screen {
             RunPluginOrAlias::Alias(alias) => alias.initial_cwd.clone(),
         };
         let mut requested = requested.clone();
-        requested.populate_run_plugin_if_needed(&self.plugin_aliases);
+        requested.populate_run_plugin_if_needed(&self.core.plugin_aliases);
         let Some(run) = requested.get_run_plugin() else {
             return Ok(false);
         };
@@ -637,7 +646,7 @@ impl Screen {
             yinz_runtime::plugin_location::parse_plugin_location(location, None)
                 .is_ok_and(|location| location == run.location)
         };
-        let existing = self.tabs.iter().find_map(|(tab, value)| {
+        let existing = self.core.tabs.iter().find_map(|(tab, value)| {
             value
                 .pane_tabs_infos()
                 .find(|info| info.overlay_group)
@@ -664,6 +673,7 @@ impl Screen {
                 )?;
             }
             let tab = self
+                .core
                 .tabs
                 .get_mut(&destination)
                 .context("overlay destination disappeared")?;
@@ -678,7 +688,8 @@ impl Screen {
                 {
                     completion.set_affected_pane_id(PaneId::Plugin(plugin));
                 } else {
-                    self.overlay_tab_completions
+                    self.core
+                        .overlay_tab_completions
                         .push((info.id, index, completion));
                 }
             }
@@ -686,7 +697,7 @@ impl Screen {
             self.render()?;
             return Ok(true);
         }
-        if let Some(pending) = self.pending_overlay_tabs.as_mut() {
+        if let Some(pending) = self.core.pending_overlay_tabs.as_mut() {
             let Some(index) = pending
                 .layout
                 .tabs
@@ -701,6 +712,7 @@ impl Screen {
             return Ok(true);
         }
         let Some(index) = self
+            .core
             .overlay_tab_plugins
             .iter()
             .position(|tab| matches_location(&tab.location))
@@ -710,7 +722,7 @@ impl Screen {
         let Some((tab, client)) = self.resolve_tab_and_client(client, None) else {
             return Ok(false);
         };
-        let mut tabs = self.overlay_tab_plugins.clone();
+        let mut tabs = self.core.overlay_tab_plugins.clone();
         if let Some(configuration) = configuration {
             tabs[index].configuration.extend(configuration);
         }
@@ -725,7 +737,8 @@ impl Screen {
                 .flatten()
         });
         let id = Tab::reserve_pane_tabs_id();
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_pty(PtyInstruction::ResolveOverlayTabCwd {
                 id,
@@ -733,7 +746,7 @@ impl Screen {
                 cwd,
             })
             .context("failed to resolve overlay tab working directory")?;
-        self.pending_overlay_tabs = Some(PendingOverlayTabs {
+        self.core.pending_overlay_tabs = Some(PendingOverlayTabs {
             id,
             layout: PaneTabsLayout {
                 tabs,
@@ -757,6 +770,7 @@ impl Screen {
         caller_terminal_pane_id: Option<yinz_types::internal_ids::TerminalId>,
     ) -> Result<()> {
         let Some(pending) = self
+            .core
             .pending_overlay_tabs
             .as_mut()
             .filter(|pending| pending.id == id)
@@ -780,7 +794,8 @@ impl Screen {
                     .or_insert_with(|| pane_id.to_string());
             }
         }
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_plugin(PluginInstruction::LoadPaneTab {
                 id,
@@ -801,6 +816,7 @@ impl Screen {
         result: &std::result::Result<(PluginId, RunPluginOrAlias), String>,
     ) -> Result<bool> {
         if !self
+            .core
             .pending_overlay_tabs
             .as_ref()
             .is_some_and(|pending| pending.id == id)
@@ -808,6 +824,7 @@ impl Screen {
             return Ok(false);
         }
         let mut pending = self
+            .core
             .pending_overlay_tabs
             .take()
             .context("pending overlay disappeared")?;
@@ -827,13 +844,20 @@ impl Screen {
             },
         };
         let destination = self
+            .core
             .active_tab_ids
             .get(&pending.focus_client)
             .copied()
-            .filter(|tab| self.tabs.contains_key(tab))
-            .or_else(|| self.tabs.contains_key(&pending.tab).then_some(pending.tab));
-        let Some(tab) = destination.and_then(|id| self.tabs.get_mut(&id)) else {
-            self.bus
+            .filter(|tab| self.core.tabs.contains_key(tab))
+            .or_else(|| {
+                self.core
+                    .tabs
+                    .contains_key(&pending.tab)
+                    .then_some(pending.tab)
+            });
+        let Some(tab) = destination.and_then(|id| self.core.tabs.get_mut(&id)) else {
+            self.core
+                .bus
                 .senders
                 .send_to_plugin(PluginInstruction::Unload(*plugin))
                 .context("failed to unload abandoned overlay")?;
@@ -871,7 +895,8 @@ impl Screen {
         for (index, client, completion) in pending.launches {
             tab.select_pane_tab(info.id, index, client)?;
             if let Some(completion) = completion {
-                self.overlay_tab_completions
+                self.core
+                    .overlay_tab_completions
                     .push((info.id, index, completion));
             }
         }
@@ -889,35 +914,37 @@ impl Screen {
 impl Screen {
     /// Whether `plugin_id` can no longer get a pane: it runs headless or it is gone.
     pub(super) fn plugin_has_no_pane(&self, plugin_id: PluginId) -> bool {
-        self.paneless_plugins.contains_key(&plugin_id) || self.unloaded_plugins.contains(&plugin_id)
+        self.core.paneless_plugins.contains_key(&plugin_id)
+            || self.core.unloaded_plugins.contains(&plugin_id)
     }
 
     /// The running headless instance of `run_plugin`, matched the way `Tab::find_plugin`
     /// matches a pane's plugin. The lowest id wins, so the answer does not depend on hash order.
     fn running_headless(&self, run_plugin: &RunPluginOrAlias) -> Option<PluginId> {
-        instances_of(&self.paneless_plugins, run_plugin)
-            .filter(|plugin_id| !self.failed_paneless_plugins.contains(plugin_id))
+        instances_of(&self.core.paneless_plugins, run_plugin)
+            .filter(|plugin_id| !self.core.failed_paneless_plugins.contains(plugin_id))
             .min()
     }
 
     /// The headless instances of `run_plugin` that failed or crashed.
     fn failed_headless(&self, run_plugin: &RunPluginOrAlias) -> Vec<PluginId> {
-        instances_of(&self.paneless_plugins, run_plugin)
-            .filter(|plugin_id| self.failed_paneless_plugins.contains(plugin_id))
+        instances_of(&self.core.paneless_plugins, run_plugin)
+            .filter(|plugin_id| self.core.failed_paneless_plugins.contains(plugin_id))
             .collect()
     }
 
     /// An instance of `run_plugin` still resolving its repository, matched as
     /// `running_headless` matches.
     fn resolving_plugin(&self, run_plugin: &RunPluginOrAlias) -> Option<PluginId> {
-        instances_of(&self.resolving_plugins, run_plugin).min()
+        instances_of(&self.core.resolving_plugins, run_plugin).min()
     }
 
     /// A launch-or-focus found `plugin_id` running headless, with nothing to focus: it hears so
     /// through a private pipe message named [`RELAUNCH_PIPE`], from `client_id`, and may answer
     /// by bringing back whatever it shows (the file finder refocuses its finder or editor).
     fn relaunch_headless_plugin(&self, plugin_id: PluginId, client_id: ClientId) {
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_plugin(PluginInstruction::KeybindPipe {
                 name: RELAUNCH_PIPE.to_owned(),
@@ -980,13 +1007,13 @@ impl Screen {
         // An ordinary close already cleaned up before the plugin thread reported the unload,
         // and a record that stays is still a pane.
         if removed
-            || (!self.destroyed_panes.contains(&pane_id)
+            || (!self.core.destroyed_panes.contains(&pane_id)
                 && self.tab_containing_pane(pane_id).is_none())
         {
             self.cleanup_closed_pane(pane_id);
         }
-        self.render_blocker.remove_blocking_plugin(plugin_id);
-        self.animating_plugin_loads.remove(&plugin_id);
+        self.core.render_blocker.remove_blocking_plugin(plugin_id);
+        self.core.animating_plugin_loads.remove(&plugin_id);
         removed
     }
 
@@ -995,7 +1022,7 @@ impl Screen {
     pub(super) fn detach_plugin_pane(&mut self, plugin_id: PluginId) -> Result<()> {
         if self.remove_plugin_pane_quietly(plugin_id) {
             self.retain_only_existing_panes_in_pane_groups();
-            let clients: Vec<ClientId> = self.active_tab_ids.keys().copied().collect();
+            let clients: Vec<ClientId> = self.core.active_tab_ids.keys().copied().collect();
             for client_id in clients {
                 self.sync_scroll_mode_on_focus(client_id)?;
             }
@@ -1021,15 +1048,15 @@ impl Screen {
     ) -> Result<()> {
         // A git plugin declares from its repository thread, so this can trail the unload. The
         // unload already removed its record, and a gone plugin must not count as running.
-        if self.unloaded_plugins.contains(&plugin_id) {
+        if self.core.unloaded_plugins.contains(&plugin_id) {
             if let Some(mut completion) = completion {
                 completion.set_exit_status(1);
                 completion.set_error_message(format!("plugin {plugin_id} was unloaded"));
             }
             return Ok(());
         }
-        self.resolving_plugins.remove(&plugin_id);
-        self.failed_paneless_plugins.remove(&plugin_id);
+        self.core.resolving_plugins.remove(&plugin_id);
+        self.core.failed_paneless_plugins.remove(&plugin_id);
         let pane_id = PaneId::Plugin(plugin_id);
         for mut completion in take_parked_add_plugins(plugin_id, pending) {
             completion.set_affected_pane_id(pane_id);
@@ -1039,7 +1066,7 @@ impl Screen {
             ));
         }
         // A reload that leaves the plugin headless: it runs again, and has no record to remove.
-        if let Some(recorded) = self.paneless_plugins.get_mut(&plugin_id) {
+        if let Some(recorded) = self.core.paneless_plugins.get_mut(&plugin_id) {
             *recorded = run;
             drop(completion);
             return Ok(());
@@ -1048,7 +1075,7 @@ impl Screen {
             .waiting_for_pane
             .remove(&pane_id)
             .unwrap_or_default();
-        self.paneless_plugins.insert(plugin_id, run);
+        self.core.paneless_plugins.insert(plugin_id, run);
         // Recorded, so the launch can be answered.
         drop(completion);
         let mut close_requested = false;
@@ -1082,11 +1109,12 @@ impl Screen {
             completion.set_error_message("plugin unloaded before its pane was placed".into());
         }
         pending.waiting_for_pane.remove(&PaneId::Plugin(plugin_id));
-        self.paneless_plugins.remove(&plugin_id);
-        self.failed_paneless_plugins.remove(&plugin_id);
-        self.resolving_plugins.remove(&plugin_id);
-        self.unloaded_plugins.insert(plugin_id);
-        self.background_plugin_subscriptions
+        self.core.paneless_plugins.remove(&plugin_id);
+        self.core.failed_paneless_plugins.remove(&plugin_id);
+        self.core.resolving_plugins.remove(&plugin_id);
+        self.core.unloaded_plugins.insert(plugin_id);
+        self.core
+            .background_plugin_subscriptions
             .retain(|(subscriber, _), _| *subscriber != plugin_id);
         keybind_intercepts.retain(|_, interceptor| *interceptor != plugin_id);
         // Headless plugins already detached their panes, so pane cleanup may not run again.
@@ -1098,10 +1126,11 @@ impl Screen {
     /// `ClosePane` does for any plugin id. It stops counting as running at once, so a launch
     /// sent before `PluginUnloaded` arrives starts a new instance instead of naming this one.
     pub(super) fn unload_paneless_plugin(&mut self, plugin_id: PluginId) {
-        self.paneless_plugins.remove(&plugin_id);
-        self.failed_paneless_plugins.remove(&plugin_id);
-        self.resolving_plugins.remove(&plugin_id);
-        self.bus
+        self.core.paneless_plugins.remove(&plugin_id);
+        self.core.failed_paneless_plugins.remove(&plugin_id);
+        self.core.resolving_plugins.remove(&plugin_id);
+        self.core
+            .bus
             .senders
             .send_to_pty(PtyInstruction::ClosePane(PaneId::Plugin(plugin_id), None))
             .context("failed to unload a headless plugin")
@@ -1116,37 +1145,37 @@ impl Screen {
         run: RunPluginOrAlias,
         completion: Option<NotificationEnd>,
     ) {
-        if self.unloaded_plugins.contains(&plugin_id) {
+        if self.core.unloaded_plugins.contains(&plugin_id) {
             if let Some(mut completion) = completion {
                 completion.set_exit_status(1);
                 completion.set_error_message(format!("plugin {plugin_id} was unloaded"));
             }
             return;
         }
-        self.resolving_plugins.insert(plugin_id, run);
+        self.core.resolving_plugins.insert(plugin_id, run);
         drop(completion);
     }
 
     /// `plugin_id` failed to load or crashed, with no pane to show it: it runs no more. A
     /// launch of it starts another instance, and one still loading is forgotten.
     pub(super) fn plugin_failed(&mut self, plugin_id: PluginId) {
-        self.resolving_plugins.remove(&plugin_id);
-        if self.paneless_plugins.contains_key(&plugin_id) {
-            self.failed_paneless_plugins.insert(plugin_id);
+        self.core.resolving_plugins.remove(&plugin_id);
+        if self.core.paneless_plugins.contains_key(&plugin_id) {
+            self.core.failed_paneless_plugins.insert(plugin_id);
         }
     }
 
     /// Whether closing `plugin_id` means unloading it: it runs headless, or it is still
     /// resolving its repository and has no pane yet.
     pub(super) fn closes_by_unloading(&self, plugin_id: PluginId) -> bool {
-        (self.paneless_plugins.contains_key(&plugin_id)
-            || self.resolving_plugins.contains_key(&plugin_id))
+        (self.core.paneless_plugins.contains_key(&plugin_id)
+            || self.core.resolving_plugins.contains_key(&plugin_id))
             && !self.holds_pane_record(plugin_id)
     }
 
     /// Why a request for `plugin_id`'s pane cannot be met, when the plugin runs headless.
     pub(super) fn headless_plugin_error(&self, plugin_id: PluginId) -> Option<String> {
-        (self.paneless_plugins.contains_key(&plugin_id) && !self.holds_pane_record(plugin_id))
+        (self.core.paneless_plugins.contains_key(&plugin_id) && !self.holds_pane_record(plugin_id))
             .then(|| format!("plugin {plugin_id} runs headless: it declares no pane"))
     }
 

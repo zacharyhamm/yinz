@@ -203,11 +203,11 @@ impl State {
 
 impl Screen {
     pub(super) fn schedule_palette_agent_labels_tick(&self, client: ClientId) {
-        let Some(state) = self.command_palettes.get(&client) else {
+        let Some(state) = self.palette.command_palettes.get(&client) else {
             return;
         };
         let opening = state.agents.opening;
-        let senders = self.bus.senders.clone();
+        let senders = self.core.bus.senders.clone();
         crate::global_async_runtime::get_tokio_runtime().spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             senders
@@ -221,6 +221,7 @@ impl Screen {
 
     pub(super) fn palette_agent_labels_tick(&mut self, client: ClientId, opening: u64) -> bool {
         let Some(state) = self
+            .palette
             .command_palettes
             .get_mut(&client)
             .filter(|state| state.agents.opening == opening)
@@ -237,11 +238,12 @@ impl Screen {
     /// Open the past-prompt picker over the agent view, which keeps its draft underneath.
     pub(super) fn open_prompt_picker(&mut self, client: ClientId) {
         let timezone = self
+            .core
             .client_timezones
             .get(&client)
             .cloned()
             .unwrap_or_default();
-        let Some(state) = self.command_palettes.get_mut(&client) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client) else {
             return;
         };
         let Some(draft) = state.widget.agent_prompt_text() else {
@@ -276,6 +278,7 @@ impl Screen {
             active: Arc::new(AtomicBool::new(true)),
         };
         if let Err(error) = self
+            .core
             .bus
             .senders
             .send_to_plugin(PluginInstruction::PaletteAgent(Box::new(request)))
@@ -297,6 +300,7 @@ impl Screen {
         prompts: Result<Arc<[PromptRecord]>, String>,
     ) {
         let Some(state) = self
+            .palette
             .command_palettes
             .get_mut(&client)
             .filter(|state| state.agents.opening == opening && state.widget.view == view)
@@ -329,7 +333,7 @@ impl Screen {
 
     /// Follow a view or query change: score the new query, or drop a picker no longer on screen.
     pub(super) fn refresh_prompt_picker(&mut self, client: ClientId) {
-        let Some(state) = self.command_palettes.get_mut(&client) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client) else {
             return;
         };
         if state
@@ -345,7 +349,7 @@ impl Screen {
     }
 
     fn search_prompt_picker(&mut self, client: ClientId) {
-        let Some(state) = self.command_palettes.get_mut(&client) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client) else {
             return;
         };
         let opening = state.agents.opening;
@@ -360,7 +364,7 @@ impl Screen {
         picker.generation += 1;
         picker.active = Arc::new(AtomicBool::new(true));
         let (view, generation, active) = (picker.view, picker.generation, picker.active.clone());
-        let senders = self.bus.senders.clone();
+        let senders = self.core.bus.senders.clone();
         crate::global_async_runtime::get_tokio_runtime().spawn_blocking(move || {
             let Some(matches) = prompt_picker::matches(&prompts, &query, &active) else {
                 return;
@@ -380,43 +384,9 @@ impl Screen {
         });
     }
 
-    pub(super) fn prompt_library_matches(
-        &mut self,
-        client: ClientId,
-        opening: u64,
-        view: u64,
-        generation: u64,
-        matches: Vec<usize>,
-    ) {
-        let Some(state) = self
-            .command_palettes
-            .get_mut(&client)
-            .filter(|state| state.agents.opening == opening && state.widget.view == view)
-        else {
-            return;
-        };
-        let Some(picker) = state
-            .agents
-            .prompt_picker
-            .as_mut()
-            .filter(|picker| picker.view == view && picker.generation == generation)
-        else {
-            return;
-        };
-        let Some(prompts) = picker.prompts.as_ref() else {
-            return;
-        };
-        picker.shown = generation;
-        state.widget.set_ranked_section(prompt_picker::section(
-            prompts,
-            &matches,
-            "No matching prompts",
-        ));
-    }
-
     /// Put the chosen prompt in the draft for editing. Nothing is sent until Enter there.
     pub(super) fn accept_prompt_picker(&mut self, client: ClientId, index: &str) -> bool {
-        let Some(state) = self.command_palettes.get_mut(&client) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client) else {
             return false;
         };
         let Some(picker) = &state.agents.prompt_picker else {
@@ -447,7 +417,7 @@ impl Screen {
         action: AgentAction,
         values: Vec<String>,
     ) {
-        let Some(state) = self.command_palettes.get_mut(&client) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client) else {
             return;
         };
         if state.agents.pending() {
@@ -455,11 +425,11 @@ impl Screen {
         }
         if state.agents.submitted {
             let message = "Launch already submitted; inspect agents before reopening the palette";
-            super::notify(&self.bus.senders, message.into());
+            super::notify(&self.core.bus.senders, message.into());
             state.widget.set_error(message.into());
             return;
         }
-        state.cancel_requests(&self.bus.senders, client);
+        state.cancel_requests(&self.core.bus.senders, client);
         state.agents.submitted = matches!(
             &action,
             AgentAction::Current { .. }
@@ -479,6 +449,7 @@ impl Screen {
         let prompt = state.agents.prompt_pending();
         let request = AgentRequest {
             timezone: self
+                .core
                 .client_timezones
                 .get(&client)
                 .cloned()
@@ -493,7 +464,7 @@ impl Screen {
         };
         if matches!(&request.action, AgentAction::History(action) if !matches!(action, yinz_bus::command_palette::HistoryAction::Resume { .. }))
         {
-            let senders = self.bus.senders.clone();
+            let senders = self.core.bus.senders.clone();
             crate::global_async_runtime::get_tokio_runtime().spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(150)).await;
                 if !request.active.load(Ordering::Acquire) {
@@ -518,6 +489,7 @@ impl Screen {
             return;
         }
         if let Err(error) = self
+            .core
             .bus
             .senders
             .send_to_plugin(PluginInstruction::PaletteAgent(Box::new(request)))
@@ -526,7 +498,7 @@ impl Screen {
             state.agents.submitted = false;
             state.widget.busy = false;
             super::notify(
-                &self.bus.senders,
+                &self.core.bus.senders,
                 format!("Could not request agent action: {error}"),
             );
             state
@@ -539,7 +511,7 @@ impl Screen {
     }
 
     pub(super) fn agent_palette_outcome(&mut self, client: ClientId, outcome: &Outcome) -> bool {
-        let Some(state) = self.command_palettes.get_mut(&client) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client) else {
             return false;
         };
         if *outcome == Outcome::Cancel && state.agents.pending() {
@@ -580,7 +552,7 @@ impl Screen {
         step: u64,
         reply: Result<AgentReply, String>,
     ) {
-        let Some(state) = self.command_palettes.get_mut(&client) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client) else {
             return;
         };
         if state.agents.opening != opening
@@ -624,7 +596,7 @@ impl Screen {
                     if !state.widget.agent_prompt_sent() {
                         state.widget.back();
                     }
-                    super::notify(&self.bus.senders, "Prompt sent".into());
+                    super::notify(&self.core.bus.senders, "Prompt sent".into());
                     self.refresh_palette_history(client, false);
                 } else {
                     state.widget.set_error(
@@ -643,7 +615,7 @@ impl Screen {
                     )
                 }) {
                     super::notify(
-                        &self.bus.senders,
+                        &self.core.bus.senders,
                         format!("Could not {}: {error}", label.to_lowercase()),
                     );
                 }
@@ -666,7 +638,7 @@ impl Screen {
                     .agents
                     .values
                     .remove(&format!("{:?}", AgentAction::CreateProject));
-                super::notify(&self.bus.senders, format!("Created project {name}"));
+                super::notify(&self.core.bus.senders, format!("Created project {name}"));
                 // Resubmitting the form could only fail: its destination now exists.
                 state.widget.reset_to_root();
                 state.widget.clear_searches();
@@ -715,7 +687,7 @@ impl Screen {
                 if response.outcome == AgentOutcome::Ok
                     && let Some(spawned) = response.spawned
                 {
-                    super::notify(&self.bus.senders, format!("Completed: {label}"));
+                    super::notify(&self.core.bus.senders, format!("Completed: {label}"));
                     self.close_command_palette(client);
                     self.focus_pane_with_id(spawned.pane_id, false, false, client)
                         .context("focusing palette agent")
@@ -732,7 +704,7 @@ impl Screen {
                     .message
                     .unwrap_or_else(|| "Agent launch did not complete".into());
                 super::notify(
-                    &self.bus.senders,
+                    &self.core.bus.senders,
                     format!("Could not {}: {message}", label.to_lowercase()),
                 );
                 let partial = response.launch_resources.is_some() || response.spawned.is_some();
@@ -760,5 +732,41 @@ impl Screen {
                 }
             },
         }
+    }
+}
+
+impl crate::screen::CommandPaletteController {
+    pub(in crate::screen) fn prompt_library_matches(
+        &mut self,
+        client: ClientId,
+        opening: u64,
+        view: u64,
+        generation: u64,
+        matches: Vec<usize>,
+    ) {
+        let Some(state) = self
+            .command_palettes
+            .get_mut(&client)
+            .filter(|state| state.agents.opening == opening && state.widget.view == view)
+        else {
+            return;
+        };
+        let Some(picker) = state
+            .agents
+            .prompt_picker
+            .as_mut()
+            .filter(|picker| picker.view == view && picker.generation == generation)
+        else {
+            return;
+        };
+        let Some(prompts) = picker.prompts.as_ref() else {
+            return;
+        };
+        picker.shown = generation;
+        state.widget.set_ranked_section(prompt_picker::section(
+            prompts,
+            &matches,
+            "No matching prompts",
+        ));
     }
 }

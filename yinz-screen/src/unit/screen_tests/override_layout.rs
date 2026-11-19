@@ -22,7 +22,7 @@ fn dispatch_override(
     focused_only: bool,
 ) -> (Vec<(TabId, TabLayoutInfo)>, Vec<TabId>) {
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     screen
         .override_layout(
             None,
@@ -69,7 +69,7 @@ fn override_results(
             floating_layouts: layout.floating_layouts,
             swap_tiled_layouts: layout.swap_tiled_layouts,
             swap_floating_layouts: layout.swap_floating_layouts,
-            new_terminal_pids: if screen.tabs[&id].is_pending() {
+            new_terminal_pids: if screen.core.tabs[&id].is_pending() {
                 vec![(TerminalId::new(100 + index as u32), None)]
             } else {
                 vec![]
@@ -97,7 +97,7 @@ fn override_layout_restores_groups_on_existing_and_reserved_tabs() {
             ],
             false,
         );
-        assert!(!screen.tab_groups.contains_key(&7));
+        assert!(!screen.core.tab_groups.contains_key(&7));
         let results = override_results(&screen, layouts);
         screen
             .complete_override_layout(
@@ -111,15 +111,15 @@ fn override_layout_restores_groups_on_existing_and_reserved_tabs() {
             )
             .unwrap();
         assert!(!screen.has_pending_tabs());
-        assert_eq!(screen.tab_groups.len(), 2);
+        assert_eq!(screen.core.tab_groups.len(), 2);
         for (tab, group) in [(0, 7), (1, 8), (2, 7), (3, 8)] {
-            assert_eq!(screen.tab_group_ids[&TabId::new(tab)], group);
+            assert_eq!(screen.core.tab_group_ids[&TabId::new(tab)], group);
         }
-        assert_eq!(screen.tab_groups[&7].name, "Group 7");
-        assert_eq!(screen.tab_groups[&8].name, "Group 8");
-        assert_eq!(screen.tab_groups[&7].preferred, Some(TabId::new(0)));
-        assert_eq!(screen.tab_groups[&8].preferred, Some(TabId::new(1)));
-        assert_eq!(screen.next_tab_group_id, 9);
+        assert_eq!(screen.core.tab_groups[&7].name, "Group 7");
+        assert_eq!(screen.core.tab_groups[&8].name, "Group 8");
+        assert_eq!(screen.core.tab_groups[&7].preferred, Some(TabId::new(0)));
+        assert_eq!(screen.core.tab_groups[&8].preferred, Some(TabId::new(1)));
+        assert_eq!(screen.core.next_tab_group_id, 9);
         // Restored preferences must win over visits made before the override.
         let other_group = if screen.group_for_client(Some(ClientId::new(1))) == 7 {
             8
@@ -135,11 +135,11 @@ fn override_layout_restores_groups_on_existing_and_reserved_tabs() {
             )
             .unwrap();
         assert_eq!(
-            screen.active_tab_ids[&ClientId::new(1)],
+            screen.core.active_tab_ids[&ClientId::new(1)],
             TabId::new((other_group - 7) as usize)
         );
 
-        let mut expected = screen.tab_group_ids.clone();
+        let mut expected = screen.core.tab_group_ids.clone();
         let (layouts, tabs_to_close) = dispatch_override(
             &mut screen,
             (0..5).map(|position| layout_at(position, 1)).collect(),
@@ -159,7 +159,7 @@ fn override_layout_restores_groups_on_existing_and_reserved_tabs() {
             )
             .unwrap();
         assert_eq!(
-            screen.tab_group_ids, expected,
+            screen.core.tab_group_ids, expected,
             "omitted metadata preserves assignments"
         );
     }
@@ -169,9 +169,9 @@ fn override_layout_restores_groups_on_existing_and_reserved_tabs() {
 fn focused_override_applies_explicit_groups_and_preserves_omitted_groups() {
     for explicit in [false, true] {
         let mut screen = screen_with_diverged_tab_ids();
-        let focused = screen.active_tab_ids[&ClientId::new(1)];
+        let focused = screen.core.active_tab_ids[&ClientId::new(1)];
         screen.restore_tab_group(focused, &grouped_layout_at(0, 7, true).tiled_layout);
-        let before = screen.tab_group_ids.clone();
+        let before = screen.core.tab_group_ids.clone();
         let layout = if explicit {
             grouped_layout_at(0, 8, true)
         } else {
@@ -192,13 +192,16 @@ fn focused_override_applies_explicit_groups_and_preserves_omitted_groups() {
             .unwrap();
         for (tab, group) in before {
             assert_eq!(
-                screen.tab_group_ids[&tab],
+                screen.core.tab_group_ids[&tab],
                 if tab == focused && explicit { 8 } else { group }
             );
         }
         let group = if explicit { 8 } else { 7 };
-        assert_eq!(screen.tab_groups[&group].name, format!("Group {group}"));
-        assert_eq!(screen.tab_groups[&group].preferred, Some(focused));
+        assert_eq!(
+            screen.core.tab_groups[&group].name,
+            format!("Group {group}")
+        );
+        assert_eq!(screen.core.tab_groups[&group].preferred, Some(focused));
     }
 }
 
@@ -206,9 +209,9 @@ fn focused_override_applies_explicit_groups_and_preserves_omitted_groups() {
 fn failed_override_does_not_apply_group_metadata() {
     for spawn_failed in [false, true] {
         let mut screen = screen_with_diverged_tab_ids();
-        let before = screen.tab_group_ids.clone();
-        let original_name = screen.tab_groups[&0].name.clone();
-        let original_preferred = screen.tab_groups[&0].preferred;
+        let before = screen.core.tab_group_ids.clone();
+        let original_name = screen.core.tab_groups[&0].name.clone();
+        let original_preferred = screen.core.tab_groups[&0].preferred;
         let (layouts, tabs_to_close) = dispatch_override(
             &mut screen,
             vec![grouped_layout_at(0, 0, true), grouped_layout_at(1, 8, true)],
@@ -236,11 +239,11 @@ fn failed_override_does_not_apply_group_metadata() {
                 &mut super::super::thread_main::PendingEvents::default(),
             )
             .is_err());
-        assert_eq!(screen.tab_group_ids, before);
-        assert_eq!(screen.tab_groups.len(), 1);
-        assert_eq!(screen.tab_groups[&0].name, original_name);
-        assert_eq!(screen.tab_groups[&0].preferred, original_preferred);
-        assert_eq!(screen.next_tab_group_id, 1);
+        assert_eq!(screen.core.tab_group_ids, before);
+        assert_eq!(screen.core.tab_groups.len(), 1);
+        assert_eq!(screen.core.tab_groups[&0].name, original_name);
+        assert_eq!(screen.core.tab_groups[&0].preferred, original_preferred);
+        assert_eq!(screen.core.next_tab_group_id, 1);
     }
 }
 
@@ -268,11 +271,11 @@ fn override_layout_uses_reordered_positions_and_closes_only_surplus_tabs() {
         vec![TabId::new(3), TabId::new(2)]
     );
     assert_eq!(
-        screen.tabs.keys().copied().collect::<Vec<_>>(),
+        screen.core.tabs.keys().copied().collect::<Vec<_>>(),
         vec![TabId::new(2), TabId::new(3), TabId::new(4)]
     );
-    assert_ne!(screen.tabs[&TabId::new(3)].name, "layout-0");
-    assert_ne!(screen.tabs[&TabId::new(2)].name, "layout-1");
+    assert_ne!(screen.core.tabs[&TabId::new(3)].name, "layout-0");
+    assert_ne!(screen.core.tabs[&TabId::new(2)].name, "layout-1");
     assert!(layouts[0].1.floating_layouts[0].already_running);
 
     let results = layouts
@@ -308,19 +311,19 @@ fn override_layout_uses_reordered_positions_and_closes_only_surplus_tabs() {
         )
         .unwrap();
     assert_eq!(
-        screen.tabs.keys().copied().collect::<Vec<_>>(),
+        screen.core.tabs.keys().copied().collect::<Vec<_>>(),
         vec![TabId::new(2), TabId::new(3)]
     );
-    assert_eq!(screen.tabs[&TabId::new(3)].name, "layout-0");
-    assert_eq!(screen.tabs[&TabId::new(2)].name, "layout-1");
-    let first_tab = &screen.tabs[&TabId::new(3)];
+    assert_eq!(screen.core.tabs[&TabId::new(3)].name, "layout-0");
+    assert_eq!(screen.core.tabs[&TabId::new(2)].name, "layout-1");
+    let first_tab = &screen.core.tabs[&TabId::new(3)];
     assert!(first_tab.has_pane_with_pid(&PaneId::Terminal(TerminalId::new(4))));
     assert!(
         first_tab.has_pane_with_pid(&retained_tiled),
         "retain keeps the extra pane"
     );
     assert!(first_tab.pane_id_is_floating(&retained_floating));
-    let second_tab = &screen.tabs[&TabId::new(2)];
+    let second_tab = &screen.core.tabs[&TabId::new(2)];
     assert!(second_tab.has_pane_with_pid(&PaneId::Terminal(TerminalId::new(3))));
     assert!(second_tab.has_pane_with_pid(&PaneId::Terminal(TerminalId::new(42))));
 }
@@ -340,7 +343,7 @@ fn override_layout_reserves_distinct_ids_for_multiple_new_tabs() {
     assert!(tabs_to_close.is_empty());
     for (position, (id, layout)) in layouts.iter().enumerate() {
         assert_eq!(layout.tab_index, TabPosition::new(position));
-        let tab = &screen.tabs[id];
+        let tab = &screen.core.tabs[id];
         assert_eq!(tab.position, TabPosition::new(position));
         if position >= 2 {
             assert_eq!(tab.name, format!("layout-{position}"));
@@ -353,7 +356,7 @@ fn override_layout_reserves_distinct_ids_for_multiple_new_tabs() {
     let next_id = screen.get_new_tab_id();
     assert_eq!(next_id, TabId::new(6));
     new_tab(&mut screen, 10, next_id);
-    assert_eq!(screen.tabs.len(), 5);
+    assert_eq!(screen.core.tabs.len(), 5);
 }
 
 #[test]
@@ -363,17 +366,19 @@ fn override_layout_focused_only_targets_active_id_and_keeps_other_tabs() {
         screen.get_active_tab(ClientId::new(1)).unwrap().id,
         TabId::new(3)
     );
-    let other_name = screen.tabs[&TabId::new(2)].name.clone();
+    let other_name = screen.core.tabs[&TabId::new(2)].name.clone();
     let (layouts, tabs_to_close) =
         dispatch_override(&mut screen, vec![layout_at(0, 1), layout_at(1, 2)], true);
     assert_eq!(layouts.len(), 1);
     assert_eq!(layouts[0].0, TabId::new(3));
     assert_eq!(layouts[0].1.tab_index, TabPosition::new(0));
-    assert_eq!(screen.tabs.len(), 2);
+    assert_eq!(screen.core.tabs.len(), 2);
     assert!(tabs_to_close.is_empty());
-    assert_ne!(screen.tabs[&TabId::new(3)].name, "layout-0");
-    assert_eq!(screen.tabs[&TabId::new(2)].name, other_name);
-    assert!(screen.tabs[&TabId::new(2)].has_pane_with_pid(&PaneId::Terminal(TerminalId::new(3))));
+    assert_ne!(screen.core.tabs[&TabId::new(3)].name, "layout-0");
+    assert_eq!(screen.core.tabs[&TabId::new(2)].name, other_name);
+    assert!(
+        screen.core.tabs[&TabId::new(2)].has_pane_with_pid(&PaneId::Terminal(TerminalId::new(3)))
+    );
     assert_eq!(
         layouts[0].1.tiled_layout.run_instructions_to_ignore,
         vec![None]
@@ -637,17 +642,17 @@ fn rejected_layout_preserves_panes_moved_into_a_pending_tab() {
                     .unwrap();
                 let tab_id = screen.get_new_tab_id();
                 screen
-                    .break_pane(None, screen.default_layout.clone(), client)
+                    .break_pane(None, screen.core.default_layout.clone(), client)
                     .unwrap();
                 tab_id
             }
         };
-        let tab = screen.tabs.get_mut(&pending_tab).unwrap();
+        let tab = screen.core.tabs.get_mut(&pending_tab).unwrap();
         assert!(tab.is_pending(), "{placement}");
         tab.handle_pty_bytes(terminal, b"output while pending".to_vec())
             .unwrap();
         let (pty_tx, pty_rx) = channels::unbounded();
-        screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+        screen.core.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
         let spawned = TerminalId::new(100);
         screen
             .land_layout(
@@ -666,7 +671,7 @@ fn rejected_layout_preserves_panes_moved_into_a_pending_tab() {
             )
             .unwrap();
         screen.settle_tabs().unwrap();
-        let tab = screen.tabs.get(&pending_tab).expect(placement);
+        let tab = screen.core.tabs.get(&pending_tab).expect(placement);
         assert!(!tab.is_pending(), "{placement}");
         assert!(tab
             .get_pane_with_id(pane_id)
@@ -694,6 +699,7 @@ fn failed_override_preserves_all_existing_tabs_and_closes_only_spawned_panes() {
     let mut screen = screen_with_diverged_tab_ids();
     new_tab(&mut screen, 5, TabId::new(4));
     let before: Vec<_> = screen
+        .core
         .tabs
         .iter()
         .map(|(id, tab)| (*id, tab.name.clone(), tab.get_all_pane_ids()))
@@ -701,7 +707,7 @@ fn failed_override_preserves_all_existing_tabs_and_closes_only_spawned_panes() {
     let (layouts, tabs_to_close) =
         dispatch_override(&mut screen, vec![layout_at(0, 1), layout_at(1, 2)], false);
     let (pty_tx, pty_rx) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
     let results = layouts
         .into_iter()
         .enumerate()
@@ -733,6 +739,7 @@ fn failed_override_preserves_all_existing_tabs_and_closes_only_spawned_panes() {
         )
         .is_err());
     let after: Vec<_> = screen
+        .core
         .tabs
         .iter()
         .map(|(id, tab)| (*id, tab.name.clone(), tab.get_all_pane_ids()))
@@ -762,7 +769,7 @@ fn failed_override_preserves_a_populated_pending_tab() {
     let tab_id = screen
         .break_multiple_panes_to_new_tab(vec![pane_id], None, false, None, ClientId::new(1))
         .unwrap();
-    assert!(screen.tabs[&tab_id].is_pending());
+    assert!(screen.core.tabs[&tab_id].is_pending());
     assert!(screen
         .complete_override_layout(
             vec![],
@@ -775,8 +782,8 @@ fn failed_override_preserves_a_populated_pending_tab() {
         )
         .is_err());
     screen.settle_tabs().unwrap();
-    assert!(screen.tabs[&tab_id].has_pane_with_pid(&pane_id));
-    assert!(!screen.tabs[&tab_id].is_pending());
+    assert!(screen.core.tabs[&tab_id].has_pane_with_pid(&pane_id));
+    assert!(!screen.core.tabs[&tab_id].is_pending());
 }
 
 #[test]
@@ -906,7 +913,14 @@ fn layout_spawn_failure_preserves_moved_panes_and_releases_navigation() {
 
 #[test]
 fn failed_new_layout_reports_error_preserves_focus_and_keeps_adopted_terminals() {
-    for (adopted, held) in [(false, false), (true, false), (true, true)] {
+    for (adopted, held, tab_receipt) in [
+        (false, false, false),
+        (true, false, false),
+        (true, true, false),
+        (false, false, true),
+        (true, false, true),
+        (true, true, true),
+    ] {
         let mut screen = screen_with_diverged_tab_ids();
         let client_id = ClientId::new(1);
         let active = screen.get_active_tab(client_id).unwrap().id;
@@ -915,20 +929,27 @@ fn failed_new_layout_reports_error_preserves_focus_and_keeps_adopted_terminals()
             .new_tab(pending_tab, (vec![], vec![]), None, None)
             .unwrap();
         let (pty_tx, pty_rx) = channels::unbounded();
-        screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+        screen.core.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
         let (background_tx, background_rx) = channels::unbounded();
-        screen.bus.senders.to_background_jobs = Some(SenderWithContext::new(background_tx));
+        screen.core.bus.senders.to_background_jobs = Some(SenderWithContext::new(background_tx));
         let (receipt_tx, receipt_rx) = channels::bounded(1);
-        screen.pending_group_placements.insert(
-            pending_tab,
-            (
-                yinz_types::data::WarpPlacement::NewTab,
-                None,
-                client_id,
-                Some(receipt_tx),
-                None,
-            ),
-        );
+        if tab_receipt {
+            screen
+                .warp
+                .pending_tab_adoptions
+                .insert(pending_tab, receipt_tx);
+        } else {
+            screen.warp.pending_group_placements.insert(
+                pending_tab,
+                (
+                    yinz_types::data::WarpPlacement::NewTab,
+                    None,
+                    client_id,
+                    Some(receipt_tx),
+                    None,
+                ),
+            );
+        }
         let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
         let (blocking_tx, blocking_rx) = tokio::sync::oneshot::channel();
         let transferred = TerminalId::new(100);
@@ -943,6 +964,13 @@ fn failed_new_layout_reports_error_preserves_focus_and_keeps_adopted_terminals()
             use_terminal_title: true,
             ..Default::default()
         };
+        let identity: yinz_types::agent::AgentInfo = serde_json::from_value(serde_json::json!({"kind":"codex","state":"Idle","session_id":"adopted-session","run_id":"adopted-run"})).unwrap();
+        if adopted {
+            screen.agents.stage_transfer_identity(
+                PaneId::Terminal(transferred),
+                (Some(identity.clone()), None),
+            );
+        }
         screen
             .land_layout(
                 unfit_layout(),
@@ -982,9 +1010,9 @@ fn failed_new_layout_reports_error_preserves_focus_and_keeps_adopted_terminals()
                 if ids == vec![active_pane] && message.contains("Failed to apply layout"))));
         assert_eq!(receipt_rx.try_recv().unwrap().is_ok(), adopted);
         assert_eq!(screen.get_active_tab(client_id).unwrap().id, active);
-        assert_eq!(screen.tabs.contains_key(&pending_tab), adopted);
+        assert_eq!(screen.core.tabs.contains_key(&pending_tab), adopted);
         if adopted {
-            let tab = &screen.tabs[&pending_tab];
+            let tab = &screen.core.tabs[&pending_tab];
             assert!(!tab.is_pending());
             for id in [transferred, transferred_floating] {
                 let pane_id = PaneId::Terminal(id);
@@ -996,6 +1024,9 @@ fn failed_new_layout_reports_error_preserves_focus_and_keeps_adopted_terminals()
                     .into_iter()
                     .find(|p| p.id == pane_id)
                     .unwrap();
+                if id == transferred {
+                    assert_eq!(info.agent.as_ref(), Some(&identity));
+                }
                 assert_eq!(info.is_suppressed, id == transferred_floating);
             }
         }
@@ -1023,23 +1054,24 @@ fn failed_hidden_warp_companion_keeps_source_focus_and_adopted_terminals() {
     let client_id = ClientId::new(1);
     let source_tab = screen.get_active_tab(client_id).unwrap().id;
     let source_pane = screen.get_active_pane_id(&client_id);
-    let source_panes = screen.tabs[&source_tab].get_all_pane_ids();
+    let source_panes = screen.core.tabs[&source_tab].get_all_pane_ids();
     let (pty_tx, pty_rx) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
     let (writer_tx, writer_rx) = channels::unbounded();
     drop(writer_rx);
-    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(writer_tx));
+    screen.core.bus.senders.to_pty_writer = Some(SenderWithContext::new(writer_tx));
     let pending_tab = screen.get_new_tab_id();
     screen
         .new_tab(pending_tab, (vec![], vec![]), None, None)
         .unwrap();
     screen
+        .core
         .tabs
         .get_mut(&pending_tab)
         .unwrap()
         .senders
         .should_silently_fail = false;
-    screen.pending_warp_relationships.insert(
+    screen.warp.pending_warp_relationships.insert(
         pending_tab,
         WarpRelationships {
             hidden: vec![WarpHiddenPane {
@@ -1083,12 +1115,15 @@ fn failed_hidden_warp_companion_keeps_source_focus_and_adopted_terminals() {
     );
     assert_eq!(screen.get_active_tab(client_id).unwrap().id, source_tab);
     assert_eq!(screen.get_active_pane_id(&client_id), source_pane);
-    assert!(screen.tabs[&source_tab].has_connected_client(&client_id));
-    assert_eq!(screen.tabs[&source_tab].get_all_pane_ids(), source_panes);
+    assert!(screen.core.tabs[&source_tab].has_connected_client(&client_id));
+    assert_eq!(
+        screen.core.tabs[&source_tab].get_all_pane_ids(),
+        source_panes
+    );
     for id in [visible, hidden] {
-        assert!(screen.tabs[&pending_tab].has_pane_with_pid(&PaneId::Terminal(id)));
+        assert!(screen.core.tabs[&pending_tab].has_pane_with_pid(&PaneId::Terminal(id)));
     }
-    assert!(!screen.tabs[&pending_tab].is_pending());
+    assert!(!screen.core.tabs[&pending_tab].is_pending());
     assert!(!pty_rx
         .try_iter()
         .any(|(instruction, _)| matches!(instruction, PtyInstruction::ClosePane(_, _))));
@@ -1103,10 +1138,10 @@ fn reporting_failure_after_layout_commit_keeps_the_new_panes() {
         .unwrap();
     let (server_tx, server_rx) = channels::unbounded();
     drop(server_rx);
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
-    screen.bus.senders.should_silently_fail = false;
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
+    screen.core.bus.senders.should_silently_fail = false;
     let (pty_tx, pty_rx) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
     let terminal_id = TerminalId::new(100);
     screen
         .land_layout(
@@ -1124,8 +1159,8 @@ fn reporting_failure_after_layout_commit_keeps_the_new_panes() {
             &mut super::super::thread_main::PendingEvents::default(),
         )
         .unwrap();
-    assert!(screen.tabs[&tab_id].has_pane_with_pid(&PaneId::Terminal(terminal_id)));
-    assert!(!screen.tabs[&tab_id].is_pending());
+    assert!(screen.core.tabs[&tab_id].has_pane_with_pid(&PaneId::Terminal(terminal_id)));
+    assert!(!screen.core.tabs[&tab_id].is_pending());
     assert!(!pty_rx.try_iter().any(|(instruction, _)| matches!(
         instruction, PtyInstruction::ClosePane(PaneId::Terminal(id), _) if id == terminal_id
     )));

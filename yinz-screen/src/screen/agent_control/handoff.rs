@@ -2,130 +2,17 @@
 use super::*;
 use yinz_types::agent::tracking::AgentTrackingHandoff;
 
-impl Screen {
-    pub(in crate::screen) fn capture_agent_tracking(
+impl super::AgentController {
+    fn restore_tracking(
         &mut self,
+        host: &impl AgentHost,
         pane: PaneId,
-    ) -> Option<AgentTrackingHandoff> {
-        let agent = self.get_pane_info(pane)?.agent?;
-        // Finish requests while the source pane still exists, so retained results and replies
-        // describe the original target. A partially delivered prompt must remain unconsumed.
-        let partial = self.agent_draft_clears.contains_key(&pane)
-            || self.agent_clear_inputs.contains_key(&pane)
-            || self.agent_controls.iter().any(|p| {
-                p.pane == pane && (p.delivery.is_some() || p.enter_at.is_some() || p.clear)
-            });
-        let mut keep = Vec::new();
-        for pending in std::mem::take(&mut self.agent_controls) {
-            if pending.pane == pane {
-                self.finish_agent_control(&pending, AgentOutcome::TargetChanged, None, None);
-            } else {
-                keep.push(pending);
-            }
-        }
-        self.agent_controls = keep;
-        if let Some(mut operation) = self.agent_draft_clears.remove(&pane) {
-            if let Some((pending, _, _)) = operation.prompt.take() {
-                self.finish_agent_control(&pending, AgentOutcome::TargetChanged, None, None);
-            } else if let Some(client) = operation.client.take() {
-                self.agent_reply(
-                    &client,
-                    self.agent_result(pane, AgentOutcome::TargetChanged, None),
-                );
-            }
-        }
-        let mut lifecycle = self.agent_lifecycle.get(&pane).map(Lifecycle::handoff);
-        if partial && let Some(lifecycle) = &mut lifecycle {
-            lifecycle.input_revision = None;
-        }
-        let input_consumed = if partial {
-            None
-        } else {
-            lifecycle
-                .as_ref()
-                .and_then(|l| {
-                    l.input_revision
-                        .map(|revision| revision == self.agent_input_revision(pane))
-                })
-                .or_else(|| {
-                    self.warped_agent_inputs.get(&pane).and_then(|input| {
-                        input.consumed.map(|consumed| {
-                            consumed && input.input_revision == self.agent_input_revision(pane)
-                        })
-                    })
-                })
-        };
-        Some(AgentTrackingHandoff {
-            events: self.agent_event_tracking(pane),
-            input_consumed,
-            agent,
-            input_revision: self.agent_input_revision(pane),
-            lifecycle,
-            dialog_input: self.agent_dialog_inputs.get(&pane).cloned(),
-            worker_waits: self.agent_worker_waits.get(&pane).cloned(),
-            permission_wait: self.claude_permission_waits.get(&pane).cloned(),
-            launch: self.agent_launches.get(&pane).cloned(),
-            submissions: self
-                .agent_submissions
-                .get(&pane)
-                .cloned()
-                .unwrap_or_default(),
-        })
-    }
-
-    /// Called immediately after placement, before queued reports or terminal bytes are drained.
-    /// Returns whether a staged identity was applied, even without a tracking payload.
-    pub(in crate::screen) fn restore_staged_transfer_state(&mut self, pane: PaneId) -> bool {
-        let restored = self.restore_transfer_state(pane);
-        if restored {
-            self.observe_restored_claude(pane);
-        }
-        restored
-    }
-
-    fn restore_transfer_state(&mut self, pane: PaneId) -> bool {
-        let restored = self
-            .pending_agent_tracking
-            .remove(&pane)
-            .and_then(|(agent, tracking)| {
-                // Apply identity first: changing it retires the destination's old OSC status.
-                // Absence is part of the snapshot too: SessionEnd may have cleared the source
-                // record while the destination command synthesized a new Busy record.
-                match super::super::agent_reports::stage_pane_agent_report(self, pane, agent)
-                    .context("restore adopted agent identity")
-                {
-                    Ok(true) => Some(tracking),
-                    Ok(false) => None,
-                    Err(error) => {
-                        Err::<(), _>(error).non_fatal();
-                        None
-                    },
-                }
-            });
-        // Restore independently of identity/tracking availability or acceptance.
-        if let Some(state) = self.pending_terminal_states.remove(&pane) {
-            // PTY preflight validated the complete snapshot before attaching any supervisor.
-            for tab in self.tabs.values_mut() {
-                if let Some(terminal) = tab.get_pane_with_id_mut(pane) {
-                    terminal
-                        .restore_terminal_state(&state)
-                        .map_err(|e| anyhow!("{e}"))
-                        .context("restore adopted terminal state")
-                        .non_fatal();
-                    break;
-                }
-            }
-        }
-        let Some(tracking) = restored else {
-            return false;
-        };
-        let Some(mut tracking) = tracking else {
-            return true;
-        };
-        let valid = self
-            .get_pane_info(pane)
+        mut tracking: AgentTrackingHandoff,
+    ) {
+        let valid = host
+            .pane_info(pane)
             .is_some_and(|info| info.agent.as_ref() == Some(&tracking.agent))
-            && self.agent_process_matches(pane, &tracking.agent.kind)
+            && host.agent_process_matches(pane, &tracking.agent.kind)
             && tracking.lifecycle.as_ref().is_none_or(|l| {
                 l.kind == tracking.agent.kind
                     && if l.conversation.is_empty() {
@@ -137,13 +24,13 @@ impl Screen {
             });
         if !valid {
             log::debug!("agent handoff rejected pane={pane:?} kind={} conversation={:?} reason=identity_or_process_mismatch", tracking.agent.kind, tracking.agent.session_id);
-            return true;
+            return;
         }
-        let live = self.get_pane_info(pane).is_some_and(|info| {
+        let live = host.pane_info(pane).is_some_and(|info| {
             !info.is_held && !info.exited && tracking.agent.state != AgentState::Exited
         });
         let source = tracking.input_revision;
-        let destination = self.agent_input_revision(pane);
+        let destination = host.agent_input_revision(pane);
         // A non-current revision is deliberately unequal even at revision zero. Unknown
         // evidence stays None. No input timestamps from another process are restored.
         let remap = |revision| {
@@ -188,33 +75,265 @@ impl Screen {
         }
         if let Some(mut launch) = tracking.launch.take() {
             launch.pane_id = pane;
-            launch.tab_id = self
-                .tabs
-                .iter()
-                .find(|(_, tab)| tab.has_pane_with_pid(&pane))
-                .map(|(id, _)| *id);
+            launch.tab_id = host.tab_for_pane(pane);
             launch.created_tab_id = None;
             launch.occupied_by.clear();
             self.agent_launches.insert(pane, launch);
         }
         self.agent_submissions.insert(pane, tracking.submissions);
         if live {
-            self.restore_agent_event_tracking(pane, tracking.events);
+            self.restore_agent_event_tracking(host, pane, tracking.events);
         }
         log::debug!(
             "agent handoff restored session={:?} pane={pane:?} kind={} conversation={:?}",
-            self.session_name,
+            host.session_name(),
             tracking.agent.kind,
             tracking.agent.session_id
         );
-        true
+    }
+}
+
+impl super::AgentController {
+    pub(in crate::screen) fn capture_agent_tracking(
+        &mut self,
+        host: &impl AgentHost,
+        pane: PaneId,
+    ) -> Option<AgentTrackingHandoff> {
+        let agent = host.pane_info(pane)?.agent?;
+        // Finish requests while the source pane still exists, so retained results and replies
+        // describe the original target. A partially delivered prompt must remain unconsumed.
+        let partial = self.agent_draft_clears.contains_key(&pane)
+            || self.agent_clear_inputs.contains_key(&pane)
+            || self.agent_controls.iter().any(|p| {
+                p.pane == pane && (p.delivery.is_some() || p.enter_at.is_some() || p.clear)
+            });
+        let mut keep = Vec::new();
+        for pending in std::mem::take(&mut self.agent_controls) {
+            if pending.pane == pane {
+                self.finish_agent_control(host, &pending, AgentOutcome::TargetChanged, None, None);
+            } else {
+                keep.push(pending);
+            }
+        }
+        self.agent_controls = keep;
+        if let Some(mut operation) = self.agent_draft_clears.remove(&pane) {
+            if let Some((pending, _, _)) = operation.prompt.take() {
+                self.finish_agent_control(host, &pending, AgentOutcome::TargetChanged, None, None);
+            } else if let Some(client) = operation.client.take() {
+                self.agent_reply(
+                    host,
+                    &client,
+                    self.agent_result(host, pane, AgentOutcome::TargetChanged, None),
+                );
+            }
+        }
+        let mut lifecycle = self.agent_lifecycle.get(&pane).map(Lifecycle::handoff);
+        if partial && let Some(lifecycle) = &mut lifecycle {
+            lifecycle.input_revision = None;
+        }
+        let input_consumed = if partial {
+            None
+        } else {
+            lifecycle
+                .as_ref()
+                .and_then(|l| {
+                    l.input_revision
+                        .map(|revision| revision == host.agent_input_revision(pane))
+                })
+                .or_else(|| {
+                    self.warped_agent_inputs.get(&pane).and_then(|input| {
+                        input.consumed.map(|consumed| {
+                            consumed && input.input_revision == host.agent_input_revision(pane)
+                        })
+                    })
+                })
+        };
+        Some(AgentTrackingHandoff {
+            events: self.agent_event_tracking(pane),
+            input_consumed,
+            agent,
+            input_revision: host.agent_input_revision(pane),
+            lifecycle,
+            dialog_input: self.agent_dialog_inputs.get(&pane).cloned(),
+            worker_waits: self.agent_worker_waits.get(&pane).cloned(),
+            permission_wait: self.claude_permission_waits.get(&pane).cloned(),
+            launch: self.agent_launches.get(&pane).cloned(),
+            submissions: self
+                .agent_submissions
+                .get(&pane)
+                .cloned()
+                .unwrap_or_default(),
+        })
+    }
+}
+
+impl super::AgentController {
+    pub(in crate::screen) fn warped_agent_input(
+        &self,
+        host: &impl AgentHost,
+        pane: PaneId,
+    ) -> Option<yinz_types::data::WarpedAgentInput> {
+        let info = host.pane_info(pane)?;
+        let agent = info.agent?;
+        let conversation = agent.session_id?;
+        if info.is_held
+            || info.exited
+            || agent.state == AgentState::Exited
+            || agent.kind != "codex"
+            || agent.source != AgentSource::Reported
+            || !host.agent_process_matches(pane, &agent.kind)
+        {
+            return None;
+        }
+        let revision = host.agent_input_revision(pane);
+        let consumed = if let Some(lifecycle) = self.agent_lifecycle.get(&pane) {
+            if lifecycle.kind != agent.kind || lifecycle.conversation != conversation {
+                return None;
+            }
+            lifecycle.input_revision == Some(revision)
+        } else {
+            let input = self.warped_agent_inputs.get(&pane)?;
+            if input.kind != agent.kind || input.conversation != conversation {
+                return None;
+            }
+            input.consumed == Some(true) && input.input_revision == revision
+        };
+        Some(yinz_types::data::WarpedAgentInput {
+            kind: agent.kind,
+            conversation,
+            consumed: consumed
+                && !self.agent_draft_clears.contains_key(&pane)
+                && !self
+                    .agent_controls
+                    .iter()
+                    .any(|pending| pending.pane == pane && pending.delivery.is_some()),
+        })
     }
 
-    fn observe_restored_claude(&mut self, pane: PaneId) {
+    pub(in crate::screen) fn restore_warped_agent_input(
+        &mut self,
+        host: &impl AgentHost,
+        pane: PaneId,
+        input: yinz_types::data::WarpedAgentInput,
+    ) {
+        if input.kind == "codex"
+            && host.pane_info(pane).is_some_and(|info| {
+                !info.is_held
+                    && !info.exited
+                    && info.agent.is_some_and(|agent| {
+                        agent.source == AgentSource::Reported
+                            && agent.kind == input.kind
+                            && agent.session_id.as_ref() == Some(&input.conversation)
+                    })
+            })
+            && host.agent_process_matches(pane, &input.kind)
+        {
+            let revision = host.agent_input_revision(pane);
+            // Adopted panes start at revision zero; a parent hook can beat this restoration.
+            if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane).filter(|lifecycle| {
+                lifecycle.kind == input.kind && lifecycle.conversation == input.conversation
+            }) {
+                if revision == 0 {
+                    lifecycle.input_revision = input.consumed.then_some(0);
+                }
+            } else {
+                self.warped_agent_inputs.insert(
+                    pane,
+                    TransferredInput {
+                        kind: input.kind,
+                        conversation: input.conversation,
+                        input_revision: 0,
+                        consumed: Some(input.consumed),
+                    },
+                );
+            }
+        }
+    }
+}
+
+impl super::AgentController {
+    pub(in crate::screen) fn stage_transfer_identity(
+        &mut self,
+        pane: PaneId,
+        tracking: super::PendingAgentTracking,
+    ) {
+        self.pending_agent_tracking.insert(pane, tracking);
+    }
+    pub(in crate::screen) fn stage_terminal_state(&mut self, pane: PaneId, state: String) {
+        self.pending_terminal_states.insert(pane, state);
+    }
+    pub(in crate::screen) fn has_staged_terminal(&self, pane: PaneId) -> bool {
+        self.pending_terminal_states.contains_key(&pane)
+    }
+    pub(in crate::screen) fn discard_staged_transfer(&mut self, pane: PaneId) {
+        self.pending_terminal_states.remove(&pane);
+        self.pending_agent_tracking.remove(&pane);
+    }
+    pub(in crate::screen) fn register_spawn(&mut self, agent: yinz_types::agent::SpawnedAgent) {
+        self.agent_launches.insert(agent.pane_id, agent);
+    }
+    pub(in crate::screen) fn forget_launch(&mut self, pane: PaneId) {
+        self.agent_launches.remove(&pane);
+    }
+    pub(in crate::screen) fn relocate_launch(
+        &mut self,
+        pane: PaneId,
+        tab: Option<yinz_types::internal_ids::TabId>,
+    ) {
+        if let Some(launch) = self.agent_launches.get_mut(&pane) {
+            launch.tab_id = tab;
+        }
+    }
+    pub(in crate::screen) fn launch_matches(
+        &self,
+        agent: &yinz_types::agent::SpawnedAgent,
+    ) -> bool {
+        self.agent_launches.get(&agent.pane_id) == Some(agent)
+    }
+}
+
+impl super::AgentController {
+    pub(in crate::screen) fn restore_transfer_state(
+        &mut self,
+        host: &mut impl AgentHost,
+        pane: PaneId,
+    ) -> bool {
+        let restored = self
+            .pending_agent_tracking
+            .remove(&pane)
+            .and_then(|(agent, tracking)| {
+                // Apply identity first: changing it retires the destination's old OSC status.
+                // Absence is part of the snapshot too: SessionEnd may have cleared the source
+                // record while the destination command synthesized a new Busy record.
+                self.claude_permission_waits.remove(&pane);
+                let staged = self.stage_agent(host, pane, agent, false, false);
+                (!matches!(staged, super::reports::AgentUpdate::Missing)).then_some(tracking)
+            });
+        // Restore independently of identity/tracking availability or acceptance.
+        if let Some(state) = self.pending_terminal_states.remove(&pane) {
+            // PTY preflight validated the complete snapshot before attaching any supervisor.
+            host.restore_terminal_state(pane, &state);
+        }
+        let Some(tracking) = restored else {
+            return false;
+        };
+        if let Some(tracking) = tracking {
+            self.restore_tracking(host, pane, tracking);
+        }
+        true
+    }
+}
+
+impl super::AgentController {
+    pub(in crate::screen) fn observe_restored_claude(
+        &mut self,
+        host: &impl AgentHost,
+        pane: PaneId,
+    ) {
         let PaneId::Terminal(terminal) = pane else {
             return;
         };
-        let Some(info) = self.get_pane_info(pane) else {
+        let Some(info) = host.pane_info(pane) else {
             return;
         };
         let Some(expected) = info
@@ -233,14 +352,13 @@ impl Screen {
         {
             return;
         }
-        let Some(os) = &self.bus.os_input else { return };
-        let Some(sender) = self.bus.senders.to_screen.clone() else {
+        let Some((observe, sender)) = host.restored_observer() else {
             return;
         };
-        let input_revision = self.agent_input_revision(pane);
+        let input_revision = host.agent_input_revision(pane);
         let generation = Instant::now();
         self.restored_claude_observers.insert(pane, generation);
-        os.observe_restored_claude(
+        observe(
             terminal,
             conversation,
             Box::new(move |state| {
@@ -269,27 +387,30 @@ impl Screen {
         .context("observe adopted Claude state")
         .non_fatal();
     }
+}
 
-    pub(in crate::screen) fn reconcile_restored_claude(
+impl super::AgentController {
+    pub(in crate::screen) fn restored_claude_activity(
         &mut self,
+        host: &impl AgentHost,
         pane: PaneId,
         generation: Instant,
         expected: &AgentInfo,
         input_revision: u64,
         last_hook: Option<i64>,
         state: Option<AgentState>,
-    ) -> Result<bool> {
+    ) -> Option<Option<AgentInfo>> {
         if self.restored_claude_observers.get(&pane) != Some(&generation) {
-            return Ok(false);
+            return None;
         }
         let current =
-            self.get_pane_info(pane)
+            host.pane_info(pane)
                 .filter(|info| {
                     !info.is_held
                         && !info.exited
                         && info.host.is_none()
                         && info.last_hook_at_ms == last_hook
-                        && self.agent_input_revision(pane) == input_revision
+                        && host.agent_input_revision(pane) == input_revision
                         && !self.agent_lifecycle.contains_key(&pane)
                         && !self.agent_worker_waits.contains_key(&pane)
                         && !self.claude_permission_waits.contains_key(&pane)
@@ -309,7 +430,7 @@ impl Screen {
                 });
         let Some(mut current) = current else {
             self.restored_claude_observers.remove(&pane);
-            return Ok(false);
+            return None;
         };
         if let Some(state) = state.filter(|state| {
             matches!(
@@ -323,9 +444,14 @@ impl Screen {
             current.waiting_on =
                 (state == AgentState::Waiting).then(|| "approve Claude permission request".into());
             current.wait_needs_a_person = state == AgentState::Waiting;
-            super::super::agent_reports::publish_pane_agent_activity(self, pane, current)
-                .context("publish restored Claude state")?;
+            return Some(Some(current));
         }
-        Ok(true)
+        Some(None)
+    }
+}
+
+impl super::AgentController {
+    pub(in crate::screen) fn staged_transfers(&self) -> impl Iterator<Item = PaneId> + '_ {
+        self.pending_agent_tracking.keys().copied()
     }
 }

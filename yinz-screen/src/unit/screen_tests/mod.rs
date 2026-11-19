@@ -9,8 +9,8 @@ use crate::{
     ClientId, ServerInstruction, ThreadSenders,
 };
 use yinz_bus::os_input_output::{
-    ClientTransport, RemotePanes, ServerEnvironment, TerminalIo, TerminalProcesses,
-    TerminalSupervision,
+    ClientTransport, RemotePanes, ServerEnvironment, SupervisorThemeHooks, TerminalIo,
+    TerminalProcesses, TerminalSupervision,
 };
 use yinz_test_support::Watched;
 use yinz_types::internal_ids::NotificationId;
@@ -288,6 +288,8 @@ struct FakeInputOutput {
     /// unsafe dump folder.
     failing_private_writes: Arc<std::sync::atomic::AtomicUsize>,
 }
+
+impl SupervisorThemeHooks for FakeInputOutput {}
 
 impl TerminalIo for FakeInputOutput {
     fn set_terminal_size_using_terminal_id(
@@ -568,6 +570,7 @@ impl Drop for MockSession {
 }
 
 struct MockScreen {
+    render_delivery: Arc<Mutex<()>>,
     pub main_client_id: ClientId,
     pub pty_receiver: Option<Receiver<(PtyInstruction, ErrorContext)>>,
     pub pty_writer_receiver: Option<Receiver<(PtyWriteInstruction, ErrorContext)>>,
@@ -629,6 +632,7 @@ impl MockScreen {
             .name("screen_thread".to_string())
             .spawn(move || {
                 screen_thread_main(
+                    None,
                     screen_bus,
                     None,
                     client_attributes,
@@ -727,6 +731,7 @@ impl MockScreen {
             .name("screen_thread".to_string())
             .spawn(move || {
                 screen_thread_main(
+                    None,
                     screen_bus,
                     None,
                     client_attributes,
@@ -983,11 +988,13 @@ impl MockScreen {
 
         let _ = to_screen.send(ScreenInstruction::RecomputeTabSize(main_client_id, size));
 
+        let render_delivery = Arc::new(Mutex::new(()));
         let received_background_jobs = Watched::new(vec![]);
         std::thread::Builder::new()
             .name("background_jobs_thread".to_string())
             .spawn({
                 let to_screen = to_screen.clone();
+                let render_delivery = render_delivery.clone();
                 let received_background_jobs = received_background_jobs.clone();
                 move || loop {
                     let (event, _err_ctx) = background_jobs_receiver
@@ -996,6 +1003,7 @@ impl MockScreen {
                     received_background_jobs.lock().push(event.clone());
                     match event {
                         BackgroundJob::RenderToClients => {
+                            let _delivery = render_delivery.lock().unwrap();
                             let _ = to_screen.send(ScreenInstruction::RenderToClients);
                         },
                         BackgroundJob::Exit => {
@@ -1007,6 +1015,7 @@ impl MockScreen {
             })
             .unwrap();
         MockScreen {
+            render_delivery,
             main_client_id,
             pty_receiver: Some(pty_receiver),
             pty_writer_receiver: Some(pty_writer_receiver),
@@ -1477,7 +1486,7 @@ fn screen_with_background_jobs(size: Size) -> (Screen, Receiver<(BackgroundJob, 
     let mut screen = create_non_mirrored_screen(size);
     let (to_background_jobs, background_jobs_receiver): ChannelWithContext<BackgroundJob> =
         channels::unbounded();
-    screen.bus.senders.to_background_jobs = Some(SenderWithContext::new(to_background_jobs));
+    screen.core.bus.senders.to_background_jobs = Some(SenderWithContext::new(to_background_jobs));
     (screen, background_jobs_receiver)
 }
 
@@ -1553,7 +1562,7 @@ fn open_floating_pane(
     } else {
         NewPanePlacement::Floating(None)
     };
-    let tab = screen.tabs.get_mut(&tab_index).expect("TEST");
+    let tab = screen.core.tabs.get_mut(&tab_index).expect("TEST");
     tab.new_pane(
         PaneId::Terminal(crate::TerminalId::new(pane_id)),
         None,
@@ -1595,7 +1604,7 @@ fn screen_wired_to_server(
     screen: &mut Screen,
 ) -> channels::Receiver<(ServerInstruction, ErrorContext)> {
     let (server_sender, server_receiver) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
     server_receiver
 }
 
@@ -1806,7 +1815,7 @@ fn adopted_pane_new_pane(
     use yinz_types::data::WarpedPane;
 
     let (to_screen, screen_receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
     screen
         .place_adopted_pane(
             crate::TerminalId::new(50),
@@ -1838,6 +1847,7 @@ fn screen_with_a_scrollback_editor_open() -> Screen {
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .expect("TEST")
@@ -1857,6 +1867,7 @@ fn screen_with_a_pane_replaced_in_place() -> Screen {
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .expect("TEST")
@@ -1942,8 +1953,8 @@ fn screen_with_a_stack_list() -> Screen {
     // terminal 9, so that a member left behind in this tab cannot be mistaken
     // for a pane that was always here
     new_tab(&mut screen, 9, TabId::new(1));
-    *screen.stacked_pane_list.borrow_mut() = true;
-    let tab = screen.tabs.get_mut(&TabId::new(0)).expect("TEST");
+    *screen.core.stacked_pane_list.borrow_mut() = true;
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).expect("TEST");
     for pane_id in [
         PaneId::Terminal(crate::TerminalId::new(2)),
         PaneId::Terminal(crate::TerminalId::new(3)),
@@ -1975,7 +1986,7 @@ fn screen_with_a_stack_list() -> Screen {
 /// hidden, and it is standing in for pane 3 all at once.
 fn screen_with_an_editor_on_a_hidden_stack_list_member() -> Screen {
     let mut screen = screen_with_a_stack_list();
-    let tab = screen.tabs.get_mut(&TabId::new(0)).expect("TEST");
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).expect("TEST");
     tab.replace_pane_with_editor_pane(
         PaneId::Terminal(crate::TerminalId::new(8)),
         PaneId::Terminal(crate::TerminalId::new(3)),
@@ -2017,12 +2028,12 @@ fn screen_with_diverged_tab_ids() -> Screen {
     screen.close_tab_by_id(TabId::new(1)).expect("TEST");
 
     assert_eq!(
-        screen.tabs.get(&TabId::new(2)).map(|t| t.position),
+        screen.core.tabs.get(&TabId::new(2)).map(|t| t.position),
         Some(TabPosition::new(0)),
         "Pre-condition: tab id 2 sits at position 0"
     );
     assert_eq!(
-        screen.tabs.get(&TabId::new(3)).map(|t| t.position),
+        screen.core.tabs.get(&TabId::new(3)).map(|t| t.position),
         Some(TabPosition::new(1)),
         "Pre-condition: tab id 3 sits at position 1"
     );
@@ -2037,6 +2048,7 @@ fn add_pane_to_tab(screen: &mut Screen, tab_id: TabId, pane_id: PaneId, floating
         NewPanePlacement::default()
     };
     screen
+        .core
         .tabs
         .get_mut(&tab_id)
         .expect("TEST")

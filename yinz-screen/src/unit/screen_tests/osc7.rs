@@ -146,7 +146,7 @@ fn osc7_focus_request_renders_quiet_panes_without_followup_activity() {
     let checkpoint = instructions.len();
 
     let (to_background, background) = channels::unbounded();
-    screen.bus.senders.to_background_jobs = Some(SenderWithContext::new(to_background));
+    screen.core.bus.senders.to_background_jobs = Some(SenderWithContext::new(to_background));
     let upper = PaneId::Terminal(TerminalId::new(1));
     screen
         .focus_pane_by_request(upper, true, false, CLIENT, None, &mut Default::default())
@@ -253,8 +253,8 @@ fn osc7_is_not_forwarded_to_watchers() {
         render_osc7(&mut screen, &receiver),
         [(CLIENT, "file://host/focused".to_owned())]
     );
-    assert!(!screen.last_forwarded_osc7.contains_key(&OTHER_CLIENT));
-    assert!(!screen.watcher_clients[&OTHER_CLIENT].should_force_render());
+    assert!(!screen.core.last_forwarded_osc7.contains_key(&OTHER_CLIENT));
+    assert!(!screen.core.watcher_clients[&OTHER_CLIENT].should_force_render());
 }
 
 #[test]
@@ -271,7 +271,7 @@ fn osc7_forgets_a_departed_clients_report_before_its_id_is_reused() {
         ]
     );
     screen.remove_client(OTHER_CLIENT).unwrap();
-    assert!(!screen.last_forwarded_osc7.contains_key(&OTHER_CLIENT));
+    assert!(!screen.core.last_forwarded_osc7.contains_key(&OTHER_CLIENT));
     screen.set_client_size(OTHER_CLIENT, SIZE).unwrap();
     screen.add_client(OTHER_CLIENT).unwrap();
     assert_eq!(
@@ -307,11 +307,12 @@ fn osc7_repaint_resends_directory_discarded_during_screensaver() {
     // The client discards this render while idle, but the server caches it.
     render_osc7(&mut screen, &receiver);
     screen
+        .core
         .last_forwarded_osc7
         .insert(OTHER_CLIENT, Some("file://other".into()));
     screen.request_client_repaint(CLIENT).unwrap();
     assert_eq!(
-        screen.last_forwarded_osc7.get(&OTHER_CLIENT),
+        screen.core.last_forwarded_osc7.get(&OTHER_CLIENT),
         Some(&Some("file://other".into()))
     );
     assert_eq!(

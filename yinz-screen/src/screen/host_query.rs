@@ -30,21 +30,21 @@ impl Screen {
             return STARTUP_SENTINEL_TOKEN; // sentinel: no real forward happened
         }
         if let crate::host_query::HostQuery::ClipboardContent { .. } = query {
-            if !self.paste_buffer_read_enabled {
+            if !self.core.paste_buffer_read_enabled {
                 let _ = self.resume_pane_after_forward(pane_id, Vec::new());
                 return STARTUP_SENTINEL_TOKEN;
             }
             return self.enqueue_clipboard_forward(pane_id, query);
         }
-        let token = self.next_forward_token;
+        let token = self.core.next_forward_token;
         // Skip over the reserved sentinel (0) on wrap; allocate a fresh
         // u32 for every forward.
-        self.next_forward_token = self.next_forward_token.wrapping_add(1);
-        if self.next_forward_token == STARTUP_SENTINEL_TOKEN {
-            self.next_forward_token = 1;
+        self.core.next_forward_token = self.core.next_forward_token.wrapping_add(1);
+        if self.core.next_forward_token == STARTUP_SENTINEL_TOKEN {
+            self.core.next_forward_token = 1;
         }
-        if self.forward_in_flight_token.is_some() {
-            self.forward_queue.push_back(PendingForward {
+        if self.core.forward_in_flight_token.is_some() {
+            self.core.forward_queue.push_back(PendingForward {
                 token,
                 pane_id,
                 query,
@@ -60,13 +60,13 @@ impl Screen {
         pane_id: PaneId,
         query: crate::host_query::HostQuery,
     ) -> u32 {
-        let token = self.next_forward_token;
-        self.next_forward_token = self.next_forward_token.wrapping_add(1);
-        if self.next_forward_token == STARTUP_SENTINEL_TOKEN {
-            self.next_forward_token = 1;
+        let token = self.core.next_forward_token;
+        self.core.next_forward_token = self.core.next_forward_token.wrapping_add(1);
+        if self.core.next_forward_token == STARTUP_SENTINEL_TOKEN {
+            self.core.next_forward_token = 1;
         }
-        if self.clipboard_forward_in_flight_token.is_some() {
-            self.clipboard_forward_queue.push_back(PendingForward {
+        if self.core.clipboard_forward_in_flight_token.is_some() {
+            self.core.clipboard_forward_queue.push_back(PendingForward {
                 token,
                 pane_id,
                 query,
@@ -84,10 +84,12 @@ impl Screen {
         query: crate::host_query::HostQuery,
     ) {
         let query_bytes = query.to_query_bytes();
-        self.pending_clipboard_forwards
+        self.core
+            .pending_clipboard_forwards
             .insert(token, PendingForwardEntry { pane_id, query });
-        self.clipboard_forward_in_flight_token = Some(token);
+        self.core.clipboard_forward_in_flight_token = Some(token);
         let _ = self
+            .core
             .bus
             .senders
             .send_to_server(ServerInstruction::ForwardQueryToHost(
@@ -95,7 +97,7 @@ impl Screen {
                 query_bytes,
                 true,
             ));
-        let senders = self.bus.senders.clone();
+        let senders = self.core.bus.senders.clone();
         crate::global_async_runtime::get_tokio_runtime().spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(
                 SERVER_CLIPBOARD_FORWARD_TIMEOUT_MS,
@@ -110,7 +112,7 @@ impl Screen {
 
     fn handle_clipboard_reply(&mut self, token: u32, reply_bytes: Vec<u8>) -> Result<()> {
         if let Some(PendingForwardEntry { pane_id, query }) =
-            self.pending_clipboard_forwards.remove(&token)
+            self.core.pending_clipboard_forwards.remove(&token)
         {
             let payload = if reply_bytes.is_empty() {
                 query.empty_reply_bytes()
@@ -119,8 +121,8 @@ impl Screen {
             };
             self.resume_pane_after_forward(pane_id, payload)?;
         }
-        self.clipboard_forward_in_flight_token = None;
-        while let Some(next) = self.clipboard_forward_queue.pop_front() {
+        self.core.clipboard_forward_in_flight_token = None;
+        while let Some(next) = self.core.clipboard_forward_queue.pop_front() {
             if !self.pane_exists(&next.pane_id) {
                 continue;
             }
@@ -139,7 +141,7 @@ impl Screen {
             return;
         }
         // The session baseline's mode, never a viewer's report.
-        let code: u8 = match self.style.application.mode {
+        let code: u8 = match self.core.style.application.mode {
             HostTerminalThemeMode::Dark => 1,
             HostTerminalThemeMode::Light => 2,
         };
@@ -163,10 +165,12 @@ impl Screen {
         query: crate::host_query::HostQuery,
     ) {
         let query_bytes = query.to_query_bytes();
-        self.pending_forwarded_queries
+        self.core
+            .pending_forwarded_queries
             .insert(token, PendingForwardEntry { pane_id, query });
-        self.forward_in_flight_token = Some(token);
+        self.core.forward_in_flight_token = Some(token);
         let _ = self
+            .core
             .bus
             .senders
             .send_to_server(ServerInstruction::ForwardQueryToHost(
@@ -174,7 +178,7 @@ impl Screen {
                 query_bytes,
                 false,
             ));
-        let senders = self.bus.senders.clone();
+        let senders = self.core.bus.senders.clone();
         crate::global_async_runtime::get_tokio_runtime().spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(SERVER_FORWARD_TIMEOUT_MS)).await;
             let _ = senders.send_to_screen(ScreenInstruction::ForwardedReplyFromHost {
@@ -201,10 +205,10 @@ impl Screen {
         token: u32,
         reply_bytes: Vec<u8>,
     ) -> Result<()> {
-        if self.clipboard_forward_in_flight_token == Some(token) {
+        if self.core.clipboard_forward_in_flight_token == Some(token) {
             return self.handle_clipboard_reply(token, reply_bytes);
         }
-        if self.pending_clipboard_forwards.contains_key(&token) {
+        if self.core.pending_clipboard_forwards.contains_key(&token) {
             log::debug!(
                 "Dropping stale clipboard reply (token={}, len={} bytes)",
                 token,
@@ -220,16 +224,16 @@ impl Screen {
         // again would clobber the new in-flight forward. The same
         // logic also rejects duplicate replies and replies for tokens
         // belonging to a previously-closed pane.
-        if self.forward_in_flight_token != Some(token) {
+        if self.core.forward_in_flight_token != Some(token) {
             log::debug!(
                 "Dropping stale forwarded reply (token={}, in-flight={:?}, len={} bytes)",
                 token,
-                self.forward_in_flight_token,
+                self.core.forward_in_flight_token,
                 reply_bytes.len(),
             );
             return Ok(());
         }
-        if let Some(entry) = self.pending_forwarded_queries.remove(&token) {
+        if let Some(entry) = self.core.pending_forwarded_queries.remove(&token) {
             let PendingForwardEntry { pane_id, query } = entry;
             match pane_id {
                 PaneId::Terminal(_) => {
@@ -255,8 +259,8 @@ impl Screen {
             }
         }
         // Release the slot and dispatch the next queued forward, if any.
-        self.forward_in_flight_token = None;
-        if let Some(next) = self.forward_queue.pop_front() {
+        self.core.forward_in_flight_token = None;
+        if let Some(next) = self.core.forward_queue.pop_front() {
             self.dispatch_forward(next.token, next.pane_id, next.query);
         }
         Ok(())
@@ -292,6 +296,7 @@ impl Screen {
             // declined" reply some apps rely on, and a non-empty
             // payload may still be deliverable until the pty drains.
             let _ = self
+                .core
                 .bus
                 .senders
                 .send_to_pty_writer(PtyWriteInstruction::Write(reply_bytes, terminal_id, None));

@@ -32,6 +32,9 @@ use yinz_types::style::{Style, Styling};
 #[macro_export]
 macro_rules! resize_pty {
     ($pane:expr_2021, $os_input:expr_2021, $senders:expr_2021, $character_cell_size:expr_2021) => {{
+        $crate::resize_pty!($pane, $os_input, $senders, $character_cell_size, ResizePty)
+    }};
+    ($pane:expr_2021, $os_input:expr_2021, $senders:expr_2021, $character_cell_size:expr_2021, $instruction:ident) => {{
         let (width_in_pixels, height_in_pixels) = {
             let character_cell_size = $character_cell_size.borrow();
             match *character_cell_size {
@@ -55,7 +58,7 @@ macro_rules! resize_pty {
                 use $crate::PtyWriteInstruction;
                 let err_context = || "Failed to send resize pty instruction".to_string();
                 $senders
-                    .send_to_pty_writer(PtyWriteInstruction::ResizePty(
+                    .send_to_pty_writer(PtyWriteInstruction::$instruction(
                         *pid,
                         $pane.get_content_columns().min(u16::MAX as usize) as u16,
                         $pane.get_content_rows().min(u16::MAX as usize) as u16,

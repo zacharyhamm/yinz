@@ -752,22 +752,14 @@ impl Tab {
         if pane.is_held() || pane.exited() || columns == 0 || rows == 0 {
             return Ok(());
         }
-        // An unchanged winsize does not trigger SIGWINCH. Flush the resize batch
-        // so it cannot coalesce this nudge with the exact size restored below.
-        self.senders
-            .send_to_pty_writer(PtyWriteInstruction::ApplyCachedResizes)
-            .context("failed to flush resizes before pane redraw")?;
-        self.senders
-            .send_to_pty_writer(PtyWriteInstruction::ResizePty(
-                terminal_id,
-                if columns == 1 { 2 } else { columns - 1 },
-                rows,
-                None,
-                None,
-            ))
-            .context("failed to nudge pane size for redraw")?;
-        resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
-            .context("failed to restore pane size after redraw nudge")
+        resize_pty!(
+            pane,
+            self.os_api,
+            self.senders,
+            self.character_cell_size,
+            RedrawPty
+        )
+        .context("request pane redraw at current size")
     }
 
     pub fn apply_buffered_instructions(&mut self) -> Result<()> {

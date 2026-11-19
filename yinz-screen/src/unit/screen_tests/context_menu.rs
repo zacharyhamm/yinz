@@ -38,7 +38,7 @@ fn menu_items() -> Vec<ContextMenuItem> {
 fn screen_with_menu_configured() -> Screen {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.context_menu = configured_menu();
+    screen.menus.context_menu = configured_menu();
     screen
 }
 
@@ -89,11 +89,12 @@ fn a_menu_awaiting_its_plugin_draws_nothing() {
     );
 
     assert!(
-        screen.context_menu_is_open(client_id),
+        screen.menus.context_menu_is_open(client_id),
         "the menu exists - it just has nothing to say yet"
     );
     assert!(
         screen
+            .menus
             .context_menu_layout_for(client_id, viewport(&screen))
             .is_none(),
         "an unresolved menu must paint no cells, or the list changes under the pointer"
@@ -112,6 +113,7 @@ fn the_timeout_falls_back_to_the_configured_items() {
     screen.context_menu_timed_out(request_id, client_id);
 
     let layout = screen
+        .menus
         .context_menu_layout_for(client_id, viewport(&screen))
         .expect("the configured items are drawn once the plugin has had its chance");
     assert_eq!(layout.rows.len(), 3);
@@ -138,7 +140,7 @@ fn a_late_plugin_answer_is_ignored_once_the_fallback_is_visible() {
         client_id,
     );
 
-    let items = screen.context_menus[&client_id].items.visible();
+    let items = screen.menus.context_menus[&client_id].items.visible();
     assert_eq!(
         items.len(),
         3,
@@ -172,7 +174,7 @@ fn a_second_plugin_answer_is_ignored() {
     );
 
     assert_eq!(
-        screen.context_menus[&client_id].items.visible()[0].label,
+        screen.menus.context_menus[&client_id].items.visible()[0].label,
         "Filtered"
     );
 }
@@ -210,7 +212,10 @@ fn an_item_the_plugin_returns_by_id_gets_its_actions_back() {
         client_id,
     );
 
-    let items = screen.context_menus[&client_id].items.visible().to_vec();
+    let items = screen.menus.context_menus[&client_id]
+        .items
+        .visible()
+        .to_vec();
     assert_eq!(items[0].label, "Close this pane", "the plugin's label wins");
     assert_eq!(
         items[0].actions,
@@ -245,6 +250,7 @@ fn a_plugins_answer_replaces_what_the_menu_says() {
     );
 
     let layout = screen
+        .menus
         .context_menu_layout_for(client_id, viewport(&screen))
         .expect("the plugin's items are drawn");
     assert_eq!(layout.rows.len(), 1);
@@ -264,7 +270,7 @@ fn an_answer_naming_a_menu_that_is_gone_is_dropped() {
         Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
         client_id,
     );
-    assert!(!screen.context_menu_is_open(client_id));
+    assert!(!screen.menus.context_menu_is_open(client_id));
 
     // ...and again, with a newer menu in the way
     let newer_request_id = screen.open_context_menu(
@@ -280,6 +286,7 @@ fn an_answer_naming_a_menu_that_is_gone_is_dropped() {
     );
     assert!(
         screen
+            .menus
             .context_menu_layout_for(client_id, viewport(&screen))
             .is_none(),
         "the newer menu is still awaiting its own answer"
@@ -303,7 +310,7 @@ fn a_plugin_answering_with_nothing_closes_the_menu() {
     );
 
     assert!(
-        !screen.context_menu_is_open(client_id),
+        !screen.menus.context_menu_is_open(client_id),
         "an empty answer means 'no menu here', not an empty box"
     );
 }
@@ -322,8 +329,9 @@ fn opening_a_second_menu_replaces_the_first() {
         client_id,
     );
 
-    assert_eq!(screen.context_menus.len(), 1);
+    assert_eq!(screen.menus.context_menus.len(), 1);
     let layout = screen
+        .menus
         .context_menu_layout_for(client_id, viewport(&screen))
         .expect("drawn");
     assert_eq!(layout.x, 30, "at the newer click, not the older one");
@@ -335,7 +343,7 @@ fn esc_closes_the_menu() {
     let esc = Some(KeyWithModifier::new(BareKey::Esc));
 
     assert!(screen.context_menu_handles_key(&esc, client_id));
-    assert!(!screen.context_menu_is_open(client_id));
+    assert!(!screen.menus.context_menu_is_open(client_id));
 }
 
 /// Esc has to work before the plugin has answered too, or a wedged hook leaves the user stuck
@@ -350,7 +358,7 @@ fn esc_closes_a_menu_that_is_still_waiting() {
     );
 
     assert!(screen.context_menu_handles_key(&Some(KeyWithModifier::new(BareKey::Esc)), client_id));
-    assert!(!screen.context_menu_is_open(client_id));
+    assert!(!screen.menus.context_menu_is_open(client_id));
 }
 
 #[test]
@@ -359,11 +367,11 @@ fn the_arrow_keys_move_the_selection_and_skip_the_separator() {
     let down = Some(KeyWithModifier::new(BareKey::Down));
 
     assert!(screen.context_menu_handles_key(&down, client_id));
-    assert_eq!(screen.context_menus[&client_id].selected, Some(0));
+    assert_eq!(screen.menus.context_menus[&client_id].selected, Some(0));
 
     assert!(screen.context_menu_handles_key(&down, client_id));
     assert_eq!(
-        screen.context_menus[&client_id].selected,
+        screen.menus.context_menus[&client_id].selected,
         Some(2),
         "index 1 is a separator"
     );
@@ -387,7 +395,7 @@ fn esc_with_a_modifier_still_closes_the_menu() {
     let ctrl_esc = Some(KeyWithModifier::new(BareKey::Esc).with_ctrl_modifier());
 
     assert!(screen.context_menu_handles_key(&ctrl_esc, client_id));
-    assert!(!screen.context_menu_is_open(client_id));
+    assert!(!screen.menus.context_menu_is_open(client_id));
 }
 
 /// Ctrl-j, Ctrl-Down, and Ctrl-Enter are distinct keys from the keybinding system's point of
@@ -401,7 +409,7 @@ fn a_modified_navigation_key_falls_through() {
 
     assert!(!screen.context_menu_handles_key(&ctrl_down, client_id));
     assert!(!screen.context_menu_handles_key(&ctrl_j, client_id));
-    assert_eq!(screen.context_menus[&client_id].selected, None);
+    assert_eq!(screen.menus.context_menus[&client_id].selected, None);
 }
 
 #[test]
@@ -411,14 +419,14 @@ fn a_modified_enter_falls_through_rather_than_activating() {
     let ctrl_enter = Some(KeyWithModifier::new(BareKey::Enter).with_ctrl_modifier());
 
     assert!(!screen.context_menu_handles_key(&ctrl_enter, client_id));
-    assert!(screen.context_menu_is_open(client_id));
+    assert!(screen.menus.context_menu_is_open(client_id));
 }
 
 #[test]
 fn enter_with_nothing_highlighted_closes_rather_than_guessing() {
     let (mut screen, client_id, _) = screen_with_open_menu((10, 5));
     assert!(screen.context_menu_handles_key(&Some(KeyWithModifier::new(BareKey::Enter)), client_id));
-    assert!(!screen.context_menu_is_open(client_id));
+    assert!(!screen.menus.context_menu_is_open(client_id));
 }
 
 #[test]
@@ -426,7 +434,7 @@ fn enter_on_a_highlighted_item_runs_it_and_closes() {
     let (mut screen, client_id, _) = screen_with_open_menu((10, 5));
     screen.context_menu_handles_key(&Some(KeyWithModifier::new(BareKey::Down)), client_id);
     assert!(screen.context_menu_handles_key(&Some(KeyWithModifier::new(BareKey::Enter)), client_id));
-    assert!(!screen.context_menu_is_open(client_id));
+    assert!(!screen.menus.context_menu_is_open(client_id));
 }
 
 #[test]
@@ -434,6 +442,7 @@ fn hovering_highlights_the_row_under_the_pointer_and_clears_off_it() {
     let (mut screen, client_id, _) = screen_with_open_menu((10, 5));
     let view = viewport(&screen);
     let layout = screen
+        .menus
         .context_menu_layout_for(client_id, view)
         .expect("drawn");
     let row = layout.row_of_item(2).expect("the third item is on screen");
@@ -443,7 +452,7 @@ fn hovering_highlights_the_row_under_the_pointer_and_clears_off_it() {
         view,
         client_id,
     );
-    assert_eq!(screen.context_menus[&client_id].selected, Some(2));
+    assert_eq!(screen.menus.context_menus[&client_id].selected, Some(2));
 
     // off the menu entirely
     screen.handle_context_menu_mouse_event(
@@ -452,7 +461,7 @@ fn hovering_highlights_the_row_under_the_pointer_and_clears_off_it() {
         client_id,
     );
     assert_eq!(
-        screen.context_menus[&client_id].selected, None,
+        screen.menus.context_menus[&client_id].selected, None,
         "a highlight the pointer has left looks like an item about to run"
     );
 }
@@ -466,7 +475,7 @@ fn a_press_outside_the_menu_dismisses_it() {
         view,
         client_id,
     );
-    assert!(!screen.context_menu_is_open(client_id));
+    assert!(!screen.menus.context_menu_is_open(client_id));
 }
 
 /// The press that lands on a row does nothing; the release is what activates. Dragging onto an
@@ -476,6 +485,7 @@ fn an_item_activates_on_the_release_not_the_press() {
     let (mut screen, client_id, _) = screen_with_open_menu((10, 5));
     let view = viewport(&screen);
     let layout = screen
+        .menus
         .context_menu_layout_for(client_id, view)
         .expect("drawn");
     let row = layout.row_of_item(0).expect("the first item is on screen");
@@ -487,7 +497,7 @@ fn an_item_activates_on_the_release_not_the_press() {
         client_id,
     );
     assert!(
-        screen.context_menu_is_open(client_id),
+        screen.menus.context_menu_is_open(client_id),
         "the press alone does not act"
     );
 
@@ -496,7 +506,7 @@ fn an_item_activates_on_the_release_not_the_press() {
         view,
         client_id,
     );
-    assert!(!screen.context_menu_is_open(client_id));
+    assert!(!screen.menus.context_menu_is_open(client_id));
 }
 
 #[test]
@@ -504,6 +514,7 @@ fn a_release_on_a_separator_does_nothing() {
     let (mut screen, client_id, _) = screen_with_open_menu((10, 5));
     let view = viewport(&screen);
     let layout = screen
+        .menus
         .context_menu_layout_for(client_id, view)
         .expect("drawn");
     let separator_row = layout.y + 2; // top border, first item, then the separator
@@ -515,7 +526,7 @@ fn a_release_on_a_separator_does_nothing() {
         view,
         client_id,
     );
-    assert!(screen.context_menu_is_open(client_id));
+    assert!(screen.menus.context_menu_is_open(client_id));
 }
 
 /// A menu is drawn above every pane and above the toasts, so it occludes the cursor exactly as a
@@ -549,6 +560,7 @@ fn a_menu_covering_the_cursor_hides_it_until_it_closes() {
         client_id,
     );
     let layout = screen
+        .menus
         .context_menu_layout_for(client_id, viewport(&screen))
         .expect("the menu is drawn");
     assert!(
@@ -598,7 +610,7 @@ fn menu_on_a_larger_tab_uses_that_tabs_bounds() {
     );
     screen.set_context_menu_items(request, menu_items(), None, client);
     let view = screen.tab_surface(TabId::new(1)).unwrap();
-    let layout = screen.context_menu_layout_for(client, view).unwrap();
+    let layout = screen.menus.context_menu_layout_for(client, view).unwrap();
     assert!(layout.x > small.cols && layout.y > small.rows);
 
     let receiver = screen_wired_to_server(&mut screen);
@@ -659,7 +671,7 @@ fn one_clients_menu_does_not_hide_another_clients_cursor() {
 fn closing_a_menu_forces_what_was_under_it_to_repaint() {
     let (mut screen, client_id, _) = screen_with_open_menu((10, 5));
     let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
-    for tab in screen.tabs.values_mut() {
+    for tab in screen.core.tabs.values_mut() {
         if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
             pane.set_should_render(false);
         }
@@ -668,6 +680,7 @@ fn closing_a_menu_forces_what_was_under_it_to_repaint() {
     screen.close_context_menu(client_id);
 
     let repainting = screen
+        .core
         .tabs
         .values_mut()
         .filter_map(|tab| tab.get_pane_with_id_mut(pane_id))
@@ -693,12 +706,12 @@ fn a_menu_over_a_pane_closes_when_that_pane_does() {
     let (mut screen, client_id, _) = screen_with_open_menu((10, 5));
     screen.close_context_menus_for_pane(PaneId::Terminal(crate::TerminalId::new(2)));
     assert!(
-        screen.context_menu_is_open(client_id),
+        screen.menus.context_menu_is_open(client_id),
         "a different pane closing is not this menu's business"
     );
 
     screen.close_context_menus_for_pane(PaneId::Terminal(crate::TerminalId::new(1)));
-    assert!(!screen.context_menu_is_open(client_id));
+    assert!(!screen.menus.context_menu_is_open(client_id));
 }
 
 #[test]
@@ -728,6 +741,7 @@ fn each_client_gets_its_own_menu() {
     let view = viewport(&screen);
     assert_eq!(
         screen
+            .menus
             .context_menu_layout_for(crate::ClientId::new(1), view)
             .unwrap()
             .x,
@@ -735,6 +749,7 @@ fn each_client_gets_its_own_menu() {
     );
     assert_eq!(
         screen
+            .menus
             .context_menu_layout_for(crate::ClientId::new(2), view)
             .unwrap()
             .x,
@@ -742,9 +757,9 @@ fn each_client_gets_its_own_menu() {
     );
 
     screen.close_context_menu(crate::ClientId::new(1));
-    assert!(!screen.context_menu_is_open(crate::ClientId::new(1)));
+    assert!(!screen.menus.context_menu_is_open(crate::ClientId::new(1)));
     assert!(
-        screen.context_menu_is_open(crate::ClientId::new(2)),
+        screen.menus.context_menu_is_open(crate::ClientId::new(2)),
         "one client dismissing does not dismiss the other's"
     );
 }
@@ -762,7 +777,7 @@ fn a_right_press_asks_the_plugin_thread_what_the_menu_should_say() {
     bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
 
     let mut screen = create_non_mirrored_screen(size);
-    screen.bus.senders.to_plugin = bus.senders.to_plugin.clone();
+    screen.core.bus.senders.to_plugin = bus.senders.to_plugin.clone();
     new_tab(&mut screen, 1, TabId::new(0));
 
     screen.handle_mouse_event(
@@ -785,7 +800,7 @@ fn a_right_press_asks_the_plugin_thread_what_the_menu_should_say() {
         "the absolute click, which is what anchors the menu - not the pane-relative one"
     );
     assert_eq!(context.client_id, client_id);
-    assert!(screen.context_menu_is_open(client_id));
+    assert!(screen.menus.context_menu_is_open(client_id));
 }
 
 /// The regression guard for the feature as a whole: with the option off, right-click is exactly
@@ -799,11 +814,11 @@ fn a_right_press_with_the_option_off_asks_nobody_anything() {
     bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
 
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
-    screen.bus.senders.to_plugin = bus.senders.to_plugin.clone();
+    screen.core.bus.senders.to_plugin = bus.senders.to_plugin.clone();
     new_tab(&mut screen, 1, TabId::new(0));
 
-    screen.context_menu_on_right_click = false;
-    for tab in screen.tabs.values_mut() {
+    screen.menus.context_menu_on_right_click = false;
+    for tab in screen.core.tabs.values_mut() {
         tab.update_context_menu_on_right_click(false);
     }
 
@@ -812,7 +827,7 @@ fn a_right_press_with_the_option_off_asks_nobody_anything() {
         client_id,
     );
 
-    assert!(!screen.context_menu_is_open(client_id));
+    assert!(!screen.menus.context_menu_is_open(client_id));
     assert!(
         !plugin_receiver.try_iter().any(|(instruction, _)| matches!(
             instruction,
@@ -829,7 +844,7 @@ fn a_right_press_with_the_option_off_asks_nobody_anything() {
 fn a_selected_items_context_reaches_only_the_plugin_that_offered_it() {
     let (mut screen, capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 20 });
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.context_menu = configured_menu();
+    screen.menus.context_menu = configured_menu();
     let client_id = ClientId::new(1);
 
     let request_id = screen.open_context_menu(
@@ -913,7 +928,7 @@ fn an_item_runs_against_the_clicked_pane_even_if_focus_moved_meanwhile() {
         Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
     // "Copy" is a focus-relative action, and this stands in for the screen thread draining the
     // instruction the activation enqueued - see `activating_an_item_enqueues_rather_than_acting_inline`.
     screen.dispatch_context_menu_actions(
@@ -957,8 +972,8 @@ fn a_menu_item_announces_its_actions_as_user_input() {
     let (to_screen, _screen_receiver) = channels::unbounded::<(ScreenInstruction, ErrorContext)>();
     let (to_plugin, plugin_receiver) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
     let (mut screen, _, _) = screen_with_open_menu((10, 5));
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
 
     screen.dispatch_context_menu_actions(
         PaneId::Terminal(crate::TerminalId::new(1)),
@@ -999,7 +1014,7 @@ fn a_vanished_pane_announces_nothing() {
     let client_id = ClientId::new(1);
     let (to_plugin, plugin_receiver) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
     let (mut screen, _, _) = screen_with_open_menu((10, 5));
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
 
     screen.dispatch_context_menu_actions(
         PaneId::Terminal(crate::TerminalId::new(999)),
@@ -1038,7 +1053,7 @@ fn a_reload_replaces_the_configured_menu() {
         .unwrap();
 
     assert_eq!(
-        screen.context_menu.items(),
+        screen.menus.context_menu.items(),
         reloaded.items(),
         "the next right-click offers what the reloaded config says"
     );
@@ -1062,12 +1077,12 @@ fn a_menu_dies_with_the_tab_holding_its_pane() {
         Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
         client_id,
     );
-    assert!(screen.context_menu_is_open(client_id));
+    assert!(screen.menus.context_menu_is_open(client_id));
 
     screen.close_tab_by_id(TabId::new(1)).unwrap();
 
     assert!(
-        !screen.context_menu_is_open(client_id),
+        !screen.menus.context_menu_is_open(client_id),
         "the pane the menu was opened over went with the tab"
     );
 }
@@ -1091,7 +1106,7 @@ fn closing_a_tab_leaves_other_tabs_menus_alone() {
 
     screen.close_tab_by_id(TabId::new(1)).unwrap();
 
-    assert!(screen.context_menu_is_open(client_id));
+    assert!(screen.menus.context_menu_is_open(client_id));
 }
 
 /// Activating an item does not restore the focus inline. It enqueues one instruction that will do
@@ -1102,7 +1117,7 @@ fn activating_an_item_enqueues_rather_than_acting_inline() {
     let client_id = ClientId::new(1);
     let (to_screen, screen_receiver) = channels::unbounded::<(ScreenInstruction, ErrorContext)>();
     let (mut screen, _, _) = screen_with_open_menu((10, 5));
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
 
     // Down highlights "Copy" - the first selectable item - and Enter runs it.
     screen.context_menu_handles_key(&Some(KeyWithModifier::new(BareKey::Down)), client_id);
@@ -1130,7 +1145,10 @@ fn activating_an_item_enqueues_rather_than_acting_inline() {
         },
         other => panic!("expected an ActivateContextMenuItem, got {other:?}"),
     }
-    assert!(!screen.context_menu_is_open(client_id), "the menu is done");
+    assert!(
+        !screen.menus.context_menu_is_open(client_id),
+        "the menu is done"
+    );
 }
 
 /// The pane can still go between the click that activated an item and the instruction that runs
@@ -1141,7 +1159,7 @@ fn a_vanished_pane_drops_its_items_actions() {
     let client_id = ClientId::new(1);
     let (to_screen, screen_receiver) = channels::unbounded::<(ScreenInstruction, ErrorContext)>();
     let (mut screen, _, _) = screen_with_open_menu((10, 5));
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
 
     screen.dispatch_context_menu_actions(
         PaneId::Terminal(crate::TerminalId::new(999)),
@@ -1200,7 +1218,7 @@ fn closing_a_menu_repaints_agent_margins_for_regular_clients_and_watchers() {
         let placement_name = format!("{placement:?}");
         let mut screen = create_non_mirrored_screen(size);
         new_tab(&mut screen, 1, TabId::new(0));
-        screen.context_menu = configured_menu();
+        screen.menus.context_menu = configured_menu();
         let tab = screen.get_active_tab_mut(followed).unwrap();
         tab.max_agent_width = 80;
         let agent = if matches!(placement, NewPanePlacement::NoPreference { .. }) {
@@ -1268,6 +1286,7 @@ fn closing_a_menu_repaints_agent_margins_for_regular_clients_and_watchers() {
         let request = screen.open_context_menu(click_context(agent, (right - 2, 5)), followed);
         screen.set_context_menu_items(request, menu_items(), None, followed);
         let menu_row = screen
+            .menus
             .context_menu_layout_for(
                 followed,
                 Viewport {
@@ -1283,7 +1302,7 @@ fn closing_a_menu_repaints_agent_margins_for_regular_clients_and_watchers() {
         for snapshot in render(&mut screen, &mut grids) {
             assert!(snapshot.contains("Copy"), "{snapshot}");
         }
-        assert!(!screen.watcher_clients[&watcher].should_force_render());
+        assert!(!screen.core.watcher_clients[&watcher].should_force_render());
         assert!(screen.close_context_menu(followed));
         let closed = render(&mut screen, &mut grids);
         for (index, client) in [followed, watcher].into_iter().enumerate() {
@@ -1319,8 +1338,9 @@ fn a_watcher_menu_only_repaint_restores_the_cursor_after_the_menu() {
     screen.set_watcher_size(watcher, Size { cols: 80, rows: 20 });
     screen.set_followed_client(followed).unwrap();
     // Keep regular-client menu output from forcing the watcher panes to repaint.
-    screen.connected_clients.borrow_mut().remove(&followed);
+    screen.core.connected_clients.borrow_mut().remove(&followed);
     screen
+        .core
         .connected_clients
         .borrow_mut()
         .insert(ClientId::new(99));
@@ -1354,13 +1374,13 @@ fn menu_selection_repaints_only_the_menu_for_a_healthy_watcher() {
         (followed, RenderBacklog { queued_renders: 1 }),
         (watcher, RenderBacklog::default()),
     ];
-    screen.bus.os_input = Some(Box::new(fake_os));
+    screen.core.bus.os_input = Some(Box::new(fake_os));
     assert!(
         screen.deferred_tabs().is_empty(),
         "the followed client's open menu can render for its healthy watcher"
     );
     assert!(screen.context_menu_handles_key(&Some(KeyWithModifier::new(BareKey::Down)), followed));
-    assert!(!screen.watcher_clients[&watcher].should_force_render());
+    assert!(!screen.core.watcher_clients[&watcher].should_force_render());
     assert!(
         screen.deferred_tabs().is_empty(),
         "selection changed without pane output"
@@ -1395,7 +1415,7 @@ fn agent_mouse_override_uses_current_metadata_and_consumes_the_opening_gesture()
                 rows: 24,
             });
             new_tab(&mut screen, 1, TabId::new(0));
-            let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+            let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
             if !focused {
                 tab.new_pane(
                     PaneId::Terminal(TerminalId::new(2)),
@@ -1430,16 +1450,17 @@ fn agent_mouse_override_uses_current_metadata_and_consumes_the_opening_gesture()
             capture.drain_pty_writes();
             screen.handle_mouse_event(MouseEvent::new_right_press_event(position), client);
             assert!(
-                screen.context_menu_is_open(client),
+                screen.menus.context_menu_is_open(client),
                 "{kind}, focused={focused}"
             );
             assert_eq!(
-                screen.tabs[&TabId::new(0)].get_active_pane_id(client),
+                screen.core.tabs[&TabId::new(0)].get_active_pane_id(client),
                 Some(pane_id)
             );
-            let request_id = screen.context_menus[&client].request_id;
+            let request_id = screen.menus.context_menus[&client].request_id;
             screen.set_context_menu_items(request_id, menu_items(), None, client);
             let menu = screen
+                .menus
                 .context_menu_layout_for(
                     client,
                     Size {
@@ -1472,6 +1493,7 @@ fn agent_mouse_override_uses_current_metadata_and_consumes_the_opening_gesture()
                     .unwrap();
                 if !recognized {
                     screen
+                        .core
                         .tabs
                         .get_mut(&TabId::new(0))
                         .unwrap()
@@ -1482,7 +1504,7 @@ fn agent_mouse_override_uses_current_metadata_and_consumes_the_opening_gesture()
                 capture.drain_pty_writes();
                 screen.handle_mouse_event(MouseEvent::new_right_press_event(position), client);
                 screen.handle_mouse_event(MouseEvent::new_right_release_event(position), client);
-                assert!(!screen.context_menu_is_open(client));
+                assert!(!screen.menus.context_menu_is_open(client));
                 assert_eq!(capture.drain_pty_writes().len(), 2);
             }
         }

@@ -2130,17 +2130,12 @@ Deno.test("cleanup of an unfinished worker records a non-retryable refusal", asy
 });
 
 Deno.test("close-completed refusal classification is pinned to the Rust CloseCompleted wording", async () => {
-  const source = await Deno.readTextFile(
+  const handler = await Deno.readTextFile(
     new URL(
-      "../../../yinz-screen/src/screen/agent_control.rs",
+      "../../../yinz-screen/src/screen/agent_control/close_completed.rs",
       import.meta.url,
     ),
   );
-  const start = source.search(/CloseCompleted \{[^}]*\} => \{/);
-  assert(start >= 0, "CloseCompleted handler not found");
-  const end = source.indexOf('"worker pane could not be closed"', start);
-  assert(end > start, "CloseCompleted handler end not found");
-  const handler = source.slice(start, end + 40);
   for (const fragment of CLOSE_COMPLETED_CORRELATION_REFUSALS) {
     assert(handler.includes(fragment), `Rust no longer says: ${fragment}`);
   }

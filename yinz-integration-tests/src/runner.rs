@@ -24,6 +24,7 @@ use crate::{keys, test_env};
 const GUEST_MODAL_TITLE: &str = "Nested Yinz session detected";
 
 pub struct TestRunner {
+    restored_observer: Option<yinz_server::RestoredAgentObserver>,
     size: Size,
     extra_config_kdl: String,
     config_dir: Option<PathBuf>,
@@ -38,6 +39,7 @@ pub struct TestRunner {
 impl TestRunner {
     pub fn new(size: Size) -> Self {
         TestRunner {
+            restored_observer: None,
             size,
             extra_config_kdl: String::new(),
             config_dir: None,
@@ -71,6 +73,11 @@ impl TestRunner {
     pub fn with_config(mut self, extra_config_kdl: &str) -> Self {
         self.extra_config_kdl.push('\n');
         self.extra_config_kdl.push_str(extra_config_kdl);
+        self
+    }
+
+    pub fn with_restored_observer(mut self, observer: yinz_server::RestoredAgentObserver) -> Self {
+        self.restored_observer = Some(observer);
         self
     }
 
@@ -114,7 +121,11 @@ impl TestRunner {
 
         let fake_server_os_api = FakeServerOsApi::default();
         let server_thread: Arc<Mutex<Option<JoinHandle<()>>>> = Arc::new(Mutex::new(None));
-        let server_spawner = in_process_server_spawner(fake_server_os_api.clone(), &server_thread);
+        let server_spawner = in_process_server_spawner(
+            fake_server_os_api.clone(),
+            &server_thread,
+            self.restored_observer.clone(),
+        );
 
         let (fake_client_os_api, fake_client_handle) =
             FakeClientOsApi::new_with_env(self.size, Some(server_spawner), self.env);
@@ -137,6 +148,7 @@ impl TestRunner {
         );
 
         TestSession {
+            restored_observer: self.restored_observer,
             session_name,
             size: self.size,
             cli_args,
@@ -156,6 +168,7 @@ impl TestRunner {
 fn in_process_server_spawner(
     fake_server_os_api: FakeServerOsApi,
     server_thread: &Arc<Mutex<Option<JoinHandle<()>>>>,
+    observer: Option<yinz_server::RestoredAgentObserver>,
 ) -> Box<dyn FnOnce(std::path::PathBuf) + Send> {
     let server_thread = server_thread.clone();
     Box::new(move |socket_path: std::path::PathBuf| {
@@ -164,6 +177,7 @@ fn in_process_server_spawner(
             .name("in_process_yinz_server".to_string())
             .spawn(move || {
                 yinz_server::start_server_impl(
+                    observer,
                     Box::new(fake_server_os_api),
                     socket_path,
                     install_panic_hook,
@@ -430,6 +444,7 @@ fn join_cli_client(
 }
 
 pub struct TestSession {
+    restored_observer: Option<yinz_server::RestoredAgentObserver>,
     session_name: String,
     size: Size,
     cli_args: CliArgs,
@@ -947,7 +962,11 @@ impl TestSession {
         }
         let fake_server_os_api = FakeServerOsApi::default();
         let server_thread: Arc<Mutex<Option<JoinHandle<()>>>> = Arc::new(Mutex::new(None));
-        let server_spawner = in_process_server_spawner(fake_server_os_api.clone(), &server_thread);
+        let server_spawner = in_process_server_spawner(
+            fake_server_os_api.clone(),
+            &server_thread,
+            self.restored_observer.clone(),
+        );
         let (fake_client_os_api, fake_client_handle) =
             FakeClientOsApi::new(size, Some(server_spawner));
         let client_thread = spawn_client_thread(

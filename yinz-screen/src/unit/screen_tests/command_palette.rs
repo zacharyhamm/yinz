@@ -16,18 +16,19 @@ fn selection_screen_with_keybinds(
 ) -> (Screen, Receiver<(PluginInstruction, ErrorContext)>) {
     let mut screen = create_non_mirrored_screen(SIZE);
     // The synthetic default theme gives selected and ordinary text the same colors.
-    screen.style.colors.text_selected.background =
+    screen.core.style.colors.text_selected.background =
         yinz_types::colors::PaletteColor::Rgb((30, 80, 130));
     let (sender, receiver) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.mode_info.entry(CLIENT).or_default().keybinds = keybinds;
+    screen.core.mode_info.entry(CLIENT).or_default().keybinds = keybinds;
     screen.change_mode(InputMode::Normal, None, CLIENT).unwrap();
     screen.toggle_command_palette(CLIENT);
     // Apply the mode update sent by the server when the palette opens.
     screen.change_mode(InputMode::Locked, None, CLIENT).unwrap();
-    assert_eq!(screen.mode_info[&CLIENT].mode, InputMode::Locked);
+    assert_eq!(screen.core.mode_info[&CLIENT].mode, InputMode::Locked);
     screen
+        .palette
         .command_palettes
         .get_mut(&CLIENT)
         .unwrap()
@@ -37,10 +38,10 @@ fn selection_screen_with_keybinds(
 }
 
 fn palette_text_position(screen: &Screen, client: ClientId, text: &str) -> Position {
-    let widget = screen.command_palettes[&client].widget();
+    let widget = screen.palette.command_palettes[&client].widget();
     let layout = widget.layout(screen.command_palette_surface(client).unwrap());
     widget
-        .chunks(&layout, &screen.style)
+        .chunks(&layout, &screen.core.style)
         .iter()
         .find_map(|chunk| {
             let line: String = chunk
@@ -74,8 +75,9 @@ fn palette_drag_uses_clipboard_setting_and_explicit_copy_including_busy_views() 
                 InputMode::Normal,
                 vec![(key.clone(), vec![Action::Copy])],
             )]);
-            screen.copy_options.copy_on_select = automatic;
+            screen.core.copy_options.copy_on_select = automatic;
             screen
+                .palette
                 .command_palettes
                 .get_mut(&CLIENT)
                 .unwrap()
@@ -109,7 +111,7 @@ fn palette_drag_uses_clipboard_setting_and_explicit_copy_including_busy_views() 
                 assert!(screen.command_palette_handles_input(&Some(key), &[], false, CLIENT));
                 assert_eq!(copied_text(&plugins), vec!["alpha"]);
             }
-            assert!(!screen.palette_captures_mouse(CLIENT));
+            assert!(!screen.palette.palette_captures_mouse(CLIENT));
             // Ordinary clicks clear the previous highlight and do not copy again.
             screen.handle_mouse_event(MouseEvent::new_left_press_event(start), CLIENT);
             screen.handle_mouse_event(MouseEvent::new_left_release_event(start), CLIENT);
@@ -127,7 +129,7 @@ fn palette_copy_respects_explicit_locked_bindings() {
             (InputMode::Normal, vec![(key.clone(), vec![Action::Copy])]),
             (InputMode::Locked, vec![(key.clone(), actions)]),
         ]);
-        screen.copy_options.copy_on_select = false;
+        screen.core.copy_options.copy_on_select = false;
         let start = palette_text_position(&screen, CLIENT, "alpha");
         let end = Position::new(start.line() as i32, (start.column() + 5) as u16);
         screen.handle_mouse_event(MouseEvent::new_left_press_event(start), CLIENT);
@@ -151,6 +153,7 @@ fn palette_drag_captures_outside_release_and_cancelled_gestures() {
         screen.handle_mouse_event(MouseEvent::new_left_motion_event(end), CLIENT);
         match cancel {
             "text" => screen
+                .palette
                 .command_palettes
                 .get_mut(&CLIENT)
                 .unwrap()
@@ -165,6 +168,7 @@ fn palette_drag_captures_outside_release_and_cancelled_gestures() {
             },
             "suspend" => {
                 screen
+                    .palette
                     .command_palettes
                     .get_mut(&CLIENT)
                     .unwrap()
@@ -175,7 +179,7 @@ fn palette_drag_captures_outside_release_and_cancelled_gestures() {
         let outside = Position::new(0, 0);
         screen.handle_mouse_event(MouseEvent::new_left_motion_event(outside), CLIENT);
         screen.handle_mouse_event(MouseEvent::new_left_release_event(outside), CLIENT);
-        assert!(!screen.palette_captures_mouse(CLIENT), "{cancel}");
+        assert!(!screen.palette.palette_captures_mouse(CLIENT), "{cancel}");
         if cancel != "outside" {
             assert!(copied_text(&plugins).is_empty(), "{cancel}");
         }
@@ -200,13 +204,14 @@ fn permission_modal_takes_palette_gesture_until_release() {
         for cancel_before_release in [false, true] {
             let mut screen = create_non_mirrored_screen(SIZE);
             let (plugin_tx, plugins) = channels::unbounded();
-            screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+            screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
             let terminal = TerminalId::new(1);
             let (tx, rx) = channels::unbounded();
-            screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(tx));
+            screen.core.bus.senders.to_pty_writer = Some(SenderWithContext::new(tx));
             new_tab(&mut screen, 1, TabId::new(0));
             screen.toggle_command_palette(CLIENT);
             screen
+                .palette
                 .command_palettes
                 .get_mut(&CLIENT)
                 .unwrap()
@@ -221,7 +226,7 @@ fn permission_modal_takes_palette_gesture_until_release() {
                 "control" => {
                     screen.close_command_palette(CLIENT);
                     screen.toggle_command_palette(CLIENT);
-                    let widget = screen.command_palettes[&CLIENT].widget();
+                    let widget = screen.palette.command_palettes[&CLIENT].widget();
                     let layout = widget.layout(screen.command_palette_surface(CLIENT).unwrap());
                     (0..SIZE.rows)
                         .flat_map(|row| {
@@ -238,7 +243,7 @@ fn permission_modal_takes_palette_gesture_until_release() {
                 let end = Position::new(start.line() as i32, (start.column() + 5) as u16);
                 screen.handle_mouse_event(MouseEvent::new_left_motion_event(end), CLIENT);
             }
-            assert!(screen.palette_captures_mouse(CLIENT));
+            assert!(screen.palette.palette_captures_mouse(CLIENT));
             rx.try_iter().for_each(drop);
             let mut request = PluginPermission::new(
                 "fixture.scm".into(),
@@ -246,7 +251,7 @@ fn permission_modal_takes_palette_gesture_until_release() {
             );
             request.request_id = 42;
             screen.open_permission_modal(PluginId::new(9), request);
-            assert!(!screen.command_palette_is_open(CLIENT));
+            assert!(!screen.palette.command_palette_is_open(CLIENT));
             if cancel_before_release {
                 screen.cancel_permission_modal(42);
             }
@@ -254,9 +259,15 @@ fn permission_modal_takes_palette_gesture_until_release() {
             let allow = Position::new(((SIZE.rows - 7) / 2 + 5) as i32, (SIZE.cols / 2) as u16);
             screen.handle_mouse_event(MouseEvent::new_left_motion_event(allow), CLIENT);
             screen.handle_mouse_event(MouseEvent::new_left_release_event(allow), CLIENT);
-            assert_eq!(screen.permission_modal_open(CLIENT), !cancel_before_release);
-            assert!(!screen.palette_captures_mouse(CLIENT));
-            assert!(!screen.permission_mouse_captures.contains(&CLIENT));
+            assert_eq!(
+                screen.permissions.permission_modal_open(CLIENT),
+                !cancel_before_release
+            );
+            assert!(!screen.palette.palette_captures_mouse(CLIENT));
+            assert!(!screen
+                .permissions
+                .permission_mouse_captures
+                .contains(&CLIENT));
             assert!(rx.try_recv().is_err());
             assert!(plugins.try_iter().all(|(instruction, _)| !matches!(
                 instruction,
@@ -293,20 +304,21 @@ fn palette_drag_on_a_picker_row_does_not_click_it() {
     screen.handle_mouse_event(MouseEvent::new_left_press_event(start), CLIENT);
     screen.handle_mouse_event(MouseEvent::new_left_motion_event(end), CLIENT);
     screen.handle_mouse_event(MouseEvent::new_left_release_event(end), CLIENT);
-    assert_eq!(screen.style.colors, screen.themes["beta"]);
+    assert_eq!(screen.core.style.colors, screen.core.themes["beta"]);
     screen.handle_mouse_event(MouseEvent::new_left_press_event(start), CLIENT);
     screen.handle_mouse_event(MouseEvent::new_left_release_event(start), CLIENT);
-    assert_eq!(screen.style.colors, screen.themes["alpha"]);
+    assert_eq!(screen.core.style.colors, screen.core.themes["alpha"]);
 }
 
 #[test]
 fn palette_selections_belong_to_the_client_that_dragged() {
     let (mut screen, plugins) = selection_screen();
-    screen.copy_options.copy_on_select = false;
+    screen.core.copy_options.copy_on_select = false;
     let other = ClientId::new(2);
     screen.add_client(other).unwrap();
     screen.toggle_command_palette(other);
     screen
+        .palette
         .command_palettes
         .get_mut(&other)
         .unwrap()
@@ -534,7 +546,7 @@ fn a_smaller_watcher_crops_the_palette_cursor_and_restores_it_when_back_in_bound
         cursor, None,
         "the input cursor is outside this watcher's width"
     );
-    assert!(screen.watcher_clients[&watcher].cursor_was_cropped());
+    assert!(screen.core.watcher_clients[&watcher].cursor_was_cropped());
     screen.command_palette_handles_input(
         &Some(KeyWithModifier::new(BareKey::Home)),
         &[],
@@ -543,7 +555,7 @@ fn a_smaller_watcher_crops_the_palette_cursor_and_restores_it_when_back_in_bound
     );
     let (cursor, _) = render_frame_and_cursor_into(&mut screen, &receiver, watcher, &mut grid);
     assert_eq!(cursor, Some((6, 3)));
-    assert!(!screen.watcher_clients[&watcher].cursor_was_cropped());
+    assert!(!screen.core.watcher_clients[&watcher].cursor_was_cropped());
     screen.close_command_palette(CLIENT);
     let (cursor, snapshot) =
         render_frame_and_cursor_into(&mut screen, &receiver, watcher, &mut grid);
@@ -633,10 +645,10 @@ fn palette_is_private_to_each_client_and_dismisses_on_tab_change_or_disconnect()
     );
     new_tab(&mut screen, 2, TabId::new(1));
     screen.render().unwrap();
-    assert!(!screen.command_palettes.contains_key(&CLIENT));
-    assert!(screen.command_palettes.contains_key(&second));
+    assert!(!screen.palette.command_palettes.contains_key(&CLIENT));
+    assert!(screen.palette.command_palettes.contains_key(&second));
     screen.remove_client(second).unwrap();
-    assert!(screen.command_palettes.is_empty());
+    assert!(screen.palette.command_palettes.is_empty());
 }
 
 #[test]
@@ -649,12 +661,13 @@ fn agent_info_requests_keep_each_clients_timezone_and_clear_it_on_disconnect() {
     let second = ClientId::new(2);
     screen.add_client(second).unwrap();
     let (tx, rx) = unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     for (client, timezone, expected) in [
         (CLIENT, "America/Chicago", "Dec. 31st, 1969, 6pm"),
         (second, "Asia/Tokyo", "Jan. 1st, 1970, 9am"),
     ] {
         screen
+            .core
             .client_timezones
             .insert(client, ClientTimeZone::from_client(Some(timezone)));
         screen.toggle_command_palette(client);
@@ -676,9 +689,9 @@ fn agent_info_requests_keep_each_clients_timezone_and_clear_it_on_disconnect() {
         assert_eq!(request.timezone.timestamp(Some(0)), expected);
     }
     screen.remove_client(second).unwrap();
-    assert!(!screen.client_timezones.contains_key(&second));
+    assert!(!screen.core.client_timezones.contains_key(&second));
     assert_eq!(
-        screen.client_timezones[&CLIENT].timestamp(Some(0)),
+        screen.core.client_timezones[&CLIENT].timestamp(Some(0)),
         "Dec. 31st, 1969, 6pm"
     );
 }
@@ -745,7 +758,7 @@ fn palette_focus_click_captures_release_before_terminal_mouse_reporting() {
     let mut screen = create_non_mirrored_screen(SIZE);
     let (pty_writer_tx, pty_writer_rx) =
         channels::unbounded::<(PtyWriteInstruction, ErrorContext)>();
-    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
+    screen.core.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
     new_tab(&mut screen, 1, TabId::new(0));
     let terminal = TerminalId::new(1);
     let pane = PaneId::Terminal(terminal);
@@ -786,14 +799,20 @@ fn palette_focus_click_captures_release_before_terminal_mouse_reporting() {
         MouseEvent::new_left_press_event(Position::new(row as i32, col as u16)),
         CLIENT,
     );
-    assert!(!screen.command_palettes.contains_key(&CLIENT));
+    assert!(!screen.palette.command_palettes.contains_key(&CLIENT));
     assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
-    assert!(screen.command_palette_mouse_captures.contains(&CLIENT));
+    assert!(screen
+        .palette
+        .command_palette_mouse_captures
+        .contains(&CLIENT));
     let position = Position::new(5, 5);
     screen.handle_mouse_event(MouseEvent::new_left_motion_event(position), CLIENT);
     screen.handle_mouse_event(MouseEvent::new_left_release_event(position), CLIENT);
     assert!(pty_writer_rx.try_recv().is_err());
-    assert!(!screen.command_palette_mouse_captures.contains(&CLIENT));
+    assert!(!screen
+        .palette
+        .command_palette_mouse_captures
+        .contains(&CLIENT));
 
     // Capture ends at release, so the next click reaches the mouse-reporting app.
     screen.handle_mouse_event(MouseEvent::new_left_press_event(position), CLIENT);
@@ -824,14 +843,14 @@ fn opening_palette_closes_context_menu_and_toggle_key_closes_palette() {
         CLIENT,
     );
     screen.toggle_command_palette(CLIENT);
-    assert!(!screen.context_menu_is_open(CLIENT));
+    assert!(!screen.menus.context_menu_is_open(CLIENT));
     assert!(screen.command_palette_handles_input(
         &Some(KeyWithModifier::new(BareKey::Char('d')).with_ctrl_modifier()),
         &[],
         true,
         CLIENT
     ));
-    assert!(screen.command_palettes.is_empty());
+    assert!(screen.palette.command_palettes.is_empty());
 }
 
 #[test]
@@ -867,7 +886,7 @@ fn palette_cursor_is_opaque_on_query_idle_and_watcher_frames() {
             .unwrap();
         screen.toggle_command_palette(CLIENT);
         let background = Some(AnsiCode::from(
-            screen.style.colors.text_unselected.background,
+            screen.core.style.colors.text_unselected.background,
         ));
         for (query, expected_x) in [("", 6), ("pane", 10)] {
             screen.command_palette_handles_input(&None, query.as_bytes(), false, CLIENT);
@@ -1047,10 +1066,17 @@ fn palette_backing_refreshes_terminal_colors_and_theme() {
     for change in 0..8 {
         let before = grid.as_character_lines();
         match change {
-            0 => screen.terminal_emulator_colors.borrow_mut().fg = PaletteColor::Rgb((12, 34, 56)),
-            1 => screen.terminal_emulator_colors.borrow_mut().bg = PaletteColor::Rgb((65, 43, 21)),
+            0 => {
+                screen.core.terminal_emulator_colors.borrow_mut().fg =
+                    PaletteColor::Rgb((12, 34, 56))
+            },
+            1 => {
+                screen.core.terminal_emulator_colors.borrow_mut().bg =
+                    PaletteColor::Rgb((65, 43, 21))
+            },
             2 => {
                 screen
+                    .core
                     .terminal_emulator_color_codes
                     .borrow_mut()
                     .insert(1, "rgb:00/ff/00".into());
@@ -1099,7 +1125,7 @@ fn palette_backing_clears_exposed_notifications_outside_floating_panes() {
         let receiver = screen_wired_to_server(&mut screen);
         let mut grid = grid_for_render_snapshot(SIZE);
         let now = std::time::Instant::now();
-        screen.pinned_now = Some(now);
+        screen.core.pinned_now = Some(now);
         screen.toggle_command_palette(CLIENT);
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         let before = grid.as_character_lines()[3][60].clone();
@@ -1113,7 +1139,7 @@ fn palette_backing_clears_exposed_notifications_outside_floating_panes() {
             now,
         );
         notification.reveal = Tween::settled(1.0);
-        screen.notifications.push(notification);
+        screen.notices.notifications.push(notification);
         let surface = yinz_types::pane_size::Viewport {
             x: 0,
             y: 0,
@@ -1121,14 +1147,14 @@ fn palette_backing_clears_exposed_notifications_outside_floating_panes() {
             rows: SIZE.rows,
         };
         let y = screen.notification_layout(surface, now, ClientId::new(1))[0].y;
-        screen.notifications[0].y_offset = Tween::settled(3.0 - y as f32);
+        screen.notices.notifications[0].y_offset = Tween::settled(3.0 - y as f32);
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert_eq!(grid.as_character_lines()[3][60].character, '─');
 
         if moved {
-            screen.notifications[0].y_offset = Tween::settled(9.0 - y as f32);
+            screen.notices.notifications[0].y_offset = Tween::settled(9.0 - y as f32);
         } else {
-            screen.notifications.clear();
+            screen.notices.notifications.clear();
         }
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert_eq!(grid.as_character_lines()[3][60], before, "moved: {moved}");
@@ -1145,7 +1171,7 @@ fn palette_backing_keeps_watcher_notifications_separate() {
     screen.set_followed_client(CLIENT).unwrap();
     let receiver = screen_wired_to_server(&mut screen);
     let now = std::time::Instant::now();
-    screen.pinned_now = Some(now);
+    screen.core.pinned_now = Some(now);
     let mut notification = crate::screen::Notification::new(
         NotificationId::new(0),
         "a toast visible to regular clients".into(),
@@ -1154,7 +1180,7 @@ fn palette_backing_keeps_watcher_notifications_separate() {
         now,
     );
     notification.reveal = Tween::settled(1.0);
-    screen.notifications.push(notification);
+    screen.notices.notifications.push(notification);
     let surface = yinz_types::pane_size::Viewport {
         x: 0,
         y: 0,
@@ -1162,7 +1188,7 @@ fn palette_backing_keeps_watcher_notifications_separate() {
         rows: SIZE.rows,
     };
     let y = screen.notification_layout(surface, now, ClientId::new(1))[0].y;
-    screen.notifications[0].y_offset = Tween::settled(3.0 - y as f32);
+    screen.notices.notifications[0].y_offset = Tween::settled(3.0 - y as f32);
     screen.toggle_command_palette(CLIENT);
     let mut grids = [
         grid_for_render_snapshot(SIZE),
@@ -1273,7 +1299,7 @@ fn assert_palette_query(snapshot: &str, expected: &str) {
 
 fn palette_actions_receiver(screen: &mut Screen) -> Receiver<(ScreenInstruction, ErrorContext)> {
     let (sender, receiver) = channels::unbounded();
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(sender));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(sender));
     receiver
 }
 
@@ -1338,7 +1364,7 @@ fn palette_builtin_actions_capture_origin_and_close_before_dispatch() {
         let receiver = palette_actions_receiver(&mut screen);
         palette_search(&mut screen, query);
         palette_key(&mut screen, BareKey::Enter);
-        assert!(screen.command_palettes.is_empty());
+        assert!(screen.palette.command_palettes.is_empty());
         assert_eq!(enqueued_palette_action(&receiver), expected, "{query}");
     }
 }
@@ -1391,7 +1417,7 @@ fn palette_rejects_directional_splits_without_losing_input() {
                         .unwrap();
                 }
                 palette_key(&mut screen, BareKey::Enter);
-                assert!(screen.command_palettes.contains_key(&CLIENT));
+                assert!(screen.palette.command_palettes.contains_key(&CLIENT));
                 assert!(matches!(
                     receiver.try_recv().unwrap().0,
                     ScreenInstruction::Notify(..)
@@ -1431,7 +1457,7 @@ fn palette_rechecks_directional_splits_before_dispatch() {
             let receiver = palette_actions_receiver(&mut screen);
             palette_search(&mut screen, query);
             palette_key(&mut screen, BareKey::Enter);
-            assert!(screen.command_palettes.is_empty());
+            assert!(screen.palette.command_palettes.is_empty());
             let action = enqueued_palette_action(&receiver);
             let origin = PaneId::Terminal(TerminalId::new(1));
             let other = PaneId::Terminal(TerminalId::new(2));
@@ -1464,7 +1490,7 @@ fn palette_rechecks_directional_splits_before_dispatch() {
                 );
             }
             let (sender, pty_receiver) = channels::unbounded();
-            screen.bus.senders.to_pty = Some(SenderWithContext::new(sender));
+            screen.core.bus.senders.to_pty = Some(SenderWithContext::new(sender));
             screen.dispatch_command_palette_action(
                 origin,
                 TabId::new(0),
@@ -1524,7 +1550,7 @@ fn palette_dispatches_supported_pane_placements() {
                 palette_key(&mut screen, BareKey::Enter);
             }
             palette_key(&mut screen, BareKey::Enter);
-            assert!(screen.command_palettes.is_empty());
+            assert!(screen.palette.command_palettes.is_empty());
             let ScreenInstruction::ActivateCommandPaletteAction {
                 pane_id,
                 tab_id,
@@ -1537,7 +1563,7 @@ fn palette_dispatches_supported_pane_placements() {
             };
             assert_eq!(pane_id, origin);
             let (sender, pty_receiver) = channels::unbounded();
-            screen.bus.senders.to_pty = Some(SenderWithContext::new(sender));
+            screen.core.bus.senders.to_pty = Some(SenderWithContext::new(sender));
             screen.dispatch_command_palette_action(
                 pane_id,
                 tab_id,
@@ -1637,7 +1663,7 @@ fn palette_never_retargets_a_vanished_origin_or_destination() {
         receiver.try_recv().unwrap().0,
         ScreenInstruction::Notify(..)
     ));
-    assert!(screen.command_palettes.contains_key(&CLIENT));
+    assert!(screen.palette.command_palettes.contains_key(&CLIENT));
     assert_eq!(screen.get_active_pane_id(&CLIENT), Some(other));
     screen.dispatch_command_palette_action(
         PaneId::Terminal(TerminalId::new(1)),
@@ -1698,7 +1724,7 @@ fn palette_float_and_embed_reveal_and_focus_the_captured_pane() {
         screen
             .focus_pane_with_id(other, false, false, CLIENT)
             .unwrap();
-        assert!(!screen.tabs[&TabId::new(0)].are_floating_panes_visible());
+        assert!(!screen.core.tabs[&TabId::new(0)].are_floating_panes_visible());
         screen.dispatch_command_palette_action(
             origin,
             TabId::new(0),
@@ -1743,7 +1769,7 @@ fn palette_float_and_embed_reveal_and_focus_the_captured_pane() {
         );
         assert_eq!(screen.get_active_pane_id(&CLIENT), Some(origin));
         assert_eq!(
-            screen.tabs[&TabId::new(0)].are_floating_panes_visible(),
+            screen.core.tabs[&TabId::new(0)].are_floating_panes_visible(),
             floating
         );
     }
@@ -1779,21 +1805,21 @@ fn palette_moves_reveal_and_focus_tiled_and_floating_panes_in_both_directions() 
             }));
             if floating {
                 // Focus is remembered separately for tiled and floating panes.
-                let tab = screen.tabs.get_mut(&destination).unwrap();
+                let tab = screen.core.tabs.get_mut(&destination).unwrap();
                 tab.new_floating_pane(previous, None, None, false, true, None, None)
                     .unwrap();
                 tab.hide_floating_panes();
             }
             let (sender, receiver) = channels::unbounded();
-            screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
-            screen.cli_event_subscribers_present = true;
+            screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+            screen.core.cli_event_subscribers_present = true;
             screen
                 .move_command_palette_pane(origin, TabId::new(0), Some(direction), CLIENT)
                 .unwrap();
-            assert_eq!(screen.active_tab_ids[&CLIENT], destination);
+            assert_eq!(screen.core.active_tab_ids[&CLIENT], destination);
             assert_eq!(screen.get_active_pane_id(&CLIENT), Some(origin));
             assert_eq!(
-                screen.tabs[&destination].are_floating_panes_visible(),
+                screen.core.tabs[&destination].are_floating_panes_visible(),
                 floating
             );
             let published = receiver
@@ -1809,9 +1835,9 @@ fn palette_moves_reveal_and_focus_tiled_and_floating_panes_in_both_directions() 
                 })
                 .last()
                 .expect("move publishes pane state");
-            let cached = &screen.peer_sessions_cache[&screen.session_name].panes;
+            let cached = &screen.core.peer_sessions_cache[&screen.core.session_name].panes;
             for manifest in [&published, cached] {
-                let panes = &manifest.panes[&screen.tabs[&destination].position];
+                let panes = &manifest.panes[&screen.core.tabs[&destination].position];
                 assert!(
                     panes
                         .iter()
@@ -1909,8 +1935,8 @@ fn palette_refused_move_keeps_destination_focus() {
     screen
         .move_command_palette_pane(origin, TabId::new(0), Some(Direction::Right), CLIENT)
         .unwrap();
-    assert!(screen.tabs[&TabId::new(0)].has_pane_with_pid(&origin));
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(1));
+    assert!(screen.core.tabs[&TabId::new(0)].has_pane_with_pid(&origin));
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(1));
     assert_eq!(
         screen.get_active_pane_id(&CLIENT),
         Some(PaneId::Terminal(TerminalId::new(3)))
@@ -1931,14 +1957,14 @@ fn palette_moves_only_the_captured_pane_and_never_a_replacement() {
     screen
         .move_command_palette_pane(origin, TabId::new(0), Some(Direction::Right), CLIENT)
         .unwrap();
-    assert!(screen.tabs[&TabId::new(1)].has_pane_with_pid(&origin));
-    assert!(screen.tabs[&TabId::new(0)].has_pane_with_pid(&other));
+    assert!(screen.core.tabs[&TabId::new(1)].has_pane_with_pid(&origin));
+    assert!(screen.core.tabs[&TabId::new(0)].has_pane_with_pid(&other));
     // The same stale origin-tab pair cannot move the other pane that remains there.
     assert!(screen
         .move_command_palette_pane(origin, TabId::new(0), None, CLIENT)
         .is_err());
-    assert_eq!(screen.tabs.len(), 2);
-    assert!(screen.tabs[&TabId::new(0)].has_pane_with_pid(&other));
+    assert_eq!(screen.core.tabs.len(), 2);
+    assert!(screen.core.tabs[&TabId::new(0)].has_pane_with_pid(&other));
     assert_eq!(screen.get_active_pane_id(&CLIENT), Some(origin));
 }
 
@@ -1980,7 +2006,7 @@ fn palette_releases_its_input_lock_on_every_dismissal_path() {
             "disconnect" => screen.remove_client(CLIENT).unwrap(),
             _ => unreachable!(),
         }
-        assert!(screen.command_palettes.is_empty(), "{dismissal}");
+        assert!(screen.palette.command_palettes.is_empty(), "{dismissal}");
         let lifecycle: Vec<_> = receiver
             .try_iter()
             .filter_map(|(instruction, _)| match instruction {
@@ -2006,20 +2032,20 @@ fn palette_keeps_screen_mode_locked_only_for_its_client() {
     screen.toggle_command_palette(CLIENT);
     for mode in [InputMode::Normal, InputMode::Pane, InputMode::Scroll] {
         screen.change_mode(mode, None, CLIENT).unwrap();
-        assert_eq!(screen.mode_info[&CLIENT].mode, InputMode::Locked);
+        assert_eq!(screen.core.mode_info[&CLIENT].mode, InputMode::Locked);
         screen.change_mode_for_all_clients(mode, None).unwrap();
-        assert_eq!(screen.mode_info[&CLIENT].mode, InputMode::Locked);
-        assert_eq!(screen.mode_info[&other].mode, mode);
+        assert_eq!(screen.core.mode_info[&CLIENT].mode, InputMode::Locked);
+        assert_eq!(screen.core.mode_info[&other].mode, mode);
     }
     screen.close_command_palette(CLIENT);
     screen.change_mode(InputMode::Normal, None, CLIENT).unwrap();
-    assert_eq!(screen.mode_info[&CLIENT].mode, InputMode::Normal);
+    assert_eq!(screen.core.mode_info[&CLIENT].mode, InputMode::Normal);
 }
 
 #[test]
 fn palette_default_shortcuts_prefer_regular_modes() {
     let mut screen = screen();
-    screen.default_mode_info.keybinds = Config::from_default_assets()
+    screen.core.default_mode_info.keybinds = Config::from_default_assets()
         .unwrap()
         .keybinds
         .to_keybinds_vec();
@@ -2046,7 +2072,7 @@ fn palette_shows_client_shortcuts_and_refreshes_reconfigured_bindings() {
     let mut screen = screen();
     let receiver = screen_wired_to_server(&mut screen);
     screen.change_mode(InputMode::Locked, None, CLIENT).unwrap();
-    let mode_info = screen.mode_info.get_mut(&CLIENT).unwrap();
+    let mode_info = screen.core.mode_info.get_mut(&CLIENT).unwrap();
     mode_info.keybinds = vec![
         (
             InputMode::Normal,
@@ -2075,7 +2101,7 @@ fn palette_shows_client_shortcuts_and_refreshes_reconfigured_bindings() {
     let mut grid = grid_for_render_snapshot(SIZE);
     let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(rendered.contains("Ctrl g → f"), "{rendered}");
-    screen.mode_info.get_mut(&CLIENT).unwrap().keybinds = vec![(
+    screen.core.mode_info.get_mut(&CLIENT).unwrap().keybinds = vec![(
         InputMode::Normal,
         vec![(
             KeyWithModifier::new(BareKey::Char('z')).with_alt_modifier(),
@@ -2086,7 +2112,7 @@ fn palette_shows_client_shortcuts_and_refreshes_reconfigured_bindings() {
     assert!(rendered.contains("Alt z"), "{rendered}");
     assert!(!rendered.contains("Ctrl g → f"), "{rendered}");
     let (background_sender, background_receiver) = channels::unbounded();
-    screen.bus.senders.to_background_jobs = Some(SenderWithContext::new(background_sender));
+    screen.core.bus.senders.to_background_jobs = Some(SenderWithContext::new(background_sender));
     screen
         .reconfigure(test_screen_config(), Keybinds::default(), CLIENT)
         .unwrap();
@@ -2101,21 +2127,25 @@ fn palette_shows_client_shortcuts_and_refreshes_reconfigured_bindings() {
 #[test]
 fn palette_skips_shortcut_searches_for_entries_without_actions() {
     let mut screen = screen();
-    screen.default_mode_info.keybinds = Config::from_default_assets()
+    screen.core.default_mode_info.keybinds = Config::from_default_assets()
         .unwrap()
         .keybinds
         .to_keybinds_vec();
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     screen.toggle_command_palette(CLIENT);
-    let lookups = screen.command_palettes[&CLIENT].shortcut_lookups;
+    let lookups = screen.palette.command_palettes[&CLIENT].shortcut_lookups;
 
     screen
+        .core
         .themes
-        .insert("test-theme".into(), screen.style.colors);
-    screen.projects.insert("test-project".into());
+        .insert("test-theme".into(), screen.core.style.colors);
+    screen.core.projects.insert("test-project".into());
     render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert_eq!(screen.command_palettes[&CLIENT].shortcut_lookups, lookups);
+    assert_eq!(
+        screen.palette.command_palettes[&CLIENT].shortcut_lookups,
+        lookups
+    );
 
     screen.command_palette_handles_input(&None, b"Change theme", false, CLIENT);
     palette_key(&mut screen, BareKey::Enter);
@@ -2123,7 +2153,10 @@ fn palette_skips_shortcut_searches_for_entries_without_actions() {
     assert!(rendered.contains("test-theme"), "{rendered}");
     screen.close_command_palette(CLIENT);
     screen.toggle_command_palette(CLIENT);
-    assert_eq!(screen.command_palettes[&CLIENT].shortcut_lookups, lookups);
+    assert_eq!(
+        screen.palette.command_palettes[&CLIENT].shortcut_lookups,
+        lookups
+    );
 }
 
 #[test]
@@ -2135,7 +2168,7 @@ fn palette_shortcut_caches_use_independent_client_bindings() {
     let mut grid = grid_for_render_snapshot(SIZE);
     for (client, letter) in [(CLIENT, 'x'), (other, 'y')] {
         screen.change_mode(InputMode::Locked, None, client).unwrap();
-        screen.mode_info.get_mut(&client).unwrap().keybinds = vec![(
+        screen.core.mode_info.get_mut(&client).unwrap().keybinds = vec![(
             InputMode::Normal,
             vec![(
                 KeyWithModifier::new(BareKey::Char(letter)).with_alt_modifier(),
@@ -2149,14 +2182,20 @@ fn palette_shortcut_caches_use_independent_client_bindings() {
         let rendered = render_frame_into(&mut screen, &receiver, client, &mut grid);
         assert!(rendered.contains(hint), "{rendered}");
     }
-    let other_lookups = screen.command_palettes[&other].shortcut_lookups;
-    screen.mode_info.get_mut(&CLIENT).unwrap().keybinds.clear();
+    let other_lookups = screen.palette.command_palettes[&other].shortcut_lookups;
+    screen
+        .core
+        .mode_info
+        .get_mut(&CLIENT)
+        .unwrap()
+        .keybinds
+        .clear();
     let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(!rendered.contains("Alt x"), "{rendered}");
     let rendered = render_frame_into(&mut screen, &receiver, other, &mut grid);
     assert!(rendered.contains("Alt y"), "{rendered}");
     assert_eq!(
-        screen.command_palettes[&other].shortcut_lookups,
+        screen.palette.command_palettes[&other].shortcut_lookups,
         other_lookups
     );
 }
@@ -2164,7 +2203,7 @@ fn palette_shortcut_caches_use_independent_client_bindings() {
 #[test]
 fn palette_new_pane_keeps_default_shortcut_when_floating_panes_are_visible() {
     let mut screen = screen();
-    screen.default_mode_info.keybinds = Config::from_default_assets()
+    screen.core.default_mode_info.keybinds = Config::from_default_assets()
         .unwrap()
         .keybinds
         .to_keybinds_vec();
@@ -2175,7 +2214,7 @@ fn palette_new_pane_keeps_default_shortcut_when_floating_panes_are_visible() {
     let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(rendered.contains("Alt n"), "{rendered}");
     assert!(!rendered.contains("Ctrl g →"), "{rendered}");
-    let lookups = screen.command_palettes[&CLIENT].shortcut_lookups;
+    let lookups = screen.palette.command_palettes[&CLIENT].shortcut_lookups;
     screen
         .get_active_tab_mut(CLIENT)
         .unwrap()
@@ -2193,7 +2232,7 @@ fn palette_new_pane_keeps_default_shortcut_when_floating_panes_are_visible() {
     assert!(rendered.contains("Alt n"), "{rendered}");
     assert!(!rendered.contains("Ctrl g →"), "{rendered}");
     assert_eq!(
-        screen.command_palettes[&CLIENT].shortcut_lookups,
+        screen.palette.command_palettes[&CLIENT].shortcut_lookups,
         lookups + 2,
         "new-pane original and floating target changed"
     );
@@ -2212,8 +2251,8 @@ fn palette_new_pane_keeps_default_shortcut_when_floating_panes_are_visible() {
 fn palette_session_scan_refreshes_current_age_without_replacing_local_metadata() {
     use std::time::Duration;
     let mut screen = screen();
-    let name = screen.session_name.clone();
-    let current = screen.peer_sessions_cache.get_mut(&name).unwrap();
+    let name = screen.core.session_name.clone();
+    let current = screen.core.peer_sessions_cache.get_mut(&name).unwrap();
     current.creation_time = Duration::from_secs(10);
     current.connected_clients = 7;
     let mut scanned = current.clone();
@@ -2225,7 +2264,7 @@ fn palette_session_scan_refreshes_current_age_without_replacing_local_metadata()
             Default::default(),
         )
         .unwrap();
-    let current = &screen.peer_sessions_cache[&name];
+    let current = &screen.core.peer_sessions_cache[&name];
     assert_eq!(current.creation_time, Duration::from_secs(70));
     assert_eq!(current.connected_clients, 7);
 }
@@ -2242,14 +2281,14 @@ fn project_context_tracks_focus_membership_and_client_lifetime() {
         .unwrap()
         .horizontal_split(other, None, None, CLIENT, None, None)
         .unwrap();
-    screen.projects = ["alpha", "beta", "gamma"].map(String::from).into();
-    screen.pane_projects = [(pane, "beta".into()), (other, "gamma".into())].into();
+    screen.core.projects = ["alpha", "beta", "gamma"].map(String::from).into();
+    screen.core.pane_projects = [(pane, "beta".into()), (other, "gamma".into())].into();
     screen
         .focus_pane_with_id(pane, false, false, CLIENT)
         .unwrap();
     screen.reconcile_project_contexts();
     assert_eq!(
-        screen.client_projects[&CLIENT].current.as_deref(),
+        screen.palette.client_projects[&CLIENT].current.as_deref(),
         Some("beta")
     );
     palette_search(&mut screen, "Switch current project");
@@ -2268,20 +2307,20 @@ fn project_context_tracks_focus_membership_and_client_lifetime() {
         "",
     );
     assert_eq!(
-        screen.client_projects[&CLIENT].current.as_deref(),
+        screen.palette.client_projects[&CLIENT].current.as_deref(),
         Some("alpha")
     );
     assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
     screen.reconcile_project_contexts();
     assert_eq!(
-        screen.client_projects[&CLIENT].current.as_deref(),
+        screen.palette.client_projects[&CLIENT].current.as_deref(),
         Some("alpha")
     );
     let second = ClientId::new(2);
     screen.add_client(second).unwrap();
     screen.reconcile_project_contexts();
     assert_eq!(
-        screen.client_projects[&second].current.as_deref(),
+        screen.palette.client_projects[&second].current.as_deref(),
         Some("beta")
     );
     screen.close_command_palette(CLIENT);
@@ -2290,42 +2329,42 @@ fn project_context_tracks_focus_membership_and_client_lifetime() {
         .unwrap();
     screen.reconcile_project_contexts();
     assert_eq!(
-        screen.client_projects[&CLIENT].current.as_deref(),
+        screen.palette.client_projects[&CLIENT].current.as_deref(),
         Some("gamma")
     );
-    screen.pane_projects.insert(other, "beta".into());
+    screen.core.pane_projects.insert(other, "beta".into());
     screen.reconcile_project_contexts();
     assert_eq!(
-        screen.client_projects[&CLIENT].current.as_deref(),
+        screen.palette.client_projects[&CLIENT].current.as_deref(),
         Some("beta")
     );
-    screen.pane_projects.clear();
+    screen.core.pane_projects.clear();
     screen.reconcile_project_contexts();
     assert_eq!(
-        screen.client_projects[&CLIENT].current.as_deref(),
+        screen.palette.client_projects[&CLIENT].current.as_deref(),
         Some("beta")
     );
-    screen.projects.remove("beta");
+    screen.core.projects.remove("beta");
     screen.reconcile_project_contexts();
     assert_eq!(
-        screen.client_projects[&CLIENT].current.as_deref(),
+        screen.palette.client_projects[&CLIENT].current.as_deref(),
         Some("alpha")
     );
-    screen.projects.clear();
+    screen.core.projects.clear();
     screen.reconcile_project_contexts();
-    assert_eq!(screen.client_projects[&CLIENT].current, None);
+    assert_eq!(screen.palette.client_projects[&CLIENT].current, None);
     screen.remove_client(second).unwrap();
-    assert!(!screen.client_projects.contains_key(&second));
+    assert!(!screen.palette.client_projects.contains_key(&second));
 }
 
 #[test]
 fn vanished_project_selection_stays_open_with_an_error() {
     let mut screen = screen();
-    screen.projects.insert("gone".into());
+    screen.core.projects.insert("gone".into());
     palette_search(&mut screen, "Switch current project");
     palette_key(&mut screen, BareKey::Enter);
     screen.command_palette_handles_input(&None, b"gone", false, CLIENT);
-    screen.projects.clear();
+    screen.core.projects.clear();
     palette_key(&mut screen, BareKey::Enter);
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
@@ -2345,36 +2384,38 @@ fn remembered_project_survives_empty_startup_and_explicit_switching() {
     let dir = tempfile::tempdir().unwrap();
     LastProject::load(dir.path().into()).remember("beta");
     let mut first = screen();
-    first.last_project = LastProject::load(dir.path().into());
+    first.core.last_project = LastProject::load(dir.path().into());
     first.reconcile_project_contexts();
-    assert_eq!(first.client_projects[&CLIENT].current, None);
+    assert_eq!(first.palette.client_projects[&CLIENT].current, None);
     assert_eq!(LastProject::load(dir.path().into()).name().unwrap(), "beta");
-    first.projects = ["alpha", "beta"].map(String::from).into();
+    first.core.projects = ["alpha", "beta"].map(String::from).into();
     first.reconcile_project_contexts();
     assert_eq!(
-        first.client_projects[&CLIENT].current.as_deref(),
+        first.palette.client_projects[&CLIENT].current.as_deref(),
         Some("beta")
     );
     palette_search(&mut first, "Switch current project");
     palette_key(&mut first, BareKey::Enter);
     palette_key(&mut first, BareKey::Enter);
-    assert_eq!(first.last_project.name().unwrap(), "alpha");
-    let projects = first.projects.clone();
+    assert_eq!(first.core.last_project.name().unwrap(), "alpha");
+    let projects = first.core.projects.clone();
     drop(first);
 
     let mut restarted = screen();
-    restarted.last_project = LastProject::load(dir.path().into());
-    restarted.projects = projects.clone();
+    restarted.core.last_project = LastProject::load(dir.path().into());
+    restarted.core.projects = projects.clone();
     restarted.reconcile_project_contexts();
     assert_eq!(
-        restarted.client_projects[&CLIENT].current.as_deref(),
+        restarted.palette.client_projects[&CLIENT]
+            .current
+            .as_deref(),
         Some("alpha")
     );
     LastProject::load(dir.path().into()).remember("beta");
     palette_search(&mut restarted, "Switch current project");
     palette_key(&mut restarted, BareKey::Enter);
     palette_key(&mut restarted, BareKey::Enter);
-    assert_eq!(restarted.last_project.name().unwrap(), "alpha");
+    assert_eq!(restarted.core.last_project.name().unwrap(), "alpha");
     drop(restarted);
     assert_eq!(
         LastProject::load(dir.path().into()).name().unwrap(),
@@ -2382,14 +2423,17 @@ fn remembered_project_survives_empty_startup_and_explicit_switching() {
     );
 
     let mut known_folder = screen();
-    known_folder.last_project = LastProject::load(dir.path().into());
-    known_folder.projects = projects;
+    known_folder.core.last_project = LastProject::load(dir.path().into());
+    known_folder.core.projects = projects;
     known_folder
+        .core
         .pane_projects
         .insert(PaneId::Terminal(TerminalId::new(1)), "beta".into());
     known_folder.reconcile_project_contexts();
     assert_eq!(
-        known_folder.client_projects[&CLIENT].current.as_deref(),
+        known_folder.palette.client_projects[&CLIENT]
+            .current
+            .as_deref(),
         Some("beta")
     );
     drop(known_folder);
@@ -2402,8 +2446,8 @@ fn remembered_project_yields_to_focus_and_late_discovery_without_repeated_writes
     let dir = tempfile::tempdir().unwrap();
     LastProject::load(dir.path().into()).remember("beta");
     let mut screen = screen();
-    screen.last_project = LastProject::load(dir.path().into());
-    screen.projects = ["alpha", "beta", "gamma"].map(String::from).into();
+    screen.core.last_project = LastProject::load(dir.path().into());
+    screen.core.projects = ["alpha", "beta", "gamma"].map(String::from).into();
     let pane = PaneId::Terminal(TerminalId::new(1));
     let other = PaneId::Terminal(TerminalId::new(2));
     screen
@@ -2416,16 +2460,16 @@ fn remembered_project_yields_to_focus_and_late_discovery_without_repeated_writes
         .unwrap();
     screen.reconcile_project_contexts();
     assert_eq!(
-        screen.client_projects[&CLIENT].current.as_deref(),
+        screen.palette.client_projects[&CLIENT].current.as_deref(),
         Some("beta")
     );
-    screen.pane_projects = [(pane, "gamma".into()), (other, "alpha".into())].into();
+    screen.core.pane_projects = [(pane, "gamma".into()), (other, "alpha".into())].into();
     screen.reconcile_project_contexts();
     assert_eq!(
-        screen.client_projects[&CLIENT].current.as_deref(),
+        screen.palette.client_projects[&CLIENT].current.as_deref(),
         Some("gamma")
     );
-    assert_eq!(screen.last_project.name().unwrap(), "gamma");
+    assert_eq!(screen.core.last_project.name().unwrap(), "gamma");
 
     let second = ClientId::new(2);
     screen.add_client(second).unwrap();
@@ -2435,16 +2479,16 @@ fn remembered_project_yields_to_focus_and_late_discovery_without_repeated_writes
         .unwrap();
     screen.reconcile_project_contexts();
     assert_eq!(
-        screen.client_projects[&CLIENT].current.as_deref(),
+        screen.palette.client_projects[&CLIENT].current.as_deref(),
         Some("alpha")
     );
     assert_eq!(
-        screen.client_projects[&second].current.as_deref(),
+        screen.palette.client_projects[&second].current.as_deref(),
         Some("gamma")
     );
-    assert_eq!(screen.last_project.name().unwrap(), "alpha");
-    drop(std::mem::take(&mut screen.last_project));
-    screen.last_project = LastProject::load(dir.path().into());
+    assert_eq!(screen.core.last_project.name().unwrap(), "alpha");
+    drop(std::mem::take(&mut screen.core.last_project));
+    screen.core.last_project = LastProject::load(dir.path().into());
     assert_eq!(
         LastProject::load(dir.path().into()).name().unwrap(),
         "alpha"
@@ -2455,11 +2499,11 @@ fn remembered_project_yields_to_focus_and_late_discovery_without_repeated_writes
     screen.reconcile_project_contexts();
     assert_eq!(LastProject::load(dir.path().into()).name().unwrap(), "beta");
     assert_eq!(
-        screen.client_projects[&CLIENT].current.as_deref(),
+        screen.palette.client_projects[&CLIENT].current.as_deref(),
         Some("alpha")
     );
     assert_eq!(
-        screen.client_projects[&second].current.as_deref(),
+        screen.palette.client_projects[&second].current.as_deref(),
         Some("gamma")
     );
 }
@@ -2474,11 +2518,11 @@ fn remembered_project_fallbacks_do_not_replace_the_saved_preference() {
             std::fs::write(&path, contents).unwrap();
         }
         let mut screen = screen();
-        screen.last_project = LastProject::load(dir.path().into());
-        screen.projects = ["alpha", "beta"].map(String::from).into();
+        screen.core.last_project = LastProject::load(dir.path().into());
+        screen.core.projects = ["alpha", "beta"].map(String::from).into();
         screen.reconcile_project_contexts();
         assert_eq!(
-            screen.client_projects[&CLIENT].current.as_deref(),
+            screen.palette.client_projects[&CLIENT].current.as_deref(),
             Some("alpha")
         );
         screen.reconcile_project_contexts();
@@ -2486,13 +2530,13 @@ fn remembered_project_fallbacks_do_not_replace_the_saved_preference() {
     }
     LastProject::load(dir.path().into()).remember("beta");
     let mut screen = screen();
-    screen.last_project = LastProject::load(dir.path().into());
-    screen.projects = ["alpha", "beta"].map(String::from).into();
+    screen.core.last_project = LastProject::load(dir.path().into());
+    screen.core.projects = ["alpha", "beta"].map(String::from).into();
     screen.reconcile_project_contexts();
-    screen.projects.remove("beta");
+    screen.core.projects.remove("beta");
     screen.reconcile_project_contexts();
     assert_eq!(
-        screen.client_projects[&CLIENT].current.as_deref(),
+        screen.palette.client_projects[&CLIENT].current.as_deref(),
         Some("alpha")
     );
     assert_eq!(LastProject::load(dir.path().into()).name().unwrap(), "beta");
@@ -2629,7 +2673,7 @@ fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening_with_sou
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     let (sender, requests) = unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     let owner = Owner {
         plugin_id: PluginId::new(50),
         generation: 9,
@@ -2792,7 +2836,7 @@ fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening_with_sou
     screen.plugin_palette_instruction(command(Command::Close {
         scope: scope.clone(),
     }));
-    assert!(!screen.command_palettes.contains_key(&CLIENT));
+    assert!(!screen.palette.command_palettes.contains_key(&CLIENT));
     screen.toggle_command_palette(CLIENT);
     screen.plugin_palette_instruction(command(Command::Close {
         scope: scope.clone(),
@@ -2801,7 +2845,7 @@ fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening_with_sou
         scope,
         result: Ok(Reply::Close),
     }));
-    assert!(screen.command_palettes.contains_key(&CLIENT));
+    assert!(screen.palette.command_palettes.contains_key(&CLIENT));
     screen.plugin_palette_instruction(Instruction::Dispose {
         plugin_id: owner.plugin_id,
         generation: owner.generation,
@@ -2834,7 +2878,7 @@ fn plugin_palette_sections_sort_by_title_then_owner_and_timeout_independently_wi
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     let (sender, requests) = unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     let command = |owner, command| Instruction::Command {
         owner,
         client: CLIENT,
@@ -2939,7 +2983,7 @@ fn plugin_palette_sections_sort_by_title_then_owner_and_timeout_independently_wi
             ..
         })
     )));
-    assert!(!screen.command_palettes.contains_key(&CLIENT));
+    assert!(!screen.palette.command_palettes.contains_key(&CLIENT));
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(!snapshot.contains("Loading"), "{snapshot}");
 }
@@ -2971,7 +3015,7 @@ fn plugin_palette_availability_and_client_scope_control_discovery_and_rendering_
             let other = ClientId::new(2);
             screen.add_client(other).unwrap();
             let (sender, requests) = unbounded();
-            screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+            screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
             let unavailable = Arc::new(AtomicBool::new(false));
             let owner = Owner {
                 plugin_id: PluginId::new(50),
@@ -3046,7 +3090,7 @@ fn plugin_palette_filter_submission_refreshes_results_and_releases_old_handles()
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     let (sender, requests) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     let owner = Owner {
         plugin_id: PluginId::new(50),
         generation: 9,
@@ -3160,7 +3204,7 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root_
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     let (sender, requests) = unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     let unavailable = Arc::new(AtomicBool::new(false));
     let owner = Owner {
         plugin_id: PluginId::new(50),
@@ -3353,7 +3397,7 @@ fn plugin_palette_completion_clears_saved_searches_and_keeps_the_new_initial_que
         let receiver = screen_wired_to_server(&mut screen);
         let mut grid = grid_for_render_snapshot(SIZE);
         let (sender, requests) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
         let owner = Owner {
             plugin_id: PluginId::new(50),
             generation: 9,
@@ -3528,7 +3572,7 @@ fn root_palette_escape_cancels_discovery_and_debounce_with_source(static_actions
         let mut screen = screen();
         let receiver = screen_wired_to_server(&mut screen);
         let (sender, requests) = unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
         let owner = Owner {
             plugin_id: PluginId::new(50),
             generation: 9,
@@ -3570,7 +3614,7 @@ fn root_palette_escape_cancels_discovery_and_debounce_with_source(static_actions
             screen.command_palette_handles_input(&None, b"query", false, CLIENT);
         }
         palette_key(&mut screen, BareKey::Esc);
-        assert!(!screen.command_palettes.contains_key(&CLIENT));
+        assert!(!screen.palette.command_palettes.contains_key(&CLIENT));
         assert!(!request.active.unwrap().load(Ordering::Acquire));
         assert!(requests.try_iter().any(|(instruction, _)| matches!(
             instruction,
@@ -3602,7 +3646,7 @@ fn root_palette_escape_cancels_discovery_and_debounce_with_source(static_actions
                 }],
             }),
         }));
-        assert!(!screen.command_palettes.contains_key(&CLIENT));
+        assert!(!screen.palette.command_palettes.contains_key(&CLIENT));
         assert!(!requests.try_iter().any(|(instruction, _)| matches!(
             instruction,
             PluginInstruction::PluginPalette(Delivery {
@@ -3616,12 +3660,12 @@ fn root_palette_escape_cancels_discovery_and_debounce_with_source(static_actions
 fn warp_peer(screen: &mut Screen, name: &str) -> SessionName {
     screen.log_and_report_session_state().unwrap();
     let name = SessionName::new(name);
-    let mut peer = screen.peer_sessions_cache[&screen.session_name].clone();
+    let mut peer = screen.core.peer_sessions_cache[&screen.core.session_name].clone();
     peer.name = name.clone();
     peer.is_current_session = false;
     peer.tabs[0].tab_id = TabId::new(42);
     peer.tabs[0].name = "Remote tab".into();
-    screen.peer_sessions_cache.insert(name.clone(), peer);
+    screen.core.peer_sessions_cache.insert(name.clone(), peer);
     name
 }
 
@@ -3632,6 +3676,7 @@ fn warp_palette_filters_peers_and_panes_and_revalidates_stale_selections() {
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     screen
+        .core
         .resurrectable_sessions_cache
         .insert(SessionName::new("exited-peer"), Duration::ZERO);
     for command in ["Warp tab", "Warp pane"] {
@@ -3640,7 +3685,7 @@ fn warp_palette_filters_peers_and_panes_and_revalidates_stale_selections() {
         let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert!(snapshot.contains("warp-peer"), "{snapshot}");
         assert!(!snapshot.contains("exited-peer"), "{snapshot}");
-        for unavailable in [screen.session_name.to_string(), "exited-peer".into()] {
+        for unavailable in [screen.core.session_name.to_string(), "exited-peer".into()] {
             screen.command_palette_handles_input(&None, unavailable.as_bytes(), false, CLIENT);
             let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
             assert!(snapshot.contains("No matches"), "{snapshot}");
@@ -3656,16 +3701,19 @@ fn warp_palette_filters_peers_and_panes_and_revalidates_stale_selections() {
         palette_key(&mut screen, BareKey::Enter);
         let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert!(snapshot.contains("Remote tab"), "{snapshot}");
-        let saved = screen.peer_sessions_cache.remove(&source).unwrap();
+        let saved = screen.core.peer_sessions_cache.remove(&source).unwrap();
         palette_key(&mut screen, BareKey::Enter);
-        assert!(screen.command_palettes.contains_key(&CLIENT));
+        assert!(screen.palette.command_palettes.contains_key(&CLIENT));
         let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert!(
             snapshot.contains("Source session no longer exists"),
             "{snapshot}"
         );
         screen.close_command_palette(CLIENT);
-        screen.peer_sessions_cache.insert(source.clone(), saved);
+        screen
+            .core
+            .peer_sessions_cache
+            .insert(source.clone(), saved);
     }
     for (suppressed, selectable, held, plugin, eligible) in [
         (true, true, false, false, false),
@@ -3673,7 +3721,7 @@ fn warp_palette_filters_peers_and_panes_and_revalidates_stale_selections() {
         (false, true, true, false, true),
         (false, true, false, true, true),
     ] {
-        let peer = screen.peer_sessions_cache.get_mut(&source).unwrap();
+        let peer = screen.core.peer_sessions_cache.get_mut(&source).unwrap();
         let pane = peer.panes.panes.values_mut().flatten().next().unwrap();
         pane.title = "Candidate".into();
         pane.display_title = None;
@@ -3692,6 +3740,7 @@ fn warp_palette_filters_peers_and_panes_and_revalidates_stale_selections() {
         assert_eq!(snapshot.contains("Candidate"), eligible, "{snapshot}");
         // Remove it after rendering but before activation.
         screen
+            .core
             .peer_sessions_cache
             .get_mut(&source)
             .unwrap()
@@ -3703,7 +3752,7 @@ fn warp_palette_filters_peers_and_panes_and_revalidates_stale_selections() {
             .unwrap()
             .is_selectable = false;
         palette_key(&mut screen, BareKey::Enter);
-        assert!(screen.command_palettes.contains_key(&CLIENT));
+        assert!(screen.palette.command_palettes.contains_key(&CLIENT));
         screen.close_command_palette(CLIENT);
     }
 }
@@ -3725,8 +3774,8 @@ fn warp_palette_worker_captures_ordered_ids_and_stops_after_failure() {
             .unwrap();
         let mut screen = screen();
         let source = warp_peer(&mut screen, &name);
-        let destination = screen.session_name.clone();
-        let peer = screen.peer_sessions_cache.get_mut(&source).unwrap();
+        let destination = screen.core.session_name.clone();
+        let peer = screen.core.peer_sessions_cache.get_mut(&source).unwrap();
         let mut second = peer.tabs[0].clone();
         second.position = yinz_types::internal_ids::TabPosition::new(1);
         second.tab_id = TabId::new(7);
@@ -3749,6 +3798,7 @@ fn warp_palette_worker_captures_ordered_ids_and_stops_after_failure() {
             screen.command_palette_handles_input(&None, b"All tabs", false, CLIENT);
             // Capture the latest metadata at activation, including a tab discovered after rendering.
             screen
+                .core
                 .peer_sessions_cache
                 .get_mut(&source)
                 .unwrap()
@@ -3756,9 +3806,10 @@ fn warp_palette_worker_captures_ordered_ids_and_stops_after_failure() {
                 .insert(0, third);
         }
         palette_key(&mut screen, BareKey::Enter);
-        assert!(!screen.command_palettes.contains_key(&CLIENT));
+        assert!(!screen.palette.command_palettes.contains_key(&CLIENT));
         // Execution returned before any server reply: screen remains available for adoption.
         screen
+            .core
             .peer_sessions_cache
             .get_mut(&source)
             .unwrap()
@@ -3837,14 +3888,20 @@ fn warp_palette_live_refresh_preserves_session_and_tab_identity() {
     palette_key(&mut screen, BareKey::Up);
     // Inserting an earlier session must not move the selection off the chosen source.
     let earlier = warp_peer(&mut screen, "42");
-    screen.peer_sessions_cache.get_mut(&earlier).unwrap().tabs[0].name = "Wrong peer".into();
+    screen
+        .core
+        .peer_sessions_cache
+        .get_mut(&earlier)
+        .unwrap()
+        .tabs[0]
+        .name = "Wrong peer".into();
     render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     palette_key(&mut screen, BareKey::Enter);
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(snapshot.contains("› Remote tab"), "{snapshot}");
     assert!(!snapshot.contains("Wrong peer"), "{snapshot}");
     palette_key(&mut screen, BareKey::Up);
-    let peer = screen.peer_sessions_cache.get_mut(&source).unwrap();
+    let peer = screen.core.peer_sessions_cache.get_mut(&source).unwrap();
     let mut inserted = peer.tabs[0].clone();
     inserted.name = "Earlier tab".into();
     inserted.tab_id = TabId::new(8);
@@ -3856,6 +3913,7 @@ fn warp_palette_live_refresh_preserves_session_and_tab_identity() {
     assert!(snapshot.find("Earlier tab").unwrap() < snapshot.find("Renamed tab").unwrap());
     assert!(snapshot.find("Renamed tab").unwrap() < snapshot.find("All tabs").unwrap());
     screen
+        .core
         .peer_sessions_cache
         .get_mut(&source)
         .unwrap()
@@ -3867,7 +3925,13 @@ fn warp_palette_live_refresh_preserves_session_and_tab_identity() {
         snapshot.contains("Warp target no longer exists"),
         "{snapshot}"
     );
-    screen.peer_sessions_cache.get_mut(&source).unwrap().tabs[0].tab_id = TabId::new(42);
+    screen
+        .core
+        .peer_sessions_cache
+        .get_mut(&source)
+        .unwrap()
+        .tabs[0]
+        .tab_id = TabId::new(42);
     render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     palette_key(&mut screen, BareKey::Esc);
     palette_key(&mut screen, BareKey::Up);
@@ -3894,8 +3958,8 @@ fn native_agent_palette_search_context_cancellation_and_stale_replies() {
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     let (tx, rx) = unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
-    screen.projects = ["**project**".into(), "other".into()].into_iter().collect();
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.projects = ["**project**".into(), "other".into()].into_iter().collect();
     let enter = Some(KeyWithModifier::new(BareKey::Enter));
     let esc = Some(KeyWithModifier::new(BareKey::Esc));
     let next = || {
@@ -4050,7 +4114,7 @@ fn native_new_project_form_preserves_both_fields_and_guards_submission() {
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     let (tx, rx) = unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let next = || {
         rx.try_iter()
             .find_map(|(instruction, _)| match instruction {
@@ -4164,7 +4228,7 @@ fn native_agent_launch_replies_are_client_and_opening_scoped_and_errors_do_not_r
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     let (tx, rx) = unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let enter = Some(KeyWithModifier::new(BareKey::Enter));
     screen.toggle_command_palette(CLIENT);
     screen.toggle_command_palette(other);
@@ -4237,20 +4301,25 @@ fn live_agent_focus_marker_tracks_each_client_and_excludes_peer_sessions() {
             .horizontal_split(second, None, None, CLIENT, None, None)
             .unwrap();
         for pane in [first, second] {
-            screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
-                pane,
-                Some(AgentInfo {
-                    kind: "codex".into(),
-                    state: AgentState::Idle,
-                    source: AgentSource::Reported,
-                    detail: None,
-                    waiting_on: None,
-                    wait_needs_a_person: false,
-                    cwd: None,
-                    session_id: None,
-                    run_id: None,
-                }),
-            );
+            screen
+                .core
+                .tabs
+                .get_mut(&TabId::new(0))
+                .unwrap()
+                .set_pane_agent(
+                    pane,
+                    Some(AgentInfo {
+                        kind: "codex".into(),
+                        state: AgentState::Idle,
+                        source: AgentSource::Reported,
+                        detail: None,
+                        waiting_on: None,
+                        wait_needs_a_person: false,
+                        cwd: None,
+                        session_id: None,
+                        run_id: None,
+                    }),
+                );
         }
         // This peer has the same pane IDs as the current session.
         warp_peer(&mut screen, "peer-agents");
@@ -4273,7 +4342,7 @@ fn live_agent_focus_marker_tracks_each_client_and_excludes_peer_sessions() {
         let renders = screen_wired_to_server(&mut screen);
         let mut grid = grid_for_render_snapshot(SIZE);
         let check = |screen: &Screen, client, expected: &str| {
-            let widget = screen.command_palettes[&client].widget();
+            let widget = screen.palette.command_palettes[&client].widget();
             assert_eq!(widget.agent_presentations.len(), 4);
             let marked = widget
                 .agent_presentations
@@ -4284,7 +4353,7 @@ fn live_agent_focus_marker_tracks_each_client_and_excludes_peer_sessions() {
             assert_eq!(marked[0].1.pane_id, expected);
             assert_eq!(
                 widget.agent_metadata[marked[0].0]["session"],
-                screen.session_name.as_str()
+                screen.core.session_name.as_str()
             );
         };
         for (client, expected) in [(CLIENT, "1"), (other_client, "2")] {
@@ -4292,7 +4361,7 @@ fn live_agent_focus_marker_tracks_each_client_and_excludes_peer_sessions() {
             check(&screen, client, expected);
             assert!(frame.contains(&format!("⌖ [{expected}]")), "{frame}");
             if picker {
-                let widget = screen.command_palettes[&client].widget();
+                let widget = screen.palette.command_palettes[&client].widget();
                 let selected = &widget.selected_entry().unwrap().id;
                 assert!(widget.agent_presentations[selected].focused);
                 assert!(widget.agent_picker());
@@ -4307,13 +4376,13 @@ fn live_agent_focus_marker_tracks_each_client_and_excludes_peer_sessions() {
         check(&screen, CLIENT, "2");
         check(&screen, other_client, "2");
         if picker {
-            let widget = screen.command_palettes[&CLIENT].widget();
+            let widget = screen.palette.command_palettes[&CLIENT].widget();
             let selected = &widget.selected_entry().unwrap().id;
             assert_eq!(widget.agent_presentations[selected].pane_id, "1");
             // Reopening clears the search and selects the newly focused agent.
             screen.command_palette_handles_input(&None, b"stale search", false, CLIENT);
             screen.open_agents(CLIENT);
-            let widget = screen.command_palettes[&CLIENT].widget();
+            let widget = screen.palette.command_palettes[&CLIENT].widget();
             let selected = &widget.selected_entry().unwrap().id;
             assert!(widget.query().is_empty());
             assert!(widget.agent_presentations[selected].focused);
@@ -4321,20 +4390,21 @@ fn live_agent_focus_marker_tracks_each_client_and_excludes_peer_sessions() {
             assert!(widget.metadata.is_none());
         }
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
             .set_pane_agent(second, None);
         let frame = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
         assert!(!frame.contains('⌖'), "{frame}");
-        assert!(screen.command_palettes[&CLIENT]
+        assert!(screen.palette.command_palettes[&CLIENT]
             .widget()
             .agent_presentations
             .values()
             .all(|p| !p.focused));
         if picker {
             screen.open_agents(CLIENT);
-            let widget = screen.command_palettes[&CLIENT].widget();
+            let widget = screen.palette.command_palettes[&CLIENT].widget();
             assert!(widget.agent_picker());
             assert_eq!(widget.selected_entry().unwrap().id, "agent-filters");
         }
@@ -4363,15 +4433,16 @@ fn live_agent_last_replies_refresh_coalesce_and_reject_old_openings_and_runs() {
             run_id: Some(" old-run ".into()),
         };
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
             .set_pane_agent(pane, Some(agent.clone()));
         warp_peer(&mut screen, "peer-agents");
         let (plugin_tx, plugin_rx) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
         let (screen_tx, screen_rx) = channels::unbounded();
-        screen.bus.senders.to_screen = Some(SenderWithContext::new(screen_tx));
+        screen.core.bus.senders.to_screen = Some(SenderWithContext::new(screen_tx));
         let renders = screen_wired_to_server(&mut screen);
         let mut grid = grid_for_render_snapshot(SIZE);
         let open = |screen: &mut Screen| {
@@ -4428,11 +4499,12 @@ fn live_agent_last_replies_refresh_coalesce_and_reject_old_openings_and_runs() {
         let local_id = first
             .sources
             .iter()
-            .find(|source| source.run.as_ref().unwrap().session == screen.session_name)
+            .find(|source| source.run.as_ref().unwrap().session == screen.core.session_name)
             .unwrap()
             .id
             .clone();
         screen
+            .palette
             .command_palettes
             .get_mut(&CLIENT)
             .unwrap()
@@ -4463,7 +4535,7 @@ fn live_agent_last_replies_refresh_coalesce_and_reject_old_openings_and_runs() {
         assert!(frame.contains("Current activity"), "{frame}");
         assert!(frame.contains("⌖ [1]"), "{frame}");
         assert_eq!(
-            screen.command_palettes[&CLIENT]
+            screen.palette.command_palettes[&CLIENT]
                 .widget()
                 .selected_entry()
                 .unwrap()
@@ -4485,6 +4557,7 @@ fn live_agent_last_replies_refresh_coalesce_and_reject_old_openings_and_runs() {
         let previous_run = next_labels();
         agent.run_id = None; // The existing provider/session fallback still resolves.
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
@@ -4558,13 +4631,14 @@ fn live_agent_results_refresh_panel_presentation_in_root_and_picker() {
             pane.update_name("**task**_[title]");
         });
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
             .set_pane_agent(pane, Some(agent.clone()));
         let receiver = screen_wired_to_server(&mut screen);
         let (plugin_tx, plugin_rx) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
         let next_labels = || loop {
             let (instruction, _) = plugin_rx.recv_timeout(Duration::from_secs(5)).unwrap();
             if let PluginInstruction::PaletteAgentLabels(request) = instruction {
@@ -4620,6 +4694,7 @@ fn live_agent_results_refresh_panel_presentation_in_root_and_picker() {
         ] {
             agent.state = state;
             screen
+                .core
                 .tabs
                 .get_mut(&TabId::new(0))
                 .unwrap()
@@ -4647,6 +4722,7 @@ fn live_agent_results_refresh_panel_presentation_in_root_and_picker() {
         let previous = next_labels();
         agent.cwd = Some("/work/other".into());
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
@@ -4685,6 +4761,7 @@ fn agent_activity_updates_info_and_preserves_registration_and_run_metadata() {
     }))
     .unwrap();
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -4739,6 +4816,7 @@ fn agent_activity_cannot_overwrite_reports_restarts_or_exits() {
         current.state = state;
         current.session_id = Some(session.into());
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
@@ -4767,20 +4845,25 @@ fn agent_info_focus_reports_success_when_focus_changes_or_is_already_set() {
     for scenario in ["already focused", "another tab", "focused while queued"] {
         let mut screen = screen();
         let pane = PaneId::Terminal(TerminalId::new(1));
-        screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
-            pane,
-            Some(AgentInfo {
-                kind: "codex".into(),
-                state: AgentState::Waiting,
-                source: AgentSource::Reported,
-                detail: None,
-                waiting_on: Some("permission".into()),
-                wait_needs_a_person: true,
-                cwd: None,
-                session_id: None,
-                run_id: None,
-            }),
-        );
+        screen
+            .core
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .set_pane_agent(
+                pane,
+                Some(AgentInfo {
+                    kind: "codex".into(),
+                    state: AgentState::Waiting,
+                    source: AgentSource::Reported,
+                    detail: None,
+                    waiting_on: Some("permission".into()),
+                    wait_needs_a_person: true,
+                    cwd: None,
+                    session_id: None,
+                    run_id: None,
+                }),
+            );
         if scenario != "already focused" {
             new_tab(&mut screen, 2, TabId::new(1));
             assert_ne!(screen.get_active_pane_id(&CLIENT), Some(pane));
@@ -4805,7 +4888,7 @@ fn agent_info_focus_reports_success_when_focus_changes_or_is_already_set() {
             MouseEvent::new_left_press_event(Position::new(row as i32, col as u16)),
             CLIENT,
         );
-        assert!(!screen.command_palettes.contains_key(&CLIENT));
+        assert!(!screen.palette.command_palettes.contains_key(&CLIENT));
         if scenario == "focused while queued" {
             screen
                 .focus_pane_with_id(pane, false, false, CLIENT)
@@ -4853,6 +4936,7 @@ fn agent_info_keeps_missing_history_readable_and_rejects_replaced_identity() {
         run_id: None,
     };
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -4879,6 +4963,7 @@ fn agent_info_keeps_missing_history_readable_and_rejects_replaced_identity() {
     let mut busy = agent.clone();
     busy.state = AgentState::Busy;
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -4889,6 +4974,7 @@ fn agent_info_keeps_missing_history_readable_and_rejects_replaced_identity() {
     let mut replacement = agent;
     replacement.session_id = Some("replacement".into());
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -4931,7 +5017,7 @@ fn archive_queries_discard_stale_replies_and_resume_cannot_be_submitted_twice() 
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let next = || loop {
         let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         if let PluginInstruction::PaletteAgent(request) = instruction {
@@ -5050,12 +5136,13 @@ fn history_live_run_id_updates_retarget_reads_and_reset_pagination() {
             run_id: None,
         };
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
             .set_pane_agent(pane, Some(agent.clone()));
         let (tx, rx) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
         let next = || loop {
             let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
             if let PluginInstruction::PaletteAgent(request) = instruction {
@@ -5069,7 +5156,7 @@ fn history_live_run_id_updates_retarget_reads_and_reset_pagination() {
             }
         };
         let (tick_tx, tick_rx) = channels::unbounded();
-        screen.bus.senders.to_screen = Some(SenderWithContext::new(tick_tx));
+        screen.core.bus.senders.to_screen = Some(SenderWithContext::new(tick_tx));
         palette_search(&mut screen, "provider:codex");
         screen.command_palette_handles_input(
             &Some(KeyWithModifier::new(BareKey::Enter)),
@@ -5108,6 +5195,7 @@ fn history_live_run_id_updates_retarget_reads_and_reset_pagination() {
         });
         agent.run_id = Some("explicit-run".into());
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
@@ -5169,7 +5257,7 @@ fn history_typing_preserves_pending_hit_and_event_replies() {
         let receiver = screen_wired_to_server(&mut screen);
         let mut grid = grid_for_render_snapshot(SIZE);
         let (tx, rx) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
         let next = || loop {
             let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
             if let PluginInstruction::PaletteAgent(request) = instruction {
@@ -5260,22 +5348,27 @@ fn history_poll_generations_reject_ticks_after_search_refresh_and_event_return()
     };
     use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
     let mut screen = screen();
-    screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
-        PaneId::Terminal(TerminalId::new(1)),
-        Some(AgentInfo {
-            kind: "codex".into(),
-            state: AgentState::Idle,
-            source: AgentSource::Reported,
-            detail: None,
-            waiting_on: None,
-            wait_needs_a_person: false,
-            cwd: None,
-            session_id: Some("session".into()),
-            run_id: Some("run".into()),
-        }),
-    );
+    screen
+        .core
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .set_pane_agent(
+            PaneId::Terminal(TerminalId::new(1)),
+            Some(AgentInfo {
+                kind: "codex".into(),
+                state: AgentState::Idle,
+                source: AgentSource::Reported,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                session_id: Some("session".into()),
+                run_id: Some("run".into()),
+            }),
+        );
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let next = || loop {
         let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         if let PluginInstruction::PaletteAgent(request) = instruction {
@@ -5289,7 +5382,7 @@ fn history_poll_generations_reject_ticks_after_search_refresh_and_event_return()
         }
     };
     let (tx, ticks) = channels::unbounded();
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(tx));
     let next_tick = || loop {
         let (instruction, _) = ticks.recv_timeout(Duration::from_secs(5)).unwrap();
         if let ScreenInstruction::CommandPalette(tick @ Instruction::HistoryTick { .. }) =
@@ -5402,7 +5495,7 @@ fn archive_filter_forms_preserve_literal_search_text() {
     };
     let mut screen = screen();
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let next = || loop {
         let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         if let PluginInstruction::PaletteAgent(request) = instruction {
@@ -5470,12 +5563,12 @@ fn modal_overlay_placement_keeps_its_tab_and_only_focuses_its_requester() {
         let other = ClientId::new(2);
         screen.add_client(other).unwrap();
         let destination = TabId::new(0);
-        let original = screen.tabs[&destination].get_active_pane_id(other);
+        let original = screen.core.tabs[&destination].get_active_pane_id(other);
         if switched {
             new_tab(&mut screen, 2, TabId::new(1));
         }
-        let requester_tab = screen.active_tab_ids[&CLIENT];
-        let requester_focus = screen.tabs[&requester_tab].get_active_pane_id(CLIENT);
+        let requester_tab = screen.core.active_tab_ids[&CLIENT];
+        let requester_focus = screen.core.tabs[&requester_tab].get_active_pane_id(CLIENT);
         let editor = PaneId::Terminal(TerminalId::new(9));
         screen
             .place_new_pane(
@@ -5491,15 +5584,15 @@ fn modal_overlay_placement_keeps_its_tab_and_only_focuses_its_requester() {
                 &mut super::super::thread_main::PendingEvents::default(),
             )
             .unwrap();
-        assert!(screen.tabs[&destination].has_pane_with_pid(&editor));
-        assert_eq!(screen.active_tab_ids[&CLIENT], requester_tab);
-        assert_eq!(screen.active_tab_ids[&other], destination);
+        assert!(screen.core.tabs[&destination].has_pane_with_pid(&editor));
+        assert_eq!(screen.core.active_tab_ids[&CLIENT], requester_tab);
+        assert_eq!(screen.core.active_tab_ids[&other], destination);
         assert_eq!(
-            screen.tabs[&destination].get_active_pane_id(other),
+            screen.core.tabs[&destination].get_active_pane_id(other),
             original
         );
         assert_eq!(
-            screen.tabs[&requester_tab].get_active_pane_id(CLIENT),
+            screen.core.tabs[&requester_tab].get_active_pane_id(CLIENT),
             if switched {
                 requester_focus
             } else {
@@ -5546,7 +5639,7 @@ fn warp_palette_uses_peer_display_titles_and_falls_back_for_old_metadata() {
     for display_title in [None, Some("host project:branch: shell".to_owned())] {
         let mut screen = screen();
         let source = warp_peer(&mut screen, "warp-peer");
-        let peer = screen.peer_sessions_cache.get_mut(&source).unwrap();
+        let peer = screen.core.peer_sessions_cache.get_mut(&source).unwrap();
         for pane in peer.panes.panes.values_mut().flatten() {
             pane.title = "shell".into();
             pane.display_title = display_title.clone();
@@ -5565,13 +5658,13 @@ fn warp_palette_uses_peer_display_titles_and_falls_back_for_old_metadata() {
 
 fn theme_screen() -> Screen {
     let mut screen = screen();
-    let mut alpha = screen.style.colors;
+    let mut alpha = screen.core.style.colors;
     alpha.text_unselected.background = yinz_types::colors::PaletteColor::Rgb((20, 30, 40));
     let mut beta = alpha;
     beta.text_unselected.background = yinz_types::colors::PaletteColor::Rgb((220, 230, 240));
-    screen.themes =
+    screen.core.themes =
         std::collections::BTreeMap::from([("alpha".into(), alpha), ("beta".into(), beta)]);
-    screen.terminal_themes.insert(
+    screen.core.terminal_themes.insert(
         "alpha".into(),
         yinz_types::style::TerminalTheme {
             foreground: (1, 2, 3),
@@ -5579,7 +5672,7 @@ fn theme_screen() -> Screen {
             ansi: [(7, 8, 9); 16],
         },
     );
-    screen.theme_name = Some("beta".into());
+    screen.core.theme_name = Some("beta".into());
     screen.repaint_theme(beta).unwrap();
     screen
 }
@@ -5595,7 +5688,8 @@ fn native_theme_form_preserves_literal_name_and_saves_raw_value() {
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     let name = "**theme**_[name]";
-    screen.themes = std::collections::BTreeMap::from([(name.into(), screen.style.colors)]);
+    screen.core.themes =
+        std::collections::BTreeMap::from([(name.into(), screen.core.style.colors)]);
     open_themes(&mut screen);
     palette_key(&mut screen, BareKey::Enter);
     let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
@@ -5612,23 +5706,26 @@ fn native_theme_form_preserves_literal_name_and_saves_raw_value() {
 fn theme_preview_initial_selection_filter_empty_and_cancel() {
     let mut screen = theme_screen();
     let receiver = screen_wired_to_server(&mut screen);
-    let original = screen.style.colors;
-    assert_eq!(screen.style.terminal, None);
+    let original = screen.core.style.colors;
+    assert_eq!(screen.core.style.terminal, None);
     open_themes(&mut screen);
-    assert_eq!(screen.style.colors, original);
+    assert_eq!(screen.core.style.colors, original);
     palette_key(&mut screen, BareKey::Up);
-    assert_eq!(screen.style.terminal, Some(screen.terminal_themes["alpha"]));
-    assert_eq!(screen.style.colors, screen.themes["alpha"]);
     assert_eq!(
-        screen.default_mode_info.style.colors,
-        screen.themes["alpha"]
+        screen.core.style.terminal,
+        Some(screen.core.terminal_themes["alpha"])
+    );
+    assert_eq!(screen.core.style.colors, screen.core.themes["alpha"]);
+    assert_eq!(
+        screen.core.default_mode_info.style.colors,
+        screen.core.themes["alpha"]
     );
     screen.command_palette_handles_input(&None, b"missing", false, CLIENT);
-    assert_eq!(screen.style.colors, original);
+    assert_eq!(screen.core.style.colors, original);
     palette_key(&mut screen, BareKey::Esc);
-    assert!(screen.theme_preview.is_none());
-    assert_eq!(screen.style.terminal, None);
-    assert_eq!(screen.style.colors, original);
+    assert!(screen.palette.theme_preview.is_none());
+    assert_eq!(screen.core.style.terminal, None);
+    assert_eq!(screen.core.style.colors, original);
     assert!(!receiver
         .try_iter()
         .any(|(instruction, _)| matches!(instruction, ServerInstruction::SavePaletteTheme { .. })));
@@ -5642,8 +5739,8 @@ fn theme_preview_excludes_other_clients_and_restores_latest_host_report() {
     let mut grid = grid_for_render_snapshot(SIZE);
     let other = ClientId::new(2);
     screen.add_client(other).unwrap();
-    screen.host_theme_dark_styling = Some(screen.themes["alpha"]);
-    screen.host_theme_light_styling = Some(screen.themes["beta"]);
+    screen.core.host_theme_dark_styling = Some(screen.core.themes["alpha"]);
+    screen.core.host_theme_light_styling = Some(screen.core.themes["beta"]);
     screen
         .update_host_terminal_theme_mode(HostTerminalThemeMode::Light)
         .unwrap();
@@ -5661,16 +5758,19 @@ fn theme_preview_excludes_other_clients_and_restores_latest_host_report() {
         snapshot.contains("Theme picker is open in another client"),
         "{snapshot}"
     );
-    assert_eq!(screen.theme_preview.as_ref().unwrap().client, CLIENT);
+    assert_eq!(
+        screen.palette.theme_preview.as_ref().unwrap().client,
+        CLIENT
+    );
     screen
         .update_host_terminal_theme_mode(HostTerminalThemeMode::Dark)
         .unwrap();
-    assert_eq!(screen.style.colors, screen.themes["beta"]);
+    assert_eq!(screen.core.style.colors, screen.core.themes["beta"]);
     screen.close_command_palette(CLIENT);
-    assert_eq!(screen.style.colors, screen.themes["alpha"]);
+    assert_eq!(screen.core.style.colors, screen.core.themes["alpha"]);
     assert_eq!(
-        screen.mode_info[&other].style.colors,
-        screen.themes["alpha"]
+        screen.core.mode_info[&other].style.colors,
+        screen.core.themes["alpha"]
     );
 }
 
@@ -5695,7 +5795,7 @@ fn theme_preview_disconnect_reload_and_failed_save() {
         })
         .unwrap();
     screen.palette_theme_saved(CLIENT, uuid::Uuid::new_v4(), Ok(()));
-    assert!(screen.theme_preview.is_some());
+    assert!(screen.palette.theme_preview.is_some());
     screen.palette_theme_saved(CLIENT, request, Err("disk is read-only".into()));
     let mut grid = grid_for_render_snapshot(SIZE);
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
@@ -5710,10 +5810,10 @@ fn theme_preview_disconnect_reload_and_failed_save() {
         .unwrap();
     assert_ne!(retry, request);
     screen.palette_theme_saved(CLIENT, retry, Err("still read-only".into()));
-    assert_eq!(screen.style.colors, screen.themes["beta"]);
-    assert_eq!(screen.style.terminal, None);
+    assert_eq!(screen.core.style.colors, screen.core.themes["beta"]);
+    assert_eq!(screen.core.style.terminal, None);
     palette_key(&mut screen, BareKey::Esc);
-    assert_eq!(screen.style.colors, screen.themes["beta"]);
+    assert_eq!(screen.core.style.colors, screen.core.themes["beta"]);
     screen.close_command_palette(CLIENT);
     open_themes(&mut screen);
     palette_key(&mut screen, BareKey::Up);
@@ -5722,12 +5822,12 @@ fn theme_preview_disconnect_reload_and_failed_save() {
     screen
         .reconfigure(config, Keybinds::default(), CLIENT)
         .unwrap();
-    assert!(screen.theme_preview.is_none());
-    assert_eq!(screen.style.colors, Styling::default());
-    screen.themes.insert("one".into(), Styling::default());
+    assert!(screen.palette.theme_preview.is_none());
+    assert_eq!(screen.core.style.colors, Styling::default());
+    screen.core.themes.insert("one".into(), Styling::default());
     open_themes(&mut screen);
     screen.remove_client(CLIENT).unwrap();
-    assert!(screen.theme_preview.is_none());
+    assert!(screen.palette.theme_preview.is_none());
 }
 
 #[test]
@@ -5751,7 +5851,7 @@ fn theme_preview_mouse_selection_toggle_and_outside_click_restore() {
             &MouseEvent::new_left_release_event(Position::new(row as i32, col as u16)),
             CLIENT,
         );
-        assert_eq!(screen.style.colors, screen.themes["alpha"]);
+        assert_eq!(screen.core.style.colors, screen.core.themes["alpha"]);
         if outside_click {
             screen.command_palette_handles_mouse(
                 &MouseEvent::new_left_press_event(Position::new(0, 0)),
@@ -5760,8 +5860,8 @@ fn theme_preview_mouse_selection_toggle_and_outside_click_restore() {
         } else {
             screen.toggle_command_palette(CLIENT);
         }
-        assert!(screen.theme_preview.is_none());
-        assert_eq!(screen.style.colors, screen.themes["beta"]);
+        assert!(screen.palette.theme_preview.is_none());
+        assert_eq!(screen.core.style.colors, screen.core.themes["beta"]);
     }
 }
 
@@ -5784,11 +5884,12 @@ fn theme_preview_cancel_invalidates_queued_save() {
     assert!(!cancelled.load(std::sync::atomic::Ordering::Acquire));
     palette_key(&mut screen, BareKey::Esc);
     assert!(cancelled.load(std::sync::atomic::Ordering::Acquire));
-    assert_eq!(screen.style.colors, screen.themes["beta"]);
+    assert_eq!(screen.core.style.colors, screen.core.themes["beta"]);
 }
 
 fn selected_palette_entry(screen: &Screen) -> Option<String> {
     screen
+        .palette
         .command_palettes
         .get(&CLIENT)
         .and_then(|state| state.widget().selected_entry())
@@ -5804,23 +5905,23 @@ fn theme_picker_preselects_active_theme_under_auto_pair_after_viewer_light_repor
         background: (shade, 0, 0),
         ansi: [(shade, 1, 1); 16],
     };
-    let mut night = screen.style.colors;
+    let mut night = screen.core.style.colors;
     night.text_unselected.background = yinz_types::colors::PaletteColor::Rgb((17, 17, 17));
     let mut day = night;
     day.text_unselected.background = yinz_types::colors::PaletteColor::Rgb((238, 238, 238));
     let mut own = night;
     own.text_unselected.background = yinz_types::colors::PaletteColor::Rgb((90, 0, 90));
-    screen.themes = std::collections::BTreeMap::from([
+    screen.core.themes = std::collections::BTreeMap::from([
         ("day".into(), day),
         ("night".into(), night),
         ("own".into(), own),
     ]);
-    screen.terminal_themes =
+    screen.core.terminal_themes =
         std::collections::BTreeMap::from([("day".into(), block(200)), ("night".into(), block(10))]);
-    screen.theme_dark_name = Some("night".into());
-    screen.theme_light_name = Some("day".into());
-    screen.host_theme_dark_styling = Some(night);
-    screen.host_theme_light_styling = Some(day);
+    screen.core.theme_dark_name = Some("night".into());
+    screen.core.theme_light_name = Some("day".into());
+    screen.core.host_theme_dark_styling = Some(night);
+    screen.core.host_theme_light_styling = Some(day);
     screen
         .set_application_theme_config(yinz_config::screen_config::ApplicationThemeConfig {
             static_terminal: None,
@@ -5833,8 +5934,8 @@ fn theme_picker_preselects_active_theme_under_auto_pair_after_viewer_light_repor
         .update_host_terminal_theme_mode(HostTerminalThemeMode::Light)
         .unwrap();
     // Chrome follows the viewer, panes stay on the dark baseline block.
-    assert_eq!(screen.style.colors, day);
-    assert_eq!(screen.style.terminal, Some(block(10)));
+    assert_eq!(screen.core.style.colors, day);
+    assert_eq!(screen.core.style.terminal, Some(block(10)));
     open_themes(&mut screen);
     assert_eq!(
         selected_palette_entry(&screen).as_deref(),
@@ -5846,13 +5947,13 @@ fn theme_picker_preselects_active_theme_under_auto_pair_after_viewer_light_repor
     let mut config = test_screen_config();
     config.theme = own;
     config.theme_name = Some("own".into());
-    config.themes = screen.themes.clone();
-    config.terminal_themes = screen.terminal_themes.clone();
+    config.themes = screen.core.themes.clone();
+    config.terminal_themes = screen.core.terminal_themes.clone();
     screen
         .reconfigure(config, Keybinds::default(), CLIENT)
         .unwrap();
-    assert_eq!(screen.style.colors, own);
-    assert_eq!(screen.style.terminal, Some(block(10)));
+    assert_eq!(screen.core.style.colors, own);
+    assert_eq!(screen.core.style.terminal, Some(block(10)));
     open_themes(&mut screen);
     assert_eq!(
         selected_palette_entry(&screen).as_deref(),
@@ -5917,7 +6018,7 @@ fn history_workers_refresh_retains_results_until_the_new_list_arrives() {
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     let (tx, requests) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let next = || loop {
         let (instruction, _) = requests.recv_timeout(Duration::from_secs(5)).unwrap();
         if let PluginInstruction::PaletteAgent(request) = instruction {
@@ -5987,25 +6088,30 @@ fn history_workers_picker_case(live: bool) {
 
     let mut screen = screen();
     if live {
-        screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
-            PaneId::Terminal(TerminalId::new(1)),
-            Some(AgentInfo {
-                kind: "codex".into(),
-                state: AgentState::Idle,
-                source: AgentSource::Reported,
-                detail: None,
-                waiting_on: None,
-                wait_needs_a_person: false,
-                cwd: None,
-                session_id: Some("session".into()),
-                run_id: Some("run".into()),
-            }),
-        );
+        screen
+            .core
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .set_pane_agent(
+                PaneId::Terminal(TerminalId::new(1)),
+                Some(AgentInfo {
+                    kind: "codex".into(),
+                    state: AgentState::Idle,
+                    source: AgentSource::Reported,
+                    detail: None,
+                    waiting_on: None,
+                    wait_needs_a_person: false,
+                    cwd: None,
+                    session_id: Some("session".into()),
+                    run_id: Some("run".into()),
+                }),
+            );
     }
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let next = || loop {
         let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         if let PluginInstruction::PaletteAgent(request) = instruction
@@ -6015,7 +6121,7 @@ fn history_workers_picker_case(live: bool) {
         }
     };
     let (tx, ticks) = channels::unbounded();
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(tx));
     let reply = |request: &AgentRequest, history| Instruction::AgentReply {
         client: CLIENT,
         opening: request.opening,
@@ -6117,7 +6223,7 @@ fn history_workers_picker_case(live: bool) {
     let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(frame.contains("Worker message"), "{frame}");
     if live {
-        let worker_view = screen.command_palettes[&CLIENT].widget().view;
+        let worker_view = screen.palette.command_palettes[&CLIENT].widget().view;
         loop {
             let (instruction, _) = ticks.recv_timeout(Duration::from_secs(5)).unwrap();
             if let ScreenInstruction::CommandPalette(tick @ Instruction::HistoryTick { view, .. }) =
@@ -6193,24 +6299,29 @@ fn history_navigation_keeps_live_target_only_for_the_current_run() {
     ] {
         let keeps_live = matches!(action, HistoryAction::Tools { .. });
         let mut screen = screen();
-        screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
-            PaneId::Terminal(TerminalId::new(1)),
-            Some(AgentInfo {
-                kind: "codex".into(),
-                state: AgentState::Idle,
-                source: AgentSource::Reported,
-                detail: None,
-                waiting_on: None,
-                wait_needs_a_person: false,
-                cwd: None,
-                session_id: Some("session".into()),
-                run_id: Some("run".into()),
-            }),
-        );
+        screen
+            .core
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .set_pane_agent(
+                PaneId::Terminal(TerminalId::new(1)),
+                Some(AgentInfo {
+                    kind: "codex".into(),
+                    state: AgentState::Idle,
+                    source: AgentSource::Reported,
+                    detail: None,
+                    waiting_on: None,
+                    wait_needs_a_person: false,
+                    cwd: None,
+                    session_id: Some("session".into()),
+                    run_id: Some("run".into()),
+                }),
+            );
         let receiver = screen_wired_to_server(&mut screen);
         let mut grid = grid_for_render_snapshot(SIZE);
         let (tx, requests) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
         let next = || loop {
             let (instruction, _) = requests.recv_timeout(Duration::from_secs(5)).unwrap();
             if let PluginInstruction::PaletteAgent(request) = instruction
@@ -6251,7 +6362,7 @@ fn history_navigation_keeps_live_target_only_for_the_current_run() {
         screen.plugin_palette_instruction(reply(&child, history));
         let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert_eq!(frame.contains("Focus"), keeps_live, "{action:?}: {frame}");
-        let view = screen.command_palettes[&CLIENT].widget().view;
+        let view = screen.palette.command_palettes[&CLIENT].widget().view;
         // A successful live reply schedules generation 1; an archived view stays at 0.
         for generation in 0..=1 {
             screen.plugin_palette_instruction(Instruction::HistoryTick {
@@ -6286,7 +6397,7 @@ fn history_tool_navigation_remains_visible_and_pages_with_the_original_range() {
     use yinz_types::agent::history::{Cursor, Range};
     let mut screen = screen();
     let (tx, requests) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let next = || loop {
         let (instruction, _) = requests.recv_timeout(Duration::from_secs(5)).unwrap();
         if let PluginInstruction::PaletteAgent(request) = instruction {
@@ -6390,7 +6501,7 @@ fn history_tool_activity_search_restores_range_and_cursor() {
     for worker in [None, Some("worker")] {
         let mut screen = screen();
         let (tx, requests) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
         let next = || loop {
             let (instruction, _) = requests.recv_timeout(Duration::from_secs(5)).unwrap();
             if let PluginInstruction::PaletteAgent(request) = instruction {
@@ -6474,24 +6585,29 @@ fn history_latest_polling_case(tools: bool, worker: Option<&str>) {
     };
     use yinz_types::agent::{history::Cursor, history::Range, AgentInfo, AgentSource, AgentState};
     let mut screen = screen();
-    screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
-        PaneId::Terminal(TerminalId::new(1)),
-        Some(AgentInfo {
-            kind: "codex".into(),
-            state: AgentState::Idle,
-            source: AgentSource::Reported,
-            detail: None,
-            waiting_on: None,
-            wait_needs_a_person: false,
-            cwd: None,
-            session_id: Some("session".into()),
-            run_id: Some("run".into()),
-        }),
-    );
+    screen
+        .core
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .set_pane_agent(
+            PaneId::Terminal(TerminalId::new(1)),
+            Some(AgentInfo {
+                kind: "codex".into(),
+                state: AgentState::Idle,
+                source: AgentSource::Reported,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                session_id: Some("session".into()),
+                run_id: Some("run".into()),
+            }),
+        );
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     let (tx, requests) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let next = || loop {
         let (instruction, _) = requests.recv_timeout(Duration::from_secs(5)).unwrap();
         if let PluginInstruction::PaletteAgent(request) = instruction
@@ -6501,7 +6617,7 @@ fn history_latest_polling_case(tools: bool, worker: Option<&str>) {
         }
     };
     let (tx, ticks) = channels::unbounded();
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(tx));
     let next_tick = || loop {
         let (instruction, _) = ticks.recv_timeout(Duration::from_secs(5)).unwrap();
         if let ScreenInstruction::CommandPalette(tick @ Instruction::HistoryTick { .. }) =
@@ -6695,22 +6811,27 @@ fn history_opens_at_tail_and_polls_before_explicit_backfill_preserving_manual_sc
     };
     use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
     let mut screen = screen();
-    screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
-        PaneId::Terminal(TerminalId::new(1)),
-        Some(AgentInfo {
-            kind: "codex".into(),
-            state: AgentState::Idle,
-            source: AgentSource::Reported,
-            detail: None,
-            waiting_on: None,
-            wait_needs_a_person: false,
-            cwd: None,
-            session_id: Some("session".into()),
-            run_id: Some("run".into()),
-        }),
-    );
+    screen
+        .core
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .set_pane_agent(
+            PaneId::Terminal(TerminalId::new(1)),
+            Some(AgentInfo {
+                kind: "codex".into(),
+                state: AgentState::Idle,
+                source: AgentSource::Reported,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                session_id: Some("session".into()),
+                run_id: Some("run".into()),
+            }),
+        );
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let next = || loop {
         let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         if let PluginInstruction::PaletteAgent(request) = instruction {
@@ -6724,7 +6845,7 @@ fn history_opens_at_tail_and_polls_before_explicit_backfill_preserving_manual_sc
         }
     };
     let (tick_tx, tick_rx) = channels::unbounded();
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(tick_tx));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(tick_tx));
     palette_search(&mut screen, "provider:codex");
     palette_key(&mut screen, BareKey::Enter);
     let initial = next();
@@ -6854,22 +6975,27 @@ fn live_history_backfill_cannot_acknowledge_repaired_messages_in_loaded_interval
     };
     use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
     let mut screen = screen();
-    screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
-        PaneId::Terminal(TerminalId::new(1)),
-        Some(AgentInfo {
-            kind: "codex".into(),
-            state: AgentState::Idle,
-            source: AgentSource::Reported,
-            detail: None,
-            waiting_on: None,
-            wait_needs_a_person: false,
-            cwd: None,
-            session_id: Some("session".into()),
-            run_id: Some("run".into()),
-        }),
-    );
+    screen
+        .core
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .set_pane_agent(
+            PaneId::Terminal(TerminalId::new(1)),
+            Some(AgentInfo {
+                kind: "codex".into(),
+                state: AgentState::Idle,
+                source: AgentSource::Reported,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                session_id: Some("session".into()),
+                run_id: Some("run".into()),
+            }),
+        );
     let (tx, requests) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let next = || loop {
         let (instruction, _) = requests.recv_timeout(Duration::from_secs(5)).unwrap();
         if let PluginInstruction::PaletteAgent(request) = instruction
@@ -6879,7 +7005,7 @@ fn live_history_backfill_cannot_acknowledge_repaired_messages_in_loaded_interval
         }
     };
     let (tx, ticks) = channels::unbounded();
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(tx));
     let next_tick = || loop {
         let (instruction, _) = ticks.recv_timeout(Duration::from_secs(5)).unwrap();
         if let ScreenInstruction::CommandPalette(tick @ Instruction::HistoryTick { .. }) =
@@ -6975,22 +7101,27 @@ fn live_history_keeps_chronological_backfill_across_search() {
     use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
     for tail_start in [10, 11, 71] {
         let mut screen = screen();
-        screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
-            PaneId::Terminal(TerminalId::new(1)),
-            Some(AgentInfo {
-                kind: "codex".into(),
-                state: AgentState::Idle,
-                source: AgentSource::Reported,
-                detail: None,
-                waiting_on: None,
-                wait_needs_a_person: false,
-                cwd: None,
-                session_id: Some("session".into()),
-                run_id: Some("run".into()),
-            }),
-        );
+        screen
+            .core
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .set_pane_agent(
+                PaneId::Terminal(TerminalId::new(1)),
+                Some(AgentInfo {
+                    kind: "codex".into(),
+                    state: AgentState::Idle,
+                    source: AgentSource::Reported,
+                    detail: None,
+                    waiting_on: None,
+                    wait_needs_a_person: false,
+                    cwd: None,
+                    session_id: Some("session".into()),
+                    run_id: Some("run".into()),
+                }),
+            );
         let (tx, rx) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
         let next = || loop {
             let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
             if let PluginInstruction::PaletteAgent(request) = instruction
@@ -7078,7 +7209,7 @@ fn archived_history_keeps_earlier_action_across_search_until_prefix_is_loaded() 
     };
     let mut screen = screen();
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let next = || loop {
         let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         if let PluginInstruction::PaletteAgent(request) = instruction {
@@ -7224,7 +7355,7 @@ fn history_navigation_case(worker: Option<&str>, search: bool, cancel: bool) {
     };
     let mut screen = screen();
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let next = || loop {
         let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         if let PluginInstruction::PaletteAgent(request) = instruction {
@@ -7325,7 +7456,7 @@ fn history_navigation_case(worker: Option<&str>, search: bool, cancel: bool) {
     } else {
         screen.plugin_palette_instruction(reply(&older, rows(68..=97, true)));
         assert_eq!(
-            screen.command_palettes[&CLIENT]
+            screen.palette.command_palettes[&CLIENT]
                 .widget()
                 .agent_first_revision(),
             Some(68)
@@ -7371,7 +7502,7 @@ fn palette_completion_notifications_are_scoped_and_readable() {
             let mut screen = screen();
             let notifications = palette_actions_receiver(&mut screen);
             let (sender, requests) = channels::unbounded();
-            screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+            screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
             let owner = Owner {
                 plugin_id: PluginId::new(50),
                 generation: 9,
@@ -7571,7 +7702,7 @@ fn palette_cursor_hides_under_toasts_and_returns_when_uncovered() {
             let receiver = screen_wired_to_server(&mut screen);
             let mut grid = grid_for_render_snapshot(SIZE);
             let now = std::time::Instant::now();
-            screen.pinned_now = Some(now);
+            screen.core.pinned_now = Some(now);
             screen.toggle_command_palette(CLIENT);
             let (cursor, _) =
                 render_frame_and_cursor_into(&mut screen, &receiver, client, &mut grid);
@@ -7581,8 +7712,8 @@ fn palette_cursor_hides_under_toasts_and_returns_when_uncovered() {
             let mut notification =
                 Notification::new(id, "Toast covering palette cursor".into(), None, None, now);
             notification.reveal = Tween::settled(1.0);
-            screen.notification_position = NotificationPosition::TopLeft;
-            screen.notifications.push(notification);
+            screen.notices.notification_position = NotificationPosition::TopLeft;
+            screen.notices.notifications.push(notification);
             let surface = Viewport {
                 x: 0,
                 y: 0,
@@ -7590,7 +7721,7 @@ fn palette_cursor_hides_under_toasts_and_returns_when_uncovered() {
                 rows: SIZE.rows,
             };
             let toast_y = screen.notification_layout(surface, now, ClientId::new(1))[0].y;
-            screen.notifications[0].y_offset = Tween::settled(y as f32 - toast_y as f32);
+            screen.notices.notifications[0].y_offset = Tween::settled(y as f32 - toast_y as f32);
             assert!(screen
                 .notification_cell_rects(surface, now, ClientId::new(1))
                 .iter()
@@ -7601,9 +7732,10 @@ fn palette_cursor_hides_under_toasts_and_returns_when_uncovered() {
 
             if dismiss {
                 screen.dismiss_notification(id, now).unwrap();
-                screen.pinned_now = Some(now + Duration::from_secs(1));
+                screen.core.pinned_now = Some(now + Duration::from_secs(1));
             } else {
-                screen.notifications[0].y_offset = Tween::settled((y + 2) as f32 - toast_y as f32);
+                screen.notices.notifications[0].y_offset =
+                    Tween::settled((y + 2) as f32 - toast_y as f32);
             }
             let (restored_cursor, _) =
                 render_frame_and_cursor_into(&mut screen, &receiver, client, &mut grid);
@@ -7622,7 +7754,7 @@ fn palette_popup_is_visible_preserves_cursor_and_restores_covered_content() {
     screen.toggle_command_palette(CLIENT);
     let (cursor, before) = render_frame_and_cursor_into(&mut screen, &receiver, CLIENT, &mut grid);
     let now = std::time::Instant::now();
-    screen.pinned_now = Some(now);
+    screen.core.pinned_now = Some(now);
     let mut notification = Notification::new(
         NotificationId::new(99),
         "Report successfully saved above palette".into(),
@@ -7632,8 +7764,9 @@ fn palette_popup_is_visible_preserves_cursor_and_restores_covered_content() {
     );
     notification.reveal = Tween::settled(1.0);
     notification.y_offset = Tween::settled(8.0);
-    screen.notification_position = yinz_types::input::options::NotificationPosition::TopRight;
-    screen.notifications.push(notification);
+    screen.notices.notification_position =
+        yinz_types::input::options::NotificationPosition::TopRight;
+    screen.notices.notifications.push(notification);
     let (after_cursor, snapshot) =
         render_frame_and_cursor_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(
@@ -7655,11 +7788,11 @@ fn palette_popup_is_visible_preserves_cursor_and_restores_covered_content() {
         MouseEvent::new_left_press_event(Position::new(line as i32, col as u16)),
         CLIENT,
     );
-    assert!(screen.command_palettes.contains_key(&CLIENT));
+    assert!(screen.palette.command_palettes.contains_key(&CLIENT));
     screen
         .dismiss_notification(NotificationId::new(99), now)
         .unwrap();
-    screen.pinned_now = Some(now + Duration::from_secs(1));
+    screen.core.pinned_now = Some(now + Duration::from_secs(1));
     let (after_cursor, after) =
         render_frame_and_cursor_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert_eq!(after, before);
@@ -7732,7 +7865,7 @@ fn suspended_palette_keeps_notifications_hidden_and_releases_mode_only_on_close(
         let mut screen = screen();
         let receiver = screen_wired_to_server(&mut screen);
         let (sender, requests) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
         let command = |command| Instruction::Command {
             owner: Owner {
                 plugin_id: PluginId::new(50),
@@ -7787,13 +7920,13 @@ fn suspended_palette_keeps_notifications_hidden_and_releases_mode_only_on_close(
             scope: scope.clone(),
             suspended: true,
         })));
-        assert!(!screen.palette_owns_input(CLIENT));
+        assert!(!screen.palette.palette_owns_input(CLIENT));
         assert!(!screen.notification_browser_is_visible(CLIENT));
         for mode in [InputMode::Normal, InputMode::Notifications] {
             screen.change_mode(mode, None, CLIENT).unwrap();
             screen.change_mode_for_all_clients(mode, None).unwrap();
-            assert_eq!(screen.mode_info[&CLIENT].mode, InputMode::Locked);
-            assert!(screen.notification_browsers.contains_key(&CLIENT));
+            assert_eq!(screen.core.mode_info[&CLIENT].mode, InputMode::Locked);
+            assert!(screen.notices.notification_browsers.contains_key(&CLIENT));
             assert!(!screen.notification_browser_is_visible(CLIENT));
         }
         for key in [
@@ -7814,7 +7947,7 @@ fn suspended_palette_keeps_notifications_hidden_and_releases_mode_only_on_close(
                 scope: scope.clone(),
                 suspended: false,
             })));
-            assert!(screen.palette_owns_input(CLIENT));
+            assert!(screen.palette.palette_owns_input(CLIENT));
             assert!(!screen.notification_browser_is_visible(CLIENT));
         }
         assert!(!receiver.try_iter().any(|(instruction, _)| matches!(
@@ -7853,7 +7986,7 @@ fn dynamic_palette_refresh_recovers_after_execution_error_and_stops_after_close(
     let mut screen = screen();
     let ticks = palette_actions_receiver(&mut screen);
     let (sender, requests) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     let command = |command| Instruction::Command {
         owner: Owner {
             plugin_id: PluginId::new(50),
@@ -8012,6 +8145,7 @@ fn dynamic_palette_refresh_recovers_after_execution_error_and_stops_after_close(
 fn palette_uses_displayed_tab_names_but_renames_the_stored_name() {
     let mut screen = screen();
     screen
+        .core
         .tab_projects
         .insert(TabId::new(0), "yinz:topic".into());
     screen.log_and_report_session_state().unwrap();
@@ -8068,6 +8202,7 @@ fn palette_tab_group_actions_capture_identity_and_confirm_closure() {
 fn palette_closes_groups_by_project_name_but_edits_the_fallback() {
     let mut screen = screen();
     screen
+        .core
         .pane_projects
         .insert(PaneId::Terminal(TerminalId::new(1)), "project".into());
     screen.log_and_report_session_state().unwrap();
@@ -8090,7 +8225,7 @@ fn palette_closes_groups_by_project_name_but_edits_the_fallback() {
 #[test]
 fn disabled_tab_groups_are_absent_from_the_command_palette() {
     let mut screen = screen();
-    screen.default_mode_info.tab_groups = Some(false);
+    screen.core.default_mode_info.tab_groups = Some(false);
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     palette_search(&mut screen, "tab group");
@@ -8108,7 +8243,7 @@ fn plugin_markdown_survives_results_forms_and_text_view_transitions() {
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     let (sender, requests) = unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     let command = |command| Instruction::Command {
         owner: Owner {
             plugin_id: PluginId::new(50),
@@ -8201,7 +8336,7 @@ fn native_project_names_remain_literal_in_markdown_results() {
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     let name = "**project**_[name]";
-    screen.projects.insert(name.into());
+    screen.core.projects.insert(name.into());
     palette_search(&mut screen, "Switch current project");
     palette_key(&mut screen, BareKey::Enter);
     screen.command_palette_handles_input(&None, name.as_bytes(), false, CLIENT);
@@ -8210,7 +8345,7 @@ fn native_project_names_remain_literal_in_markdown_results() {
     assert!(frame.contains(&format!("› {name}")), "{frame}");
     palette_key(&mut screen, BareKey::Enter);
     assert_eq!(
-        screen.client_projects[&CLIENT].current.as_deref(),
+        screen.palette.client_projects[&CLIENT].current.as_deref(),
         Some(name)
     );
 }
@@ -8220,8 +8355,8 @@ fn project_picker_shows_literal_sources_and_current_marker() {
     let mut screen = screen();
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
-    screen.projects = ["alpha", "beta", "gamma"].map(String::from).into();
-    screen.project_sources = [
+    screen.core.projects = ["alpha", "beta", "gamma"].map(String::from).into();
+    screen.core.project_sources = [
         ("alpha".into(), "git@host:雪/[a].git".into()),
         ("beta".into(), "/home/*notes*".into()),
     ]
@@ -8233,12 +8368,13 @@ fn project_picker_shows_literal_sources_and_current_marker() {
     assert!(frame.contains("Current · git@host:雪/[a].git"), "{frame}");
     assert!(frame.contains("/home/*notes*"), "{frame}");
     assert!(frame.contains("gamma"), "{frame}");
-    screen.project_sources.clear();
+    screen.core.project_sources.clear();
     screen.reconcile_project_contexts();
     let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(frame.contains("Current"), "{frame}");
     assert!(!frame.contains("git@host"), "{frame}");
     screen
+        .core
         .project_sources
         .insert("alpha".into(), "git@host:雪/[a].git".repeat(10));
     screen
@@ -8260,23 +8396,28 @@ fn peer_agent_quota_is_unavailable_without_local_usage_collection() {
 
     for conversation in [None, Some("peer-conversation")] {
         let mut screen = screen();
-        screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
-            PaneId::Terminal(TerminalId::new(1)),
-            Some(AgentInfo {
-                kind: "codex".into(),
-                state: AgentState::Idle,
-                source: AgentSource::Reported,
-                detail: None,
-                waiting_on: None,
-                wait_needs_a_person: false,
-                cwd: None,
-                session_id: conversation.map(str::to_owned),
-                run_id: None,
-            }),
-        );
+        screen
+            .core
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .set_pane_agent(
+                PaneId::Terminal(TerminalId::new(1)),
+                Some(AgentInfo {
+                    kind: "codex".into(),
+                    state: AgentState::Idle,
+                    source: AgentSource::Reported,
+                    detail: None,
+                    waiting_on: None,
+                    wait_needs_a_person: false,
+                    cwd: None,
+                    session_id: conversation.map(str::to_owned),
+                    run_id: None,
+                }),
+            );
         warp_peer(&mut screen, "quota-peer");
         let (tx, rx) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
         palette_search(&mut screen, "provider:codex session:quota-peer");
         palette_key(&mut screen, BareKey::Enter);
         if conversation.is_some() {
@@ -8334,22 +8475,27 @@ fn agent_info_usage_and_prompt_are_scoped_to_the_selected_agent() {
     for conversation in [None, Some("selected-conversation")] {
         let mut screen = screen();
         let pane = PaneId::Terminal(TerminalId::new(1));
-        screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
-            pane,
-            Some(AgentInfo {
-                kind: "codex".into(),
-                state: AgentState::Idle,
-                source: AgentSource::Reported,
-                detail: None,
-                waiting_on: None,
-                wait_needs_a_person: false,
-                cwd: None,
-                session_id: conversation.map(str::to_owned),
-                run_id: None,
-            }),
-        );
+        screen
+            .core
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .set_pane_agent(
+                pane,
+                Some(AgentInfo {
+                    kind: "codex".into(),
+                    state: AgentState::Idle,
+                    source: AgentSource::Reported,
+                    detail: None,
+                    waiting_on: None,
+                    wait_needs_a_person: false,
+                    cwd: None,
+                    session_id: conversation.map(str::to_owned),
+                    run_id: None,
+                }),
+            );
         let (tx, rx) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
         palette_search(&mut screen, "provider:codex");
         palette_key(&mut screen, BareKey::Enter);
         let usage_request = loop {
@@ -8477,22 +8623,27 @@ fn prompt_picker_searches_off_thread_and_fills_the_draft_without_sending() {
     use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
 
     let mut screen = screen();
-    screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
-        PaneId::Terminal(TerminalId::new(1)),
-        Some(AgentInfo {
-            kind: "codex".into(),
-            state: AgentState::Idle,
-            source: AgentSource::Reported,
-            detail: None,
-            waiting_on: None,
-            wait_needs_a_person: false,
-            cwd: None,
-            session_id: Some("conversation".into()),
-            run_id: Some("run".into()),
-        }),
-    );
+    screen
+        .core
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .set_pane_agent(
+            PaneId::Terminal(TerminalId::new(1)),
+            Some(AgentInfo {
+                kind: "codex".into(),
+                state: AgentState::Idle,
+                source: AgentSource::Reported,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                session_id: Some("conversation".into()),
+                run_id: Some("run".into()),
+            }),
+        );
     let (tx, requests) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let next = || loop {
         let (instruction, _) = requests.recv_timeout(Duration::from_secs(5)).unwrap();
         if let PluginInstruction::PaletteAgent(request) = instruction
@@ -8502,7 +8653,7 @@ fn prompt_picker_searches_off_thread_and_fills_the_draft_without_sending() {
         }
     };
     let (tx, to_screen) = channels::unbounded();
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(tx));
     let next_matches = || loop {
         let (instruction, _) = to_screen.recv_timeout(Duration::from_secs(5)).unwrap();
         if let ScreenInstruction::CommandPalette(
@@ -8521,7 +8672,12 @@ fn prompt_picker_searches_off_thread_and_fills_the_draft_without_sending() {
         ));
     };
     fn widget(screen: &Screen) -> &crate::ui::command_palette::CommandPalette {
-        screen.command_palettes.get(&CLIENT).unwrap().widget()
+        screen
+            .palette
+            .command_palettes
+            .get(&CLIENT)
+            .unwrap()
+            .widget()
     }
     let draft = |screen: &Screen| widget(screen).agent_prompt_text();
 
@@ -8685,22 +8841,27 @@ fn agent_prompt_retries_keep_identity_and_unsuccessful_submissions_restart_polli
 
     for failure in ["error", "rejected", "cancelled", "dispatch"] {
         let mut screen = screen();
-        screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
-            PaneId::Terminal(TerminalId::new(1)),
-            Some(AgentInfo {
-                kind: "codex".into(),
-                state: AgentState::Idle,
-                source: AgentSource::Reported,
-                detail: None,
-                waiting_on: None,
-                wait_needs_a_person: false,
-                cwd: None,
-                session_id: Some("conversation".into()),
-                run_id: Some("run".into()),
-            }),
-        );
+        screen
+            .core
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .set_pane_agent(
+                PaneId::Terminal(TerminalId::new(1)),
+                Some(AgentInfo {
+                    kind: "codex".into(),
+                    state: AgentState::Idle,
+                    source: AgentSource::Reported,
+                    detail: None,
+                    waiting_on: None,
+                    wait_needs_a_person: false,
+                    cwd: None,
+                    session_id: Some("conversation".into()),
+                    run_id: Some("run".into()),
+                }),
+            );
         let (tx, rx) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
         let next = || loop {
             let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
             if let PluginInstruction::PaletteAgent(request) = instruction
@@ -8710,7 +8871,7 @@ fn agent_prompt_retries_keep_identity_and_unsuccessful_submissions_restart_polli
             }
         };
         let (tx, ticks) = channels::unbounded();
-        screen.bus.senders.to_screen = Some(SenderWithContext::new(tx));
+        screen.core.bus.senders.to_screen = Some(SenderWithContext::new(tx));
         let next_tick = || loop {
             let (instruction, _) = ticks.recv_timeout(Duration::from_secs(5)).unwrap();
             if let ScreenInstruction::CommandPalette(tick @ Instruction::HistoryTick { .. }) =
@@ -8746,14 +8907,14 @@ fn agent_prompt_retries_keep_identity_and_unsuccessful_submissions_restart_polli
         }
         screen.command_palette_handles_input(&None, b"continue", false, CLIENT);
         let original = if failure == "dispatch" {
-            let saved = screen.bus.senders.to_plugin.clone();
+            let saved = screen.core.bus.senders.to_plugin.clone();
             let (tx, disconnected) = channels::unbounded();
             drop(disconnected);
-            screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
-            screen.bus.senders.should_silently_fail = false;
+            screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+            screen.core.bus.senders.should_silently_fail = false;
             palette_key(&mut screen, BareKey::Enter);
-            screen.bus.senders.should_silently_fail = true;
-            screen.bus.senders.to_plugin = saved;
+            screen.core.bus.senders.should_silently_fail = true;
+            screen.core.bus.senders.to_plugin = saved;
             None
         } else {
             palette_key(&mut screen, BareKey::Enter);
@@ -8865,6 +9026,7 @@ fn live_agent_palette_resolves_osc_status_for_presentation_filtering_and_order()
     ] {
         let peer = warp_peer(&mut screen, name);
         for pane in screen
+            .core
             .peer_sessions_cache
             .get_mut(&peer)
             .unwrap()
@@ -8910,7 +9072,7 @@ fn live_agent_palette_resolves_osc_status_for_presentation_filtering_and_order()
         let local = screen
             .live_palette_agents()
             .into_iter()
-            .find(|live| live.session == screen.session_name)
+            .find(|live| live.session == screen.core.session_name)
             .unwrap();
         assert_eq!(local.pane.agent, Some(agent.clone()));
         assert_eq!(local.presentation().unwrap().state, state);
@@ -8968,6 +9130,7 @@ fn live_agent_order_uses_peer_timestamps_and_refreshes_root_and_picker() {
         let newer = warp_peer(&mut screen, "newer");
         for (name, stamp) in [(&older, Some(50)), (&newer, Some(200))] {
             for pane in screen
+                .core
                 .peer_sessions_cache
                 .get_mut(name)
                 .unwrap()
@@ -9008,6 +9171,7 @@ fn live_agent_order_uses_peer_timestamps_and_refreshes_root_and_picker() {
         // State wins over recency, and equal pane IDs are ordered by session on a tie.
         for name in [&older, &newer] {
             for pane in screen
+                .core
                 .peer_sessions_cache
                 .get_mut(name)
                 .unwrap()
@@ -9038,25 +9202,31 @@ fn expanded_palette_quota_clips_notifications_and_releases_rasters_with_the_view
         animation::Tween, input::options::NotificationPosition, internal_ids::NotificationId,
     };
     let mut screen = screen();
-    screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
-        PaneId::Terminal(TerminalId::new(1)),
-        Some(AgentInfo {
-            kind: "codex".into(),
-            state: AgentState::Idle,
-            source: AgentSource::Reported,
-            detail: None,
-            waiting_on: None,
-            wait_needs_a_person: false,
-            cwd: None,
-            session_id: None,
-            run_id: None,
-        }),
-    );
     screen
+        .core
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .set_pane_agent(
+            PaneId::Terminal(TerminalId::new(1)),
+            Some(AgentInfo {
+                kind: "codex".into(),
+                state: AgentState::Idle,
+                source: AgentSource::Reported,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                session_id: None,
+                run_id: None,
+            }),
+        );
+    screen
+        .core
         .kitty_host_capabilities
         .borrow_mut()
         .insert(CLIENT, true);
-    screen.client_cell_pixel_sizes.insert(
+    screen.core.client_cell_pixel_sizes.insert(
         CLIENT,
         Some(SizeInPixels {
             width: 8,
@@ -9064,7 +9234,7 @@ fn expanded_palette_quota_clips_notifications_and_releases_rasters_with_the_view
         }),
     );
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     let open = |screen: &mut Screen| {
@@ -9098,8 +9268,8 @@ fn expanded_palette_quota_clips_notifications_and_releases_rasters_with_the_view
     };
     open(&mut screen);
     render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert_eq!(screen.kitty_image_store.borrow().image_count(), 1);
-    let full = screen.client_kitty_host_state.borrow()[&CLIENT]
+    assert_eq!(screen.core.kitty_image_store.borrow().image_count(), 1);
+    let full = screen.core.client_kitty_host_state.borrow()[&CLIENT]
         .live_placements
         .values()
         .next()
@@ -9107,7 +9277,7 @@ fn expanded_palette_quota_clips_notifications_and_releases_rasters_with_the_view
         .geometry;
     assert_eq!((full.source_px_width, full.source_px_height), (144, 36));
     let now = std::time::Instant::now();
-    screen.pinned_now = Some(now);
+    screen.core.pinned_now = Some(now);
     let id = NotificationId::new(99);
     let mut notification = Notification::new(
         id,
@@ -9117,8 +9287,8 @@ fn expanded_palette_quota_clips_notifications_and_releases_rasters_with_the_view
         now,
     );
     notification.reveal = Tween::settled(1.0);
-    screen.notifications.push(notification);
-    screen.notification_position = NotificationPosition::TopRight;
+    screen.notices.notifications.push(notification);
+    screen.notices.notification_position = NotificationPosition::TopRight;
     let surface = Viewport {
         x: 0,
         y: 0,
@@ -9132,21 +9302,21 @@ fn expanded_palette_quota_clips_notifications_and_releases_rasters_with_the_view
         (full.cell_y + 3, 2),
         (full.cell_y, 0),
     ] {
-        screen.notifications[0].y_offset = Tween::settled(y as f32 - settled_y as f32);
+        screen.notices.notifications[0].y_offset = Tween::settled(y as f32 - settled_y as f32);
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-        let visible_pixels: usize = screen.client_kitty_host_state.borrow()[&CLIENT]
+        let visible_pixels: usize = screen.core.client_kitty_host_state.borrow()[&CLIENT]
             .live_placements
             .values()
             .filter(|record| record.geometry.internal_image_id == full.internal_image_id)
             .map(|record| record.geometry.source_px_width * record.geometry.source_px_height)
             .sum();
         assert_eq!(visible_pixels, 144 * 18 * visible_rows);
-        assert_eq!(screen.kitty_image_store.borrow().image_count(), 1);
+        assert_eq!(screen.core.kitty_image_store.borrow().image_count(), 1);
     }
     screen.dismiss_notification(id, now).unwrap();
-    screen.pinned_now = Some(now + Duration::from_secs(1));
+    screen.core.pinned_now = Some(now + Duration::from_secs(1));
     render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    let restored: Vec<_> = screen.client_kitty_host_state.borrow()[&CLIENT]
+    let restored: Vec<_> = screen.core.client_kitty_host_state.borrow()[&CLIENT]
         .live_placements
         .values()
         .map(|record| record.geometry)
@@ -9157,21 +9327,21 @@ fn expanded_palette_quota_clips_notifications_and_releases_rasters_with_the_view
         .unwrap();
     grid.change_size(24, 40);
     let compact = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert_eq!(screen.kitty_image_store.borrow().image_count(), 0);
+    assert_eq!(screen.core.kitty_image_store.borrow().image_count(), 0);
     assert!(compact.contains("Weekly · 25%"), "{compact}");
     screen.resize_to_screen(SIZE).unwrap();
     grid.change_size(SIZE.rows, SIZE.cols);
     render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert_eq!(screen.kitty_image_store.borrow().image_count(), 1);
+    assert_eq!(screen.core.kitty_image_store.borrow().image_count(), 1);
     palette_key(&mut screen, BareKey::Esc);
     render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert_eq!(screen.kitty_image_store.borrow().image_count(), 0);
+    assert_eq!(screen.core.kitty_image_store.borrow().image_count(), 0);
     screen.close_command_palette(CLIENT);
     open(&mut screen);
     render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert_eq!(screen.kitty_image_store.borrow().image_count(), 1);
+    assert_eq!(screen.core.kitty_image_store.borrow().image_count(), 1);
     screen.close_command_palette(CLIENT);
-    assert_eq!(screen.kitty_image_store.borrow().image_count(), 0);
+    assert_eq!(screen.core.kitty_image_store.borrow().image_count(), 0);
 }
 
 #[test]
@@ -9193,14 +9363,14 @@ fn hook_flash_renders_matching_agent_in_both_views_and_clock_restores_dot() {
     let start = std::time::Instant::now();
     let (mut screen, jobs) = screen_with_background_jobs(SIZE);
     for colors in [
-        &mut screen.style.colors.text_unselected,
-        &mut screen.style.colors.text_selected,
+        &mut screen.core.style.colors.text_unselected,
+        &mut screen.core.style.colors.text_selected,
     ] {
         colors.emphasis_0 = yinz_types::colors::PaletteColor::Rgb((17, 80, 190));
         colors.emphasis_2 = yinz_types::colors::PaletteColor::Rgb((40, 170, 50));
     }
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.pinned_now = Some(start);
+    screen.core.pinned_now = Some(start);
     let pane = PaneId::Terminal(TerminalId::new(1));
     let busy = yinz_types::agent::AgentInfo {
         kind: "codex".into(),
@@ -9256,13 +9426,13 @@ fn hook_flash_renders_matching_agent_in_both_views_and_clock_restores_dot() {
     assert_eq!(dots(&grid).len(), 2);
     send_hook(&mut screen);
     render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    let accent = Some(screen.style.colors.text_unselected.emphasis_0.into());
-    let ordinary = Some(screen.style.colors.text_unselected.emphasis_2.into());
+    let accent = Some(screen.core.style.colors.text_unselected.emphasis_0.into());
+    let ordinary = Some(screen.core.style.colors.text_unselected.emphasis_2.into());
     assert_eq!(dots(&grid), vec![accent, ordinary]);
     assert_eq!(screen.animation_clock_period(start), Some(FRAME_PERIOD));
     drain_background_jobs(&jobs);
     let expired = start + Duration::from_millis(150);
-    screen.pinned_now = Some(expired);
+    screen.core.pinned_now = Some(expired);
     screen.on_animation_tick(expired).unwrap();
     let sent = drain_background_jobs(&jobs);
     assert!(sent.contains(&BackgroundJob::RenderToClients));
@@ -9278,7 +9448,7 @@ fn hook_flash_renders_matching_agent_in_both_views_and_clock_restores_dot() {
     render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert_eq!(dots(&grid), vec![accent]);
     assert_eq!(screen.animation_clock_period(expired), Some(FRAME_PERIOD));
-    screen.pinned_now = Some(expired + Duration::from_millis(150));
+    screen.core.pinned_now = Some(expired + Duration::from_millis(150));
     screen.on_animation_tick(screen.frame_now()).unwrap();
     render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert_eq!(dots(&grid), vec![ordinary]);
@@ -9313,7 +9483,7 @@ fn native_worktree_search_launches_typed_branch_once_without_a_form() {
     use yinz_runtime::channels::{unbounded, SenderWithContext};
     let mut screen = screen();
     let (tx, rx) = unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let enter = Some(KeyWithModifier::new(BareKey::Enter));
     let next = || {
         rx.try_iter()
@@ -9394,15 +9564,15 @@ fn open_agents_starts_empty_returns_to_root_and_is_client_local() {
     );
     let root = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(root.contains("Do · Project:"), "{root}");
-    assert!(screen.command_palette_is_open(CLIENT));
+    assert!(screen.palette.command_palette_is_open(CLIENT));
     screen.command_palette_handles_input(
         &Some(KeyWithModifier::new(BareKey::Esc)),
         &[],
         false,
         CLIENT,
     );
-    assert!(!screen.command_palette_is_open(CLIENT));
-    assert!(screen.command_palette_is_open(other));
+    assert!(!screen.palette.command_palette_is_open(CLIENT));
+    assert!(screen.palette.command_palette_is_open(other));
 }
 
 #[test]
@@ -9411,20 +9581,20 @@ fn open_agents_cancels_theme_preview_and_releases_other_clients() {
     let other = ClientId::new(2);
     screen.add_client(other).unwrap();
     let receiver = screen_wired_to_server(&mut screen);
-    let original_colors = screen.style.colors;
-    let original_terminal = screen.style.terminal;
+    let original_colors = screen.core.style.colors;
+    let original_terminal = screen.core.style.terminal;
     open_themes(&mut screen);
     palette_key(&mut screen, BareKey::Up);
-    assert_ne!(screen.style.colors, original_colors);
-    assert_ne!(screen.style.terminal, original_terminal);
+    assert_ne!(screen.core.style.colors, original_colors);
+    assert_ne!(screen.core.style.terminal, original_terminal);
 
     screen.open_agents(CLIENT);
 
-    assert!(screen.theme_preview.is_none());
-    assert_eq!(screen.style.colors, original_colors);
-    assert_eq!(screen.style.terminal, original_terminal);
-    assert_eq!(screen.default_mode_info.style.colors, original_colors);
-    assert_eq!(screen.mode_info[&other].style.colors, original_colors);
+    assert!(screen.palette.theme_preview.is_none());
+    assert_eq!(screen.core.style.colors, original_colors);
+    assert_eq!(screen.core.style.terminal, original_terminal);
+    assert_eq!(screen.core.default_mode_info.style.colors, original_colors);
+    assert_eq!(screen.core.mode_info[&other].style.colors, original_colors);
     let mut grid = grid_for_render_snapshot(SIZE);
     let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(
@@ -9440,7 +9610,7 @@ fn open_agents_cancels_theme_preview_and_releases_other_clients() {
         false,
         other,
     );
-    assert_eq!(screen.theme_preview.as_ref().unwrap().client, other);
+    assert_eq!(screen.palette.theme_preview.as_ref().unwrap().client, other);
 }
 
 #[test]
@@ -9451,14 +9621,17 @@ fn open_agents_preserves_another_clients_theme_preview() {
     let receiver = screen_wired_to_server(&mut screen);
     open_themes(&mut screen);
     palette_key(&mut screen, BareKey::Up);
-    let preview_colors = screen.style.colors;
-    let preview_terminal = screen.style.terminal;
+    let preview_colors = screen.core.style.colors;
+    let preview_terminal = screen.core.style.terminal;
 
     screen.open_agents(other);
 
-    assert_eq!(screen.theme_preview.as_ref().unwrap().client, CLIENT);
-    assert_eq!(screen.style.colors, preview_colors);
-    assert_eq!(screen.style.terminal, preview_terminal);
+    assert_eq!(
+        screen.palette.theme_preview.as_ref().unwrap().client,
+        CLIENT
+    );
+    assert_eq!(screen.core.style.colors, preview_colors);
+    assert_eq!(screen.core.style.terminal, preview_terminal);
     let mut grid = grid_for_render_snapshot(SIZE);
     let frame = render_frame_into(&mut screen, &receiver, other, &mut grid);
     assert!(
@@ -9479,9 +9652,9 @@ fn open_agents_respects_permission_modal() {
         ),
     );
     screen.assign_permission_modals();
-    assert!(screen.permission_modal_open(CLIENT));
+    assert!(screen.permissions.permission_modal_open(CLIENT));
     screen.open_agents(CLIENT);
-    assert!(!screen.command_palette_is_open(CLIENT));
+    assert!(!screen.palette.command_palette_is_open(CLIENT));
 }
 
 #[test]
@@ -9495,7 +9668,7 @@ fn plugin_table_refresh_validates_shape_and_preserves_original_handle() {
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     let (sender, requests) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     let command = |command| Instruction::Command {
         owner: Owner {
             plugin_id: PluginId::new(50),
@@ -9638,7 +9811,7 @@ fn created_project_choices_replace_the_form_and_open_a_local_terminal() {
     use yinz_types::input::command::{RunCommand, TerminalAction};
     let root = PathBuf::from("/projects/new-app");
     let mut screen = screen();
-    screen.default_shell_action = Some(TerminalAction::RunCommand(RunCommand {
+    screen.core.default_shell_action = Some(TerminalAction::RunCommand(RunCommand {
         command: "shell".into(),
         target: PaneTarget::Ssh {
             host: "remote".into(),
@@ -9647,7 +9820,7 @@ fn created_project_choices_replace_the_form_and_open_a_local_terminal() {
     }));
     let actions = palette_actions_receiver(&mut screen);
     let (tx, rx) = unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let next = || {
         rx.try_iter()
             .find_map(|(instruction, _)| match instruction {
@@ -9699,14 +9872,14 @@ fn created_project_choices_replace_the_form_and_open_a_local_terminal() {
 
     create(&mut screen, &next);
     palette_key(&mut screen, BareKey::Esc);
-    let palette = screen.command_palettes[&CLIENT].widget();
+    let palette = screen.palette.command_palettes[&CLIENT].widget();
     assert!(palette.is_root(), "Esc must skip the submitted form");
     assert!(palette.form_values().is_none());
     screen.close_command_palette(CLIENT);
 
     create(&mut screen, &next);
     palette_key(&mut screen, BareKey::Enter);
-    assert!(screen.command_palettes.is_empty());
+    assert!(screen.palette.command_palettes.is_empty());
     let activation = actions
         .try_iter()
         .find_map(|(instruction, _)| match instruction {
@@ -9732,7 +9905,7 @@ fn client_timezone_palette_discovery_execution_and_refresh_use_current_report() 
     use yinz_types::command_palette::{Action as PaletteAction, Command, Message, Reply};
     let mut screen = screen();
     let (sender, requests) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     let command = |command| Instruction::Command {
         owner: Owner {
             plugin_id: PluginId::new(50),

@@ -27,52 +27,56 @@ impl Drop for Preview {
 
 impl Screen {
     pub(super) fn open_theme_picker(&mut self, client: ClientId) {
-        if self.theme_preview.is_some() {
-            if let Some(state) = self.command_palettes.get_mut(&client) {
+        if self.palette.theme_preview.is_some() {
+            if let Some(state) = self.palette.command_palettes.get_mut(&client) {
                 state
                     .widget
                     .set_error("Theme picker is open in another client".into());
             }
             return;
         }
-        let configured =
-            if self.host_theme_dark_styling.is_some() && self.host_theme_light_styling.is_some() {
-                match self.host_terminal_theme_mode {
-                    Some(HostTerminalThemeMode::Light) => self.theme_light_name.as_deref(),
-                    _ => self.theme_dark_name.as_deref(),
-                }
-            } else {
-                self.theme_name.as_deref().or(Some("default"))
-            };
+        let configured = if self.core.host_theme_dark_styling.is_some()
+            && self.core.host_theme_light_styling.is_some()
+        {
+            match self.core.host_terminal_theme_mode {
+                Some(HostTerminalThemeMode::Light) => self.core.theme_light_name.as_deref(),
+                _ => self.core.theme_dark_name.as_deref(),
+            }
+        } else {
+            self.core.theme_name.as_deref().or(Some("default"))
+        };
         // Chrome identifies the active theme: the pane palette follows the session's
         // application baseline, which may differ from this viewer's chrome theme.
         let active = configured
-            .filter(|name| self.themes.get(*name) == Some(&self.style.colors))
+            .filter(|name| self.core.themes.get(*name) == Some(&self.core.style.colors))
             .or_else(|| {
-                self.themes
+                self.core
+                    .themes
                     .iter()
                     .find(|(name, theme)| {
-                        **theme == self.style.colors
-                            && self.terminal_themes.get(*name).copied() == self.style.terminal
+                        **theme == self.core.style.colors
+                            && self.core.terminal_themes.get(*name).copied()
+                                == self.core.style.terminal
                     })
                     .map(|(name, _)| name.as_str())
             })
             .or_else(|| {
-                self.themes
+                self.core
+                    .themes
                     .iter()
-                    .find(|(_, theme)| **theme == self.style.colors)
+                    .find(|(_, theme)| **theme == self.core.style.colors)
                     .map(|(name, _)| name.as_str())
             })
             .map(|name| format!("theme:{name}"));
-        if let Some(state) = self.command_palettes.get_mut(&client) {
+        if let Some(state) = self.palette.command_palettes.get_mut(&client) {
             state.widget.open_picker(EntryKind::Theme);
             if let Some(active) = active {
                 state.widget.select_id(&active);
             }
-            self.theme_preview = Some(Preview {
+            self.palette.theme_preview = Some(Preview {
                 client,
-                original: self.style.colors,
-                original_terminal: self.style.terminal,
+                original: self.core.style.colors,
+                original_terminal: self.core.style.terminal,
                 saving: None,
                 cancelled: Arc::new(AtomicBool::new(false)),
             });
@@ -83,16 +87,17 @@ impl Screen {
 
     pub(super) fn cancel_theme_preview(&mut self, client: ClientId) {
         if self
+            .palette
             .theme_preview
             .as_ref()
             .is_none_or(|preview| preview.client != client)
         {
             return;
         }
-        if let Some(preview) = self.theme_preview.take() {
-            self.style.terminal = preview.original_terminal;
+        if let Some(preview) = self.palette.theme_preview.take() {
+            self.core.style.terminal = preview.original_terminal;
             self.repaint_theme(preview.original).non_fatal();
-            if let Some(mode) = self.host_terminal_theme_mode {
+            if let Some(mode) = self.core.host_terminal_theme_mode {
                 self.repaint_theme_mode(mode).non_fatal();
             }
         }
@@ -100,6 +105,7 @@ impl Screen {
 
     pub(crate) fn refresh_theme_preview(&mut self, client: ClientId) {
         let Some(preview) = self
+            .palette
             .theme_preview
             .as_ref()
             .filter(|preview| preview.client == client)
@@ -107,6 +113,7 @@ impl Screen {
             return;
         };
         let Some(state) = self
+            .palette
             .command_palettes
             .get(&client)
             .filter(|state| state.widget.theme_picker())
@@ -119,34 +126,36 @@ impl Screen {
             .selected_entry()
             .and_then(|entry| state.actions.get(&entry.id));
         let theme = match selected {
-            Some(Builtin::Theme(name)) => self.themes.get(name).copied(),
+            Some(Builtin::Theme(name)) => self.core.themes.get(name).copied(),
             _ => None,
         };
-        let normal =
-            if self.host_theme_dark_styling.is_some() && self.host_theme_light_styling.is_some() {
-                match self.host_terminal_theme_mode {
-                    Some(HostTerminalThemeMode::Dark) => self.host_theme_dark_styling,
-                    Some(HostTerminalThemeMode::Light) => self.host_theme_light_styling,
-                    None => None,
-                }
-            } else {
-                None
-            };
+        let normal = if self.core.host_theme_dark_styling.is_some()
+            && self.core.host_theme_light_styling.is_some()
+        {
+            match self.core.host_terminal_theme_mode {
+                Some(HostTerminalThemeMode::Dark) => self.core.host_theme_dark_styling,
+                Some(HostTerminalThemeMode::Light) => self.core.host_theme_light_styling,
+                None => None,
+            }
+        } else {
+            None
+        };
         // Entries that are not themes preview the viewer's chrome over the baseline
         // pane palette, which is what panes return to.
         let terminal = match selected {
-            Some(Builtin::Theme(name)) => self.terminal_themes.get(name).copied(),
+            Some(Builtin::Theme(name)) => self.core.terminal_themes.get(name).copied(),
             _ => preview.original_terminal,
         };
         let theme = theme.or(normal).unwrap_or(preview.original);
-        if self.style.colors != theme || self.style.terminal != terminal {
-            self.style.terminal = terminal;
+        if self.core.style.colors != theme || self.core.style.terminal != terminal {
+            self.core.style.terminal = terminal;
             self.repaint_theme(theme).non_fatal();
         }
     }
 
     pub(crate) fn save_palette_theme(&mut self, client: ClientId, name: String, permanent: bool) {
         let Some(preview) = self
+            .palette
             .theme_preview
             .as_mut()
             .filter(|preview| preview.client == client && preview.saving.is_none())
@@ -155,19 +164,20 @@ impl Screen {
         };
         let request = uuid::Uuid::new_v4();
         preview.saving = Some(request);
-        if let Some(state) = self.command_palettes.get_mut(&client) {
+        if let Some(state) = self.palette.command_palettes.get_mut(&client) {
             state.widget.busy = true;
         }
-        if let Err(error) = self
-            .bus
-            .senders
-            .send_to_server(ServerInstruction::SavePaletteTheme {
-                client,
-                request,
-                name,
-                permanent,
-                cancelled: preview.cancelled.clone(),
-            })
+        if let Err(error) =
+            self.core
+                .bus
+                .senders
+                .send_to_server(ServerInstruction::SavePaletteTheme {
+                    client,
+                    request,
+                    name,
+                    permanent,
+                    cancelled: preview.cancelled.clone(),
+                })
         {
             self.palette_theme_saved(client, request, Err(error.to_string()));
         }
@@ -180,6 +190,7 @@ impl Screen {
         result: Result<(), String>,
     ) {
         if self
+            .palette
             .theme_preview
             .as_ref()
             .is_none_or(|preview| preview.client != client || preview.saving != Some(request))
@@ -188,27 +199,30 @@ impl Screen {
         }
         match result {
             Ok(()) => {
-                super::notify(&self.bus.senders, "Completed: Apply theme".into());
+                super::notify(&self.core.bus.senders, "Completed: Apply theme".into());
                 // The server published the saved theme's baseline before this reply, so
                 // `original_terminal` already holds it. When another configuration layer
                 // overrode the save, it is the unchanged baseline, and panes must not keep
                 // rendering the preview.
-                if let Some(preview) = self.theme_preview.take()
-                    && self.style.terminal != preview.original_terminal
+                if let Some(preview) = self.palette.theme_preview.take()
+                    && self.core.style.terminal != preview.original_terminal
                 {
                     self.set_render_terminal(preview.original_terminal);
                 }
                 self.close_command_palette(client);
             },
             Err(error) => {
-                super::notify(&self.bus.senders, format!("Could not save theme: {error}"));
-                if let Some(preview) = self.theme_preview.as_mut() {
+                super::notify(
+                    &self.core.bus.senders,
+                    format!("Could not save theme: {error}"),
+                );
+                if let Some(preview) = self.palette.theme_preview.as_mut() {
                     preview.saving = None;
                     let original = preview.original;
-                    self.style.terminal = preview.original_terminal;
+                    self.core.style.terminal = preview.original_terminal;
                     self.repaint_theme(original).non_fatal();
                 }
-                if let Some(state) = self.command_palettes.get_mut(&client) {
+                if let Some(state) = self.palette.command_palettes.get_mut(&client) {
                     state.widget.busy = false;
                     state.widget.set_error(error);
                 }

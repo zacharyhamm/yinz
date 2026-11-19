@@ -2310,6 +2310,82 @@ fn exercise_agent_tracking_warps(kind: &str) {
 }
 
 #[test]
+fn restored_claude_observer_after_adoption() {
+    use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, ServerToClientMsg};
+    use yinz_types::agent::{
+        control::AgentRequest,
+        hook_outcome,
+        report::{AgentReport, AgentReportState},
+        AgentState, HookEvent, HookOutcome,
+    };
+    use yinz_types::pane_id::PaneId;
+
+    let (registrations, calls) = std::sync::mpsc::channel();
+    let receiver = TestRunner::new(TERMINAL_SIZE)
+        .with_config(NO_BACKGROUND_PLUGINS)
+        .skip_concurrency_slot()
+        .with_restored_observer(std::sync::Arc::new(move |terminal, session, publish| {
+            registrations.send((terminal, session, publish)).unwrap();
+            Ok(())
+        }))
+        .start();
+    receiver.expect_pty_spawn().output(PROMPT);
+    receiver.wait_for_app_load();
+    let source = start(Some(r#"layout { pane; pane command="claude"; }"#));
+    let subject = [source.expect_pty_spawn(), source.expect_pty_spawn()]
+        .into_iter()
+        .find(|pane| pane.run_command().command.ends_with("claude"))
+        .unwrap();
+    let hook = HookEvent {
+        session_id: "warp-conversation".into(),
+        hook_event_name: "UserPromptSubmit".into(),
+        ..Default::default()
+    };
+    let HookOutcome::Reported(agent) = hook_outcome("claude", &hook) else {
+        panic!("expected Claude agent state");
+    };
+    let (mut sender, mut replies) = agent_connection(&source);
+    let trace = yinz_runtime::agent::report::ReportTrace::new(std::time::Instant::now());
+    sender
+        .send_client_msg(ClientToServerMsg::AgentReport(AgentReport {
+            report_id: trace.report_id,
+            process_id: trace.process_id,
+            pane_id: PaneId::Terminal(subject.terminal_id()),
+            kind: "claude".into(),
+            state: AgentReportState::Set(agent),
+            event: None,
+            trace: false,
+        }))
+        .unwrap();
+    assert!(matches!(
+        replies.recv_server_msg(),
+        IpcRecv::Msg(ServerToClientMsg::AgentReportAccepted { .. }, _)
+    ));
+    let (code, message) = warp_pane_by_id(&source, &receiver, subject.terminal_id());
+    assert_eq!(code, 0, "{message}");
+    let arrived = receiver.expect_adopted_pty();
+    let (terminal, conversation, publish) = calls
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap();
+    assert_eq!(terminal, arrived.terminal_id());
+    assert_eq!(conversation, "warp-conversation");
+    assert!(publish(Some(AgentState::Waiting)));
+    let (mut sender, mut replies) = agent_connection(&receiver);
+    sender
+        .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Status {
+            pane_id: PaneId::Terminal(terminal),
+            expected_session_id: Some(conversation),
+        }))
+        .unwrap();
+    assert_eq!(
+        agent_response(&mut replies).agents[0].agent.state,
+        AgentState::Waiting
+    );
+    tracking_report(&receiver, &arrived, "claude", "SessionStart", "", "");
+    assert!(!publish(Some(AgentState::Busy)));
+}
+
+#[test]
 fn agent_tracking_survives_claude_warps() {
     exercise_agent_tracking_warps("claude");
 }

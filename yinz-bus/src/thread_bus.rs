@@ -230,6 +230,16 @@ impl ThreadSenders {
         }
     }
     pub fn send_to_pty_writer(&self, instruction: PtyWriteInstruction) -> Result<()> {
+        if crate::os_input_output::ResizeCache::prepare(self, &instruction)? {
+            self.send_pty_writer_instruction(instruction)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn send_pty_writer_instruction(
+        &self,
+        instruction: PtyWriteInstruction,
+    ) -> Result<()> {
         if self.should_silently_fail {
             let _ = self
                 .to_pty_writer

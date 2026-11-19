@@ -23,6 +23,7 @@ fn screen_with_agent(state: &str) -> Screen {
     }))
     .unwrap();
     screen
+        .core
         .tabs
         .get_mut(&TAB)
         .unwrap()
@@ -55,7 +56,7 @@ fn warp_manifest_gains_no_record_for_a_live_agent() {
     let screen = screen_with_agent("Busy");
     let (tiled, _, _) = screen.tab_panes_for_layout(
         TAB,
-        &screen.tabs[&TAB],
+        &screen.core.tabs[&TAB],
         false,
         crate::screen::LayoutPurpose::Warp,
     );

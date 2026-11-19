@@ -29,8 +29,10 @@
 //! - `tab_history: BTreeMap<ClientId, Vec<TabId>>`: History of tab IDs per client
 
 mod agent_control;
+mod agent_dispatch;
 mod agent_events;
 mod agent_reports;
+mod core;
 mod multipanes;
 mod pane_tabs;
 mod pending_events;
@@ -561,12 +563,6 @@ pub(crate) struct ParkedPaneWarp {
     pub(crate) client_id: ClientId,
 }
 
-/// Pane identity and observations staged before asynchronous pane creation.
-type PendingAgentTracking = (
-    Option<yinz_types::agent::AgentInfo>,
-    Option<yinz_types::agent::tracking::AgentTrackingHandoff>,
-);
-
 /// Where a warped-in group goes, and who is told once placement completes.
 type PendingGroupPlacement = (
     yinz_types::data::WarpPlacement,
@@ -607,33 +603,161 @@ impl LayoutPurpose {
     }
 }
 
-pub(crate) struct Screen {
-    instance_id: uuid::Uuid,
-    agent_events: agent_events::AgentEvents,
-    agent_worktrees: agent_worktrees::Worktrees,
-    agent_controls: Vec<agent_control::Pending>,
-    agent_draft_clears: HashMap<PaneId, agent_control::DraftClear>,
-    agent_terminal_claims: HashMap<PaneId, (u64, String, String)>,
-    closed_agent_submissions: std::collections::VecDeque<(
-        std::time::Instant,
-        yinz_types::agent::control::RetainedSubmission,
-        u64, // Input revision frozen before normal provider shutdown.
-        Option<yinz_types::agent::claude_notifications::Source>,
+struct ContextMenuController {
+    /// The open right-click context menu per client, if any.
+    ///
+    /// Per client rather than per session, and on `Screen` rather than on `Tab`, for the same two
+    /// reasons the notification stack is: it is drawn after the per-tab loop in
+    /// `render_to_clients`, where tab-owned state would be invisible, and it has to be torn down
+    /// in `remove_client` alongside `notification_mouse_captures`. See `screen::context_menu`.
+    context_menus: HashMap<ClientId, ContextMenuState>,
+    /// The items a right-click menu offers before its hook plugin has had its say.
+    ///
+    /// Held here, rather than only in the plugin thread, because the screen needs them for two
+    /// things the plugin is not involved in: the fallback when the hook does not answer in time,
+    /// and putting an item's actions back when it does.
+    context_menu: ContextMenu,
+    /// Correlates a plugin's answer with the menu that asked for it. Monotonic per session.
+    next_context_menu_request_id: ContextMenuRequestId,
+    context_menu_on_right_click: bool,
+    context_menu_override_agent_mouse: bool,
+}
+
+struct PermissionModalController {
+    permission_modals: Vec<permission_modal::PermissionModal>,
+    permission_last_client: Option<ClientId>,
+    permission_mouse_captures: HashSet<ClientId>,
+}
+
+struct NestedSessionController {
+    nested_guest_tracker: NestedGuestTracker,
+    nested_ancestry: Vec<SessionName>,
+    nested_via_client_id: Option<ClientId>,
+    nested_fullscreen_panes: HashSet<PaneId>,
+    own_fullscreen_requested: bool,
+    reported_guest_fullscreen: HashMap<PaneId, bool>,
+    host_fullscreen: bool,
+    dimmed_clients: HashSet<ClientId>,
+    nested_guest_choices: HashMap<(ClientId, PaneId), NestedGuestChoice>,
+    guest_ascend_keys: HashMap<PaneId, Vec<KeyWithModifier>>,
+    host_descend_keys: Vec<KeyWithModifier>,
+    host_descended: bool,
+    nested_session_handling: NestedSessionHandling,
+}
+
+struct NotificationController {
+    /// Live toast notifications, newest first (index 0 sits in the configured corner).
+    notifications: Vec<Notification>,
+    notification_mouse_captures: HashSet<ClientId>,
+    /// Every toast received by this live session. Dismissal only affects `notifications` above.
+    /// ponytail: intentionally unbounded because the feature promises "all" notifications;
+    /// add a configurable cap only if long-lived sessions show meaningful memory pressure.
+    notification_history: Vec<NotificationRecord>,
+    notification_return_panes: HashMap<ClientId, PaneId>,
+    notification_return_retry_until: HashMap<ClientId, Instant>,
+    notification_policy: notification_policy::NotificationPolicy,
+    /// Toasts committed before any client was ever connected, in arrival order: the session's
+    /// first layout can raise one while its first client is still being registered. They are
+    /// shown to that first client. `None` from then on, so a later attach never replays a toast
+    /// committed while the session was detached; see `commit_notifications`.
+    toasts_before_first_client: Option<Vec<NotificationId>>,
+    /// The open notification browser per client in `Notifications` mode. See
+    /// `screen::notification_browser`.
+    notification_browsers: HashMap<ClientId, notification_browser::NotificationBrowser>,
+    next_notification_id: NotificationId,
+    notification_position: NotificationPosition,
+    notification_timeout_secs: ElapsedSeconds,
+    /// The cells each client's toasts painted last frame, so the next one can work out which of
+    /// them a moving toast stopped covering. Keyed by client rather than by render group because
+    /// a client that switches tab or resizes gets different rects, and that difference *is* the
+    /// damage. See `prepare_notification_damage`.
+    last_notification_fill: HashMap<ClientId, Vec<crate::ui::damage::CellRect>>,
+}
+
+struct CommandPaletteController {
+    command_palettes: HashMap<ClientId, command_palette::CommandPaletteState>,
+    command_palette_mouse_captures: HashSet<ClientId>,
+    palette_providers: command_palette::plugins::Registry,
+    theme_preview: Option<command_palette::themes::Preview>,
+    client_projects: HashMap<ClientId, command_palette::ClientProject>,
+}
+
+struct WarpController {
+    warped_tab_groups: HashMap<(String, u32), u32>,
+    /// Warps waiting on the pty thread, keyed by the terminal id being released.
+    ///
+    /// A warp takes two hops — ask pty to let the supervisor go, then serialize
+    /// the pane once it has — and whoever is waiting on the far end has to still
+    /// be reachable from the second hop.
+    ///
+    /// The `Instant` is the last moment the second hop may *start*: the
+    /// caller's deadline less `PANE_WARP_SCREEN_RESERVE`, the same number the
+    /// pty thread was given. It is kept because serializing the pane is also
+    /// what closes it: by the time a send could report that nobody is
+    /// listening, the pane is already gone and its process unwatched. Comparing
+    /// against this before starting is the only chance to notice in time.
+    pending_warps: HashMap<TerminalId, (ParkedPaneWarp, std::time::Instant)>,
+    /// Live `PaneWarpHold`s. While any exists, an emptied session keeps its last
+    /// tab and clients, because the pane may still come back.
+    in_flight_pane_warps: usize,
+    /// The same idea as `pending_warps`, keyed by tab id rather than terminal id
+    /// because a tab's release is answered once for the whole tab — and carrying
+    /// the arrangement, which was worked out before the release so that a tab
+    /// that could not be rebuilt was never taken apart.
+    ///
+    /// The `Instant` is the tab-sized version of the one above: the caller's
+    /// deadline less `TAB_WARP_SCREEN_RESERVE`. Not the caller's deadline
+    /// itself — a release landing inside the reserve would pass that check and
+    /// still have the tab closed under a caller that had gone by the time the
+    /// serialization finished, which is exactly what the reserve exists to rule
+    /// out.
+    pending_pane_groups: HashMap<TabId, (ParkedPaneWarp, PreparedTabWarp, std::time::Instant)>,
+    pending_group_placements: HashMap<TabId, PendingGroupPlacement>,
+    pending_tab_adoptions: HashMap<TabId, crossbeam::channel::Sender<Result<()>>>,
+    pending_warp_relationships: HashMap<TabId, yinz_types::data::WarpRelationships>,
+    pending_tab_warps: HashMap<
+        TabId,
+        (
+            WarpReplySender<WarpedTab>,
+            PreparedTabWarp,
+            std::time::Instant,
+        ),
+    >,
+}
+
+struct MigrationController {
+    migration: Option<migration::MigrationState>,
+    preparing_migration: Option<String>,
+    completed_migration: Option<(
+        String,
+        yinz_types::session_migration::SessionMigrationInventory,
+        yinz_types::session_migration::SessionMigrationMap,
     )>,
-    agent_submissions: HashMap<PaneId, std::collections::VecDeque<agent_control::Submission>>,
-    agent_launches: HashMap<PaneId, yinz_types::agent::SpawnedAgent>,
+    migration_deferred: std::collections::VecDeque<ScreenInstruction>,
+    /// Destination client -> (operation, original client), completed after its restored frame.
+    pending_update_client_ready: HashMap<ClientId, (String, ClientId)>,
+}
+
+use agent_control::AgentController;
+
+pub(crate) struct Screen {
+    menus: ContextMenuController,
+    permissions: PermissionModalController,
+    nested: NestedSessionController,
+    notices: NotificationController,
+    palette: CommandPaletteController,
+    warp: WarpController,
+    transfer: MigrationController,
+    agents: AgentController,
+    core: ScreenCore,
+}
+
+struct ScreenCore {
+    restored_observer: Option<crate::RestoredAgentObserver>,
+    instance_id: uuid::Uuid,
     managed_reservations: HashMap<TerminalId, yinz_bus::route::AgentTabPlacement>,
     agent_worker_regions: HashMap<(PaneId, TabId), (std::sync::Weak<()>, String)>,
     agent_worker_stacks: HashMap<(PaneId, TabId), Vec<PaneId>>,
-    pending_agent_tracking: HashMap<PaneId, PendingAgentTracking>,
-    pending_terminal_states: HashMap<PaneId, String>,
-    warped_agent_inputs: HashMap<PaneId, agent_control::TransferredInput>,
-    agent_lifecycle: HashMap<PaneId, agent_control::Lifecycle>,
-    restored_claude_observers: HashMap<PaneId, Instant>,
-    agent_dialog_inputs: HashMap<PaneId, agent_control::DialogInput>,
-    agent_clear_inputs: HashMap<PaneId, agent_control::ClearInput>,
-    agent_worker_waits: HashMap<PaneId, agent_control::WorkerWaits>,
-    claude_permission_waits: HashMap<PaneId, agent_control::PermissionWait>,
     overlay_tab_plugins: Vec<yinz_types::pane_tabs::PaneTabDescriptor>,
     plugin_aliases: yinz_types::input::plugins::PluginAliases,
     pending_overlay_tabs: Option<plugins::PendingOverlayTabs>,
@@ -676,7 +800,6 @@ pub(crate) struct Screen {
     projects: std::collections::BTreeSet<String>,
     project_sources: BTreeMap<String, String>,
     pane_projects: HashMap<PaneId, String>,
-    client_projects: HashMap<ClientId, command_palette::ClientProject>,
     last_project: yinz_runtime::last_project::LastProject,
     pixel_dimensions: PixelDimensions,
     client_pixel_dimensions: HashMap<ClientId, PixelDimensions>,
@@ -718,11 +841,6 @@ pub(crate) struct Screen {
     /// given and `Output::is_dirty` counts them, so filling these unconditionally would send a frame
     /// on every render tick (and force every watcher into a full repaint) - this is the diff.
     unowned_strip_fill: HashMap<ClientId, Vec<(usize, usize, usize)>>,
-    /// The cells each client's toasts painted last frame, so the next one can work out which of
-    /// them a moving toast stopped covering. Keyed by client rather than by render group because
-    /// a client that switches tab or resizes gets different rects, and that difference *is* the
-    /// damage. See `prepare_notification_damage`.
-    last_notification_fill: HashMap<ClientId, Vec<crate::ui::damage::CellRect>>,
     /// Panes whose frame colour is currently easing back out of a bell flash. Kept so the frames
     /// get repainted while the colour moves - a pane whose contents are idle has nothing else to
     /// make it redraw - and so the animation clock knows when the last one is done.
@@ -735,13 +853,10 @@ pub(crate) struct Screen {
     /// so `sync_animation_clock` is a no-op on the overwhelming majority of ticks rather than a
     /// message on the bus sixty times a second.
     animation_clock: Option<Duration>,
-    /// Local hook activity, guarded by agent identity and sampled with monotonic frame time.
-    agent_hook_flashes: HashMap<PaneId, agent_reports::HookFlash>,
     global_last_active_tab_id: TabId,
     tab_history: BTreeMap<ClientId, Vec<TabId>>,
     tab_groups: BTreeMap<u32, tab_groups::TabGroup>,
     tab_group_ids: HashMap<TabId, u32>,
-    warped_tab_groups: HashMap<(String, u32), u32>,
     next_tab_group_id: u64,
     pane_history: BTreeMap<ClientId, Vec<PaneId>>,
     mode_info: BTreeMap<ClientId, ModeInfo>,
@@ -750,48 +865,6 @@ pub(crate) struct Screen {
     style: Style,
     pane_frame_style: PaneFrameStyle,
     max_agent_width: usize,
-    /// Live toast notifications, newest first (index 0 sits in the configured corner).
-    notifications: Vec<Notification>,
-    notification_mouse_captures: HashSet<ClientId>,
-    /// The open right-click context menu per client, if any.
-    ///
-    /// Per client rather than per session, and on `Screen` rather than on `Tab`, for the same two
-    /// reasons the notification stack is: it is drawn after the per-tab loop in
-    /// `render_to_clients`, where tab-owned state would be invisible, and it has to be torn down
-    /// in `remove_client` alongside `notification_mouse_captures`. See `screen::context_menu`.
-    context_menus: HashMap<ClientId, ContextMenuState>,
-    command_palettes: HashMap<ClientId, command_palette::CommandPaletteState>,
-    permission_modals: Vec<permission_modal::PermissionModal>,
-    permission_last_client: Option<ClientId>,
-    permission_mouse_captures: HashSet<ClientId>,
-    command_palette_mouse_captures: HashSet<ClientId>,
-    palette_providers: command_palette::plugins::Registry,
-    /// Correlates a plugin's answer with the menu that asked for it. Monotonic per session.
-    next_context_menu_request_id: ContextMenuRequestId,
-    /// The items a right-click menu offers before its hook plugin has had its say.
-    ///
-    /// Held here, rather than only in the plugin thread, because the screen needs them for two
-    /// things the plugin is not involved in: the fallback when the hook does not answer in time,
-    /// and putting an item's actions back when it does.
-    context_menu: ContextMenu,
-    /// Every toast received by this live session. Dismissal only affects `notifications` above.
-    /// ponytail: intentionally unbounded because the feature promises "all" notifications;
-    /// add a configurable cap only if long-lived sessions show meaningful memory pressure.
-    notification_history: Vec<NotificationRecord>,
-    notification_return_panes: HashMap<ClientId, PaneId>,
-    notification_return_retry_until: HashMap<ClientId, Instant>,
-    notification_policy: notification_policy::NotificationPolicy,
-    /// Toasts committed before any client was ever connected, in arrival order: the session's
-    /// first layout can raise one while its first client is still being registered. They are
-    /// shown to that first client. `None` from then on, so a later attach never replays a toast
-    /// committed while the session was detached; see `commit_notifications`.
-    toasts_before_first_client: Option<Vec<NotificationId>>,
-    /// The open notification browser per client in `Notifications` mode. See
-    /// `screen::notification_browser`.
-    notification_browsers: HashMap<ClientId, notification_browser::NotificationBrowser>,
-    next_notification_id: NotificationId,
-    notification_position: NotificationPosition,
-    notification_timeout_secs: ElapsedSeconds,
     /// The floor a spawned agent pane's equal share of a tab must clear, columns by rows;
     /// zero in either turns the rule off. See `agent_placement`.
     agent_pane_min_size: Size,
@@ -802,57 +875,10 @@ pub(crate) struct Screen {
     pub(super) agent_double_escape: bool,
     serialize_pane_viewport: bool,
     scrollback_lines_to_serialize: Option<usize>,
-    /// Warps waiting on the pty thread, keyed by the terminal id being released.
-    ///
-    /// A warp takes two hops — ask pty to let the supervisor go, then serialize
-    /// the pane once it has — and whoever is waiting on the far end has to still
-    /// be reachable from the second hop.
-    ///
-    /// The `Instant` is the last moment the second hop may *start*: the
-    /// caller's deadline less `PANE_WARP_SCREEN_RESERVE`, the same number the
-    /// pty thread was given. It is kept because serializing the pane is also
-    /// what closes it: by the time a send could report that nobody is
-    /// listening, the pane is already gone and its process unwatched. Comparing
-    /// against this before starting is the only chance to notice in time.
-    pending_warps: HashMap<TerminalId, (ParkedPaneWarp, std::time::Instant)>,
-    migration: Option<migration::MigrationState>,
-    preparing_migration: Option<String>,
-    completed_migration: Option<(
-        String,
-        yinz_types::session_migration::SessionMigrationInventory,
-        yinz_types::session_migration::SessionMigrationMap,
-    )>,
-    migration_deferred: std::collections::VecDeque<ScreenInstruction>,
-    /// Live `PaneWarpHold`s. While any exists, an emptied session keeps its last
-    /// tab and clients, because the pane may still come back.
-    in_flight_pane_warps: usize,
-    /// The same idea as `pending_warps`, keyed by tab id rather than terminal id
-    /// because a tab's release is answered once for the whole tab — and carrying
-    /// the arrangement, which was worked out before the release so that a tab
-    /// that could not be rebuilt was never taken apart.
-    ///
-    /// The `Instant` is the tab-sized version of the one above: the caller's
-    /// deadline less `TAB_WARP_SCREEN_RESERVE`. Not the caller's deadline
-    /// itself — a release landing inside the reserve would pass that check and
-    /// still have the tab closed under a caller that had gone by the time the
-    /// serialization finished, which is exactly what the reserve exists to rule
-    /// out.
-    pending_pane_groups: HashMap<TabId, (ParkedPaneWarp, PreparedTabWarp, std::time::Instant)>,
-    pending_group_placements: HashMap<TabId, PendingGroupPlacement>,
-    pending_tab_adoptions: HashMap<TabId, crossbeam::channel::Sender<Result<()>>>,
-    pending_warp_relationships: HashMap<TabId, yinz_types::data::WarpRelationships>,
     /// Connections that left before attaching while a tab's layout was still on its way. A
     /// layout applied with nobody attached registers the client it was opened for, and one of
     /// these would never leave: its id is never handed out again. Emptied once no tab is pending.
     departed_before_layout: HashSet<ClientId>,
-    pending_tab_warps: HashMap<
-        TabId,
-        (
-            WarpReplySender<WarpedTab>,
-            PreparedTabWarp,
-            std::time::Instant,
-        ),
-    >,
     session_is_mirrored: bool,
     copy_options: CopyOptions,
     debug: bool,
@@ -892,8 +918,6 @@ pub(crate) struct Screen {
     pane_animations: bool,
     focus_follows_mouse: bool,
     mouse_click_through: bool,
-    context_menu_on_right_click: bool,
-    context_menu_override_agent_mouse: bool,
     currently_marking_pane_group: Rc<RefCell<HashMap<ClientId, bool>>>,
     render_blocker: RenderBlocker,
     watcher_clients: HashMap<ClientId, WatcherState>,
@@ -906,8 +930,6 @@ pub(crate) struct Screen {
     pane_subscriber_snapshots_dirty: bool,
     pane_subscriber_dirty_panes: HashSet<PaneId>,
     pending_client_repaints: HashSet<ClientId>,
-    /// Destination client -> (operation, original client), completed after its restored frame.
-    pending_update_client_ready: HashMap<ClientId, (String, ClientId)>,
     deferred_render_tabs: HashSet<TabId>,
     render_writer_ready: OnceCell<yinz_bus::os_input_output::RenderReady>,
     deferred_subscriber_renders: bool,
@@ -948,18 +970,6 @@ pub(crate) struct Screen {
     clipboard_forward_queue: VecDeque<PendingForward>,
     clipboard_forward_in_flight_token: Option<u32>,
     paste_buffer_read_enabled: bool,
-    nested_guest_tracker: NestedGuestTracker,
-    nested_ancestry: Vec<SessionName>,
-    nested_via_client_id: Option<ClientId>,
-    nested_fullscreen_panes: HashSet<PaneId>,
-    own_fullscreen_requested: bool,
-    reported_guest_fullscreen: HashMap<PaneId, bool>,
-    host_fullscreen: bool,
-    dimmed_clients: HashSet<ClientId>,
-    nested_guest_choices: HashMap<(ClientId, PaneId), NestedGuestChoice>,
-    guest_ascend_keys: HashMap<PaneId, Vec<KeyWithModifier>>,
-    host_descend_keys: Vec<KeyWithModifier>,
-    host_descended: bool,
     /// The mode the session is currently painted in (`None` until resolved).
     host_terminal_theme_mode: Option<HostTerminalThemeMode>,
     /// The last mode the host terminal reported, recorded even while a pin
@@ -979,10 +989,8 @@ pub(crate) struct Screen {
     theme_name: Option<String>,
     theme_dark_name: Option<String>,
     theme_light_name: Option<String>,
-    theme_preview: Option<command_palette::themes::Preview>,
     host_theme_dark_styling: Option<Styling>,
     host_theme_light_styling: Option<Styling>,
-    nested_session_handling: NestedSessionHandling,
     pane_output_activity: HashMap<PaneId, Instant>,
     /// Session-lifetime tombstones, relying on terminal and plugin IDs not being reused.
     /// Absent panes with these IDs are already closed; unknown IDs may be awaiting creation.
@@ -1006,6 +1014,8 @@ pub(crate) struct Screen {
     /// sleeping. Never set outside tests.
     #[cfg(test)]
     pinned_now: Option<Instant>,
+    #[cfg(test)]
+    publication_observer: Option<Box<dyn FnMut(&'static str)>>,
 }
 
 /// A live toast notification. See [`crate::ui::notification`] for how these are drawn.
@@ -1019,9 +1029,9 @@ pub(crate) struct Screen {
 /// wants to step an animation frame by frame sets `pinned_now` instead of sleeping.
 impl Screen {
     pub(crate) fn set_pane_animations(&mut self, enabled: bool) {
-        self.pane_animations = enabled;
+        self.core.pane_animations = enabled;
         if !enabled {
-            for tab in self.tabs.values_mut() {
+            for tab in self.core.tabs.values_mut() {
                 tab.settle_overlay_ripples();
             }
         }
@@ -1029,7 +1039,7 @@ impl Screen {
 
     pub(crate) fn frame_now(&self) -> Instant {
         #[cfg(test)]
-        if let Some(pinned) = self.pinned_now {
+        if let Some(pinned) = self.core.pinned_now {
             return pinned;
         }
         Instant::now()
@@ -1053,23 +1063,29 @@ impl Screen {
     /// load starting while a toast is mid-slide must not be able to drop the clock to the dot
     /// period underneath it.
     pub(crate) fn animation_clock_period(&self, now: Instant) -> Option<Duration> {
-        if self.notifications_are_animating(now)
+        if self.notices.notifications_are_animating(now)
             || self.palette_hook_flashes_are_visible(now)
             || self.pane_title_hook_flashes_are_visible(now)
-            || !self.fading_frame_panes.is_empty()
-            || self.tabs.values().any(|tab| tab.overlay_ripple_is_live())
+            || !self.core.fading_frame_panes.is_empty()
+            || self
+                .core
+                .tabs
+                .values()
+                .any(|tab| tab.overlay_ripple_is_live())
         {
             Some(FRAME_PERIOD)
-        } else if self.pane_animations
+        } else if self.core.pane_animations
             && self
+                .core
                 .active_tab_ids
                 .values()
                 .copied()
                 .chain(self.watched_tab_id())
                 .any(|id| {
-                    self.tabs.get(&id).is_some_and(|tab| {
+                    self.core.tabs.get(&id).is_some_and(|tab| {
                         tab.has_visible_waiting_pulse(
-                            self.followed_client_id
+                            self.core
+                                .followed_client_id
                                 .filter(|_| self.watched_tab_id() == Some(id)),
                         )
                     })
@@ -1077,11 +1093,13 @@ impl Screen {
         {
             Some(Duration::from_millis(50))
         } else if self
+            .notices
             .notification_return_retry_until
             .values()
             .any(|until| now < *until)
-            || !self.animating_plugin_loads.is_empty()
+            || !self.core.animating_plugin_loads.is_empty()
             || self
+                .core
                 .tabs
                 .values()
                 .any(|tab| !tab.pending_agent_escapes.is_empty())
@@ -1108,20 +1126,22 @@ impl Screen {
     pub(crate) fn sync_animation_clock(&mut self, now: Instant) -> Result<()> {
         self.reap_agent_hook_flashes(now);
         let wanted = self.animation_clock_period(now);
-        if wanted == self.animation_clock {
+        if wanted == self.core.animation_clock {
             return Ok(());
         }
         match wanted {
             Some(period) => self
+                .core
                 .bus
                 .senders
                 .send_to_background_jobs(BackgroundJob::StartAnimationClock(period))?,
             None => self
+                .core
                 .bus
                 .senders
                 .send_to_background_jobs(BackgroundJob::StopAnimationClock)?,
         }
-        self.animation_clock = wanted;
+        self.core.animation_clock = wanted;
         Ok(())
     }
 
@@ -1137,7 +1157,7 @@ impl Screen {
     /// `reap_settled_notifications` only runs inside a frame - until unrelated output happens to
     /// repaint.
     pub(crate) fn on_animation_tick(&mut self, now: Instant) -> Result<()> {
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             tab.expire_pending_agent_escapes(now);
         }
         self.render()?;
@@ -1147,10 +1167,11 @@ impl Screen {
     /// Redraw the loading indicator of every plugin still loading. The pane itself skips the write
     /// on the frames where the derived dot count has not changed, which is most of them.
     pub(crate) fn advance_plugin_loading_animations(&mut self) {
-        if self.animating_plugin_loads.is_empty() {
+        if self.core.animating_plugin_loads.is_empty() {
             return;
         }
         for plugin_id in self
+            .core
             .animating_plugin_loads
             .iter()
             .copied()
@@ -1164,18 +1185,18 @@ impl Screen {
     /// finished. A pane sitting idle produces no output of its own, so without this the flash
     /// would freeze at whatever strength the last frame happened to catch it at.
     pub(crate) fn advance_frame_color_fades(&mut self, now: Instant) {
-        if self.fading_frame_panes.is_empty() {
+        if self.core.fading_frame_panes.is_empty() {
             return;
         }
-        let fading: Vec<PaneId> = self.fading_frame_panes.iter().copied().collect();
+        let fading: Vec<PaneId> = self.core.fading_frame_panes.iter().copied().collect();
         for pane_id in fading {
             let Some(tab) = self.tab_containing_pane_mut(pane_id) else {
                 // the pane went away mid-flash; nothing left to fade
-                self.fading_frame_panes.remove(&pane_id);
+                self.core.fading_frame_panes.remove(&pane_id);
                 continue;
             };
             if tab.frame_color_override_is_faded_out(pane_id, now) {
-                self.fading_frame_panes.remove(&pane_id);
+                self.core.fading_frame_panes.remove(&pane_id);
                 continue;
             }
             tab.set_pane_frame_should_render(pane_id);
@@ -1482,232 +1503,234 @@ impl Screen {
         let current_pane_group = PaneGroups::new(bus.senders.clone());
         let character_cell_size = Rc::new(RefCell::new(None));
         Screen {
-            instance_id: uuid::Uuid::new_v4(),
-            agent_events: Default::default(),
-            agent_worktrees: Default::default(),
-            agent_controls: Vec::new(),
-            agent_draft_clears: HashMap::new(),
-            agent_terminal_claims: HashMap::new(),
-            closed_agent_submissions: std::collections::VecDeque::new(),
-            agent_submissions: HashMap::new(),
-            agent_launches: HashMap::new(),
-            managed_reservations: HashMap::new(),
-            agent_worker_regions: HashMap::new(),
-            agent_worker_stacks: HashMap::new(),
-            pending_agent_tracking: HashMap::new(),
-            pending_terminal_states: HashMap::new(),
-            warped_agent_inputs: HashMap::new(),
-            agent_lifecycle: HashMap::new(),
-            restored_claude_observers: HashMap::new(),
-            agent_dialog_inputs: HashMap::new(),
-            agent_clear_inputs: HashMap::new(),
-            agent_worker_waits: HashMap::new(),
-            claude_permission_waits: HashMap::new(),
-            overlay_tab_plugins,
-            plugin_aliases,
-            pending_overlay_tabs: None,
-            overlay_tab_completions: vec![],
-            reported_pane_tabs: vec![],
-            bus,
-            max_panes,
-            pixel_dimensions: Default::default(),
-            client_pixel_dimensions: HashMap::new(),
-            client_cell_pixel_sizes: HashMap::new(),
-            character_cell_size,
-            stacked_resize: Rc::new(RefCell::new(stacked_resize)),
-            stacked_pane_list: Rc::new(RefCell::new(stacked_pane_list)),
-            sixel_image_store: Rc::new(RefCell::new(SixelImageStore::default())),
-            kitty_image_store: Rc::new(RefCell::new(KittyImageStore::default())),
-            kitty_host_capabilities: Rc::new(RefCell::new(HashMap::new())),
-            kitty_probe_answers: HashMap::new(),
-            sixel_host_capabilities: Rc::new(RefCell::new(HashMap::new())),
-            synchronized_output_capabilities: Rc::new(RefCell::new(HashMap::new())),
-            client_kitty_host_state: Rc::new(RefCell::new(HashMap::new())),
-            style,
-            connected_clients: Rc::new(RefCell::new(AttachedClients::default())),
-            active_tab_ids: BTreeMap::new(),
-            client_sizes: HashMap::new(),
-            native_render_clients: HashMap::new(),
-            client_presentations: HashMap::new(),
-            last_surface_size: client_attributes.size,
-            unowned_strip_fill: HashMap::new(),
-            last_notification_fill: HashMap::new(),
-            fading_frame_panes: HashSet::new(),
-            animating_plugin_loads: HashSet::new(),
-            animation_clock: None,
-            agent_hook_flashes: HashMap::new(),
-            global_last_active_tab_id: TabId::new(0),
-            opening_layout_landed: false,
-            tabs: BTreeMap::new(),
-            tabs_needing_reflow: HashSet::new(),
-            has_created_tab: false,
-            terminal_cwds: HashMap::new(),
-            terminal_foreground_cmds: HashMap::new(),
-            terminal_hosts: HashMap::new(),
-            last_plugin_tab_names: HashMap::new(),
-            arrangement_projects: HashMap::new(),
-            pending_arrangement: None,
-            tab_projects: HashMap::new(),
-            projects: Default::default(),
-            project_sources: BTreeMap::new(),
-            pane_projects: HashMap::new(),
-            client_projects: HashMap::new(),
-            last_project: Default::default(),
-            terminal_emulator_colors: Rc::new(RefCell::new(Palette::default())),
-            terminal_emulator_color_codes: Rc::new(RefCell::new(HashMap::new())),
-            tab_history: BTreeMap::new(),
-            tab_groups: BTreeMap::new(),
-            tab_group_ids: HashMap::new(),
-            warped_tab_groups: HashMap::new(),
-            next_tab_group_id: 1,
-            pane_history: BTreeMap::new(),
-            mode_info: BTreeMap::new(),
-            default_mode_info: mode_info,
-            pane_frame_style,
-            max_agent_width,
-            notifications: vec![],
-            notification_mouse_captures: HashSet::new(),
-            context_menus: HashMap::new(),
-            command_palettes: HashMap::new(),
-            permission_modals: vec![],
-            permission_last_client: None,
-            permission_mouse_captures: HashSet::new(),
-            command_palette_mouse_captures: HashSet::new(),
-            palette_providers: command_palette::plugins::Registry::default(),
-            next_context_menu_request_id: ContextMenuRequestId::new(0),
-            context_menu,
-            notification_history: vec![],
-            notification_return_panes: HashMap::new(),
-            notification_return_retry_until: HashMap::new(),
-            notification_policy: Default::default(),
-            toasts_before_first_client: Some(vec![]),
-            notification_browsers: HashMap::new(),
-            next_notification_id: NotificationId::new(0),
-            notification_position,
-            notification_timeout_secs,
-            agent_pane_min_size,
-            auto_layout,
-            session_is_mirrored,
-            copy_options,
-            debug,
-            session_name,
-            config_file_path: None,
-            config_dir: None,
-            peer_sessions_cache,
-            default_layout,
-            default_layout_name,
-            default_shell,
-            default_shell_action,
-            session_serialization,
-            agent_double_escape,
-            serialize_pane_viewport,
-            scrollback_lines_to_serialize,
-            in_flight_pane_warps: 0,
-            migration: None,
-            preparing_migration: None,
-            completed_migration: None,
-            migration_deferred: Default::default(),
-            pending_warps: HashMap::new(),
-            pending_tab_warps: HashMap::new(),
-            pending_warp_relationships: HashMap::new(),
-            departed_before_layout: HashSet::new(),
-            pending_pane_groups: HashMap::new(),
-            pending_group_placements: HashMap::new(),
-            pending_tab_adoptions: HashMap::new(),
-            styled_underlines,
-            background_opacity,
-            osc8_hyperlinks,
-            arrow_fonts,
-            resurrectable_sessions_cache,
-            layout_dir,
-            layout_watcher: None,
-            layout_watcher_generation: 0,
-            explicitly_disable_kitty_keyboard_protocol,
-            support_kitty_graphics_protocol,
-            default_editor,
-            current_pane_group: Rc::new(RefCell::new(current_pane_group)),
-            currently_marking_pane_group: Rc::new(RefCell::new(HashMap::new())),
-            advanced_mouse_actions,
-            osc133_command_selection,
-            word_separators,
-            mouse_scroll_resize,
-            mouse_hover_effects,
-            visual_bell,
-            pane_animations,
-            focus_follows_mouse,
-            mouse_click_through,
-            context_menu_on_right_click,
-            context_menu_override_agent_mouse,
-            render_blocker: RenderBlocker::new(100),
-            watcher_clients: HashMap::new(),
-            followed_client_id: None,
-            departed_followed_tab_id: None,
-            cached_layouts: vec![],
-            cached_layout_errors: vec![],
-            pane_render_subscribers: HashMap::new(),
-            pane_subscriber_snapshots_dirty: true,
-            pane_subscriber_dirty_panes: HashSet::new(),
-            pending_client_repaints: HashSet::new(),
-            pending_update_client_ready: HashMap::new(),
-            deferred_render_tabs: HashSet::new(),
-            render_writer_ready: OnceCell::new(),
-            deferred_subscriber_renders: false,
-            quit_notices: BTreeMap::new(),
-            replacement_tab: None,
-            replacement_pending: false,
-            deferred_tab_closes: HashSet::new(),
-            cli_event_subscribers_present: false,
-            background_plugin_subscriptions: HashMap::new(),
-            paneless_plugins: HashMap::new(),
-            failed_paneless_plugins: HashSet::new(),
-            resolving_plugins: HashMap::new(),
-            unloaded_plugins: HashSet::new(),
-            next_forward_token: 1, // 0 is reserved as the startup sentinel
-            pending_forwarded_queries: HashMap::new(),
-            forward_queue: VecDeque::new(),
-            forward_in_flight_token: None,
-            pending_clipboard_forwards: HashMap::new(),
-            clipboard_forward_queue: VecDeque::new(),
-            clipboard_forward_in_flight_token: None,
-            paste_buffer_read_enabled: dangerously_enable_paste_buffer_read,
-            nested_guest_tracker: NestedGuestTracker::default(),
-            nested_ancestry: vec![],
-            nested_via_client_id: None,
-            nested_fullscreen_panes: HashSet::new(),
-            own_fullscreen_requested: false,
-            reported_guest_fullscreen: HashMap::new(),
-            host_fullscreen: false,
-            dimmed_clients: HashSet::new(),
-            nested_guest_choices: HashMap::new(),
-            guest_ascend_keys: HashMap::new(),
-            host_descend_keys: vec![],
-            host_descended: false,
-            host_terminal_theme_mode: None,
-            last_host_reported_theme_mode: None,
-            theme_policy: ThemePolicy::Auto,
-            application_theme,
-            application_pin: None,
-            configured_explicit_theme_hue: None,
-            themes,
-            theme_name,
-            theme_dark_name,
-            theme_light_name,
-            theme_preview: None,
-            terminal_themes,
-            host_theme_dark_styling: host_theme_dark,
-            host_theme_light_styling: host_theme_light,
-            nested_session_handling,
-            pane_output_activity: HashMap::new(),
-            destroyed_panes: HashSet::new(),
-            pane_output_subscriptions: HashMap::new(),
-            client_host_focused: HashMap::new(),
-            client_notification_protocols: HashMap::new(),
-            host_notification_protocol,
-            client_timezones: HashMap::new(),
-            client_host_terminal_env: HashMap::new(),
-            last_forwarded_osc7: HashMap::new(),
-            #[cfg(test)]
-            pinned_now: None,
+            menus: ContextMenuController {
+                context_menus: HashMap::new(),
+                context_menu,
+                next_context_menu_request_id: ContextMenuRequestId::new(0),
+                context_menu_on_right_click,
+                context_menu_override_agent_mouse,
+            },
+            permissions: PermissionModalController {
+                permission_modals: vec![],
+                permission_last_client: None,
+                permission_mouse_captures: HashSet::new(),
+            },
+            nested: NestedSessionController {
+                nested_guest_tracker: NestedGuestTracker::default(),
+                nested_ancestry: vec![],
+                nested_via_client_id: None,
+                nested_fullscreen_panes: HashSet::new(),
+                own_fullscreen_requested: false,
+                reported_guest_fullscreen: HashMap::new(),
+                host_fullscreen: false,
+                dimmed_clients: HashSet::new(),
+                nested_guest_choices: HashMap::new(),
+                guest_ascend_keys: HashMap::new(),
+                host_descend_keys: vec![],
+                host_descended: false,
+                nested_session_handling,
+            },
+            notices: NotificationController {
+                notifications: vec![],
+                notification_mouse_captures: HashSet::new(),
+                notification_history: vec![],
+                notification_return_panes: HashMap::new(),
+                notification_return_retry_until: HashMap::new(),
+                notification_policy: Default::default(),
+                toasts_before_first_client: Some(vec![]),
+                notification_browsers: HashMap::new(),
+                next_notification_id: NotificationId::new(0),
+                notification_position,
+                notification_timeout_secs,
+                last_notification_fill: HashMap::new(),
+            },
+            palette: CommandPaletteController {
+                command_palettes: HashMap::new(),
+                command_palette_mouse_captures: HashSet::new(),
+                palette_providers: command_palette::plugins::Registry::default(),
+                theme_preview: None,
+                client_projects: HashMap::new(),
+            },
+            warp: WarpController {
+                warped_tab_groups: HashMap::new(),
+                pending_warps: HashMap::new(),
+                in_flight_pane_warps: 0,
+                pending_pane_groups: HashMap::new(),
+                pending_group_placements: HashMap::new(),
+                pending_tab_adoptions: HashMap::new(),
+                pending_warp_relationships: HashMap::new(),
+                pending_tab_warps: HashMap::new(),
+            },
+            transfer: MigrationController {
+                migration: None,
+                preparing_migration: None,
+                completed_migration: None,
+                migration_deferred: Default::default(),
+                pending_update_client_ready: HashMap::new(),
+            },
+            agents: AgentController::default(),
+            core: ScreenCore {
+                restored_observer: None,
+                instance_id: uuid::Uuid::new_v4(),
+                managed_reservations: HashMap::new(),
+                agent_worker_regions: HashMap::new(),
+                agent_worker_stacks: HashMap::new(),
+                overlay_tab_plugins,
+                plugin_aliases,
+                pending_overlay_tabs: None,
+                overlay_tab_completions: vec![],
+                reported_pane_tabs: vec![],
+                bus,
+                max_panes,
+                pixel_dimensions: Default::default(),
+                client_pixel_dimensions: HashMap::new(),
+                client_cell_pixel_sizes: HashMap::new(),
+                character_cell_size,
+                stacked_resize: Rc::new(RefCell::new(stacked_resize)),
+                stacked_pane_list: Rc::new(RefCell::new(stacked_pane_list)),
+                sixel_image_store: Rc::new(RefCell::new(SixelImageStore::default())),
+                kitty_image_store: Rc::new(RefCell::new(KittyImageStore::default())),
+                kitty_host_capabilities: Rc::new(RefCell::new(HashMap::new())),
+                kitty_probe_answers: HashMap::new(),
+                sixel_host_capabilities: Rc::new(RefCell::new(HashMap::new())),
+                synchronized_output_capabilities: Rc::new(RefCell::new(HashMap::new())),
+                client_kitty_host_state: Rc::new(RefCell::new(HashMap::new())),
+                style,
+                connected_clients: Rc::new(RefCell::new(AttachedClients::default())),
+                active_tab_ids: BTreeMap::new(),
+                client_sizes: HashMap::new(),
+                native_render_clients: HashMap::new(),
+                client_presentations: HashMap::new(),
+                last_surface_size: client_attributes.size,
+                unowned_strip_fill: HashMap::new(),
+                fading_frame_panes: HashSet::new(),
+                animating_plugin_loads: HashSet::new(),
+                animation_clock: None,
+                global_last_active_tab_id: TabId::new(0),
+                opening_layout_landed: false,
+                tabs: BTreeMap::new(),
+                tabs_needing_reflow: HashSet::new(),
+                has_created_tab: false,
+                terminal_cwds: HashMap::new(),
+                terminal_foreground_cmds: HashMap::new(),
+                terminal_hosts: HashMap::new(),
+                last_plugin_tab_names: HashMap::new(),
+                arrangement_projects: HashMap::new(),
+                pending_arrangement: None,
+                tab_projects: HashMap::new(),
+                projects: Default::default(),
+                project_sources: BTreeMap::new(),
+                pane_projects: HashMap::new(),
+                last_project: Default::default(),
+                terminal_emulator_colors: Rc::new(RefCell::new(Palette::default())),
+                terminal_emulator_color_codes: Rc::new(RefCell::new(HashMap::new())),
+                tab_history: BTreeMap::new(),
+                tab_groups: BTreeMap::new(),
+                tab_group_ids: HashMap::new(),
+                next_tab_group_id: 1,
+                pane_history: BTreeMap::new(),
+                mode_info: BTreeMap::new(),
+                default_mode_info: mode_info,
+                pane_frame_style,
+                max_agent_width,
+                agent_pane_min_size,
+                auto_layout,
+                session_is_mirrored,
+                copy_options,
+                debug,
+                session_name,
+                config_file_path: None,
+                config_dir: None,
+                peer_sessions_cache,
+                default_layout,
+                default_layout_name,
+                default_shell,
+                default_shell_action,
+                session_serialization,
+                agent_double_escape,
+                serialize_pane_viewport,
+                scrollback_lines_to_serialize,
+                departed_before_layout: HashSet::new(),
+                styled_underlines,
+                background_opacity,
+                osc8_hyperlinks,
+                arrow_fonts,
+                resurrectable_sessions_cache,
+                layout_dir,
+                layout_watcher: None,
+                layout_watcher_generation: 0,
+                explicitly_disable_kitty_keyboard_protocol,
+                support_kitty_graphics_protocol,
+                default_editor,
+                current_pane_group: Rc::new(RefCell::new(current_pane_group)),
+                currently_marking_pane_group: Rc::new(RefCell::new(HashMap::new())),
+                advanced_mouse_actions,
+                osc133_command_selection,
+                word_separators,
+                mouse_scroll_resize,
+                mouse_hover_effects,
+                visual_bell,
+                pane_animations,
+                focus_follows_mouse,
+                mouse_click_through,
+                render_blocker: RenderBlocker::new(100),
+                watcher_clients: HashMap::new(),
+                followed_client_id: None,
+                departed_followed_tab_id: None,
+                cached_layouts: vec![],
+                cached_layout_errors: vec![],
+                pane_render_subscribers: HashMap::new(),
+                pane_subscriber_snapshots_dirty: true,
+                pane_subscriber_dirty_panes: HashSet::new(),
+                pending_client_repaints: HashSet::new(),
+                deferred_render_tabs: HashSet::new(),
+                render_writer_ready: OnceCell::new(),
+                deferred_subscriber_renders: false,
+                quit_notices: BTreeMap::new(),
+                replacement_tab: None,
+                replacement_pending: false,
+                deferred_tab_closes: HashSet::new(),
+                cli_event_subscribers_present: false,
+                background_plugin_subscriptions: HashMap::new(),
+                paneless_plugins: HashMap::new(),
+                failed_paneless_plugins: HashSet::new(),
+                resolving_plugins: HashMap::new(),
+                unloaded_plugins: HashSet::new(),
+                next_forward_token: 1, // 0 is reserved as the startup sentinel
+                pending_forwarded_queries: HashMap::new(),
+                forward_queue: VecDeque::new(),
+                forward_in_flight_token: None,
+                pending_clipboard_forwards: HashMap::new(),
+                clipboard_forward_queue: VecDeque::new(),
+                clipboard_forward_in_flight_token: None,
+                paste_buffer_read_enabled: dangerously_enable_paste_buffer_read,
+                host_terminal_theme_mode: None,
+                last_host_reported_theme_mode: None,
+                theme_policy: ThemePolicy::Auto,
+                application_theme,
+                application_pin: None,
+                configured_explicit_theme_hue: None,
+                themes,
+                theme_name,
+                theme_dark_name,
+                theme_light_name,
+                terminal_themes,
+                host_theme_dark_styling: host_theme_dark,
+                host_theme_light_styling: host_theme_light,
+                pane_output_activity: HashMap::new(),
+                destroyed_panes: HashSet::new(),
+                pane_output_subscriptions: HashMap::new(),
+                client_host_focused: HashMap::new(),
+                client_notification_protocols: HashMap::new(),
+                host_notification_protocol,
+                client_timezones: HashMap::new(),
+                client_host_terminal_env: HashMap::new(),
+                last_forwarded_osc7: HashMap::new(),
+                #[cfg(test)]
+                pinned_now: None,
+                #[cfg(test)]
+                publication_observer: None,
+            },
         }
     }
 
@@ -1750,13 +1773,14 @@ impl Screen {
 
     /// Returns a mutable reference to this [`Screen`]'s tabs.
     pub fn get_tabs_mut(&mut self) -> &mut BTreeMap<TabId, Tab> {
-        &mut self.tabs
+        &mut self.core.tabs
     }
 
     /// Returns an immutable reference to this [`Screen`]'s active [`Tab`].
     pub fn get_active_tab(&self, client_id: ClientId) -> Result<&Tab> {
-        match self.active_tab_ids.get(&client_id) {
+        match self.core.active_tab_ids.get(&client_id) {
             Some(tab) => self
+                .core
                 .tabs
                 .get(tab)
                 .ok_or_else(|| anyhow!("active tab {} does not exist", tab)),
@@ -1771,7 +1795,7 @@ impl Screen {
     }
 
     pub fn get_first_client_id(&self) -> Option<ClientId> {
-        self.active_tab_ids.keys().next().copied()
+        self.core.active_tab_ids.keys().next().copied()
     }
 
     /// The client a "focused tab/pane" action is really for: `client_id` when it is attached,
@@ -1800,7 +1824,8 @@ impl Screen {
         message: String,
         completion_tx: Option<NotificationEnd>,
     ) {
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_server(ServerInstruction::LogError(
                 vec![message],
@@ -1817,6 +1842,7 @@ impl Screen {
         explicit_tab_id: Option<TabId>,
     ) -> Option<(TabId, ClientId)> {
         let client_id = self
+            .core
             .active_tab_ids
             .contains_key(&requested_client_id)
             .then_some(requested_client_id)
@@ -1824,7 +1850,8 @@ impl Screen {
         explicit_tab_id
             .map(|tab_id| (tab_id, client_id))
             .or_else(|| {
-                self.active_tab_ids
+                self.core
+                    .active_tab_ids
                     .get(&client_id)
                     .map(|tab_id| (*tab_id, client_id))
             })
@@ -1835,20 +1862,22 @@ impl Screen {
     pub fn get_previous_tab(&mut self, client_id: ClientId) -> Result<Option<&Tab>> {
         let group = self.group_for_client(Some(client_id));
         let history = self
+            .core
             .tab_history
             .get_mut(&client_id)
             .context("missing tab history")?;
         let previous = history.iter().rposition(|id| {
-            self.default_mode_info.tab_groups == Some(false)
-                || self.tab_group_ids.get(id) == Some(&group)
+            self.core.default_mode_info.tab_groups == Some(false)
+                || self.core.tab_group_ids.get(id) == Some(&group)
         });
-        Ok(previous.and_then(|index| self.tabs.get(&history.remove(index))))
+        Ok(previous.and_then(|index| self.core.tabs.get(&history.remove(index))))
     }
 
     /// Returns a mutable reference to this [`Screen`]'s active [`Tab`].
     pub fn get_active_tab_mut(&mut self, client_id: ClientId) -> Result<&mut Tab> {
-        match self.active_tab_ids.get(&client_id) {
+        match self.core.active_tab_ids.get(&client_id) {
             Some(tab) => self
+                .core
                 .tabs
                 .get_mut(tab)
                 .ok_or_else(|| anyhow!("active tab {} does not exist", tab)),
@@ -1865,18 +1894,20 @@ impl Screen {
                     .map(|pane_id| (tab.id, pane_id))
             });
         if let Some((tab_id, focused_pane_id)) = tab_id_and_pane_id
-            && let Some(tab) = self.tabs.get_mut(&tab_id)
+            && let Some(tab) = self.core.tabs.get_mut(&tab_id)
             && tab.panes_with_pending_bell.contains(&focused_pane_id)
         {
             let tab_had_bell = tab.tab_has_pending_bell;
             tab.clear_bell_notification_for_pane(focused_pane_id);
             let tab_bell_now_cleared = tab_had_bell && !tab.tab_has_pending_bell;
             let _ = self
+                .core
                 .bus
                 .senders
                 .send_to_background_jobs(BackgroundJob::StopFlashPaneBell(vec![focused_pane_id]));
             if tab_bell_now_cleared {
                 let _ = self
+                    .core
                     .bus
                     .senders
                     .send_to_background_jobs(BackgroundJob::StopFlashTabBell(tab_id));
@@ -1888,18 +1919,20 @@ impl Screen {
     pub fn clear_bell_for_pane_id(&mut self, pane_id: PaneId, client_id: ClientId) {
         let tab_id: Option<TabId> = self.get_active_tab_mut(client_id).ok().map(|tab| tab.id);
         if let Some(tab_id) = tab_id
-            && let Some(tab) = self.tabs.get_mut(&tab_id)
+            && let Some(tab) = self.core.tabs.get_mut(&tab_id)
             && tab.panes_with_pending_bell.contains(&pane_id)
         {
             let tab_had_bell = tab.tab_has_pending_bell;
             tab.clear_bell_notification_for_pane(pane_id);
             let tab_bell_now_cleared = tab_had_bell && !tab.tab_has_pending_bell;
             let _ = self
+                .core
                 .bus
                 .senders
                 .send_to_background_jobs(BackgroundJob::StopFlashPaneBell(vec![pane_id]));
             if tab_bell_now_cleared {
                 let _ = self
+                    .core
                     .bus
                     .senders
                     .send_to_background_jobs(BackgroundJob::StopFlashTabBell(tab_id));
@@ -1914,7 +1947,7 @@ impl Screen {
         completion: Option<NotificationEnd>,
     ) -> Result<()> {
         let tab = match tab_id {
-            Some(id) => self.tabs.get_mut(&id),
+            Some(id) => self.core.tabs.get_mut(&id),
             None => self.get_active_tab_mut(client_id).ok(),
         };
         match tab {
@@ -1938,7 +1971,7 @@ impl Screen {
         completion: Option<NotificationEnd>,
     ) -> Result<()> {
         let tab = match tab_id {
-            Some(id) => self.tabs.get_mut(&id),
+            Some(id) => self.core.tabs.get_mut(&id),
             None => self.get_active_tab_mut(client_id).ok(),
         };
         match tab {
@@ -1962,7 +1995,7 @@ impl Screen {
         completion: Option<NotificationEnd>,
     ) -> Result<()> {
         let tab = match tab_id {
-            Some(id) => self.tabs.get(&id),
+            Some(id) => self.core.tabs.get(&id),
             None => self.get_active_tab(client_id).ok(),
         };
         let mut completion = completion;
@@ -2010,57 +2043,58 @@ impl Screen {
 
         let tab_name = tab_name.unwrap_or_default();
 
-        let position = TabPosition::new(self.tabs.len());
+        let position = TabPosition::new(self.core.tabs.len());
         let tab_size = self.size_for_client(client_id);
         let mut tab = Tab::new(
             tab_id,
             position,
             tab_name,
             tab_size,
-            self.character_cell_size.clone(),
-            self.stacked_resize.clone(),
-            self.stacked_pane_list.clone(),
-            self.sixel_image_store.clone(),
-            self.kitty_image_store.clone(),
-            self.bus
+            self.core.character_cell_size.clone(),
+            self.core.stacked_resize.clone(),
+            self.core.stacked_pane_list.clone(),
+            self.core.sixel_image_store.clone(),
+            self.core.kitty_image_store.clone(),
+            self.core
+                .bus
                 .os_input
                 .as_ref()
                 .with_context(err_context)?
                 .clone(),
-            self.bus.senders.clone(),
-            self.max_panes,
-            self.style,
-            self.default_mode_info.clone(),
-            self.pane_frame_style,
-            self.auto_layout,
-            self.connected_clients.clone(),
-            self.session_is_mirrored,
+            self.core.bus.senders.clone(),
+            self.core.max_panes,
+            self.core.style,
+            self.core.default_mode_info.clone(),
+            self.core.pane_frame_style,
+            self.core.auto_layout,
+            self.core.connected_clients.clone(),
+            self.core.session_is_mirrored,
             client_id,
-            self.copy_options.clone(),
-            self.terminal_emulator_colors.clone(),
-            self.terminal_emulator_color_codes.clone(),
+            self.core.copy_options.clone(),
+            self.core.terminal_emulator_colors.clone(),
+            self.core.terminal_emulator_color_codes.clone(),
             swap_layouts,
-            self.default_shell.clone(),
-            self.debug,
-            self.arrow_fonts,
-            self.styled_underlines,
-            self.osc8_hyperlinks,
-            self.explicitly_disable_kitty_keyboard_protocol,
-            self.default_editor.clone(),
-            self.current_pane_group.clone(),
-            self.currently_marking_pane_group.clone(),
-            self.advanced_mouse_actions,
-            self.mouse_scroll_resize,
-            self.mouse_hover_effects,
-            self.focus_follows_mouse,
-            self.mouse_click_through,
-            self.context_menu_on_right_click,
-            self.context_menu_override_agent_mouse,
+            self.core.default_shell.clone(),
+            self.core.debug,
+            self.core.arrow_fonts,
+            self.core.styled_underlines,
+            self.core.osc8_hyperlinks,
+            self.core.explicitly_disable_kitty_keyboard_protocol,
+            self.core.default_editor.clone(),
+            self.core.current_pane_group.clone(),
+            self.core.currently_marking_pane_group.clone(),
+            self.core.advanced_mouse_actions,
+            self.core.mouse_scroll_resize,
+            self.core.mouse_hover_effects,
+            self.core.focus_follows_mouse,
+            self.core.mouse_click_through,
+            self.menus.context_menu_on_right_click,
+            self.menus.context_menu_override_agent_mouse,
         );
-        for (client_id, mode_info) in &self.mode_info {
+        for (client_id, mode_info) in &self.core.mode_info {
             tab.change_mode_info(mode_info.clone(), *client_id);
         }
-        for dimmed_client_id in &self.dimmed_clients {
+        for dimmed_client_id in &self.nested.dimmed_clients {
             tab.set_client_dimmed(*dimmed_client_id, true);
         }
         if let Some(aggregate) = self.kitty_host_support_aggregate() {
@@ -2069,12 +2103,15 @@ impl Screen {
         if let Some(aggregate) = self.sixel_host_support_aggregate() {
             tab.update_sixel_host_support(aggregate);
         }
-        tab.max_agent_width = self.max_agent_width;
-        tab.update_background_opacity(self.background_opacity);
-        tab.update_selection_options(self.osc133_command_selection, self.word_separators.clone());
-        self.tabs.insert(tab_id, tab);
+        tab.max_agent_width = self.core.max_agent_width;
+        tab.update_background_opacity(self.core.background_opacity);
+        tab.update_selection_options(
+            self.core.osc133_command_selection,
+            self.core.word_separators.clone(),
+        );
+        self.core.tabs.insert(tab_id, tab);
         self.assign_tab_group(tab_id, client_id);
-        self.has_created_tab = true;
+        self.core.has_created_tab = true;
         Ok(())
     }
     /// Whether the name a new tab was asked for is the user's, so it holds off the project.
@@ -2104,7 +2141,7 @@ impl Screen {
     ) -> Result<Option<ClientId>> {
         let departed = self.departed_follow_source();
         let applied = (|| {
-            if !self.tabs.contains_key(&tab_id) {
+            if !self.core.tabs.contains_key(&tab_id) {
                 let message = format!("Tab with index {tab_id} not found. Cannot apply layout!");
                 return Err(anyhow!(message));
             }
@@ -2117,8 +2154,8 @@ impl Screen {
             };
             let err_context = || format!("failed to apply layout for tab {tab_id:?}",);
 
-            let warp_slots = if self.pending_warp_relationships.contains_key(&tab_id)
-                || self.migration_tab_pending(tab_id)
+            let warp_slots = if self.warp.pending_warp_relationships.contains_key(&tab_id)
+                || self.transfer.migration_tab_pending(tab_id)
             {
                 let mut plugins = new_plugin_ids.clone();
                 let mut tiled = new_terminal_ids.iter();
@@ -2154,7 +2191,7 @@ impl Screen {
             let mut hidden_companions = vec![];
             if let (Some(slots), Some(relationships)) = (
                 warp_slots.as_ref(),
-                self.pending_warp_relationships.get(&tab_id),
+                self.warp.pending_warp_relationships.get(&tab_id),
             ) {
                 relationships
                     .validate(slots.len())
@@ -2201,7 +2238,8 @@ impl Screen {
             }
 
             // Reject the layout before moving clients away from their working tab.
-            self.tabs
+            self.core
+                .tabs
                 .get_mut(&tab_id)
                 .context("layout tab is missing")?
                 .validate_layout(
@@ -2216,6 +2254,7 @@ impl Screen {
             // Companions must exist before apply_layout replays buffered output. Create them
             // before moving clients too, since parking a companion can fail on its resize.
             let tab = self
+                .core
                 .tabs
                 .get_mut(&tab_id)
                 .context("layout tab is missing")?;
@@ -2224,19 +2263,20 @@ impl Screen {
                     .with_context(err_context)?;
             }
 
-            let client_departed = self.departed_before_layout.contains(&client_id);
-            let source_tab = self.active_tab_ids.get(&client_id).copied();
+            let client_departed = self.core.departed_before_layout.contains(&client_id);
+            let source_tab = self.core.active_tab_ids.get(&client_id).copied();
             let mut transition = (should_change_client_focus && !client_departed)
                 .then(|| self.begin_tab_transition(client_id, tab_id));
 
-            if !client_departed && !self.active_tab_ids.contains_key(&client_id) {
-                self.connected_clients.borrow_mut().insert(client_id);
+            if !client_departed && !self.core.active_tab_ids.contains_key(&client_id) {
+                self.core.connected_clients.borrow_mut().insert(client_id);
                 self.show_toasts_held_for_the_first_client()
                     .with_context(err_context)?;
             }
 
             // apply the layout to the new tab
-            self.tabs
+            self.core
+                .tabs
                 .get_mut(&tab_id)
                 .context("couldn't find tab with index {tab_id}")
                 .and_then(|tab| {
@@ -2253,7 +2293,7 @@ impl Screen {
                     // send them through rejected-layout cleanup and destroy a committed tab.
                     if let (Some(slots), Some(relationships)) = (
                         warp_slots.as_ref(),
-                        self.pending_warp_relationships.get(&tab_id),
+                        self.warp.pending_warp_relationships.get(&tab_id),
                     ) {
                         tab.restore_warp_relationships(slots, relationships)
                             .non_fatal();
@@ -2264,11 +2304,11 @@ impl Screen {
 
             // Restore observations before group placement can acknowledge adoption or render.
             let adopted_ids: Vec<_> = self
-                .pending_agent_tracking
-                .keys()
-                .copied()
+                .agents
+                .staged_transfers()
                 .filter(|id| {
-                    self.tabs
+                    self.core
+                        .tabs
                         .get(&tab_id)
                         .is_some_and(|tab| tab.has_pane_with_pid(id))
                 })
@@ -2284,7 +2324,7 @@ impl Screen {
                     .with_context(err_context)
                     .non_fatal();
             }
-            if let Some(tab) = self.tabs.get_mut(&tab_id) {
+            if let Some(tab) = self.core.tabs.get_mut(&tab_id) {
                 // after the drained clients have joined, so the plugins in this tab hear
                 // about their modes too and not only about the client that opened it
                 tab.update_input_modes().non_fatal();
@@ -2294,17 +2334,17 @@ impl Screen {
                 let resized = tab.resize_whole_tab(tab_size).with_context(err_context);
                 if resized.is_err() {
                     // The size will not change, so nothing else would resend what failed.
-                    self.tabs_needing_reflow.insert(tab_id);
+                    self.core.tabs_needing_reflow.insert(tab_id);
                 }
                 resized.non_fatal();
                 tab.set_force_render();
             }
-            if client_departed && let Some(tab) = self.tabs.get_mut(&tab_id) {
+            if client_departed && let Some(tab) = self.core.tabs.get_mut(&tab_id) {
                 tab.remove_client_pane_state(client_id);
                 tab.remove_client(client_id);
             }
             let mut retired_source = None;
-            if !client_departed && !self.active_tab_ids.contains_key(&client_id) {
+            if !client_departed && !self.core.active_tab_ids.contains_key(&client_id) {
                 // Capture the departed source before the layout provisionally connects this id.
                 self.register_client_transaction(client_id, departed, None, false)
                     .map(|source| retired_source = source)
@@ -2314,7 +2354,7 @@ impl Screen {
 
             if let (Some(slots), Some(relationships)) = (
                 warp_slots.as_ref(),
-                self.pending_warp_relationships.remove(&tab_id),
+                self.warp.pending_warp_relationships.remove(&tab_id),
             ) {
                 self.finish_warp_group(tab_id, slots, &relationships)
                     .non_fatal();
@@ -2351,7 +2391,7 @@ impl Screen {
             Ok(retired_source)
         })();
         if !self.has_pending_tabs() {
-            self.departed_before_layout.clear();
+            self.core.departed_before_layout.clear();
         }
         if let Err(error) = &applied
             && let Some((_, completion)) = blocking_terminal.as_mut()
@@ -2384,9 +2424,10 @@ impl Screen {
                 let s: &str = &decoded;
                 let finish_empty_rename = s.is_empty()
                     && self
+                        .core
                         .mode_info
                         .get(&client_id)
-                        .unwrap_or(&self.default_mode_info)
+                        .unwrap_or(&self.core.default_mode_info)
                         .mode
                         != InputMode::RenameTab;
                 match self.get_active_tab_mut(client_id) {
@@ -2444,16 +2485,16 @@ impl Screen {
     }
 
     pub fn move_active_tab_to_left(&mut self, client_id: ClientId) -> Result<()> {
-        if self.tab_groups_enabled() && self.tab_groups.len() > 1 {
+        if self.tab_groups_enabled() && self.core.tab_groups.len() > 1 {
             if let Some(client) = self.client_id(client_id)
-                && let Some(tab) = self.active_tab_ids.get(&client).copied()
+                && let Some(tab) = self.core.active_tab_ids.get(&client).copied()
             {
                 self.move_group_tab(tab, false)?;
             }
             return Ok(());
         }
         let err_context = || "Failed to move active tab left";
-        if self.tabs.len() < 2 {
+        if self.core.tabs.len() < 2 {
             debug!("cannot move tab to left: only one tab exists");
             return Ok(());
         }
@@ -2497,6 +2538,7 @@ impl Screen {
     /// NOTE: this expects positions rather than IDs (see distinction at top of file)
     fn switch_tabs(&mut self, active_tab_pos: TabPosition, other_tab_pos: TabPosition) {
         let Some(active_tab_id) = self
+            .core
             .tabs
             .values()
             .find(|t| t.position == active_tab_pos)
@@ -2506,6 +2548,7 @@ impl Screen {
             return;
         };
         let Some(other_tab_id) = self
+            .core
             .tabs
             .values()
             .find(|t| t.position == other_tab_pos)
@@ -2518,35 +2561,39 @@ impl Screen {
             return;
         };
 
-        if !self.tabs.contains_key(&active_tab_id) || !self.tabs.contains_key(&other_tab_id) {
+        if !self.core.tabs.contains_key(&active_tab_id)
+            || !self.core.tabs.contains_key(&other_tab_id)
+        {
             warn!(
                 "failed to switch tabs: index {} or {} not found in {:?}",
                 active_tab_id,
                 other_tab_id,
-                self.tabs.keys()
+                self.core.tabs.keys()
             );
             return;
         }
 
         // NOTE: Can `expect` here, because we checked that the keys exist above
         let mut active_tab = self
+            .core
             .tabs
             .remove(&active_tab_id)
             .expect("active tab not found");
         let mut other_tab = self
+            .core
             .tabs
             .remove(&other_tab_id)
             .expect("other tab not found");
 
         std::mem::swap(&mut active_tab.position, &mut other_tab.position);
 
-        self.tabs.insert(active_tab_id, active_tab);
-        self.tabs.insert(other_tab_id, other_tab);
+        self.core.tabs.insert(active_tab_id, active_tab);
+        self.core.tabs.insert(other_tab_id, other_tab);
     }
 
     fn rotate_tab_positions_left(&mut self) {
-        let last_position = TabPosition::new(self.tabs.len().saturating_sub(1));
-        for tab in self.tabs.values_mut() {
+        let last_position = TabPosition::new(self.core.tabs.len().saturating_sub(1));
+        for tab in self.core.tabs.values_mut() {
             tab.position = if tab.position == TabPosition::new(0) {
                 last_position
             } else {
@@ -2556,23 +2603,23 @@ impl Screen {
     }
 
     fn rotate_tab_positions_right(&mut self) {
-        let num_tabs = self.tabs.len();
-        for tab in self.tabs.values_mut() {
+        let num_tabs = self.core.tabs.len();
+        for tab in self.core.tabs.values_mut() {
             tab.position = TabPosition::new((tab.position.get() + 1) % num_tabs);
         }
     }
 
     pub fn move_active_tab_to_right(&mut self, client_id: ClientId) -> Result<()> {
-        if self.tab_groups_enabled() && self.tab_groups.len() > 1 {
+        if self.tab_groups_enabled() && self.core.tab_groups.len() > 1 {
             if let Some(client) = self.client_id(client_id)
-                && let Some(tab) = self.active_tab_ids.get(&client).copied()
+                && let Some(tab) = self.core.active_tab_ids.get(&client).copied()
             {
                 self.move_group_tab(tab, true)?;
             }
             return Ok(());
         }
         let err_context = || "Failed to move active tab right ";
-        if self.tabs.len() < 2 {
+        if self.core.tabs.len() < 2 {
             debug!("cannot move tab to right: only one tab exists");
             return Ok(());
         }
@@ -2583,7 +2630,7 @@ impl Screen {
         match self.get_active_tab(client_id) {
             Ok(active_tab) => {
                 let active_tab_pos = active_tab.position;
-                if active_tab_pos.get() == self.tabs.len().saturating_sub(1) {
+                if active_tab_pos.get() == self.core.tabs.len().saturating_sub(1) {
                     self.rotate_tab_positions_right();
                 } else {
                     self.switch_tabs(active_tab_pos, TabPosition::new(active_tab_pos.get() + 1));
@@ -2598,17 +2645,17 @@ impl Screen {
 
     pub fn move_tab_by_id(&mut self, tab_id: TabId, direction: Direction) -> Result<()> {
         if self.tab_groups_enabled()
-            && self.tab_groups.len() > 1
+            && self.core.tab_groups.len() > 1
             && matches!(direction, Direction::Left | Direction::Right)
         {
             return self.move_group_tab(tab_id, direction == Direction::Right);
         }
-        if self.tabs.len() < 2 {
+        if self.core.tabs.len() < 2 {
             return Ok(());
         }
-        if let Some(tab) = self.tabs.get(&tab_id) {
+        if let Some(tab) = self.core.tabs.get(&tab_id) {
             let tab_pos = tab.position;
-            let num_tabs = self.tabs.len();
+            let num_tabs = self.core.tabs.len();
             match direction {
                 Direction::Left => {
                     if tab_pos == TabPosition::new(0) {
@@ -2716,7 +2763,11 @@ impl Screen {
             // tab. Across a multipane's divider the tab has already moved
             // (`Tab::move_focus_to_overlay_sibling`).
             if moved == Some(false) && !self.active_tab_overlay_holds_focus(client_id) {
-                if self.navigation_tabs(self.active_tab_ids[&client_id]).len() == 1 {
+                if self
+                    .navigation_tabs(self.core.active_tab_ids[&client_id])
+                    .len()
+                    == 1
+                {
                     self.bubble_focus_to_host(client_id, Direction::Left);
                 } else {
                     self.switch_tab_prev(Some(Direction::Left), true, client_id)
@@ -2761,7 +2812,11 @@ impl Screen {
             // tab. Across a multipane's divider the tab has already moved
             // (`Tab::move_focus_to_overlay_sibling`).
             if moved == Some(false) && !self.active_tab_overlay_holds_focus(client_id) {
-                if self.navigation_tabs(self.active_tab_ids[&client_id]).len() == 1 {
+                if self
+                    .navigation_tabs(self.core.active_tab_ids[&client_id])
+                    .len()
+                    == 1
+                {
                     self.bubble_focus_to_host(client_id, Direction::Right);
                 } else {
                     self.switch_tab_next(Some(Direction::Right), true, client_id)
@@ -2803,23 +2858,24 @@ impl Screen {
         let mut tab_id_and_plugin_pane_id = None;
         let mut plugin_pane_to_move_to_active_tab = None;
         let mut overlay_to_move = None;
-        // A tab *id*, as `self.tabs` and `active_tab_ids` are both keyed - never a position. The
+        // A tab *id*, as `self.core.tabs` and `active_tab_ids` are both keyed - never a position. The
         // two part company as soon as a tab is closed or moved, and reading one as the other is
         // what used to walk the client off its own tab on the way to a reveal.
         //
-        // Resolved, and checked against `self.tabs`, *before* anything is extracted: a pane taken
+        // Resolved, and checked against `self.core.tabs`, *before* anything is extracted: a pane taken
         // out of its tab with nowhere to put it is dropped on the `?` below, and a dropped plugin
         // pane never reaches `PluginInstruction::Unload` - the instance outlives the pane with
         // nothing left holding it. Production cannot get here without an active tab
         // (`resolve_tab_and_client` only hands over a client that has one), but that invariant is
         // worth keeping next to the extraction rather than one call frame away.
         let focused_tab_id = self
+            .core
             .active_tab_ids
             .get(&client_id)
             .copied()
-            .filter(|tab_id| self.tabs.contains_key(tab_id));
+            .filter(|tab_id| self.core.tabs.contains_key(tab_id));
         let can_replace_active_pane = focused_tab_id
-            .and_then(|tab_id| self.tabs.get(&tab_id))
+            .and_then(|tab_id| self.core.tabs.get(&tab_id))
             .is_some_and(|tab| tab.can_replace_active_pane(client_id));
         let all_tabs = self.get_tabs_mut();
         for (tab_id, tab) in all_tabs.iter_mut() {
@@ -2847,7 +2903,11 @@ impl Screen {
                 false,
                 client_id,
             )?;
-            let tab = self.tabs.get_mut(&destination).with_context(err_context)?;
+            let tab = self
+                .core
+                .tabs
+                .get_mut(&destination)
+                .with_context(err_context)?;
             tab.show_overlay_pane(plugin_pane_id);
             tab_id_and_plugin_pane_id = Some((destination, plugin_pane_id));
         }
@@ -2864,7 +2924,7 @@ impl Screen {
             });
             // Asked before extracting, so a refusal leaves the pane exactly where it was. The
             // plugin is then focused in its own tab below rather than moved.
-            let destination_has_room = self.tabs.get_mut(&destination).is_some_and(|tab| {
+            let destination_has_room = self.core.tabs.get_mut(&destination).is_some_and(|tab| {
                 placement
                     .as_ref()
                     .is_none_or(|placement| tab.has_room_for_extracted_pane(placement))
@@ -2882,7 +2942,7 @@ impl Screen {
                         .accept_transferred_panes(vec![(extracted, placement)], destination, false)
                         .moved
                         .contains(&pane_id),
-                    None => match self.tabs.get_mut(&destination) {
+                    None => match self.core.tabs.get_mut(&destination) {
                         Some(tab) => {
                             let (_, _, pane, carried_respawn) = extracted;
                             tab.park_pane(pane);
@@ -2900,7 +2960,8 @@ impl Screen {
                 };
                 if moved {
                     // focusing also raises or lowers the floating layer to match the pane
-                    self.tabs
+                    self.core
+                        .tabs
                         .get_mut(&destination)
                         .with_context(err_context)?
                         .focus_pane_with_id(pane_id, false, should_be_in_place, client_id)?;
@@ -2918,7 +2979,7 @@ impl Screen {
         }
         match tab_id_and_plugin_pane_id {
             Some((tab_id, plugin_pane_id)) => {
-                // `tab_id` is a `self.tabs` key - a stable id - and `go_to_tab` takes a 1-based
+                // `tab_id` is a `self.core.tabs` key - a stable id - and `go_to_tab` takes a 1-based
                 // display *position*. The two agree only until the first tab is closed or moved:
                 // `close_tab_by_id` renumbers positions and leaves ids alone. Handing the id over
                 // as a position took the client to whichever tab happened to sit at that number
@@ -2935,7 +2996,8 @@ impl Screen {
                     .get_tab_position_by_id(tab_id)
                     .with_context(err_context)?;
                 self.switch_active_tab(tab_position, None, true, client_id)?;
-                self.tabs
+                self.core
+                    .tabs
                     .get_mut(&tab_id)
                     .with_context(err_context)?
                     .focus_pane_with_id(plugin_pane_id, should_float, should_be_in_place, client_id)
@@ -2958,7 +3020,7 @@ impl Screen {
         pane_id: PaneId,
         f: impl FnOnce(&mut dyn Pane) -> R,
     ) -> Option<R> {
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
                 return Some(f(pane.as_mut()));
             }
@@ -3015,6 +3077,7 @@ impl Screen {
     /// the cells it vacates have no other writer.
     pub(super) fn repaint_tab_of_closing_overlay(&mut self, pane_id: PaneId) {
         let Some(tab_id) = self
+            .core
             .tabs
             .iter()
             .find(|(_, tab)| tab.pane_is_overlay(pane_id))
@@ -3022,7 +3085,7 @@ impl Screen {
         else {
             return;
         };
-        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+        if let Some(tab) = self.core.tabs.get_mut(&tab_id) {
             tab.set_should_clear_display_before_rendering();
         }
     }
@@ -3043,7 +3106,7 @@ impl Screen {
                 // produce an `Option<Result>` whose *outer* layer was the only thing
                 // `non_fatal` ever looked at, so a tab that failed to focus the pane was
                 // reported as success.
-                match self.tabs.iter_mut().find(|(_, t)| t.position == tab_index) {
+                match self.core.tabs.iter_mut().find(|(_, t)| t.position == tab_index) {
                     Some((_, tab)) => tab
                         .focus_pane_with_id(
                             pane_id,
@@ -3088,19 +3151,19 @@ impl Screen {
             return Ok(());
         };
 
-        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+        if let Some(tab) = self.core.tabs.get_mut(&tab_id) {
             tab.add_highlight_pane_frame_color_override(pane_id, label, Some(client_id));
         }
 
         // Deliberately not a focus operation: a pane in another tab is only revealed once the
         // client is looking at that tab, and nothing here moves the keyboard.
-        if self.active_tab_ids.get(&client_id) != Some(&tab_id) {
+        if self.core.active_tab_ids.get(&client_id) != Some(&tab_id) {
             self.render()?;
             self.log_and_report_session_state()?;
             return Ok(());
         }
 
-        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+        if let Some(tab) = self.core.tabs.get_mut(&tab_id) {
             // Suppressed, or floating while floating panes are hidden: in the
             // right tab and still not on screen. Unlike the tab-level
             // `focus_pane_with_id` this leaves the tab's own active pane alone,
@@ -3140,19 +3203,18 @@ impl Screen {
 
     pub(crate) fn cleanup_closed_pane(&mut self, id: PaneId) {
         if let PaneId::Terminal(terminal) = id
-            && let Some(gate) = self.bus.senders.launches.gate(terminal)
+            && let Some(gate) = self.core.bus.senders.launches.gate(terminal)
         {
             gate.layout_released();
         }
-        self.pending_agent_tracking.remove(&id);
-        self.pending_terminal_states.remove(&id);
-        self.forget_notification_assemblies(id);
+        self.agents.discard_staged_transfer(id);
+        self.notices.forget_notification_assemblies(id);
         self.retire_agent_event_pane(id, "pane_closed");
-        self.destroyed_panes.insert(id);
-        self.agent_hook_flashes.remove(&id);
+        self.core.destroyed_panes.insert(id);
+        self.agents.clear_hook_flash(id);
         self.invalidate_agent_lifecycle(id, "pane_closed");
-        self.agent_launches.remove(&id);
-        self.agent_worker_stacks.retain(|_, members| {
+        self.agents.forget_launch(id);
+        self.core.agent_worker_stacks.retain(|_, members| {
             members.retain(|pane| *pane != id);
             !members.is_empty()
         });
@@ -3160,8 +3222,9 @@ impl Screen {
         if let PaneId::Plugin(plugin_id) = id {
             self.drop_quit_notice(plugin_id);
         }
+        self.refresh_agent_worktrees();
         self.clear_nested_guest(id);
-        self.pane_output_activity.remove(&id);
+        self.core.pane_output_activity.remove(&id);
     }
 
     pub(crate) fn close_pane_explicitly(
@@ -3197,10 +3260,10 @@ impl Screen {
         let entry = QuitNotice { notice, guard };
         match entry.is_empty() {
             true => {
-                self.quit_notices.remove(&plugin_id);
+                self.core.quit_notices.remove(&plugin_id);
             },
             false => {
-                self.quit_notices.insert(plugin_id, entry);
+                self.core.quit_notices.insert(plugin_id, entry);
             },
         }
     }
@@ -3210,18 +3273,19 @@ impl Screen {
     /// Without this a plugin that crashed or was closed mid-reply would leave a guard behind
     /// that nothing could lift, and the session could never close its last pane again.
     pub(crate) fn drop_quit_notice(&mut self, plugin_id: PluginId) {
-        self.quit_notices.remove(&plugin_id);
+        self.core.quit_notices.remove(&plugin_id);
     }
 
     /// Whether any plugin has asked for the session's last pane closing to be confirmed.
     pub(crate) fn quit_is_guarded(&self) -> bool {
-        self.quit_notices.values().any(|notice| notice.guard)
+        self.core.quit_notices.values().any(|notice| notice.guard)
     }
 
     /// Everything the plugins asked to have said about a quit, one per line, in plugin id order
     /// so the same set of notices always reads the same way.
     fn quit_notice_text(&self) -> Option<String> {
         let lines: Vec<&str> = self
+            .core
             .quit_notices
             .values()
             .filter_map(|notice| notice.notice.as_deref())
@@ -3260,7 +3324,8 @@ impl Screen {
             configuration: PluginUserConfiguration::new(configuration),
             ..Default::default()
         });
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_screen(ScreenInstruction::LaunchPlugin(
                 plugin,
@@ -3291,7 +3356,7 @@ impl Screen {
         let mut completed = Vec::new();
         for (&terminal_id, &generation) in pending.iter() {
             let pane_id = PaneId::Terminal(terminal_id);
-            let mut placed = self.tabs.iter().find_map(|(&tab_id, tab)| {
+            let mut placed = self.core.tabs.iter().find_map(|(&tab_id, tab)| {
                 if tab.is_pending() {
                     return None;
                 }
@@ -3300,7 +3365,7 @@ impl Screen {
                     // needs a usable PTY at startup; leave its layout geometry alone.
                     let cols = pane.get_content_columns().clamp(1, u16::MAX as usize) as u16;
                     let rows = pane.get_content_rows().clamp(1, u16::MAX as usize) as u16;
-                    let cell = *self.character_cell_size.borrow();
+                    let cell = *self.core.character_cell_size.borrow();
                     (
                         yinz_types::pane_size::TerminalSize {
                             cols,
@@ -3321,6 +3386,7 @@ impl Screen {
                 })
             });
             if self
+                .core
                 .bus
                 .senders
                 .launches
@@ -3331,7 +3397,8 @@ impl Screen {
                     .validate_launch_slot(terminal_id)
                     .ok()
                     .and_then(|size| {
-                        self.bus
+                        self.core
+                            .bus
                             .senders
                             .launches
                             .gate(terminal_id)?
@@ -3345,11 +3412,12 @@ impl Screen {
                     || events.waiting_for_tab.iter().any(|event| {
                         matches!(event, ScreenInstruction::NewPane(id, ..) if *id == pane_id)
                     }))
-                && !self.destroyed_panes.contains(&pane_id)
+                && !self.core.destroyed_panes.contains(&pane_id)
             {
                 continue;
             }
             let instruction = if let Some(gate) = self
+                .core
                 .bus
                 .senders
                 .launches
@@ -3384,7 +3452,8 @@ impl Screen {
                     placement: placed,
                 }
             };
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_pty_writer(instruction)
                 .context("confirm terminal placement decision")?;
@@ -3428,6 +3497,7 @@ impl Screen {
             .tab_containing_pane(pane_id)
             .and_then(|tab| tab.pane_agent_info(pane_id));
         self.fire_agent_state_hooks(pane_id, previous.as_ref(), current.as_ref());
+        self.refresh_agent_worktrees();
     }
     pub(super) fn restart_agent_pane(
         &mut self,
@@ -3436,68 +3506,14 @@ impl Screen {
         session: yinz_types::agent::control::AgentRestartSession,
         originating_plugin: Option<yinz_types::data::OriginatingPlugin>,
     ) -> Result<yinz_types::agent::control::RestartedAgent, String> {
-        use yinz_types::agent::{
-            control::AgentRestartSession, control::RestartedAgent, AgentSource,
-        };
-        let PaneId::Terminal(terminal_id) = pane_id else {
-            return Err("target must be a terminal pane".into());
-        };
-        let pane = self
-            .tab_containing_pane(pane_id)
-            .and_then(|tab| tab.get_pane_with_id(pane_id))
-            .ok_or("target pane does not exist")?;
-        let mut command = pane.agent_restart_command(session, prompt)?;
-        let kind = pane
-            .last_agent_kind()
-            .ok_or("target has no remembered agent kind")?
-            .to_owned();
-        let cwd = command
-            .cwd
-            .as_ref()
-            .map(|cwd| cwd.display().to_string())
-            .or_else(|| pane.last_agent_cwd().map(str::to_owned));
-        let session_id = (session == AgentRestartSession::Resume)
-            .then(|| pane.last_agent_session_id().map(str::to_owned))
-            .flatten();
-        let previous = pane.agent_info().cloned();
-        if let Some(origin) = originating_plugin {
-            command.originating_plugin = Some(origin);
-        }
-        command.hold_on_close = true;
-        let result = RestartedAgent {
+        let result = self.agents.restart_agent_pane(
+            &mut self.core,
             pane_id,
-            session_id: session_id.clone(),
-            command: std::iter::once(command.command.display().to_string())
-                .chain(command.args.iter().cloned())
-                .collect(),
-        };
-        self.refresh_agent_events();
-        let tab = self
-            .tab_containing_pane_mut(pane_id)
-            .ok_or("target pane does not exist")?;
-        if !tab.run_command_in_pane_with_id(terminal_id, command, false) {
-            return Err("agent pane could not accept the restart".into());
-        }
-        if session == AgentRestartSession::Fresh
-            && let Some(pane) = tab.get_pane_with_id_mut(pane_id)
-        {
-            pane.clear_agent_session_id();
-        }
-        let current = AgentInfo {
-            kind,
-            cwd,
-            session_id,
-            state: AgentState::Busy,
-            source: AgentSource::Spawned,
-            detail: None,
-            waiting_on: None,
-            run_id: None,
-            wait_needs_a_person: false,
-        };
-        tab.set_pane_agent(pane_id, Some(current.clone()));
-        self.retire_agent_event_pane(pane_id, "pane_replaced");
-        self.invalidate_agent_lifecycle(pane_id, "agent_restarted");
-        self.fire_agent_state_hooks(pane_id, previous.as_ref(), Some(&current));
+            prompt,
+            session,
+            originating_plugin,
+        )?;
+        self.refresh_agent_worktrees();
         Ok(result)
     }
     /// Run a *different* command in an existing command pane, reusing its pane id.
@@ -3536,6 +3552,7 @@ impl Screen {
             .tab_containing_pane(pane_id)
             .and_then(|tab| tab.pane_agent_info(pane_id));
         self.fire_agent_state_hooks(pane_id, previous.as_ref(), current.as_ref());
+        self.refresh_agent_worktrees();
     }
     pub fn resize_pane_with_id(&mut self, resize: ResizeStrategy, pane_id: PaneId) -> Result<()> {
         match self.tab_containing_pane_mut(pane_id) {
@@ -3645,13 +3662,14 @@ impl Screen {
     /// would run until the session ends.
     pub fn forget_unplaced_pane(&mut self, pane_id: PaneId, why: String) {
         if let PaneId::Terminal(terminal) = pane_id
-            && let Some(gate) = self.bus.senders.launches.gate(terminal)
+            && let Some(gate) = self.core.bus.senders.launches.gate(terminal)
         {
             gate.layout_released();
         }
         self.cleanup_closed_pane(pane_id);
         log::error!("dropping pane {pane_id:?}: {why}");
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_pty(PtyInstruction::ClosePane(pane_id, None))
             .with_context(|| format!("failed to close unplaced pane {pane_id:?}"))
@@ -3703,6 +3721,7 @@ impl Screen {
             })?;
         {
             let tab = self
+                .core
                 .tabs
                 .get(&tab_of_pane_to_replace)
                 .context("tab of the pane to replace disappeared")?;
@@ -3711,6 +3730,7 @@ impl Screen {
             }
         }
         let (extracted_pane_from_other_tab, carried_respawn, retains_tab) = self
+            .core
             .tabs
             .get_mut(&tab_of_existing_pane)
             .and_then(|t| {
@@ -3724,13 +3744,14 @@ impl Screen {
             })
             .with_context(|| format!("failed to take pane {pane_id_of_existing_pane:?}"))?;
         let tab = self
+            .core
             .tabs
             .get_mut(&tab_of_pane_to_replace)
             .context("tab of the pane to replace disappeared")?;
         // Taking the pane can take its whole container with it, the target included.
         if !tab.has_non_suppressed_pane_with_pid(&pane_id_to_replace) {
             let error = tab.no_slot_error(pane_id_to_replace);
-            if let Some(origin) = self.tabs.get_mut(&tab_of_existing_pane) {
+            if let Some(origin) = self.core.tabs.get_mut(&tab_of_existing_pane) {
                 origin.park_pane(extracted_pane_from_other_tab);
                 if let Some(entry) = carried_respawn {
                     origin.restore_pending_respawn(pane_id_of_existing_pane, entry);
@@ -3801,18 +3822,20 @@ impl Screen {
             return None;
         };
         let root_pane_id_is_floating = self
+            .core
             .tabs
             .get(&root_tab_id)
             .map(|t| t.pane_id_is_floating(&root_pane_id))
             .unwrap_or(false);
 
-        if root_pane_id_is_floating && let Some(tab) = self.tabs.get_mut(&root_tab_id) {
+        if root_pane_id_is_floating && let Some(tab) = self.core.tabs.get_mut(&root_tab_id) {
             let _ = tab.toggle_pane_embed_or_floating_for_pane_id(root_pane_id, None);
         }
 
         let mut panes_to_stack = vec![];
         let mut pending_respawns_to_restore: Vec<(PaneId, (RunCommand, bool))> = vec![];
         let target_tab_has_room_for_stack = self
+            .core
             .tabs
             .get_mut(&root_tab_id)
             .map(|t| t.has_room_for_stack(root_pane_id, stack_size))
@@ -3822,7 +3845,7 @@ impl Screen {
             return None;
         }
 
-        for (tab_id, tab) in self.tabs.iter_mut() {
+        for (tab_id, tab) in self.core.tabs.iter_mut() {
             if tab_id == &root_tab_id {
                 // we do this before we extract panes so that the extraction won't trigger a
                 // relayout according to the next swapped tiled pane
@@ -3849,10 +3872,10 @@ impl Screen {
                 }
             }
         }
-        if let Some(t) = self.tabs.get_mut(&root_tab_id) {
+        if let Some(t) = self.core.tabs.get_mut(&root_tab_id) {
             t.stack_panes(root_pane_id, panes_to_stack)
         }
-        if let Some(dest) = self.tabs.get_mut(&root_tab_id) {
+        if let Some(dest) = self.core.tabs.get_mut(&root_tab_id) {
             for (pane_id, entry) in pending_respawns_to_restore {
                 dest.restore_pending_respawn(pane_id, entry);
             }
@@ -3955,10 +3978,11 @@ impl Screen {
             pane.set_remote_host(host.clone())
         });
         let changed = match host {
-            Some(host) => self.terminal_hosts.insert(terminal_id, host.clone()) != Some(host),
-            None => self.terminal_hosts.remove(&terminal_id).is_some(),
+            Some(host) => self.core.terminal_hosts.insert(terminal_id, host.clone()) != Some(host),
+            None => self.core.terminal_hosts.remove(&terminal_id).is_some(),
         };
         if changed {
+            self.refresh_agent_worktrees();
             self.render()?;
             self.log_and_report_session_state()?;
         }
@@ -3978,7 +4002,8 @@ impl Screen {
     }
     pub fn toggle_group_marking(&mut self, client_id: ClientId) -> Result<()> {
         let (was_marking_before, marking_pane_group_now) = {
-            let mut currently_marking_pane_group = self.currently_marking_pane_group.borrow_mut();
+            let mut currently_marking_pane_group =
+                self.core.currently_marking_pane_group.borrow_mut();
             let previous_value = currently_marking_pane_group
                 .remove(&client_id)
                 .unwrap_or(false);
@@ -3996,7 +4021,7 @@ impl Screen {
         }
         let value_changed = was_marking_before != marking_pane_group_now;
         if value_changed {
-            for tab in self.tabs.values_mut() {
+            for tab in self.core.tabs.values_mut() {
                 tab.update_input_modes()?;
             }
             let _ = self.log_and_report_session_state();
@@ -4010,7 +4035,8 @@ impl Screen {
     ) -> SessionLayoutMetadata {
         let mut metadata = self.layout_metadata_for(default_shell, tab_index, LayoutPurpose::Dump);
         metadata.set_client_timezones(
-            self.connected_clients
+            self.core
+                .connected_clients
                 .borrow()
                 .iter()
                 .map(|id| (*id, self.client_timezone(*id).report().map(str::to_owned)))
@@ -4031,19 +4057,21 @@ impl Screen {
         tab_index: Option<TabId>,
         purpose: LayoutPurpose,
     ) -> SessionLayoutMetadata {
-        let mut session_layout_metadata = SessionLayoutMetadata::new(self.default_layout.clone());
+        let mut session_layout_metadata =
+            SessionLayoutMetadata::new(self.core.default_layout.clone());
         if let Some(default_shell) = default_shell {
             session_layout_metadata.update_default_shell(default_shell);
         }
         let first_client_id = self.get_first_client_id();
         let active_tab_index =
-            first_client_id.and_then(|client_id| self.active_tab_ids.get(&client_id));
+            first_client_id.and_then(|client_id| self.core.active_tab_ids.get(&client_id));
 
-        // Filter tabs based on optional tab_index parameter. `self.tabs` is keyed by
+        // Filter tabs based on optional tab_index parameter. `self.core.tabs` is keyed by
         // creation id, so walk them by position instead: a dumped or resurrected
         // layout should keep the order the user put the tabs in, not the order they
         // opened them in.
         let mut tabs_to_process: Vec<_> = self
+            .core
             .tabs
             .iter()
             .filter(|(idx, _)| tab_index.is_none_or(|target| **idx == target))
@@ -4052,8 +4080,12 @@ impl Screen {
 
         for (tab_index, tab) in tabs_to_process {
             let tab_is_focused = active_tab_index == Some(tab_index);
-            let (tiled_panes, floating_panes, hide_floating_panes) =
-                self.tab_panes_for_layout(*tab_index, tab, self.serialize_pane_viewport, purpose);
+            let (tiled_panes, floating_panes, hide_floating_panes) = self.tab_panes_for_layout(
+                *tab_index,
+                tab,
+                self.core.serialize_pane_viewport,
+                purpose,
+            );
             session_layout_metadata.add_tab(
                 tab.name.clone(),
                 tab_is_focused,
@@ -4063,8 +4095,9 @@ impl Screen {
                 floating_panes.into_iter().map(|(_, pane)| pane).collect(),
             );
             // Persist the fallback, so derived project names do not replace it on restore.
-            let group = self.tab_group_ids.get(tab_index).and_then(|id| {
-                self.tab_groups
+            let group = self.core.tab_group_ids.get(tab_index).and_then(|id| {
+                self.core
+                    .tab_groups
                     .get(id)
                     .map(|group| yinz_types::tab_bar::TabGroupInfo {
                         id: *id,
@@ -4075,10 +4108,11 @@ impl Screen {
                 first_client_id
                     .and_then(|client| self.preferred_group_tab(group.id, client, false))
                     .or_else(|| {
-                        self.tab_groups
+                        self.core
+                            .tab_groups
                             .get(&group.id)?
                             .preferred
-                            .filter(|id| self.tabs.contains_key(id))
+                            .filter(|id| self.core.tabs.contains_key(id))
                     })
                     == Some(*tab_index)
             });
@@ -4097,7 +4131,7 @@ impl Screen {
     /// layout that looks plausible and is missing a pane.
     ///
     /// `with_contents` is a parameter rather than a read of
-    /// `self.serialize_pane_viewport` because the two callers mean different
+    /// `self.core.serialize_pane_viewport` because the two callers mean different
     /// things by it: that option governs whether sessions are serialized to disk
     /// in the background, whereas a warp is something the user asked for by name.
     fn tab_panes_for_layout(
@@ -4124,11 +4158,12 @@ impl Screen {
             }
 
             let all_connected_clients: Vec<ClientId> = self
+                .core
                 .connected_clients
                 .borrow()
                 .iter()
                 .copied()
-                .filter(|c| self.active_tab_ids.get(c) == Some(&tab_index))
+                .filter(|c| self.core.active_tab_ids.get(c) == Some(&tab_index))
                 .collect();
 
             let mut active_pane_ids: HashMap<ClientId, Option<PaneId>> = HashMap::new();
@@ -4187,7 +4222,7 @@ impl Screen {
                         p.custom_title(),
                         !focused_clients.is_empty(),
                         if with_contents {
-                            p.serialize(self.scrollback_lines_to_serialize)
+                            p.serialize(self.core.scrollback_lines_to_serialize)
                         } else {
                             None
                         },
@@ -4232,7 +4267,7 @@ impl Screen {
                     p.custom_title(),
                     !focused_clients.is_empty(),
                     if with_contents {
-                        p.serialize(self.scrollback_lines_to_serialize)
+                        p.serialize(self.core.scrollback_lines_to_serialize)
                     } else {
                         None
                     },
@@ -4248,9 +4283,9 @@ impl Screen {
         }
     }
     fn accepts_plugin_output(&self, client_id: ClientId) -> bool {
-        self.connected_clients.borrow().contains(&client_id)
-            || self.client_sizes.contains_key(&client_id)
-            || self.followed_client_id == Some(client_id)
+        self.core.connected_clients.borrow().contains(&client_id)
+            || self.core.client_sizes.contains_key(&client_id)
+            || self.core.followed_client_id == Some(client_id)
     }
 
     fn handle_plugin_render_assets(
@@ -4262,7 +4297,7 @@ impl Screen {
         for mut plugin_render_asset in plugin_render_assets {
             let plugin_id = plugin_render_asset.plugin_id;
             let client_id = plugin_render_asset.client_id;
-            self.render_blocker.remove_blocking_plugin(plugin_id);
+            self.core.render_blocker.remove_blocking_plugin(plugin_id);
             if !self.accepts_plugin_output(client_id) {
                 continue;
             }
@@ -4270,7 +4305,7 @@ impl Screen {
             let mut found_plugin = false;
 
             {
-                for tab in self.tabs.values_mut() {
+                for tab in self.core.tabs.values_mut() {
                     if tab.has_plugin(plugin_id) {
                         tab.handle_plugin_bytes(plugin_id, client_id, vte_bytes.take().unwrap())
                             .context("failed to process plugin bytes")?;
@@ -4301,7 +4336,7 @@ impl Screen {
         if !self.accepts_plugin_output(client_id) {
             return true;
         }
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             if tab.has_plugin(plugin_id) {
                 tab.show_plugin_cursor(plugin_id, client_id, cursor_position);
                 return true;
@@ -4310,7 +4345,7 @@ impl Screen {
         false
     }
     fn update_plugin_location(&mut self, plugin_id: PluginId, location: RunPluginLocation) {
-        if let Some(run) = self.paneless_plugins.get_mut(&plugin_id) {
+        if let Some(run) = self.core.paneless_plugins.get_mut(&plugin_id) {
             let plugin = match run {
                 RunPluginOrAlias::RunPlugin(plugin) => Some(plugin),
                 RunPluginOrAlias::Alias(alias) => alias.run_plugin.as_mut(),
@@ -4319,7 +4354,7 @@ impl Screen {
                 plugin.location = location.clone();
             }
         }
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             if let Some(pane) = tab
                 .get_pane_with_id_mut(PaneId::Plugin(plugin_id))
                 .and_then(|pane| pane.plugin_control_mut())
@@ -4351,7 +4386,7 @@ impl Screen {
         plugin_id: PluginId,
         loading_indication: LoadingIndication,
     ) -> bool {
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             if tab.has_plugin(plugin_id) {
                 tab.start_plugin_loading_indication(plugin_id, loading_indication);
                 return true;
@@ -4365,7 +4400,7 @@ impl Screen {
         client_id: ClientId,
         loading_indication: LoadingIndication,
     ) -> bool {
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             if tab.has_plugin(plugin_id) {
                 tab.start_client_plugin_loading_indication(
                     plugin_id,
@@ -4378,7 +4413,7 @@ impl Screen {
         false
     }
     fn progress_plugin_loading_offset(&mut self, plugin_id: PluginId) -> bool {
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             if tab.has_plugin(plugin_id) {
                 tab.progress_plugin_loading_offset(plugin_id);
                 return true;
@@ -4387,18 +4422,21 @@ impl Screen {
         false
     }
     fn connected_clients_contains(&self, client_id: &ClientId) -> bool {
-        self.connected_clients.borrow().contains(client_id)
+        self.core.connected_clients.borrow().contains(client_id)
     }
     fn get_client_pane_group(&self, client_id: &ClientId) -> HashSet<PaneId> {
-        self.current_pane_group
+        self.core
+            .current_pane_group
             .borrow()
             .get_client_pane_group(client_id)
     }
     fn clear_pane_group(&mut self, client_id: &ClientId) {
-        self.current_pane_group
+        self.core
+            .current_pane_group
             .borrow_mut()
             .clear_pane_group(client_id);
-        self.currently_marking_pane_group
+        self.core
+            .currently_marking_pane_group
             .borrow_mut()
             .remove(client_id);
     }
@@ -4414,7 +4452,7 @@ impl Screen {
         }
         let (surface_size, launch_tab) = self.pane_group_control_placement(*client_id);
         {
-            let mut pane_groups = self.current_pane_group.borrow_mut();
+            let mut pane_groups = self.core.current_pane_group.borrow_mut();
             pane_groups.toggle_pane_id_in_group(pane_id, surface_size, launch_tab, client_id);
         }
         self.retain_only_existing_panes_in_pane_groups();
@@ -4426,7 +4464,7 @@ impl Screen {
         }
         let (surface_size, launch_tab) = self.pane_group_control_placement(*client_id);
         {
-            let mut pane_groups = self.current_pane_group.borrow_mut();
+            let mut pane_groups = self.core.current_pane_group.borrow_mut();
             pane_groups.add_pane_id_to_group(pane_id, surface_size, launch_tab, client_id);
         }
         self.retain_only_existing_panes_in_pane_groups();
@@ -4434,6 +4472,7 @@ impl Screen {
     fn add_active_pane_to_group_if_marking(&mut self, client_id: &ClientId) {
         {
             if self
+                .core
                 .currently_marking_pane_group
                 .borrow()
                 .get(client_id)
@@ -4455,9 +4494,9 @@ impl Screen {
     fn pane_group_control_placement(&self, client_id: ClientId) -> (Size, Option<TabId>) {
         let launch_tab = self
             .client_to_act_for(client_id)
-            .and_then(|client_id| self.active_tab_ids.get(&client_id).copied());
+            .and_then(|client_id| self.core.active_tab_ids.get(&client_id).copied());
         let surface_size = launch_tab
-            .and_then(|tab_id| self.tabs.get(&tab_id))
+            .and_then(|tab_id| self.core.tabs.get(&tab_id))
             .map(|tab| tab.size)
             .unwrap_or_else(|| self.size_of_tab_of_client(client_id));
         (surface_size, launch_tab)
@@ -4471,7 +4510,7 @@ impl Screen {
     /// client whose host is focused is sitting on the same pane.
     pub fn host_terminal_focus_changed(&mut self, client_id: ClientId, focused: bool) {
         let was_focused = self.client_host_is_focused(&client_id);
-        self.client_host_focused.insert(client_id, focused);
+        self.core.client_host_focused.insert(client_id, focused);
         if was_focused == focused {
             return;
         }
@@ -4491,10 +4530,12 @@ impl Screen {
         client_id: &ClientId,
         pane_id: PaneId,
     ) -> bool {
-        self.active_tab_ids
+        self.core
+            .active_tab_ids
             .keys()
             .filter(|other_client_id| {
-                *other_client_id != client_id && !self.watcher_clients.contains_key(other_client_id)
+                *other_client_id != client_id
+                    && !self.core.watcher_clients.contains_key(other_client_id)
             })
             .any(|other_client_id| {
                 self.client_host_is_focused(other_client_id)
@@ -4503,7 +4544,8 @@ impl Screen {
     }
 
     fn client_host_is_focused(&self, client_id: &ClientId) -> bool {
-        self.client_host_focused
+        self.core
+            .client_host_focused
             .get(client_id)
             .copied()
             .unwrap_or(true)
@@ -4514,11 +4556,12 @@ impl Screen {
         client_id: ClientId,
         host_terminal_env: BTreeMap<String, String>,
     ) {
-        self.client_notification_protocols.insert(
+        self.core.client_notification_protocols.insert(
             client_id,
-            NotificationProtocol::resolve(self.host_notification_protocol, &host_terminal_env),
+            NotificationProtocol::resolve(self.core.host_notification_protocol, &host_terminal_env),
         );
-        self.client_host_terminal_env
+        self.core
+            .client_host_terminal_env
             .insert(client_id, host_terminal_env);
     }
 
@@ -4528,15 +4571,17 @@ impl Screen {
         &mut self,
         host_notification_protocol: HostNotificationProtocol,
     ) {
-        self.host_notification_protocol = host_notification_protocol;
-        let client_ids: Vec<ClientId> = self.client_host_terminal_env.keys().copied().collect();
+        self.core.host_notification_protocol = host_notification_protocol;
+        let client_ids: Vec<ClientId> =
+            self.core.client_host_terminal_env.keys().copied().collect();
         for client_id in client_ids {
             let host_terminal_env = self
+                .core
                 .client_host_terminal_env
                 .get(&client_id)
                 .cloned()
                 .unwrap_or_default();
-            self.client_notification_protocols.insert(
+            self.core.client_notification_protocols.insert(
                 client_id,
                 NotificationProtocol::resolve(host_notification_protocol, &host_terminal_env),
             );
@@ -4544,11 +4589,15 @@ impl Screen {
     }
 
     fn notification_protocol_for_client(&self, client_id: &ClientId) -> NotificationProtocol {
-        self.client_notification_protocols
+        self.core
+            .client_notification_protocols
             .get(client_id)
             .copied()
             .unwrap_or_else(|| {
-                NotificationProtocol::resolve(self.host_notification_protocol, &BTreeMap::new())
+                NotificationProtocol::resolve(
+                    self.core.host_notification_protocol,
+                    &BTreeMap::new(),
+                )
             })
     }
 
@@ -4561,7 +4610,13 @@ impl Screen {
         notifications: Vec<PendingNotification>,
         pane_id: TerminalId,
     ) {
-        let all_clients: Vec<ClientId> = self.connected_clients.borrow().iter().copied().collect();
+        let all_clients: Vec<ClientId> = self
+            .core
+            .connected_clients
+            .borrow()
+            .iter()
+            .copied()
+            .collect();
         if all_clients.is_empty() || notifications.is_empty() {
             return;
         }
@@ -4607,7 +4662,8 @@ impl Screen {
             }
         }
         if !output.is_empty() {
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_server(ServerInstruction::DesktopNotification(output))
                 .context("forward desktop notifications to host terminals")
@@ -4615,73 +4671,8 @@ impl Screen {
         }
     }
 
-    fn report_codex_plan_prompt(
-        &mut self,
-        notification: &PendingNotification,
-        terminal_id: TerminalId,
-    ) -> Result<()> {
-        use yinz_types::agent::report::{AgentReport, AgentReportState};
-        use yinz_types::agent::{hook_outcome, AgentEvent, AgentSource, HookEvent, HookOutcome};
-
-        // Codex supplies no structured plan-prompt event. This exact TUI notification text
-        // must follow upstream changes; disabled Codex notifications produce no wait here.
-        let (title, body) = notification.title_and_body();
-        if title != "Plan mode prompt: Implement this plan?"
-            && body != "Plan mode prompt: Implement this plan?"
-        {
-            return Ok(());
-        }
-        let pane_id = PaneId::Terminal(terminal_id);
-        let Some(agent) = self
-            .get_pane_info(pane_id)
-            .and_then(|info| info.agent)
-            .filter(|agent| {
-                agent.kind == "codex"
-                    && agent.source == AgentSource::Reported
-                    && agent.state == AgentState::Idle
-            })
-        else {
-            return Ok(());
-        };
-        let Some(session_id) = agent.session_id.filter(|id| !id.is_empty()) else {
-            return Ok(());
-        };
-        // ponytail: local dismissal has no signal; the next native hook clears this wait.
-        let hook = HookEvent {
-            hook_event_name: "Elicitation".into(),
-            session_id,
-            cwd: agent.cwd,
-            message: Some("approve the plan".into()),
-            ..Default::default()
-        };
-        let HookOutcome::Reported(agent) = hook_outcome("codex", &hook) else {
-            return Ok(());
-        };
-        let raw = serde_json::to_string(&hook).context("serialize a Codex plan prompt")?;
-        thread_main::apply_queued_agent_report(
-            self,
-            &AgentReport {
-                report_id: uuid::Uuid::new_v4().to_string(),
-                pane_id,
-                state: AgentReportState::Set(agent),
-                event: Some(AgentEvent::from_hook("codex", terminal_id, &hook, raw)),
-                trace: false,
-                process_id: yinz_types::internal_ids::ProcessId::new(std::process::id()),
-                kind: "codex".into(),
-            },
-            Instant::now(),
-        )?;
-        Ok(())
-    }
-
     fn get_pane_info(&self, pane_id: PaneId) -> Option<PaneInfo> {
-        // Search through all tabs to find the pane
-        for tab in self.tabs.values() {
-            if let Some(pane_info) = tab.get_pane_info(pane_id) {
-                return Some(pane_info);
-            }
-        }
-        None
+        self.core.get_pane_info(pane_id)
     }
 
     /// Each client's multiplayer color slot, for `TabInfo::other_focused_client_slots`.
@@ -4689,7 +4680,7 @@ impl Screen {
         &self,
         clients: &[ClientId],
     ) -> Vec<Option<yinz_types::multiplayer::ColorSlot>> {
-        let attached = self.connected_clients.borrow();
+        let attached = self.core.connected_clients.borrow();
         clients
             .iter()
             .map(|client| attached.color_slot(client))
@@ -4698,8 +4689,9 @@ impl Screen {
 
     fn get_tab_info(&self, tab_id: TabId, tab_names: &HashMap<TabId, String>) -> Option<TabInfo> {
         // Look up tab by its stable ID
-        self.tabs.get(&tab_id).map(|tab| {
+        self.core.tabs.get(&tab_id).map(|tab| {
             let all_focused_clients: Vec<ClientId> = self
+                .core
                 .active_tab_ids
                 .iter()
                 .filter(|(_c_id, active_tab_id)| **active_tab_id == tab.id)
@@ -4716,7 +4708,7 @@ impl Screen {
                 group: self.tab_group_info(tab.id),
                 position: tab.position,
                 name: tab_names[&tab.id].clone(),
-                active: self.active_tab_ids.values().any(|i| i == &tab.id),
+                active: self.core.active_tab_ids.values().any(|i| i == &tab.id),
                 panes_to_hide: tab.panes_to_hide_count(),
                 is_fullscreen_active: tab.is_fullscreen_active(),
                 is_sync_panes_active: tab.is_sync_panes_active(),
@@ -4733,9 +4725,9 @@ impl Screen {
                 selectable_floating_panes_count,
                 tab_id: tab.id,
                 has_bell_notification: tab.tab_has_pending_bell
-                    && !self.active_tab_ids.values().any(|i| i == &tab.id),
+                    && !self.core.active_tab_ids.values().any(|i| i == &tab.id),
                 is_flashing_bell: tab.tab_bell_flash
-                    && !self.active_tab_ids.values().any(|i| i == &tab.id),
+                    && !self.core.active_tab_ids.values().any(|i| i == &tab.id),
             }
         })
     }
@@ -4754,7 +4746,7 @@ impl Screen {
         let (surface_size, launch_tab) = self.pane_group_control_placement(client_id);
         if for_all_clients {
             {
-                let mut current_pane_group = self.current_pane_group.borrow_mut();
+                let mut current_pane_group = self.core.current_pane_group.borrow_mut();
                 current_pane_group.group_and_ungroup_panes_for_all_clients(
                     pane_ids_to_group,
                     pane_ids_to_ungroup,
@@ -4764,7 +4756,7 @@ impl Screen {
             }
         } else {
             {
-                let mut current_pane_group = self.current_pane_group.borrow_mut();
+                let mut current_pane_group = self.core.current_pane_group.borrow_mut();
                 current_pane_group.group_and_ungroup_panes(
                     pane_ids_to_group,
                     pane_ids_to_ungroup,
@@ -4780,20 +4772,22 @@ impl Screen {
     fn retain_only_existing_panes_in_pane_groups(&mut self) {
         let clients_with_empty_group = {
             let mut clients_with_empty_group = vec![];
-            let mut current_pane_group = { self.current_pane_group.borrow().clone_inner() };
+            let mut current_pane_group = { self.core.current_pane_group.borrow().clone_inner() };
             for (client_id, panes_in_group) in current_pane_group.iter_mut() {
                 panes_in_group.retain(|p_id| self.pane_is_selectable(*p_id));
                 if panes_in_group.is_empty() {
                     clients_with_empty_group.push(*client_id)
                 }
             }
-            self.current_pane_group
+            self.core
+                .current_pane_group
                 .borrow_mut()
                 .override_groups_with(current_pane_group);
             clients_with_empty_group
         };
         for client_id in &clients_with_empty_group {
-            self.currently_marking_pane_group
+            self.core
+                .currently_marking_pane_group
                 .borrow_mut()
                 .remove(client_id);
         }
@@ -4807,12 +4801,17 @@ impl Screen {
         }
     }
     fn update_active_pane_ids(&mut self) {
-        let connected_clients: Vec<ClientId> =
-            self.connected_clients.borrow().iter().copied().collect();
+        let connected_clients: Vec<ClientId> = self
+            .core
+            .connected_clients
+            .borrow()
+            .iter()
+            .copied()
+            .collect();
         for client_id in connected_clients {
             if let Some(active_pane_id) = self.get_active_pane_id(&client_id) {
                 let active_pane_id: PaneId = active_pane_id;
-                let history = self.pane_history.entry(client_id).or_default();
+                let history = self.core.pane_history.entry(client_id).or_default();
                 history.retain(|e| e != &active_pane_id);
                 history.push(active_pane_id);
             }
@@ -4958,20 +4957,20 @@ fn replay_pending_plugin_events(
         };
         match event {
             event @ ScreenInstruction::RequestPluginPermissions(..) => {
-                screen.bus.senders.send_to_screen(event)?;
+                screen.core.bus.senders.send_to_screen(event)?;
             },
             ScreenInstruction::AgentReport(report, accepted_at) => {
                 thread_main::apply_queued_agent_report(screen, &report, accepted_at)?;
             },
             ScreenInstruction::ClosePane(id, _, _, _)
-                if screen.destroyed_panes.contains(&id)
+                if screen.core.destroyed_panes.contains(&id)
                     && screen.tab_containing_pane(id).is_none() => {},
             ScreenInstruction::ClosePane(id, Some(_), completion_tx, _)
             | ScreenInstruction::ClosePane(id, _, completion_tx @ Some(_), _) => {
                 // Close before replaying later events: a queued close_self must not restore
                 // the source that this explicit close is meant to destroy.
                 screen.close_pane_explicitly(id, completion_tx);
-                let client_ids: Vec<_> = screen.active_tab_ids.keys().copied().collect();
+                let client_ids: Vec<_> = screen.core.active_tab_ids.keys().copied().collect();
                 for client_id in client_ids {
                     screen.sync_scroll_mode_on_focus(client_id)?;
                 }
@@ -5088,7 +5087,7 @@ fn replay_pending_plugin_events(
                     screen.drop_quit_notice(plugin_id);
                 }
                 let mut found = false;
-                for tab in screen.tabs.values_mut() {
+                for tab in screen.core.tabs.values_mut() {
                     if tab.get_all_pane_ids().contains(&pane_id) {
                         tab.close_pane(pane_id, false, exit_status);
                         found = true;
@@ -5104,6 +5103,7 @@ fn replay_pending_plugin_events(
                 }
                 screen.clear_nested_guest(pane_id);
                 screen
+                    .core
                     .bus
                     .senders
                     .send_to_pty(PtyInstruction::ClosePane(pane_id, None))
@@ -5121,7 +5121,7 @@ fn replay_pending_plugin_events(
                 let mut found = false;
                 let mut pane_is_agent = false;
                 let mut queued_respawn = None;
-                for tab in screen.tabs.values_mut() {
+                for tab in screen.core.tabs.values_mut() {
                     if tab.get_all_pane_ids().contains(&pane_id) {
                         queued_respawn =
                             tab.hold_pane(pane_id, exit_status, is_first_run, run_command.clone());
@@ -5131,6 +5131,7 @@ fn replay_pending_plugin_events(
                     }
                 }
                 if found {
+                    screen.refresh_agent_worktrees();
                     screen.fire_pane_exit_hook(pane_id, exit_status, &run_command, true);
                     screen.fire_agent_exit_hook(pane_id, exit_status, &run_command, pane_is_agent);
                     if let Some((terminal_pane_id, run_command, keep_scrollback)) = queued_respawn {

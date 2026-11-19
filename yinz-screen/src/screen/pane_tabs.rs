@@ -3,8 +3,14 @@ use yinz_types::pane_tabs::*;
 
 impl Screen {
     pub(crate) fn report_pane_tabs(&mut self) -> Result<()> {
-        let tabs: Vec<_> = self.tabs.values().flat_map(Tab::pane_tabs_infos).collect();
-        self.overlay_tab_completions
+        let tabs: Vec<_> = self
+            .core
+            .tabs
+            .values()
+            .flat_map(Tab::pane_tabs_infos)
+            .collect();
+        self.core
+            .overlay_tab_completions
             .retain_mut(|(id, index, completion)| {
                 let slot = tabs
                     .iter()
@@ -32,9 +38,10 @@ impl Screen {
                 }
                 false
             });
-        if tabs != self.reported_pane_tabs {
-            self.reported_pane_tabs = tabs.clone();
-            self.bus
+        if tabs != self.core.reported_pane_tabs {
+            self.core.reported_pane_tabs = tabs.clone();
+            self.core
+                .bus
                 .senders
                 .send_to_plugin(PluginInstruction::Update(vec![(
                     None,
@@ -123,7 +130,8 @@ impl Screen {
     }
 
     fn pane_tabs_tab_mut(&mut self, id: PaneTabsId) -> Result<&mut Tab> {
-        self.tabs
+        self.core
+            .tabs
             .values_mut()
             .find(|tab| tab.pane_tabs_info(id).is_some())
             .context("unknown pane tabs")
@@ -139,10 +147,10 @@ impl Screen {
         // A plugin without a pane cannot fill the slot. The plugin thread unloads it, so the
         // failure path needs no unload of its own.
         let result = match result {
-            Ok((plugin_id, run)) if self.paneless_plugins.contains_key(&plugin_id) => {
+            Ok((plugin_id, run)) if self.core.paneless_plugins.contains_key(&plugin_id) => {
                 Err(format!("{} declares no pane", run.location_string()))
             },
-            Ok((plugin_id, _)) if self.unloaded_plugins.contains(&plugin_id) => Err(format!(
+            Ok((plugin_id, _)) if self.core.unloaded_plugins.contains(&plugin_id) => Err(format!(
                 "plugin {plugin_id} was unloaded before its pane tab was placed"
             )),
             result => result,
@@ -159,7 +167,8 @@ impl Screen {
             },
             _ => {
                 if let Ok((plugin_id, _)) = result {
-                    self.bus
+                    self.core
+                        .bus
                         .senders
                         .send_to_plugin(PluginInstruction::Unload(plugin_id))
                         .context("failed to unload closed pane tabs child")?;

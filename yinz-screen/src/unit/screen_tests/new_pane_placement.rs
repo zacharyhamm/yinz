@@ -144,7 +144,8 @@ fn startup_placement(stage: u8) {
     let mut pending = PendingEvents::default();
     let mut confirmations = HashMap::from([(TerminalId::new(9), 42)]);
     let (tx, placements) = yinz_runtime::channels::unbounded();
-    screen.bus.senders.to_pty_writer = Some(yinz_runtime::channels::SenderWithContext::new(tx));
+    screen.core.bus.senders.to_pty_writer =
+        Some(yinz_runtime::channels::SenderWithContext::new(tx));
     if stage > 0 {
         screen
             .new_tab(tab, (vec![], vec![]), None, Some(client))
@@ -233,7 +234,7 @@ fn startup_placement(stage: u8) {
     let reply = rx.try_recv().expect("completed placement");
     assert!(reply.error_message.is_none(), "{reply:?}");
     assert_eq!(reply.affected_pane_id, Some(pane));
-    assert!(screen.tabs.get(&tab).unwrap().has_pane_with_pid(&pane));
+    assert!(screen.core.tabs.get(&tab).unwrap().has_pane_with_pid(&pane));
 }
 
 #[test]
@@ -257,7 +258,7 @@ fn deferred_startup_pane_is_closed_if_initial_destination_closes_or_fails() {
     for failed in [false, true] {
         let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
         let (tx, instructions) = yinz_runtime::channels::unbounded();
-        screen.bus.senders.to_pty = Some(yinz_runtime::channels::SenderWithContext::new(tx));
+        screen.core.bus.senders.to_pty = Some(yinz_runtime::channels::SenderWithContext::new(tx));
         let client = ClientId::new(1);
         let tab = TabId::new(0);
         let pane = PaneId::Terminal(TerminalId::new(9));
@@ -346,10 +347,11 @@ fn terminal_placement_rejects_destroyed_startup_panes_and_unqueued_missing_panes
             &mut pending,
         )
         .unwrap();
-    screen.destroyed_panes.insert(PaneId::Terminal(queued));
+    screen.core.destroyed_panes.insert(PaneId::Terminal(queued));
     let missing = TerminalId::new(10);
     let (tx, placements) = yinz_runtime::channels::unbounded();
-    screen.bus.senders.to_pty_writer = Some(yinz_runtime::channels::SenderWithContext::new(tx));
+    screen.core.bus.senders.to_pty_writer =
+        Some(yinz_runtime::channels::SenderWithContext::new(tx));
     let mut confirmations = HashMap::from([(queued, 42), (missing, 43)]);
     screen
         .confirm_terminal_placements(&mut confirmations, &pending)
@@ -367,4 +369,71 @@ fn terminal_placement_rejects_destroyed_startup_panes_and_unqueued_missing_panes
         })
         .collect();
     assert_eq!(rejected, [queued, missing].into_iter().collect());
+}
+
+#[test]
+fn settled_query_and_pending_placement_have_distinct_writer_traffic() {
+    use crate::screen::thread_main::{process_instruction, EventLoopState};
+    use PtyWriteInstruction::*;
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    let (writer, traffic) = channels::unbounded();
+    let writer = SenderWithContext::new(writer);
+    screen.core.bus.senders.to_pty_writer = Some(writer.clone());
+    let (tx, fifo) = channels::unbounded();
+    let tx = SenderWithContext::new(tx);
+    let mut state = EventLoopState::default();
+    let terminal = TerminalId::new(1);
+    let pane = PaneId::Terminal(terminal);
+    new_tab(&mut screen, 1, TabId::new(0));
+
+    // The second FIFO response fences the preceding instruction's complete epilogue.
+    // The fence is itself a settled read: exercise it alone before using it to delimit queries.
+    let turn = |screen: &mut Screen, state: &mut EventLoopState, query: bool| {
+        let (list_tx, list_rx) = crossbeam::channel::bounded(1);
+        let (info_tx, info_rx) = crossbeam::channel::bounded(1);
+        if query {
+            tx.send(ScreenInstruction::ListNotifications {
+                response_channel: list_tx,
+            })
+            .unwrap();
+        }
+        tx.send(ScreenInstruction::GetPaneInfo {
+            pane_id: pane,
+            response_channel: info_tx,
+        })
+        .unwrap();
+        for _ in 0..if query { 2 } else { 1 } {
+            let (event, _) = fifo.recv().unwrap();
+            assert!(process_instruction(screen, state, event)
+                .unwrap()
+                .is_continue());
+        }
+        if query {
+            list_rx.try_recv().unwrap();
+        }
+        assert!(info_rx.try_recv().unwrap().is_some());
+        writer
+            .send(Write(b"query fence".to_vec(), terminal, None))
+            .unwrap();
+        let mut events = Vec::new();
+        loop {
+            let (event, _) = traffic
+                .try_recv()
+                .expect("writer must see the synchronously enqueued fence");
+            if matches!(&event, Write(bytes, _, _) if bytes == b"query fence") {
+                break events;
+            }
+            events.push(event);
+        }
+    };
+    let _setup = turn(&mut screen, &mut state, false);
+    assert!(turn(&mut screen, &mut state, false).is_empty());
+    assert!(turn(&mut screen, &mut state, true).is_empty());
+    state.terminal_placements.insert(terminal, 101);
+    let messages = turn(&mut screen, &mut state, true);
+    assert!(
+        matches!(messages.as_slice(), [StartCachingResizes, TerminalPlaced {terminal_id, generation: 101, placement: Some((size, tab))}, ApplyCachedResizes] if *terminal_id == terminal && size.is_positive() && *tab == TabId::new(0)),
+        "{messages:?}"
+    );
+    assert!(turn(&mut screen, &mut state, true).is_empty());
 }

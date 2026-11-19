@@ -87,6 +87,9 @@ impl NestedGuestTracker {
         self.last_heard_from.remove(&pane_id);
         self.dormant.remove(&pane_id);
     }
+    pub fn has_live_guests(&self) -> bool {
+        !self.last_heard_from.is_empty()
+    }
     pub fn is_tracked(&self, pane_id: PaneId) -> bool {
         self.last_heard_from.contains_key(&pane_id)
     }

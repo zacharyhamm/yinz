@@ -19,7 +19,7 @@ fn wait_for_layouts(
         } = instruction
         {
             let matches =
-                generation == screen.layout_watcher_generation && expected(&layouts, &errors);
+                generation == screen.core.layout_watcher_generation && expected(&layouts, &errors);
             screen.update_available_layouts(generation, layouts, errors);
             if matches {
                 return;
@@ -47,8 +47,8 @@ fn assert_layouts_published(
     assert_eq!(
         layout_updates(receiver).last(),
         Some(&(
-            screen.cached_layouts.clone(),
-            screen.cached_layout_errors.clone()
+            screen.core.cached_layouts.clone(),
+            screen.core.cached_layout_errors.clone()
         ))
     );
 }
@@ -64,25 +64,25 @@ fn layout_watcher_retargets_and_rejects_stale_updates() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
     let (to_screen, screen_rx) = channels::unbounded();
     let (to_plugin, plugin_rx) = channels::unbounded();
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
-    screen.layout_dir = Some(old_dir.path().to_owned());
-    screen.default_layout_name = Some("alpha".into());
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    screen.core.layout_dir = Some(old_dir.path().to_owned());
+    screen.core.default_layout_name = Some("alpha".into());
     screen.restart_layout_watcher();
     assert!(
-        screen.layout_watcher.is_none(),
+        screen.core.layout_watcher.is_none(),
         "a config file enables watching"
     );
-    screen.config_file_path = Some(old_dir.path().join("config.kdl"));
+    screen.core.config_file_path = Some(old_dir.path().join("config.kdl"));
     screen.restart_layout_watcher();
     // The initial callback is sent after watch registration, so subsequent edits are observable.
     wait_for_layouts(&mut screen, &screen_rx, |layouts, _| {
         layouts[0].name() == "alpha"
     });
     assert_layouts_published(&screen, &plugin_rx);
-    let old_generation = screen.layout_watcher_generation;
-    let old_layouts = screen.cached_layouts.clone();
-    let old_errors = screen.cached_layout_errors.clone();
+    let old_generation = screen.core.layout_watcher_generation;
+    let old_layouts = screen.core.cached_layouts.clone();
+    let old_errors = screen.core.cached_layout_errors.clone();
 
     let mut config = test_screen_config();
     config.layout_dir = Some(new_dir.path().to_owned());
@@ -90,8 +90,8 @@ fn layout_watcher_retargets_and_rejects_stale_updates() {
     screen
         .reconfigure(config.clone(), Keybinds::default(), ClientId::new(1))
         .unwrap();
-    assert_eq!(screen.cached_layouts[0].name(), "beta");
-    assert_eq!(screen.cached_layout_errors[0].layout_name, "broken");
+    assert_eq!(screen.core.cached_layouts[0].name(), "beta");
+    assert_eq!(screen.core.cached_layout_errors[0].layout_name, "broken");
     assert_layouts_published(&screen, &plugin_rx);
     wait_for_layouts(&mut screen, &screen_rx, |layouts, errors| {
         layouts[0].name() == "beta" && errors.len() == 1
@@ -104,14 +104,15 @@ fn layout_watcher_retargets_and_rejects_stale_updates() {
         layouts.iter().any(|layout| layout.name() == "gamma") && errors.is_empty()
     });
     assert!(!screen
+        .core
         .cached_layouts
         .iter()
         .any(|layout| layout.name() == "old-only"));
     assert_layouts_published(&screen, &plugin_rx);
-    let current_layouts = screen.cached_layouts.clone();
+    let current_layouts = screen.core.cached_layouts.clone();
     screen.update_available_layouts(old_generation, old_layouts.clone(), old_errors.clone());
-    assert_eq!(screen.cached_layouts, current_layouts);
-    assert!(screen.cached_layout_errors.is_empty());
+    assert_eq!(screen.core.cached_layouts, current_layouts);
+    assert!(screen.core.cached_layout_errors.is_empty());
     assert!(layout_updates(&plugin_rx).is_empty());
 
     // Returning to A must still reject a queued result from A's original watcher.
@@ -121,27 +122,27 @@ fn layout_watcher_retargets_and_rejects_stale_updates() {
         .reconfigure(config.clone(), Keybinds::default(), ClientId::new(1))
         .unwrap();
     assert_layouts_published(&screen, &plugin_rx);
-    let current_layouts = screen.cached_layouts.clone();
+    let current_layouts = screen.core.cached_layouts.clone();
     screen.update_available_layouts(old_generation, old_layouts, old_errors);
-    assert_eq!(screen.cached_layouts, current_layouts);
+    assert_eq!(screen.core.cached_layouts, current_layouts);
     assert!(layout_updates(&plugin_rx).is_empty());
 
     config.default_layout_name = Some("compact".into());
     screen
         .reconfigure(config.clone(), Keybinds::default(), ClientId::new(1))
         .unwrap();
-    assert_eq!(screen.cached_layouts[0].name(), "compact");
+    assert_eq!(screen.core.cached_layouts[0].name(), "compact");
     assert_layouts_published(&screen, &plugin_rx);
     wait_for_layouts(&mut screen, &screen_rx, |layouts, _| {
         layouts[0].name() == "compact"
     });
-    let generation = screen.layout_watcher_generation;
-    let task_id = screen.layout_watcher.as_ref().unwrap().0.id();
+    let generation = screen.core.layout_watcher_generation;
+    let task_id = screen.core.layout_watcher.as_ref().unwrap().0.id();
     screen
         .reconfigure(config, Keybinds::default(), ClientId::new(1))
         .unwrap();
-    assert_eq!(screen.layout_watcher_generation, generation);
-    assert_eq!(screen.layout_watcher.as_ref().unwrap().0.id(), task_id);
+    assert_eq!(screen.core.layout_watcher_generation, generation);
+    assert_eq!(screen.core.layout_watcher.as_ref().unwrap().0.id(), task_id);
 
     drop(screen);
     // Every watcher owns a sender. Disconnection proves teardown cancelled all of them,
@@ -162,8 +163,8 @@ fn layout_watcher_reports_a_directory_created_after_reload() {
     let layouts_dir = dir.path().join("layouts");
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
     let (to_screen, screen_rx) = channels::unbounded();
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
-    screen.config_file_path = Some(dir.path().join("config.kdl"));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    screen.core.config_file_path = Some(dir.path().join("config.kdl"));
     let mut config = test_screen_config();
     config.layout_dir = Some(layouts_dir.clone());
     config.default_layout_name = Some("later".into());
@@ -171,6 +172,7 @@ fn layout_watcher_reports_a_directory_created_after_reload() {
         .reconfigure(config, Keybinds::default(), ClientId::new(1))
         .unwrap();
     assert!(!screen
+        .core
         .cached_layouts
         .iter()
         .any(|layout| layout.name() == "later"));
@@ -185,7 +187,7 @@ fn layout_watcher_reports_a_directory_created_after_reload() {
 fn layout_watcher_reload_uses_the_default_directory_when_unset() {
     let dir = tempfile::tempdir().unwrap();
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
-    screen.layout_dir = Some(dir.path().to_owned());
+    screen.core.layout_dir = Some(dir.path().to_owned());
     let config = test_screen_config();
     let expected = yinz_config::layout::list_available_layouts(
         yinz_runtime::home::default_layout_dir(),
@@ -195,7 +197,7 @@ fn layout_watcher_reload_uses_the_default_directory_when_unset() {
         .reconfigure(config, Keybinds::default(), ClientId::new(1))
         .unwrap();
     assert_eq!(
-        (screen.cached_layouts, screen.cached_layout_errors),
+        (screen.core.cached_layouts, screen.core.cached_layout_errors),
         expected
     );
 }

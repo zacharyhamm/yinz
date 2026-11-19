@@ -26,7 +26,7 @@ fn screen_with_a_settled_toast(
         Notification::new(NotificationId::new(0), TEXT.to_owned(), None, None, now);
     notification.reveal = Tween::settled(1.0);
     notification.y_offset = Tween::settled(0.0);
-    screen.notifications.push(notification);
+    screen.notices.notifications.push(notification);
     (screen, background_jobs)
 }
 
@@ -79,7 +79,7 @@ fn the_tick_that_finds_everything_settled_still_asks_for_a_frame() {
 
     screen.reap_settled_notifications(settled);
     assert!(
-        screen.notifications.is_empty(),
+        screen.notices.notifications.is_empty(),
         "and that frame is the one that drops the toast from the stack"
     );
 }
@@ -125,6 +125,7 @@ fn a_loading_plugin_wakes_the_clock_at_the_dot_period() {
     let (mut screen, background_jobs) = screen_with_background_jobs(size);
 
     screen
+        .core
         .animating_plugin_loads
         .insert(crate::PluginId::new(1));
     screen.sync_animation_clock(now).unwrap();
@@ -148,7 +149,7 @@ fn a_plugin_load_cannot_slow_the_clock_under_a_moving_toast() {
     let start = Instant::now();
     let (mut screen, _background_jobs) = screen_with_background_jobs(size);
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.notifications.push(Notification::new(
+    screen.notices.notifications.push(Notification::new(
         NotificationId::new(0),
         TEXT.to_owned(),
         None,
@@ -156,6 +157,7 @@ fn a_plugin_load_cannot_slow_the_clock_under_a_moving_toast() {
         start,
     ));
     screen
+        .core
         .animating_plugin_loads
         .insert(crate::PluginId::new(1));
 
@@ -172,7 +174,7 @@ fn a_plugin_load_cannot_slow_the_clock_under_a_moving_toast() {
         "once it stops moving, only the dots are left"
     );
 
-    screen.animating_plugin_loads.remove(&PluginId::new(1));
+    screen.core.animating_plugin_loads.remove(&PluginId::new(1));
     assert_eq!(
         screen.animation_clock_period(toast_settled),
         None,
@@ -190,6 +192,7 @@ fn quiet_ticks_put_nothing_but_the_frame_on_the_bus() {
     new_tab(&mut screen, 1, TabId::new(0));
 
     screen
+        .core
         .animating_plugin_loads
         .insert(crate::PluginId::new(1));
     screen.sync_animation_clock(start).unwrap();
@@ -220,6 +223,7 @@ fn agent_double_escape_timeout_repaints_and_stops_the_clock() {
     let (mut screen, background_jobs) = screen_with_background_jobs(Size { cols: 80, rows: 20 });
     new_tab(&mut screen, 1, TabId::new(0));
     screen
+        .core
         .tabs
         .values_mut()
         .next()
@@ -246,6 +250,7 @@ fn agent_double_escape_timeout_repaints_and_stops_the_clock() {
         .on_animation_tick(start + Duration::from_secs(1))
         .unwrap();
     assert!(screen
+        .core
         .tabs
         .values()
         .all(|tab| tab.pending_agent_escapes.is_empty()));

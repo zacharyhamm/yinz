@@ -1,12 +1,9 @@
 //! Pane and agent lifecycle hooks.
-use super::agent_hook_edges;
 use super::Screen;
 use crate::panes::PaneId;
 use crate::plugins::HookFiring;
-use crate::plugins::PluginInstruction;
 use crate::ClientId;
 use std::collections::BTreeMap;
-use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::AgentInfo;
 use yinz_types::data::HookPayload;
 use yinz_types::data::AGENT_PANE_CONTEXT;
@@ -25,25 +22,14 @@ impl Screen {
         payload: HookFiring,
         client_id: ClientId,
     ) {
-        self.bus
-            .senders
-            .send_to_plugin(PluginInstruction::RunHook {
-                point,
-                pane_id,
-                payload,
-                client_id,
-            })
-            .non_fatal();
+        self.core.fire_hook(point, pane_id, payload, client_id)
     }
 
     /// The client a hook about a pane is run for: the one that spawned the pane, or the first
     /// one where nobody did. `None` when there is no client at all, which is no one to run a
     /// hook for.
     pub(super) fn hook_client_id(&self, run_command: Option<&RunCommand>) -> Option<ClientId> {
-        run_command
-            .and_then(|run_command| run_command.originating_plugin.as_ref())
-            .map(|plugin| plugin.client_id)
-            .or_else(|| self.get_first_client_id())
+        self.core.hook_client_id(run_command)
     }
 
     /// Hand an exited agent pane to the `agent_exit` hook.
@@ -181,47 +167,7 @@ impl Screen {
         previous: Option<&AgentInfo>,
         current: Option<&AgentInfo>,
     ) {
-        let edges = agent_hook_edges(previous, current);
-        if edges.is_empty() {
-            return;
-        }
-        let Some(current) = current else {
-            return;
-        };
-        let PaneId::Terminal(terminal_pane_id) = pane_id else {
-            return;
-        };
-        let run_command = self
-            .tab_containing_pane(pane_id)
-            .and_then(|tab| tab.pane_run_command(pane_id));
-        let Some(client_id) = self.hook_client_id(run_command.as_ref()) else {
-            return;
-        };
-        // The record as it stands, with the pane's folder filled in where the agent has not
-        // said where it works.
-        let mut agent = current.clone();
-        if agent.cwd.is_none() {
-            agent.cwd = run_command
-                .as_ref()
-                .and_then(|run_command| run_command.cwd.as_ref())
-                .map(|cwd| cwd.display().to_string());
-        }
-        let payload = HookPayload::Agent {
-            pane_id: terminal_pane_id,
-            agent,
-            previous_state: previous.map(|previous| previous.state),
-            command: run_command
-                .as_ref()
-                .map(|run_command| run_command.to_string()),
-        };
-        for point in edges {
-            self.fire_hook(
-                point,
-                Some(pane_id),
-                HookFiring::Headless(payload.clone()),
-                client_id,
-            );
-        }
+        self.core.fire_agent_state_hooks(pane_id, previous, current)
     }
 
     /// A pane that was born with an agent record - the spawn path wrote it - has started.

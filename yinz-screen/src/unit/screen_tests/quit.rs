@@ -18,28 +18,35 @@ fn last_pane_exit_returns_each_client_to_the_previous_usable_tab() {
             &[TabId::new(1), TabId::new(2), TabId::new(3)],
             &[client, CLIENT_2],
         );
-        screen.session_is_mirrored = false;
+        screen.core.session_is_mirrored = false;
         screen
             .go_to_tab(yinz_types::internal_ids::TabNumber::new(2), client)
             .unwrap();
         screen
             .go_to_tab(yinz_types::internal_ids::TabNumber::new(3), client)
             .unwrap();
-        assert_eq!(screen.tab_history[&client].last(), Some(&TabId::new(2)));
-        screen.tab_history.insert(CLIENT_2, vec![TabId::new(1)]);
+        assert_eq!(
+            screen.core.tab_history[&client].last(),
+            Some(&TabId::new(2))
+        );
+        screen
+            .core
+            .tab_history
+            .insert(CLIENT_2, vec![TabId::new(1)]);
         match unavailable {
             Some("missing") => {
-                screen.tab_history.insert(client, vec![TabId::new(99)]);
+                screen.core.tab_history.insert(client, vec![TabId::new(99)]);
             },
             Some("pending") => {
                 let pending = TabId::new(4);
                 screen
                     .new_tab(pending, (vec![], vec![]), None, None)
                     .unwrap();
-                screen.tab_history.insert(client, vec![pending]);
+                screen.core.tab_history.insert(client, vec![pending]);
             },
             Some("hidden") => {
                 screen
+                    .core
                     .tabs
                     .get_mut(&TabId::new(2))
                     .unwrap()
@@ -47,19 +54,20 @@ fn last_pane_exit_returns_each_client_to_the_previous_usable_tab() {
             },
             _ => {},
         }
-        screen.tabs.get_mut(&TabId::new(3)).unwrap().close_pane(
-            PaneId::Terminal(TerminalId::new(3)),
-            false,
-            Some(0),
-        );
+        screen
+            .core
+            .tabs
+            .get_mut(&TabId::new(3))
+            .unwrap()
+            .close_pane(PaneId::Terminal(TerminalId::new(3)), false, Some(0));
         screen.settle_tabs().unwrap();
         assert_eq!(
-            screen.active_tab_ids[&client],
+            screen.core.active_tab_ids[&client],
             TabId::new(if unavailable.is_some() { 1 } else { 2 })
         );
-        assert_eq!(screen.active_tab_ids[&CLIENT_2], TabId::new(1));
-        assert!(!screen.tabs.contains_key(&TabId::new(3)));
-        assert!(screen.tabs.contains_key(&TabId::new(2)));
+        assert_eq!(screen.core.active_tab_ids[&CLIENT_2], TabId::new(1));
+        assert!(!screen.core.tabs.contains_key(&TabId::new(3)));
+        assert!(screen.core.tabs.contains_key(&TabId::new(2)));
         assert_every_client_has_a_tab(&screen);
     }
 }
@@ -68,8 +76,14 @@ fn last_pane_exit_returns_each_client_to_the_previous_usable_tab() {
 /// the session with is decided by `settle_tabs`, which the screen thread runs after every
 /// instruction.
 fn close_pane(screen: &mut Screen, pane_id: PaneId) {
-    let tab_id = *screen.tabs.keys().next().expect("a tab to close it in");
+    let tab_id = *screen
+        .core
+        .tabs
+        .keys()
+        .next()
+        .expect("a tab to close it in");
     screen
+        .core
         .tabs
         .get_mut(&tab_id)
         .expect("TEST")
@@ -86,7 +100,7 @@ fn screen_with_a_single_pane() -> (Screen, ScreenReceiver) {
     new_tab(&mut screen, 1, TabId::new(1));
     screen.add_client(crate::ClientId::new(1)).expect("TEST");
     let (to_screen, screen_receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
     (screen, screen_receiver)
 }
 
@@ -291,12 +305,12 @@ fn a_withdrawn_notice_leaves_nothing_behind() {
 fn the_last_pane_closing_still_exits_when_nothing_guards() {
     let (mut screen, _screen_receiver) = screen_with_a_single_pane();
     let (to_server, server_receiver): ChannelWithContext<ServerInstruction> = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(to_server));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(to_server));
 
     close_pane(&mut screen, PaneId::Terminal(crate::TerminalId::new(1)));
     screen.settle_tabs().expect("TEST");
 
-    assert!(screen.tabs.is_empty(), "the emptied tab is closed");
+    assert!(screen.core.tabs.is_empty(), "the emptied tab is closed");
     assert!(
         session_ended(&server_receiver),
         "the session ends when the last pane closes"
@@ -309,12 +323,12 @@ fn the_last_pane_closing_still_exits_when_nothing_guards() {
 fn the_last_pane_closing_exits_with_nobody_attached() {
     let (mut screen, _screen_receiver, server_receiver, _plugin_receiver) =
         screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[]);
-    assert!(screen.active_tab_ids.is_empty());
+    assert!(screen.core.active_tab_ids.is_empty());
 
     close_pane(&mut screen, PaneId::Terminal(crate::TerminalId::new(1)));
     screen.settle_tabs().expect("TEST");
 
-    assert!(screen.tabs.is_empty());
+    assert!(screen.core.tabs.is_empty());
     assert!(session_ended(&server_receiver));
 }
 
@@ -330,7 +344,7 @@ fn the_last_pane_closing_exits_with_only_a_watcher_attached() {
     close_pane(&mut screen, PaneId::Terminal(crate::TerminalId::new(1)));
     screen.settle_tabs().expect("TEST");
 
-    assert!(screen.tabs.is_empty());
+    assert!(screen.core.tabs.is_empty());
     assert!(session_ended(&server_receiver));
 }
 
@@ -349,7 +363,7 @@ fn last_pane_close_ends_the_session_with_hidden_terminals() {
                 screen_with_plugin_senders_and_clients(&tab_ids, &[client]);
             let hidden = PaneId::Terminal(TerminalId::new(1));
             let visible = PaneId::Terminal(TerminalId::new(2));
-            let tab = screen.tabs.get_mut(&source).unwrap();
+            let tab = screen.core.tabs.get_mut(&source).unwrap();
             if !hidden_in_other_tab {
                 tab.new_pane(
                     visible,
@@ -366,9 +380,9 @@ fn last_pane_close_ends_the_session_with_hidden_terminals() {
             tab.suppress_pane(hidden, None);
             screen.settle_tabs().unwrap();
             let (to_pty, pty_receiver): ChannelWithContext<PtyInstruction> = channels::unbounded();
-            screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
-            for tab in screen.tabs.values_mut() {
-                tab.senders.to_pty = screen.bus.senders.to_pty.clone();
+            screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+            for tab in screen.core.tabs.values_mut() {
+                tab.senders.to_pty = screen.core.bus.senders.to_pty.clone();
             }
 
             screen
@@ -382,7 +396,7 @@ fn last_pane_close_ends_the_session_with_hidden_terminals() {
                 .unwrap();
             screen.settle_tabs().unwrap();
 
-            assert!(screen.tabs.is_empty());
+            assert!(screen.core.tabs.is_empty());
             assert!(session_ended(&server));
             assert!(requested_tabs(&plugins).is_empty());
             assert_eq!(launches(&receiver), 0);
@@ -422,7 +436,7 @@ fn the_last_pane_closing_confirms_when_a_plugin_guards() {
         other => panic!("one replacement tab is requested, got {other:?}"),
     };
     assert_eq!(
-        screen.tabs.len(),
+        screen.core.tabs.len(),
         2,
         "the emptied tab waits for its replacement"
     );
@@ -440,11 +454,14 @@ fn the_last_pane_closing_confirms_when_a_plugin_guards() {
     screen.settle_tabs().expect("TEST");
 
     assert_eq!(
-        screen.tabs.keys().copied().collect::<Vec<_>>(),
+        screen.core.tabs.keys().copied().collect::<Vec<_>>(),
         vec![replacement]
     );
-    assert_eq!(screen.active_tab_ids.get(&client_id), Some(&replacement));
-    assert!(screen.tabs[&replacement].has_selectable_panes());
+    assert_eq!(
+        screen.core.active_tab_ids.get(&client_id),
+        Some(&replacement)
+    );
+    assert!(screen.core.tabs[&replacement].has_selectable_panes());
     assert!(!session_ended(&server_receiver));
     let launch = launched_plugin(&screen_receiver).expect("the confirmation is raised");
     let (tag, configuration, placement) = launch_details(&launch);
@@ -480,8 +497,11 @@ fn paste_into_an_empty_tab_completes_while_a_quit_guard_replacement_loads() {
 
         let requested = requested_tabs(&plugin_receiver);
         assert_eq!(requested.len(), 1);
-        assert_eq!(screen.active_tab_ids[&client], TabId::new(1));
-        assert_eq!(screen.tabs[&TabId::new(1)].get_active_pane_id(client), None);
+        assert_eq!(screen.core.active_tab_ids[&client], TabId::new(1));
+        assert_eq!(
+            screen.core.tabs[&TabId::new(1)].get_active_pane_id(client),
+            None
+        );
         assert_eq!(screen.client_to_act_for(paste_client), Some(client));
         // Unattached callers have no input mode, so paste exits before fallback delivery.
         assert_eq!(
@@ -503,7 +523,7 @@ fn paste_into_an_empty_tab_completes_while_a_quit_guard_replacement_loads() {
 
         load_replacement_tab(&mut screen, requested[0], 2);
         screen.settle_tabs().unwrap();
-        assert_eq!(screen.active_tab_ids[&client], requested[0]);
+        assert_eq!(screen.core.active_tab_ids[&client], requested[0]);
         assert_every_client_has_a_tab(&screen);
         assert_eq!(launches(&screen_receiver), 1);
         assert!(!session_ended(&server_receiver));
@@ -522,6 +542,7 @@ fn closing_all_tabs_at_once_still_confirms_when_a_plugin_guards() {
 
     for (tab_id, terminal_id) in [(1, 1), (2, 2)] {
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(tab_id))
             .expect("TEST")
@@ -538,12 +559,12 @@ fn closing_all_tabs_at_once_still_confirms_when_a_plugin_guards() {
         [id] => *id,
         other => panic!("one replacement tab is requested, got {other:?}"),
     };
-    assert_eq!(screen.tabs.len(), 3);
+    assert_eq!(screen.core.tabs.len(), 3);
     load_replacement_tab(&mut screen, replacement, 3);
     screen.settle_tabs().expect("TEST");
 
     assert_eq!(
-        screen.tabs.keys().copied().collect::<Vec<_>>(),
+        screen.core.tabs.keys().copied().collect::<Vec<_>>(),
         vec![replacement]
     );
     assert_eq!(launches(&screen_receiver), 1);
@@ -603,7 +624,7 @@ fn closing_the_replacements_shell_asks_again() {
     screen.settle_tabs().expect("TEST");
 
     assert_eq!(
-        screen.tabs.keys().copied().collect::<Vec<_>>(),
+        screen.core.tabs.keys().copied().collect::<Vec<_>>(),
         vec![second]
     );
     assert_eq!(
@@ -626,7 +647,7 @@ fn a_guarded_session_with_nobody_attached_waits_for_a_client() {
     screen.settle_tabs().expect("TEST");
     screen.settle_tabs().expect("TEST");
 
-    assert_eq!(screen.tabs.len(), 1, "the emptied tab is kept");
+    assert_eq!(screen.core.tabs.len(), 1, "the emptied tab is kept");
     assert!(requested_tabs(&plugin_receiver).is_empty());
     assert!(!session_ended(&server_receiver));
 
@@ -658,7 +679,7 @@ fn a_replacement_closed_before_it_loads_is_requested_again() {
         1,
         "another replacement is requested"
     );
-    assert_eq!(screen.tabs.len(), 2);
+    assert_eq!(screen.core.tabs.len(), 2);
     assert!(!session_ended(&server_receiver));
 }
 
@@ -688,7 +709,7 @@ fn a_replacement_that_loads_unusable_ends_the_session() {
         .expect("TEST");
     screen.settle_tabs().expect("TEST");
 
-    assert!(screen.tabs.is_empty());
+    assert!(screen.core.tabs.is_empty());
     assert!(session_ended(&server_receiver));
     assert!(requested_tabs(&plugin_receiver).is_empty());
 }
@@ -749,9 +770,9 @@ fn screen_with_plugin_senders_and_clients(
     let size = Size { cols: 80, rows: 24 };
     let mut screen = create_new_screen(size, true, true);
     let (to_plugin, plugin_receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
     let (to_server, server_receiver): ChannelWithContext<ServerInstruction> = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(to_server));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(to_server));
     for (index, tab_id) in tab_ids.iter().enumerate() {
         new_tab(&mut screen, index as u32 + 1, *tab_id);
     }
@@ -764,7 +785,7 @@ fn screen_with_plugin_senders_and_clients(
         screen.add_client(*client_id).expect("TEST");
     }
     let (to_screen, screen_receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
     (screen, screen_receiver, server_receiver, plugin_receiver)
 }
 
@@ -789,7 +810,7 @@ fn hook_pane_over_a_held_terminal(
     terminal_id: crate::TerminalId,
     plugin_id: PluginId,
 ) {
-    let tab = screen.tabs.get_mut(&tab_id).expect("TEST");
+    let tab = screen.core.tabs.get_mut(&tab_id).expect("TEST");
     tab.suppress_pane_and_replace_with_pid(
         PaneId::Terminal(terminal_id),
         PaneId::Plugin(plugin_id),
@@ -813,8 +834,8 @@ fn hook_pane_over_a_held_terminal(
 /// tab, and that tab counts it among its connected clients. A client that fails either half
 /// gets no output and no input handling, with nothing to repair it short of a reattach.
 fn assert_every_client_has_a_tab(screen: &Screen) {
-    for (client_id, tab_id) in &screen.active_tab_ids {
-        let tab = screen.tabs.get(tab_id).unwrap_or_else(|| {
+    for (client_id, tab_id) in &screen.core.active_tab_ids {
+        let tab = screen.core.tabs.get(tab_id).unwrap_or_else(|| {
             panic!("client {client_id} is on tab {tab_id}, which no longer exists")
         });
         assert!(
@@ -850,7 +871,7 @@ fn closing_a_hook_pane_over_a_dead_terminal_closes_the_last_tab() {
     screen.settle_tabs().expect("TEST");
 
     assert!(
-        screen.tabs.is_empty(),
+        screen.core.tabs.is_empty(),
         "the hook pane and the dead terminal go together, and the tab with them",
     );
     assert!(
@@ -869,7 +890,10 @@ fn closing_a_hook_pane_over_a_dead_terminal_rehomes_the_client() {
     screen
         .go_to_tab(yinz_types::internal_ids::TabNumber::new(1), client_id)
         .expect("TEST");
-    assert_eq!(screen.active_tab_ids.get(&client_id), Some(&TabId::new(1)));
+    assert_eq!(
+        screen.core.active_tab_ids.get(&client_id),
+        Some(&TabId::new(1))
+    );
 
     hook_pane_over_a_held_terminal(
         &mut screen,
@@ -882,7 +906,7 @@ fn closing_a_hook_pane_over_a_dead_terminal_rehomes_the_client() {
     screen.settle_tabs().expect("TEST");
 
     assert_eq!(
-        screen.tabs.keys().copied().collect::<Vec<_>>(),
+        screen.core.tabs.keys().copied().collect::<Vec<_>>(),
         vec![TabId::new(2)],
         "the emptied tab is swept and the other one survives",
     );
@@ -900,7 +924,7 @@ fn a_client_re_homed_into_a_tab_with_only_floating_panes_can_still_see_and_type(
     let client_id = crate::ClientId::new(1);
     // Tab 2 keeps a floating pane and nothing tiled, so it survives the sweep with no tiled
     // pane for an arriving client to be focused on.
-    let tab_two = screen.tabs.get_mut(&TabId::new(2)).expect("TEST");
+    let tab_two = screen.core.tabs.get_mut(&TabId::new(2)).expect("TEST");
     tab_two
         .new_floating_pane(
             PaneId::Terminal(crate::TerminalId::new(9)),
@@ -928,7 +952,7 @@ fn a_client_re_homed_into_a_tab_with_only_floating_panes_can_still_see_and_type(
     screen.settle_tabs().expect("TEST");
 
     assert_eq!(
-        screen.tabs.keys().copied().collect::<Vec<_>>(),
+        screen.core.tabs.keys().copied().collect::<Vec<_>>(),
         vec![TabId::new(2)],
         "the emptied tab is swept and the floating-only one survives",
     );
@@ -1018,30 +1042,33 @@ fn closing_a_hook_pane_over_a_dead_terminal_clears_the_terminals_guest_state() {
         PluginId::new(42),
     );
     screen
+        .nested
         .nested_guest_tracker
         .on_announce(subject, std::time::Instant::now());
-    screen.nested_guest_choices.insert(
+    screen.nested.nested_guest_choices.insert(
         (client_id, subject),
         super::super::NestedGuestChoice::Descend,
     );
     screen
+        .core
         .pane_output_activity
         .insert(subject, std::time::Instant::now());
 
     screen.close_focused_pane(client_id, None).expect("TEST");
 
     assert!(
-        !screen.nested_guest_tracker.is_tracked(subject),
+        !screen.nested.nested_guest_tracker.is_tracked(subject),
         "the terminal that went with the hook pane is no longer a tracked guest",
     );
     assert!(
         !screen
+            .nested
             .nested_guest_choices
             .contains_key(&(client_id, subject)),
         "and no client is left descended into it",
     );
     assert!(
-        !screen.pane_output_activity.contains_key(&subject),
+        !screen.core.pane_output_activity.contains_key(&subject),
         "and nothing is left keyed on an id that will be handed out again",
     );
 }
@@ -1054,12 +1081,13 @@ fn disconnected_pty_does_not_interrupt_tab_teardown() {
             &[crate::ClientId::new(1)],
         );
     let (sender, receiver) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(sender));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(sender));
     drop(receiver);
-    screen.bus.senders.should_silently_fail = false;
+    screen.core.bus.senders.should_silently_fail = false;
     let (background_sender, _background_receiver) = channels::unbounded();
-    screen.bus.senders.to_background_jobs = Some(SenderWithContext::new(background_sender));
+    screen.core.bus.senders.to_background_jobs = Some(SenderWithContext::new(background_sender));
     assert!(screen
+        .core
         .bus
         .senders
         .send_to_pty(PtyInstruction::Exit)
@@ -1072,8 +1100,8 @@ fn disconnected_pty_does_not_interrupt_tab_teardown() {
         .unwrap();
     screen.close_tab_by_id(TabId::new(1)).unwrap();
     assert_every_client_has_a_tab(&screen);
-    assert_eq!(screen.tabs[&TabId::new(2)].position.get(), 0);
-    assert_eq!(screen.tabs[&TabId::new(3)].position.get(), 1);
+    assert_eq!(screen.core.tabs[&TabId::new(2)].position.get(), 0);
+    assert_eq!(screen.core.tabs[&TabId::new(3)].position.get(), 1);
     screen
         .go_to_tab(
             yinz_types::internal_ids::TabNumber::new(2),
@@ -1081,7 +1109,7 @@ fn disconnected_pty_does_not_interrupt_tab_teardown() {
         )
         .unwrap();
     assert_eq!(
-        screen.active_tab_ids[&crate::ClientId::new(1)],
+        screen.core.active_tab_ids[&crate::ClientId::new(1)],
         TabId::new(3)
     );
 }
@@ -1099,19 +1127,19 @@ fn pending_tabs_are_not_relocation_destinations_and_cancel_obsolete_confirmation
         .new_tab(other, (vec![], vec![]), None, Some(crate::ClientId::new(1)))
         .unwrap();
     screen.settle_tabs().unwrap();
-    assert!(screen.tabs.contains_key(&TabId::new(1)));
+    assert!(screen.core.tabs.contains_key(&TabId::new(1)));
     assert_eq!(
-        screen.active_tab_ids[&crate::ClientId::new(1)],
+        screen.core.active_tab_ids[&crate::ClientId::new(1)],
         TabId::new(1)
     );
     load_replacement_tab(&mut screen, other, 3);
     screen.settle_tabs().unwrap();
-    assert_eq!(screen.active_tab_ids[&crate::ClientId::new(1)], other);
-    assert!(!screen.tabs.contains_key(&TabId::new(1)));
+    assert_eq!(screen.core.active_tab_ids[&crate::ClientId::new(1)], other);
+    assert!(!screen.core.tabs.contains_key(&TabId::new(1)));
     assert_eq!(launches(&receiver), 0);
     load_replacement_tab(&mut screen, replacement, 2);
     screen.settle_tabs().unwrap();
-    assert_eq!(screen.active_tab_ids[&crate::ClientId::new(1)], other);
+    assert_eq!(screen.core.active_tab_ids[&crate::ClientId::new(1)], other);
     assert_eq!(launches(&receiver), 0);
 }
 
@@ -1127,8 +1155,8 @@ fn internal_tab_closure_waits_for_a_loaded_destination() {
         let (mut screen, receiver, server, plugins) =
             screen_with_plugin_senders_and_clients(&[source], &[client, CLIENT_2]);
         let (to_pty, pty_receiver) = channels::unbounded();
-        screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
-        let tab = screen.tabs.get_mut(&source).unwrap();
+        screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+        let tab = screen.core.tabs.get_mut(&source).unwrap();
         for (id, placement) in [
             (hidden, NewPanePlacement::default()),
             (
@@ -1153,11 +1181,11 @@ fn internal_tab_closure_waits_for_a_loaded_destination() {
             screen.close_tab_by_id(source).unwrap();
         }
         screen.settle_tabs().unwrap();
-        assert!(screen.deferred_tab_closes.contains(&source));
-        assert_eq!(screen.active_tab_ids[&client], source);
-        assert_eq!(screen.active_tab_ids[&CLIENT_2], source);
+        assert!(screen.core.deferred_tab_closes.contains(&source));
+        assert_eq!(screen.core.active_tab_ids[&client], source);
+        assert_eq!(screen.core.active_tab_ids[&CLIENT_2], source);
         assert_every_client_has_a_tab(&screen);
-        let tab = screen.tabs.get_mut(&source).unwrap();
+        let tab = screen.core.tabs.get_mut(&source).unwrap();
         assert!(tab.has_pane_with_pid(&hidden));
         assert!(tab.pane_is_overlay(overlay));
         assert_eq!(tab.take_pending_respawn(hidden), Some(respawn.clone()));
@@ -1169,14 +1197,14 @@ fn internal_tab_closure_waits_for_a_loaded_destination() {
 
         // ApplyLayout must leave focus alone: settlement owns the client relocation.
         load_replacement_tab(&mut screen, destination, 2);
-        assert_eq!(screen.active_tab_ids[&client], source);
+        assert_eq!(screen.core.active_tab_ids[&client], source);
         screen.settle_tabs().unwrap();
-        assert!(!screen.tabs.contains_key(&source));
-        assert!(screen.deferred_tab_closes.is_empty());
-        assert_eq!(screen.active_tab_ids[&client], destination);
-        assert_eq!(screen.active_tab_ids[&CLIENT_2], destination);
+        assert!(!screen.core.tabs.contains_key(&source));
+        assert!(screen.core.deferred_tab_closes.is_empty());
+        assert_eq!(screen.core.active_tab_ids[&client], destination);
+        assert_eq!(screen.core.active_tab_ids[&CLIENT_2], destination);
         assert_every_client_has_a_tab(&screen);
-        let tab = screen.tabs.get_mut(&destination).unwrap();
+        let tab = screen.core.tabs.get_mut(&destination).unwrap();
         assert_eq!(tab.position.get(), 0);
         assert!(tab.has_pane_with_pid(&hidden));
         assert!(tab.pane_is_overlay(overlay));
@@ -1214,15 +1242,15 @@ fn failed_pending_destination_does_not_block_internal_tab_closure() {
         .unwrap();
     screen.empty_and_close_tab(source);
     screen.settle_tabs().unwrap();
-    assert!(screen.tabs.contains_key(&source));
+    assert!(screen.core.tabs.contains_key(&source));
 
     screen.close_tab_by_id(failed).unwrap();
     assert!(!screen.has_pending_tabs());
-    assert_eq!(screen.tabs[&source].position.get(), 0);
+    assert_eq!(screen.core.tabs[&source].position.get(), 0);
     screen.settle_tabs().unwrap();
-    assert!(screen.tabs.is_empty());
-    assert!(screen.deferred_tab_closes.is_empty());
-    assert!(screen.active_tab_ids.is_empty());
+    assert!(screen.core.tabs.is_empty());
+    assert!(screen.core.deferred_tab_closes.is_empty());
+    assert!(screen.core.active_tab_ids.is_empty());
     assert!(session_ended(&server));
     assert_eq!(launches(&receiver), 0);
     assert!(requested_tabs(&plugins).is_empty());
@@ -1240,12 +1268,12 @@ fn hidden_only_non_last_tab_keeps_its_identity_and_terminal() {
             let other = ClientId::new(2);
             let (mut screen, _, _, plugins) =
                 screen_with_plugin_senders_and_clients(&[source, destination], &[client, other]);
-            screen.session_is_mirrored = mirrored;
+            screen.core.session_is_mirrored = mirrored;
             screen
                 .go_to_tab(yinz_types::internal_ids::TabNumber::new(1), client)
                 .unwrap();
             let id = PaneId::Terminal(TerminalId::new(1));
-            let tab = screen.tabs.get_mut(&source).unwrap();
+            let tab = screen.core.tabs.get_mut(&source).unwrap();
             tab.name = "parked".into();
             tab.handle_pty_bytes(TerminalId::new(1), b"saved parked output".to_vec())
                 .unwrap();
@@ -1266,9 +1294,9 @@ fn hidden_only_non_last_tab_keeps_its_identity_and_terminal() {
             }
             tab.suppress_pane(id, None);
             screen.settle_tabs().unwrap();
-            assert_eq!(screen.active_tab_ids[&client], destination);
-            assert!(!screen.tabs[&source].has_selectable_panes());
-            assert!(screen.tabs[&source].has_pane_with_pid(&id));
+            assert_eq!(screen.core.active_tab_ids[&client], destination);
+            assert!(!screen.core.tabs[&source].has_selectable_panes());
+            assert!(screen.core.tabs[&source].has_pane_with_pid(&id));
             assert!(requested_tabs(&plugins).is_empty());
             match route {
                 "number" => screen
@@ -1292,17 +1320,20 @@ fn hidden_only_non_last_tab_keeps_its_identity_and_terminal() {
             for _ in 0..3 {
                 screen.settle_tabs().unwrap();
                 assert_eq!(
-                    screen.active_tab_ids[&client], source,
+                    screen.core.active_tab_ids[&client], source,
                     "{route}, mirrored={mirrored}"
                 );
-                assert_eq!(screen.tabs[&source].get_active_pane_id(client), Some(id));
-                assert!(screen.tabs[&source].are_floating_panes_visible());
+                assert_eq!(
+                    screen.core.tabs[&source].get_active_pane_id(client),
+                    Some(id)
+                );
+                assert!(screen.core.tabs[&source].are_floating_panes_visible());
             }
             assert_eq!(
-                screen.active_tab_ids[&other],
+                screen.core.active_tab_ids[&other],
                 if mirrored { source } else { destination }
             );
-            assert!(screen.tabs[&source]
+            assert!(screen.core.tabs[&source]
                 .get_pane_with_id(id)
                 .unwrap()
                 .dump_screen(true, None)
@@ -1326,7 +1357,7 @@ fn settlement_repairs_floating_focus_after_last_tiled_exit_alone_or_beside_anoth
         screen
             .go_to_tab(yinz_types::internal_ids::TabNumber::new(1), client)
             .unwrap();
-        let tab = screen.tabs.get_mut(&source).unwrap();
+        let tab = screen.core.tabs.get_mut(&source).unwrap();
         let floating = PaneId::Terminal(TerminalId::new(3));
         tab.new_pane(
             floating,
@@ -1344,12 +1375,12 @@ fn settlement_repairs_floating_focus_after_last_tiled_exit_alone_or_beside_anoth
         // Also exercise settlement itself, independently of removal's immediate repair.
         tab.hide_floating_panes();
         screen.settle_tabs().unwrap();
-        assert_eq!(screen.active_tab_ids[&client], source);
+        assert_eq!(screen.core.active_tab_ids[&client], source);
         assert_eq!(
-            screen.tabs[&source].get_active_pane_id(client),
+            screen.core.tabs[&source].get_active_pane_id(client),
             Some(floating)
         );
-        assert!(screen.tabs[&source].are_floating_panes_visible());
+        assert!(screen.core.tabs[&source].are_floating_panes_visible());
         assert_every_client_has_a_tab(&screen);
         assert!(requested_tabs(&plugins).is_empty());
     }
@@ -1364,7 +1395,7 @@ fn tab_teardown_records_destruction_but_not_held_or_relocated_panes() {
         screen_with_plugin_senders_and_clients(&[source, destination], &[client]);
     let destroyed = PaneId::Terminal(TerminalId::new(1));
     let moved = PaneId::Terminal(TerminalId::new(8));
-    let tab = screen.tabs.get_mut(&source).unwrap();
+    let tab = screen.core.tabs.get_mut(&source).unwrap();
     tab.new_pane(
         moved,
         None,
@@ -1378,16 +1409,16 @@ fn tab_teardown_records_destruction_but_not_held_or_relocated_panes() {
     .unwrap();
     tab.hold_pane(destroyed, Some(0), false, RunCommand::default());
     tab.suppress_pane(moved, None);
-    assert!(screen.destroyed_panes.is_empty());
+    assert!(screen.core.destroyed_panes.is_empty());
     screen.close_tab_by_id(source).unwrap();
-    assert_eq!(screen.destroyed_panes, HashSet::from([destroyed]));
-    assert!(screen.tabs[&destination].has_pane_with_pid(&moved));
+    assert_eq!(screen.core.destroyed_panes, HashSet::from([destroyed]));
+    assert!(screen.core.tabs[&destination].has_pane_with_pid(&moved));
     screen.close_pane_explicitly(moved, None);
-    assert!(screen.destroyed_panes.contains(&moved));
-    assert!(!screen.tabs[&destination].has_pane_with_pid(&moved));
+    assert!(screen.core.destroyed_panes.contains(&moved));
+    assert!(!screen.core.tabs[&destination].has_pane_with_pid(&moved));
     let discarded = PaneId::Terminal(TerminalId::new(9));
     screen.forget_unplaced_pane(discarded, "destination closed during spawn".into());
-    assert!(screen.destroyed_panes.contains(&discarded));
+    assert!(screen.core.destroyed_panes.contains(&discarded));
 }
 
 #[test]
@@ -1397,6 +1428,7 @@ fn homeless_plugin_drops_its_notice_before_settlement() {
     screen.set_quit_notice(AGENT_PLUGIN_ID, None, true);
     screen.close_homeless_pane(PaneId::Plugin(AGENT_PLUGIN_ID));
     assert!(screen
+        .core
         .destroyed_panes
         .contains(&PaneId::Plugin(AGENT_PLUGIN_ID)));
     assert!(!screen.quit_is_guarded());
@@ -1416,13 +1448,13 @@ fn deferred_focus_uses_stable_ids_after_earlier_tab_removal() {
     screen.close_tab_by_id(TabId::new(1)).unwrap();
     screen.apply_deferred_tab_switches(&mut switches).unwrap();
     assert_eq!(
-        screen.active_tab_ids[&crate::ClientId::new(1)],
+        screen.core.active_tab_ids[&crate::ClientId::new(1)],
         TabId::new(3)
     );
     switches.insert((TabId::new(1), crate::ClientId::new(1)));
     screen.apply_deferred_tab_switches(&mut switches).unwrap();
     assert_eq!(
-        screen.active_tab_ids[&crate::ClientId::new(1)],
+        screen.core.active_tab_ids[&crate::ClientId::new(1)],
         TabId::new(3)
     );
 }
@@ -1439,10 +1471,11 @@ fn explicit_last_tab_close_checks_guards_then_exits_with_hidden_work() {
             screen.request_close_tab(TabId::new(1), None).unwrap();
         }
         assert_eq!(launches(&receiver), 1);
-        assert!(screen.tabs.contains_key(&TabId::new(1)));
+        assert!(screen.core.tabs.contains_key(&TabId::new(1)));
         screen.drop_quit_notice(AGENT_PLUGIN_ID);
         let id = PaneId::Terminal(crate::TerminalId::new(1));
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(1))
             .unwrap()
@@ -1453,7 +1486,7 @@ fn explicit_last_tab_close_checks_guards_then_exits_with_hidden_work() {
             screen.request_close_tab(TabId::new(1), None).unwrap();
         }
         screen.settle_tabs().unwrap();
-        assert!(screen.tabs.is_empty());
+        assert!(screen.core.tabs.is_empty());
         assert!(requested_tabs(&plugins).is_empty());
         assert!(session_ended(&server));
     }
@@ -1465,7 +1498,7 @@ fn automatic_replacement_preserves_guarding_plugins_in_every_layer() {
         let (mut screen, receiver, _, plugins) =
             screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[crate::ClientId::new(1)]);
         let id = PaneId::Plugin(AGENT_PLUGIN_ID);
-        let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+        let tab = screen.core.tabs.get_mut(&TabId::new(1)).unwrap();
         let placement = match layer {
             1 => NewPanePlacement::Floating(None),
             3 => NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
@@ -1495,7 +1528,7 @@ fn automatic_replacement_preserves_guarding_plugins_in_every_layer() {
         load_replacement_tab(&mut screen, replacement, 2);
         screen.settle_tabs().unwrap();
         assert!(
-            screen.tabs[&replacement].has_pane_with_pid(&id),
+            screen.core.tabs[&replacement].has_pane_with_pid(&id),
             "layer {layer}"
         );
         assert!(screen.quit_is_guarded(), "layer {layer}");
@@ -1705,7 +1738,8 @@ fn buffered_explicit_and_self_closes_keep_their_order_and_complete_once() {
             let (mut screen, _screen_receiver, _, plugins) =
                 screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[client]);
             let (background_tx, background_rx) = channels::unbounded();
-            screen.bus.senders.to_background_jobs = Some(SenderWithContext::new(background_tx));
+            screen.core.bus.senders.to_background_jobs =
+                Some(SenderWithContext::new(background_tx));
             let source = PaneId::Terminal(TerminalId::new(1));
             let replacement = PaneId::Plugin(PluginId::new(42));
             hook_pane_over_a_held_terminal(
@@ -1716,6 +1750,7 @@ fn buffered_explicit_and_self_closes_keep_their_order_and_complete_once() {
             );
             screen.set_quit_notice(PluginId::new(42), None, true);
             screen
+                .core
                 .pane_output_activity
                 .insert(source, std::time::Instant::now());
             let (tx, mut rx) = tokio::sync::oneshot::channel();
@@ -1749,7 +1784,7 @@ fn buffered_explicit_and_self_closes_keep_their_order_and_complete_once() {
             assert!(screen.tab_containing_pane(replacement).is_none());
             assert_eq!(screen.tab_containing_pane(source).is_none(), explicit_first);
             assert_eq!(
-                screen.pane_output_activity.contains_key(&source),
+                screen.core.pane_output_activity.contains_key(&source),
                 !explicit_first
             );
             assert!(!screen.quit_is_guarded());
@@ -2098,6 +2133,7 @@ fn background_tab_overlays_skip_pending_destinations() {
         screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[crate::ClientId::new(1)]);
     let id = PaneId::Plugin(AGENT_PLUGIN_ID);
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(1))
         .unwrap()
@@ -2128,8 +2164,8 @@ fn background_tab_overlays_skip_pending_destinations() {
         )
         .unwrap();
     screen.close_tab_by_id(TabId::new(1)).unwrap();
-    assert!(screen.tabs[&TabId::new(3)].has_pane_with_pid(&id));
-    assert!(!screen.tabs[&TabId::new(2)].has_pane_with_pid(&id));
+    assert!(screen.core.tabs[&TabId::new(3)].has_pane_with_pid(&id));
+    assert!(!screen.core.tabs[&TabId::new(2)].has_pane_with_pid(&id));
 }
 
 #[test]
@@ -2240,7 +2276,7 @@ fn navigation_recovers_parked_work_after_visible_pane_closes() {
             .unwrap();
         let original = PaneId::Terminal(TerminalId::new(1));
         let added = PaneId::Terminal(TerminalId::new(3));
-        let tab = screen.tabs.get_mut(&source).unwrap();
+        let tab = screen.core.tabs.get_mut(&source).unwrap();
         tab.new_pane(
             added,
             None,
@@ -2261,25 +2297,26 @@ fn navigation_recovers_parked_work_after_visible_pane_closes() {
         };
         screen.settle_tabs().unwrap();
         assert!(
-            screen.tabs[&source]
+            screen.core.tabs[&source]
                 .get_pane_info(hidden)
                 .unwrap()
                 .is_suppressed
         );
         screen
+            .core
             .tabs
             .get_mut(&source)
             .unwrap()
             .close_pane(visible, false, None);
         screen.settle_tabs().unwrap();
-        assert_ne!(screen.active_tab_ids[&client], source);
+        assert_ne!(screen.core.active_tab_ids[&client], source);
         screen
             .go_to_tab(yinz_types::internal_ids::TabNumber::new(1), client)
             .unwrap();
         screen.settle_tabs().unwrap();
-        assert_eq!(screen.active_tab_ids[&client], source);
+        assert_eq!(screen.core.active_tab_ids[&client], source);
         assert_eq!(
-            screen.tabs[&source].get_active_pane_id(client),
+            screen.core.tabs[&source].get_active_pane_id(client),
             Some(hidden)
         );
     }
@@ -2292,7 +2329,7 @@ fn navigation_with_no_floating_room_preserves_hidden_terminal_for_retry() {
     let hidden = PaneId::Terminal(TerminalId::new(1));
     let (mut screen, _, _, _) =
         screen_with_plugin_senders_and_clients(&[source, TabId::new(2)], &[client]);
-    let tab = screen.tabs.get_mut(&source).unwrap();
+    let tab = screen.core.tabs.get_mut(&source).unwrap();
     tab.suppress_pane(hidden, None);
     // The room is the arriving client's: the tab is sized for it before recovery is judged.
     screen
@@ -2302,9 +2339,9 @@ fn navigation_with_no_floating_room_preserves_hidden_terminal_for_retry() {
     screen
         .go_to_tab(yinz_types::internal_ids::TabNumber::new(1), client)
         .unwrap();
-    assert_eq!(screen.active_tab_ids[&client], TabId::new(2));
+    assert_eq!(screen.core.active_tab_ids[&client], TabId::new(2));
     assert!(
-        screen.tabs[&source]
+        screen.core.tabs[&source]
             .get_pane_info(hidden)
             .unwrap()
             .is_suppressed
@@ -2316,9 +2353,9 @@ fn navigation_with_no_floating_room_preserves_hidden_terminal_for_retry() {
         .go_to_tab(yinz_types::internal_ids::TabNumber::new(1), client)
         .unwrap();
     screen.settle_tabs().unwrap();
-    assert_eq!(screen.active_tab_ids[&client], source);
+    assert_eq!(screen.core.active_tab_ids[&client], source);
     assert_eq!(
-        screen.tabs[&source].get_active_pane_id(client),
+        screen.core.tabs[&source].get_active_pane_id(client),
         Some(hidden)
     );
 }
@@ -2334,12 +2371,12 @@ fn attaching_to_a_parked_tab_judges_room_at_the_attaching_clients_size() {
     let hidden = PaneId::Terminal(TerminalId::new(1));
     let (mut screen, _, _, _) =
         screen_with_plugin_senders_and_clients(&[parked, other_tab], &[viewer]);
-    screen.session_is_mirrored = false;
-    let tab = screen.tabs.get_mut(&parked).unwrap();
+    screen.core.session_is_mirrored = false;
+    let tab = screen.core.tabs.get_mut(&parked).unwrap();
     tab.suppress_pane(hidden, None);
     tab.resize_whole_tab(Size { cols: 1, rows: 1 }).unwrap();
     screen.settle_tabs().unwrap();
-    assert_eq!(screen.active_tab_ids[&viewer], other_tab);
+    assert_eq!(screen.core.active_tab_ids[&viewer], other_tab);
 
     screen
         .attach_client(
@@ -2352,9 +2389,9 @@ fn attaching_to_a_parked_tab_judges_room_at_the_attaching_clients_size() {
         )
         .unwrap();
 
-    assert_eq!(screen.active_tab_ids[&attaching], parked);
+    assert_eq!(screen.core.active_tab_ids[&attaching], parked);
     assert_eq!(
-        screen.tabs[&parked].get_active_pane_id(attaching),
+        screen.core.tabs[&parked].get_active_pane_id(attaching),
         Some(hidden)
     );
 }
@@ -2366,6 +2403,7 @@ fn navigating_to_the_current_tab_recovers_its_hidden_terminal() {
     let hidden = PaneId::Terminal(TerminalId::new(1));
     let (mut screen, _, _, _) = screen_with_plugin_senders_and_clients(&[source], &[client]);
     screen
+        .core
         .tabs
         .get_mut(&source)
         .unwrap()
@@ -2374,10 +2412,10 @@ fn navigating_to_the_current_tab_recovers_its_hidden_terminal() {
         .go_to_tab(yinz_types::internal_ids::TabNumber::new(1), client)
         .unwrap();
     assert_eq!(
-        screen.tabs[&source].get_active_pane_id(client),
+        screen.core.tabs[&source].get_active_pane_id(client),
         Some(hidden)
     );
-    assert!(screen.tabs[&source].are_floating_panes_visible());
+    assert!(screen.core.tabs[&source].are_floating_panes_visible());
 }
 
 #[test]
@@ -2388,7 +2426,7 @@ fn explicit_pane_focus_does_not_recover_an_unrequested_terminal() {
         screen_with_plugin_senders_and_clients(&[source, TabId::new(2)], &[client]);
     let requested = PaneId::Terminal(TerminalId::new(9));
     let other = PaneId::Terminal(TerminalId::new(1));
-    let tab = screen.tabs.get_mut(&source).unwrap();
+    let tab = screen.core.tabs.get_mut(&source).unwrap();
     tab.new_pane(
         requested,
         None,
@@ -2405,13 +2443,13 @@ fn explicit_pane_focus_does_not_recover_an_unrequested_terminal() {
         .focus_pane_with_id(requested, true, false, client)
         .unwrap();
     screen.settle_tabs().unwrap();
-    assert_eq!(screen.active_tab_ids[&client], source);
+    assert_eq!(screen.core.active_tab_ids[&client], source);
     assert_eq!(
-        screen.tabs[&source].get_active_pane_id(client),
+        screen.core.tabs[&source].get_active_pane_id(client),
         Some(requested)
     );
     assert!(
-        screen.tabs[&source]
+        screen.core.tabs[&source]
             .get_pane_info(other)
             .unwrap()
             .is_suppressed
@@ -2430,6 +2468,7 @@ fn moving_a_pane_to_a_hidden_only_tab_does_not_recover_parked_work() {
         .unwrap();
     let hidden = PaneId::Terminal(TerminalId::new(2));
     screen
+        .core
         .tabs
         .get_mut(&destination)
         .unwrap()
@@ -2438,14 +2477,14 @@ fn moving_a_pane_to_a_hidden_only_tab_does_not_recover_parked_work() {
         .break_pane_to_new_tab(Direction::Right, client)
         .unwrap();
     screen.settle_tabs().unwrap();
-    assert_eq!(screen.active_tab_ids[&client], destination);
+    assert_eq!(screen.core.active_tab_ids[&client], destination);
     assert!(
-        screen.tabs[&destination]
+        screen.core.tabs[&destination]
             .get_pane_info(hidden)
             .unwrap()
             .is_suppressed
     );
-    assert!(screen.tabs[&destination]
+    assert!(screen.core.tabs[&destination]
         .has_non_suppressed_pane_with_pid(&PaneId::Terminal(TerminalId::new(1))));
 }
 
@@ -2461,7 +2500,7 @@ fn detaching_while_replacement_loads_preserves_confirmation_for_next_client() {
     screen.remove_client(client).unwrap();
     load_replacement_tab(&mut screen, replacement, 2);
     assert!(
-        screen.active_tab_ids.is_empty(),
+        screen.core.active_tab_ids.is_empty(),
         "layout must not reattach a departed client"
     );
     screen.settle_tabs().unwrap();
@@ -2470,10 +2509,10 @@ fn detaching_while_replacement_loads_preserves_confirmation_for_next_client() {
     assert!(!session_ended(&server_receiver));
     screen.add_client(CLIENT_2).unwrap();
     screen.settle_tabs().unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT_2], replacement);
+    assert_eq!(screen.core.active_tab_ids[&CLIENT_2], replacement);
     assert_eq!(launches(&screen_receiver), 1);
     screen.settle_tabs().unwrap();
     assert_eq!(launches(&screen_receiver), 0);
-    assert_eq!(screen.tabs.len(), 1);
+    assert_eq!(screen.core.tabs.len(), 1);
     assert!(requested_tabs(&plugin_receiver).is_empty());
 }

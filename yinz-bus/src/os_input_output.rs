@@ -100,15 +100,6 @@ pub trait TerminalIo: Send + Sync {
     ) -> Result<()>;
     /// Write bytes to the standard input of the virtual terminal referred to by `terminal_id`.
     fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize>;
-    /// Persist observations for the active launch; unsupervised backends have
-    /// no retained launch metadata to update.
-    fn retain_agent_theme(
-        &self,
-        _terminal_id: TerminalId,
-        _event: yinz_types::agent::theme::AgentThemeEvent,
-    ) -> Result<()> {
-        Ok(())
-    }
     /// Wait until all output written to the terminal has been transmitted.
     fn tcdrain(&self, terminal_id: TerminalId) -> Result<()>;
     fn cache_resizes(&mut self) {}
@@ -414,18 +405,6 @@ pub trait ClientTransport: Send + Sync {
 
 /// Process metadata, palette, and file access used by the server.
 pub trait ServerEnvironment: Send + Sync {
-    /// Observe an adopted local Claude without requiring a new provider hook.
-    /// Only publish while the terminal retains its foreground process group and the
-    /// observed Claude process instance is alive. The launch command may name a shell.
-    /// The callback returns false when the destination no longer accepts this observation.
-    fn observe_restored_claude(
-        &self,
-        _terminal: TerminalId,
-        _conversation: String,
-        _publish: Box<dyn Fn(Option<yinz_types::agent::AgentState>) -> bool + Send>,
-    ) -> Result<()> {
-        Ok(())
-    }
     fn load_palette(&self) -> Palette;
     /// Returns the current working directory for a given pid
     fn get_cwd(&self, pid: ProcessId) -> Option<PathBuf>;
@@ -449,14 +428,6 @@ pub trait ServerEnvironment: Send + Sync {
     ) -> HashMap<TerminalId, Vec<String>> {
         HashMap::new()
     }
-    /// Execution-host detection state, including pending asynchronous resolution.
-    fn detected_agent_theme(
-        &self,
-        _terminal_id: TerminalId,
-        _child_pid: ProcessId,
-    ) -> Option<yinz_types::agent::theme::DetectedAgentTheme> {
-        None
-    }
     /// Writes the given buffer to a string
     fn write_to_file(&mut self, buf: String, file: Option<String>) -> Result<()>;
     /// Write `buf` to a new file at `path` that only this user can read, inside a private
@@ -470,6 +441,27 @@ pub trait ServerEnvironment: Send + Sync {
     }
 }
 
+/// Agent palette observations retained by pane supervisors.
+pub trait SupervisorThemeHooks: Send + Sync {
+    /// Persist observations for the active launch; unsupervised backends have
+    /// no retained launch metadata to update.
+    fn retain_agent_theme(
+        &self,
+        _terminal_id: TerminalId,
+        _event: yinz_types::agent::theme::AgentThemeEvent,
+    ) -> Result<()> {
+        Ok(())
+    }
+    /// Execution-host detection state, including pending asynchronous resolution.
+    fn detected_agent_theme(
+        &self,
+        _terminal_id: TerminalId,
+        _child_pid: ProcessId,
+    ) -> Option<yinz_types::agent::theme::DetectedAgentTheme> {
+        None
+    }
+}
+
 /// The complete server OS boundary. Consumers use a capability trait when they need only one part.
 pub trait ServerOsApi:
     TerminalIo
@@ -478,6 +470,7 @@ pub trait ServerOsApi:
     + RemotePanes
     + ClientTransport
     + ServerEnvironment
+    + SupervisorThemeHooks
 {
     /// Returns a [`Box`] pointer to this [`ServerOsApi`] struct.
     fn box_clone(&self) -> Box<dyn ServerOsApi>;
@@ -492,6 +485,7 @@ where
         + RemotePanes
         + ClientTransport
         + ServerEnvironment
+        + SupervisorThemeHooks
         + Clone
         + 'static,
 {
@@ -509,27 +503,86 @@ impl Clone for Box<dyn ServerOsApi> {
 use crate::pty_writer::PtyWriteInstruction;
 use crate::thread_bus::ThreadSenders;
 
+type Writer = yinz_runtime::channels::SenderWithContext<PtyWriteInstruction>;
+
+struct ResizeTransaction {
+    writer: Writer,
+    opened: bool,
+}
+
+thread_local! {
+    static TRANSACTION: std::cell::RefCell<Option<ResizeTransaction>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Batches resizes from the screen and all its tabs through placement confirmation.
 pub struct ResizeCache {
     senders: ThreadSenders,
+    previous: Option<ResizeTransaction>,
+    _thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
 impl ResizeCache {
     pub fn new(senders: ThreadSenders) -> Self {
-        senders
-            .send_to_pty_writer(PtyWriteInstruction::StartCachingResizes)
-            .unwrap_or_else(|e| {
-                log::error!("Failed to cache resizes: {}", e);
+        let transaction = senders
+            .to_pty_writer
+            .clone()
+            .map(|writer| ResizeTransaction {
+                writer,
+                opened: false,
             });
-        ResizeCache { senders }
+        let previous = TRANSACTION.replace(transaction);
+        Self {
+            senders,
+            previous,
+            _thread_bound: Default::default(),
+        }
+    }
+
+    pub(crate) fn prepare(
+        senders: &ThreadSenders,
+        instruction: &PtyWriteInstruction,
+    ) -> Result<bool> {
+        use PtyWriteInstruction::*;
+        if !matches!(
+            instruction,
+            ResizePty(..)
+                | TerminalPlaced { .. }
+                | ManagedTerminalPlaced { .. }
+                | StartCachingResizes
+        ) {
+            return Ok(true);
+        }
+        TRANSACTION.with_borrow_mut(|transaction| {
+            let Some(batch) = transaction.as_mut().filter(|batch| {
+                senders
+                    .to_pty_writer
+                    .as_ref()
+                    .is_some_and(|writer| writer.same_channel(&batch.writer))
+            }) else {
+                return Ok(true);
+            };
+            // Layout code also hints that subsequent resizes should be coalesced.
+            // The first actual resize or placement opens our transaction.
+            if matches!(instruction, StartCachingResizes) {
+                return Ok(false);
+            }
+            if !batch.opened {
+                senders.send_pty_writer_instruction(StartCachingResizes)?;
+                batch.opened = true;
+            }
+            Ok(true)
+        })
     }
 }
 
 impl Drop for ResizeCache {
     fn drop(&mut self) {
-        self.senders
-            .send_to_pty_writer(PtyWriteInstruction::ApplyCachedResizes)
-            .unwrap_or_else(|e| {
-                log::error!("Failed to apply cached resizes: {}", e);
-            });
+        let transaction = TRANSACTION.replace(self.previous.take());
+        if transaction.is_some_and(|batch| batch.opened) {
+            self.senders
+                .send_pty_writer_instruction(PtyWriteInstruction::ApplyCachedResizes)
+                .context("finish screen resize transaction")
+                .non_fatal();
+        }
     }
 }

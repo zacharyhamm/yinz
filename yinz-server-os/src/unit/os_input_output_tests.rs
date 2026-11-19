@@ -2430,7 +2430,7 @@ fn detected_agent_theme_observes_an_agent_started_inside_a_shell() {
 
 #[test]
 fn launch_transaction_cleanup_confirms_real_process_exit_after_termination() {
-    use yinz_bus::os_input_output::{ServerEnvironment, TerminalProcesses};
+    use yinz_bus::os_input_output::{SupervisorThemeHooks, TerminalProcesses};
     let server = make_server();
     let (terminal, reader, child) = server
         .spawn_terminal(
@@ -2482,4 +2482,63 @@ fn native_frames_are_counted_and_bounded_as_ordered_render_allocations() {
         queue.push(ServerToClientMsg::RenderFrame { frame: oversized }),
         SendQueuePush::ControlQueueFull(_)
     ));
+}
+
+#[cfg(unix)]
+#[test]
+fn supervisor_theme_forwards_remote_event() {
+    use crate::pty_host::remote::{
+        protocol::{read_frame, ServerToBrokerMsg},
+        RemoteConn,
+    };
+    use std::os::unix::net::UnixStream;
+    use yinz_types::agent::theme::{AgentThemeEvent, EVENT_VERSION};
+    let server = make_server();
+    let (write_socket, mut broker_peer) = UnixStream::pair().unwrap();
+    broker_peer
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let (read_socket, _reader_peer) = UnixStream::pair().unwrap();
+    let remote_command = RunCommand {
+        command: PathBuf::from("remote-step"),
+        target: PaneTarget::Ssh {
+            host: "build-box".to_owned(),
+        },
+        ..Default::default()
+    };
+    let connection = Arc::new(
+        RemoteConn::new(
+            write_socket,
+            "build-box".to_owned(),
+            "token".to_owned(),
+            remote_command.clone(),
+            None,
+        )
+        .unwrap(),
+    );
+    let _remote_reader = server
+        .pty_backend
+        .register_remote_terminal(
+            crate::TerminalId::new(7),
+            connection.clone(),
+            read_socket,
+            Box::new(|_, _, _| {}),
+            remote_command,
+        )
+        .unwrap();
+
+    let id = crate::TerminalId::new(7);
+    let event = AgentThemeEvent {
+        version: EVENT_VERSION,
+        launch_id: "remote-palette-observation".into(),
+        snapshot: None,
+    };
+    server.retain_agent_theme(id, event.clone()).unwrap();
+    let frame = read_frame(&mut broker_peer).unwrap().unwrap();
+    assert_eq!(
+        frame.decode_control::<ServerToBrokerMsg>().unwrap(),
+        ServerToBrokerMsg::AgentTheme(event.clone())
+    );
+    connection.mark_transport_lost();
+    assert!(server.retain_agent_theme(id, event).is_err());
 }

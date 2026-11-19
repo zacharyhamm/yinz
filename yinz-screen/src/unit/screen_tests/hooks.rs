@@ -161,9 +161,9 @@ fn agent_exit_fires_again_while_its_hook_pane_is_still_loaded() {
 
     let (mut screen, _) = screen_with_background_jobs(Size { cols: 80, rows: 24 });
     let (to_plugin, plugins) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
     let (to_pty, _pty) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
     let tab_id = TabId::new(0);
     new_tab(&mut screen, 2, tab_id);
     let pane_id = PaneId::Terminal(TERMINAL_2);
@@ -178,6 +178,7 @@ fn agent_exit_fires_again_while_its_hook_pane_is_still_loaded() {
     super::super::replay_pending_plugin_events(&mut screen, vec![hold(2, command.clone())])
         .unwrap();
     screen
+        .core
         .tabs
         .get_mut(&tab_id)
         .unwrap()
@@ -325,7 +326,7 @@ fn hooks_fired_by_until(steps: Vec<ScreenInstruction>, expected: HookPoint) -> V
 fn a_changed_agent_record_reports_pane_and_session_state() {
     let (mut screen, background_jobs) = screen_with_background_jobs(Size { cols: 80, rows: 20 });
     let (to_plugin, plugin_receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
     new_tab(&mut screen, 1, TabId::new(0));
     drain_background_jobs(&background_jobs);
     plugin_receiver.try_iter().for_each(drop);
@@ -339,6 +340,7 @@ fn a_changed_agent_record_reports_pane_and_session_state() {
     screen.report_pane_state().expect("pane state reports");
 
     let cached = screen
+        .core
         .peer_sessions_cache
         .get("yinz-test")
         .expect("current session stays cached");
@@ -846,10 +848,11 @@ fn claiming_an_agent_launch_fires_start_only_when_installation_adds_identity() {
         let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
         new_tab(&mut screen, 1, TabId::new(0));
         let (to_plugin, plugins) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
         let gate = std::sync::Arc::new(LaunchGate::new("test.claim".into(), false));
         gate.allocated(TERMINAL_2);
         screen
+            .core
             .bus
             .senders
             .launches
@@ -891,7 +894,7 @@ fn claiming_an_agent_launch_fires_start_only_when_installation_adds_identity() {
 
         let size = screen.claim_agent_launch(TERMINAL_2, command.clone());
         assert_eq!(size.is_some(), !rejected);
-        let pane = screen.tabs[&TabId::new(0)]
+        let pane = screen.core.tabs[&TabId::new(0)]
             .get_pane_with_id(PaneId::Terminal(TERMINAL_2))
             .unwrap();
         assert_eq!(
@@ -1207,7 +1210,10 @@ fn replayed_held_waiting_agent_requests_repaint() {
     super::super::replay_pending_plugin_events(&mut screen, vec![hold(1, echo_command())]).unwrap();
 
     assert_eq!(
-        screen.tabs[&tab_id].pane_agent_info(pane_id).unwrap().state,
+        screen.core.tabs[&tab_id]
+            .pane_agent_info(pane_id)
+            .unwrap()
+            .state,
         AgentState::Exited,
     );
     assert_eq!(screen.plugin_tab_names()[&tab_id], "Tab #1");
@@ -1222,10 +1228,11 @@ fn waiting_agent_bell_survives_typing_and_repeated_reports_without_animation() {
     drain_background_jobs(&background_jobs);
     let (to_plugin, plugin_updates) = channels::unbounded();
     screen
+        .core
         .bus
         .senders
         .replace_to_plugin(SenderWithContext::new(to_plugin));
-    screen.cli_event_subscribers_present = true;
+    screen.core.cli_event_subscribers_present = true;
     let reported_name = || {
         plugin_updates.try_iter().find_map(|(instruction, _)| {
             let PluginInstruction::Update(events) = instruction else {
@@ -1258,7 +1265,7 @@ fn waiting_agent_bell_survives_typing_and_repeated_reports_without_animation() {
             )
             .unwrap();
         assert_eq!(screen.plugin_tab_names()[&tab_id], "🔔 Tab #1");
-        assert!(screen.tabs[&tab_id]
+        assert!(screen.core.tabs[&tab_id]
             .pane_agent_info(pane_id)
             .unwrap()
             .is_waiting_on_a_person());
@@ -1613,9 +1620,9 @@ fn agent_restart_keeps_flags_and_session_while_suppressed_then_fires_exit_again(
     for session in [AgentRestartSession::Resume, AgentRestartSession::Fresh] {
         let (mut screen, _) = screen_with_background_jobs(Size { cols: 80, rows: 24 });
         let (to_plugin, plugins) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
         let (to_pty, pty) = channels::unbounded();
-        screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+        screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
         let tab_id = TabId::new(0);
         new_tab(&mut screen, 2, tab_id);
         let pane_id = PaneId::Terminal(TERMINAL_2);
@@ -1648,6 +1655,7 @@ fn agent_restart_keeps_flags_and_session_while_suppressed_then_fires_exit_again(
             Some("sid")
         );
         screen
+            .core
             .tabs
             .get_mut(&tab_id)
             .unwrap()
@@ -1709,11 +1717,11 @@ fn agent_restart_keeps_flags_and_session_while_suppressed_then_fires_exit_again(
             resumed.then_some("sid")
         );
         // CloseSelf uses the ordinary close path, revealing the suppressed pane.
-        screen
-            .tabs
-            .get_mut(&tab_id)
-            .unwrap()
-            .close_pane(PaneId::Plugin(plugin_id), false, None);
+        screen.core.tabs.get_mut(&tab_id).unwrap().close_pane(
+            PaneId::Plugin(plugin_id),
+            false,
+            None,
+        );
         assert!(!screen.get_pane_info(pane_id).unwrap().is_suppressed);
         let new_session = if resumed { "sid" } else { "new-session" };
         apply_pane_agent_report(
@@ -1761,11 +1769,12 @@ fn agent_restart_rejects_missing_sessions_live_panes_and_unsafe_commands() {
         hold_on_close: true,
         ..Default::default()
     };
-    screen
-        .tabs
-        .get_mut(&TabId::new(0))
-        .unwrap()
-        .hold_pane(pane, Some(0), false, command.clone());
+    screen.core.tabs.get_mut(&TabId::new(0)).unwrap().hold_pane(
+        pane,
+        Some(0),
+        false,
+        command.clone(),
+    );
     let (reply, receive) = std::sync::mpsc::channel();
     screen.agent_control_with_reply(
         AgentRequest::Restart {
@@ -1783,11 +1792,12 @@ fn agent_restart_rejects_missing_sessions_live_panes_and_unsafe_commands() {
         args: vec!["--unknown".into()],
         ..command
     };
-    screen
-        .tabs
-        .get_mut(&TabId::new(0))
-        .unwrap()
-        .hold_pane(pane, Some(0), false, unsafe_command);
+    screen.core.tabs.get_mut(&TabId::new(0)).unwrap().hold_pane(
+        pane,
+        Some(0),
+        false,
+        unsafe_command,
+    );
     assert_eq!(
         screen
             .restart_agent_pane(pane, None, AgentRestartSession::Fresh, None)
@@ -1801,7 +1811,7 @@ fn agent_control_fresh_restart_without_a_prompt_forgets_the_previous_session() {
     use yinz_types::agent::control::{AgentOutcome, AgentRequest, AgentRestartSession};
     let (mut screen, _) = screen_with_background_jobs(Size { cols: 80, rows: 24 });
     let (to_pty, pty) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
     let tab_id = TabId::new(0);
     new_tab(&mut screen, 2, tab_id);
     let pane = PaneId::Terminal(TERMINAL_2);
@@ -1817,6 +1827,7 @@ fn agent_control_fresh_restart_without_a_prompt_forgets_the_previous_session() {
         ..Default::default()
     };
     screen
+        .core
         .tabs
         .get_mut(&tab_id)
         .unwrap()
@@ -1867,9 +1878,9 @@ fn provider_session_ids_survive_exit_and_follow_conversation_changes() {
             ] {
                 let (mut screen, _) = screen_with_background_jobs(Size { cols: 80, rows: 24 });
                 let (to_plugin, plugins) = channels::unbounded();
-                screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+                screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
                 let (to_pty, _pty) = channels::unbounded();
-                screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+                screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
                 new_tab(&mut screen, 2, TabId::new(0));
                 let command = RunCommand {
                     command: kind.into(),
@@ -1981,5 +1992,109 @@ fn provider_session_ids_survive_exit_and_follow_conversation_changes() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn restart_dispatch_reply_order() {
+    use crate::screen::thread_main::{process_instruction, EventLoopState};
+    use std::{cell::RefCell, rc::Rc, sync::mpsc};
+    use yinz_types::agent::control::{AgentOutcome, AgentRequest, AgentRestartSession};
+    for (plugin, held) in [(false, false), (false, true), (true, false), (true, true)] {
+        let (mut screen, _jobs) = screen_with_background_jobs(Size { cols: 80, rows: 24 });
+        let (to_pty, _pty) = channels::unbounded();
+        screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+        let tab = TabId::new(0);
+        new_tab(&mut screen, 2, tab);
+        let pane = PaneId::Terminal(TERMINAL_2);
+        apply_pane_agent_report(
+            &mut screen,
+            pane,
+            Some(report(AgentState::Busy, Some("sid"))),
+        )
+        .unwrap();
+        if held {
+            screen.core.tabs.get_mut(&tab).unwrap().hold_pane(
+                pane,
+                Some(0),
+                false,
+                RunCommand {
+                    command: "claude".into(),
+                    hold_on_close: true,
+                    ..Default::default()
+                },
+            );
+        }
+        let session = AgentRestartSession::Resume;
+        let (op, read_reply): (_, Box<dyn Fn() -> Option<bool>>) = if plugin {
+            let (response, rx) = mpsc::channel();
+            let originating_plugin = yinz_types::data::OriginatingPlugin::new(
+                crate::PluginId::new(42),
+                ClientId::new(1),
+                Default::default(),
+            );
+            (
+                ScreenInstruction::RestartAgentPane {
+                    pane_id: pane,
+                    prompt: None,
+                    session,
+                    originating_plugin,
+                    response,
+                },
+                Box::new(move || rx.try_recv().ok().map(|r| r.is_ok())),
+            )
+        } else {
+            let (tx, rx) = mpsc::channel();
+            (
+                ScreenInstruction::AgentControlReply(
+                    AgentRequest::Restart {
+                        pane_id: pane,
+                        prompt: None,
+                        session,
+                    },
+                    tx,
+                ),
+                Box::new(move || {
+                    rx.try_recv()
+                        .ok()
+                        .map(|response| response.outcome == AgentOutcome::Ok)
+                }),
+            )
+        };
+        // Sample the real reply FIFO synchronously inside report/render and after dispatch.
+        let trace = Rc::new(RefCell::new(Vec::new()));
+        let read_reply = Rc::new(read_reply);
+        let observe = {
+            let trace = Rc::clone(&trace);
+            let read_reply = Rc::clone(&read_reply);
+            move |label| {
+                if let Some(ok) = read_reply() {
+                    assert_eq!(ok, held);
+                    trace.borrow_mut().push("reply");
+                }
+                trace.borrow_mut().push(label);
+            }
+        };
+        screen.core.publication_observer = Some(Box::new(observe));
+        assert!(
+            process_instruction(&mut screen, &mut EventLoopState::default(), op)
+                .unwrap()
+                .is_continue()
+        );
+        if let Some(ok) = read_reply() {
+            assert_eq!(ok, held);
+            trace.borrow_mut().push("reply");
+        }
+        assert_eq!(
+            *trace.borrow(),
+            if plugin {
+                vec!["reply", "report", "render"]
+            } else if held {
+                vec!["report", "render", "reply"]
+            } else {
+                vec!["reply"]
+            }
+        );
+        assert!(read_reply().is_none());
     }
 }

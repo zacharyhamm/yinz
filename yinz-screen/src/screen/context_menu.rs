@@ -99,9 +99,9 @@ impl Screen {
         client_id: ClientId,
     ) -> ContextMenuRequestId {
         self.close_command_palette(client_id);
-        let request_id = self.next_context_menu_request_id;
-        self.next_context_menu_request_id =
-            ContextMenuRequestId::new(self.next_context_menu_request_id.get() + 1);
+        let request_id = self.menus.next_context_menu_request_id;
+        self.menus.next_context_menu_request_id =
+            ContextMenuRequestId::new(self.menus.next_context_menu_request_id.get() + 1);
         context.request_id = request_id;
         context.client_id = client_id;
 
@@ -109,14 +109,14 @@ impl Screen {
         // The one place the configured items enter a menu. The tab that fired this knows the pane
         // and nothing about the configuration; filling them in here is what lets the fallback and
         // the re-attachment below both work off the same list the plugin was shown.
-        context.items = self.context_menu.items_for_plugin();
-        let configured = self.context_menu.items().to_vec();
+        context.items = self.menus.context_menu.items_for_plugin();
+        let configured = self.menus.context_menu.items().to_vec();
         // Replacing an existing menu rather than stacking: two menus for one client have no
         // meaning, and the old one's cells are repainted by the same force-render a close does.
-        if self.context_menus.contains_key(&client_id) {
+        if self.menus.context_menus.contains_key(&client_id) {
             self.force_render_under_context_menu();
         }
-        self.context_menus.insert(
+        self.menus.context_menus.insert(
             client_id,
             ContextMenuState {
                 request_id,
@@ -141,14 +141,15 @@ impl Screen {
         client_id: ClientId,
     ) {
         let request_id = self.open_context_menu(context, client_id);
-        let Some(menu) = self.context_menus.get(&client_id) else {
+        let Some(menu) = self.menus.context_menus.get(&client_id) else {
             return;
         };
         let context = menu.context.clone();
         // The plugin thread answers this even when no hook is bound - with the configured items -
         // so that "is a hook configured" is asked in the one place the configuration lives, the
         // way every other hook site already works.
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_plugin(PluginInstruction::RequestContextMenu {
                 context: Box::new(context),
@@ -157,7 +158,8 @@ impl Screen {
             .non_fatal();
         // Armed regardless: a plugin that is loading, wedged, or simply slow must not be able to
         // make right-click do nothing at all.
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_background_jobs(BackgroundJob::ContextMenuTimeout(
                 request_id,
@@ -178,7 +180,7 @@ impl Screen {
         plugin_id: Option<PluginId>,
         client_id: ClientId,
     ) {
-        let Some(menu) = self.context_menus.get_mut(&client_id) else {
+        let Some(menu) = self.menus.context_menus.get_mut(&client_id) else {
             return;
         };
         if menu.request_id != request_id {
@@ -215,7 +217,7 @@ impl Screen {
         request_id: ContextMenuRequestId,
         client_id: ClientId,
     ) {
-        let Some(menu) = self.context_menus.get_mut(&client_id) else {
+        let Some(menu) = self.menus.context_menus.get_mut(&client_id) else {
             return;
         };
         if menu.request_id != request_id {
@@ -236,7 +238,7 @@ impl Screen {
 
     /// Close this client's menu, if it has one. Returns whether there was one to close.
     pub(crate) fn close_context_menu(&mut self, client_id: ClientId) -> bool {
-        if self.context_menus.remove(&client_id).is_none() {
+        if self.menus.context_menus.remove(&client_id).is_none() {
             return false;
         }
         self.force_render_under_context_menu();
@@ -247,6 +249,7 @@ impl Screen {
     /// offering to act on nothing.
     pub(crate) fn close_context_menus_for_pane(&mut self, pane_id: PaneId) {
         let stale: Vec<ClientId> = self
+            .menus
             .context_menus
             .iter()
             .filter(|(_, menu)| menu.pane_id == pane_id)
@@ -257,59 +260,12 @@ impl Screen {
         }
     }
 
-    pub(crate) fn context_menu_is_open(&self, client_id: ClientId) -> bool {
-        self.context_menus.contains_key(&client_id)
-    }
-
     /// Nothing under a closed menu is dirty, so its cells would keep the menu's glyphs.
     /// Include inactive tabs in case the client switched tabs while the menu was open.
     pub(super) fn force_render_under_context_menu(&mut self) {
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             tab.set_force_render();
         }
-    }
-
-    /// This client's menu geometry for `viewport`, or `None` if it has no menu or the menu has
-    /// nothing to show yet.
-    ///
-    /// Laid out fresh on every use rather than stored, for the reason `notification_layout` gives:
-    /// a viewport can change under an open menu, and a remembered box would then be drawn and
-    /// hit-tested in coordinates that no longer exist.
-    pub(super) fn context_menu_layout_for(
-        &self,
-        client_id: ClientId,
-        viewport: Viewport,
-    ) -> Option<ContextMenuLayout> {
-        let menu = self.context_menus.get(&client_id)?;
-        let items = menu.items.visible();
-        if items.is_empty() {
-            return None;
-        }
-        let layout = context_menu_layout(items, menu.anchor, viewport, menu.selected);
-        (!layout.is_empty()).then_some(layout)
-    }
-
-    /// The cells these clients' menus will paint into `viewport`.
-    ///
-    /// The same relationship to `render_context_menu` that `notification_cell_rects` has to
-    /// `render_notifications`: one mapping, derived from the one layout function, so what occludes
-    /// the cursor and what is drawn cannot drift apart. Told to `Output` before anything renders,
-    /// because a fake cursor is decided while the panes draw.
-    pub(super) fn context_menu_cell_rect(
-        &self,
-        client_id: ClientId,
-        viewport: Viewport,
-    ) -> Option<(ClientId, Vec<CellRect>)> {
-        let layout = self.context_menu_layout_for(client_id, viewport)?;
-        Some((
-            client_id,
-            vec![CellRect {
-                x: layout.x,
-                y: layout.y,
-                cols: layout.width,
-                rows: layout.height(),
-            }],
-        ))
     }
 
     /// Paint this client's menu, on top of everything already in the frame.
@@ -323,14 +279,15 @@ impl Screen {
         viewport: Viewport,
         client_id: ClientId,
     ) -> Result<()> {
-        let Some(layout) = self.context_menu_layout_for(client_id, viewport) else {
+        let Some(layout) = self.menus.context_menu_layout_for(client_id, viewport) else {
             return Ok(());
         };
         let selected = self
+            .menus
             .context_menus
             .get(&client_id)
             .and_then(|menu| menu.selected);
-        let chunks = context_menu_chunks(&layout, selected, &self.style);
+        let chunks = context_menu_chunks(&layout, selected, &self.core.style);
         let previous_stack = output.set_floating_panes_stack(None);
         let result = output.add_character_chunks_to_client(client_id, chunks, None);
         output.set_floating_panes_stack(previous_stack);
@@ -348,7 +305,7 @@ impl Screen {
         viewport: Viewport,
         client_id: ClientId,
     ) {
-        let Some(layout) = self.context_menu_layout_for(client_id, viewport) else {
+        let Some(layout) = self.menus.context_menu_layout_for(client_id, viewport) else {
             // Still awaiting the plugin: nothing is drawn, so there is nothing to aim at. Swallow
             // the event rather than letting it through to a pane the user cannot see right now.
             return;
@@ -362,6 +319,7 @@ impl Screen {
                 // menu that still shows a selection the pointer has left looks like it is about to
                 // run that item.
                 let changed = self
+                    .menus
                     .context_menus
                     .get_mut(&client_id)
                     .map(|menu| {
@@ -404,12 +362,13 @@ impl Screen {
         let Some(key) = key else {
             return false;
         };
-        if !self.context_menus.contains_key(&client_id) {
+        if !self.menus.context_menus.contains_key(&client_id) {
             return false;
         }
         // A menu still waiting on its plugin shows nothing, so it has no selection to move and no
         // item to run - but Esc must still dismiss it, or a slow hook leaves the user stuck.
         let has_items = self
+            .menus
             .context_menus
             .get(&client_id)
             .map(|menu| !menu.items.visible().is_empty())
@@ -425,7 +384,7 @@ impl Screen {
                 if has_items && key.key_modifiers.is_empty() =>
             {
                 let forward = matches!(key.bare_key, BareKey::Down | BareKey::Char('j'));
-                if let Some(menu) = self.context_menus.get_mut(&client_id) {
+                if let Some(menu) = self.menus.context_menus.get_mut(&client_id) {
                     let items = menu.items.visible().to_vec();
                     menu.selected = next_selectable(&items, menu.selected, forward);
                 }
@@ -434,6 +393,7 @@ impl Screen {
             },
             BareKey::Enter if has_items && key.key_modifiers.is_empty() => {
                 let selected = self
+                    .menus
                     .context_menus
                     .get(&client_id)
                     .and_then(|menu| menu.selected);
@@ -457,7 +417,7 @@ impl Screen {
     /// The menu is taken out of the map *before* the actions run, so an action that itself asks the
     /// screen to do something - most of them do - cannot find a menu that is on its way out.
     fn activate_context_menu_item(&mut self, client_id: ClientId, index: usize) {
-        let Some(menu) = self.context_menus.get(&client_id) else {
+        let Some(menu) = self.menus.context_menus.get(&client_id) else {
             return;
         };
         let Some(item) = menu.items.visible().get(index).cloned() else {
@@ -477,7 +437,8 @@ impl Screen {
             // actions can only be dispatched from another thread (see `run_overlay_actions`).
             // Enqueueing both as one instruction is what keeps them together; the screen channel is
             // unbounded, so this self-send cannot block the thread it is sent from.
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_screen(ScreenInstruction::ActivateContextMenuItem {
                     pane_id,
@@ -494,6 +455,7 @@ impl Screen {
             match plugin_id {
                 Some(plugin_id) => {
                     let _ = self
+                        .core
                         .bus
                         .senders
                         .send_to_plugin(PluginInstruction::Update(vec![(
@@ -568,9 +530,9 @@ impl Screen {
         client_id: ClientId,
         palette_tab: Option<(yinz_types::internal_ids::TabId, String)>,
     ) {
-        let senders = self.bus.senders.clone();
-        let default_mode = self.default_mode_info.mode;
-        let default_shell = self.default_shell_action.clone();
+        let senders = self.core.bus.senders.clone();
+        let default_mode = self.core.default_mode_info.mode;
+        let default_shell = self.core.default_shell_action.clone();
         // `UserInput` calls this a terminal id, and the only other place the two are related -
         // routing a CLI action - reads one back as `PaneId::Terminal`. A menu over a plugin pane
         // therefore has no terminal to name.
@@ -743,7 +705,8 @@ impl Screen {
         // worth taking the session down for.
         if let Err(e) = spawned {
             log::error!("failed to spawn overlay action thread: {e}");
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_screen(ScreenInstruction::Notify(
                     format!("Could not start action: {e}"),
@@ -753,5 +716,71 @@ impl Screen {
                 ))
                 .non_fatal();
         }
+    }
+}
+
+impl crate::screen::ContextMenuController {
+    pub(crate) fn context_menu_is_open(&self, client_id: ClientId) -> bool {
+        self.context_menus.contains_key(&client_id)
+    }
+    /// This client's menu geometry for `viewport`, or `None` if it has no menu or the menu has
+    /// nothing to show yet.
+    ///
+    /// Laid out fresh on every use rather than stored, for the reason `notification_layout` gives:
+    /// a viewport can change under an open menu, and a remembered box would then be drawn and
+    /// hit-tested in coordinates that no longer exist.
+    pub(in crate::screen) fn context_menu_layout_for(
+        &self,
+        client_id: ClientId,
+        viewport: Viewport,
+    ) -> Option<ContextMenuLayout> {
+        let menu = self.context_menus.get(&client_id)?;
+        let items = menu.items.visible();
+        if items.is_empty() {
+            return None;
+        }
+        let layout = context_menu_layout(items, menu.anchor, viewport, menu.selected);
+        (!layout.is_empty()).then_some(layout)
+    }
+    /// The cells these clients' menus will paint into `viewport`.
+    ///
+    /// The same relationship to `render_context_menu` that `notification_cell_rects` has to
+    /// `render_notifications`: one mapping, derived from the one layout function, so what occludes
+    /// the cursor and what is drawn cannot drift apart. Told to `Output` before anything renders,
+    /// because a fake cursor is decided while the panes draw.
+    pub(in crate::screen) fn context_menu_cell_rect(
+        &self,
+        client_id: ClientId,
+        viewport: Viewport,
+    ) -> Option<(ClientId, Vec<CellRect>)> {
+        let layout = self.context_menu_layout_for(client_id, viewport)?;
+        Some((
+            client_id,
+            vec![CellRect {
+                x: layout.x,
+                y: layout.y,
+                cols: layout.width,
+                rows: layout.height(),
+            }],
+        ))
+    }
+}
+
+impl super::ContextMenuController {
+    pub(super) fn on_client_removed(&mut self, client_id: ClientId) {
+        self.context_menus.remove(&client_id);
+    }
+}
+
+impl super::ContextMenuController {
+    pub(super) fn on_reconfigure(
+        &mut self,
+        menu: yinz_types::input::context_menu::ContextMenu,
+        right_click: bool,
+        override_agent_mouse: bool,
+    ) {
+        self.context_menu = menu;
+        self.context_menu_on_right_click = right_click;
+        self.context_menu_override_agent_mouse = override_agent_mouse;
     }
 }

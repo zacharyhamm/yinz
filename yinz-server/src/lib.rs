@@ -1013,7 +1013,13 @@ impl SessionState {
     }
 }
 
-pub fn start_server(os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) -> Result<()> {
+pub use yinz_screen::RestoredAgentObserver;
+
+pub fn start_server(
+    observer: Option<RestoredAgentObserver>,
+    os_input: Box<dyn ServerOsApi>,
+    socket_path: PathBuf,
+) -> Result<()> {
     use nix::sys::stat::{umask, Mode};
     let working_directory = std::env::current_dir().context("read server startup directory")?;
     // preserve the current umask: read current value by setting to another mode, and then restoring it
@@ -1027,11 +1033,12 @@ pub fn start_server(os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) -> Res
     })
     .context("daemonize the server process")?;
 
-    start_server_impl(os_input, socket_path, true);
+    start_server_impl(observer, os_input, socket_path, true);
     Ok(())
 }
 
 pub fn start_server_impl(
+    observer: Option<RestoredAgentObserver>,
     mut os_input: Box<dyn ServerOsApi>,
     socket_path: PathBuf,
     install_panic_hook: bool,
@@ -1476,6 +1483,7 @@ pub fn start_server_impl(
                     info!("FirstClientConnected: client={client_id} initializing session");
                     startup_stage("server.init_session", || {
                         init_session(
+                            observer.clone(),
                             &mut starting_session,
                             os_input.clone(),
                             to_server.clone(),
@@ -3047,6 +3055,7 @@ fn take_session_for_shutdown(
 }
 
 fn init_session(
+    observer: Option<RestoredAgentObserver>,
     starting_session: &mut Option<SessionMetaData>,
     os_input: Box<dyn ServerOsApi>,
     to_server: SenderWithContext<ServerInstruction>,
@@ -3257,6 +3266,7 @@ fn init_session(
         let screen_data_dir = data_dir.clone();
         move || {
             screen_thread_main(
+                observer,
                 screen_bus,
                 max_panes,
                 client_attributes_clone,

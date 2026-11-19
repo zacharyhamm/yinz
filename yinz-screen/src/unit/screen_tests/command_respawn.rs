@@ -244,19 +244,21 @@ fn a_suppressed_pane_replacement_closes_with_its_tab() {
     let replaced = PaneId::Terminal(crate::TerminalId::new(1));
     let stand_in = PaneId::Terminal(crate::TerminalId::new(9));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
         .restore_pending_respawn(replaced, (step_command("step2", "2"), true));
     let (to_pty, pty_receiver) = yinz_runtime::channels::unbounded();
     screen
+        .core
         .bus
         .senders
         .replace_to_pty(yinz_runtime::channels::SenderWithContext::new(to_pty));
 
     screen.close_tab_by_id(TabId::new(0)).unwrap();
 
-    let remaining = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+    let remaining = screen.core.tabs.get_mut(&TabId::new(1)).unwrap();
     assert!(!remaining.has_pane_with_pid(&replaced));
     assert!(remaining
         .hold_pane(replaced, Some(0), false, step_command("step1", "1"))
@@ -288,12 +290,12 @@ fn tab_teardown_preserves_only_surviving_replacement_chains() {
             let survives = hidden && !last_tab;
             let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
             let (to_plugin, plugins): ChannelWithContext<PluginInstruction> = channels::unbounded();
-            screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+            screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
             new_tab(&mut screen, 1, TabId::new(0));
             if !last_tab {
                 new_tab(&mut screen, 2, TabId::new(1));
             }
-            let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+            let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
             tab.new_pane(
                 PaneId::Terminal(TerminalId::new(4)),
                 None,
@@ -332,12 +334,12 @@ fn tab_teardown_preserves_only_surviving_replacement_chains() {
                 .collect();
             let fake_os = FakeInputOutput::default();
             let messages = fake_os.server_to_client_messages.clone();
-            screen.bus.os_input = Some(Box::new(fake_os));
+            screen.core.bus.os_input = Some(Box::new(fake_os));
             let subscriber = ClientId::new(100);
             screen.subscribe_to_pane_renders(subscriber, chain.to_vec(), None, false);
             messages.lock().unwrap().clear();
             let (to_pty, pty): ChannelWithContext<PtyInstruction> = channels::unbounded();
-            screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+            screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
 
             screen.close_tab_by_id(TabId::new(0)).unwrap();
 
@@ -387,14 +389,14 @@ fn tab_teardown_preserves_only_surviving_replacement_chains() {
                 }
             );
             for id in chain {
-                assert_eq!(screen.destroyed_panes.contains(id), !survives);
+                assert_eq!(screen.core.destroyed_panes.contains(id), !survives);
             }
             if survives {
                 assert_eq!(
-                    screen.pane_render_subscribers[&subscriber].pane_ids,
+                    screen.core.pane_render_subscribers[&subscriber].pane_ids,
                     chain.iter().copied().collect()
                 );
-                let destination = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+                let destination = screen.core.tabs.get_mut(&TabId::new(1)).unwrap();
                 for &id in chain {
                     if let PaneId::Terminal(terminal_id) = id {
                         assert_eq!(
@@ -415,13 +417,13 @@ fn tab_teardown_preserves_only_surviving_replacement_chains() {
                     assert!(!destination.has_pane_with_pid(&pair[1]));
                 }
             } else {
-                for tab in screen.tabs.values_mut() {
+                for tab in screen.core.tabs.values_mut() {
                     for &id in chain {
                         assert!(!tab.has_pane_with_pid(&id));
                         assert!(tab.take_pending_respawn(id).is_none());
                     }
                 }
-                assert_eq!(screen.tabs.is_empty(), last_tab);
+                assert_eq!(screen.core.tabs.is_empty(), last_tab);
             }
         }
     }
@@ -435,6 +437,7 @@ fn an_overlay_pane_replacement_survives_its_tab_closing() {
     new_tab(&mut screen, 2, TabId::new(1));
     open_floating_pane(&mut screen, TabId::new(0), 7, "overlay", true);
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -445,6 +448,7 @@ fn an_overlay_pane_replacement_survives_its_tab_closing() {
 
     screen.close_tab_by_id(TabId::new(0)).unwrap();
     let (_, replacement, keep_scrollback) = screen
+        .core
         .tabs
         .get_mut(&TabId::new(1))
         .unwrap()

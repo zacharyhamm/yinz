@@ -93,12 +93,12 @@ impl Screen {
         plugin: Option<PluginId>,
         reason: Option<String>,
     ) -> Result<()> {
-        for pending in &mut self.notification_policy.pending {
+        for pending in &mut self.notices.notification_policy.pending {
             pending.fallback("policy_reconfigured");
         }
-        self.notification_policy.plugin = plugin;
-        self.notification_policy.available = plugin.is_some();
-        self.notification_policy.unavailable_reason = reason;
+        self.notices.notification_policy.plugin = plugin;
+        self.notices.notification_policy.available = plugin.is_some();
+        self.notices.notification_policy.unavailable_reason = reason;
         self.release_notification_assemblies("policy_reconfigured");
         self.commit_notifications()
     }
@@ -109,21 +109,21 @@ impl Screen {
         reason: String,
         disable: bool,
     ) -> Result<()> {
-        if self.notification_policy.plugin != Some(plugin) {
+        if self.notices.notification_policy.plugin != Some(plugin) {
             return Ok(());
         }
-        for pending in &mut self.notification_policy.pending {
+        for pending in &mut self.notices.notification_policy.pending {
             pending.fallback(&reason);
         }
-        self.notification_policy.available = !disable;
-        self.notification_policy.unavailable_reason = disable.then_some(reason.clone());
+        self.notices.notification_policy.available = !disable;
+        self.notices.notification_policy.unavailable_reason = disable.then_some(reason.clone());
         self.release_notification_assemblies(&reason);
         self.commit_notifications()
     }
 
     fn release_notification_assemblies(&mut self, reason: &str) {
         let mut raw = vec![];
-        for ((pane, _), assembly) in &mut self.notification_policy.assemblies {
+        for ((pane, _), assembly) in &mut self.notices.notification_policy.assemblies {
             if !assembly.chunks.is_empty() {
                 raw.push((*pane, std::mem::take(&mut assembly.chunks)));
                 assembly.bytes = 0;
@@ -135,26 +135,6 @@ impl Screen {
         }
     }
 
-    pub(super) fn bind_notification_request(
-        &mut self,
-        id: NotificationId,
-        plugin: PluginId,
-        instance: PluginInstanceId,
-    ) {
-        if let Some(pending) = self
-            .notification_policy
-            .pending
-            .iter_mut()
-            .find(|p| p.original.id == id)
-            && pending.policy == Some(plugin)
-            && pending.instance.is_none()
-            && pending.decision.is_none()
-            && Instant::now() < pending.deadline
-        {
-            pending.instance = Some(instance);
-        }
-    }
-
     pub(super) fn resolve_notification(
         &mut self,
         id: NotificationId,
@@ -163,6 +143,7 @@ impl Screen {
         instance: PluginInstanceId,
     ) -> Result<()> {
         let Some(pending) = self
+            .notices
             .notification_policy
             .pending
             .iter_mut()
@@ -189,62 +170,13 @@ impl Screen {
         self.commit_notifications()
     }
 
-    pub(super) fn forget_notification_assemblies(&mut self, pane: PaneId) {
-        if let PaneId::Terminal(pane) = pane {
-            self.notification_policy
-                .assemblies
-                .retain(|(owner, _), _| *owner != pane);
-        }
-    }
-
-    pub(super) fn notification_deadline(&self) -> Option<Duration> {
-        self.notification_policy
-            .pending
-            .iter()
-            .filter(|p| p.decision.is_none())
-            .map(|p| p.deadline.saturating_duration_since(Instant::now()))
-            .min()
-    }
-
     pub(super) fn expire_notification_requests(&mut self, now: Instant) -> Result<()> {
-        for pending in &mut self.notification_policy.pending {
+        for pending in &mut self.notices.notification_policy.pending {
             if pending.decision.is_none() && now >= pending.deadline {
                 pending.fallback("policy_timeout");
             }
         }
         self.commit_notifications()
-    }
-
-    fn notification_data(
-        &mut self,
-        source: NotificationSource,
-        pane_id: Option<PaneId>,
-        plugin_id: Option<PluginId>,
-        title: String,
-        body: String,
-    ) -> NotificationData {
-        let id = self.next_notification_id;
-        self.next_notification_id = NotificationId::new(id.get() + 1);
-        NotificationData {
-            id,
-            received_at_unix_ms: UnixMillis::try_from(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis(),
-            )
-            .unwrap_or_else(|_| UnixMillis::new(u64::MAX)),
-            source,
-            pane_id,
-            plugin_id,
-            title,
-            body,
-            delivery: if source == NotificationSource::Toast {
-                NotificationDelivery::Toast
-            } else {
-                NotificationDelivery::Desktop
-            },
-        }
     }
 
     pub(super) fn receive_toast(
@@ -255,8 +187,13 @@ impl Screen {
         plugin: Option<PluginId>,
         completion: Option<NotificationEnd>,
     ) -> Result<()> {
-        let original =
-            self.notification_data(NotificationSource::Toast, pane, plugin, String::new(), text);
+        let original = self.notices.notification_data(
+            NotificationSource::Toast,
+            pane,
+            plugin,
+            String::new(),
+            text,
+        );
         self.queue_notification(original, vec![], None, click, completion, None)
     }
 
@@ -269,7 +206,8 @@ impl Screen {
         completion: Option<NotificationEnd>,
         fallback: Option<String>,
     ) -> Result<()> {
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_plugin(PluginInstruction::Update(vec![(
                 None,
@@ -277,11 +215,11 @@ impl Screen {
                 Event::NotificationReceived(original.clone()),
             )]))
             .context("publish notification arrival")?;
-        let policy = self
-            .notification_policy
-            .plugin
-            .filter(|id| self.notification_policy.available && original.plugin_id != Some(*id));
-        let fallback = fallback.or_else(|| self.notification_policy.unavailable_reason.clone());
+        let policy = self.notices.notification_policy.plugin.filter(|id| {
+            self.notices.notification_policy.available && original.plugin_id != Some(*id)
+        });
+        let fallback =
+            fallback.or_else(|| self.notices.notification_policy.unavailable_reason.clone());
         let mut pending = Pending {
             original,
             desktop,
@@ -295,21 +233,23 @@ impl Screen {
             fallback,
         };
         let bytes = self
+            .notices
             .notification_policy
             .pending
             .iter()
             .map(Pending::bytes)
             .sum::<usize>()
             + self
+                .notices
                 .notification_policy
                 .assemblies
                 .values()
                 .map(|a| a.bytes)
                 .sum::<usize>();
-        if self.notification_policy.pending.len() >= MAX_PENDING
+        if self.notices.notification_policy.pending.len() >= MAX_PENDING
             || bytes.saturating_add(pending.bytes()) > MAX_BYTES
         {
-            for pending in &mut self.notification_policy.pending {
+            for pending in &mut self.notices.notification_policy.pending {
                 pending.fallback("pending_overflow");
             }
             self.commit_notifications()?;
@@ -318,7 +258,8 @@ impl Screen {
         if policy.is_none() || pending.fallback.is_some() {
             pending.decision = Some(NotificationDecision::Pass);
         } else if let Some(plugin) = policy {
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_plugin(PluginInstruction::Update(vec![(
                     Some(plugin),
@@ -327,7 +268,7 @@ impl Screen {
                 )]))
                 .context("request notification policy")?;
         }
-        self.notification_policy.pending.push_back(pending);
+        self.notices.notification_policy.pending.push_back(pending);
         self.commit_notifications()
     }
 
@@ -348,7 +289,18 @@ impl Screen {
     ) -> Result<()> {
         for notification in notifications {
             // Agent state is derived from original content, before policy changes.
-            self.report_codex_plan_prompt(&notification, pane)
+            let (title, body) = notification.title_and_body();
+            super::agent_control::providers::codex::plan_prompt(&self.core, &title, &body, pane)
+                .and_then(|report| {
+                    if let Some(report) = report {
+                        super::agent_reports::apply_queued_agent_report(
+                            self,
+                            &report,
+                            Instant::now(),
+                        )?;
+                    }
+                    Ok(())
+                })
                 .context("report Codex plan prompt")
                 .non_fatal();
             let source = match &notification {
@@ -356,7 +308,6 @@ impl Screen {
                 PendingNotification::Osc777 { .. } => NotificationSource::Osc777,
                 PendingNotification::Osc99 { .. } => NotificationSource::Osc99,
             };
-            let (title, body) = notification.title_and_body();
             let mut chunks = vec![];
             let mut osc99_identity = None;
             let mut fallback = None;
@@ -377,8 +328,8 @@ impl Screen {
                     .unwrap_or(Osc99PayloadType::Title);
                 if kind.is_control_request() {
                     if kind == Osc99PayloadType::Close {
-                        self.notification_policy.assemblies.remove(&key);
-                        for pending in &mut self.notification_policy.pending {
+                        self.notices.notification_policy.assemblies.remove(&key);
+                        for pending in &mut self.notices.notification_policy.pending {
                             if pending.original.pane_id == Some(PaneId::Terminal(pane))
                                 && pending
                                     .osc99_identity
@@ -397,9 +348,14 @@ impl Screen {
                 let is_done = metadata.get("d").copied().unwrap_or("1") != "0";
                 // Bound raw assemblies and bypass markers in both policy states.
                 // Existing IDs must keep their markers until completion or cleanup.
-                if (self.notification_policy.available || !is_done)
-                    && !self.notification_policy.assemblies.contains_key(&key)
+                if (self.notices.notification_policy.available || !is_done)
+                    && !self
+                        .notices
+                        .notification_policy
+                        .assemblies
+                        .contains_key(&key)
                     && self
+                        .notices
                         .notification_policy
                         .assemblies
                         .keys()
@@ -408,6 +364,7 @@ impl Screen {
                         >= 512
                 {
                     let oldest = self
+                        .notices
                         .notification_policy
                         .assemblies
                         .iter()
@@ -415,19 +372,21 @@ impl Screen {
                         .min_by_key(|(_, a)| a.sequence)
                         .map(|(key, _)| key.clone());
                     if let Some(oldest) = oldest {
-                        self.notification_policy.assemblies.remove(&oldest);
+                        self.notices.notification_policy.assemblies.remove(&oldest);
                     }
                 }
-                if !self.notification_policy.available {
+                if !self.notices.notification_policy.available {
                     if !is_done {
-                        self.notification_policy.next_assembly += 1;
-                        let sequence = self.notification_policy.next_assembly;
+                        self.notices.notification_policy.next_assembly += 1;
+                        let sequence = self.notices.notification_policy.next_assembly;
                         let reason = self
+                            .notices
                             .notification_policy
                             .unavailable_reason
                             .clone()
                             .unwrap_or_else(|| "policy_unavailable".into());
-                        self.notification_policy
+                        self.notices
+                            .notification_policy
                             .assemblies
                             .entry(key.clone())
                             .or_insert_with(|| Assembly {
@@ -444,6 +403,7 @@ impl Screen {
                     }
                     if is_done {
                         fallback = self
+                            .notices
                             .notification_policy
                             .assemblies
                             .remove(&key)
@@ -451,8 +411,13 @@ impl Screen {
                     }
                 } else {
                     // Match the grid's existing 256-ID bound per pane.
-                    if !self.notification_policy.assemblies.contains_key(&key)
+                    if !self
+                        .notices
+                        .notification_policy
+                        .assemblies
+                        .contains_key(&key)
                         && self
+                            .notices
                             .notification_policy
                             .assemblies
                             .iter()
@@ -461,6 +426,7 @@ impl Screen {
                             >= 256
                     {
                         let oldest = self
+                            .notices
                             .notification_policy
                             .assemblies
                             .iter()
@@ -469,7 +435,7 @@ impl Screen {
                             .map(|(k, _)| k.clone());
                         if let Some(oldest) = oldest
                             && let Some(assembly) =
-                                self.notification_policy.assemblies.get_mut(&oldest)
+                                self.notices.notification_policy.assemblies.get_mut(&oldest)
                         {
                             assembly.bypass = Some("assembly_overflow".into());
                             assembly.bytes = 0;
@@ -478,20 +444,23 @@ impl Screen {
                         }
                     }
                     let total_bytes = self
+                        .notices
                         .notification_policy
                         .pending
                         .iter()
                         .map(Pending::bytes)
                         .sum::<usize>()
                         + self
+                            .notices
                             .notification_policy
                             .assemblies
                             .values()
                             .map(|a| a.bytes)
                             .sum::<usize>();
-                    self.notification_policy.next_assembly += 1;
-                    let sequence = self.notification_policy.next_assembly;
+                    self.notices.notification_policy.next_assembly += 1;
+                    let sequence = self.notices.notification_policy.next_assembly;
                     let assembly = self
+                        .notices
                         .notification_policy
                         .assemblies
                         .entry(key.clone())
@@ -516,7 +485,8 @@ impl Screen {
                         }
                     }
                     if is_done
-                        && let Some(assembly) = self.notification_policy.assemblies.remove(&key)
+                        && let Some(assembly) =
+                            self.notices.notification_policy.assemblies.remove(&key)
                     {
                         chunks = assembly.chunks;
                         fallback = assembly.bypass.or(fallback);
@@ -535,16 +505,26 @@ impl Screen {
             } else {
                 chunks.push(notification);
             }
-            let original =
-                self.notification_data(source, Some(PaneId::Terminal(pane)), None, title, body);
+            let original = self.notices.notification_data(
+                source,
+                Some(PaneId::Terminal(pane)),
+                None,
+                title,
+                body,
+            );
             self.queue_notification(original, chunks, osc99_identity, None, None, fallback)?;
         }
         Ok(())
     }
 
     fn deliver_policy_desktop(&mut self, outcome: &NotificationResolution) {
-        let clients: std::collections::HashSet<_> =
-            self.connected_clients.borrow().iter().copied().collect();
+        let clients: std::collections::HashSet<_> = self
+            .core
+            .connected_clients
+            .borrow()
+            .iter()
+            .copied()
+            .collect();
         if clients.is_empty() {
             return;
         }
@@ -563,7 +543,8 @@ impl Screen {
             }
         }
         if !output.is_empty() {
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_server(ServerInstruction::DesktopNotification(output))
                 .context("deliver policy desktop notification")
@@ -590,6 +571,7 @@ impl Screen {
             .get("p")
             .is_none_or(|p| !Osc99PayloadType::from_metadata_value(p).is_control_request())
             && let Some(record) = self
+                .notices
                 .notification_history
                 .iter()
                 .find(|record| record.info.id == id)
@@ -620,6 +602,7 @@ impl Screen {
             return;
         };
         let target = self
+            .notices
             .notification_history
             .iter()
             .rev()
@@ -644,12 +627,13 @@ impl Screen {
     fn commit_notifications(&mut self) -> Result<()> {
         let mut changed = false;
         while self
+            .notices
             .notification_policy
             .pending
             .front()
             .is_some_and(|p| p.decision.is_some())
         {
-            let Some(mut pending) = self.notification_policy.pending.pop_front() else {
+            let Some(mut pending) = self.notices.notification_policy.pending.pop_front() else {
                 break;
             };
             let decision = pending
@@ -685,41 +669,46 @@ impl Screen {
                 );
             // No client to show it to. Before the first one ever connects the toast waits for
             // it; once the session has had a client, a detached session only records it.
-            let show_toast = wants_toast && !self.connected_clients.borrow().is_empty();
+            let show_toast = wants_toast && !self.core.connected_clients.borrow().is_empty();
             if wants_toast
                 && !show_toast
-                && let Some(held) = self.toasts_before_first_client.as_mut()
+                && let Some(held) = self.notices.toasts_before_first_client.as_mut()
             {
                 held.push(id);
             }
             self.with_notification_stack_change(now, |screen| {
-                screen.notification_history.push(NotificationRecord {
-                    info: NotificationInfo {
-                        id,
-                        received_at_unix_ms: outcome.original.received_at_unix_ms,
-                        message: text.clone(),
-                        outcome: Some(outcome.clone()),
-                    },
-                    pane_id: pane,
-                    on_click: pending.on_click.clone(),
-                    pending: !outcome.suppressed,
-                    forwarded_id,
-                });
+                screen
+                    .notices
+                    .notification_history
+                    .push(NotificationRecord {
+                        info: NotificationInfo {
+                            id,
+                            received_at_unix_ms: outcome.original.received_at_unix_ms,
+                            message: text.clone(),
+                            outcome: Some(outcome.clone()),
+                        },
+                        pane_id: pane,
+                        on_click: pending.on_click.clone(),
+                        pending: !outcome.suppressed,
+                        forwarded_id,
+                    });
                 if show_toast {
                     screen
+                        .notices
                         .notifications
                         .insert(0, Notification::new(id, text, pane, pending.on_click, now));
                 }
             });
-            self.notification_browsers_saw_arrival();
+            self.notices.notification_browsers_saw_arrival();
             self.sync_animation_clock(now)?;
             if !outcome.suppressed {
                 if show_toast {
-                    self.bus
+                    self.core
+                        .bus
                         .senders
                         .send_to_background_jobs(BackgroundJob::DismissNotification(
                             id,
-                            self.notification_timeout_secs,
+                            self.notices.notification_timeout_secs,
                         ))
                         .context("schedule notification dismissal")?;
                 }
@@ -737,7 +726,8 @@ impl Screen {
                     }
                 }
             }
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_plugin(PluginInstruction::Update(vec![(
                     None,
@@ -759,13 +749,14 @@ impl Screen {
     /// committed before it, unless something consumed them meanwhile, each with its full
     /// timeout since nobody has seen it yet. Later clients find nothing held.
     pub(super) fn show_toasts_held_for_the_first_client(&mut self) -> Result<()> {
-        let Some(held) = self.toasts_before_first_client.take() else {
+        let Some(held) = self.notices.toasts_before_first_client.take() else {
             return Ok(());
         };
         let toasts: Vec<Notification> = held
             .iter()
             .filter_map(|id| {
-                self.notification_history
+                self.notices
+                    .notification_history
                     .iter()
                     .find(|record| record.info.id == *id && record.pending)
             })
@@ -787,16 +778,17 @@ impl Screen {
         self.with_notification_stack_change(now, |screen| {
             // Newest first, as `commit_notifications` stacks them.
             for toast in toasts {
-                screen.notifications.insert(0, toast);
+                screen.notices.notifications.insert(0, toast);
             }
         });
         self.sync_animation_clock(now)?;
         for id in ids {
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_background_jobs(BackgroundJob::DismissNotification(
                     id,
-                    self.notification_timeout_secs,
+                    self.notices.notification_timeout_secs,
                 ))
                 .context("schedule notification dismissal")?;
         }
@@ -870,4 +862,72 @@ fn rewrite_desktop(
         },
     ]);
     retained
+}
+
+impl crate::screen::NotificationController {
+    pub(in crate::screen) fn bind_notification_request(
+        &mut self,
+        id: NotificationId,
+        plugin: PluginId,
+        instance: PluginInstanceId,
+    ) {
+        if let Some(pending) = self
+            .notification_policy
+            .pending
+            .iter_mut()
+            .find(|p| p.original.id == id)
+            && pending.policy == Some(plugin)
+            && pending.instance.is_none()
+            && pending.decision.is_none()
+            && Instant::now() < pending.deadline
+        {
+            pending.instance = Some(instance);
+        }
+    }
+    pub(in crate::screen) fn forget_notification_assemblies(&mut self, pane: PaneId) {
+        if let PaneId::Terminal(pane) = pane {
+            self.notification_policy
+                .assemblies
+                .retain(|(owner, _), _| *owner != pane);
+        }
+    }
+    pub(in crate::screen) fn notification_deadline(&self) -> Option<Duration> {
+        self.notification_policy
+            .pending
+            .iter()
+            .filter(|p| p.decision.is_none())
+            .map(|p| p.deadline.saturating_duration_since(Instant::now()))
+            .min()
+    }
+    pub(in crate::screen) fn notification_data(
+        &mut self,
+        source: NotificationSource,
+        pane_id: Option<PaneId>,
+        plugin_id: Option<PluginId>,
+        title: String,
+        body: String,
+    ) -> NotificationData {
+        let id = self.next_notification_id;
+        self.next_notification_id = NotificationId::new(id.get() + 1);
+        NotificationData {
+            id,
+            received_at_unix_ms: UnixMillis::try_from(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+            )
+            .unwrap_or_else(|_| UnixMillis::new(u64::MAX)),
+            source,
+            pane_id,
+            plugin_id,
+            title,
+            body,
+            delivery: if source == NotificationSource::Toast {
+                NotificationDelivery::Toast
+            } else {
+                NotificationDelivery::Desktop
+            },
+        }
+    }
 }

@@ -69,14 +69,14 @@ fn setup_with_pane_limit(
     Receiver<(PtyWriteInstruction, ErrorContext)>,
 ) {
     let mut screen = create_non_mirrored_screen(size);
-    screen.max_panes = max_panes;
+    screen.core.max_panes = max_panes;
     let os = FakeInputOutput::default();
     let messages = os.server_to_client_messages.clone();
-    screen.bus.os_input = Some(Box::new(os));
+    screen.core.bus.os_input = Some(Box::new(os));
     let (to_writer, writes) = channels::unbounded();
-    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(to_writer));
+    screen.core.bus.senders.to_pty_writer = Some(SenderWithContext::new(to_writer));
     new_tab(&mut screen, 1, TabId::new(0));
-    let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
     tab.new_pane(
         PANE,
         Some("codex".into()),
@@ -255,7 +255,7 @@ fn readiness_reports_each_failed_gate_without_writing_input() {
         report_kind(&mut screen, kind, hook("SessionStart"));
         match case {
             "missing" | "multiple" => {
-                screen.agent_lifecycle.clear();
+                screen.agents.agent_lifecycle.clear();
             },
             "mismatch" | "unreported" => {
                 // Deliberately bypass invalidation to exercise the diagnostic distinction.
@@ -335,7 +335,7 @@ fn missing_lifecycle_requires_a_parent_hook_and_preserves_unknown_input() {
     report(&mut screen, hook("SessionStart"));
     assert!(screen.agent_status_for_test().ready);
     // A server restart loses this map; the restored pane record is not authority.
-    screen.agent_lifecycle.clear();
+    screen.agents.agent_lifecycle.clear();
     let status = screen.agent_status_for_test();
     assert_eq!(
         status.readiness.unwrap().failures(),
@@ -415,9 +415,14 @@ fn hand_started_agent_width_tracks_foreground_command_without_lifecycle_changes(
             rows: 24,
         },
     );
-    screen.tabs.get_mut(&TabId::new(0)).unwrap().max_agent_width = 80;
+    screen
+        .core
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .max_agent_width = 80;
     screen.render_to_clients().unwrap();
-    let original = screen.tabs[&TabId::new(0)]
+    let original = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PANE)
         .unwrap()
         .render_geom();
@@ -428,11 +433,13 @@ fn hand_started_agent_width_tracks_foreground_command_without_lifecycle_changes(
         Some("codex".into())
     ));
     screen.render_to_clients().unwrap();
-    let pane = screen.tabs[&TabId::new(0)].get_pane_with_id(PANE).unwrap();
+    let pane = screen.core.tabs[&TabId::new(0)]
+        .get_pane_with_id(PANE)
+        .unwrap();
     assert_eq!(pane.get_content_columns(), 80);
     assert!(pane.agent_info().is_none());
     assert!(!pane.was_an_agent());
-    assert!(!screen.agent_lifecycle.contains_key(&PANE));
+    assert!(!screen.agents.agent_lifecycle.contains_key(&PANE));
     assert!(apply_pane_foreground_command(
         &mut screen,
         TerminalId::new(7),
@@ -441,7 +448,7 @@ fn hand_started_agent_width_tracks_foreground_command_without_lifecycle_changes(
     ));
     screen.render_to_clients().unwrap();
     assert_eq!(
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .get_pane_with_id(PANE)
             .unwrap()
             .render_geom(),
@@ -457,7 +464,7 @@ fn list_names_a_hand_started_agent_in_a_shell_as_detected_and_unmanaged() {
         replies(&messages, CLIENT).pop().unwrap()
     };
     assert!(list(&mut screen).agents.is_empty());
-    screen.terminal_foreground_cmds.insert(
+    screen.core.terminal_foreground_cmds.insert(
         TerminalId::new(7),
         vec![
             "/usr/local/bin/codex".into(),
@@ -497,6 +504,7 @@ fn list_names_a_hand_started_agent_in_a_shell_as_detected_and_unmanaged() {
     // Something else in the foreground is not an agent.
     report(&mut screen, hook("SessionEnd"));
     screen
+        .core
         .terminal_foreground_cmds
         .insert(TerminalId::new(7), vec!["vim".into(), "codex".into()]);
     assert!(list(&mut screen).agents.is_empty());
@@ -558,7 +566,7 @@ fn initial_status_distinguishes_missing_non_agent_and_exited_targets() {
                     assert!(response.agents.is_empty());
                 }
             }
-            assert!(screen.agent_controls.is_empty());
+            assert!(screen.agents.agent_controls.is_empty());
             assert!(writes
                 .try_iter()
                 .all(|(instruction, _)| !matches!(instruction, PtyWriteInstruction::Write(..))));
@@ -622,7 +630,7 @@ fn startup_dialog_keys_are_consumed_only_by_verified_startup() {
             );
             assert!(replies(&messages, CLIENT).is_empty());
             report_kind(&mut screen, kind, hook("SessionStart"));
-            assert!(screen.agent_dialog_inputs.is_empty());
+            assert!(screen.agents.agent_dialog_inputs.is_empty());
             assert!(replies(&messages, CLIENT).is_empty());
             screen
                 .tab_containing_pane_mut(PANE)
@@ -666,7 +674,7 @@ fn permission_keys_preserve_the_accepted_prompt_until_progress_and_completion() 
                         AgentOutcome::Ok
                     );
                     screen.refresh_agent_controls();
-                    assert_eq!(screen.agent_controls.len(), 1);
+                    assert_eq!(screen.agents.agent_controls.len(), 1);
                 }
                 assert_eq!(finish_paste(&writes), b"\x1b[B\r");
                 screen.agent_control(wait(AgentState::Idle), CLIENT);
@@ -678,7 +686,7 @@ fn permission_keys_preserve_the_accepted_prompt_until_progress_and_completion() 
                 if progress {
                     report_kind(&mut screen, kind, hook("PostToolUse"));
                     assert!(replies(&messages, CLIENT).is_empty());
-                    assert!(screen.agent_dialog_inputs.is_empty());
+                    assert!(screen.agents.agent_dialog_inputs.is_empty());
                 }
                 report_kind(
                     &mut screen,
@@ -697,7 +705,7 @@ fn permission_keys_preserve_the_accepted_prompt_until_progress_and_completion() 
                 assert!(result.agents[0].ready);
                 // The answered turn's final text reaches the wait, not only the run archive.
                 assert_eq!(result.message.as_deref(), Some("WROTE_OK"));
-                assert!(screen.agent_controls.is_empty());
+                assert!(screen.agents.agent_controls.is_empty());
                 screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
                 assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
                 for name in ["UserPromptSubmit", "Stop"] {
@@ -786,7 +794,7 @@ fn worker_progress_cannot_consume_parent_dialog_keys() {
         let mut worker = hook(name);
         worker.agent_id = Some("worker".into());
         report(&mut screen, worker);
-        assert!(screen.agent_dialog_inputs.contains_key(&PANE));
+        assert!(screen.agents.agent_dialog_inputs.contains_key(&PANE));
         assert!(replies(&messages, CLIENT).is_empty());
     }
     report(&mut screen, hook("Stop"));
@@ -801,7 +809,7 @@ fn dialog_tracking_is_cleared_on_recovery_invalidation_and_closure() {
         report(&mut screen, hook("PermissionRequest"));
         screen.agent_control(send_keys(vec![BareKey::Enter]), CLIENT);
         assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
-        assert!(screen.agent_dialog_inputs.contains_key(&PANE));
+        assert!(screen.agents.agent_dialog_inputs.contains_key(&PANE));
         match cleanup {
             "recover" => {
                 recover_after_quiet(
@@ -839,7 +847,7 @@ fn dialog_tracking_is_cleared_on_recovery_invalidation_and_closure() {
             },
             _ => unreachable!(),
         }
-        assert!(screen.agent_dialog_inputs.is_empty(), "{cleanup}");
+        assert!(screen.agents.agent_dialog_inputs.is_empty(), "{cleanup}");
     }
 }
 
@@ -887,7 +895,7 @@ fn dialog_keys_cannot_consume_manual_input_or_a_failed_batch() {
                     };
                     screen.agent_control(send_keys(keys), CLIENT);
                     assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Failed);
-                    assert!(screen.agent_dialog_inputs.is_empty());
+                    assert!(screen.agents.agent_dialog_inputs.is_empty());
                 }
                 if interference == "replacement" {
                     if startup {
@@ -897,7 +905,7 @@ fn dialog_keys_cannot_consume_manual_input_or_a_failed_batch() {
                         replacement.session_id = "replacement".into();
                         report_kind(&mut screen, kind, replacement);
                     }
-                    assert!(screen.agent_dialog_inputs.is_empty());
+                    assert!(screen.agents.agent_dialog_inputs.is_empty());
                 }
                 report_kind(
                     &mut screen,
@@ -942,7 +950,7 @@ fn permission_keys_do_not_advance_an_unacknowledged_or_delivering_prompt() {
             replies(&messages, ClientId::new(2))[0].outcome,
             AgentOutcome::Ok
         );
-        assert!(screen.agent_dialog_inputs.is_empty());
+        assert!(screen.agents.agent_dialog_inputs.is_empty());
         finish_paste(&writes);
         report(&mut screen, hook("UserPromptSubmit"));
         report(&mut screen, hook("Stop"));
@@ -1195,7 +1203,7 @@ fn status_only_provider_idle_wait_requires_matching_lifecycle_evidence() {
         }
         screen.agent_control(wait(AgentState::Idle), CLIENT);
         assert!(replies(&messages, CLIENT).is_empty(), "{evidence}");
-        screen.agent_controls[0].deadline = Some(Instant::now());
+        screen.agents.agent_controls[0].deadline = Some(Instant::now());
         screen.refresh_agent_controls();
         assert_eq!(
             replies(&messages, CLIENT)[0].outcome,
@@ -1218,7 +1226,7 @@ fn supported_idle_waits_require_readiness_even_without_prompt_support() {
             .unwrap();
         screen.agent_control(wait(AgentState::Idle), CLIENT);
         assert!(replies(&messages, CLIENT).is_empty());
-        screen.agent_controls[0].deadline = Some(Instant::now());
+        screen.agents.agent_controls[0].deadline = Some(Instant::now());
         screen.refresh_agent_controls();
         let result = replies(&messages, CLIENT).pop().unwrap();
         assert_eq!(result.outcome, AgentOutcome::TimedOut);
@@ -1241,7 +1249,7 @@ fn supported_idle_waits_require_readiness_even_without_prompt_support() {
         .unwrap();
     screen.agent_control(wait(AgentState::Idle), CLIENT);
     assert!(replies(&messages, CLIENT).is_empty());
-    screen.agent_controls[0].deadline = Some(Instant::now());
+    screen.agents.agent_controls[0].deadline = Some(Instant::now());
     screen.refresh_agent_controls();
     let result = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(result.outcome, AgentOutcome::TimedOut);
@@ -1930,7 +1938,7 @@ fn startup_reports_preserve_consumption_without_consuming_a_newer_draft() {
                 CLIENT,
             );
             assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
-            assert!(screen.agent_controls.is_empty());
+            assert!(screen.agents.agent_controls.is_empty());
             assert!(writes
                 .try_iter()
                 .all(|(instruction, _)| !matches!(instruction, PtyWriteInstruction::Write(..))));
@@ -1951,7 +1959,7 @@ fn worker_reports_preserve_parent_identity_claims_and_plugin_broadcasts() {
             writes.try_iter().for_each(drop);
             let parent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
             let (to_plugin, plugins) = channels::unbounded();
-            screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+            screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
             let mut worker = hook(name);
             worker.session_id = "worker-conversation".into();
             if matches!(name, "Stop" | "SessionEnd") {
@@ -1975,7 +1983,7 @@ fn worker_reports_preserve_parent_identity_claims_and_plugin_broadcasts() {
                 screen.get_pane_info(PANE).unwrap().agent.as_ref(),
                 Some(&parent)
             );
-            assert_eq!(screen.agent_controls.len(), 1);
+            assert_eq!(screen.agents.agent_controls.len(), 1);
             screen.agent_control_with_clear(prompt(true), ClientId::new(2), &writes);
             let rejected = replies(&messages, ClientId::new(2)).pop().unwrap();
             assert_eq!(rejected.outcome, AgentOutcome::Rejected);
@@ -2008,7 +2016,7 @@ fn worker_reports_preserve_parent_identity_claims_and_plugin_broadcasts() {
             assert_eq!(completed.outcome, AgentOutcome::Completed);
             assert!(completed.acknowledged);
             assert!(completed.agents[0].ready);
-            assert!(screen.agent_controls.is_empty());
+            assert!(screen.agents.agent_controls.is_empty());
         }
     }
 }
@@ -2090,7 +2098,7 @@ fn prompt_claim_precedes_input_and_acknowledgement_does_not_release_it() {
         replies(&messages, CLIENT).is_empty(),
         "one acknowledgement reply"
     );
-    assert!(screen.agent_controls.is_empty());
+    assert!(screen.agents.agent_controls.is_empty());
     screen.agent_control(
         AgentRequest::Status {
             pane_id: PANE,
@@ -2142,7 +2150,7 @@ fn fast_turn_hooks_preserve_completion_failure_and_interruption() {
             assert!(result.agents[0].ready);
         }
         assert_eq!(
-            screen.agent_controls.is_empty(),
+            screen.agents.agent_controls.is_empty(),
             outcome != AgentOutcome::Interrupted
         );
         screen.agent_control(
@@ -2171,7 +2179,7 @@ fn manual_terminal_input_interrupts_correlation_before_a_fast_completion() {
     let result = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(result.outcome, AgentOutcome::Interrupted);
     assert!(result.acknowledged);
-    assert!(screen.agent_controls.is_empty());
+    assert!(screen.agents.agent_controls.is_empty());
 }
 
 #[test]
@@ -2192,7 +2200,7 @@ fn replacement_and_closure_do_not_finish_the_original_conversation() {
             AgentOutcome::TargetChanged
         };
         assert_eq!(replies(&messages, CLIENT)[0].outcome, expected);
-        assert!(screen.agent_controls.is_empty());
+        assert!(screen.agents.agent_controls.is_empty());
     }
 }
 
@@ -2209,7 +2217,7 @@ fn claude_compaction_preserves_reported_state_without_a_lifecycle() {
         initial_hook.tool_name = Some("AskUserQuestion".into());
         report_kind(&mut screen, "claude", initial_hook);
         // Reproduce an ordinary reported pane without managed lifecycle evidence.
-        screen.agent_lifecycle.remove(&PANE);
+        screen.agents.agent_lifecycle.remove(&PANE);
         let before = screen.get_pane_info(PANE).unwrap().agent.unwrap();
         assert_eq!(before.state, expected);
         for name in ["PreCompact", "PostCompact", "SessionStart"] {
@@ -2225,7 +2233,9 @@ fn claude_compaction_preserves_reported_state_without_a_lifecycle() {
                 screen.get_pane_info(PANE).unwrap().agent,
                 Some(before.clone())
             );
-            assert!(!screen.has_agent_lifecycle(PANE, "claude", "conversation"));
+            assert!(!screen
+                .agents
+                .has_agent_lifecycle(PANE, "claude", "conversation"));
         }
     }
 }
@@ -2246,7 +2256,7 @@ fn claude_active_turn_compaction_does_not_finish_a_pending_prompt() {
             screen.get_pane_info(PANE).unwrap().agent.unwrap().state,
             AgentState::Busy
         );
-        assert!(!screen.agent_controls.is_empty());
+        assert!(!screen.agents.agent_controls.is_empty());
     }
     // Compaction is also not a substitute for confirmed Stop completion.
     let mut stop = hook("Stop");
@@ -2258,7 +2268,7 @@ fn claude_active_turn_compaction_does_not_finish_a_pending_prompt() {
         replies(&messages, CLIENT).pop().unwrap().outcome,
         AgentOutcome::Completed
     );
-    assert!(screen.agent_controls.is_empty());
+    assert!(screen.agents.agent_controls.is_empty());
 }
 
 #[test]
@@ -2315,7 +2325,7 @@ fn waiting_state_succeeds_while_other_state_waits_need_human_input() {
                     "{name}, {already_waiting}, {until}"
                 );
                 assert!(result[0].agents[0].agent.is_waiting_on_a_person());
-                assert!(screen.agent_controls.is_empty());
+                assert!(screen.agents.agent_controls.is_empty());
             }
         }
     }
@@ -2338,7 +2348,7 @@ fn idle_wait_reports_a_manual_draft_without_blocking_submission() {
         reply.agents[0].not_ready_reason,
         Some(NotReadyReason::UnconsumedInput)
     );
-    assert!(screen.agent_controls.is_empty());
+    assert!(screen.agents.agent_controls.is_empty());
     // The automatic prompt that follows replaces the draft.
     assert_eq!(finish_paste(&writes), b"manual draft");
     screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
@@ -2356,15 +2366,20 @@ fn exit_wait_survives_session_end_until_exit_timeout_replacement_or_closure() {
     ] {
         let (mut screen, messages, _writes) = setup("codex");
         report(&mut screen, hook("SessionStart"));
-        screen.agent_control(wait(AgentState::Exited), CLIENT);
+        let start = Instant::now();
+        let due = start + Duration::from_secs(30);
+        screen.agent_control_at(
+            wait(AgentState::Exited),
+            crate::screen::agent_control::Reply::Client(CLIENT),
+            start,
+        );
         assert!(replies(&messages, CLIENT).is_empty());
         report(&mut screen, hook("SessionEnd"));
         assert!(replies(&messages, CLIENT).is_empty());
         let info = screen.get_pane_info(PANE).unwrap();
         assert!(info.agent.is_none());
         assert!(!info.exited);
-        assert_eq!(screen.agent_controls.len(), 1);
-        assert!(screen.agent_control_deadline().is_some());
+        assert!(screen.agents.agent_control_deadline().is_some());
 
         match expected {
             AgentOutcome::Ok => {
@@ -2382,7 +2397,7 @@ fn exit_wait_survives_session_end_until_exit_timeout_replacement_or_closure() {
                 assert!(info.agent.is_none());
             },
             AgentOutcome::TimedOut => {
-                screen.agent_controls[0].deadline = Some(Instant::now());
+                screen.refresh_agent_controls_at(due);
             },
             AgentOutcome::TargetChanged => {
                 let mut replacement = hook("SessionStart");
@@ -2392,11 +2407,16 @@ fn exit_wait_survives_session_end_until_exit_timeout_replacement_or_closure() {
             AgentOutcome::TargetClosed => screen.close_pane_explicitly(PANE, None),
             _ => unreachable!(),
         }
-        screen.refresh_agent_controls();
+        screen.refresh_agent_controls_at(if expected == AgentOutcome::TimedOut {
+            due
+        } else {
+            start
+        });
         let result = replies(&messages, CLIENT);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].outcome, expected);
-        assert!(screen.agent_controls.is_empty());
+        screen.refresh_agent_controls_at(due + Duration::from_secs(1));
+        assert!(replies(&messages, CLIENT).is_empty());
     }
 }
 
@@ -2441,7 +2461,7 @@ fn exit_wait_ignores_worker_clear_reports_but_not_unrelated_parent_clears() {
         screen.refresh_agent_controls();
         if unrelated == "worker" {
             assert!(replies(&messages, CLIENT).is_empty());
-            assert_eq!(screen.agent_controls.len(), 1);
+            assert_eq!(screen.agents.agent_controls.len(), 1);
             assert_eq!(
                 screen
                     .get_pane_info(PANE)
@@ -2459,7 +2479,7 @@ fn exit_wait_ignores_worker_clear_reports_but_not_unrelated_parent_clears() {
             AgentOutcome::TargetChanged,
             "{unrelated}"
         );
-        assert!(screen.agent_controls.is_empty());
+        assert!(screen.agents.agent_controls.is_empty());
         assert!(screen.get_pane_info(PANE).unwrap().agent.is_none());
     }
 }
@@ -2507,7 +2527,7 @@ fn moving_an_agent_to_another_tab_preserves_pending_prompt_correlation() {
         .break_multiple_panes_to_tab_with_id(vec![PANE], TabId::new(1), false, CLIENT)
         .unwrap();
     assert!(moved.succeeded(), "{moved:?}");
-    let destination = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+    let destination = screen.core.tabs.get_mut(&TabId::new(1)).unwrap();
     assert_eq!(destination.agent_input_revision(PANE), revision);
     destination
         .write_to_pane_id(&None, Vec::new(), false, PANE, None, None)
@@ -2528,14 +2548,14 @@ fn timeout_keeps_the_claim_until_the_original_submission_is_resolved() {
     report(&mut screen, hook("SessionStart"));
     screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
     finish_paste(&writes);
-    screen.agent_controls[0].deadline = Some(Instant::now());
+    screen.agents.agent_controls[0].deadline = Some(Instant::now());
     screen.refresh_agent_controls();
     let timeout = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(timeout.outcome, AgentOutcome::TimedOut);
     assert!(!timeout.acknowledged);
     assert!(!timeout.agents[0].ready);
-    assert_eq!(screen.agent_controls.len(), 1);
-    assert!(screen.agent_control_deadline().is_none());
+    assert_eq!(screen.agents.agent_controls.len(), 1);
+    assert!(screen.agents.agent_control_deadline().is_none());
 
     screen.agent_control_with_clear(prompt(true), ClientId::new(2), &writes);
     assert_eq!(
@@ -2548,11 +2568,11 @@ fn timeout_keeps_the_claim_until_the_original_submission_is_resolved() {
         replies(&messages, CLIENT).is_empty(),
         "the timed-out caller is detached"
     );
-    assert!(screen.agent_controls.is_empty());
+    assert!(screen.agents.agent_controls.is_empty());
 
     screen.agent_control_with_clear(prompt(true), ClientId::new(2), &writes);
     assert!(replies(&messages, ClientId::new(2)).is_empty());
-    assert_eq!(screen.agent_controls.len(), 1);
+    assert_eq!(screen.agents.agent_controls.len(), 1);
 }
 
 #[test]
@@ -2647,8 +2667,8 @@ fn delayed_and_duplicate_acknowledgements_do_not_clear_a_manual_draft() {
         assert_eq!(interrupted[0].outcome, AgentOutcome::Interrupted);
         assert_eq!(interrupted[0].acknowledged, acknowledged_before_draft);
         assert!(!interrupted[0].agents[0].ready);
-        assert_eq!(screen.agent_controls.len(), 1);
-        assert!(screen.agent_control_deadline().is_none());
+        assert_eq!(screen.agents.agent_controls.len(), 1);
+        assert!(screen.agents.agent_control_deadline().is_none());
         screen.agent_control_with_clear(prompt(true), ClientId::new(2), &writes);
         assert_eq!(
             replies(&messages, ClientId::new(2))[0].outcome,
@@ -2658,7 +2678,7 @@ fn delayed_and_duplicate_acknowledgements_do_not_clear_a_manual_draft() {
         report(&mut screen, hook("UserPromptSubmit"));
         report(&mut screen, hook("Stop"));
         assert!(replies(&messages, CLIENT).is_empty());
-        assert!(screen.agent_controls.is_empty());
+        assert!(screen.agents.agent_controls.is_empty());
 
         screen.agent_control(
             AgentRequest::Status {
@@ -2707,7 +2727,7 @@ fn delayed_manual_acceptance_does_not_consume_a_newer_draft() {
         assert_eq!(result.agents[0].agent.state, AgentState::Idle);
         assert!(result.agents[0].status_available);
         assert!(!result.agents[0].ready);
-        assert!(screen.agent_controls.is_empty());
+        assert!(screen.agents.agent_controls.is_empty());
         assert!(writes
             .try_iter()
             .all(|(instruction, _)| !matches!(instruction, PtyWriteInstruction::Write(..))));
@@ -2794,7 +2814,7 @@ fn tool_and_completion_reports_do_not_clear_a_draft_typed_while_busy() {
     let result = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(result.outcome, AgentOutcome::Ok);
     assert!(!result.agents[0].ready);
-    assert!(screen.agent_controls.is_empty());
+    assert!(screen.agents.agent_controls.is_empty());
     assert!(writes
         .try_iter()
         .all(|(instruction, _)| !matches!(instruction, PtyWriteInstruction::Write(..))));
@@ -2839,7 +2859,7 @@ impl Screen {
             AgentRequest::Prompt { pane_id, .. } => *pane_id,
             _ => PANE,
         };
-        let clearing = self.agent_draft_clears.contains_key(&pane);
+        let clearing = self.agents.agent_draft_clears.contains_key(&pane);
         let prompt = matches!(request, AgentRequest::Prompt { .. });
         let now = Instant::now();
         let delay = if self
@@ -2851,7 +2871,7 @@ impl Screen {
             0
         };
         self.agent_control_at(request, client, now - Duration::from_millis(251 + delay));
-        if prompt && !clearing && self.agent_draft_clears.contains_key(&pane) {
+        if prompt && !clearing && self.agents.agent_draft_clears.contains_key(&pane) {
             let marker = finish_paste(writes);
             assert!(marker.starts_with(b"\x1b[200~yz") && marker.ends_with(b"\x1b[201~"));
             self.refresh_agent_controls_at(now - Duration::from_millis(250 + delay));
@@ -2908,13 +2928,13 @@ fn clear_start() -> HookEvent {
 
 fn deliver_clear(screen: &mut Screen, writes: &Receiver<(PtyWriteInstruction, ErrorContext)>) {
     screen.agent_control_with_clear(clear_prompt(), CLIENT, writes);
-    assert!(!screen.agent_clear_inputs.contains_key(&PANE));
+    assert!(!screen.agents.agent_clear_inputs.contains_key(&PANE));
     assert_eq!(finish_paste(writes), b"/clear\x1b[200~\x1b[201~");
     let now = Instant::now();
     screen.refresh_agent_controls_at(now);
     screen.refresh_agent_controls_at(now + Duration::from_millis(501));
     assert_eq!(finish_paste(writes), b"\r");
-    assert!(screen.agent_clear_inputs.contains_key(&PANE));
+    assert!(screen.agents.agent_clear_inputs.contains_key(&PANE));
 }
 
 #[test]
@@ -2929,7 +2949,7 @@ fn cli_clear_restores_readiness_and_allows_the_next_prompt() {
             AgentOutcome::TargetChanged
         );
         assert!(screen.get_pane_info(PANE).unwrap().agent.is_none());
-        assert!(screen.agent_control_deadline().is_some());
+        assert!(screen.agents.agent_control_deadline().is_some());
         report_kind(&mut screen, "claude", hook("SessionEnd"));
         // An older installed hook can report no state before the updated inline hook.
         report_state(
@@ -2938,10 +2958,10 @@ fn cli_clear_restores_readiness_and_allows_the_next_prompt() {
             clear_start(),
             AgentReportState::Unchanged,
         );
-        assert!(screen.agent_clear_inputs.contains_key(&PANE));
+        assert!(screen.agents.agent_clear_inputs.contains_key(&PANE));
         report_kind(&mut screen, "claude", clear_start());
-        assert!(screen.agent_clear_inputs.is_empty());
-        assert!(screen.agent_control_deadline().is_none());
+        assert!(screen.agents.agent_clear_inputs.is_empty());
+        assert!(screen.agents.agent_control_deadline().is_none());
         // Duplicate registrations repeat the clear-start hook without losing consumption.
         report_kind(&mut screen, "claude", clear_start());
         for request in [
@@ -3005,7 +3025,7 @@ fn cli_codex_new_restores_readiness_like_claude_clear() {
         screen.refresh_agent_controls_at(now);
         screen.refresh_agent_controls_at(now + Duration::from_millis(501));
         assert_eq!(finish_paste(&writes), b"\r");
-        assert!(screen.agent_clear_inputs.contains_key(&PANE));
+        assert!(screen.agents.agent_clear_inputs.contains_key(&PANE));
         // The bridge reports a replaced thread as an end and a clear start.
         report_kind(&mut screen, "codex", hook("SessionEnd"));
         assert_eq!(
@@ -3023,7 +3043,7 @@ fn cli_codex_new_restores_readiness_like_claude_clear() {
                 ..clear_start()
             },
         );
-        assert!(screen.agent_clear_inputs.is_empty());
+        assert!(screen.agents.agent_clear_inputs.is_empty());
         let waited = replies(&messages, CLIENT).pop().unwrap();
         assert_eq!(waited.outcome, AgentOutcome::Ok);
         assert_eq!(
@@ -3157,11 +3177,11 @@ fn failed_or_unsubmitted_clear_cannot_restore_readiness() {
                 senders.to_pty_writer = Some(SenderWithContext::new(sender));
             }
             if reason == "timeout" {
-                screen.agent_controls[0].deadline = Some(now);
+                screen.agents.agent_controls[0].deadline = Some(now);
             }
             screen.refresh_agent_controls_at(now + Duration::from_millis(501));
         }
-        assert!(screen.agent_clear_inputs.is_empty(), "{reason}");
+        assert!(screen.agents.agent_clear_inputs.is_empty(), "{reason}");
         report_kind(&mut screen, kind, hook("SessionEnd"));
         report_kind(&mut screen, kind, clear_start());
         replies(&messages, CLIENT);
@@ -3285,10 +3305,10 @@ fn clear_tracking_is_discarded_on_unrelated_lifecycle_or_cleanup() {
             _ => {},
         }
         if reason == "process" {
-            assert!(screen.agent_clear_inputs.is_empty());
+            assert!(screen.agents.agent_clear_inputs.is_empty());
         }
         report_kind(&mut screen, "claude", clear_start());
-        assert!(screen.agent_clear_inputs.is_empty(), "{reason}");
+        assert!(screen.agents.agent_clear_inputs.is_empty(), "{reason}");
         if reason != "closed" {
             screen.agent_control(
                 AgentRequest::Status {
@@ -3419,7 +3439,7 @@ fn enter_is_cancelled_on_input_failure_early_acknowledgement_or_replacement() {
                 );
             },
             "closed" => screen.close_pane_explicitly(PANE, None),
-            "timeout" => screen.agent_controls[0].deadline = Some(Instant::now()),
+            "timeout" => screen.agents.agent_controls[0].deadline = Some(Instant::now()),
             _ => unreachable!(),
         }
         finish_paste(&writes);
@@ -3460,7 +3480,7 @@ fn uncertain_submission_requires_explicit_recovery_and_replies_once() {
             replies(&messages, ClientId::new(2))[0].outcome,
             AgentOutcome::Rejected
         );
-        screen.agent_controls[0].deadline = Some(Instant::now());
+        screen.agents.agent_controls[0].deadline = Some(Instant::now());
         screen.refresh_agent_controls();
         let timed_out = replies(&messages, CLIENT);
         assert_eq!(timed_out[0].outcome, AgentOutcome::TimedOut);
@@ -3477,7 +3497,7 @@ fn uncertain_submission_requires_explicit_recovery_and_replies_once() {
         );
         finish_paste(&writes);
         screen.refresh_agent_controls();
-        assert!(screen.agent_control_deadline().is_none());
+        assert!(screen.agents.agent_control_deadline().is_none());
         report(&mut screen, hook("Stop"));
         for _ in 0..3 {
             screen.refresh_agent_controls();
@@ -3619,8 +3639,8 @@ fn claude_permission_enter_clears_wait_before_tool_completion_in_every_placement
             permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
             report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
             let (sender, plugins) = channels::unbounded();
-            screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
-            screen.background_plugin_subscriptions.insert(
+            screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+            screen.core.background_plugin_subscriptions.insert(
                 (PluginId::new(99), CLIENT),
                 HashSet::from([EventType::PaneUpdate]),
             );
@@ -3661,7 +3681,7 @@ fn claude_permission_enter_clears_wait_before_tool_completion_in_every_placement
                 assert_eq!(busy.waiting_on, None);
                 assert_eq!(busy.detail, None);
                 assert!(!busy.wait_needs_a_person);
-                assert!(screen.claude_permission_waits.is_empty());
+                assert!(screen.agents.claude_permission_waits.is_empty());
                 assert!(plugins.try_iter().any(|(instruction, _)| {
                     let PluginInstruction::Update(updates) = instruction else { return false };
                     updates.into_iter().any(|(_, _, event)| {
@@ -3724,7 +3744,7 @@ fn claude_permission_enter_ignores_other_waits_and_replaced_conversations() {
         }
         let waiting = screen.get_pane_info(PANE).unwrap().agent.unwrap();
         assert_eq!(waiting.state, AgentState::Waiting, "{case}");
-        assert!(screen.claude_permission_waits.is_empty(), "{case}");
+        assert!(screen.agents.claude_permission_waits.is_empty(), "{case}");
         permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), true);
         assert_eq!(
             screen.get_pane_info(PANE).unwrap().agent,
@@ -3755,8 +3775,8 @@ fn claude_permission_enter_preserves_unrelated_worker_waits() {
         let waiting = screen.get_pane_info(PANE).unwrap().agent;
         permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), true);
         assert_eq!(screen.get_pane_info(PANE).unwrap().agent, waiting);
-        assert!(screen.claude_permission_waits.is_empty());
-        assert!(screen.agent_worker_waits.contains_key(&PANE));
+        assert!(screen.agents.claude_permission_waits.is_empty());
+        assert!(screen.agents.agent_worker_waits.contains_key(&PANE));
         report_kind(
             &mut screen,
             "claude",
@@ -3796,6 +3816,7 @@ fn claude_permission_wait_requires_forwarded_enter_and_stays_with_its_pane() {
         .set_suspended(false);
     new_tab(&mut screen, 2, TabId::new(1));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(1))
         .unwrap()
@@ -3832,7 +3853,7 @@ fn claude_permission_wait_requires_forwarded_enter_and_stays_with_its_pane() {
     screen.refresh_agent_controls();
     assert_eq!(screen.get_pane_info(PANE).unwrap().agent, waiting);
     screen.close_pane_explicitly(PANE, None);
-    assert!(screen.claude_permission_waits.is_empty());
+    assert!(screen.agents.claude_permission_waits.is_empty());
 }
 
 #[test]
@@ -3854,13 +3875,13 @@ fn claude_permission_tracking_requires_an_accepted_state_report() {
         let (mut screen, _, _writes) = setup("claude");
         report_kind(&mut screen, "claude", hook("SessionStart"));
         report_kind(&mut screen, "claude", event);
-        assert!(screen.claude_permission_waits.is_empty());
+        assert!(screen.agents.claude_permission_waits.is_empty());
     }
     let (mut screen, _, _writes) = setup("claude");
     report_kind(&mut screen, "claude", hook("SessionStart"));
     report_kind(&mut screen, "claude", hook("Interrupt"));
     report_kind(&mut screen, "claude", claude_permission_prompt());
-    assert!(screen.claude_permission_waits.is_empty());
+    assert!(screen.agents.claude_permission_waits.is_empty());
 }
 
 #[test]
@@ -3885,7 +3906,7 @@ fn claude_worker_permission_reminders_preserve_parent_state_and_worker_waits() {
                     screen.get_pane_info(PANE).unwrap().agent,
                     Some(parent.clone())
                 );
-                assert!(screen.agent_worker_waits.is_empty());
+                assert!(screen.agents.agent_worker_waits.is_empty());
             }
             let mut worker = HookEvent {
                 agent_id: Some("worker".into()),
@@ -3908,7 +3929,7 @@ fn claude_worker_permission_reminders_preserve_parent_state_and_worker_waits() {
                     screen.get_pane_info(PANE).unwrap().agent,
                     Some(parent.clone())
                 );
-                assert!(screen.agent_worker_waits.is_empty());
+                assert!(screen.agents.agent_worker_waits.is_empty());
             }
             for tool in ["AskUserQuestion", "ExitPlanMode"] {
                 worker.tool_name = Some(tool.into());
@@ -3921,14 +3942,14 @@ fn claude_worker_permission_reminders_preserve_parent_state_and_worker_waits() {
                 assert_eq!(waiting.state, AgentState::Waiting);
                 report_kind(&mut screen, "claude", reminder.clone());
                 assert_eq!(screen.get_pane_info(PANE).unwrap().agent, Some(waiting));
-                assert!(screen.agent_worker_waits.contains_key(&PANE));
+                assert!(screen.agents.agent_worker_waits.contains_key(&PANE));
                 worker.hook_event_name = "PostToolUse".into();
                 report_kind(&mut screen, "claude", worker.clone());
                 assert_eq!(
                     screen.get_pane_info(PANE).unwrap().agent,
                     Some(parent.clone())
                 );
-                assert!(screen.agent_worker_waits.is_empty());
+                assert!(screen.agents.agent_worker_waits.is_empty());
             }
             worker.tool_use_id = Some("eliciting-tool".into());
             worker.hook_event_name = "Elicitation".into();
@@ -3941,7 +3962,7 @@ fn claude_worker_permission_reminders_preserve_parent_state_and_worker_waits() {
             worker.hook_event_name = "ElicitationResult".into();
             report_kind(&mut screen, "claude", worker);
             assert_eq!(screen.get_pane_info(PANE).unwrap().agent, Some(parent));
-            assert!(screen.agent_worker_waits.is_empty());
+            assert!(screen.agents.agent_worker_waits.is_empty());
             assert!(replies(&messages, CLIENT).is_empty());
         }
     }
@@ -4006,7 +4027,7 @@ fn concurrent_worker_waits_restore_latest_parent_and_keep_identity() {
                 CLIENT,
             );
             assert!(replies(&messages, CLIENT)[0].agents[0].ready);
-            assert!(screen.agent_worker_waits.is_empty());
+            assert!(screen.agents.agent_worker_waits.is_empty());
             let mut automatic = hook("PermissionRequest");
             automatic.agent_id = Some("auto".into());
             automatic.approvals_reviewer = Some("auto_review".into());
@@ -4024,7 +4045,7 @@ fn agent_spawn_placement_works_before_keyboard_input_and_without_clients() {
     for detached in [false, true] {
         let (mut screen, _, _) = setup("codex");
         if detached {
-            screen.active_tab_ids.clear();
+            screen.core.active_tab_ids.clear();
         }
         let pane = PaneId::Terminal(TerminalId::new(88));
         let (tx, mut rx) = tokio::sync::oneshot::channel();
@@ -4176,7 +4197,7 @@ fn synthesized_scroll_arrows_interrupt_agent_before_delayed_enter() {
 fn lifecycle_survives_moving_a_pane_and_is_cleared_on_closure() {
     let (mut screen, messages, _) = setup("codex");
     report(&mut screen, hook("SessionStart"));
-    screen.agent_launches.insert(
+    screen.agents.agent_launches.insert(
         PANE,
         yinz_types::agent::SpawnedAgent {
             pane_id: PANE,
@@ -4199,9 +4220,9 @@ fn lifecycle_survives_moving_a_pane_and_is_cleared_on_closure() {
     );
     assert!(replies(&messages, CLIENT)[0].agents[0].ready);
     screen.close_pane_explicitly(PANE, None);
-    assert!(!screen.agent_lifecycle.contains_key(&PANE));
-    assert!(!screen.agent_launches.contains_key(&PANE));
-    assert!(!screen.agent_worker_waits.contains_key(&PANE));
+    assert!(!screen.agents.agent_lifecycle.contains_key(&PANE));
+    assert!(!screen.agents.agent_launches.contains_key(&PANE));
+    assert!(!screen.agents.agent_worker_waits.contains_key(&PANE));
 }
 
 #[test]
@@ -4295,7 +4316,7 @@ fn interrupted_recovery_resets_a_silent_busy_claude_after_a_quiet_period() {
         "a hook may still be on its way"
     );
     let (to_plugin, plugins) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
     recover_after_quiet(&mut screen, interrupted);
     let recovered = replies(&messages, CLIENT);
     assert_eq!(recovered[0].outcome, AgentOutcome::Ok);
@@ -4512,7 +4533,7 @@ fn prompt_delivery_normalizes_only_claude_format_controls() {
                 let response = replies(&messages, CLIENT).pop().unwrap();
                 assert_eq!(response.outcome, AgentOutcome::Rejected);
                 assert!(response.agents[0].ready);
-                assert!(screen.agent_controls.is_empty());
+                assert!(screen.agents.agent_controls.is_empty());
                 assert!(finish_paste(&writes).is_empty());
                 continue;
             }
@@ -4583,7 +4604,7 @@ fn commands_are_rejected_before_claiming_or_writing_input() {
             );
             assert!(response.message.unwrap().contains("send-keys"));
             assert!(response.agents[0].ready);
-            assert!(screen.agent_controls.is_empty());
+            assert!(screen.agents.agent_controls.is_empty());
             assert!(finish_paste(&writes).is_empty());
         }
     }
@@ -4630,7 +4651,7 @@ fn host_bridge_and_cli_share_readiness_identity_outcomes_and_recovery() {
             assert_eq!(answers()[0].outcome, AgentOutcome::Rejected);
             finish_paste(&writes);
             if end == "timeout" {
-                screen.agent_controls[0].deadline = Some(Instant::now());
+                screen.agents.agent_controls[0].deadline = Some(Instant::now());
                 screen.refresh_agent_controls();
                 let result = answers().pop().unwrap();
                 assert_eq!(result.outcome, AgentOutcome::TimedOut);
@@ -4714,13 +4735,13 @@ fn duplicate_bootstrap_cannot_overwrite_provider_state_or_an_acknowledged_prompt
             }
         );
         let (to_plugin, plugins) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
         let mut bootstrap = hook("SessionStart");
         bootstrap.codex_hooks_ready = Some(true);
         report(&mut screen, bootstrap);
         assert_eq!(screen.get_pane_info(PANE).unwrap().agent.unwrap(), parent);
         assert!(replies(&messages, CLIENT).is_empty());
-        assert_eq!(screen.agent_controls.len(), 1);
+        assert_eq!(screen.agents.agent_controls.len(), 1);
         assert!(plugins
             .try_iter()
             .all(|(instruction, _)| !matches!(instruction, PluginInstruction::Update(_))));
@@ -4853,7 +4874,7 @@ fn interrupted_accepted_turn_reports_unresolved_until_recovery() {
         Some(NotReadyReason::UnresolvedTurn)
     );
     screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(41));
-    assert_eq!(screen.agent_controls.len(), 1);
+    assert_eq!(screen.agents.agent_controls.len(), 1);
     for request in [
         AgentRequest::Status {
             pane_id: PANE,
@@ -4885,13 +4906,13 @@ fn interrupted_accepted_turn_reports_unresolved_until_recovery() {
         timed_out.agents[0].not_ready_reason,
         Some(NotReadyReason::UnresolvedTurn)
     );
-    assert_eq!(screen.agent_controls.len(), 1);
+    assert_eq!(screen.agents.agent_controls.len(), 1);
     screen.agent_control(recover(), CLIENT);
     let recovered = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(recovered.outcome, AgentOutcome::Ok);
     assert!(recovered.agents[0].ready);
     assert_eq!(recovered.agents[0].not_ready_reason, None);
-    assert!(screen.agent_controls.is_empty());
+    assert!(screen.agents.agent_controls.is_empty());
 }
 
 /// A blocking Stop hook continues the same turn, and a hook without a turn id cannot be
@@ -4952,6 +4973,7 @@ fn claude_pastes_wait_for_settling_and_quiet_output_and_enter_only_once() {
             screen.refresh_agent_controls_at(now + Duration::from_millis(499));
             assert!(finish_paste(&writes).is_empty());
             screen
+                .core
                 .pane_output_activity
                 .insert(PANE, now + Duration::from_millis(480));
             screen.refresh_agent_controls_at(now + Duration::from_millis(500));
@@ -4966,7 +4988,7 @@ fn claude_pastes_wait_for_settling_and_quiet_output_and_enter_only_once() {
             screen.refresh_agent_controls_at(now + Duration::from_millis(580));
             if manual {
                 assert!(finish_paste(&writes).is_empty());
-                assert_eq!(screen.agent_controls.len(), 1);
+                assert_eq!(screen.agents.agent_controls.len(), 1);
             } else {
                 assert_eq!(finish_paste(&writes), b"\r");
                 screen.refresh_agent_controls_at(now + Duration::from_secs(1));
@@ -5087,7 +5109,7 @@ fn claude_confirmation_failure_retains_the_uncertain_submission_claim() {
     assert_eq!(response.outcome, AgentOutcome::StatusUnavailable);
     assert!(response.acknowledged);
     assert!(!response.agents[0].ready);
-    assert_eq!(screen.agent_controls.len(), 1);
+    assert_eq!(screen.agents.agent_controls.len(), 1);
     screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
     assert_eq!(
         replies(&messages, CLIENT)[0].outcome,
@@ -5096,7 +5118,7 @@ fn claude_confirmation_failure_retains_the_uncertain_submission_claim() {
     assert!(finish_paste(&writes).is_empty());
     // A second observer can supply valid late evidence after the first was unavailable.
     report_kind(&mut screen, "claude", hook("Stop"));
-    assert!(screen.agent_controls.is_empty());
+    assert!(screen.agents.agent_controls.is_empty());
     assert!(
         replies(&messages, CLIENT).is_empty(),
         "the caller already received unavailable"
@@ -5192,7 +5214,7 @@ fn timeout_and_input_interruption_explain_acceptance_and_conditional_recovery() 
             if interrupted {
                 screen.agent_write_for_test();
             } else {
-                screen.agent_controls[0].deadline = Some(Instant::now());
+                screen.agents.agent_controls[0].deadline = Some(Instant::now());
             }
             screen.refresh_agent_controls();
             let response = replies(&messages, CLIENT).pop().unwrap();
@@ -5281,7 +5303,7 @@ fn failed_turn_replies_once_releases_its_claim_and_preserves_newer_input() {
                 assert!(response.agents[0].ready);
                 assert_eq!(response.agents[0].not_ready_reason, None);
             }
-            assert!(screen.agent_controls.is_empty());
+            assert!(screen.agents.agent_controls.is_empty());
             report(&mut screen, failure);
             assert!(replies(&messages, CLIENT).is_empty());
             screen.agent_control(
@@ -5411,14 +5433,18 @@ fn a_notification_after_adoption_can_confirm_its_completed_turn() {
         };
         // Adoption carries the visible record, but not the old server's lifecycle.
         crate::screen::apply_pane_agent_report(&mut screen, PANE, Some(agent)).unwrap();
-        assert!(!screen.has_agent_lifecycle(PANE, "claude", "conversation"));
+        assert!(!screen
+            .agents
+            .has_agent_lifecycle(PANE, "claude", "conversation"));
 
         report_kind(
             &mut screen,
             "claude",
             task_notification("notification", &["bash"]),
         );
-        assert!(screen.has_agent_lifecycle(PANE, "claude", "conversation"));
+        assert!(screen
+            .agents
+            .has_agent_lifecycle(PANE, "claude", "conversation"));
         report_kind(
             &mut screen,
             "claude",
@@ -5435,7 +5461,7 @@ fn a_notification_after_adoption_can_confirm_its_completed_turn() {
             claude_stop("notification", "Finished after restart.", false),
         );
         assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
-        assert!(!screen.claude_background_pending_for_test());
+        assert!(!screen.agents.claude_background_pending_for_test());
     }
 }
 
@@ -5576,7 +5602,7 @@ fn a_notification_confirmed_before_its_launching_turn_keeps_the_newer_registry_s
     replies(&messages, CLIENT);
     let status = screen.agent_status_for_test();
     assert!(!status.background);
-    assert!(!screen.claude_background_pending_for_test());
+    assert!(!screen.agents.claude_background_pending_for_test());
     screen.agent_control(wait(AgentState::Idle), CLIENT);
     let done = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(done.outcome, AgentOutcome::Ok);
@@ -5597,7 +5623,7 @@ fn interrupted_recovery_ends_an_interrupted_notification_turn() {
     let recovered = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(recovered.outcome, AgentOutcome::Ok);
     assert!(recovered.agents[0].ready);
-    assert!(!screen.claude_background_pending_for_test());
+    assert!(!screen.agents.claude_background_pending_for_test());
     screen.agent_control(wait(AgentState::Idle), CLIENT);
     assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
 }
@@ -5703,6 +5729,7 @@ fn background_tracking_ends_with_recovery_and_the_conversation() {
             }
         }
         assert!(screen
+            .agents
             .agent_lifecycle
             .get(&PANE)
             .is_none_or(|lifecycle| lifecycle.claude_background_for_test().is_none()));
@@ -5831,6 +5858,7 @@ fn an_idle_wait_returns_the_last_completed_turn_and_a_new_prompt_clears_it() {
     replies(&messages, CLIENT);
     let lifecycle = |screen: &Screen| {
         screen
+            .agents
             .agent_lifecycle
             .get(&PANE)
             .unwrap()
@@ -5867,7 +5895,7 @@ fn a_failed_notification_confirmation_ends_only_that_turn() {
     let status = screen.agent_status_for_test();
     assert!(status.background);
     assert_eq!(status.agent.state, AgentState::Busy);
-    assert!(screen.claude_background_pending_for_test());
+    assert!(screen.agents.claude_background_pending_for_test());
     send_esc(&mut screen, &messages);
     recover_after_quiet(&mut screen, interrupted_recover());
     let recovered = replies(&messages, CLIENT).pop().unwrap();
@@ -6081,7 +6109,7 @@ fn unpinned_muse_recovery_restores_readiness_after_a_cleared_draft() {
     let recovered = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(recovered.outcome, AgentOutcome::Ok);
     assert!(recovered.agents[0].ready);
-    assert!(screen.agent_dialog_inputs.is_empty());
+    assert!(screen.agents.agent_dialog_inputs.is_empty());
     // Once the first turn binds, the empty pin no longer matches.
     report_kind(&mut screen, "muse", hook("SessionStart"));
     screen.agent_control(recover_as("", true), CLIENT);
@@ -6105,11 +6133,11 @@ fn muse_bootstrap_cannot_overwrite_provider_state() {
     let parent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
     assert_eq!(parent.state, AgentState::Busy);
     let (to_plugin, plugins) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
     report_kind(&mut screen, "muse", muse_bootstrap(true));
     assert_eq!(screen.get_pane_info(PANE).unwrap().agent.unwrap(), parent);
     assert!(replies(&messages, CLIENT).is_empty());
-    assert_eq!(screen.agent_controls.len(), 1);
+    assert_eq!(screen.agents.agent_controls.len(), 1);
     assert!(plugins
         .try_iter()
         .all(|(instruction, _)| !matches!(instruction, PluginInstruction::Update(_))));
@@ -6229,7 +6257,7 @@ fn muse_first_enter_requires_the_composer_to_keep_focus() {
                     replies(&messages, CLIENT).pop().unwrap().outcome,
                     AgentOutcome::Interrupted
                 );
-                assert_eq!(screen.agent_controls.len(), 1);
+                assert_eq!(screen.agents.agent_controls.len(), 1);
                 muse_output(&mut screen, &muse_composer_frame(""));
                 screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
                 assert_eq!(
@@ -6324,7 +6352,7 @@ fn agy_confirmation_failure_retains_the_uncertain_submission_claim() {
     assert_eq!(response.outcome, AgentOutcome::StatusUnavailable);
     assert!(response.acknowledged);
     assert!(!response.agents[0].ready);
-    assert_eq!(screen.agent_controls.len(), 1);
+    assert_eq!(screen.agents.agent_controls.len(), 1);
     screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
     assert_eq!(
         replies(&messages, CLIENT)[0].outcome,
@@ -6333,7 +6361,7 @@ fn agy_confirmation_failure_retains_the_uncertain_submission_claim() {
     assert!(finish_paste(&writes).is_empty());
     // A second observer can supply valid late evidence after the first was unavailable.
     report_kind(&mut screen, "agy", hook("Stop"));
-    assert!(screen.agent_controls.is_empty());
+    assert!(screen.agents.agent_controls.is_empty());
     assert!(
         replies(&messages, CLIENT).is_empty(),
         "the caller already received unavailable"
@@ -6427,14 +6455,14 @@ fn agy_switched_conversation_is_admitted_and_acknowledged() {
     let mut submit2 = hook("UserPromptSubmit");
     submit2.session_id = "conv-2".into();
     submit2.prompt_id = Some("conv-2:1".into());
-    assert!(!screen.ignore_agy_confirmation(PANE, &submit2));
+    assert!(!screen.agents.ignore_agy_confirmation(PANE, &submit2));
     report_kind(&mut screen, "agy", submit2);
 
     let mut stop2 = hook("Stop");
     stop2.session_id = "conv-2".into();
     stop2.prompt_id = Some("conv-2:1".into());
     stop2.agy_turn_complete = Some(true);
-    assert!(!screen.ignore_agy_confirmation(PANE, &stop2));
+    assert!(!screen.agents.ignore_agy_confirmation(PANE, &stop2));
     report_kind(&mut screen, "agy", stop2);
 
     screen.agent_control(
@@ -6454,20 +6482,20 @@ fn agy_switched_conversation_is_admitted_and_acknowledged() {
     assert_eq!(status2.agent.state, AgentState::Idle);
 
     // Stale confirmation from old conv-1 is filtered out and ignored
-    assert!(screen.ignore_agy_confirmation(PANE, &stop1));
+    assert!(screen.agents.ignore_agy_confirmation(PANE, &stop1));
 
     // Normal subsequent submission on conv-2 is admitted and acknowledged
     let mut submit3 = hook("UserPromptSubmit");
     submit3.session_id = "conv-2".into();
     submit3.prompt_id = Some("conv-2:2".into());
-    assert!(!screen.ignore_agy_confirmation(PANE, &submit3));
+    assert!(!screen.agents.ignore_agy_confirmation(PANE, &submit3));
     report_kind(&mut screen, "agy", submit3);
 
     let mut stop3 = hook("Stop");
     stop3.session_id = "conv-2".into();
     stop3.prompt_id = Some("conv-2:2".into());
     stop3.agy_turn_complete = Some(true);
-    assert!(!screen.ignore_agy_confirmation(PANE, &stop3));
+    assert!(!screen.agents.ignore_agy_confirmation(PANE, &stop3));
     report_kind(&mut screen, "agy", stop3);
 
     screen.agent_control(
@@ -6501,7 +6529,7 @@ fn agy_confirmations_require_nonempty_matching_identities() {
         let mut confirmation = hook("Stop");
         confirmation.session_id = conversation.into();
         confirmation.prompt_id = prompt.map(str::to_owned);
-        assert!(screen.ignore_agy_confirmation(PANE, &confirmation));
+        assert!(screen.agents.ignore_agy_confirmation(PANE, &confirmation));
         report_kind(&mut screen, "agy", confirmation);
     }
     screen.agent_control(wait(AgentState::Idle), CLIENT);
@@ -6510,7 +6538,7 @@ fn agy_confirmations_require_nonempty_matching_identities() {
     let done = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(done.outcome, AgentOutcome::Ok);
     assert!(done.agents[0].ready);
-    assert!(screen.ignore_agy_confirmation(PANE, &hook("Stop")));
+    assert!(screen.agents.ignore_agy_confirmation(PANE, &hook("Stop")));
 }
 
 #[test]
@@ -6537,7 +6565,7 @@ fn cli_pi_new_restores_readiness() {
         screen.refresh_agent_controls_at(now);
         screen.refresh_agent_controls_at(now + Duration::from_millis(501));
         assert_eq!(finish_paste(&writes), b"\r");
-        assert!(screen.agent_clear_inputs.contains_key(&PANE));
+        assert!(screen.agents.agent_clear_inputs.contains_key(&PANE));
         // The bridge reports a replaced thread as an end and a clear start.
         report_kind(&mut screen, "pi", hook("SessionEnd"));
         assert_eq!(
@@ -6548,7 +6576,7 @@ fn cli_pi_new_restores_readiness() {
         screen.agent_control(wait(AgentState::Idle), CLIENT);
         assert!(replies(&messages, CLIENT).is_empty());
         report_kind(&mut screen, "pi", HookEvent { ..clear_start() });
-        assert!(screen.agent_clear_inputs.is_empty());
+        assert!(screen.agents.agent_clear_inputs.is_empty());
         let waited = replies(&messages, CLIENT).pop().unwrap();
         assert_eq!(waited.outcome, AgentOutcome::Ok);
         assert_eq!(
@@ -6626,7 +6654,7 @@ fn pi_normalized_prompt_completes_and_allows_another_prompt() {
         assert_eq!(result.outcome, AgentOutcome::Completed);
         assert!(result.acknowledged);
         assert!(result.agents[0].ready);
-        assert!(screen.agent_controls.is_empty());
+        assert!(screen.agents.agent_controls.is_empty());
     }
 }
 
@@ -6660,7 +6688,7 @@ fn pi_rejects_commands_and_empty_text_after_trimming() {
         assert_eq!(result.outcome, AgentOutcome::Rejected, "{text:?}");
         assert!(result.agents[0].ready);
         assert!(writes.try_iter().next().is_none());
-        assert!(screen.agent_controls.is_empty());
+        assert!(screen.agents.agent_controls.is_empty());
     }
 }
 
@@ -6695,7 +6723,10 @@ fn pi_early_startup_dialog_consumes_only_its_answer() {
         for key in [BareKey::Down, BareKey::Enter] {
             screen.agent_control(send_keys(vec![key]), CLIENT);
             assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
-            assert_eq!(screen.agent_dialog_inputs.contains_key(&PANE), !draft);
+            assert_eq!(
+                screen.agents.agent_dialog_inputs.contains_key(&PANE),
+                !draft
+            );
         }
         finish_paste(&writes);
         report_kind(
@@ -6709,7 +6740,7 @@ fn pi_early_startup_dialog_consumes_only_its_answer() {
         );
         // Pi now reaches Yinz's actual startup handler.
         report_kind(&mut screen, "pi", hook("SessionStart"));
-        assert!(screen.agent_dialog_inputs.is_empty());
+        assert!(screen.agents.agent_dialog_inputs.is_empty());
         screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
         assert!(replies(&messages, CLIENT).is_empty());
         assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
@@ -6740,14 +6771,14 @@ fn pi_dialog_before_submit_keeps_claim_and_consumes_only_its_answer() {
         assert!(!result.acknowledged);
         assert_eq!(result.turn_id, None);
         assert!(!result.agents[0].ready);
-        assert_eq!(screen.agent_controls.len(), 1);
+        assert_eq!(screen.agents.agent_controls.len(), 1);
         for key in [BareKey::Down, BareKey::Enter] {
             screen.agent_control(send_keys(vec![key]), ClientId::new(2));
             assert_eq!(
                 replies(&messages, ClientId::new(2))[0].outcome,
                 AgentOutcome::Ok
             );
-            assert!(screen.agent_dialog_inputs.contains_key(&PANE));
+            assert!(screen.agents.agent_dialog_inputs.contains_key(&PANE));
         }
         report_kind(
             &mut screen,
@@ -6775,9 +6806,9 @@ fn pi_dialog_before_submit_keeps_claim_and_consumes_only_its_answer() {
                 ..hook("Stop")
             },
         );
-        assert_eq!(screen.agent_controls.len(), 1);
+        assert_eq!(screen.agents.agent_controls.len(), 1);
         report_kind(&mut screen, "pi", hook("Stop"));
-        assert!(screen.agent_controls.is_empty());
+        assert!(screen.agents.agent_controls.is_empty());
         assert!(
             replies(&messages, CLIENT).is_empty(),
             "the original caller was already answered"
@@ -6861,7 +6892,7 @@ fn pi_unverified_dialog_keys_cannot_acquire_prompt_correlation() {
             },
             "{case}"
         );
-        assert!(screen.agent_dialog_inputs.is_empty(), "{case}");
+        assert!(screen.agents.agent_dialog_inputs.is_empty(), "{case}");
         finish_paste(&writes);
         report_kind(&mut screen, "pi", hook("UserPromptSubmit"));
         report_kind(&mut screen, "pi", hook("Stop"));
@@ -6885,7 +6916,7 @@ fn pi_manual_terminal_input_interrupts_correlation_before_completion() {
     let result = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(result.outcome, AgentOutcome::Interrupted);
     assert!(result.acknowledged);
-    assert!(screen.agent_controls.is_empty());
+    assert!(screen.agents.agent_controls.is_empty());
 }
 
 #[test]
@@ -6947,7 +6978,7 @@ fn a_codex_plan_prompt_keeps_the_turn_complete_and_the_next_hook_clears_waiting(
         .unwrap()
         .is_waiting_on_a_person());
     assert!(replies(&messages, CLIENT).is_empty());
-    assert!(screen.agent_controls.is_empty());
+    assert!(screen.agents.agent_controls.is_empty());
     report(
         &mut screen,
         HookEvent {
@@ -7089,7 +7120,7 @@ fn submission_wait_survives_timeout_and_disconnect_without_resubmitting() {
                 AgentOutcome::Interrupted
             );
         } else {
-            screen.agent_controls[0].deadline = Some(Instant::now());
+            screen.agents.agent_controls[0].deadline = Some(Instant::now());
             screen.refresh_agent_controls();
             let timed_out = replies(&messages, CLIENT).pop().unwrap();
             assert_eq!(timed_out.outcome, AgentOutcome::TimedOut);
@@ -7136,7 +7167,7 @@ fn submission_wait_returns_provider_interrupt_and_explicit_recovery() {
             replies(&messages, CLIENT);
         } else {
             screen.refresh_agent_controls();
-            screen.agent_controls[0].deadline = Some(Instant::now());
+            screen.agents.agent_controls[0].deadline = Some(Instant::now());
             screen.refresh_agent_controls();
             replies(&messages, CLIENT);
             screen.agent_control(recover(), CLIENT);
@@ -7179,7 +7210,7 @@ fn submission_history_is_bounded_and_closing_a_pane_releases_it() {
             AgentOutcome::Submitted
         );
     }
-    assert_eq!(screen.agent_submissions[&PANE].len(), limit);
+    assert_eq!(screen.agents.agent_submissions[&PANE].len(), limit);
     screen.agent_control(wait_submission("receipt-0"), CLIENT);
     assert_eq!(
         replies(&messages, CLIENT)[0].outcome,
@@ -7199,7 +7230,7 @@ fn submission_history_is_bounded_and_closing_a_pane_releases_it() {
         replies(&messages, ClientId::new(2))[0].outcome,
         AgentOutcome::TargetClosed
     );
-    assert!(!screen.agent_submissions.contains_key(&PANE));
+    assert!(!screen.agents.agent_submissions.contains_key(&PANE));
 }
 
 #[test]
@@ -7234,7 +7265,7 @@ fn submission_wait_checks_conversation_pins_and_unknown_ids() {
             ..hook("SessionStart")
         },
     );
-    assert!(!screen.agent_submissions.contains_key(&PANE));
+    assert!(!screen.agents.agent_submissions.contains_key(&PANE));
     screen.agent_control(
         AgentRequest::WaitTurn {
             pane_id: PANE,
@@ -7262,7 +7293,7 @@ fn submission_ids_are_validated_before_terminal_input() {
         );
     }
     assert!(finish_paste(&writes).is_empty());
-    assert!(screen.agent_submissions.is_empty());
+    assert!(screen.agents.agent_submissions.is_empty());
 }
 
 #[test]
@@ -7347,7 +7378,7 @@ fn literal_claude_notification_xml_is_a_caller_turn() {
     assert!(completed.acknowledged);
     assert!(completed.agents[0].ready);
     assert_eq!(completed.message.as_deref(), Some("It is XML."));
-    assert!(!screen.claude_background_pending_for_test());
+    assert!(!screen.agents.claude_background_pending_for_test());
 }
 
 #[test]
@@ -7358,7 +7389,7 @@ fn unpinned_muse_recovery_advice_quotes_the_empty_conversation() {
     screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
     finish_paste(&writes);
     screen.refresh_agent_controls();
-    screen.agent_controls[0].deadline = Some(Instant::now());
+    screen.agents.agent_controls[0].deadline = Some(Instant::now());
     screen.refresh_agent_controls();
     let result = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(result.outcome, AgentOutcome::TimedOut);
@@ -7497,7 +7528,7 @@ fn plugin_agent_capability_and_command_prefixes_refuse_unsafe_prompt_input() {
             }
         );
         assert!(finish_paste(&writes).is_empty());
-        assert!(screen.agent_controls.is_empty());
+        assert!(screen.agents.agent_controls.is_empty());
     }
     unregister_owner(owner);
 }
@@ -7553,7 +7584,7 @@ fn plugin_agent_delayed_submit_preserves_host_input_and_identity_guards() {
                 );
             },
             "closed" => screen.close_pane_explicitly(PANE, None),
-            "timeout" => screen.agent_controls[0].deadline = Some(Instant::now()),
+            "timeout" => screen.agents.agent_controls[0].deadline = Some(Instant::now()),
             "unload" => {
                 unregister_owner(owner);
             },
@@ -7578,7 +7609,7 @@ fn draft_request(screen: &Screen) -> AgentRequest {
     AgentRequest::ClearDraft {
         pane_id: PANE,
         expected_session_id: "conversation".into(),
-        input_revision: screen.tabs[&TabId::new(0)].agent_input_revision(PANE),
+        input_revision: screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE),
         confirm_discard: true,
         interrupted: false,
         timeout_ms: 30_000,
@@ -7586,7 +7617,9 @@ fn draft_request(screen: &Screen) -> AgentRequest {
 }
 
 fn draft_frame(screen: &mut Screen, kind: &str, text: &str, cursor: usize, now: Instant) {
-    let pane = screen.tabs[&TabId::new(0)].get_pane_with_id(PANE).unwrap();
+    let pane = screen.core.tabs[&TabId::new(0)]
+        .get_pane_with_id(PANE)
+        .unwrap();
     let border = "─".repeat(pane.get_content_columns());
     let border = if kind == "pi" {
         format!("\x1b[38;5;6m{border}\x1b[m")
@@ -7610,12 +7643,13 @@ fn draft_frame(screen: &mut Screen, kind: &str, text: &str, cursor: usize, now: 
         ),
     };
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
         .handle_pty_bytes(TerminalId::new(7), format!("{frame}\x1b[?25h").into_bytes())
         .unwrap();
-    screen.pane_output_activity.insert(PANE, now);
+    screen.core.pane_output_activity.insert(PANE, now);
 }
 
 #[test]
@@ -7650,6 +7684,7 @@ fn clear_draft_verifies_marker_then_stable_empty_before_recovery() {
         );
         // Delivery alone and a hidden cursor during redraw cannot authorize Ctrl+C.
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
@@ -7732,6 +7767,7 @@ fn clear_draft_rejects_guards_without_writing() {
             },
             "layout" | "paste" => {
                 screen
+                    .core
                     .tabs
                     .get_mut(&TabId::new(0))
                     .unwrap()
@@ -7788,7 +7824,7 @@ fn clear_draft_cancellation_drains_writes_and_preserves_new_input() {
         let later = now + Duration::from_secs(if race == "timeout" { 31 } else { 1 });
         screen.refresh_agent_controls_at(later);
         assert!(
-            screen.agent_draft_clears.contains_key(&PANE),
+            screen.agents.agent_draft_clears.contains_key(&PANE),
             "queued writes keep ownership: {race}"
         );
         screen.agent_control(recover(), ClientId::new(2));
@@ -7798,7 +7834,7 @@ fn clear_draft_cancellation_drains_writes_and_preserves_new_input() {
         );
         finish_paste(&writes);
         screen.refresh_agent_controls_at(later);
-        assert!(screen.agent_draft_clears.is_empty());
+        assert!(screen.agents.agent_draft_clears.is_empty());
         assert!(
             finish_paste(&writes).is_empty(),
             "no destructive stage after {race}"
@@ -7869,6 +7905,7 @@ fn clear_draft_attachment_areas_prevent_empty_verification() {
         let now = Instant::now();
         draft_frame(&mut screen, kind, text, 0, now);
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
@@ -7990,12 +8027,13 @@ fn captured_composer_frame(screen: &mut Screen, fixture: &serde_json::Value, now
         frame += "\x1b[?25l";
     }
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
         .handle_pty_bytes(TerminalId::new(7), frame.into_bytes())
         .unwrap();
-    screen.pane_output_activity.insert(PANE, now);
+    screen.core.pane_output_activity.insert(PANE, now);
 }
 
 #[test]
@@ -8270,7 +8308,7 @@ fn clear_draft_interrupted_recovery_finishes_the_abandoned_submission() {
 fn clear_draft_pi_draft_rules_cannot_hide_earlier_input() {
     let (mut screen, messages, writes) = setup("pi");
     report_kind(&mut screen, "pi", hook("SessionStart"));
-    let width = screen.tabs[&TabId::new(0)]
+    let width = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PANE)
         .unwrap()
         .get_content_columns();
@@ -8283,6 +8321,7 @@ fn clear_draft_pi_draft_rules_cannot_hide_earlier_input() {
         now,
     );
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -8670,13 +8709,13 @@ fn first_derived_run_id_binding_before_or_during_prompt_preparation_delivers() {
                 screen.refresh_agent_controls_at(now + Duration::from_millis(1));
                 assert_eq!(finish_paste(&writes), [3]);
             }
-            let revision = screen.tabs[&TabId::new(0)].agent_input_revision(PANE);
+            let revision = screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE);
             screen
                 .tab_containing_pane_mut(PANE)
                 .unwrap()
                 .set_pane_agent(PANE, Some(bound));
             assert_eq!(
-                screen.tabs[&TabId::new(0)].agent_input_revision(PANE),
+                screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE),
                 revision
             );
             if binding != "clearing" {
@@ -8896,7 +8935,7 @@ fn pi_prompt_clear_waits_after_marker_delivery_and_honors_cancellation() {
             assert_eq!(finish_paste(&writes), [3]);
         } else {
             assert!(finish_paste(&writes).is_empty());
-            assert!(screen.agent_draft_clears.is_empty());
+            assert!(screen.agents.agent_draft_clears.is_empty());
             assert_eq!(
                 replies(&messages, CLIENT).pop().unwrap().outcome,
                 if cancellation == "typing" {
@@ -9004,7 +9043,7 @@ fn automatic_draft_clear_validates_before_writing() {
             screen.agent_control(request, CLIENT);
             assert_eq!(replies(&messages, CLIENT).len(), 1, "{kind}/{invalid}");
             assert!(finish_paste(&writes).is_empty(), "{kind}/{invalid}");
-            assert!(screen.agent_draft_clears.is_empty());
+            assert!(screen.agents.agent_draft_clears.is_empty());
         }
     }
 }
@@ -9054,14 +9093,17 @@ fn automatic_draft_clear_cancellation_retains_result_and_drains_writer() {
         let later = now + Duration::from_secs(if race == "timeout" { 31 } else { 1 });
         screen.refresh_agent_controls_at(later);
         if race != "writer" {
-            assert!(screen.agent_draft_clears.contains_key(&PANE), "{race}");
+            assert!(
+                screen.agents.agent_draft_clears.contains_key(&PANE),
+                "{race}"
+            );
             let status = screen.agent_status(PANE, None).unwrap();
             assert!(!status.ready);
             assert_eq!(status.not_ready_reason, Some(NotReadyReason::ClearingDraft));
         }
         finish_paste(&writes);
         screen.refresh_agent_controls_at(later);
-        assert!(screen.agent_draft_clears.is_empty());
+        assert!(screen.agents.agent_draft_clears.is_empty());
         assert!(finish_paste(&writes).is_empty(), "no delivery after {race}");
         if race != "replacement" {
             screen.agent_control(
@@ -9227,7 +9269,7 @@ fn agent_hide_rejects_the_last_selectable_pane_before_settlement() {
                         screen
                             .new_tab(other_tab, (vec![], vec![]), None, None)
                             .unwrap();
-                        let tab = screen.tabs.get_mut(&other_tab).unwrap();
+                        let tab = screen.core.tabs.get_mut(&other_tab).unwrap();
                         tab.new_pane(
                             PaneId::Terminal(TerminalId::new(9)),
                             None,
@@ -9243,7 +9285,7 @@ fn agent_hide_rejects_the_last_selectable_pane_before_settlement() {
                     },
                     "closing" => {
                         new_tab(&mut screen, 9, other_tab);
-                        screen.deferred_tab_closes.insert(other_tab);
+                        screen.core.deferred_tab_closes.insert(other_tab);
                     },
                     "overlay" => {
                         tab.new_pane(
@@ -9265,9 +9307,14 @@ fn agent_hide_rejects_the_last_selectable_pane_before_settlement() {
                     .unwrap();
                 screen.set_quit_notice(PluginId::new(8), None, guarded);
                 let (to_pty, pty) = channels::unbounded();
-                screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
-                screen.tabs.get_mut(&TabId::new(0)).unwrap().senders.to_pty =
-                    screen.bus.senders.to_pty.clone();
+                screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+                screen
+                    .core
+                    .tabs
+                    .get_mut(&TabId::new(0))
+                    .unwrap()
+                    .senders
+                    .to_pty = screen.core.bus.senders.to_pty.clone();
 
                 for (conversation, outcome) in [
                     ("conversation", AgentOutcome::Rejected),
@@ -9288,16 +9335,18 @@ fn agent_hide_rejects_the_last_selectable_pane_before_settlement() {
                     screen.settle_tabs().unwrap();
                     let info = screen.get_pane_info(PANE).unwrap();
                     assert!(!info.is_suppressed && !info.exited);
-                    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(0));
+                    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(0));
                     assert_eq!(
-                        screen.tabs[&TabId::new(0)].get_active_pane_id(CLIENT),
+                        screen.core.tabs[&TabId::new(0)].get_active_pane_id(CLIENT),
                         Some(PANE)
                     );
                     assert_eq!(
-                        screen.tabs.len(),
+                        screen.core.tabs.len(),
                         if companion == "pending" { 2 } else { 1 }
                     );
-                    assert!(screen.replacement_tab.is_none() && !screen.replacement_pending);
+                    assert!(
+                        screen.core.replacement_tab.is_none() && !screen.core.replacement_pending
+                    );
                     assert!(pty.try_iter().all(|(instruction, _)| match instruction {
                         PtyInstruction::ClosePane(id, _) => id != PANE,
                         PtyInstruction::CloseTab(ids) => !ids.contains(&PANE),
@@ -9351,9 +9400,14 @@ fn agent_hide_with_another_selectable_pane_survives_settlement() {
                 .focus_pane_with_id(PANE, false, false, CLIENT)
                 .unwrap();
             let (to_pty, pty) = channels::unbounded();
-            screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
-            screen.tabs.get_mut(&TabId::new(0)).unwrap().senders.to_pty =
-                screen.bus.senders.to_pty.clone();
+            screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+            screen
+                .core
+                .tabs
+                .get_mut(&TabId::new(0))
+                .unwrap()
+                .senders
+                .to_pty = screen.core.bus.senders.to_pty.clone();
             for _ in 0..2 {
                 screen.agent_control(visibility(true, Some("conversation")), CLIENT);
                 let response = replies(&messages, CLIENT).pop().unwrap();
@@ -9367,9 +9421,9 @@ fn agent_hide_with_another_selectable_pane_survives_settlement() {
                 assert!(info.is_suppressed && !info.exited);
                 assert!(info.agent.is_some());
                 assert_eq!(screen.tab_id_containing_pane(PANE), Some(TabId::new(0)));
-                assert_eq!(screen.active_tab_ids[&CLIENT], destination_tab);
+                assert_eq!(screen.core.active_tab_ids[&CLIENT], destination_tab);
                 assert_eq!(
-                    screen.tabs[&destination_tab].get_active_pane_id(CLIENT),
+                    screen.core.tabs[&destination_tab].get_active_pane_id(CLIENT),
                     Some(survivor)
                 );
                 assert!(pty.try_recv().is_err());
@@ -9490,7 +9544,7 @@ fn agent_overlay_hide_show_preserves_ownership_placement_and_client_focus() {
         tab.focus_pane_with_id(shell, false, false, client).unwrap();
     }
     let geom = tab.get_pane_with_id(PANE).unwrap().position_and_size();
-    let active_tabs = screen.active_tab_ids.clone();
+    let active_tabs = screen.core.active_tab_ids.clone();
     for suppressed in [true, true, false, false, true, false] {
         screen.agent_control(visibility(suppressed, Some("conversation")), CLIENT);
         let response = replies(&messages, CLIENT).pop().unwrap();
@@ -9504,7 +9558,7 @@ fn agent_overlay_hide_show_preserves_ownership_placement_and_client_focus() {
             tab.get_pane_with_id(PANE).unwrap().position_and_size(),
             geom
         );
-        assert_eq!(screen.active_tab_ids, active_tabs);
+        assert_eq!(screen.core.active_tab_ids, active_tabs);
         for client in [CLIENT, other] {
             assert_eq!(tab.get_active_pane_id(client), Some(shell));
         }
@@ -9539,7 +9593,7 @@ fn agent_show_rejects_hidden_modals_without_changing_client_focus_or_tabs() {
                 .tab_containing_pane(PANE)
                 .unwrap()
                 .overlay_placement_for(PANE);
-            let active_tabs = screen.active_tab_ids.clone();
+            let active_tabs = screen.core.active_tab_ids.clone();
             let focus = [CLIENT, other].map(|client| screen.active_pane_id(client));
             assert_eq!(
                 focus,
@@ -9585,7 +9639,7 @@ fn agent_show_rejects_hidden_modals_without_changing_client_focus_or_tabs() {
                 let tab = screen.tab_containing_pane(PANE).unwrap();
                 assert_eq!(tab.overlay_placement_for(PANE), placement);
                 assert_eq!(tab.overlays_are_rendered(), !hidden);
-                assert_eq!(screen.active_tab_ids, active_tabs);
+                assert_eq!(screen.core.active_tab_ids, active_tabs);
                 assert_eq!(
                     [CLIENT, other].map(|client| screen.active_pane_id(client)),
                     focus
@@ -9644,9 +9698,14 @@ fn agent_hide_retained_multipane_requires_a_destination_outside_its_container() 
             TabId::new(0)
         };
         let (to_pty, pty) = channels::unbounded();
-        screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
-        screen.tabs.get_mut(&TabId::new(0)).unwrap().senders.to_pty =
-            screen.bus.senders.to_pty.clone();
+        screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+        screen
+            .core
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .senders
+            .to_pty = screen.core.bus.senders.to_pty.clone();
         let hidden = destination != "absent";
         for _ in 0..2 {
             screen.agent_control(visibility(true, Some("conversation")), CLIENT);
@@ -9677,13 +9736,16 @@ fn agent_hide_retained_multipane_requires_a_destination_outside_its_container() 
                 assert!(!info.exited);
                 assert_eq!(tab.overlay_placement_for(child), Some(placement.clone()));
             }
-            assert_eq!(screen.active_tab_ids[&CLIENT], destination_tab);
+            assert_eq!(screen.core.active_tab_ids[&CLIENT], destination_tab);
             assert_eq!(
                 screen.active_pane_id(CLIENT),
                 Some(if hidden { survivor } else { PANE })
             );
-            assert_eq!(screen.tabs.len(), if destination == "tab" { 2 } else { 1 });
-            assert!(screen.replacement_tab.is_none() && !screen.replacement_pending);
+            assert_eq!(
+                screen.core.tabs.len(),
+                if destination == "tab" { 2 } else { 1 }
+            );
+            assert!(screen.core.replacement_tab.is_none() && !screen.core.replacement_pending);
             assert!(pty.try_recv().is_err());
         }
     }
@@ -9705,7 +9767,7 @@ fn agent_hide_checks_the_stack_sibling_that_suppression_will_promote() {
                 },
             );
             report(&mut screen, hook("SessionStart"));
-            *screen.stacked_pane_list.borrow_mut() = true;
+            *screen.core.stacked_pane_list.borrow_mut() = true;
             let tab = screen.tab_containing_pane_mut(PANE).unwrap();
             tab.sync_stacked_pane_list_mode();
             if has_next {
@@ -9733,7 +9795,7 @@ fn agent_hide_checks_the_stack_sibling_that_suppression_will_promote() {
             assert_eq!(tab.get_selectable_tiled_panes_count(), 1);
             let (to_pty, pty) = channels::unbounded();
             tab.senders.to_pty = Some(SenderWithContext::new(to_pty));
-            screen.bus.senders.to_pty = tab.senders.to_pty.clone();
+            screen.core.bus.senders.to_pty = tab.senders.to_pty.clone();
 
             for _ in 0..2 {
                 screen.agent_control(visibility(true, Some("conversation")), CLIENT);
@@ -9759,9 +9821,9 @@ fn agent_hide_checks_the_stack_sibling_that_suppression_will_promote() {
                     Some(if selectable { promoted } else { PANE })
                 );
                 assert_eq!(tab.get_all_pane_ids().len(), if has_next { 3 } else { 2 });
-                assert_eq!(screen.tabs.len(), 1);
-                assert_eq!(screen.active_tab_ids[&CLIENT], tab.id);
-                assert!(screen.replacement_tab.is_none() && !screen.replacement_pending);
+                assert_eq!(screen.core.tabs.len(), 1);
+                assert_eq!(screen.core.active_tab_ids[&CLIENT], tab.id);
+                assert!(screen.core.replacement_tab.is_none() && !screen.core.replacement_pending);
                 assert!(pty.try_recv().is_err());
             }
         }
@@ -9801,7 +9863,7 @@ fn agent_show_hide_preserve_focus_and_validate_live_and_held_conversations() {
                 tab.hold_pane(PANE, Some(0), false, tab.pane_run_command(PANE).unwrap());
             }
             new_tab(&mut screen, 9, TabId::new(1));
-            let active_tabs = screen.active_tab_ids.clone();
+            let active_tabs = screen.core.active_tab_ids.clone();
             for suppressed in [true, true, false, false, true] {
                 let before = screen.get_pane_info(PANE).unwrap().is_suppressed;
                 screen.agent_control(visibility(suppressed, Some("other")), CLIENT);
@@ -9810,7 +9872,7 @@ fn agent_show_hide_preserve_focus_and_validate_live_and_held_conversations() {
                     AgentOutcome::TargetChanged
                 );
                 assert_eq!(screen.get_pane_info(PANE).unwrap().is_suppressed, before);
-                let focus = screen.tabs[&TabId::new(1)].get_active_pane_id(CLIENT);
+                let focus = screen.core.tabs[&TabId::new(1)].get_active_pane_id(CLIENT);
                 screen.agent_control(visibility(suppressed, Some("conversation")), CLIENT);
                 let response = replies(&messages, CLIENT).pop().unwrap();
                 assert_eq!(response.outcome, AgentOutcome::Ok, "{response:?}");
@@ -9818,9 +9880,9 @@ fn agent_show_hide_preserve_focus_and_validate_live_and_held_conversations() {
                 assert_eq!(info.is_suppressed, suppressed);
                 assert!(!info.is_floating);
                 assert_eq!(screen.tab_id_containing_pane(PANE), Some(TabId::new(0)));
-                assert_eq!(screen.active_tab_ids, active_tabs);
+                assert_eq!(screen.core.active_tab_ids, active_tabs);
                 assert_eq!(
-                    screen.tabs[&TabId::new(1)].get_active_pane_id(CLIENT),
+                    screen.core.tabs[&TabId::new(1)].get_active_pane_id(CLIENT),
                     focus
                 );
             }
@@ -9875,7 +9937,7 @@ fn agent_show_rejects_suppressed_pane_tabs_without_changing_ownership() {
         assert!(tab.get_pane_info(PANE).unwrap().is_suppressed);
         let before = tab.pane_tabs_info(info.id).unwrap();
         let focus = tab.get_active_pane_id(CLIENT);
-        let active_tabs = screen.active_tab_ids.clone();
+        let active_tabs = screen.core.active_tab_ids.clone();
 
         for (conversation, outcome) in [
             ("other", AgentOutcome::TargetChanged),
@@ -9893,7 +9955,7 @@ fn agent_show_rejects_suppressed_pane_tabs_without_changing_ownership() {
             assert_eq!(tab.pane_tabs_of(PANE), Some(info.id));
             assert_eq!(tab.pane_tabs_of(PaneId::Plugin(overview)), Some(info.id));
             assert_eq!(tab.get_active_pane_id(CLIENT), focus);
-            assert_eq!(screen.active_tab_ids, active_tabs);
+            assert_eq!(screen.core.active_tab_ids, active_tabs);
         }
 
         let tab = screen.tab_containing_pane_mut(PANE).unwrap();
@@ -9913,7 +9975,7 @@ fn agent_show_rejects_suppressed_pane_tabs_without_changing_ownership() {
 fn agent_show_rejects_hidden_stack_members_without_changing_client_focus() {
     let (mut screen, messages, _writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
-    *screen.stacked_pane_list.borrow_mut() = true;
+    *screen.core.stacked_pane_list.borrow_mut() = true;
     let visible = PaneId::Terminal(TerminalId::new(8));
     screen
         .tab_containing_pane_mut(PANE)
@@ -9934,7 +9996,7 @@ fn agent_show_rejects_hidden_stack_members_without_changing_client_focus() {
         .unwrap();
     let other = ClientId::new(2);
     screen.add_client(other).unwrap();
-    let active_tabs = screen.active_tab_ids.clone();
+    let active_tabs = screen.core.active_tab_ids.clone();
     let tab = screen.tab_containing_pane_mut(PANE).unwrap();
     for client in [CLIENT, other] {
         tab.focus_pane_with_id(visible, false, false, client)
@@ -9948,7 +10010,7 @@ fn agent_show_rejects_hidden_stack_members_without_changing_client_focus() {
     assert_eq!(response.outcome, AgentOutcome::Rejected, "{response:?}");
     assert!(response.message.unwrap().contains("stack"));
     assert!(response.agents[0].is_suppressed);
-    assert_eq!(screen.active_tab_ids, active_tabs);
+    assert_eq!(screen.core.active_tab_ids, active_tabs);
     let tab = screen.tab_containing_pane_mut(PANE).unwrap();
     assert!(tab.pane_is_hidden_stack_list_member(&PANE));
     assert!(tab.pane_is_stack_list_member(&visible));
@@ -10107,7 +10169,7 @@ fn live_hook_recency_is_shared_repeated_and_excludes_replay_and_display_updates(
         let info = screen.get_pane_info(PANE).unwrap();
         let at = info.last_hook_at_ms.unwrap();
         assert!(at >= first);
-        let cached = screen.peer_sessions_cache[&screen.session_name]
+        let cached = screen.core.peer_sessions_cache[&screen.core.session_name]
             .panes
             .panes
             .values()
@@ -10152,26 +10214,30 @@ fn live_hook_recency_is_shared_repeated_and_excludes_replay_and_display_updates(
 fn hook_flash_restarts_for_identical_and_stateless_reports_and_expires_at_150_ms() {
     let (mut screen, _, _) = setup("codex");
     let start = Instant::now();
-    screen.pinned_now = Some(start);
+    screen.core.pinned_now = Some(start);
     report(&mut screen, hook("SessionStart"));
     let pane = screen.get_pane_info(PANE).unwrap();
-    assert!(screen.pane_title_hook_is_flashing(&pane, start));
-    assert!(!screen.agent_hook_is_flashing(&pane, start));
+    assert!(screen.agents.pane_title_hook_is_flashing(&pane, start));
+    assert!(!screen.agents.agent_hook_is_flashing(&pane, start));
     for (offset, name) in [
         (0, "UserPromptSubmit"),
         (100, "UserPromptSubmit"),
         (200, "PreCompact"),
     ] {
         let now = start + Duration::from_millis(offset);
-        screen.pinned_now = Some(now);
+        screen.core.pinned_now = Some(now);
         report(&mut screen, hook(name));
         let pane = screen.get_pane_info(PANE).unwrap();
-        assert!(screen.agent_hook_is_flashing(&pane, now));
-        assert!(screen.agent_hook_is_flashing(&pane, now + Duration::from_millis(149)));
-        assert!(!screen.agent_hook_is_flashing(&pane, now + Duration::from_millis(150)));
+        assert!(screen.agents.agent_hook_is_flashing(&pane, now));
+        assert!(screen
+            .agents
+            .agent_hook_is_flashing(&pane, now + Duration::from_millis(149)));
+        assert!(!screen
+            .agents
+            .agent_hook_is_flashing(&pane, now + Duration::from_millis(150)));
     }
     screen.reap_agent_hook_flashes(start + Duration::from_millis(350));
-    assert!(screen.agent_hook_flashes.is_empty());
+    assert!(screen.agents.agent_hook_flashes.is_empty());
 }
 
 #[test]
@@ -10189,14 +10255,20 @@ fn hook_flash_includes_all_title_states_but_excludes_replay_ignored_and_mismatch
         );
         let now = screen.frame_now();
         let pane = screen.get_pane_info(PANE).unwrap();
-        assert!(screen.pane_title_hook_is_flashing(&pane, now), "{state:?}");
-        assert!(!screen.agent_hook_is_flashing(&pane, now), "{state:?}");
+        assert!(
+            screen.agents.pane_title_hook_is_flashing(&pane, now),
+            "{state:?}"
+        );
+        assert!(
+            !screen.agents.agent_hook_is_flashing(&pane, now),
+            "{state:?}"
+        );
     }
     let (mut screen, _, _) = setup("agy");
     let start = Instant::now();
-    screen.pinned_now = Some(start);
+    screen.core.pinned_now = Some(start);
     report_kind(&mut screen, "agy", hook("UserPromptSubmit"));
-    screen.pinned_now = Some(start + Duration::from_millis(100));
+    screen.core.pinned_now = Some(start + Duration::from_millis(100));
     for event in [
         HookEvent {
             archive_only: true,
@@ -10212,12 +10284,16 @@ fn hook_flash_includes_all_title_states_but_excludes_replay_ignored_and_mismatch
         },
     ] {
         if event.hook_event_name == "Stop" {
-            assert!(screen.ignore_agy_confirmation(PANE, &event));
+            assert!(screen.agents.ignore_agy_confirmation(PANE, &event));
         }
         report_state(&mut screen, "agy", event, AgentReportState::Unchanged);
         let pane = screen.get_pane_info(PANE).unwrap();
-        assert!(screen.agent_hook_is_flashing(&pane, start + Duration::from_millis(149)));
-        assert!(!screen.agent_hook_is_flashing(&pane, start + Duration::from_millis(150)));
+        assert!(screen
+            .agents
+            .agent_hook_is_flashing(&pane, start + Duration::from_millis(149)));
+        assert!(!screen
+            .agents
+            .agent_hook_is_flashing(&pane, start + Duration::from_millis(150)));
     }
 }
 
@@ -10225,9 +10301,9 @@ fn hook_flash_includes_all_title_states_but_excludes_replay_ignored_and_mismatch
 fn hook_flash_is_cleared_on_replacement_clear_and_pane_removal() {
     for change in ["kind", "session", "run", "clear", "pane"] {
         let (mut screen, _, _) = setup("codex");
-        screen.pinned_now = Some(Instant::now());
+        screen.core.pinned_now = Some(Instant::now());
         report(&mut screen, hook("UserPromptSubmit"));
-        assert!(!screen.agent_hook_flashes.is_empty());
+        assert!(!screen.agents.agent_hook_flashes.is_empty());
         let mut agent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
         match change {
             "kind" => agent.kind = "claude".into(),
@@ -10244,7 +10320,7 @@ fn hook_flash_is_cleared_on_replacement_clear_and_pane_removal() {
             )
             .unwrap();
         }
-        assert!(screen.agent_hook_flashes.is_empty(), "{change}");
+        assert!(screen.agents.agent_hook_flashes.is_empty(), "{change}");
     }
 }
 
@@ -10256,13 +10332,13 @@ fn hook_flash_clearing_hook_flashes_only_remaining_title_and_expires() {
         .unwrap()
         .set_pane_frames(PaneFrameStyle::Full);
     let start = Instant::now();
-    screen.pinned_now = Some(start);
+    screen.core.pinned_now = Some(start);
     report(&mut screen, hook("UserPromptSubmit"));
     report(&mut screen, hook("SessionEnd"));
     let pane = screen.get_pane_info(PANE).unwrap();
     assert!(pane.agent.is_none());
-    assert!(screen.pane_title_hook_is_flashing(&pane, start));
-    assert!(!screen.agent_hook_is_flashing(&pane, start));
+    assert!(screen.agents.pane_title_hook_is_flashing(&pane, start));
+    assert!(!screen.agents.agent_hook_is_flashing(&pane, start));
     assert!(screen.pane_title_hook_flashes_are_visible(start));
     screen.render_to_clients().unwrap();
     let title = screen
@@ -10274,10 +10350,10 @@ fn hook_flash_clearing_hook_flashes_only_remaining_title_and_expires() {
     assert_eq!(title.state, None);
     assert!(title.hook_flash);
     let expired = start + Duration::from_millis(150);
-    screen.pinned_now = Some(expired);
+    screen.core.pinned_now = Some(expired);
     screen.on_animation_tick(expired).unwrap();
     screen.render_to_clients().unwrap();
-    assert!(screen.agent_hook_flashes.is_empty());
+    assert!(screen.agents.agent_hook_flashes.is_empty());
     assert!(
         !screen
             .tab_containing_pane(PANE)
@@ -10326,12 +10402,12 @@ fn hook_flash_title_clock_with_palette_closed_and_animations_disabled() {
                 tab.settle_overlay_ripples();
                 screen.set_pane_animations(enabled);
                 let (sender, receiver) = channels::unbounded();
-                screen.bus.senders.to_server = Some(SenderWithContext::new(sender));
+                screen.core.bus.senders.to_server = Some(SenderWithContext::new(sender));
                 let mut grid = grid_for_render_snapshot(size);
                 let start = Instant::now();
-                screen.pinned_now = Some(start);
+                screen.core.pinned_now = Some(start);
                 report(&mut screen, hook("SessionStart"));
-                assert!(screen.command_palettes.is_empty());
+                assert!(screen.palette.command_palettes.is_empty());
                 render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
                 assert_eq!(
                     screen.animation_clock_period(start),
@@ -10339,9 +10415,9 @@ fn hook_flash_title_clock_with_palette_closed_and_animations_disabled() {
                     "floating={floating}, focused={focused}, enabled={enabled}"
                 );
                 let colors = if focused {
-                    screen.style.colors.text_selected
+                    screen.core.style.colors.text_selected
                 } else {
-                    screen.style.colors.text_unselected
+                    screen.core.style.colors.text_unselected
                 };
                 let marker_color = |grid: &crate::panes::grid::Grid| {
                     grid.as_character_lines()
@@ -10363,7 +10439,7 @@ fn hook_flash_title_clock_with_palette_closed_and_animations_disabled() {
                         .into()
                     )
                 );
-                screen.pinned_now = Some(start + Duration::from_millis(150));
+                screen.core.pinned_now = Some(start + Duration::from_millis(150));
                 screen.on_animation_tick(screen.frame_now()).unwrap();
                 render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
                 assert_eq!(screen.animation_clock_period(screen.frame_now()), None);
@@ -10416,10 +10492,10 @@ fn hook_flash_pane_tab_repaints_when_terminal_is_hidden_behind_plugin_tab() {
         }
         tab.settle_overlay_ripples();
         let (sender, receiver) = channels::unbounded();
-        screen.bus.senders.to_server = Some(SenderWithContext::new(sender));
+        screen.core.bus.senders.to_server = Some(SenderWithContext::new(sender));
         let mut grid = grid_for_render_snapshot(size);
         let start = Instant::now();
-        screen.pinned_now = Some(start);
+        screen.core.pinned_now = Some(start);
         report(&mut screen, hook("SessionStart"));
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert!(screen.pane_title_hook_flashes_are_visible(start));
@@ -10441,15 +10517,15 @@ fn hook_flash_pane_tab_repaints_when_terminal_is_hidden_behind_plugin_tab() {
         };
         assert_eq!(
             color(&grid),
-            Some(screen.style.colors.text_unselected.emphasis_0.into())
+            Some(screen.core.style.colors.text_unselected.emphasis_0.into())
         );
-        screen.pinned_now = Some(start + Duration::from_millis(150));
+        screen.core.pinned_now = Some(start + Duration::from_millis(150));
         screen.on_animation_tick(screen.frame_now()).unwrap();
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert_eq!(screen.animation_clock_period(screen.frame_now()), None);
         assert_eq!(
             color(&grid),
-            Some(screen.style.colors.text_unselected.base.into())
+            Some(screen.core.style.colors.text_unselected.base.into())
         );
         assert_eq!(
             screen
@@ -10469,11 +10545,11 @@ fn hook_flash_pane_tab_repaints_when_terminal_is_hidden_behind_plugin_tab() {
 fn hook_flash_idle_hooks_restart_title_deadline_without_arming_palette() {
     let (mut screen, _, _) = setup("codex");
     let start = Instant::now();
-    screen.pinned_now = Some(start);
+    screen.core.pinned_now = Some(start);
     report(&mut screen, hook("SessionStart"));
     for offset in [100, 200] {
         let now = start + Duration::from_millis(offset);
-        screen.pinned_now = Some(now);
+        screen.core.pinned_now = Some(now);
         report_state(
             &mut screen,
             "codex",
@@ -10482,30 +10558,44 @@ fn hook_flash_idle_hooks_restart_title_deadline_without_arming_palette() {
         );
         let pane = screen.get_pane_info(PANE).unwrap();
         assert_eq!(pane.agent.as_ref().unwrap().state, AgentState::Idle);
-        assert!(screen.pane_title_hook_is_flashing(&pane, now + Duration::from_millis(149)));
-        assert!(!screen.pane_title_hook_is_flashing(&pane, now + Duration::from_millis(150)));
-        assert!(!screen.agent_hook_is_flashing(&pane, now));
+        assert!(screen
+            .agents
+            .pane_title_hook_is_flashing(&pane, now + Duration::from_millis(149)));
+        assert!(!screen
+            .agents
+            .pane_title_hook_is_flashing(&pane, now + Duration::from_millis(150)));
+        assert!(!screen.agents.agent_hook_is_flashing(&pane, now));
     }
     let mut agent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
     agent.state = AgentState::Busy;
     crate::screen::apply_pane_agent_report(&mut screen, PANE, Some(agent)).unwrap();
     let pane = screen.get_pane_info(PANE).unwrap();
-    assert!(screen.pane_title_hook_is_flashing(&pane, screen.frame_now()));
-    assert!(!screen.agent_hook_is_flashing(&pane, screen.frame_now()));
+    assert!(screen
+        .agents
+        .pane_title_hook_is_flashing(&pane, screen.frame_now()));
+    assert!(!screen
+        .agents
+        .agent_hook_is_flashing(&pane, screen.frame_now()));
     report_state(
         &mut screen,
         "codex",
         hook("PreCompact"),
         AgentReportState::Unchanged,
     );
-    assert!(screen.agent_hook_is_flashing(&screen.get_pane_info(PANE).unwrap(), screen.frame_now()));
+    assert!(screen
+        .agents
+        .agent_hook_is_flashing(&screen.get_pane_info(PANE).unwrap(), screen.frame_now()));
     for state in [AgentState::Idle, AgentState::Busy] {
         let mut agent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
         agent.state = state;
         crate::screen::apply_pane_agent_report(&mut screen, PANE, Some(agent)).unwrap();
         let pane = screen.get_pane_info(PANE).unwrap();
-        assert!(screen.pane_title_hook_is_flashing(&pane, screen.frame_now()));
-        assert!(!screen.agent_hook_is_flashing(&pane, screen.frame_now()));
+        assert!(screen
+            .agents
+            .pane_title_hook_is_flashing(&pane, screen.frame_now()));
+        assert!(!screen
+            .agents
+            .agent_hook_is_flashing(&pane, screen.frame_now()));
     }
 }
 
@@ -10572,7 +10662,9 @@ fn claude_worker_waits_release_only_the_matching_tool() {
                 screen.agent_status_for_test().agent.state,
                 AgentState::Waiting
             );
-            assert!(screen.agent_worker_waits[&PANE].waits.contains_key(task));
+            assert!(screen.agents.agent_worker_waits[&PANE]
+                .waits
+                .contains_key(task));
         }
         report_kind(
             &mut screen,
@@ -10653,7 +10745,7 @@ fn background_completion_preserves_draft_revision_and_independent_readiness() {
         17,
         Instant::now(),
     );
-    let revision = screen.tabs[&TabId::new(0)].agent_input_revision(PANE);
+    let revision = screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE);
     assert_eq!(
         screen.agent_status_for_test().not_ready_reason,
         Some(NotReadyReason::UnconsumedInput),
@@ -10668,10 +10760,10 @@ fn background_completion_preserves_draft_revision_and_independent_readiness() {
         Some(NotReadyReason::UnconsumedInput)
     );
     assert_eq!(
-        screen.tabs[&TabId::new(0)].agent_input_revision(PANE),
+        screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE),
         revision
     );
-    assert!(screen.tabs[&TabId::new(0)]
+    assert!(screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PANE)
         .unwrap()
         .dump_screen(false, Some(CLIENT))
@@ -10696,7 +10788,7 @@ fn claude_worker_stop_archives_without_publishing_idle_or_clearing_waits() {
         },
     );
     let (sender, plugins) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     let mut stop = claude_worker("SubagentStop", "worker");
     stop.agent_type = Some("reviewer".into());
     stop.last_assistant_message = Some("worker report".into());
@@ -10705,7 +10797,7 @@ fn claude_worker_stop_archives_without_publishing_idle_or_clearing_waits() {
         screen.agent_status_for_test().agent.state,
         AgentState::Waiting
     );
-    assert!(screen.agent_worker_waits[&PANE]
+    assert!(screen.agents.agent_worker_waits[&PANE]
         .waits
         .contains_key("worker"));
     let events: Vec<_> = plugins
@@ -10789,8 +10881,8 @@ fn claude_background_and_notifications_publish_aggregate_activity_without_idle_e
             report_kind(&mut screen, "claude", claude_worker("SubagentStart", id));
         }
         let (sender, plugins) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
-        screen.background_plugin_subscriptions.insert(
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+        screen.core.background_plugin_subscriptions.insert(
             (PluginId::new(99), CLIENT),
             HashSet::from([EventType::PaneUpdate]),
         );
@@ -11026,6 +11118,7 @@ fn claude_preserving_steering_rejects_unverified_drafts_and_invalid_targets() {
             "dialog" => report_kind(&mut screen, "claude", claude_permission_prompt()),
             "hidden" => {
                 screen
+                    .core
                     .tabs
                     .get_mut(&TabId::new(0))
                     .unwrap()
@@ -11236,6 +11329,7 @@ fn claude_steering_attempts_enter_even_if_the_composer_becomes_hidden() {
     screen.agent_control_with_clear(steering_prompt("next"), CLIENT, &writes);
     finish_paste(&writes);
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -11338,9 +11432,9 @@ fn recent_submission_results_survive_older_unresolved_steering() {
         }
     }
     // Resolving an older claim prunes it immediately, without waiting for another admission.
-    let before = screen.agent_submissions[&PANE].len();
+    let before = screen.agents.agent_submissions[&PANE].len();
     report_kind(&mut screen, "claude", claude_stop("old-1", "late", false));
-    assert_eq!(screen.agent_submissions[&PANE].len(), before - 1);
+    assert_eq!(screen.agents.agent_submissions[&PANE].len(), before - 1);
 }
 
 #[test]
@@ -11506,7 +11600,7 @@ fn old_submission_waiters_survive_completion_and_newer_admissions() {
             report_kind(&mut screen, "claude", claude_stop(&id, "newer", false));
             replies(&messages, CLIENT);
         }
-        assert_eq!(screen.agent_submissions[&PANE].len(), limit + 1);
+        assert_eq!(screen.agents.agent_submissions[&PANE].len(), limit + 1);
         assert!(replies(&messages, ClientId::new(2)).is_empty());
         if release == "timeout" {
             screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(31));
@@ -11538,14 +11632,14 @@ fn old_submission_waiters_survive_completion_and_newer_admissions() {
                 assert!(result[0].background);
             }
         } else if release == "disconnect" {
-            assert_eq!(screen.agent_submissions[&PANE].len(), limit + 1);
+            assert_eq!(screen.agents.agent_submissions[&PANE].len(), limit + 1);
             screen.detach_agent_controls(ClientId::new(2));
-            assert_eq!(screen.agent_submissions[&PANE].len(), limit + 1);
+            assert_eq!(screen.agents.agent_submissions[&PANE].len(), limit + 1);
             screen.detach_agent_controls(ClientId::new(3));
             assert!(replies(&messages, ClientId::new(2)).is_empty());
             assert!(replies(&messages, ClientId::new(3)).is_empty());
         }
-        assert_eq!(screen.agent_submissions[&PANE].len(), limit);
+        assert_eq!(screen.agents.agent_submissions[&PANE].len(), limit);
         screen.agent_control(wait_submission("parent"), ClientId::new(4));
         assert_eq!(
             replies(&messages, ClientId::new(4))[0].outcome,
@@ -11681,7 +11775,7 @@ fn notification_permission_wait_clears_only_after_delivered_enter() {
         assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
         // The notification is still running, and the parent's completion stays intact.
         assert_eq!(
-            screen.agent_lifecycle[&PANE].last_message_for_test(),
+            screen.agents.agent_lifecycle[&PANE].last_message_for_test(),
             Some("Started.")
         );
         report_kind(
@@ -11694,7 +11788,7 @@ fn notification_permission_wait_clears_only_after_delivered_enter() {
 }
 
 fn claude_lifecycle(screen: &Screen) -> yinz_types::agent::tracking::LifecycleState {
-    screen.agent_lifecycle[&PANE].handoff_for_test()
+    screen.agents.agent_lifecycle[&PANE].handoff_for_test()
 }
 
 fn claude_background_permission_request(name: &str) -> HookEvent {
@@ -11739,8 +11833,8 @@ fn claude_background_permission_approval_restores_completed_parent_and_finishes_
                     claude_worker("SubagentStart", "worker"),
                 );
                 let (sender, plugins) = channels::unbounded();
-                screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
-                screen.background_plugin_subscriptions.insert(
+                screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+                screen.core.background_plugin_subscriptions.insert(
                     (PluginId::new(99), CLIENT),
                     HashSet::from([EventType::PaneUpdate]),
                 );
@@ -11749,7 +11843,7 @@ fn claude_background_permission_approval_restores_completed_parent_and_finishes_
                 permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
                 assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
                 let consumption = if cli {
-                    Some(screen.tabs[&TabId::new(0)].agent_input_revision(PANE))
+                    Some(screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE))
                 } else {
                     previous_consumption
                 };
@@ -11765,7 +11859,7 @@ fn claude_background_permission_approval_restores_completed_parent_and_finishes_
                 assert!(!parent.wait_needs_a_person);
                 assert_eq!(lifecycle.claude_confirmation, Some(true));
                 assert!(screen.agent_status_for_test().background);
-                assert!(screen.claude_permission_waits.is_empty());
+                assert!(screen.agents.claude_permission_waits.is_empty());
                 // Terminal Enter has no CLI consumption receipt; observe the empty composer
                 // so the idle wait also has independent evidence of input readiness.
                 draft_frame(&mut screen, "claude", "", 0, Instant::now());
@@ -11887,6 +11981,7 @@ fn claude_background_permission_repeated_dialogs_require_new_enter_and_preserve_
             }
             // Activity completion must not consume a draft typed after permission approval.
             let consumption = screen
+                .agents
                 .agent_dialog_inputs
                 .get(&PANE)
                 .map(|input| input.input_revision)
@@ -11899,7 +11994,7 @@ fn claude_background_permission_repeated_dialogs_require_new_enter_and_preserve_
                 17,
                 Instant::now(),
             );
-            let revision = screen.tabs[&TabId::new(0)].agent_input_revision(PANE);
+            let revision = screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE);
             report_kind(
                 &mut screen,
                 "claude",
@@ -11928,11 +12023,11 @@ fn claude_background_permission_repeated_dialogs_require_new_enter_and_preserve_
                 Some(NotReadyReason::UnconsumedInput)
             );
             assert_eq!(
-                screen.tabs[&TabId::new(0)].agent_input_revision(PANE),
+                screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE),
                 revision
             );
             assert_eq!(claude_lifecycle(&screen).input_revision, consumption);
-            assert!(screen.tabs[&TabId::new(0)]
+            assert!(screen.core.tabs[&TabId::new(0)]
                 .get_pane_with_id(PANE)
                 .unwrap()
                 .dump_screen(false, Some(CLIENT))
@@ -12014,7 +12109,7 @@ fn claude_background_permission_new_callers_invalidate_old_completion_evidence()
                     screen.agent_status_for_test().agent.state,
                     AgentState::Waiting
                 );
-                assert!(screen.claude_permission_waits.contains_key(&PANE));
+                assert!(screen.agents.claude_permission_waits.contains_key(&PANE));
             } else {
                 report_kind(
                     &mut screen,
@@ -12099,7 +12194,7 @@ fn claude_background_permission_approval_preserves_concurrent_worker_tools_after
             AgentState::Idle
         );
         assert_eq!(
-            screen.agent_worker_waits[&PANE].parent.state,
+            screen.agents.agent_worker_waits[&PANE].parent.state,
             AgentState::Idle
         );
         assert_eq!(
@@ -12133,8 +12228,12 @@ fn claude_background_permission_approval_preserves_concurrent_worker_tools_after
                 AgentState::Waiting
             );
         }
-        assert!(screen.agent_worker_waits[&PANE].waits.contains_key("one"));
-        assert!(!screen.agent_worker_waits[&PANE].waits.contains_key("two"));
+        assert!(screen.agents.agent_worker_waits[&PANE]
+            .waits
+            .contains_key("one"));
+        assert!(!screen.agents.agent_worker_waits[&PANE]
+            .waits
+            .contains_key("two"));
         report_kind(
             &mut screen,
             "claude",
@@ -12167,7 +12266,7 @@ fn claude_steering_delivery_is_bounded_during_continuous_background_output() {
     // Advance a controlled clock; output is never quiet for the old 100 ms debounce.
     for tick in 0..=30 {
         let at = now + Duration::from_millis(tick * 50);
-        screen.pane_output_activity.insert(PANE, at);
+        screen.core.pane_output_activity.insert(PANE, at);
         if tick == 2 {
             report_kind(
                 &mut screen,
@@ -12221,6 +12320,7 @@ fn claude_steering_replaces_unconsumed_input_despite_unrelated_output() {
     assert_eq!(finish_paste(&writes), b"x");
     // The terminal still shows the old empty editor. A spinner is not an input receipt.
     screen
+        .core
         .pane_output_activity
         .insert(PANE, Instant::now() + Duration::from_millis(1));
     assert_eq!(
@@ -12323,7 +12423,7 @@ fn claude_steering_preparation_stops_when_permission_or_question_hooks_arrive() 
                     "no preparation, paste, or Enter after waiting"
                 );
             }
-            assert!(screen.agent_draft_clears.is_empty());
+            assert!(screen.agents.agent_draft_clears.is_empty());
             assert!(replies(&messages, ClientId::new(2)).is_empty());
 
             report_kind(&mut screen, "claude", hook("PostToolUse"));
@@ -12489,6 +12589,7 @@ fn claude_steering_attempts_replacement_for_full_and_hidden_composers() {
         draft_frame(&mut screen, "claude", "old draft", 9, Instant::now());
         if hidden {
             screen
+                .core
                 .tabs
                 .get_mut(&TabId::new(0))
                 .unwrap()
@@ -12642,9 +12743,12 @@ fn controller_worker_stack_shares_region_and_survives_root_close() {
             .unwrap();
         assert!(rx.try_recv().unwrap().error_message.is_none());
         workers.push(pane);
-        assert_eq!(screen.tabs[&tab_id].get_active_pane_id(CLIENT), Some(owner));
+        assert_eq!(
+            screen.core.tabs[&tab_id].get_active_pane_id(CLIENT),
+            Some(owner)
+        );
     }
-    let tab = &screen.tabs[&tab_id];
+    let tab = &screen.core.tabs[&tab_id];
     let first = tab
         .get_pane_with_id(workers[0])
         .unwrap()
@@ -12657,11 +12761,17 @@ fn controller_worker_stack_shares_region_and_survives_root_close() {
         assert_eq!(geom.cols, first.cols);
     }
     screen.close_pane_explicitly(workers[0], None);
-    assert_eq!(screen.agent_worker_stacks[&(owner, tab_id)], workers[1..]);
+    assert_eq!(
+        screen.core.agent_worker_stacks[&(owner, tab_id)],
+        workers[1..]
+    );
     for worker in &workers[1..] {
         screen.close_pane_explicitly(*worker, None);
     }
-    assert!(!screen.agent_worker_stacks.contains_key(&(owner, tab_id)));
+    assert!(!screen
+        .core
+        .agent_worker_stacks
+        .contains_key(&(owner, tab_id)));
     assert!(screen.tab_containing_pane(owner).is_some());
 }
 
@@ -12673,7 +12783,11 @@ fn completed_worker_close_requires_latest_accepted_submission() {
     finish_paste(&writes);
     report(&mut screen, hook("UserPromptSubmit"));
     report(&mut screen, hook("Stop"));
-    let submission = screen.agent_submissions[&PANE].back().unwrap().id.clone();
+    let submission = screen.agents.agent_submissions[&PANE]
+        .back()
+        .unwrap()
+        .id
+        .clone();
     replies(&messages, CLIENT);
     screen.agent_control(
         AgentRequest::CloseCompleted {
@@ -12722,7 +12836,11 @@ fn completed_worker_close_discards_subsequent_input() {
     finish_paste(&writes);
     report(&mut screen, hook("UserPromptSubmit"));
     report(&mut screen, hook("Stop"));
-    let submission = screen.agent_submissions[&PANE].back().unwrap().id.clone();
+    let submission = screen.agents.agent_submissions[&PANE]
+        .back()
+        .unwrap()
+        .id
+        .clone();
     replies(&messages, CLIENT);
     screen
         .tab_containing_pane_mut(PANE)
@@ -12816,7 +12934,11 @@ fn completed_worker_close_names_in_flight_control() {
     finish_paste(&writes);
     report(&mut screen, hook("UserPromptSubmit"));
     report(&mut screen, hook("Stop"));
-    let submission = screen.agent_submissions[&PANE].back().unwrap().id.clone();
+    let submission = screen.agents.agent_submissions[&PANE]
+        .back()
+        .unwrap()
+        .id
+        .clone();
     replies(&messages, CLIENT);
     // Another client's observation still owns a control slot on this pane.
     screen.agent_control_with_clear(wait(AgentState::Busy), ClientId::new(2), &writes);
@@ -12879,9 +13001,12 @@ fn controller_worker_stack_avoids_unrelated_stack() {
             .unwrap();
         assert!(rx.try_recv().unwrap().error_message.is_none());
         workers.push(pane);
-        assert_eq!(screen.tabs[&tab_id].get_active_pane_id(CLIENT), Some(owner));
+        assert_eq!(
+            screen.core.tabs[&tab_id].get_active_pane_id(CLIENT),
+            Some(owner)
+        );
     }
-    let tab = &screen.tabs[&tab_id];
+    let tab = &screen.core.tabs[&tab_id];
     let first = tab
         .get_pane_with_id(workers[0])
         .unwrap()
@@ -12901,11 +13026,17 @@ fn controller_worker_stack_avoids_unrelated_stack() {
         assert_eq!(geom.cols, first.cols);
     }
     screen.close_pane_explicitly(workers[0], None);
-    assert_eq!(screen.agent_worker_stacks[&(owner, tab_id)], workers[1..]);
+    assert_eq!(
+        screen.core.agent_worker_stacks[&(owner, tab_id)],
+        workers[1..]
+    );
     for worker in &workers[1..] {
         screen.close_pane_explicitly(*worker, None);
     }
-    assert!(!screen.agent_worker_stacks.contains_key(&(owner, tab_id)));
+    assert!(!screen
+        .core
+        .agent_worker_stacks
+        .contains_key(&(owner, tab_id)));
     assert!(screen.tab_containing_pane(owner).is_some());
 }
 
@@ -12957,6 +13088,7 @@ fn controller_worker_stack_rejects_only_stack_space() {
         .unwrap_err();
     assert!(rx.try_recv().unwrap().error_message.is_some());
     assert!(!screen
+        .core
         .agent_worker_stacks
         .get(&(owner, tab_id))
         .is_some_and(|members| members.contains(&pane)));
@@ -12975,7 +13107,11 @@ fn completed_worker_close_preserves_related_panes() {
         finish_paste(&writes);
         report(&mut screen, hook("UserPromptSubmit"));
         report(&mut screen, hook("Stop"));
-        let submission = screen.agent_submissions[&PANE].back().unwrap().id.clone();
+        let submission = screen.agents.agent_submissions[&PANE]
+            .back()
+            .unwrap()
+            .id
+            .clone();
         replies(&messages, CLIENT);
         let tab = screen.tab_containing_pane_mut(PANE).unwrap();
         let editor = PaneId::Terminal(TerminalId::new(99));
@@ -13046,7 +13182,7 @@ fn controller_worker_stack_skips_hidden_workers() {
     for remaining_worker in [false, true] {
         for list_mode in [false, true] {
             let (mut screen, _, _) = setup("bash");
-            *screen.stacked_pane_list.borrow_mut() = list_mode;
+            *screen.core.stacked_pane_list.borrow_mut() = list_mode;
             let tab_id = screen.tab_id_containing_pane(PANE).unwrap();
             let first = PaneId::Terminal(TerminalId::new(88));
             let second = PaneId::Terminal(TerminalId::new(89));
@@ -13056,6 +13192,7 @@ fn controller_worker_stack_skips_hidden_workers() {
                 }
                 if id == 90 {
                     screen
+                        .core
                         .tabs
                         .get_mut(&tab_id)
                         .unwrap()
@@ -13083,7 +13220,7 @@ fn controller_worker_stack_skips_hidden_workers() {
                     .unwrap();
                 assert!(rx.try_recv().unwrap().error_message.is_none());
             }
-            let tab = &screen.tabs[&tab_id];
+            let tab = &screen.core.tabs[&tab_id];
             let newest = PaneId::Terminal(TerminalId::new(90));
             assert!(tab.can_anchor_tiled_stack(newest));
             assert!(!tab.can_anchor_tiled_stack(first));
@@ -13111,7 +13248,7 @@ fn worker_stack_anchor_requires_a_tiled_region() {
             Size { cols: 80, rows: 24 },
             placement,
         );
-        *screen.stacked_pane_list.borrow_mut() = true;
+        *screen.core.stacked_pane_list.borrow_mut() = true;
         let tab = screen.tab_containing_pane_mut(PANE).unwrap();
         assert_eq!(tab.can_anchor_tiled_stack(PANE), !floating);
         tab.new_pane(
@@ -13147,12 +13284,13 @@ fn controller_worker_stack_preserves_focused_member() {
     for list_mode in [false, true] {
         for focus_worker in [false, true] {
             let (mut screen, _, _) = setup("bash");
-            *screen.stacked_pane_list.borrow_mut() = list_mode;
+            *screen.core.stacked_pane_list.borrow_mut() = list_mode;
             let tab_id = screen.tab_id_containing_pane(PANE).unwrap();
             let focused = PaneId::Terminal(TerminalId::new(89));
             for id in [88, 89, 90] {
                 if id == 90 && focus_worker {
                     screen
+                        .core
                         .tabs
                         .get_mut(&tab_id)
                         .unwrap()
@@ -13184,12 +13322,12 @@ fn controller_worker_stack_preserves_focused_member() {
             }
             let expected = if focus_worker { focused } else { PANE };
             assert_eq!(
-                screen.tabs[&tab_id].get_active_pane_id(CLIENT),
+                screen.core.tabs[&tab_id].get_active_pane_id(CLIENT),
                 Some(expected)
             );
             assert!(!screen.get_pane_info(expected).unwrap().is_suppressed);
             if list_mode {
-                assert!(!screen.tabs[&tab_id]
+                assert!(!screen.core.tabs[&tab_id]
                     .get_pane_with_id(expected)
                     .unwrap()
                     .position_and_size()
@@ -13234,12 +13372,16 @@ fn controller_worker_stack_respects_first_worker_pane_limit() {
         );
         assert_eq!(result.is_err(), limit == 1);
         assert_eq!(rx.try_recv().unwrap().error_message.is_some(), limit == 1);
-        assert_eq!(screen.tabs[&tab_id].get_tiled_pane_ids().len(), limit);
-        assert_eq!(screen.tabs[&tab_id].get_active_pane_id(CLIENT), Some(PANE));
+        assert_eq!(screen.core.tabs[&tab_id].get_tiled_pane_ids().len(), limit);
+        assert_eq!(
+            screen.core.tabs[&tab_id].get_active_pane_id(CLIENT),
+            Some(PANE)
+        );
         assert!(screen.get_pane_info(PANE).is_some());
         assert_eq!(screen.get_pane_info(worker).is_some(), limit == 2);
         assert_eq!(
             screen
+                .core
                 .agent_worker_stacks
                 .get(&(PANE, tab_id))
                 .is_some_and(|members| members.contains(&worker)),
@@ -13262,8 +13404,9 @@ fn controller_worker_stack_respects_subsequent_worker_pane_limit() {
         );
         let tab_id = screen.tab_id_containing_pane(PANE).unwrap();
         let (to_pty, pty) = channels::unbounded();
-        screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
-        screen.tabs.get_mut(&tab_id).unwrap().senders.to_pty = screen.bus.senders.to_pty.clone();
+        screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+        screen.core.tabs.get_mut(&tab_id).unwrap().senders.to_pty =
+            screen.core.bus.senders.to_pty.clone();
         let mut workers = vec![];
         for index in 0..limit {
             let worker = PaneId::Terminal(TerminalId::new(88 + index as u32));
@@ -13295,8 +13438,11 @@ fn controller_worker_stack_respects_subsequent_worker_pane_limit() {
                 assert!(completion.error_message.is_none());
                 workers.push(worker);
             }
-            assert_eq!(screen.agent_worker_stacks[&(PANE, tab_id)], workers);
-            assert_eq!(screen.tabs[&tab_id].get_active_pane_id(CLIENT), Some(PANE));
+            assert_eq!(screen.core.agent_worker_stacks[&(PANE, tab_id)], workers);
+            assert_eq!(
+                screen.core.tabs[&tab_id].get_active_pane_id(CLIENT),
+                Some(PANE)
+            );
             assert!(screen.get_pane_info(PANE).is_some());
             for existing in &workers {
                 assert!(screen.get_pane_info(*existing).is_some());
@@ -13484,7 +13630,7 @@ fn claude_queued_prompt_recovery_cannot_acknowledge_pending_input_or_consume_a_d
         } else {
             deliver_steering(&mut screen, &writes, "pending", CLIENT);
         }
-        let revision = screen.tabs[&TabId::new(0)].agent_input_revision(PANE);
+        let revision = screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE);
         // Even identical prose is not correlation evidence in a recovered report.
         let mut recovered = recovered_prompt("queued", "prompt");
         recovered.prompt = Some("steer".into());
@@ -13496,7 +13642,7 @@ fn claude_queued_prompt_recovery_cannot_acknowledge_pending_input_or_consume_a_d
         let responses = replies(&messages, CLIENT);
         assert!(responses.is_empty(), "{responses:?}");
         if !newer_draft {
-            let pending = screen.agent_submissions[&PANE]
+            let pending = screen.agents.agent_submissions[&PANE]
                 .iter()
                 .find(|submission| submission.id == "pending")
                 .unwrap();
@@ -13504,7 +13650,7 @@ fn claude_queued_prompt_recovery_cannot_acknowledge_pending_input_or_consume_a_d
             assert!(pending.result.is_none());
         }
         assert_eq!(
-            screen.tabs[&TabId::new(0)].agent_input_revision(PANE),
+            screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE),
             revision
         );
         assert_ne!(
@@ -13521,7 +13667,7 @@ fn claude_queued_prompt_recovery_cannot_acknowledge_pending_input_or_consume_a_d
                 screen.agent_status_for_test().not_ready_reason,
                 Some(NotReadyReason::UnconsumedInput)
             );
-            assert!(screen.tabs[&TabId::new(0)]
+            assert!(screen.core.tabs[&TabId::new(0)]
                 .get_pane_with_id(PANE)
                 .unwrap()
                 .dump_screen(false, Some(CLIENT))
@@ -13537,17 +13683,17 @@ fn claude_queued_prompt_recovery_preserves_permission_wait_and_event_state() {
     report_kind(&mut screen, "claude", claude_stop("prompt", "first", false));
     report_kind(&mut screen, "claude", claude_permission_prompt());
     let before = screen.get_pane_info(PANE).unwrap().agent.unwrap();
-    let revision = screen.claude_permission_waits[&PANE].input_revision;
+    let revision = screen.agents.claude_permission_waits[&PANE].input_revision;
     let (sender, plugins) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     report_kind(&mut screen, "claude", recovered_prompt("queued", "prompt"));
     assert_eq!(screen.get_pane_info(PANE).unwrap().agent.unwrap(), before);
     assert_eq!(
-        screen.claude_permission_waits[&PANE].input_revision,
+        screen.agents.claude_permission_waits[&PANE].input_revision,
         revision
     );
     assert_eq!(
-        screen.claude_permission_waits[&PANE].conversation,
+        screen.agents.claude_permission_waits[&PANE].conversation,
         "conversation"
     );
     let lifecycle = screen
@@ -13583,7 +13729,7 @@ fn claude_queued_prompt_recovery_native_evidence_correlates_once_without_reopeni
                 deliver_steering(&mut screen, &writes, "pending", CLIENT);
                 replies(&messages, CLIENT);
                 let (sender, plugins) = channels::unbounded();
-                screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+                screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
                 let mut native = steering_ack("queued");
                 if !matches {
                     native.prompt = Some("different input".into());
@@ -13597,7 +13743,7 @@ fn claude_queued_prompt_recovery_native_evidence_correlates_once_without_reopeni
                 report_kind(&mut screen, "claude", first);
                 if !native_first {
                     assert!(
-                        !screen.agent_submissions[&PANE]
+                        !screen.agents.agent_submissions[&PANE]
                             .iter()
                             .find(|s| s.id == "pending")
                             .unwrap()
@@ -13611,7 +13757,7 @@ fn claude_queued_prompt_recovery_native_evidence_correlates_once_without_reopeni
                 report_kind(&mut screen, "claude", native.clone());
                 report_kind(&mut screen, "claude", native);
                 assert_eq!(
-                    screen.agent_submissions[&PANE]
+                    screen.agents.agent_submissions[&PANE]
                         .iter()
                         .find(|s| s.id == "pending")
                         .unwrap()
@@ -13679,7 +13825,7 @@ fn claude_queued_prompt_recovery_native_replay_cannot_acknowledge_later_identica
         deliver_steering(&mut screen, &writes, "later", CLIENT);
         replies(&messages, CLIENT);
         report_kind(&mut screen, "claude", native);
-        let later = screen.agent_submissions[&PANE]
+        let later = screen.agents.agent_submissions[&PANE]
             .iter()
             .find(|s| s.id == "later")
             .unwrap();
@@ -13714,6 +13860,7 @@ fn launch_transaction_worker_after_resolve(
     ));
     gate.allocated(terminal);
     screen
+        .core
         .bus
         .senders
         .launches
@@ -13763,16 +13910,16 @@ fn launch_transaction_destination_rejection_has_typed_reason_and_no_side_effects
         ),
     ] {
         let (mut screen, _, _) = setup("bash");
-        let before = screen.tabs.keys().copied().collect::<Vec<_>>();
-        let focus = screen.active_tab_ids.clone();
+        let before = screen.core.tabs.keys().copied().collect::<Vec<_>>();
+        let focus = screen.core.active_tab_ids.clone();
         let gate = yinz_bus::agent_launch::LaunchGate::new("test.destination".into(), false);
         assert!(screen
             .resolve_launch_tab(placement, None, CLIENT, None, &gate)
             .is_err());
         assert_eq!(gate.snapshot().revoked, Some(expected));
         assert!(gate.snapshot().destination.is_none());
-        assert_eq!(screen.tabs.keys().copied().collect::<Vec<_>>(), before);
-        assert_eq!(screen.active_tab_ids, focus);
+        assert_eq!(screen.core.tabs.keys().copied().collect::<Vec<_>>(), before);
+        assert_eq!(screen.core.active_tab_ids, focus);
     }
 }
 
@@ -13825,11 +13972,11 @@ fn launch_transaction_floating_controller_admits_first_worker_in_empty_tiled_lay
             Size { cols: 80, rows: 24 },
             NewPanePlacement::Floating(None),
         );
-        *screen.stacked_pane_list.borrow_mut() = list_mode;
+        *screen.core.stacked_pane_list.borrow_mut() = list_mode;
         screen.close_pane_explicitly(PaneId::Terminal(TerminalId::new(1)), None);
         let tab_id = screen.tab_id_containing_pane(PANE).unwrap();
-        assert!(screen.tabs[&tab_id].get_tiled_pane_ids().is_empty());
-        let controller = screen.tabs[&tab_id]
+        assert!(screen.core.tabs[&tab_id].get_tiled_pane_ids().is_empty());
+        let controller = screen.core.tabs[&tab_id]
             .get_pane_with_id(PANE)
             .unwrap()
             .position_and_size();
@@ -13837,11 +13984,14 @@ fn launch_transaction_floating_controller_admits_first_worker_in_empty_tiled_lay
             let (gate, result) = launch_transaction_worker(&mut screen, id);
             assert!(result.error_message.is_none(), "{result:?}");
             let slot = gate.snapshot().slot.unwrap();
-            assert!(screen.tabs[&tab_id].can_anchor_tiled_stack(slot.pane_id));
+            assert!(screen.core.tabs[&tab_id].can_anchor_tiled_stack(slot.pane_id));
             assert!(screen.validate_launch_slot(TerminalId::new(id)).is_ok());
-            assert_eq!(screen.tabs[&tab_id].get_active_pane_id(CLIENT), Some(PANE));
             assert_eq!(
-                screen.tabs[&tab_id]
+                screen.core.tabs[&tab_id].get_active_pane_id(CLIENT),
+                Some(PANE)
+            );
+            assert_eq!(
+                screen.core.tabs[&tab_id]
                     .get_pane_with_id(PANE)
                     .unwrap()
                     .position_and_size(),
@@ -13849,8 +13999,9 @@ fn launch_transaction_floating_controller_admits_first_worker_in_empty_tiled_lay
             );
         }
         let workers = [88, 89].map(|id| PaneId::Terminal(TerminalId::new(id)));
-        assert_eq!(screen.agent_worker_stacks[&(PANE, tab_id)], workers);
+        assert_eq!(screen.core.agent_worker_stacks[&(PANE, tab_id)], workers);
         let mut members = screen
+            .core
             .tabs
             .get_mut(&tab_id)
             .unwrap()
@@ -13893,13 +14044,13 @@ fn launch_transaction_empty_tiled_worker_checks_capacity_and_size() {
         }
         screen.resize_to_screen(size).unwrap();
         let tab_id = screen.tab_id_containing_pane(PANE).unwrap();
-        let focus = screen.tabs[&tab_id].get_active_pane_id(CLIENT);
+        let focus = screen.core.tabs[&tab_id].get_active_pane_id(CLIENT);
         let (gate, result) = launch_transaction_worker(&mut screen, 88);
         assert!(result.error_message.is_some());
         assert_eq!(gate.snapshot().revoked, Some(expected));
         assert!(gate.snapshot().slot.is_none());
-        assert!(screen.tabs[&tab_id].get_tiled_pane_ids().is_empty());
-        assert_eq!(screen.tabs[&tab_id].get_active_pane_id(CLIENT), focus);
+        assert!(screen.core.tabs[&tab_id].get_tiled_pane_ids().is_empty());
+        assert_eq!(screen.core.tabs[&tab_id].get_active_pane_id(CLIENT), focus);
         assert!(screen.get_pane_info(PANE).is_some());
         assert!(screen
             .get_pane_info(PaneId::Terminal(TerminalId::new(88)))
@@ -13925,13 +14076,14 @@ fn launch_transaction_floating_and_overlay_controllers_keep_both_clients_focus()
         let other = ClientId::new(2);
         screen.add_client(other).unwrap();
         let tab_id = screen.tab_id_containing_pane(PANE).unwrap();
-        let focus = [CLIENT, other].map(|client| screen.tabs[&tab_id].get_active_pane_id(client));
-        let active_tabs = screen.active_tab_ids.clone();
-        let controller = screen.tabs[&tab_id]
+        let focus =
+            [CLIENT, other].map(|client| screen.core.tabs[&tab_id].get_active_pane_id(client));
+        let active_tabs = screen.core.active_tab_ids.clone();
+        let controller = screen.core.tabs[&tab_id]
             .get_pane_with_id(PANE)
             .unwrap()
             .position_and_size();
-        let overlays = screen.tabs[&tab_id].overlays_are_rendered();
+        let overlays = screen.core.tabs[&tab_id].overlays_are_rendered();
         for id in [88, 89] {
             let (gate, result) = launch_transaction_worker(&mut screen, id);
             assert!(result.error_message.is_none(), "{result:?}");
@@ -13939,19 +14091,20 @@ fn launch_transaction_floating_and_overlay_controllers_keep_both_clients_focus()
             assert_eq!(slot.tab_id, tab_id);
             assert!(screen.validate_launch_slot(TerminalId::new(id)).is_ok());
             assert_eq!(
-                [CLIENT, other].map(|client| screen.tabs[&tab_id].get_active_pane_id(client)),
+                [CLIENT, other].map(|client| screen.core.tabs[&tab_id].get_active_pane_id(client)),
                 focus
             );
-            assert_eq!(screen.active_tab_ids, active_tabs);
+            assert_eq!(screen.core.active_tab_ids, active_tabs);
             assert_eq!(
-                screen.tabs[&tab_id]
+                screen.core.tabs[&tab_id]
                     .get_pane_with_id(PANE)
                     .unwrap()
                     .position_and_size(),
                 controller
             );
-            assert_eq!(screen.tabs[&tab_id].overlays_are_rendered(), overlays);
+            assert_eq!(screen.core.tabs[&tab_id].overlays_are_rendered(), overlays);
             assert!(!screen
+                .core
                 .tabs
                 .get_mut(&tab_id)
                 .unwrap()
@@ -13972,11 +14125,12 @@ fn launch_transaction_splits_only_controller_stack_in_incident_geometry() {
                 rows: 59,
             },
         );
-        *screen.stacked_pane_list.borrow_mut() = list_mode;
+        *screen.core.stacked_pane_list.borrow_mut() = list_mode;
         screen.close_pane_explicitly(PaneId::Terminal(TerminalId::new(1)), None);
         let tab_id = screen.tab_id_containing_pane(PANE).unwrap();
         let old = PaneId::Terminal(TerminalId::new(87));
         screen
+            .core
             .tabs
             .get_mut(&tab_id)
             .unwrap()
@@ -13996,6 +14150,7 @@ fn launch_transaction_splits_only_controller_stack_in_incident_geometry() {
             .unwrap();
         assert_eq!(
             screen
+                .core
                 .tabs
                 .get_mut(&tab_id)
                 .unwrap()
@@ -14010,9 +14165,13 @@ fn launch_transaction_splits_only_controller_stack_in_incident_geometry() {
             assert!(slot.worker_region.is_some());
             let size = screen.validate_launch_slot(TerminalId::new(id)).unwrap();
             assert!(size.cols > 1 && size.rows > 1, "{size:?}");
-            assert_eq!(screen.tabs[&tab_id].get_active_pane_id(CLIENT), Some(PANE));
+            assert_eq!(
+                screen.core.tabs[&tab_id].get_active_pane_id(CLIENT),
+                Some(PANE)
+            );
             assert_eq!(
                 screen
+                    .core
                     .tabs
                     .get_mut(&tab_id)
                     .unwrap()
@@ -14021,6 +14180,7 @@ fn launch_transaction_splits_only_controller_stack_in_incident_geometry() {
                 2
             );
             assert!(screen
+                .core
                 .tabs
                 .get_mut(&tab_id)
                 .unwrap()
@@ -14048,13 +14208,14 @@ fn launch_transaction_rejected_admission_keeps_layout_and_has_no_hidden_orphan()
         let tab = screen.tab_id_containing_pane(PANE).unwrap();
         if fullscreen {
             screen
+                .core
                 .tabs
                 .get_mut(&tab)
                 .unwrap()
                 .toggle_pane_fullscreen(PANE);
         }
-        assert_eq!(screen.tabs[&tab].is_fullscreen_active(), fullscreen);
-        let geom = screen.tabs[&tab]
+        assert_eq!(screen.core.tabs[&tab].is_fullscreen_active(), fullscreen);
+        let geom = screen.core.tabs[&tab]
             .get_pane_with_id(PANE)
             .unwrap()
             .position_and_size();
@@ -14074,14 +14235,17 @@ fn launch_transaction_rejected_admission_keeps_layout_and_has_no_hidden_orphan()
             .get_pane_info(PaneId::Terminal(TerminalId::new(88)))
             .is_none());
         assert_eq!(
-            screen.tabs[&tab]
+            screen.core.tabs[&tab]
                 .get_pane_with_id(PANE)
                 .unwrap()
                 .position_and_size(),
             geom
         );
-        assert_eq!(screen.tabs[&tab].get_active_pane_id(CLIENT), Some(PANE));
-        assert_eq!(screen.tabs[&tab].is_fullscreen_active(), fullscreen);
+        assert_eq!(
+            screen.core.tabs[&tab].get_active_pane_id(CLIENT),
+            Some(PANE)
+        );
+        assert_eq!(screen.core.tabs[&tab].is_fullscreen_active(), fullscreen);
     }
 }
 
@@ -14089,7 +14253,7 @@ fn launch_transaction_rejected_admission_keeps_layout_and_has_no_hidden_orphan()
 fn launch_transaction_region_survives_root_close_and_hidden_list_members() {
     for list_mode in [false, true] {
         let (mut screen, _, _) = setup("bash");
-        *screen.stacked_pane_list.borrow_mut() = list_mode;
+        *screen.core.stacked_pane_list.borrow_mut() = list_mode;
         let (first, _) = launch_transaction_worker(&mut screen, 88);
         let (second, result) = launch_transaction_worker(&mut screen, 89);
         assert!(result.error_message.is_none(), "{result:?}");
@@ -14102,7 +14266,7 @@ fn launch_transaction_region_survives_root_close_and_hidden_list_members() {
         assert!(result.error_message.is_none(), "{result:?}");
         assert_eq!(third.snapshot().slot.unwrap().worker_region, region);
         assert_eq!(
-            screen.tabs[&TabId::new(0)].get_active_pane_id(CLIENT),
+            screen.core.tabs[&TabId::new(0)].get_active_pane_id(CLIENT),
             Some(PANE)
         );
     }
@@ -14125,6 +14289,7 @@ fn launch_transaction_dissolved_group_cannot_revive_completed_region_ownership()
     let mut original_geoms = Vec::new();
     for id in [88, 89] {
         let pane = screen
+            .core
             .tabs
             .get_mut(&key.1)
             .unwrap()
@@ -14137,10 +14302,11 @@ fn launch_transaction_dissolved_group_cannot_revive_completed_region_ownership()
         pane.set_geom(standalone);
     }
     screen.revalidate_launches();
-    assert!(!screen.agent_worker_regions.contains_key(&key));
+    assert!(!screen.core.agent_worker_regions.contains_key(&key));
     // Even identical panes and recycled classic stack IDs cannot resurrect retired ownership.
     for (id, original) in original_geoms {
         screen
+            .core
             .tabs
             .get_mut(&key.1)
             .unwrap()
@@ -14154,7 +14320,10 @@ fn launch_transaction_dissolved_group_cannot_revive_completed_region_ownership()
         third.snapshot().slot.unwrap().worker_region,
         Some(original_region)
     );
-    assert_eq!(screen.tabs[&key.1].get_active_pane_id(CLIENT), Some(PANE));
+    assert_eq!(
+        screen.core.tabs[&key.1].get_active_pane_id(CLIENT),
+        Some(PANE)
+    );
 }
 
 #[test]
@@ -14286,14 +14455,15 @@ fn launch_transaction_changed_group_or_tab_incarnation_cannot_authorize_start() 
         assert!(result.error_message.is_none());
         let slot = gate.snapshot().slot.unwrap();
         if reused_tab {
-            let old = screen.tabs.remove(&slot.tab_id).unwrap();
+            let old = screen.core.tabs.remove(&slot.tab_id).unwrap();
             new_tab(&mut screen, 1, slot.tab_id);
             assert_ne!(
-                screen.tabs[&slot.tab_id].agent_tab_incarnation,
+                screen.core.tabs[&slot.tab_id].agent_tab_incarnation,
                 old.agent_tab_incarnation
             );
         } else {
             screen
+                .core
                 .tabs
                 .get_mut(&slot.tab_id)
                 .unwrap()
@@ -14340,7 +14510,7 @@ fn lose_notification_observation(screen: &mut Screen, loss: &str) {
         "budget" => {
             let mut state = claude_lifecycle(screen);
             state.claude.obligations.launches[0].remaining_ms = 1;
-            screen.agent_lifecycle.insert(PANE, state.into());
+            screen.agents.agent_lifecycle.insert(PANE, state.into());
             screen.refresh_agent_controls_at(Instant::now() + Duration::from_millis(10));
         },
         "capacity" => {
@@ -14526,6 +14696,7 @@ fn unavailable_notification_observation_preserves_worker_tool_wait_ownership() {
             claude_worker_input("PostToolUse", "worker", Some("question")),
         );
         assert!(screen
+            .agents
             .agent_worker_waits
             .get(&PANE)
             .is_none_or(|w| w.waits.is_empty()));
@@ -14582,7 +14753,7 @@ fn unavailable_identified_notification_releases_only_its_processing_lifetime() {
                     &serde_json::to_string(&state).unwrap(),
                 )
                 .unwrap();
-                screen.agent_lifecycle.insert(PANE, state.into());
+                screen.agents.agent_lifecycle.insert(PANE, state.into());
                 screen.refresh_agent_controls_at(Instant::now() + Duration::from_millis(10));
             } else {
                 if !concurrent {
@@ -14592,7 +14763,7 @@ fn unavailable_identified_notification_releases_only_its_processing_lifetime() {
                     let mut unknown = sourced_stop("notice", "");
                     unknown.claude_turn_complete = Some(false);
                     report_kind(&mut screen, "claude", unknown);
-                    assert!(screen.claude_background_pending_for_test());
+                    assert!(screen.agents.claude_background_pending_for_test());
                 }
                 let mut failed = sourced_stop("notice", "not a confirmed answer");
                 failed.claude_turn_complete = Some(false);
@@ -14624,7 +14795,7 @@ fn unavailable_identified_notification_releases_only_its_processing_lifetime() {
             late.claude_notifications = accepted.claude_notifications;
             report_kind(&mut screen, "claude", late.clone());
             assert_eq!(
-                screen.agent_lifecycle[&PANE].last_message_for_test(),
+                screen.agents.agent_lifecycle[&PANE].last_message_for_test(),
                 Some("REAL_ANSWER")
             );
             // A later human turn finishes normally without erasing independent work.
@@ -14633,7 +14804,7 @@ fn unavailable_identified_notification_releases_only_its_processing_lifetime() {
             assert_eq!(screen.agent_status_for_test().background, concurrent);
             report_kind(&mut screen, "claude", late);
             assert_eq!(
-                screen.agent_lifecycle[&PANE].last_message_for_test(),
+                screen.agents.agent_lifecycle[&PANE].last_message_for_test(),
                 Some("LATER")
             );
             if concurrent {
@@ -14724,7 +14895,7 @@ fn ordinary_answer_history_cannot_disable_later_notification_tracking() {
             identified_notice("notice", "new-task", "new-tool", "new-run"),
         );
         assert_eq!(
-            screen.agent_lifecycle[&PANE].last_message_for_test(),
+            screen.agents.agent_lifecycle[&PANE].last_message_for_test(),
             Some("newer ordinary")
         );
         if concurrent {
@@ -14781,7 +14952,7 @@ fn unrelated_answer_pruning_preserves_reordered_cancellation_and_run_guards() {
     }
     report_kind(&mut screen, "claude", steering_ack("cancel"));
     report_kind(&mut screen, "claude", sourced_stop("cancel", "CANCELLED"));
-    assert!(screen.claude_background_pending_for_test());
+    assert!(screen.agents.claude_background_pending_for_test());
     // A reordered positive cancellation joins the retained confirmed answer.
     let (mut cancel, _) = yinz_runtime::agent::hooks::parse_hook_event(
         "claude",
@@ -14795,9 +14966,9 @@ fn unrelated_answer_pruning_preserves_reordered_cancellation_and_run_guards() {
     .unwrap();
     cancel.claude_notifications.as_mut().unwrap().source = Some(notification_source());
     report_kind(&mut screen, "claude", cancel.clone());
-    assert!(!screen.claude_background_pending_for_test());
+    assert!(!screen.agents.claude_background_pending_for_test());
     assert_eq!(
-        screen.agent_lifecycle[&PANE].last_message_for_test(),
+        screen.agents.agent_lifecycle[&PANE].last_message_for_test(),
         Some("CANCELLED")
     );
     report_kind(&mut screen, "claude", steering_ack("new"));
@@ -14808,7 +14979,7 @@ fn unrelated_answer_pruning_preserves_reordered_cancellation_and_run_guards() {
     report_kind(&mut screen, "claude", sourced_stop("new", "NEW_LAUNCH"));
     report_kind(&mut screen, "claude", cancel);
     assert!(
-        screen.claude_background_pending_for_test(),
+        screen.agents.claude_background_pending_for_test(),
         "old cancellation cannot bind reused task"
     );
     report_kind(
@@ -14820,10 +14991,10 @@ fn unrelated_answer_pruning_preserves_reordered_cancellation_and_run_guards() {
     answer.claude_notifications =
         identified_notice("notice", "bash", "new-tool", "new-run").claude_notifications;
     report_kind(&mut screen, "claude", answer);
-    assert!(!screen.claude_background_pending_for_test());
+    assert!(!screen.agents.claude_background_pending_for_test());
     assert!(!claude_lifecycle(&screen).claude.obligations.disabled);
     assert_eq!(
-        screen.agent_lifecycle[&PANE].last_message_for_test(),
+        screen.agents.agent_lifecycle[&PANE].last_message_for_test(),
         Some("FINAL")
     );
 }
@@ -14884,7 +15055,7 @@ fn identified_capacity_loss_does_not_orphan_an_accepted_notification() {
     report_kind(&mut screen, "claude", failed);
     assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
     assert_eq!(
-        screen.agent_lifecycle[&PANE].last_message_for_test(),
+        screen.agents.agent_lifecycle[&PANE].last_message_for_test(),
         Some("LATER")
     );
 }
@@ -14999,7 +15170,7 @@ fn identified_launches_survive_every_sampled_idle_until_their_correlated_answers
                 "claude",
                 native_background_launch("bash", "bash-tool", "Bash"),
             );
-            assert!(!screen.claude_background_pending_for_test());
+            assert!(!screen.agents.claude_background_pending_for_test());
         }
     }
 }
@@ -15049,13 +15220,14 @@ fn exact_local_cancellation_waits_for_cancelling_answer_and_budget_loss_is_not_s
                 Instant::now() + Duration::from_millis(yinz_types::agent::control::MAX_TIMEOUT_MS),
             );
             let state = screen
+                .agents
                 .agent_lifecycle
                 .get(&PANE)
                 .unwrap()
                 .handoff_for_test();
             assert!(state.claude.obligations.launches[0].unavailable);
             assert!(!state.claude.obligations.launches[0].settled);
-            assert!(!screen.claude_background_pending_for_test());
+            assert!(!screen.agents.claude_background_pending_for_test());
         }
     }
 }
@@ -15103,11 +15275,11 @@ fn unrelated_scope_old_runs_and_reused_tasks_cannot_settle_new_launches() {
             },
         }
         report_kind(&mut screen, "claude", notice);
-        assert!(screen.claude_background_pending_for_test());
+        assert!(screen.agents.claude_background_pending_for_test());
     }
     // A journal delay longer than the historical debounce still has no clearing transition.
     screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(30));
-    assert!(screen.claude_background_pending_for_test());
+    assert!(screen.agents.claude_background_pending_for_test());
     report_kind(
         &mut screen,
         "claude",
@@ -15118,7 +15290,7 @@ fn unrelated_scope_old_runs_and_reused_tasks_cannot_settle_new_launches() {
     let mut stop = claude_stop("notice", "FINAL", false);
     stop.claude_notifications = accepted.claude_notifications;
     report_kind(&mut screen, "claude", stop);
-    assert!(!screen.claude_background_pending_for_test());
+    assert!(!screen.agents.claude_background_pending_for_test());
     // Reusing a task with a different positively acquired tool is a separate obligation.
     let mut submit = hook("UserPromptSubmit");
     submit.prompt_id = Some("new".into());
@@ -15132,8 +15304,9 @@ fn unrelated_scope_old_runs_and_reused_tasks_cannot_settle_new_launches() {
         "claude",
         identified_notice("notice", "bash", "tool", "actual-run"),
     );
-    assert!(screen.claude_background_pending_for_test());
+    assert!(screen.agents.claude_background_pending_for_test());
     let state = screen
+        .agents
         .agent_lifecycle
         .get(&PANE)
         .unwrap()
@@ -15177,6 +15350,7 @@ fn unsupported_cancellation_degrades_only_unbound_observation_without_settling()
         unsupported.claude_notifications.as_mut().unwrap().source = Some(notification_source());
         report_kind(&mut screen, "claude", unsupported);
         let state = screen
+            .agents
             .agent_lifecycle
             .get(&PANE)
             .unwrap()
@@ -15233,7 +15407,7 @@ fn claude_provider_resume_retires_old_observation_and_preserves_completed_submis
         replies(&messages, CLIENT).pop().unwrap().message.as_deref(),
         Some("LAUNCH")
     );
-    let original = screen.agent_submissions[&PANE].clone();
+    let original = screen.agents.agent_submissions[&PANE].clone();
     draft_frame(&mut screen, "claude", "", 0, Instant::now());
     screen.agent_control(wait(AgentState::Idle), CLIENT);
     assert!(replies(&messages, CLIENT).is_empty());
@@ -15243,8 +15417,8 @@ fn claude_provider_resume_retires_old_observation_and_preserves_completed_submis
         replies(&messages, CLIENT).pop().unwrap().outcome,
         AgentOutcome::TargetChanged
     );
-    assert!(!screen.claude_background_pending_for_test());
-    assert_eq!(screen.agent_submissions[&PANE], original);
+    assert!(!screen.agents.claude_background_pending_for_test());
+    assert_eq!(screen.agents.agent_submissions[&PANE], original);
     assert_eq!(claude_lifecycle(&screen).last_message, None);
     assert_eq!(
         claude_lifecycle(&screen).claude.obligations.source,
@@ -15336,7 +15510,7 @@ fn claude_provider_source_adoption_rejects_unrelated_callbacks_and_old_replay() 
         );
         assert_eq!(after.claude.turns, before.claude.turns);
         assert_eq!(after.last_message, before.last_message);
-        assert!(screen.claude_background_pending_for_test());
+        assert!(screen.agents.claude_background_pending_for_test());
     }
     report_kind(&mut screen, "claude", provider_resume(replacement_source()));
     report_kind(
@@ -15399,12 +15573,12 @@ fn claude_provider_source_adoption_rejects_unrelated_callbacks_and_old_replay() 
     report_kind(&mut screen, "claude", notice.clone());
     // Even an old-source answer naming the current prompt cannot settle it.
     report_kind(&mut screen, "claude", sourced_stop("notice", "OLD"));
-    assert!(screen.claude_background_pending_for_test());
+    assert!(screen.agents.claude_background_pending_for_test());
     let mut answer =
         with_notification_source(sourced_stop("notice", "FINAL_NEW"), replacement_source());
     answer.claude_notifications = notice.claude_notifications;
     report_kind(&mut screen, "claude", answer);
-    assert!(!screen.claude_background_pending_for_test());
+    assert!(!screen.agents.claude_background_pending_for_test());
     assert_eq!(
         claude_lifecycle(&screen).last_message.as_deref(),
         Some("FINAL_NEW")
@@ -15452,7 +15626,7 @@ fn claude_same_source_resume_preserves_available_work_and_native_waits() {
             "claude",
             provider_resume(notification_source()),
         );
-        assert!(screen.claude_background_pending_for_test());
+        assert!(screen.agents.claude_background_pending_for_test());
         assert_eq!(
             screen.agent_status_for_test().agent.state,
             AgentState::Waiting
@@ -15466,14 +15640,14 @@ fn claude_same_source_resume_preserves_available_work_and_native_waits() {
             before.claude.worker_wait_tools
         );
         report_kind(&mut screen, "claude", provider_resume(replacement_source()));
-        assert!(!screen.claude_background_pending_for_test());
+        assert!(!screen.agents.claude_background_pending_for_test());
         assert!(claude_lifecycle(&screen).claude_notifications.is_empty());
         assert!(claude_lifecycle(&screen)
             .claude
             .worker_wait_tools
             .is_empty());
-        assert!(!screen.agent_worker_waits.contains_key(&PANE));
-        assert!(!screen.claude_permission_waits.contains_key(&PANE));
+        assert!(!screen.agents.agent_worker_waits.contains_key(&PANE));
+        assert!(!screen.agents.claude_permission_waits.contains_key(&PANE));
         assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
     }
 }
@@ -15498,7 +15672,7 @@ fn claude_provider_replacement_cannot_complete_an_unresolved_submission() {
         replies(&messages, CLIENT).pop().unwrap().outcome,
         AgentOutcome::TargetChanged
     );
-    let result = screen.agent_submissions[&PANE]
+    let result = screen.agents.agent_submissions[&PANE]
         .back()
         .unwrap()
         .result
@@ -15517,7 +15691,7 @@ fn claude_provider_replacement_cannot_complete_an_unresolved_submission() {
         with_notification_source(claude_stop("new", "NEW", false), replacement_source()),
     );
     assert_eq!(
-        screen.agent_submissions[&PANE]
+        screen.agents.agent_submissions[&PANE]
             .back()
             .unwrap()
             .result
@@ -15542,7 +15716,7 @@ fn claude_provider_replacement_cannot_complete_an_unresolved_submission() {
         "claude",
         with_notification_source(sourced_stop("prompt", "NEXT"), third),
     );
-    assert!(screen.claude_background_pending_for_test());
+    assert!(screen.agents.claude_background_pending_for_test());
     assert_eq!(
         claude_lifecycle(&screen).last_message.as_deref(),
         Some("NEXT")
@@ -15620,7 +15794,10 @@ fn claude_provider_adoption_requires_live_local_native_authority() {
             Some(notification_source()),
             "{invalid}"
         );
-        assert!(screen.claude_background_pending_for_test(), "{invalid}");
+        assert!(
+            screen.agents.claude_background_pending_for_test(),
+            "{invalid}"
+        );
     }
 }
 
@@ -15653,12 +15830,12 @@ fn claude_same_source_resume_does_not_answer_the_current_parent_turn_or_permissi
         );
         assert_eq!(screen.agent_status_for_test().agent, before);
         assert_eq!(
-            screen.claude_permission_waits.contains_key(&PANE),
+            screen.agents.claude_permission_waits.contains_key(&PANE),
             permission
         );
         report_kind(&mut screen, "claude", provider_resume(replacement_source()));
         assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
-        assert!(!screen.claude_permission_waits.contains_key(&PANE));
+        assert!(!screen.agents.claude_permission_waits.contains_key(&PANE));
     }
 }
 
@@ -15767,7 +15944,7 @@ fn claude_permission_registry_overlays_parent_and_normalizes_late_reminders() {
     );
     assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
     let (to_plugin, plugins) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
     for sample in [
         permission_sample(Status::Active, 500_000),
         permission_sample(Status::Active, 500_001),
@@ -15782,7 +15959,7 @@ fn claude_permission_registry_overlays_parent_and_normalizes_late_reminders() {
         report_kind(&mut screen, "claude", reminder);
         assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
     }
-    assert!(screen.claude_permission_waits.is_empty());
+    assert!(screen.agents.claude_permission_waits.is_empty());
     assert!(plugins.try_iter().all(|(instruction, _)| {
         let PluginInstruction::Update(updates) = instruction else { return true };
         updates.into_iter().all(|(_,_,event)| !matches!(event, Event::AgentEvent(event) if event.state == Some(AgentState::Waiting)))
@@ -15982,7 +16159,12 @@ fn claude_permission_registry_preserves_native_enter_release_ownership() {
                 permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
                 report_kind(&mut screen, "claude", claude_permission_prompt());
                 let native = screen.agent_status_for_test().agent;
-                let wait = screen.claude_permission_waits.get(&PANE).unwrap().clone();
+                let wait = screen
+                    .agents
+                    .claude_permission_waits
+                    .get(&PANE)
+                    .unwrap()
+                    .clone();
                 for updated in [500_000, 500_001] {
                     report_kind(&mut screen, "claude", permission_sample(status, updated));
                     if status == Status::Active {
@@ -15994,6 +16176,7 @@ fn claude_permission_registry_preserves_native_enter_release_ownership() {
                         report_kind(&mut screen, "claude", reminder);
                     }
                     let retained = screen
+                        .agents
                         .claude_permission_waits
                         .get(&PANE)
                         .expect("registry presentation must retain native Enter ownership");
@@ -16002,15 +16185,15 @@ fn claude_permission_registry_preserves_native_enter_release_ownership() {
                     assert_eq!(screen.agent_status_for_test().agent, native);
                 }
                 let (sender, plugins) = channels::unbounded();
-                screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
-                screen.background_plugin_subscriptions.insert(
+                screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+                screen.core.background_plugin_subscriptions.insert(
                     (PluginId::new(99), CLIENT),
                     HashSet::from([EventType::PaneUpdate]),
                 );
                 finish_paste(&writes);
                 permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
                 assert_eq!(finish_paste(&writes), b"\r");
-                assert!(!screen.claude_permission_waits.contains_key(&PANE));
+                assert!(!screen.agents.claude_permission_waits.contains_key(&PANE));
                 let expected = if confirmed {
                     AgentState::Idle
                 } else {
@@ -16046,9 +16229,9 @@ fn claude_permission_registry_preserves_native_enter_release_ownership() {
                 }));
                 // Presentation preservation must not retain ownership across replacement.
                 report_kind(&mut screen, "claude", claude_permission_prompt());
-                assert!(screen.claude_permission_waits.contains_key(&PANE));
+                assert!(screen.agents.claude_permission_waits.contains_key(&PANE));
                 report_kind(&mut screen, "claude", provider_resume(replacement_source()));
-                assert!(!screen.claude_permission_waits.contains_key(&PANE));
+                assert!(!screen.agents.claude_permission_waits.contains_key(&PANE));
             }
         }
     }
@@ -16068,15 +16251,23 @@ fn claude_permission_registry_native_enter_preserves_worker_question() {
             ..claude_worker("PreToolUse", "worker")
         },
     );
-    let wait = screen.claude_permission_waits.get(&PANE).unwrap().clone();
+    let wait = screen
+        .agents
+        .claude_permission_waits
+        .get(&PANE)
+        .unwrap()
+        .clone();
     report_kind(
         &mut screen,
         "claude",
         permission_sample(Status::Unavailable, 500_000),
     );
-    assert_eq!(screen.claude_permission_waits.get(&PANE), Some(&wait));
+    assert_eq!(
+        screen.agents.claude_permission_waits.get(&PANE),
+        Some(&wait)
+    );
     permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), true);
-    assert!(!screen.claude_permission_waits.contains_key(&PANE));
+    assert!(!screen.agents.claude_permission_waits.contains_key(&PANE));
     let agent = screen.agent_status_for_test().agent;
     assert_eq!(agent.state, AgentState::Waiting);
     assert_eq!(agent.waiting_on.as_deref(), Some("a question"));
@@ -16101,7 +16292,7 @@ fn claude_permission_registry_rejects_unowned_sources_and_fences_cancel_and_tran
         permission_sample(Status::Active, 500_000),
     );
     let handoff = claude_lifecycle(&screen);
-    screen.agent_lifecycle.insert(PANE, handoff.into());
+    screen.agents.agent_lifecycle.insert(PANE, handoff.into());
     assert_eq!(
         screen.agent_status_for_test().agent.state,
         AgentState::Waiting
@@ -16205,7 +16396,12 @@ fn permission_recovery_setup() -> (
         with_notification_source(hook("UserPromptSubmit"), notification_source()),
     );
     assert!(replies(&messages, CLIENT).is_empty());
-    assert!(screen.agent_submissions[&PANE].back().unwrap().acknowledged);
+    assert!(
+        screen.agents.agent_submissions[&PANE]
+            .back()
+            .unwrap()
+            .acknowledged
+    );
     (screen, messages, writes)
 }
 
@@ -16260,14 +16456,16 @@ fn claude_permission_registry_recovery_passive_reports_preserve_cancellation() {
             permission_recovery_cancel(&mut screen, &messages, cli);
             finish_paste(&writes);
             let before = claude_lifecycle(&screen);
-            let last_report = screen.agent_lifecycle[&PANE].last_report;
-            let input_at = screen.tabs[&TabId::new(0)].agent_input_at(PANE).unwrap();
+            let last_report = screen.agents.agent_lifecycle[&PANE].last_report;
+            let input_at = screen.core.tabs[&TabId::new(0)]
+                .agent_input_at(PANE)
+                .unwrap();
             assert!(input_at > last_report);
-            let revision = screen.tabs[&TabId::new(0)].agent_input_revision(PANE);
-            let submissions = screen.agent_submissions[&PANE].clone();
+            let revision = screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE);
+            let submissions = screen.agents.agent_submissions[&PANE].clone();
             let (sender, plugins) = channels::unbounded();
-            screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
-            screen.background_plugin_subscriptions.insert(
+            screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+            screen.core.background_plugin_subscriptions.insert(
                 (PluginId::new(99), CLIENT),
                 HashSet::from([EventType::PaneUpdate]),
             );
@@ -16280,17 +16478,17 @@ fn claude_permission_registry_recovery_passive_reports_preserve_cancellation() {
             );
             assert_eq!(sample.updated_ms, if reordered { 500_002 } else { 500_001 });
             assert_eq!(
-                screen.agent_lifecycle[&PANE].last_report, last_report,
+                screen.agents.agent_lifecycle[&PANE].last_report, last_report,
                 "passive presentation must not move the input-after-hook fence"
             );
             assert_eq!(accepted.input_revision, before.input_revision);
             assert_eq!(accepted.claude.parent, before.claude.parent);
             assert_eq!(accepted.claude_confirmation, before.claude_confirmation);
             assert_eq!(
-                screen.tabs[&TabId::new(0)].agent_input_revision(PANE),
+                screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE),
                 revision
             );
-            assert_eq!(screen.agent_submissions[&PANE], submissions);
+            assert_eq!(screen.agents.agent_submissions[&PANE], submissions);
             assert!(plugins.try_iter().any(|(instruction, _)| {
                 let PluginInstruction::Update(updates) = instruction else { return false };
                 updates.into_iter().any(|(_, _, event)| {
@@ -16351,9 +16549,12 @@ fn claude_permission_registry_recovery_clear_draft_survives_passive_reports() {
             let (mut screen, messages, writes) = permission_recovery_setup();
             permission_recovery_cancel(&mut screen, &messages, true);
             finish_paste(&writes);
-            let last_report = screen.agent_lifecycle[&PANE].last_report;
+            let last_report = screen.agents.agent_lifecycle[&PANE].last_report;
             report_kind(&mut screen, "claude", permission_sample(status, 500_001));
-            assert_eq!(screen.agent_lifecycle[&PANE].last_report, last_report);
+            assert_eq!(
+                screen.agents.agent_lifecycle[&PANE].last_report,
+                last_report
+            );
             let now = Instant::now() + Duration::from_secs(4);
             draft_frame(&mut screen, "claude", draft, 3.min(draft.len()), now);
             let mut request = draft_request(&screen);
@@ -16378,12 +16579,15 @@ fn claude_permission_registry_recovery_clear_draft_survives_passive_reports() {
                 replies(&messages, CLIENT).is_empty(),
                 "clearing starts after cancellation and quiet"
             );
-            assert!(screen.agent_draft_clears.contains_key(&PANE));
+            assert!(screen.agents.agent_draft_clears.contains_key(&PANE));
             let bytes = finish_paste(&writes);
             // Deliver during the operation as well: its captured report timestamp
             // must still match through marker verification and stable-empty proof.
             report_kind(&mut screen, "claude", permission_sample(status, 500_002));
-            assert_eq!(screen.agent_lifecycle[&PANE].last_report, last_report);
+            assert_eq!(
+                screen.agents.agent_lifecycle[&PANE].last_report,
+                last_report
+            );
             if draft.is_empty() {
                 assert!(bytes.is_empty());
             } else {
@@ -16415,7 +16619,7 @@ fn claude_permission_registry_recovery_clear_draft_survives_passive_reports() {
             assert_eq!(response.outcome, AgentOutcome::Ok);
             assert!(response.agents[0].ready);
             assert_eq!(response.agents[0].agent.state, AgentState::Idle);
-            assert!(!screen.agent_draft_clears.contains_key(&PANE));
+            assert!(!screen.agents.agent_draft_clears.contains_key(&PANE));
             assert_abandoned_permission_submission(&mut screen, &messages);
             assert!(finish_paste(&writes).is_empty());
         }
@@ -16429,7 +16633,7 @@ fn claude_permission_registry_recovery_retains_real_activity_fences() {
         let (mut screen, messages, writes) = permission_recovery_setup();
         permission_recovery_cancel(&mut screen, &messages, true);
         finish_paste(&writes);
-        let before = screen.agent_lifecycle[&PANE].last_report;
+        let before = screen.agents.agent_lifecycle[&PANE].last_report;
         let event = match activity {
             "worker" => claude_worker("SubagentStop", "worker"),
             "active" => permission_sample(Status::Active, 500_001),
@@ -16441,7 +16645,7 @@ fn claude_permission_registry_recovery_retains_real_activity_fences() {
             _ => hook("PreToolUse"),
         };
         report_kind(&mut screen, "claude", event);
-        let fenced = screen.agent_lifecycle[&PANE].last_report;
+        let fenced = screen.agents.agent_lifecycle[&PANE].last_report;
         assert!(fenced > before, "{activity}");
         if activity == "active" {
             assert_eq!(
@@ -16455,7 +16659,7 @@ fn claude_permission_registry_recovery_retains_real_activity_fences() {
             permission_sample(Status::Inactive, 500_002),
         );
         assert_eq!(
-            screen.agent_lifecycle[&PANE].last_report, fenced,
+            screen.agents.agent_lifecycle[&PANE].last_report, fenced,
             "a passive sample must neither advance nor erase the {activity} fence"
         );
         recover_after_quiet(&mut screen, interrupted_recover());
@@ -16480,7 +16684,7 @@ fn claude_permission_registry_recovery_retains_real_activity_fences() {
             AgentOutcome::Rejected,
             "{activity}"
         );
-        assert!(!screen.agent_draft_clears.contains_key(&PANE));
+        assert!(!screen.agents.agent_draft_clears.contains_key(&PANE));
         assert!(finish_paste(&writes).is_empty());
     }
 }
@@ -16503,7 +16707,7 @@ fn claude_permission_registry_recovery_activity_interrupts_clearing() {
             crate::screen::agent_control::Reply::Client(CLIENT),
             now,
         );
-        assert!(screen.agent_draft_clears.contains_key(&PANE));
+        assert!(screen.agents.agent_draft_clears.contains_key(&PANE));
         report_kind(
             &mut screen,
             "claude",
@@ -16518,7 +16722,7 @@ fn claude_permission_registry_recovery_activity_interrupts_clearing() {
             replies(&messages, CLIENT)[0].outcome,
             AgentOutcome::Interrupted
         );
-        assert!(!screen.agent_draft_clears.contains_key(&PANE));
+        assert!(!screen.agents.agent_draft_clears.contains_key(&PANE));
         assert!(finish_paste(&writes).is_empty());
     }
 }
@@ -16543,15 +16747,21 @@ fn claude_permission_registry_recovery_passive_reports_do_not_answer_unacted_wai
                 claude_permission_prompt()
             },
         );
-        let native = screen.claude_permission_waits.get(&PANE).cloned();
-        let last_report = screen.agent_lifecycle[&PANE].last_report;
+        let native = screen.agents.claude_permission_waits.get(&PANE).cloned();
+        let last_report = screen.agents.agent_lifecycle[&PANE].last_report;
         report_kind(
             &mut screen,
             "claude",
             permission_sample(Status::Inactive, 500_001),
         );
-        assert_eq!(screen.claude_permission_waits.get(&PANE), native.as_ref());
-        assert_eq!(screen.agent_lifecycle[&PANE].last_report, last_report);
+        assert_eq!(
+            screen.agents.claude_permission_waits.get(&PANE),
+            native.as_ref()
+        );
+        assert_eq!(
+            screen.agents.agent_lifecycle[&PANE].last_report,
+            last_report
+        );
         assert_eq!(
             screen.agent_status_for_test().agent.state,
             AgentState::Waiting
@@ -16650,7 +16860,7 @@ fn closeout_unavailable_turn_background_and_other_control_work_fail_closed() {
     report(&mut screen, hook("UserPromptSubmit"));
     replies(&messages, CLIENT);
     let fence = closeout_snapshot(&mut screen, &messages);
-    screen.agent_worker_waits.insert(
+    screen.agents.agent_worker_waits.insert(
         PANE,
         yinz_types::agent::tracking::WorkerWaits {
             parent: screen.agent_status(PANE, None).unwrap().agent,
@@ -16667,7 +16877,7 @@ fn closeout_unavailable_turn_background_and_other_control_work_fail_closed() {
         replies(&messages, CLIENT).pop().unwrap().outcome,
         AgentOutcome::Rejected
     );
-    screen.agent_worker_waits.remove(&PANE);
+    screen.agents.agent_worker_waits.remove(&PANE);
     screen.agent_control(
         AgentRequest::Wait {
             pane_id: PANE,
@@ -16814,7 +17024,7 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
     let (mut screen, _, _) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     screen.log_and_report_session_state().unwrap();
-    let mut peer = screen.peer_sessions_cache[&screen.session_name].clone();
+    let mut peer = screen.core.peer_sessions_cache[&screen.core.session_name].clone();
     peer.name = "web-peer".into();
     peer.is_current_session = false;
     peer.web_peer_instance = Some(uuid::Uuid::new_v4().to_string());
@@ -16859,6 +17069,7 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
         (TabPosition::new(3), vec![unknown]),
     ]);
     screen
+        .core
         .peer_sessions_cache
         .insert(peer.name.clone(), peer.clone());
     let before = web_agents_snapshot(&mut screen);
@@ -16882,9 +17093,11 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
         name: "Replacement Default".into(),
     });
     screen
+        .core
         .peer_sessions_cache
         .insert(peer.name.clone(), replacement.clone());
     screen
+        .core
         .peer_sessions_cache
         .insert(renamed_key.clone(), peer.clone());
     let live = web_agents_snapshot(&mut screen);
@@ -16908,7 +17121,7 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
         );
         assert_eq!(
             row.usage_unavailable,
-            same.usage_unavailable(&screen.session_name)
+            same.usage_unavailable(&screen.core.session_name)
         );
     }
     let local = live.iter().find(|a| a.current_session).unwrap();
@@ -16924,7 +17137,7 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
             name: "Default".into()
         })
     );
-    assert_eq!(local.tab_group_session, screen.session_name);
+    assert_eq!(local.tab_group_session, screen.core.session_name);
     assert_eq!(remote.session, original.session);
     assert_eq!(remote.id, original.id);
     assert_eq!(remote.tab_group, original.tab_group);
@@ -16966,9 +17179,10 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
     };
     peer.tabs[1].group = Some(moved.clone());
     screen
+        .core
         .peer_sessions_cache
         .insert(renamed_key.clone(), peer.clone());
-    screen.active_tab_ids.clear();
+    screen.core.active_tab_ids.clear();
     let detached = web_agents_snapshot(&mut screen);
     assert_eq!(detached.len(), 5);
     assert!(detached.iter().all(|a| !a.focused));
@@ -16982,7 +17196,10 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
         Some(&moved)
     );
     peer.name = renamed_key.clone();
-    screen.peer_sessions_cache.insert(renamed_key.clone(), peer);
+    screen
+        .core
+        .peer_sessions_cache
+        .insert(renamed_key.clone(), peer);
     let republished = web_agents_snapshot(&mut screen);
     let converged = republished
         .iter()
@@ -17032,7 +17249,7 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
     let (tx, rx) = channels::bounded(1);
     screen.web_focus_agent(
         reference,
-        screen.session_name.clone(),
+        screen.core.session_name.clone(),
         None,
         Instant::now() + Duration::from_secs(5),
         tx,
@@ -17064,15 +17281,15 @@ fn web_agents_snapshot_excludes_the_serving_sessions_former_self_after_rename() 
     let old: SessionName = format!("web-old-{}", uuid::Uuid::new_v4()).into();
     let renamed: SessionName = format!("web-new-{}", uuid::Uuid::new_v4()).into();
     let peer: SessionName = format!("web-peer-{}", uuid::Uuid::new_v4()).into();
-    let mut initial = screen.peer_sessions_cache[&screen.session_name].clone();
-    screen.session_name = old.clone();
+    let mut initial = screen.core.peer_sessions_cache[&screen.core.session_name].clone();
+    screen.core.session_name = old.clone();
     initial.name = old.clone();
     initial.web_peer_instance = None;
-    screen.peer_sessions_cache.clear();
-    screen.peer_sessions_cache.insert(old.clone(), initial);
+    screen.core.peer_sessions_cache.clear();
+    screen.core.peer_sessions_cache.insert(old.clone(), initial);
     screen.report_pane_state().unwrap();
-    let former = screen.peer_sessions_cache[&old].clone();
-    let instance = screen.instance_id.to_string();
+    let former = screen.core.peer_sessions_cache[&old].clone();
+    let instance = screen.core.instance_id.to_string();
     assert_eq!(former.web_peer_instance.as_deref(), Some(instance.as_str()));
     let scoped_self = yinz_types::agent::control::peer_web_detail_id(
         &instance,
@@ -17096,15 +17313,16 @@ fn web_agents_snapshot_excludes_the_serving_sessions_former_self_after_rename() 
             .unwrap(),
     );
     let _listener = ownership.bind().unwrap();
-    screen.bus.senders.session_ownership = Some(std::sync::Arc::downgrade(&ownership));
+    screen.core.bus.senders.session_ownership = Some(std::sync::Arc::downgrade(&ownership));
     screen.rename_session(renamed.clone(), CLIENT).unwrap();
-    assert_eq!(screen.session_name, renamed);
-    assert!(screen.peer_sessions_cache.contains_key(&old));
+    assert_eq!(screen.core.session_name, renamed);
+    assert!(screen.core.peer_sessions_cache.contains_key(&old));
 
     let mut genuine_peer = former;
     genuine_peer.web_peer_instance = Some(uuid::Uuid::new_v4().to_string());
     // The peer deliberately reuses the old embedded name, pane and group IDs.
     screen
+        .core
         .peer_sessions_cache
         .insert(peer.clone(), genuine_peer);
     let live = web_agents_snapshot(&mut screen);
@@ -17169,7 +17387,7 @@ fn web_agents_focus_revalidates_provider_conversation_selectability_and_peer_mem
         let (tx, rx) = channels::bounded(1);
         screen.web_focus_agent(
             reference,
-            screen.session_name.clone(),
+            screen.core.session_name.clone(),
             None,
             Instant::now() + Duration::from_secs(5),
             tx,
@@ -17249,7 +17467,7 @@ fn web_agents_peer_instance_guard_refuses_a_restarted_screen_before_read_or_inpu
     let (mut screen, messages, writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     let stale = uuid::Uuid::new_v4().to_string();
-    let current = screen.instance_id.to_string();
+    let current = screen.core.instance_id.to_string();
     let request = |instance: &str, action| AgentRequest::WebPeerGuarded {
         expected_instance: instance.into(),
         pane_id: PANE,
@@ -17304,7 +17522,7 @@ fn web_agents_peer_focus_verification_checks_live_identity_without_terminal_acti
     use yinz_types::agent::control::WebAgentAction::VerifyFocus;
     let (mut screen, messages, writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
-    let current = screen.instance_id.to_string();
+    let current = screen.core.instance_id.to_string();
     let replaced = uuid::Uuid::new_v4().to_string();
     let request = |instance: &str, kind: &str, conversation: &str| AgentRequest::WebPeerGuarded {
         expected_instance: instance.into(),
@@ -17379,10 +17597,11 @@ fn web_agents_focus_refuses_expired_peer_dispatch() {
     let (mut screen, messages, _) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     screen.log_and_report_session_state().unwrap();
-    let mut peer = screen.peer_sessions_cache[&screen.session_name].clone();
+    let mut peer = screen.core.peer_sessions_cache[&screen.core.session_name].clone();
     peer.name = "focus-peer".into();
     peer.web_peer_instance = Some(uuid::Uuid::new_v4().to_string());
     screen
+        .core
         .peer_sessions_cache
         .insert(peer.name.clone(), peer.clone());
     let snapshot = web_agents_snapshot(&mut screen);
@@ -17408,6 +17627,7 @@ fn web_agents_focus_refuses_expired_peer_dispatch() {
         pane.is_selectable = false;
     }
     screen
+        .core
         .peer_sessions_cache
         .insert(peer.name.clone(), peer.clone());
     let (tx, rx) = channels::bounded(1);
@@ -17496,7 +17716,7 @@ fn web_agents_local_focus_finishes_before_reply_in_the_validated_screen_turn() {
     let (mut screen, _, _) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     let (tx, _rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let reference = web_agents_reference(&web_agents_snapshot(&mut screen)[0]);
     screen
         .focus_pane_with_id(PaneId::Terminal(TerminalId::new(1)), true, false, CLIENT)
@@ -17504,7 +17724,7 @@ fn web_agents_local_focus_finishes_before_reply_in_the_validated_screen_turn() {
     let (reply, rx) = channels::bounded(1);
     screen.web_focus_agent(
         reference,
-        screen.session_name.clone(),
+        screen.core.session_name.clone(),
         None,
         Instant::now() + Duration::from_secs(5),
         reply,
@@ -17627,17 +17847,21 @@ fn issue85_positive_completion_survives_closure_but_activity_and_expiry_block_it
         screen.retain_closed_agent(PANE, now);
         if case == "closed" {
             assert!(
-                !screen.closed_agent_submissions.is_empty(),
+                !screen.agents.closed_agent_submissions.is_empty(),
                 "claims={:?} submissions={:?} controls={:?}",
-                screen.agent_terminal_claims,
-                screen.agent_submissions,
-                screen.agent_controls.len()
+                screen.agents.agent_terminal_claims,
+                screen.agents.agent_submissions,
+                screen.agents.agent_controls.len()
             );
         }
         if case == "expired" {
             // Inject the original insertion time, avoiding wall-clock waits.
-            screen.closed_agent_submissions.front_mut().unwrap().0 =
-                now - Duration::from_secs(86401);
+            screen
+                .agents
+                .closed_agent_submissions
+                .front_mut()
+                .unwrap()
+                .0 = now - Duration::from_secs(86401);
         }
         screen.invalidate_agent_lifecycle(
             PANE,
@@ -17670,15 +17894,17 @@ fn issue85_positive_completion_survives_closure_but_activity_and_expiry_block_it
                 let mut newer = proof.clone();
                 newer.submission_id = format!("newer-{index}");
                 screen
+                    .agents
                     .closed_agent_submissions
                     .push_back((Instant::now(), newer, 0, None));
             }
             screen.agent_control(wait_submission("issue85-original"), CLIENT);
             let evicted = replies(&messages, CLIENT).pop().unwrap();
             assert_ne!(evicted.outcome, AgentOutcome::Completed);
-            assert_eq!(screen.closed_agent_submissions.len(), 1024);
+            assert_eq!(screen.agents.closed_agent_submissions.len(), 1024);
             assert_eq!(
                 screen
+                    .agents
                     .closed_agent_submissions
                     .front()
                     .unwrap()
@@ -17799,13 +18025,13 @@ fn issue85_session_end_freezes_completion_before_clearing_identity() {
         let eligible = matches!(case, "closed" | "held" | "tab");
         for stage in 0..3 {
             if stage == 1 {
-                let frozen = screen.closed_agent_submissions.clone();
+                let frozen = screen.agents.closed_agent_submissions.clone();
                 report_kind(&mut screen, "claude", issue85_sourced(hook("SessionEnd")));
                 screen.invalidate_agent_lifecycle(PANE, "held");
                 let tab = screen.tab_containing_pane_mut(PANE).unwrap();
                 tab.hold_pane(PANE, Some(0), false, tab.pane_run_command(PANE).unwrap());
                 assert_eq!(
-                    screen.closed_agent_submissions, frozen,
+                    screen.agents.closed_agent_submissions, frozen,
                     "shutdown must not refresh TTL"
                 );
             } else if stage == 2 {
@@ -17851,7 +18077,7 @@ fn issue85_hold_without_session_end_preserves_completion_through_pane_and_tab_cl
 
         // Match HoldPane's ordering without receiving a provider SessionEnd.
         screen.invalidate_agent_lifecycle(PANE, "held");
-        let frozen = screen.closed_agent_submissions.clone();
+        let frozen = screen.agents.closed_agent_submissions.clone();
         assert_eq!(frozen.len(), 1);
         let proof = &frozen.front().unwrap().1;
         assert!(proof.answered && proof.quiescent);
@@ -17860,7 +18086,7 @@ fn issue85_hold_without_session_end_preserves_completion_through_pane_and_tab_cl
         let info = screen.get_pane_info(PANE).unwrap();
         assert!(info.is_held && info.exited);
         assert_eq!(info.agent.unwrap().state, AgentState::Exited);
-        assert!(!screen.agent_lifecycle.contains_key(&PANE));
+        assert!(!screen.agents.agent_lifecycle.contains_key(&PANE));
 
         for closed in [false, true] {
             if closed {
@@ -17875,7 +18101,7 @@ fn issue85_hold_without_session_end_preserves_completion_through_pane_and_tab_cl
                 screen
                     .retain_closed_agent(PANE, frozen.front().unwrap().0 + Duration::from_secs(1));
             }
-            assert_eq!(screen.closed_agent_submissions, frozen);
+            assert_eq!(screen.agents.closed_agent_submissions, frozen);
             for _ in 0..2 {
                 screen.agent_control(wait_submission("held"), CLIENT);
                 let response = replies(&messages, CLIENT).pop().unwrap();
@@ -17887,7 +18113,7 @@ fn issue85_hold_without_session_end_preserves_completion_through_pane_and_tab_cl
                 assert_eq!(response.prompt_delivery, Some(proof.prompt_delivery));
                 assert_eq!(response.message.as_deref(), Some("DONE"));
                 assert_eq!(response.retained_submission.as_ref(), Some(proof));
-                assert_eq!(screen.closed_agent_submissions, frozen);
+                assert_eq!(screen.agents.closed_agent_submissions, frozen);
             }
         }
         assert!(finish_paste(&writes).is_empty());
@@ -17936,7 +18162,7 @@ fn issue85_hold_without_session_end_preserves_completion_guards() {
             "busy" | "background" | "interrupted" | "legacy" | "unknown-idle"
         );
         assert_eq!(
-            screen.closed_agent_submissions.len(),
+            screen.agents.closed_agent_submissions.len(),
             usize::from(qualified),
             "{case}"
         );
@@ -17957,8 +18183,12 @@ fn issue85_hold_without_session_end_preserves_completion_guards() {
         if case == "replaced" {
             screen.invalidate_agent_lifecycle(PANE, "rerun");
         } else if case == "expired" {
-            screen.closed_agent_submissions.front_mut().unwrap().0 =
-                Instant::now() - Duration::from_secs(86401);
+            screen
+                .agents
+                .closed_agent_submissions
+                .front_mut()
+                .unwrap()
+                .0 = Instant::now() - Duration::from_secs(86401);
         }
 
         let mut request = wait_submission("held-guard");
@@ -18143,7 +18373,7 @@ fn issue85_interruption_preserves_background_and_newer_foreground_work() {
                 "{case}"
             );
         }
-        assert!(screen.closed_agent_submissions.is_empty());
+        assert!(screen.agents.closed_agent_submissions.is_empty());
         assert!(finish_paste(&writes).is_empty());
     }
 }
@@ -18341,7 +18571,7 @@ fn issue85_indirect_explicit_close_retains_each_qualified_worker() {
         report_kind(&mut screen, "claude", issue85_answer(false));
         let original = replies(&messages, CLIENT).pop().unwrap();
         assert_eq!(original.outcome, AgentOutcome::Completed, "{composition}");
-        assert!(screen.closed_agent_submissions.is_empty());
+        assert!(screen.agents.closed_agent_submissions.is_empty());
         assert!(screen.get_pane_info(PANE).unwrap().agent.is_some());
         if composition == "multipane" {
             screen
@@ -18359,7 +18589,7 @@ fn issue85_indirect_explicit_close_retains_each_qualified_worker() {
         assert!(screen.get_pane_info(PANE).is_none(), "{composition}");
         assert!(screen.get_pane_info(target).is_none());
         assert!(screen.get_pane_info(survivor).is_some());
-        let frozen = screen.closed_agent_submissions.clone();
+        let frozen = screen.agents.closed_agent_submissions.clone();
         for _ in 0..2 {
             screen.agent_control(wait_submission("composed"), CLIENT);
             let response = replies(&messages, CLIENT).pop().unwrap();
@@ -18376,7 +18606,7 @@ fn issue85_indirect_explicit_close_retains_each_qualified_worker() {
             assert!(proof.answered && proof.quiescent);
             screen.close_pane_explicitly(target, None);
             screen.cleanup_closed_pane(PANE);
-            assert_eq!(screen.closed_agent_submissions, frozen);
+            assert_eq!(screen.agents.closed_agent_submissions, frozen);
         }
         assert!(finish_paste(&writes).is_empty());
     }
@@ -18561,12 +18791,13 @@ fn issue85_composed_close_checks_each_member_and_does_not_archive_survivors() {
             _ => {},
         }
         replies(&messages, CLIENT);
-        assert!(screen.closed_agent_submissions.is_empty());
+        assert!(screen.agents.closed_agent_submissions.is_empty());
         screen.close_pane_explicitly(sibling, None);
         assert!(screen.get_pane_info(PANE).is_none());
         assert!(screen.get_pane_info(sibling).is_none());
         assert!(screen.get_pane_info(unrelated).is_some());
         assert!(screen
+            .agents
             .closed_agent_submissions
             .iter()
             .all(|(_, proof, _, _)| proof.pane_id != unrelated));
@@ -18627,13 +18858,13 @@ fn issue85_closing_lent_stand_in_does_not_archive_the_surviving_lender() {
         replies(&messages, CLIENT).pop().unwrap().outcome,
         AgentOutcome::Completed
     );
-    assert!(screen.closed_agent_submissions.is_empty());
+    assert!(screen.agents.closed_agent_submissions.is_empty());
     screen.close_pane_explicitly(stand_in, None);
     assert!(screen
         .tab_containing_pane(PANE)
         .unwrap()
         .has_non_suppressed_pane_with_pid(&PANE));
-    assert!(screen.closed_agent_submissions.is_empty());
+    assert!(screen.agents.closed_agent_submissions.is_empty());
     assert!(finish_paste(&writes).is_empty());
 }
 
@@ -18666,7 +18897,7 @@ fn issue85_plugin_pane_tabs_close_case(selected: &str, state: &str) {
     let (plugin_tx, plugins) = channels::unbounded();
     let (pty_tx, ptys) = channels::unbounded();
     let (screen_tx, notifications) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx.clone()));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx.clone()));
     let tab = screen.tab_containing_pane_mut(PANE).unwrap();
     tab.senders
         .replace_to_plugin(SenderWithContext::new(plugin_tx));
@@ -18801,7 +19032,7 @@ fn issue85_plugin_pane_tabs_close_case(selected: &str, state: &str) {
         _ => {},
     }
     assert!(screen.get_pane_info(PANE).unwrap().agent.is_some());
-    assert!(screen.closed_agent_submissions.is_empty());
+    assert!(screen.agents.closed_agent_submissions.is_empty());
     if state == "qualified" {
         assert_eq!(original.as_ref().unwrap().outcome, AgentOutcome::Completed);
     }
@@ -18812,6 +19043,7 @@ fn issue85_plugin_pane_tabs_close_case(selected: &str, state: &str) {
     expected.sort();
     expected.dedup();
     screen
+        .core
         .current_pane_group
         .borrow_mut()
         .restore_client_group(CLIENT, expected.iter().copied().chain([survivor]).collect());
@@ -18827,11 +19059,12 @@ fn issue85_plugin_pane_tabs_close_case(selected: &str, state: &str) {
     );
     for pane in &expected {
         assert!(screen.get_pane_info(*pane).is_none());
-        assert!(screen.destroyed_panes.contains(pane));
-        assert!(!screen.agent_submissions.contains_key(pane));
+        assert!(screen.core.destroyed_panes.contains(pane));
+        assert!(!screen.agents.agent_submissions.contains_key(pane));
     }
     assert_eq!(
         screen
+            .core
             .current_pane_group
             .borrow()
             .get_client_pane_group(&CLIENT),
@@ -18879,7 +19112,7 @@ fn issue85_plugin_pane_tabs_close_case(selected: &str, state: &str) {
         .collect();
     deferred.sort();
     assert_eq!(deferred, expected);
-    let frozen = screen.closed_agent_submissions.clone();
+    let frozen = screen.agents.closed_agent_submissions.clone();
     assert!(frozen
         .iter()
         .all(|(_, proof, _, _)| proof.pane_id != survivor));
@@ -18903,7 +19136,7 @@ fn issue85_plugin_pane_tabs_close_case(selected: &str, state: &str) {
                 proof.server_instance,
                 yinz_bus::agent_launch::server_instance()
             );
-            assert_eq!(proof.session, screen.session_name.to_string());
+            assert_eq!(proof.session, screen.core.session_name.to_string());
             assert_eq!(proof.kind, "claude");
             assert_eq!(proof.cwd, "/work");
             assert_eq!(proof.submission_id, "plugin-close");
@@ -18921,8 +19154,8 @@ fn issue85_plugin_pane_tabs_close_case(selected: &str, state: &str) {
         // The screen loop later processes these same removal notifications.
         for pane in &deferred {
             screen.cleanup_closed_pane(*pane);
-            assert!(screen.destroyed_panes.contains(pane));
-            assert!(!screen.agent_submissions.contains_key(pane));
+            assert!(screen.core.destroyed_panes.contains(pane));
+            assert!(!screen.agents.agent_submissions.contains_key(pane));
         }
         assert_eq!(
             screen
@@ -18931,7 +19164,7 @@ fn issue85_plugin_pane_tabs_close_case(selected: &str, state: &str) {
                 .to_string(),
             "unknown pane tabs"
         );
-        assert_eq!(screen.closed_agent_submissions, frozen);
+        assert_eq!(screen.agents.closed_agent_submissions, frozen);
     }
     assert!(!ptys
         .try_iter()
@@ -18959,7 +19192,7 @@ fn issue85_plugin_pane_tabs_close_case(selected: &str, state: &str) {
     assert!(screen
         .get_pane_info(PaneId::Plugin(PluginId::new(101)))
         .is_none());
-    assert_eq!(screen.closed_agent_submissions, frozen);
+    assert_eq!(screen.agents.closed_agent_submissions, frozen);
     assert!(finish_paste(&writes).is_empty());
 }
 
@@ -18973,8 +19206,9 @@ fn osc7501_correlated_completion_retires_status_after_removing_pending_control()
                 screen.agent_control_with_clear(prompt(wait), CLIENT, &writes);
                 finish_paste(&writes);
                 report_kind(&mut screen, kind, hook("UserPromptSubmit"));
-                assert_eq!(screen.agent_controls.len(), 1);
+                assert_eq!(screen.agents.agent_controls.len(), 1);
                 assert!(screen
+                    .agents
                     .event_submission(PANE, &hook("UserPromptSubmit"))
                     .is_some());
                 replies(&messages, CLIENT);
@@ -18996,10 +19230,11 @@ fn osc7501_correlated_completion_retires_status_after_removing_pending_control()
                 report_kind(&mut screen, kind, hook("Stop"));
 
                 assert!(
-                    screen.agent_controls.is_empty(),
+                    screen.agents.agent_controls.is_empty(),
                     "{kind}, {state}, wait={wait}"
                 );
                 assert!(screen
+                    .agents
                     .event_submission(PANE, &hook("UserPromptSubmit"))
                     .is_none());
                 let pane = screen.get_pane_info(PANE).unwrap();
@@ -19070,7 +19305,11 @@ fn osc7501_unaccepted_stops_preserve_status() {
                     status,
                     "{kind}, {case}, {state}"
                 );
-                assert_eq!(screen.agent_controls.len(), 1, "{kind}, {case}, {state}");
+                assert_eq!(
+                    screen.agents.agent_controls.len(),
+                    1,
+                    "{kind}, {case}, {state}"
+                );
             }
         }
     }
@@ -19101,6 +19340,7 @@ fn osc7501_correlated_prompt_submission_retires_status() {
         assert_eq!(screen.get_pane_info(PANE).unwrap().program_status, status);
         report_kind(&mut screen, kind, hook("UserPromptSubmit"));
         assert!(screen
+            .agents
             .event_submission(PANE, &hook("UserPromptSubmit"))
             .is_some());
         let pane = screen.get_pane_info(PANE).unwrap();
@@ -19115,8 +19355,8 @@ fn osc7501_enter_publishes_retirement_without_pty_output() {
         let (mut screen, _messages, _writes) = setup("codex");
         report(&mut screen, hook("SessionStart"));
         let (to_plugin, plugins) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
-        screen.background_plugin_subscriptions.insert(
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        screen.core.background_plugin_subscriptions.insert(
             (PluginId::new(99), CLIENT),
             HashSet::from([EventType::PaneUpdate]),
         );
@@ -19186,8 +19426,8 @@ fn osc_status_replay_requests_a_manifest_with_the_parsed_status() {
     for forwarded in [false, true] {
         let (mut screen, _messages, _writes) = setup("codex");
         let (to_plugin, plugins) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
-        screen.background_plugin_subscriptions.insert(
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        screen.core.background_plugin_subscriptions.insert(
             (PluginId::new(99), CLIENT),
             HashSet::from([EventType::PaneUpdate]),
         );
@@ -19251,8 +19491,8 @@ fn osc7501_programmatic_enter_publishes_retirement_without_pty_output() {
         let (mut screen, _messages, writes) = setup("codex");
         report(&mut screen, hook("SessionStart"));
         let (to_plugin, plugins) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
-        screen.background_plugin_subscriptions.insert(
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        screen.core.background_plugin_subscriptions.insert(
             (PluginId::new(99), CLIENT),
             HashSet::from([EventType::PaneUpdate]),
         );
@@ -19468,9 +19708,9 @@ fn a_queued_notice_settles_only_its_own_launch() {
 
 /// Let a drained obligation's idle reading outlast its grace.
 fn outlast_drain_grace(screen: &mut Screen) {
-    screen.refresh_agent_controls_at(
-        Instant::now() + Duration::from_millis(crate::screen::agent_control::DRAIN_GRACE_MS + 1),
-    );
+    // Some cases intentionally cancel the provider drain before it is due.
+    let drain = screen.agents.claude_drain_at().unwrap_or_else(Instant::now);
+    screen.refresh_agent_controls_at(drain);
 }
 
 #[test]
@@ -19795,8 +20035,8 @@ fn web_agents_slash_commands_use_command_input_and_never_claim_prompt_completion
             } else {
                 "not verified"
             }));
-            assert!(screen.agent_controls.is_empty());
-            assert!(screen.agent_clear_inputs.is_empty());
+            assert!(screen.agents.agent_controls.is_empty());
+            assert!(screen.agents.agent_clear_inputs.is_empty());
             if !switches {
                 screen.agent_control(request, CLIENT);
                 let retry = replies(&messages, CLIENT).pop().unwrap();
@@ -19875,7 +20115,7 @@ fn web_agents_command_delivery_blocks_recovery() {
         let response = replies(&messages, CLIENT).pop().unwrap();
         assert_eq!(response.outcome, AgentOutcome::CommandSent, "{kind}");
         assert_eq!(response.submission_id.as_deref(), Some("web-command"));
-        assert!(screen.agent_controls.is_empty());
+        assert!(screen.agents.agent_controls.is_empty());
 
         // The durable result also remains successful, without resubmitting input.
         screen.agent_control_at(request, Reply::Client(CLIENT), now + Duration::from_secs(4));

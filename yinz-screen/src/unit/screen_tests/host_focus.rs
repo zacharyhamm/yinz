@@ -255,12 +255,18 @@ fn a_departing_client_leaves_no_host_focus_state_behind() {
         .unwrap();
     screen.add_client(crate::ClientId::new(2)).unwrap();
     screen.host_terminal_focus_changed(crate::ClientId::new(2), false);
-    assert!(screen.client_host_focused.contains_key(&ClientId::new(2)));
+    assert!(screen
+        .core
+        .client_host_focused
+        .contains_key(&ClientId::new(2)));
 
     screen.remove_client(crate::ClientId::new(2)).unwrap();
 
     assert!(
-        !screen.client_host_focused.contains_key(&ClientId::new(2)),
+        !screen
+            .core
+            .client_host_focused
+            .contains_key(&ClientId::new(2)),
         "focus state is forgotten"
     );
 }

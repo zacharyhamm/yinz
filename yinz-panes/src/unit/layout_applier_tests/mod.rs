@@ -15,8 +15,8 @@ use std::fmt::Write;
 use std::path::PathBuf;
 use std::rc::Rc;
 use yinz_bus::os_input_output::{
-    ClientTransport, RemotePanes, ServerEnvironment, TerminalIo, TerminalProcesses,
-    TerminalSupervision,
+    ClientTransport, RemotePanes, ServerEnvironment, SupervisorThemeHooks, TerminalIo,
+    TerminalProcesses, TerminalSupervision,
 };
 use yinz_runtime::{
     channels::{self, ChannelWithContext, Receiver, SenderWithContext},
@@ -38,6 +38,8 @@ use {
 
 #[derive(Clone)]
 struct FakeInputOutput {}
+
+impl SupervisorThemeHooks for FakeInputOutput {}
 
 impl TerminalIo for FakeInputOutput {
     fn set_terminal_size_using_terminal_id(

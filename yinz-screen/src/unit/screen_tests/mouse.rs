@@ -45,10 +45,11 @@ fn clicking_a_pane_notification_focuses_its_pane_and_dismisses_it() {
     let mut screen = create_non_mirrored_screen(size);
     let (pty_writer_tx, pty_writer_rx) =
         channels::unbounded::<(PtyWriteInstruction, ErrorContext)>();
-    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
+    screen.core.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -62,7 +63,7 @@ fn clicking_a_pane_notification_focuses_its_pane_and_dismisses_it() {
         .expect("TEST");
 
     let text = "agent idle";
-    screen.notifications.push(settled_notification(
+    screen.notices.notifications.push(settled_notification(
         0,
         text,
         PaneId::Terminal(crate::TerminalId::new(1)),
@@ -83,7 +84,7 @@ fn clicking_a_pane_notification_focuses_its_pane_and_dismisses_it() {
         screen.get_active_pane_id(&client_id),
         Some(PaneId::Terminal(crate::TerminalId::new(1)))
     );
-    assert!(screen.notifications[0].is_dismissing());
+    assert!(screen.notices.notifications[0].is_dismissing());
     pty_writer_rx.try_iter().for_each(drop);
 
     let pane_position = Position::new(5, 5);
@@ -107,7 +108,7 @@ fn clicking_a_stale_pane_notification_dismisses_it_without_moving_focus() {
     let focused_before = screen.get_active_pane_id(&client_id);
 
     let text = "gone";
-    screen.notifications.push(settled_notification(
+    screen.notices.notifications.push(settled_notification(
         0,
         text,
         PaneId::Terminal(crate::TerminalId::new(99)),
@@ -121,7 +122,7 @@ fn clicking_a_stale_pane_notification_dismisses_it_without_moving_focus() {
     );
 
     assert_eq!(screen.get_active_pane_id(&client_id), focused_before);
-    assert!(screen.notifications[0].is_dismissing());
+    assert!(screen.notices.notifications[0].is_dismissing());
 }
 
 #[test]
@@ -148,7 +149,7 @@ fn clicking_overlapping_pane_notifications_uses_paint_order() {
         yinz_types::animation::Easing::EaseOut,
         Instant::now(),
     );
-    screen.notifications.extend([newer, older]);
+    screen.notices.notifications.extend([newer, older]);
     let width = notification_width(text, size.cols).expect("notification fits");
     let x = size.cols - width - 1;
 
@@ -161,8 +162,8 @@ fn clicking_overlapping_pane_notifications_uses_paint_order() {
         screen.get_active_pane_id(&client_id),
         Some(PaneId::Terminal(crate::TerminalId::new(1)))
     );
-    assert!(!screen.notifications[0].is_dismissing());
-    assert!(screen.notifications[1].is_dismissing());
+    assert!(!screen.notices.notifications[0].is_dismissing());
+    assert!(screen.notices.notifications[1].is_dismissing());
 }
 
 /// The click on a toast is the one gesture that says "the thing this was about, now". Focusing
@@ -179,11 +180,11 @@ fn clicking_a_notification_tells_the_plugin_that_raised_it() {
     let client_id = ClientId::new(1);
     let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
     let mut screen = create_non_mirrored_screen(size);
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
     new_tab(&mut screen, 1, TabId::new(0));
 
     let text = "agent has a plan";
-    screen.notifications.push(settled_notification_with(
+    screen.notices.notifications.push(settled_notification_with(
         0,
         text,
         Some(PaneId::Terminal(crate::TerminalId::new(1))),
@@ -225,7 +226,7 @@ fn clicking_a_notification_tells_the_plugin_that_raised_it() {
             "42".to_owned()
         )
     );
-    assert!(screen.notifications[0].is_dismissing());
+    assert!(screen.notices.notifications[0].is_dismissing());
 }
 
 /// A toast whose plugin is already the pane in front still has something to say - the focus is
@@ -236,14 +237,14 @@ fn a_notification_click_is_reported_even_when_its_pane_is_already_focused() {
     let client_id = ClientId::new(1);
     let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
     let mut screen = create_non_mirrored_screen(size);
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
     new_tab(&mut screen, 1, TabId::new(0));
     let focused = screen
         .get_active_pane_id(&client_id)
         .expect("the tab has a focused pane");
 
     let text = "needs you";
-    screen.notifications.push(settled_notification_with(
+    screen.notices.notifications.push(settled_notification_with(
         0,
         text,
         Some(focused),
@@ -277,9 +278,10 @@ fn clicking_a_notification_with_no_target_falls_through_to_the_pane() {
     let mut screen = create_non_mirrored_screen(size);
     let (pty_writer_tx, pty_writer_rx) =
         channels::unbounded::<(PtyWriteInstruction, ErrorContext)>();
-    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
+    screen.core.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
     new_tab(&mut screen, 1, TabId::new(0));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -292,6 +294,7 @@ fn clicking_a_notification_with_no_target_falls_through_to_the_pane() {
 
     let text = "just saying";
     screen
+        .notices
         .notifications
         .push(settled_notification_with(0, text, None, None));
     let width = notification_width(text, size.cols).expect("notification fits");
@@ -303,7 +306,7 @@ fn clicking_a_notification_with_no_target_falls_through_to_the_pane() {
     );
 
     assert!(
-        !screen.notifications[0].is_dismissing(),
+        !screen.notices.notifications[0].is_dismissing(),
         "a toast that is not a click target is not dismissed by the click either"
     );
     assert!(
@@ -409,6 +412,7 @@ fn group_panes_with_mouse() {
 
     assert_eq!(
         screen
+            .core
             .current_pane_group
             .borrow()
             .clone_inner()
@@ -424,6 +428,7 @@ fn group_panes_with_mouse() {
 
     assert_eq!(
         screen
+            .core
             .current_pane_group
             .borrow()
             .clone_inner()
@@ -437,7 +442,7 @@ fn screen_with_tab_bar_for_grouping() -> (Screen, Receiver<(PluginInstruction, E
     let client_id = ClientId::new(1);
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
     let (plugin_tx, plugin_rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
     let plugin = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
         "yinz:tab-bar",
         &None,
@@ -488,7 +493,12 @@ fn pane_grouping_ignores_nonselectable_panes_under_alt_click_and_drag() {
         MouseEvent::new_left_motion_with_alt_event(Position::new(0, 10)),
     ] {
         screen.handle_mouse_event(event, client_id);
-        assert!(screen.current_pane_group.borrow().clone_inner().is_empty());
+        assert!(screen
+            .core
+            .current_pane_group
+            .borrow()
+            .clone_inner()
+            .is_empty());
     }
 
     screen.handle_mouse_event(
@@ -501,7 +511,7 @@ fn pane_grouping_ignores_nonselectable_panes_under_alt_click_and_drag() {
     ] {
         screen.handle_mouse_event(event, client_id);
         assert_eq!(
-            screen.current_pane_group.borrow().clone_inner()[&client_id],
+            screen.core.current_pane_group.borrow().clone_inner()[&client_id],
             vec![terminal]
         );
     }
@@ -520,6 +530,7 @@ fn pane_grouping_filters_plugin_requests_and_preserves_selectable_plugins() {
             let (mut screen, _plugin_rx) = screen_with_tab_bar_for_grouping();
             screen.set_pane_selectable(plugin, selectable);
             screen
+                .core
                 .current_pane_group
                 .borrow_mut()
                 .override_groups_with(HashMap::from([
@@ -539,12 +550,18 @@ fn pane_grouping_filters_plugin_requests_and_preserves_selectable_plugins() {
                     vec![terminal]
                 };
                 assert_eq!(
-                    screen.current_pane_group.borrow().clone_inner()[&client],
+                    screen.core.current_pane_group.borrow().clone_inner()[&client],
                     expected
                 );
             }
             screen.group_and_ungroup_panes(vec![], vec![plugin], for_all_clients, client_id);
-            for panes in screen.current_pane_group.borrow().clone_inner().values() {
+            for panes in screen
+                .core
+                .current_pane_group
+                .borrow()
+                .clone_inner()
+                .values()
+            {
                 assert_eq!(panes, &vec![terminal]);
             }
         }
@@ -560,24 +577,25 @@ fn pane_grouping_removes_panes_that_become_nonselectable_and_stale_members() {
     let (mut screen, _plugin_rx) = screen_with_tab_bar_for_grouping();
     screen.group_and_ungroup_panes(vec![bar, terminal], vec![], false, client_id);
     assert_eq!(
-        screen.current_pane_group.borrow().clone_inner()[&client_id],
+        screen.core.current_pane_group.borrow().clone_inner()[&client_id],
         vec![bar, terminal]
     );
 
     assert!(screen.set_pane_selectable(bar, false));
     assert_eq!(
-        screen.current_pane_group.borrow().clone_inner()[&client_id],
+        screen.core.current_pane_group.borrow().clone_inner()[&client_id],
         vec![terminal]
     );
 
     // An already-invalid selection is pruned too, including a closed pane.
     screen
+        .core
         .current_pane_group
         .borrow_mut()
         .override_groups_with(HashMap::from([(client_id, vec![bar, terminal, missing])]));
     screen.add_pane_id_to_group(bar, &client_id);
     assert_eq!(
-        screen.current_pane_group.borrow().clone_inner()[&client_id],
+        screen.core.current_pane_group.borrow().clone_inner()[&client_id],
         vec![terminal]
     );
 }
@@ -595,20 +613,23 @@ fn pane_group_control_opens_in_the_grouping_clients_tab() {
     {
         let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
         let (pty_tx, pty_rx): ChannelWithContext<PtyInstruction> = channels::unbounded();
-        screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+        screen.core.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
         // Tabs need a plugin sender to build the control's pane.
         let (plugin_tx, _plugin_rx): ChannelWithContext<PluginInstruction> = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
         // The group bookkeeping holds its own senders, taken when the screen was built.
-        *screen.current_pane_group.borrow_mut() =
-            crate::pane_groups::PaneGroups::new(screen.bus.senders.clone());
+        *screen.core.current_pane_group.borrow_mut() =
+            crate::pane_groups::PaneGroups::new(screen.core.bus.senders.clone());
         for (pid, tab_id) in [(1, 0), (2, 1), (3, 2)] {
             new_tab(&mut screen, pid, TabId::new(tab_id));
         }
         screen
             .go_to_tab(TabNumber::new(tab_number), client_id)
             .unwrap();
-        assert_eq!(screen.active_tab_ids.get(&client_id), Some(&target_tab));
+        assert_eq!(
+            screen.core.active_tab_ids.get(&client_id),
+            Some(&target_tab)
+        );
 
         screen.toggle_pane_in_group(client_id).unwrap();
         let launches: Vec<_> = pty_rx
@@ -671,6 +692,7 @@ fn pane_group_control_opens_in_the_grouping_clients_tab() {
             .unwrap();
         let tabs_with_control = |screen: &Screen| -> Vec<TabId> {
             screen
+                .core
                 .tabs
                 .iter()
                 .filter(|(_, tab)| tab.has_plugin(control))
@@ -684,10 +706,13 @@ fn pane_group_control_opens_in_the_grouping_clients_tab() {
         screen
             .go_to_tab(TabNumber::new(other_tab_number), client_id)
             .unwrap();
-        assert_ne!(screen.active_tab_ids.get(&client_id), Some(&target_tab));
+        assert_ne!(
+            screen.core.active_tab_ids.get(&client_id),
+            Some(&target_tab)
+        );
         screen.toggle_pane_in_group(client_id).unwrap();
         assert_eq!(
-            screen.current_pane_group.borrow().clone_inner()[&client_id].len(),
+            screen.core.current_pane_group.borrow().clone_inner()[&client_id].len(),
             2
         );
         assert!(
@@ -791,7 +816,7 @@ fn nested_guest_fullscreen_moves_from_one_pane_to_another() {
         assert!(active_tab.fullscreen_covers_ui());
     }
     assert_eq!(
-        screen.nested_fullscreen_panes,
+        screen.nested.nested_fullscreen_panes,
         [pane_one].into_iter().collect(),
         "only the first guest pane is tracked as fullscreen"
     );
@@ -807,7 +832,7 @@ fn nested_guest_fullscreen_moves_from_one_pane_to_another() {
         assert!(active_tab.fullscreen_covers_ui());
     }
     assert_eq!(
-        screen.nested_fullscreen_panes,
+        screen.nested.nested_fullscreen_panes,
         [pane_two].into_iter().collect(),
         "the first guest pane is no longer tracked as fullscreen, only the second is"
     );
@@ -822,7 +847,7 @@ fn nested_guest_fullscreen_moves_from_one_pane_to_another() {
         );
     }
     assert!(
-        screen.nested_fullscreen_panes.is_empty(),
+        screen.nested.nested_fullscreen_panes.is_empty(),
         "no guest panes are tracked as fullscreen after unsetting"
     );
 }
@@ -842,6 +867,7 @@ fn group_panes_with_keyboard() {
 
     assert_eq!(
         screen
+            .core
             .current_pane_group
             .borrow()
             .clone_inner()
@@ -854,6 +880,7 @@ fn group_panes_with_keyboard() {
 
     assert_eq!(
         screen
+            .core
             .current_pane_group
             .borrow()
             .clone_inner()
@@ -904,6 +931,7 @@ fn group_panes_following_focus() {
         screen.add_active_pane_to_group_if_marking(&client_id);
         assert_eq!(
             screen
+                .core
                 .current_pane_group
                 .borrow()
                 .clone_inner()
@@ -923,7 +951,7 @@ fn group_panes_following_focus() {
             .move_focus_up(client_id)
             .unwrap();
         screen.add_active_pane_to_group_if_marking(&client_id);
-        assert_eq!(screen.current_pane_group.borrow().clone_inner().get(&client_id), Some(&vec![PaneId::Terminal(crate::TerminalId::new(4)), PaneId::Terminal(crate::TerminalId::new(3))]), "Pane Id of newly focused pane not added to group after the group marking was toggled off");
+        assert_eq!(screen.core.current_pane_group.borrow().clone_inner().get(&client_id), Some(&vec![PaneId::Terminal(crate::TerminalId::new(4)), PaneId::Terminal(crate::TerminalId::new(3))]), "Pane Id of newly focused pane not added to group after the group marking was toggled off");
     }
 }
 
@@ -974,6 +1002,7 @@ fn break_group_with_mouse() {
         screen.add_active_pane_to_group_if_marking(&client_id);
         assert_eq!(
             screen
+                .core
                 .current_pane_group
                 .borrow()
                 .clone_inner()
@@ -993,6 +1022,7 @@ fn break_group_with_mouse() {
     );
     assert_eq!(
         screen
+            .core
             .current_pane_group
             .borrow()
             .clone_inner()
@@ -1010,7 +1040,7 @@ fn a_plugin_pane_with_mouse_selection_hears_the_whole_click() {
     let client_id = ClientId::new(1);
     let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
     let mut screen = create_non_mirrored_screen(size);
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
     new_tab(&mut screen, 1, TabId::new(0));
 
     let dialog = Run::Plugin(

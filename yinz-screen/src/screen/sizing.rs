@@ -8,7 +8,8 @@ use yinz_types::pane_size::Size;
 
 impl Screen {
     pub fn set_client_size(&mut self, client_id: ClientId, size: Size) -> Result<()> {
-        self.client_sizes.insert(client_id, size);
+        self.core.client_sizes.insert(client_id, size);
+        self.permission_surfaces_changed();
         if self.update_pixel_dimensions(client_id, PixelDimensions::default()) {
             self.resize_pty_all_panes()
                 .context("failed to re-apply pty pixel sizes after a client resize")?;
@@ -22,12 +23,12 @@ impl Screen {
 
     /// The smallest bounds among the connected interactive clients `counts` selects.
     pub(super) fn min_client_size(&self, counts: impl Fn(&ClientId) -> bool) -> Option<Size> {
-        let connected = self.connected_clients.borrow();
+        let connected = self.core.connected_clients.borrow();
         connected
             .iter()
-            .filter(|client_id| !self.watcher_clients.contains_key(client_id))
+            .filter(|client_id| !self.core.watcher_clients.contains_key(client_id))
             .filter(|client_id| counts(client_id))
-            .filter_map(|client_id| self.client_sizes.get(client_id).copied())
+            .filter_map(|client_id| self.core.client_sizes.get(client_id).copied())
             .reduce(|acc, size| Size {
                 rows: acc.rows.min(size.rows),
                 cols: acc.cols.min(size.cols),
@@ -35,23 +36,24 @@ impl Screen {
     }
 
     pub(super) fn surface_size(&self) -> Size {
-        self.session_size().unwrap_or(self.last_surface_size)
+        self.session_size().unwrap_or(self.core.last_surface_size)
     }
 
     pub(super) fn remember_surface_size(&mut self) {
         if let Some(size) = self.session_size() {
-            self.last_surface_size = size;
+            self.core.last_surface_size = size;
         }
     }
 
     #[cfg(test)]
     pub(super) fn resize_to_screen(&mut self, new_screen_size: Size) -> Result<()> {
         let client_ids: Vec<ClientId> = self
+            .core
             .connected_clients
             .borrow()
             .iter()
             .copied()
-            .chain(self.client_sizes.keys().copied())
+            .chain(self.core.client_sizes.keys().copied())
             .collect();
         for client_id in client_ids {
             self.set_client_size(client_id, new_screen_size)
@@ -72,19 +74,20 @@ impl Screen {
 
     pub(super) fn size_for_client(&self, client_id: Option<ClientId>) -> Size {
         client_id
-            .and_then(|client_id| self.client_sizes.get(&client_id).copied())
+            .and_then(|client_id| self.core.client_sizes.get(&client_id).copied())
             .or_else(|| {
                 self.get_first_client_id()
-                    .and_then(|client_id| self.client_sizes.get(&client_id).copied())
+                    .and_then(|client_id| self.core.client_sizes.get(&client_id).copied())
             })
-            .or_else(|| self.client_sizes.values().next().copied())
-            .unwrap_or(self.last_surface_size)
+            .or_else(|| self.core.client_sizes.values().next().copied())
+            .unwrap_or(self.core.last_surface_size)
     }
 
     pub(super) fn size_of_tab_of_client(&self, client_id: ClientId) -> Size {
-        self.active_tab_ids
+        self.core
+            .active_tab_ids
             .get(&client_id)
-            .and_then(|tab_id| self.tabs.get(tab_id))
+            .and_then(|tab_id| self.core.tabs.get(tab_id))
             .map(|tab| tab.size)
             .unwrap_or_else(|| self.size_for_client(Some(client_id)))
     }

@@ -21,21 +21,21 @@ fn panel_half(
         SenderWithContext::new(tx),
         "panel─title".to_owned(),
         "panel─title".to_owned(),
-        screen.sixel_image_store.clone(),
-        screen.kitty_image_store.clone(),
-        screen.terminal_emulator_colors.clone(),
-        screen.terminal_emulator_color_codes.clone(),
+        screen.core.sixel_image_store.clone(),
+        screen.core.kitty_image_store.clone(),
+        screen.core.terminal_emulator_colors.clone(),
+        screen.core.terminal_emulator_color_codes.clone(),
         Rc::new(RefCell::new(LinkHandler::new())),
-        screen.character_cell_size.clone(),
+        screen.core.character_cell_size.clone(),
         vec![ClientId::new(1)],
-        screen.style,
+        screen.core.style,
         Some(Run::Plugin(run.clone())),
         false,
         true,
         true,
     );
     let pane_id = PaneId::Plugin(PluginId::new(id));
-    let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
     tab.add_overlay_pane(
         pane,
         pane_id,
@@ -69,16 +69,17 @@ fn opening_ripple_placement_cache_and_clock_shutdown() {
     let (mut screen, jobs) = screen_with_background_jobs(size);
     new_tab(&mut screen, 1, TabId::new(0));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
         .set_pane_frames(PaneFrameStyle::Full);
     let (_, pane_id) = panel_half(&mut screen, 7, "agents", 3, true);
     let (server_tx, server_rx) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
     let mut grid = grid_for_render_snapshot(size);
     let start = Instant::now();
-    screen.pinned_now = Some(start);
+    screen.core.pinned_now = Some(start);
     let hidden = render_frame_into(&mut screen, &server_rx, ClientId::new(1), &mut grid);
     assert!(!hidden.contains("CONTENTS"));
     assert!(!screen.animations_are_live(start));
@@ -95,12 +96,12 @@ fn opening_ripple_placement_cache_and_clock_shutdown() {
     assert!(prompt.contains("Plugin permissions"));
     assert!(!screen.animations_are_live(start));
     screen.cancel_permission_modal(0);
-    let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
     tab.get_pane_with_id_mut(pane_id)
         .unwrap()
         .handle_plugin_bytes(ClientId::new(1), b"\x1b[2J\x1b[HCONTENTS".to_vec());
 
-    let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
     let coordinates = tab
         .overlay_placement_for(pane_id)
         .unwrap()
@@ -115,18 +116,18 @@ fn opening_ripple_placement_cache_and_clock_shutdown() {
     assert!(
         drain_background_jobs(&jobs).contains(&BackgroundJob::StartAnimationClock(FRAME_PERIOD))
     );
-    let original_geometry = screen.tabs[&TabId::new(0)]
+    let original_geometry = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(pane_id)
         .unwrap()
         .position_and_size();
 
-    screen.pinned_now = Some(start + Duration::from_millis(160));
+    screen.core.pinned_now = Some(start + Duration::from_millis(160));
     let middle = render_frame_into(&mut screen, &server_rx, ClientId::new(1), &mut grid);
     assert_ne!(initial, middle, "the cached frame must be repainted");
     assert!(middle.contains('∿') || middle.contains('∽'), "{middle}");
     assert!(middle.contains("panel─title") && middle.contains("CONTENTS"));
     assert_eq!(
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .get_pane_with_id(pane_id)
             .unwrap()
             .position_and_size(),
@@ -139,7 +140,7 @@ fn opening_ripple_placement_cache_and_clock_shutdown() {
         !drain_background_jobs(&jobs).contains(&BackgroundJob::StopAnimationClock),
         "the straight border has not been painted yet"
     );
-    screen.pinned_now = Some(end);
+    screen.core.pinned_now = Some(end);
     let settled = render_frame_into(&mut screen, &server_rx, ClientId::new(1), &mut grid);
     assert_eq!(settled, initial);
     assert!(!screen.animations_are_live(end));
@@ -155,35 +156,37 @@ fn opening_ripple_link_reveal_move_resize_and_disable() {
     let (mut screen, _jobs) = screen_with_background_jobs(size);
     new_tab(&mut screen, 1, TabId::new(0));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
         .set_pane_frames(PaneFrameStyle::Full);
     let (run, left) = panel_half(&mut screen, 7, "agents", 3, false);
     let start = Instant::now();
-    screen.pinned_now = Some(start);
+    screen.core.pinned_now = Some(start);
     screen.render_to_clients().unwrap();
     let (_, right) = panel_half(&mut screen, 8, "agents", 38, false);
     let (_, unrelated) = panel_half(&mut screen, 9, "file-finder", 73, false);
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
         .create_multipane([left, right], panel_split(), 0, panel_placement())
         .unwrap();
     let later = start + Duration::from_millis(120);
-    screen.pinned_now = Some(later);
+    screen.core.pinned_now = Some(later);
     screen.render_to_clients().unwrap();
     for id in [left, right] {
         assert_eq!(
-            screen.tabs[&TabId::new(0)]
+            screen.core.tabs[&TabId::new(0)]
                 .overlay_carry_for(id)
                 .opening_started,
             Some(later)
         );
     }
     assert_eq!(
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .overlay_carry_for(unrelated)
             .opening_started,
         None
@@ -191,6 +194,7 @@ fn opening_ripple_link_reveal_move_resize_and_disable() {
 
     new_tab(&mut screen, 2, TabId::new(1));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(1))
         .unwrap()
@@ -198,7 +202,7 @@ fn opening_ripple_link_reveal_move_resize_and_disable() {
     assert!(screen
         .focus_plugin_pane(&run, true, true, false, ClientId::new(1), &mut None)
         .unwrap());
-    let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+    let tab = screen.core.tabs.get_mut(&TabId::new(1)).unwrap();
     tab.resize_whole_tab_to(Size {
         cols: 110,
         rows: 26,
@@ -222,7 +226,7 @@ fn opening_ripple_link_reveal_move_resize_and_disable() {
 
     screen.set_pane_animations(false);
     assert_eq!(
-        screen.tabs[&TabId::new(1)]
+        screen.core.tabs[&TabId::new(1)]
             .overlay_carry_for(left)
             .opening_started,
         None,
@@ -240,7 +244,7 @@ fn opening_ripple_link_reveal_move_resize_and_disable() {
         !screen.animations_are_live(later),
         "enabling effects does not replay a visible panel"
     );
-    let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+    let tab = screen.core.tabs.get_mut(&TabId::new(1)).unwrap();
     tab.hide_overlay_pane(left);
     tab.show_overlay_pane(left);
     tab.set_pane_frames(PaneFrameStyle::Titles);
@@ -287,6 +291,7 @@ fn opening_ripple_fullscreen_bounds_and_restore() {
         let (mut screen, _jobs) = screen_with_background_jobs(size);
         new_tab(&mut screen, 1, TabId::new(0));
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
@@ -297,6 +302,7 @@ fn opening_ripple_fullscreen_bounds_and_restore() {
             let (_, right) = panel_half(&mut screen, 8, "agents", 38, false);
             panes.push(right);
             screen
+                .core
                 .tabs
                 .get_mut(&TabId::new(0))
                 .unwrap()
@@ -306,19 +312,20 @@ fn opening_ripple_fullscreen_bounds_and_restore() {
         let original_geoms: Vec<_> = panes
             .iter()
             .map(|id| {
-                screen.tabs[&TabId::new(0)]
+                screen.core.tabs[&TabId::new(0)]
                     .get_pane_with_id(*id)
                     .unwrap()
                     .current_geom()
             })
             .collect();
         let (server_tx, server_rx) = channels::unbounded();
-        screen.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
+        screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
         let mut grid = grid_for_render_snapshot(size);
         let start = Instant::now();
-        screen.pinned_now = Some(start);
+        screen.core.pinned_now = Some(start);
         render_frame_into(&mut screen, &server_rx, ClientId::new(1), &mut grid);
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
@@ -327,7 +334,7 @@ fn opening_ripple_fullscreen_bounds_and_restore() {
         // The wave crosses both halves of the displayed 100-column frame.
         // Sampling the left half also catches a partner using its unexpanded bounds.
         for (ms, column) in [(160, 35), (360, 85)] {
-            screen.pinned_now = Some(start + Duration::from_millis(ms));
+            screen.core.pinned_now = Some(start + Duration::from_millis(ms));
             let frame = render_frame_into(&mut screen, &server_rx, ClientId::new(1), &mut grid);
             let bottom = frame.lines().last().unwrap().split_once(": ").unwrap().1;
             assert!(
@@ -337,6 +344,7 @@ fn opening_ripple_fullscreen_bounds_and_restore() {
         }
 
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
@@ -346,13 +354,13 @@ fn opening_ripple_fullscreen_bounds_and_restore() {
             restored.contains('∿') || restored.contains('∽'),
             "{restored}"
         );
-        let tab = &screen.tabs[&TabId::new(0)];
+        let tab = &screen.core.tabs[&TabId::new(0)];
         for (id, geom) in panes.iter().zip(original_geoms) {
             assert_eq!(tab.get_pane_with_id(*id).unwrap().current_geom(), geom);
             assert_eq!(tab.overlay_carry_for(*id).opening_started, Some(start));
         }
         let end = start + Duration::from_millis(450);
-        screen.pinned_now = Some(end);
+        screen.core.pinned_now = Some(end);
         let settled = render_frame_into(&mut screen, &server_rx, ClientId::new(1), &mut grid);
         assert!(
             !settled.contains('∿') && !settled.contains('∽'),
@@ -371,12 +379,12 @@ fn opening_ripple_alone_and_reopened_beside_a_settled_half() {
     new_tab(&mut screen, 1, TabId::new(0));
     let (_, agents) = panel_half(&mut screen, 7, "agents", 3, false);
     let start = Instant::now();
-    screen.pinned_now = Some(start);
+    screen.core.pinned_now = Some(start);
     screen.render_to_clients().unwrap();
     assert!(screen.animations_are_live(start), "agents can open alone");
     let (_, conversation) = panel_half(&mut screen, 8, "agents", 38, false);
     let later = start + Duration::from_secs(1);
-    let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
     tab.create_multipane([agents, conversation], panel_split(), 0, panel_placement())
         .unwrap();
     tab.sample_overlay_ripples(later, true);

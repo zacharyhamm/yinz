@@ -12,8 +12,8 @@ impl Screen {
     /// Whether `pane_id` was a pane once and has since been closed, or names a plugin the
     /// plugin thread has unloaded: closing it again has nothing left to do.
     pub(super) fn pane_is_gone(&self, pane_id: PaneId) -> bool {
-        self.destroyed_panes.contains(&pane_id)
-            || matches!(pane_id, PaneId::Plugin(plugin_id) if self.unloaded_plugins.contains(&plugin_id))
+        self.core.destroyed_panes.contains(&pane_id)
+            || matches!(pane_id, PaneId::Plugin(plugin_id) if self.core.unloaded_plugins.contains(&plugin_id))
     }
 
     /// The headless plugin whose pane `pane_id` names, if it names one. An id a tab still holds
@@ -21,7 +21,7 @@ impl Screen {
     fn headless_plugin(&self, pane_id: PaneId) -> Option<PluginId> {
         match pane_id {
             PaneId::Plugin(plugin_id)
-                if self.paneless_plugins.contains_key(&plugin_id)
+                if self.core.paneless_plugins.contains_key(&plugin_id)
                     && !self.holds_pane_record(plugin_id) =>
             {
                 Some(plugin_id)

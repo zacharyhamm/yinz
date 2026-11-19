@@ -18,15 +18,15 @@ const MAX_QUEUED_RENDERS: usize = 1;
 
 impl Screen {
     pub(super) fn request_client_repaint(&mut self, client: ClientId) -> Result<()> {
-        self.pending_client_repaints.insert(client);
+        self.core.pending_client_repaints.insert(client);
         self.force_client_repaint(client);
         self.render()
     }
 
     pub(super) fn force_client_repaint(&mut self, client: ClientId) {
-        self.last_forwarded_osc7.remove(&client);
+        self.core.last_forwarded_osc7.remove(&client);
         // The screensaver removed placements and hid the cursor outside the server render stream.
-        if let Some(watcher) = self.watcher_clients.get_mut(&client) {
+        if let Some(watcher) = self.core.watcher_clients.get_mut(&client) {
             watcher.set_force_render();
         } else if let Ok(tab) = self.get_active_tab_mut(client) {
             tab.forget_host_cursor_state(client);
@@ -36,8 +36,9 @@ impl Screen {
 
     fn complete_client_repaints(&mut self, clients: Vec<ClientId>) -> Result<()> {
         for client in clients {
-            if self.pending_client_repaints.remove(&client) {
-                self.bus
+            if self.core.pending_client_repaints.remove(&client) {
+                self.core
+                    .bus
                     .senders
                     .send_to_server(ServerInstruction::RepaintComplete(client))
                     .context("complete client repaint")?;
@@ -47,22 +48,25 @@ impl Screen {
     }
 
     pub(super) fn watched_tab_id(&self) -> Option<TabId> {
-        self.followed_client_id
-            .filter(|_| !self.watcher_clients.is_empty())
+        self.core
+            .followed_client_id
+            .filter(|_| !self.core.watcher_clients.is_empty())
             .map(|client| {
-                self.active_tab_ids
+                self.core
+                    .active_tab_ids
                     .get(&client)
                     .copied()
-                    .or(self.departed_followed_tab_id)
+                    .or(self.core.departed_followed_tab_id)
                     .unwrap_or(TabId::new(0))
             })
     }
 
     pub fn render(&mut self) -> Result<()> {
-        self.refresh_agent_worktrees();
-        self.assign_permission_modals();
-        self.prepare_permission_modal_render();
-        self.pane_subscriber_snapshots_dirty = true;
+        #[cfg(test)]
+        if let Some(observe) = self.core.publication_observer.as_mut() {
+            observe("render");
+        }
+        self.core.pane_subscriber_snapshots_dirty = true;
         self.schedule_render()
     }
 
@@ -70,7 +74,8 @@ impl Screen {
     /// longer than this, so a pane whose application never ends its frame still repaints.
     pub(super) fn sync_output_deadline(&self) -> Option<std::time::Duration> {
         let now = std::time::Instant::now();
-        self.tabs
+        self.core
+            .tabs
             .values()
             .filter_map(|tab| tab.sync_output_deadline())
             .min()
@@ -80,7 +85,7 @@ impl Screen {
     /// Releases synchronized-output locks that lapsed by `now` and renders their panes.
     pub(super) fn expire_sync_output(&mut self, now: std::time::Instant) -> Result<()> {
         let mut expired = false;
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             expired |= tab.expire_sync_output(now);
         }
         if expired {
@@ -98,11 +103,10 @@ impl Screen {
         // when this job decides to render, it sends back the ScreenInstruction::RenderToClients
         // message, triggering our render_to_clients method which does the actual rendering
 
-        self.dismiss_stale_command_palettes();
-        self.sync_nested_guest_fullscreen_state();
         self.report_pane_tabs()?;
 
         let _ = self
+            .core
             .bus
             .senders
             .send_to_background_jobs(BackgroundJob::RenderToClients);
@@ -111,7 +115,8 @@ impl Screen {
 
     /// Asks the client's writer how far behind it is, arming `ready` if it is behind.
     fn client_render_is_blocked(&self, client: ClientId, ready: &RenderReady) -> bool {
-        self.bus
+        self.core
+            .bus
             .os_input
             .as_ref()
             .and_then(|os| os.client_render_backlog_and_notify(client, MAX_QUEUED_RENDERS, ready))
@@ -142,8 +147,8 @@ impl Screen {
     /// Check and arm each queue before deciding which tabs can consume dirty state.
     pub(super) fn deferred_tabs(&mut self) -> &HashSet<TabId> {
         // Reuse one notifier, cloned only into the queues of clients that are behind.
-        let ready = self.render_writer_ready.get_or_init(|| {
-            let to_screen = self.bus.senders.to_screen.clone();
+        let ready = self.core.render_writer_ready.get_or_init(|| {
+            let to_screen = self.core.bus.senders.to_screen.clone();
             Arc::new(move || {
                 if let Some(to_screen) = &to_screen {
                     to_screen
@@ -153,18 +158,18 @@ impl Screen {
                 }
             })
         });
-        self.deferred_render_tabs.clear();
+        self.core.deferred_render_tabs.clear();
         let mut blocked_client = None;
-        let connected_clients = self.connected_clients.borrow();
+        let connected_clients = self.core.connected_clients.borrow();
         if connected_clients.len() == 1
-            && self.watcher_clients.is_empty()
-            && self.pane_render_subscribers.is_empty()
+            && self.core.watcher_clients.is_empty()
+            && self.core.pane_render_subscribers.is_empty()
             && let Some(&client) = connected_clients.iter().next()
         {
             let blocked = self.client_render_is_blocked(client, ready);
             if !blocked {
-                self.deferred_subscriber_renders = false;
-                return &self.deferred_render_tabs;
+                self.core.deferred_subscriber_renders = false;
+                return &self.core.deferred_render_tabs;
             }
             blocked_client = Some(client);
         }
@@ -173,35 +178,38 @@ impl Screen {
             known.insert(client, true);
         }
         let followed_tab = self.watched_tab_id();
-        for (tab_id, tab) in &self.tabs {
+        for (tab_id, tab) in &self.core.tabs {
             let recipients = connected_clients
                 .iter()
                 .filter(|client| {
-                    tab.has_connected_client(client) && !self.watcher_clients.contains_key(client)
+                    tab.has_connected_client(client)
+                        && !self.core.watcher_clients.contains_key(client)
                 })
                 .copied()
                 .chain(
-                    self.watcher_clients
+                    self.core
+                        .watcher_clients
                         .keys()
                         .copied()
                         .filter(|_| followed_tab == Some(*tab_id)),
                 );
             if self.recipients_are_blocked(recipients, &mut known, ready) {
-                self.deferred_render_tabs.insert(*tab_id);
+                self.core.deferred_render_tabs.insert(*tab_id);
             }
         }
-        self.deferred_subscriber_renders = self.subscriber_snapshots_pending()
+        self.core.deferred_subscriber_renders = self.subscriber_snapshots_pending()
             && self.recipients_are_blocked(
-                self.pane_render_subscribers.keys().copied(),
+                self.core.pane_render_subscribers.keys().copied(),
                 &mut known,
                 ready,
             );
-        &self.deferred_render_tabs
+        &self.core.deferred_render_tabs
     }
 
     pub(super) fn resume_deferred_render(&self) {
-        if !self.deferred_render_tabs.is_empty() || self.deferred_subscriber_renders {
-            self.bus
+        if !self.core.deferred_render_tabs.is_empty() || self.core.deferred_subscriber_renders {
+            self.core
+                .bus
                 .senders
                 .send_to_background_jobs(BackgroundJob::RenderToClients)
                 .context("failed to resume a deferred render")
@@ -214,8 +222,6 @@ impl Screen {
     }
 
     pub(crate) fn render_to_clients_traced(&mut self, trace_attach: bool) -> Result<()> {
-        self.refresh_agent_worktrees();
-        self.assign_permission_modals();
         self.prepare_permission_modal_render();
         // this method does the actual rendering and is triggered by a debounced BackgroundJob (see
         // the render method for more details)
@@ -231,7 +237,8 @@ impl Screen {
         // whoever scheduled it - moves the animation to where the wall clock says it should be.
         let now = self.frame_now();
         self.reap_settled_notifications(now);
-        self.notification_return_retry_until
+        self.notices
+            .notification_return_retry_until
             .retain(|_, until| now < *until);
         self.advance_frame_color_fades(now);
         self.advance_plugin_loading_animations();
@@ -241,35 +248,36 @@ impl Screen {
         // thread treats a failed frame as fatal, and a rejected client is still on its way out.
         self.reflow_all_tabs().context(err_context).non_fatal();
         let presentations: Vec<_> = self
+            .core
             .active_tab_ids
             .iter()
             .filter_map(|(client, tab_id)| {
-                let tab = self.tabs.get(tab_id)?;
-                let terminal = *self.client_sizes.get(client)?;
+                let tab = self.core.tabs.get(tab_id)?;
+                let terminal = *self.core.client_sizes.get(client)?;
                 Some((
                     *client,
                     *tab_id,
                     crate::output::Presentation {
                         terminal,
                         content: tab.size,
-                        background: self.style.pane_surround(),
+                        background: self.core.style.pane_surround(),
                     },
                 ))
             })
             .collect();
         for (client, tab_id, presentation) in presentations {
             if self
+                .core
                 .client_presentations
                 .insert(client, (tab_id, presentation))
                 != Some((tab_id, presentation))
-                && let Some(tab) = self.tabs.get_mut(&tab_id)
+                && let Some(tab) = self.core.tabs.get_mut(&tab_id)
             {
                 tab.forget_host_cursor_state(client);
                 tab.request_client_repaint(client, true);
             }
         }
         let surface = self.surface_size();
-        self.dismiss_stale_command_palettes();
         if trace_attach {
             log::info!(
                 "attach trace: render frame setup and tab sizing complete after {:?}",
@@ -278,41 +286,42 @@ impl Screen {
         }
 
         let flashing_titles: HashSet<_> = self
-            .agent_hook_flashes
-            .keys()
-            .copied()
+            .agents
+            .flash_panes()
             .filter(|id| {
-                self.pane_animations
+                self.core.pane_animations
                     && self
                         .get_pane_info(*id)
-                        .is_some_and(|pane| self.pane_title_hook_is_flashing(&pane, now))
+                        .is_some_and(|pane| self.agents.pane_title_hook_is_flashing(&pane, now))
             })
             .collect();
         let watched_tab_id = self.watched_tab_id();
-        for (tab_id, tab) in &mut self.tabs {
+        for (tab_id, tab) in &mut self.core.tabs {
             for id in tab.get_all_pane_ids() {
                 if let Some(pane) = tab.get_pane_with_id_mut(id) {
                     pane.set_agent_hook_flash(flashing_titles.contains(&id));
                 }
             }
-            tab.sample_overlay_ripples(now, self.pane_animations);
+            tab.sample_overlay_ripples(now, self.core.pane_animations);
             tab.sample_waiting_pulses(
                 now,
-                self.pane_animations
-                    && (self.active_tab_ids.values().any(|id| id == tab_id)
+                self.core.pane_animations
+                    && (self.core.active_tab_ids.values().any(|id| id == tab_id)
                         || watched_tab_id == Some(*tab_id)),
-                self.followed_client_id
+                self.core
+                    .followed_client_id
                     .filter(|_| watched_tab_id == Some(*tab_id)),
             );
         }
 
         // Separate rendering for regular clients and watchers
         let has_regular_clients = self
+            .core
             .connected_clients
             .borrow()
             .iter()
-            .any(|id| !self.watcher_clients.contains_key(id));
-        let has_watchers = !self.watcher_clients.is_empty(); // No change needed
+            .any(|id| !self.core.watcher_clients.contains_key(id));
+        let has_watchers = !self.core.watcher_clients.is_empty(); // No change needed
         self.prepare_command_palette_render();
 
         // Track pane output consumed by regular clients for conditional watcher rendering.
@@ -329,26 +338,27 @@ impl Screen {
                 log::info!("attach trace: render regular-client pane rendering begin");
             }
             let mut output = Output::new(
-                self.sixel_image_store.clone(),
-                self.character_cell_size.clone(),
-                self.styled_underlines,
-                self.osc8_hyperlinks,
-                self.kitty_image_store.clone(),
-                self.kitty_host_capabilities.clone(),
-                self.client_kitty_host_state.clone(),
-                self.sixel_host_capabilities.clone(),
-                self.synchronized_output_capabilities.clone(),
+                self.core.sixel_image_store.clone(),
+                self.core.character_cell_size.clone(),
+                self.core.styled_underlines,
+                self.core.osc8_hyperlinks,
+                self.core.kitty_image_store.clone(),
+                self.core.kitty_host_capabilities.clone(),
+                self.core.client_kitty_host_state.clone(),
+                self.core.sixel_host_capabilities.clone(),
+                self.core.synchronized_output_capabilities.clone(),
             );
 
             output.set_input_overlay_clients(
-                self.command_palettes
+                self.palette
+                    .command_palettes
                     .keys()
                     .copied()
-                    .filter(|client| self.palette_owns_input(*client))
-                    .chain(self.permission_modal_clients()),
+                    .filter(|client| self.palette.palette_owns_input(*client))
+                    .chain(self.permissions.permission_modal_clients()),
             );
 
-            output.pane_change_client = self.followed_client_id.filter(|_| has_watchers);
+            output.pane_change_client = self.core.followed_client_id.filter(|_| has_watchers);
 
             // Before any pane renders: work out which cells this frame's toasts have stopped
             // covering and ask the panes under them to repaint. A pane only emits chunks for rows
@@ -358,7 +368,7 @@ impl Screen {
             // frame where the toasts only grew, so an arriving toast costs nothing.
             for (tab_id, damage) in self.prepare_notification_damage(now, surface) {
                 if let Some(tab_id) = tab_id
-                    && let Some(tab) = self.tabs.get_mut(&tab_id)
+                    && let Some(tab) = self.core.tabs.get_mut(&tab_id)
                 {
                     tab.force_render_panes_intersecting(&damage);
                 }
@@ -374,15 +384,16 @@ impl Screen {
             // Wanted twice below - once for the menu geometry, once when the overlays paint - and
             // on almost every frame there is neither a toast nor a menu, so it is not worth
             // walking the client list to find out.
-            let has_overlays = !self.notifications.is_empty()
-                || !self.notification_browsers.is_empty()
-                || !self.notification_return_retry_until.is_empty()
-                || !self.context_menus.is_empty();
+            let has_overlays = !self.notices.notifications.is_empty()
+                || !self.notices.notification_browsers.is_empty()
+                || !self.notices.notification_return_retry_until.is_empty()
+                || !self.menus.context_menus.is_empty();
             let regular_client_ids: Vec<ClientId> = if has_overlays {
-                self.connected_clients
+                self.core
+                    .connected_clients
                     .borrow()
                     .iter()
-                    .filter(|client_id| !self.watcher_clients.contains_key(client_id))
+                    .filter(|client_id| !self.core.watcher_clients.contains_key(client_id))
                     .copied()
                     .collect()
             } else {
@@ -411,13 +422,13 @@ impl Screen {
 
             // ...and the same for the menus, which are drawn above even the toasts. Per client,
             // because a menu belongs to the client that opened it.
-            output.set_context_menu_rects(if self.context_menus.is_empty() {
+            output.set_context_menu_rects(if self.menus.context_menus.is_empty() {
                 HashMap::new()
             } else {
                 client_surfaces
                     .iter()
                     .filter_map(|(client, viewport)| {
-                        self.context_menu_cell_rect(*client, *viewport)
+                        self.menus.context_menu_cell_rect(*client, *viewport)
                     })
                     .collect()
             });
@@ -430,8 +441,8 @@ impl Screen {
             // `render_panes` copes with no active tiled pane, and its overlays are what there
             // is to see.
             let mut tabs_that_rendered: Vec<TabId> = vec![];
-            for (tab_index, tab) in &mut self.tabs {
-                if !self.deferred_render_tabs.contains(tab_index)
+            for (tab_index, tab) in &mut self.core.tabs {
+                if !self.core.deferred_render_tabs.contains(tab_index)
                     && (tab.should_retain_tab() || !tab.is_pending())
                 {
                     // Pass None for normal client rendering
@@ -441,6 +452,7 @@ impl Screen {
             }
             // Rendering can set and consume a tab's clear flag (eg. when adopting stacks).
             replay_clear = self
+                .core
                 .followed_client_id
                 .filter(|_| has_watchers)
                 .is_some_and(|client| output.host_display_cleared_for_client(client));
@@ -460,7 +472,7 @@ impl Screen {
             // notifications paint over the panes, so they're emitted once every tab has rendered
             if has_overlays {
                 for (client, viewport) in &client_surfaces {
-                    if !self.palette_owns_input(*client) {
+                    if !self.palette.palette_owns_input(*client) {
                         self.render_notifications(&mut output, *viewport, *client, now)
                             .context(err_context)?;
                     }
@@ -477,7 +489,7 @@ impl Screen {
             // cursor stayed wherever the toast's last absolute goto put it: blinking in the
             // bottom-right of the box.
             for tab_index in &tabs_that_rendered {
-                if let Some(tab) = self.tabs.get_mut(tab_index) {
+                if let Some(tab) = self.core.tabs.get_mut(tab_index) {
                     tab.render_cursor_last(&mut output, None);
                 }
             }
@@ -487,15 +499,17 @@ impl Screen {
             // it in anyway, sending a behind client a frame every pass with its cursor on a
             // palette that is not drawn. The palette paints with the tab once it catches up.
             let palette_clients: Vec<ClientId> = self
+                .palette
                 .command_palettes
                 .keys()
                 .copied()
                 .filter(|client_id| {
-                    self.palette_owns_input(*client_id)
+                    self.palette.palette_owns_input(*client_id)
                         && !self
+                            .core
                             .active_tab_ids
                             .get(client_id)
-                            .is_some_and(|tab_id| self.deferred_render_tabs.contains(tab_id))
+                            .is_some_and(|tab_id| self.core.deferred_render_tabs.contains(tab_id))
                 })
                 .collect();
             self.render_command_palettes(&mut output, palette_clients.iter().copied(), false)
@@ -515,6 +529,7 @@ impl Screen {
             self.deliver_to_pane_subscribers(Some(&pane_render_report));
 
             let _ = self
+                .core
                 .bus
                 .senders
                 .send_to_plugin(PluginInstruction::PaneRenderReport(pane_render_report));
@@ -522,15 +537,15 @@ impl Screen {
             let mut bell_state_changed = false;
             let mut has_bell = false;
 
-            if self.visual_bell {
+            if self.core.visual_bell {
                 let mut panes_to_flash: Vec<PaneId> = vec![];
                 let mut tabs_to_flash: Vec<TabId> = vec![];
 
                 let active_tab_ids_snapshot: Vec<TabId> =
-                    self.active_tab_ids.values().copied().collect();
+                    self.core.active_tab_ids.values().copied().collect();
 
-                for tab in self.tabs.values_mut() {
-                    if self.deferred_render_tabs.contains(&tab.id) {
+                for tab in self.core.tabs.values_mut() {
+                    if self.core.deferred_render_tabs.contains(&tab.id) {
                         continue;
                     }
                     let is_active = active_tab_ids_snapshot.contains(&tab.id);
@@ -549,20 +564,22 @@ impl Screen {
                 has_bell = !panes_to_flash.is_empty() || !tabs_to_flash.is_empty();
                 if !panes_to_flash.is_empty() {
                     let _ = self
+                        .core
                         .bus
                         .senders
                         .send_to_background_jobs(BackgroundJob::FlashPaneBell(panes_to_flash));
                 }
                 for tab_id in tabs_to_flash {
                     let _ = self
+                        .core
                         .bus
                         .senders
                         .send_to_background_jobs(BackgroundJob::FlashTabBell(tab_id));
                 }
             } else {
                 // visual_bell disabled: still detect bell for ANSI BEL forwarding only
-                for tab in self.tabs.values_mut() {
-                    if self.deferred_render_tabs.contains(&tab.id) {
+                for tab in self.core.tabs.values_mut() {
+                    if self.core.deferred_render_tabs.contains(&tab.id) {
                         continue;
                     }
                     if tab.check_and_consume_bells_without_visual_notification() {
@@ -575,11 +592,12 @@ impl Screen {
                 // Not to watchers: their stream is the watcher pass's, and a pre-vte or post-vte
                 // instruction gives its client a frame even when none of its panes rendered.
                 output.add_post_vte_instruction_to_multiple_clients(
-                    self.active_tab_ids
+                    self.core
+                        .active_tab_ids
                         .iter()
                         .filter(|(client_id, tab_id)| {
-                            !self.watcher_clients.contains_key(client_id)
-                                && !self.deferred_render_tabs.contains(tab_id)
+                            !self.core.watcher_clients.contains_key(client_id)
+                                && !self.core.deferred_render_tabs.contains(tab_id)
                         })
                         .map(|(client_id, _)| *client_id),
                     "\u{7}", // ANSI BEL
@@ -587,19 +605,20 @@ impl Screen {
             }
 
             let mut has_osc7_update = false;
-            for (client_id, tab_index) in &self.active_tab_ids {
-                if self.watcher_clients.contains_key(client_id)
-                    || self.deferred_render_tabs.contains(tab_index)
+            for (client_id, tab_index) in &self.core.active_tab_ids {
+                if self.core.watcher_clients.contains_key(client_id)
+                    || self.core.deferred_render_tabs.contains(tab_index)
                 {
                     continue;
                 }
-                if let Some(tab) = self.tabs.get(tab_index) {
+                if let Some(tab) = self.core.tabs.get(tab_index) {
                     output.set_kitty_visible_panes(*client_id, tab.kitty_visible_pane_ids());
 
                     let current_osc7 = tab
                         .get_active_pane(*client_id)
                         .and_then(|pane| pane.osc7_payload());
                     let last = self
+                        .core
                         .last_forwarded_osc7
                         .get(client_id)
                         .and_then(|uri| uri.as_deref());
@@ -611,7 +630,8 @@ impl Screen {
                             );
                             has_osc7_update = true;
                         }
-                        self.last_forwarded_osc7
+                        self.core
+                            .last_forwarded_osc7
                             .insert(*client_id, current_osc7.map(str::to_owned));
                     }
                 }
@@ -621,34 +641,37 @@ impl Screen {
                 if trace_attach {
                     log::info!("attach trace: render output serialization begin");
                 }
-                for client in self.native_render_clients.keys() {
+                for client in self.core.native_render_clients.keys() {
                     if let Some(tab) = self
+                        .core
                         .active_tab_ids
                         .get(client)
-                        .and_then(|tab| self.tabs.get(tab))
+                        .and_then(|tab| self.core.tabs.get(tab))
                     {
                         output.set_native_geometry(*client, tab.native_geometry(*client));
                     }
                 }
                 let presentations = self
+                    .core
                     .client_presentations
                     .iter()
                     .map(|(client, (_, presentation))| (*client, *presentation))
                     .collect();
                 let native_frames = output.serialize_native(
-                    &mut self.native_render_clients,
-                    &self.client_sizes,
+                    &mut self.core.native_render_clients,
+                    &self.core.client_sizes,
                     &presentations,
                 );
                 if !native_frames.is_empty() {
-                    self.bus
+                    self.core
+                        .bus
                         .senders
                         .send_to_server(ServerInstruction::RenderFrames(native_frames))
                         .context(err_context)?;
                 }
                 let mut serialized_output = output.serialize().context(err_context)?;
                 for (client, bytes) in &mut serialized_output {
-                    if let Some((_, presentation)) = self.client_presentations.get(client) {
+                    if let Some((_, presentation)) = self.core.client_presentations.get(client) {
                         *bytes = presentation.present(std::mem::take(bytes));
                     }
                 }
@@ -668,23 +691,29 @@ impl Screen {
                         .keys()
                         .copied()
                         .filter(|client| {
-                            (self.pending_client_repaints.contains(client)
-                                || self.pending_update_client_ready.contains_key(client))
+                            (self.core.pending_client_repaints.contains(client)
+                                || self
+                                    .transfer
+                                    .pending_update_client_ready
+                                    .contains_key(client))
                                 && self
+                                    .core
                                     .active_tab_ids
                                     .get(client)
                                     .is_some_and(|tab| tabs_that_rendered.contains(tab))
                         })
                         .collect();
-                    self.bus
+                    self.core
+                        .bus
                         .senders
                         .send_to_server(ServerInstruction::Render(Some(serialized_output)))
                         .context(err_context)?;
                     for client in &repainted {
                         if let Some((operation, source_client)) =
-                            self.pending_update_client_ready.get(client)
+                            self.transfer.pending_update_client_ready.get(client)
                         {
-                            self.bus
+                            self.core
+                                .bus
                                 .senders
                                 .send_to_server(ServerInstruction::UpdateClientReady {
                                     client: *client,
@@ -692,7 +721,7 @@ impl Screen {
                                     source_client: *source_client,
                                 })
                                 .context("acknowledge restored migration client after rendering")?;
-                            self.pending_update_client_ready.remove(client);
+                            self.transfer.pending_update_client_ready.remove(client);
                         }
                     }
                     self.complete_client_repaints(repainted)?;
@@ -718,21 +747,22 @@ impl Screen {
 
         // === PHASE 2: Render for watchers ===
         if has_watchers
-            && watched_tab_id.is_some_and(|tab_id| !self.deferred_render_tabs.contains(&tab_id))
+            && watched_tab_id
+                .is_some_and(|tab_id| !self.core.deferred_render_tabs.contains(&tab_id))
             && let (Some(followed_client_id), Some(focused_tab_index_of_followed_client_id)) =
-                (self.followed_client_id, watched_tab_id)
+                (self.core.followed_client_id, watched_tab_id)
         {
             // Create fresh output for watchers
             let mut watcher_output = Output::new(
-                self.sixel_image_store.clone(),
-                self.character_cell_size.clone(),
-                self.styled_underlines,
-                self.osc8_hyperlinks,
-                self.kitty_image_store.clone(),
-                self.kitty_host_capabilities.clone(),
-                self.client_kitty_host_state.clone(),
-                self.sixel_host_capabilities.clone(),
-                self.synchronized_output_capabilities.clone(),
+                self.core.sixel_image_store.clone(),
+                self.core.character_cell_size.clone(),
+                self.core.styled_underlines,
+                self.core.osc8_hyperlinks,
+                self.core.kitty_image_store.clone(),
+                self.core.kitty_host_capabilities.clone(),
+                self.core.client_kitty_host_state.clone(),
+                self.core.sixel_host_capabilities.clone(),
+                self.core.synchronized_output_capabilities.clone(),
             );
 
             // This frame carries the followed client's id but goes to the watchers' terminals,
@@ -741,8 +771,9 @@ impl Screen {
             // paints: a hide nobody needed costs a `?25h`, a missing one is a cursor visibly
             // chasing the repaint.
             let every_watcher_presents_frames_atomically = {
-                let capabilities = self.synchronized_output_capabilities.borrow();
-                self.watcher_clients
+                let capabilities = self.core.synchronized_output_capabilities.borrow();
+                self.core
+                    .watcher_clients
                     .keys()
                     .all(|watcher_id| capabilities.get(watcher_id).copied().unwrap_or(false))
             };
@@ -750,6 +781,7 @@ impl Screen {
                 .set_host_presents_frames_atomically(every_watcher_presents_frames_atomically);
 
             let any_watcher_needs_force_render = self
+                .core
                 .watcher_clients
                 .values()
                 .any(|state| state.should_force_render());
@@ -763,18 +795,21 @@ impl Screen {
             // client's own menu is about to cover.
             if let Some(watcher_surface) = watcher_surface {
                 watcher_output.set_context_menu_rects(
-                    self.context_menu_cell_rect(followed_client_id, watcher_surface)
+                    self.menus
+                        .context_menu_cell_rect(followed_client_id, watcher_surface)
                         .into_iter()
                         .collect(),
                 );
             }
             watcher_output.set_input_overlay_clients(
-                self.command_palettes
+                self.palette
+                    .command_palettes
                     .keys()
                     .copied()
-                    .filter(|client| self.palette_owns_input(*client)),
+                    .filter(|client| self.palette.palette_owns_input(*client)),
             );
             if let Some(tab) = self
+                .core
                 .tabs
                 .get_mut(&focused_tab_index_of_followed_client_id)
                 .as_mut()
@@ -826,6 +861,7 @@ impl Screen {
                 // painted incrementally has its cursor hidden for the frame, which makes
                 // `must_show` true on its own.
                 let a_watchers_cursor_was_cropped = self
+                    .core
                     .watcher_clients
                     .values()
                     .any(|watcher_state| watcher_state.cursor_was_cropped());
@@ -839,7 +875,11 @@ impl Screen {
                 self.render_context_menu(&mut watcher_output, watcher_surface, followed_client_id)
                     .context(err_context)?;
             }
-            if let Some(tab) = self.tabs.get_mut(&focused_tab_index_of_followed_client_id) {
+            if let Some(tab) = self
+                .core
+                .tabs
+                .get_mut(&focused_tab_index_of_followed_client_id)
+            {
                 tab.render_cursor_last(&mut watcher_output, Some(followed_client_id));
                 watcher_output
                     .set_kitty_visible_panes(followed_client_id, tab.kitty_visible_pane_ids());
@@ -882,7 +922,7 @@ impl Screen {
         let mut cursor_was_cropped_for_watcher: Vec<(ClientId, bool)> = vec![];
 
         // For each watcher, clone the output and serialize with size constraints
-        for (watcher_id, watcher_state) in &self.watcher_clients {
+        for (watcher_id, watcher_state) in &self.core.watcher_clients {
             let mut watcher_specific_output = watcher_output.clone();
 
             // Serialize this watcher's output cropped to its viewport
@@ -901,10 +941,10 @@ impl Screen {
                     terminal: watcher_state.size(),
                     content: self
                         .watched_tab_id()
-                        .and_then(|tab_id| self.tabs.get(&tab_id))
+                        .and_then(|tab_id| self.core.tabs.get(&tab_id))
                         .map(|tab| tab.size)
                         .unwrap_or(watcher_state.size()),
-                    background: self.style.pane_surround(),
+                    background: self.core.style.pane_surround(),
                 };
                 watcher_render_output.insert(*watcher_id, presentation.present(followed_output));
             }
@@ -913,7 +953,8 @@ impl Screen {
         // Send to server for delivery to watcher clients
         if !watcher_render_output.is_empty() {
             let repainted = watcher_render_output.keys().copied().collect();
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_server(ServerInstruction::Render(Some(watcher_render_output)))
                 .context(err_context)?;
@@ -921,13 +962,13 @@ impl Screen {
         }
 
         // Clear force render flag for all watchers after successful render
-        for watcher_state in self.watcher_clients.values_mut() {
+        for watcher_state in self.core.watcher_clients.values_mut() {
             watcher_state.clear_force_render();
         }
         // What each watcher's delivered frame did to its cursor, for the next frame's cursor pass
         // to correct the tab's memo with when the cursor comes back into range.
         for (watcher_id, cursor_was_cropped) in cursor_was_cropped_for_watcher {
-            if let Some(watcher_state) = self.watcher_clients.get_mut(&watcher_id) {
+            if let Some(watcher_state) = self.core.watcher_clients.get_mut(&watcher_id) {
                 watcher_state.set_cursor_was_cropped(cursor_was_cropped);
             }
         }

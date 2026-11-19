@@ -24,25 +24,26 @@ pub(super) struct TabGroup {
 
 impl Screen {
     pub(super) fn tab_groups_enabled(&self) -> bool {
-        self.default_mode_info.tab_groups != Some(false)
+        self.core.default_mode_info.tab_groups != Some(false)
     }
 
     pub(super) fn navigation_tabs(&self, tab: TabId) -> Vec<TabId> {
         if self.tab_groups_enabled() {
             return self
+                .core
                 .tab_group_ids
                 .get(&tab)
                 .map(|id| self.group_tabs(*id))
                 .unwrap_or_default();
         }
-        let mut tabs: Vec<_> = self.tabs.values().collect();
+        let mut tabs: Vec<_> = self.core.tabs.values().collect();
         tabs.sort_by_key(|tab| tab.position);
         tabs.into_iter().map(|tab| tab.id).collect()
     }
 
     pub(super) fn sync_tab_bar_rows(&mut self) -> Result<()> {
-        let count = self.tab_groups.len();
-        for tab in self.tabs.values_mut().filter(|tab| !tab.is_pending()) {
+        let count = self.core.tab_groups.len();
+        for tab in self.core.tabs.values_mut().filter(|tab| !tab.is_pending()) {
             tab.set_tab_group_count(count)
                 .context("sync tab bar height")?;
         }
@@ -50,7 +51,7 @@ impl Screen {
     }
 
     pub(super) fn tab_group_info(&self, tab: TabId) -> Option<TabGroupInfo> {
-        let id = *self.tab_group_ids.get(&tab)?;
+        let id = *self.core.tab_group_ids.get(&tab)?;
         Some(TabGroupInfo {
             id,
             name: self.tab_group_name(id)?,
@@ -58,16 +59,16 @@ impl Screen {
     }
 
     pub(super) fn tab_group_name(&self, id: u32) -> Option<String> {
-        let group = self.tab_groups.get(&id)?;
+        let group = self.core.tab_groups.get(&id)?;
         let mut seen = HashSet::new();
         let projects: Vec<_> = self
             .group_tabs(id)
             .into_iter()
             .flat_map(|tab| {
-                self.tabs[&tab]
+                self.core.tabs[&tab]
                     .get_all_pane_ids()
                     .into_iter()
-                    .filter_map(|pane| self.pane_projects.get(&pane))
+                    .filter_map(|pane| self.core.pane_projects.get(&pane))
                     .map(|name| yinz_types::text::clean_string_from_control_and_linebreak(name))
                     .collect::<BTreeSet<_>>()
             })
@@ -82,22 +83,22 @@ impl Screen {
 
     pub(super) fn group_for_client(&self, client: Option<ClientId>) -> u32 {
         client
-            .and_then(|c| self.active_tab_ids.get(&c))
-            .or_else(|| self.active_tab_ids.values().next())
-            .and_then(|tab| self.tab_group_ids.get(tab))
+            .and_then(|c| self.core.active_tab_ids.get(&c))
+            .or_else(|| self.core.active_tab_ids.values().next())
+            .and_then(|tab| self.core.tab_group_ids.get(tab))
             .copied()
-            .or_else(|| self.tab_groups.keys().next().copied())
+            .or_else(|| self.core.tab_groups.keys().next().copied())
             .unwrap_or(0)
     }
 
     pub(super) fn assign_tab_group(&mut self, tab: TabId, client: Option<ClientId>) {
         let id = self.group_for_client(client);
-        self.tab_groups.entry(id).or_insert_with(|| TabGroup {
+        self.core.tab_groups.entry(id).or_insert_with(|| TabGroup {
             name: "Default".into(),
             preferred: None,
             restored_preferred: None,
         });
-        self.tab_group_ids.insert(tab, id);
+        self.core.tab_group_ids.insert(tab, id);
     }
 
     pub(super) fn restore_tab_group(
@@ -106,18 +107,22 @@ impl Screen {
         layout: &yinz_types::input::layout::TiledPaneLayout,
     ) {
         if let Some(group) = &layout.tab_group {
-            let restored = self.tab_groups.entry(group.id).or_insert_with(|| TabGroup {
-                name: group.name.clone(),
-                preferred: None,
-                restored_preferred: None,
-            });
+            let restored = self
+                .core
+                .tab_groups
+                .entry(group.id)
+                .or_insert_with(|| TabGroup {
+                    name: group.name.clone(),
+                    preferred: None,
+                    restored_preferred: None,
+                });
             restored.name = yinz_types::text::clean_string_from_control_and_linebreak(&group.name);
             if layout.group_focused {
                 restored.preferred = Some(tab);
                 restored.restored_preferred = Some(tab);
             }
-            self.tab_group_ids.insert(tab, group.id);
-            self.next_tab_group_id = self.next_tab_group_id.max(u64::from(group.id) + 1);
+            self.core.tab_group_ids.insert(tab, group.id);
+            self.core.next_tab_group_id = self.core.next_tab_group_id.max(u64::from(group.id) + 1);
             self.prune_tab_groups();
         }
     }
@@ -126,19 +131,19 @@ impl Screen {
         if self.has_pending_tabs() {
             return;
         }
-        for (group_id, group) in &mut self.tab_groups {
+        for (group_id, group) in &mut self.core.tab_groups {
             let Some(tab) = group
                 .restored_preferred
                 .take()
-                .filter(|tab| self.tabs.contains_key(tab))
+                .filter(|tab| self.core.tabs.contains_key(tab))
             else {
                 continue;
             };
             group.preferred = Some(tab);
             // Initial layout focus is provisional until all restored tabs have loaded.
-            for (client, active) in &self.active_tab_ids {
-                if self.tab_group_ids.get(active) != Some(group_id) {
-                    let history = self.tab_history.entry(*client).or_default();
+            for (client, active) in &self.core.active_tab_ids {
+                if self.core.tab_group_ids.get(active) != Some(group_id) {
+                    let history = self.core.tab_history.entry(*client).or_default();
                     history.retain(|id| *id != tab);
                     history.push(tab);
                 }
@@ -147,22 +152,24 @@ impl Screen {
     }
 
     pub(super) fn prune_tab_groups(&mut self) {
-        self.tab_group_ids
-            .retain(|tab, _| self.tabs.contains_key(tab));
-        for history in self.tab_history.values_mut() {
-            history.retain(|tab| self.tabs.contains_key(tab));
+        self.core
+            .tab_group_ids
+            .retain(|tab, _| self.core.tabs.contains_key(tab));
+        for history in self.core.tab_history.values_mut() {
+            history.retain(|tab| self.core.tabs.contains_key(tab));
         }
-        self.tab_groups
-            .retain(|id, _| self.tab_group_ids.values().any(|group| group == id));
-        self.warped_tab_groups
-            .retain(|_, id| self.tab_groups.contains_key(id));
+        self.core
+            .tab_groups
+            .retain(|id, _| self.core.tab_group_ids.values().any(|group| group == id));
+        self.warp.retain_destination_groups(&self.core.tab_groups);
     }
 
     pub(super) fn group_tabs(&self, group: u32) -> Vec<TabId> {
         let mut tabs: Vec<_> = self
+            .core
             .tabs
             .values()
-            .filter(|tab| self.tab_group_ids.get(&tab.id) == Some(&group))
+            .filter(|tab| self.core.tab_group_ids.get(&tab.id) == Some(&group))
             .collect();
         tabs.sort_by_key(|tab| tab.position);
         tabs.into_iter().map(|tab| tab.id).collect()
@@ -175,24 +182,26 @@ impl Screen {
         require_selectable: bool,
     ) -> Option<TabId> {
         let valid = |id: &TabId| {
-            self.tab_group_ids.get(id) == Some(&group)
-                && self.tabs.get(id).is_some_and(|tab| {
+            self.core.tab_group_ids.get(id) == Some(&group)
+                && self.core.tabs.get(id).is_some_and(|tab| {
                     !tab.is_pending() && (!require_selectable || tab.has_selectable_panes())
                 })
         };
-        self.active_tab_ids
+        self.core
+            .active_tab_ids
             .get(&client)
             .filter(|id| valid(id))
             .copied()
             .or_else(|| {
-                self.tab_history
+                self.core
+                    .tab_history
                     .get(&client)?
                     .iter()
                     .rev()
                     .find(|id| valid(id))
                     .copied()
             })
-            .or_else(|| self.tab_groups.get(&group)?.preferred.filter(valid))
+            .or_else(|| self.core.tab_groups.get(&group)?.preferred.filter(valid))
             .or_else(|| self.group_tabs(group).into_iter().find(valid))
     }
 
@@ -204,22 +213,25 @@ impl Screen {
         } else {
             (index + tabs.len() - 1) % tabs.len()
         };
-        self.tabs.get(&tabs[next]).map(|tab| tab.position)
+        self.core.tabs.get(&tabs[next]).map(|tab| tab.position)
     }
 
     pub(super) fn closed_tab_group_destination(&self, client: ClientId) -> Option<TabId> {
         if !self.tab_groups_enabled() {
             let valid = |id: &TabId| {
-                self.tabs
+                self.core
+                    .tabs
                     .get(id)
                     .is_some_and(|tab| !tab.is_pending() && tab.has_selectable_panes())
             };
             return self
+                .core
                 .tab_history
                 .get(&client)
                 .and_then(|history| history.iter().rev().find(|id| valid(id)).copied())
                 .or_else(|| {
-                    self.tabs
+                    self.core
+                        .tabs
                         .values()
                         .filter(|tab| valid(&tab.id))
                         .min_by_key(|tab| tab.position)
@@ -228,21 +240,26 @@ impl Screen {
         }
         let group = self.group_for_client(Some(client));
         self.preferred_group_tab(group, client, true).or_else(|| {
-            self.tab_groups
+            self.core
+                .tab_groups
                 .range((std::ops::Bound::Excluded(group), std::ops::Bound::Unbounded))
-                .chain(self.tab_groups.range(..group).rev())
+                .chain(self.core.tab_groups.range(..group).rev())
                 .find_map(|(id, _)| self.preferred_group_tab(*id, client, true))
         })
     }
 
     pub(super) fn move_group_tab(&mut self, tab: TabId, forward: bool) -> Result<()> {
-        let group = *self.tab_group_ids.get(&tab).context("tab group missing")?;
+        let group = *self
+            .core
+            .tab_group_ids
+            .get(&tab)
+            .context("tab group missing")?;
         let tabs = self.group_tabs(group);
         let index = tabs
             .iter()
             .position(|id| *id == tab)
             .context("tab missing")?;
-        let positions: Vec<_> = tabs.iter().map(|id| self.tabs[id].position).collect();
+        let positions: Vec<_> = tabs.iter().map(|id| self.core.tabs[id].position).collect();
         let mut reordered = tabs;
         if forward && index + 1 == reordered.len() {
             reordered.rotate_right(1);
@@ -252,7 +269,7 @@ impl Screen {
             reordered.swap(index, if forward { index + 1 } else { index - 1 });
         }
         for (id, position) in reordered.into_iter().zip(positions) {
-            if let Some(tab) = self.tabs.get_mut(&id) {
+            if let Some(tab) = self.core.tabs.get_mut(&id) {
                 tab.position = position;
             }
         }
@@ -304,6 +321,7 @@ impl Screen {
             },
             Action::GoToTabGroupName { name, create } => {
                 let id = self
+                    .core
                     .tab_groups
                     .keys()
                     .copied()
@@ -323,6 +341,7 @@ impl Screen {
                 let current_only = matches!(action, Action::CurrentTabGroupInfo { .. });
                 let active = self.group_for_client(Some(client));
                 let groups: Vec<_> = self
+                    .core
                     .tab_groups
                     .keys()
                     .copied()
@@ -382,11 +401,12 @@ impl Screen {
                     Action::NewNamedTabGroup { name } => (name, true),
                     _ => (None, false),
                 };
-                let id =
-                    u32::try_from(self.next_tab_group_id).context("tab group IDs exhausted")?;
-                self.next_tab_group_id += 1;
+                let id = u32::try_from(self.core.next_tab_group_id)
+                    .context("tab group IDs exhausted")?;
+                self.core.next_tab_group_id += 1;
                 let mut number = 1u64;
                 while self
+                    .core
                     .tab_groups
                     .values()
                     .any(|group| group.name == format!("Group {number}"))
@@ -397,14 +417,14 @@ impl Screen {
                 self.new_tab(
                     tab,
                     (
-                        self.default_layout.swap_tiled_layouts.clone(),
-                        self.default_layout.swap_floating_layouts.clone(),
+                        self.core.default_layout.swap_tiled_layouts.clone(),
+                        self.core.default_layout.swap_floating_layouts.clone(),
                     ),
                     None,
                     Some(client),
                 )
                 .context("create first tab in group")?;
-                self.tab_groups.insert(
+                self.core.tab_groups.insert(
                     id,
                     TabGroup {
                         name: name
@@ -416,7 +436,7 @@ impl Screen {
                         restored_preferred: None,
                     },
                 );
-                self.tab_group_ids.insert(tab, id);
+                self.core.tab_group_ids.insert(tab, id);
                 self.prune_tab_groups();
                 if let Some(completion) = completion.as_mut() {
                     completion.wait_for_placement();
@@ -424,18 +444,23 @@ impl Screen {
                         completion.set_stdout_message(id.to_string());
                     }
                 }
-                if let Err(error) = self.bus.senders.send_to_plugin(PluginInstruction::NewTab(
-                    None,
-                    self.default_shell_action.clone(),
-                    None,
-                    None,
-                    tab,
-                    None,
-                    false,
-                    true,
-                    client,
-                    completion.take(),
-                )) {
+                if let Err(error) = self
+                    .core
+                    .bus
+                    .senders
+                    .send_to_plugin(PluginInstruction::NewTab(
+                        None,
+                        self.core.default_shell_action.clone(),
+                        None,
+                        None,
+                        tab,
+                        None,
+                        false,
+                        true,
+                        client,
+                        completion.take(),
+                    ))
+                {
                     self.close_tab_by_id(tab)
                         .context("remove undispatched group tab")
                         .non_fatal();
@@ -444,17 +469,18 @@ impl Screen {
                 return Ok(());
             },
             Action::RenameTabGroup { id, name } => {
-                self.tab_groups
+                self.core
+                    .tab_groups
                     .get_mut(&id)
                     .context("tab group no longer exists")?
                     .name = yinz_types::text::clean_string_from_control_and_linebreak(&name);
             },
             Action::CloseTabGroup { id } => {
-                if !self.tab_groups.contains_key(&id) {
+                if !self.core.tab_groups.contains_key(&id) {
                     return Err(anyhow!("tab group no longer exists"));
                 }
-                let has_destination = self.tabs.values().any(|tab| {
-                    self.tab_group_ids.get(&tab.id) != Some(&id)
+                let has_destination = self.core.tabs.values().any(|tab| {
+                    self.core.tab_group_ids.get(&tab.id) != Some(&id)
                         && !tab.is_pending()
                         && tab.has_selectable_panes()
                 });
@@ -466,7 +492,7 @@ impl Screen {
                 for tab in self.group_tabs(id) {
                     self.close_tab_by_id(tab).context("close tab group")?;
                 }
-                let clients: Vec<_> = self.active_tab_ids.keys().copied().collect();
+                let clients: Vec<_> = self.core.active_tab_ids.keys().copied().collect();
                 for client in clients {
                     self.sync_scroll_mode_on_focus(client)
                         .context("sync scroll mode after closing tab group")?;
@@ -476,11 +502,11 @@ impl Screen {
                 let tab = self
                     .preferred_group_tab(id, client, false)
                     .context("tab group has no loaded tab")?;
-                self.navigate_to_tab(self.tabs[&tab].position, None, true, client)
+                self.navigate_to_tab(self.core.tabs[&tab].position, None, true, client)
                     .context("switch tab group")?;
             },
             Action::GoToNextTabGroup | Action::GoToPreviousTabGroup => {
-                let groups: Vec<_> = self.tab_groups.keys().copied().collect();
+                let groups: Vec<_> = self.core.tab_groups.keys().copied().collect();
                 if groups.is_empty() {
                     return Ok(());
                 }
@@ -494,7 +520,7 @@ impl Screen {
                 for offset in 1..=groups.len() {
                     let id = groups[(index + step * offset) % groups.len()];
                     if let Some(tab) = self.preferred_group_tab(id, client, false) {
-                        self.navigate_to_tab(self.tabs[&tab].position, None, true, client)
+                        self.navigate_to_tab(self.core.tabs[&tab].position, None, true, client)
                             .context("switch adjacent group")?;
                         break;
                     }
@@ -505,7 +531,7 @@ impl Screen {
                     .get_active_tab(client)?
                     .get_active_pane_id(client)
                     .context("no active pane to move to group")?;
-                let groups: Vec<_> = self.tab_groups.keys().copied().collect();
+                let groups: Vec<_> = self.core.tab_groups.keys().copied().collect();
                 let active = self.group_for_client(Some(client));
                 let index = groups.iter().position(|id| *id == active).unwrap_or(0);
                 let forward = action == Action::MovePaneToNextTabGroup;
@@ -523,7 +549,7 @@ impl Screen {
                         .context("move pane to adjacent group")?;
                     if outcome.moved.contains(&pane) {
                         self.switch_active_tab_with_pane_focus(
-                            self.tabs[&destination].position,
+                            self.core.tabs[&destination].position,
                             None,
                             true,
                             client,
@@ -543,7 +569,8 @@ impl Screen {
                     Some("No other tab groups to add pane to!")
                 };
                 if let Some(error) = error {
-                    self.bus
+                    self.core
+                        .bus
                         .senders
                         .send_to_background_jobs(
                             crate::background_jobs::BackgroundJob::DisplayPaneError(
@@ -556,13 +583,14 @@ impl Screen {
             },
             Action::GoToTabInGroup { index } => {
                 let tabs = self
+                    .core
                     .active_tab_ids
                     .get(&client)
                     .map(|tab| self.navigation_tabs(*tab))
                     .unwrap_or_default();
                 if let Some(tab) = tabs
                     .get(index.position().get())
-                    .and_then(|id| self.tabs.get(id))
+                    .and_then(|id| self.core.tabs.get(id))
                 {
                     if self.has_pending_tabs() {
                         tab_switches.insert((tab.id, client));

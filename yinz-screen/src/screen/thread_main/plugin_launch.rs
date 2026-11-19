@@ -46,6 +46,7 @@ pub(super) fn new_tiled_plugin_pane(
     let should_be_opened_in_place = false;
     let should_focus_plugin = if no_focus { Some(false) } else { None };
     screen
+        .core
         .bus
         .senders
         .send_to_pty(PtyInstruction::FillPluginCwd(
@@ -94,6 +95,7 @@ pub(super) fn new_in_place_plugin_pane(
     let should_be_in_place = true;
     let should_focus_plugin = if no_focus { Some(false) } else { None };
     screen
+        .core
         .bus
         .senders
         .send_to_pty(PtyInstruction::FillPluginCwd(
@@ -125,7 +127,7 @@ pub(super) fn start_or_reload_plugin_pane(
     mut completion_tx: Option<NotificationEnd>,
 ) -> Result<()> {
     let detached_tab = if screen.has_no_client_to_act_for(client_id) {
-        screen.tabs.keys().next().copied()
+        screen.core.tabs.keys().next().copied()
     } else {
         None
     };
@@ -138,6 +140,7 @@ pub(super) fn start_or_reload_plugin_pane(
     let should_float = Some(false);
 
     screen
+        .core
         .bus
         .senders
         // ClosePane queues unloading on PTY; reopening must follow that unload.

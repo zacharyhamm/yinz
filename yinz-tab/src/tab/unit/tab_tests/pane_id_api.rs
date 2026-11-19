@@ -1298,12 +1298,8 @@ fn request_pane_redraw_restores_content_size_and_pixels_without_changing_geometr
         tab.request_pane_redraw(terminal_id).unwrap();
         let instructions = drain_pty_writer(&rx);
         assert!(matches!(instructions.as_slice(), [
-            PtyWriteInstruction::ApplyCachedResizes,
-            PtyWriteInstruction::ResizePty(id1, temporary, height1, None, None),
-            PtyWriteInstruction::ResizePty(id2, width, height2, Some(pixels_x), Some(pixels_y)),
-        ] if *id1 == terminal_id && *id2 == terminal_id
-            && *temporary == if columns == 1 { 2 } else { columns as u16 - 1 }
-            && *width == columns as u16 && *height1 == rows && *height2 == rows
+            PtyWriteInstruction::RedrawPty(id, width, height, Some(pixels_x), Some(pixels_y)),
+        ] if *id == terminal_id && *width == columns as u16 && *height == rows
             && *pixels_x == columns as u16 * 8 && *pixels_y == rows * 16));
         assert_eq!(tab.get_pane_with_id(id).unwrap().current_geom(), geometry);
         tab.request_pane_redraw(TerminalId::new(99)).unwrap();
@@ -1341,7 +1337,7 @@ fn request_pane_redraw_waits_for_the_entire_pending_layout_event() {
     };
     tab.request_pane_redraw(requested).unwrap();
     assert!(
-        matches!(drain_pty_writer(&rx).last(), Some(PtyWriteInstruction::ResizePty(_, width, ..)) if *width == columns)
+        matches!(drain_pty_writer(&rx).last(), Some(PtyWriteInstruction::RedrawPty(_, width, ..)) if *width == columns)
     );
 }
 

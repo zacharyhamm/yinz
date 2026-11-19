@@ -24,6 +24,7 @@ impl Screen {
             .collect();
         if !plugin_updates.is_empty() {
             let _ = self
+                .core
                 .bus
                 .senders
                 .send_to_plugin(PluginInstruction::Update(plugin_updates));
@@ -37,7 +38,7 @@ impl Screen {
             && !event.wheel_up
             && !event.wheel_down;
         let mut outside = false;
-        if let Some((_, presentation)) = self.client_presentations.get(&client_id) {
+        if let Some((_, presentation)) = self.core.client_presentations.get(&client_id) {
             let (x, y) = presentation.offset();
             outside = event.position.column() < x
                 || event.position.column() >= x + presentation.content.cols
@@ -57,13 +58,17 @@ impl Screen {
         }
         // A gesture belongs to its press target, even when it crosses a toast or
         // leaves the palette. In particular its release must not reach a pane.
-        if self.palette_captures_mouse(client_id) {
+        if self.palette.palette_captures_mouse(client_id) {
             self.command_palette_handles_mouse(&event, client_id);
             return;
         }
-        if self.notification_mouse_captures.contains(&client_id) {
+        if self
+            .notices
+            .notification_mouse_captures
+            .contains(&client_id)
+        {
             if event.event_type == MouseEventType::Release && event.left {
-                self.notification_mouse_captures.remove(&client_id);
+                self.notices.notification_mouse_captures.remove(&client_id);
             }
             return;
         }
@@ -75,7 +80,7 @@ impl Screen {
         // never also "focus whatever happened to be underneath". The event is consumed either
         // way: with no surface there is nothing to hit-test against, but letting it fall through
         // to the pane under the menu is the one thing it must not do.
-        if self.context_menu_is_open(client_id) {
+        if self.menus.context_menu_is_open(client_id) {
             if let Some(surface) = surface {
                 self.handle_context_menu_mouse_event(&overlay_event, surface, client_id);
             }
@@ -91,17 +96,17 @@ impl Screen {
                 self.handle_notification_browser_mouse(&overlay_event, surface, client_id, now)
             }) {
                 if event.event_type == MouseEventType::Press && event.left {
-                    self.notification_mouse_captures.insert(client_id);
+                    self.notices.notification_mouse_captures.insert(client_id);
                 }
                 return;
             }
         } else if surface.is_some_and(|surface| {
             self.handle_pane_notification_click(&overlay_event, surface, client_id, now)
         }) {
-            self.notification_mouse_captures.insert(client_id);
+            self.notices.notification_mouse_captures.insert(client_id);
             return;
         }
-        if self.command_palettes.contains_key(&client_id)
+        if self.palette.command_palettes.contains_key(&client_id)
             && surface.is_some_and(|surface| {
                 usize::try_from(overlay_event.position.line())
                     .ok()
@@ -113,7 +118,7 @@ impl Screen {
             })
         {
             if event.event_type == MouseEventType::Press && event.left {
-                self.notification_mouse_captures.insert(client_id);
+                self.notices.notification_mouse_captures.insert(client_id);
             }
             return;
         }
@@ -149,18 +154,18 @@ impl Screen {
                     should_render = true;
                 }
                 if let Some(pane_id) = mouse_effect.group_toggle
-                    && self.advanced_mouse_actions
+                    && self.core.advanced_mouse_actions
                 {
                     self.toggle_pane_id_in_group(pane_id, &client_id);
                     should_render = true;
                 }
                 if let Some(pane_id) = mouse_effect.group_add
-                    && self.advanced_mouse_actions
+                    && self.core.advanced_mouse_actions
                 {
                     self.add_pane_id_to_group(pane_id, &client_id);
                     should_render = true;
                 }
-                if mouse_effect.ungroup && self.advanced_mouse_actions {
+                if mouse_effect.ungroup && self.core.advanced_mouse_actions {
                     self.clear_pane_group(&client_id);
                     should_render = true;
                 }

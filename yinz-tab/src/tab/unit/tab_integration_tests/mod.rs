@@ -9,8 +9,8 @@ use crate::{
 };
 use std::sync::Arc;
 use yinz_bus::os_input_output::{
-    ClientTransport, RemotePanes, ServerEnvironment, TerminalIo, TerminalProcesses,
-    TerminalSupervision,
+    ClientTransport, RemotePanes, ServerEnvironment, SupervisorThemeHooks, TerminalIo,
+    TerminalProcesses, TerminalSupervision,
 };
 use yinz_types::input::options::PaneFrameStyle;
 use yinz_types::internal_ids::ProcessId;
@@ -60,6 +60,8 @@ struct FakeInputOutput {
     pub tty_stdin_bytes: Arc<Mutex<BTreeMap<TerminalId, Vec<u8>>>>,
     remote_panes: Arc<Mutex<HashSet<TerminalId>>>,
 }
+
+impl SupervisorThemeHooks for FakeInputOutput {}
 
 impl TerminalIo for FakeInputOutput {
     fn set_terminal_size_using_terminal_id(

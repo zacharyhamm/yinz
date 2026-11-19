@@ -99,7 +99,7 @@ fn subscribers_reuse_plain_render_reports_and_read_missing_or_ansi_contents() {
         new_tab(&mut screen, 1, TabId::new(0));
         screen.subscribe_to_pane_renders(plain, vec![pane_id], None, false);
         screen.subscribe_to_pane_renders(ansi, vec![pane_id], None, true);
-        let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+        let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
         tab.handle_pty_bytes(TERMINAL_1, b"\x1b[31mupdated-content".to_vec())
             .unwrap();
         let pane = tab.get_pane_with_id(pane_id).unwrap();
@@ -150,7 +150,7 @@ fn subscribers_reuse_plain_render_reports_and_read_missing_or_ansi_contents() {
             }
         }
         messages.lock().unwrap().clear();
-        screen.pane_subscriber_snapshots_dirty = true;
+        screen.core.pane_subscriber_snapshots_dirty = true;
         screen.deliver_to_pane_subscribers(Some(&report));
         assert!(messages.lock().unwrap().is_empty());
     }
@@ -169,7 +169,7 @@ fn subscribers_receive_cached_plugin_contents_on_inactive_tabs() {
             create_new_screen_with_message_capture(Size { cols: 80, rows: 20 });
         new_tab(&mut screen, 1, plugin_tab);
         let (plugin_sender, _plugin_receiver) = channels::unbounded();
-        let tab = screen.tabs.get_mut(&plugin_tab).unwrap();
+        let tab = screen.core.tabs.get_mut(&plugin_tab).unwrap();
         tab.senders.to_plugin = Some(SenderWithContext::new(plugin_sender));
         tab.new_pane(
             PaneId::Plugin(plugin),
@@ -192,8 +192,8 @@ fn subscribers_receive_cached_plugin_contents_on_inactive_tabs() {
         if !keep_cached_client_attached {
             screen.remove_client(client).unwrap();
         }
-        assert!(screen.tabs[&plugin_tab].has_no_connected_clients());
-        assert!(screen.tabs[&plugin_tab]
+        assert!(screen.core.tabs[&plugin_tab].has_no_connected_clients());
+        assert!(screen.core.tabs[&plugin_tab]
             .get_pane_with_id(PaneId::Plugin(plugin))
             .unwrap()
             .pane_contents(Some(ClientId::new(2)), false, None)
@@ -267,9 +267,9 @@ fn subscribers_use_one_client_even_when_other_plugin_grids_have_contents() {
         screen.add_watcher_client(watcher).unwrap();
         screen.add_client(later).unwrap();
         screen.add_client(live).unwrap();
-        screen.followed_client_id = Some(followed);
+        screen.core.followed_client_id = Some(followed);
         let (sender, _receiver) = channels::unbounded();
-        let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+        let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
         tab.senders.to_plugin = Some(SenderWithContext::new(sender));
         for (plugin, selected) in plugins {
             tab.new_pane(
@@ -374,13 +374,14 @@ fn subscribers_use_one_client_even_when_other_plugin_grids_have_contents() {
         screen.deliver_to_pane_subscribers(use_report.then_some(&report));
         if use_report && !ansi {
             assert!(
-                screen.pane_render_subscribers[&subscriber].previous_viewports[&pane_ids[0]]
+                screen.core.pane_render_subscribers[&subscriber].previous_viewports[&pane_ids[0]]
                     .is_empty()
             );
         }
 
         // Losing the selected grid cannot switch the source to a higher client's grid.
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
@@ -390,25 +391,26 @@ fn subscribers_use_one_client_even_when_other_plugin_grids_have_contents() {
         screen.mark_subscriber_pane_dirty(pane_ids[0]);
         screen.deliver_to_pane_subscribers(None);
         assert!(
-            screen.pane_render_subscribers[&subscriber].previous_viewports[&pane_ids[0]].is_empty()
+            screen.core.pane_render_subscribers[&subscriber].previous_viewports[&pane_ids[0]]
+                .is_empty()
         );
 
         // Detaching the selected client does change the source to the next live client.
         screen.remove_client(live).unwrap();
         screen.deliver_to_pane_subscribers(None);
         assert!(
-            screen.pane_render_subscribers[&subscriber].previous_viewports[&pane_ids[0]]
+            screen.core.pane_render_subscribers[&subscriber].previous_viewports[&pane_ids[0]]
                 .concat()
                 .contains("later-grid")
         );
 
         // With no regular clients left, the retained followed client is the fallback.
         screen.remove_client(later).unwrap();
-        screen.followed_client_id = Some(followed);
+        screen.core.followed_client_id = Some(followed);
         screen.render().unwrap();
         screen.deliver_to_pane_subscribers(None);
         assert!(
-            screen.pane_render_subscribers[&subscriber].previous_viewports[&pane_ids[2]]
+            screen.core.pane_render_subscribers[&subscriber].previous_viewports[&pane_ids[2]]
                 .concat()
                 .contains("live-update")
         );
@@ -450,7 +452,7 @@ fn subscribers_only_serialize_dirty_panes_in_requested_formats() {
     screen.deliver_to_pane_subscribers(None);
     assert_eq!(take_reads(), [(panes[0], false)]);
 
-    screen.deferred_subscriber_renders = true;
+    screen.core.deferred_subscriber_renders = true;
     for (id, bytes) in [(2, "ANSI"), (3, "both"), (2, " latest")] {
         screen
             .handle_pty_bytes(TerminalId::new(id), bytes.as_bytes().to_vec(), &mut pending)
@@ -459,7 +461,7 @@ fn subscribers_only_serialize_dirty_panes_in_requested_formats() {
     }
     assert!(take_reads().is_empty());
     assert!(screen.subscriber_snapshots_pending());
-    screen.deferred_subscriber_renders = false;
+    screen.core.deferred_subscriber_renders = false;
     screen.deliver_to_pane_subscribers(None);
     let mut reads = take_reads();
     reads.sort();
@@ -468,7 +470,7 @@ fn subscribers_only_serialize_dirty_panes_in_requested_formats() {
         [(panes[1], true), (panes[2], false), (panes[2], true)]
     );
     assert!(
-        screen.pane_render_subscribers[&ClientId::new(102)].previous_viewports[&panes[1]]
+        screen.core.pane_render_subscribers[&ClientId::new(102)].previous_viewports[&panes[1]]
             .concat()
             .contains("ANSI latest")
     );
@@ -491,11 +493,11 @@ fn subscribers_only_serialize_dirty_panes_in_requested_formats() {
 
     screen.mark_subscriber_pane_dirty(panes[0]);
     screen.notify_pane_closed_to_subscribers(panes[0]);
-    assert!(!screen.pane_subscriber_dirty_panes.contains(&panes[0]));
+    assert!(!screen.core.pane_subscriber_dirty_panes.contains(&panes[0]));
     screen.mark_subscriber_pane_dirty(panes[1]);
-    screen.pane_render_subscribers.clear();
+    screen.core.pane_render_subscribers.clear();
     screen.deliver_to_pane_subscribers(None);
-    assert!(screen.pane_subscriber_dirty_panes.is_empty());
+    assert!(screen.core.pane_subscriber_dirty_panes.is_empty());
     assert!(take_reads().is_empty());
 }
 
@@ -643,6 +645,7 @@ fn subscriber_error_for_nonexistent_pane() {
     }
     assert!(
         !screen
+            .core
             .pane_render_subscribers
             .contains_key(&ClientId::new(100)),
         "Subscriber should not be registered for nonexistent pane"
@@ -667,6 +670,7 @@ fn subscriber_state_registered_for_multiple_panes() {
     );
 
     let sub = screen
+        .core
         .pane_render_subscribers
         .get(&ClientId::new(100))
         .unwrap();
@@ -734,13 +738,15 @@ fn subscriber_removed_on_remove_client() {
         false,
     );
     assert!(screen
+        .core
         .pane_render_subscribers
         .contains_key(&ClientId::new(100)));
 
-    screen.pane_subscriber_snapshots_dirty = false;
+    screen.core.pane_subscriber_snapshots_dirty = false;
     screen.remove_client(crate::ClientId::new(100)).unwrap();
-    assert!(!screen.pane_subscriber_snapshots_dirty);
+    assert!(!screen.core.pane_subscriber_snapshots_dirty);
     assert!(!screen
+        .core
         .pane_render_subscribers
         .contains_key(&ClientId::new(100)));
 }
@@ -785,6 +791,7 @@ fn subscriber_removed_when_all_panes_closed() {
     assert!(has_pane_closed, "Should send SubscribedPaneClosed");
     assert!(has_exit, "Should send Exit when all panes closed");
     assert!(!screen
+        .core
         .pane_render_subscribers
         .contains_key(&ClientId::new(100)));
 }
@@ -829,10 +836,12 @@ fn subscriber_partial_close() {
     );
     assert!(!has_exit, "Should NOT send Exit when panes remain");
     assert!(screen
+        .core
         .pane_render_subscribers
         .contains_key(&ClientId::new(100)));
     assert_eq!(
         screen
+            .core
             .pane_render_subscribers
             .get(&ClientId::new(100))
             .unwrap()
@@ -886,6 +895,7 @@ fn subscriber_full_close_sequence() {
     assert_eq!(pane_closed_count, 2, "Two SubscribedPaneClosed messages");
     assert_eq!(exit_count, 1, "One Exit message after all panes closed");
     assert!(!screen
+        .core
         .pane_render_subscribers
         .contains_key(&ClientId::new(100)));
 }
@@ -897,6 +907,7 @@ fn delivery_path_a_and_b_produce_same_content() {
             create_new_screen_with_message_capture(Size { cols: 60, rows: 6 });
         new_tab(&mut screen, 1, TabId::new(0));
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
@@ -930,6 +941,7 @@ fn delivery_path_a_and_b_produce_same_content() {
         let mut expected = HashMap::new();
         for (client, pane, text) in [(100, 1, "first pane"), (101, 2, "second pane")] {
             screen
+                .core
                 .tabs
                 .get_mut(&TabId::new(0))
                 .unwrap()

@@ -116,14 +116,14 @@ impl Screen {
     /// request is a client of its own with no screen, which is why the fallbacks exist.
     pub(super) fn tab_a_client_is_looking_at(&self, client_id: ClientId) -> Option<TabId> {
         self.connected_client_to_act_for(client_id)
-            .and_then(|client_id| self.active_tab_ids.get(&client_id).copied())
-            .or_else(|| self.tabs.keys().next().copied())
+            .and_then(|client_id| self.core.active_tab_ids.get(&client_id).copied())
+            .or_else(|| self.core.tabs.keys().next().copied())
     }
 
     /// The attached client a "focused" action from `client_id` acts for: `client_id` if it is
     /// attached, else the first client that is.
     pub(super) fn connected_client_to_act_for(&self, client_id: ClientId) -> Option<ClientId> {
-        if self.active_tab_ids.contains_key(&client_id) {
+        if self.core.active_tab_ids.contains_key(&client_id) {
             Some(client_id)
         } else {
             self.get_first_client_id()
@@ -132,7 +132,7 @@ impl Screen {
 
     /// The share a tab would give one more tiled pane.
     fn projected_share_of_tab(&self, tab_id: TabId) -> Option<usize> {
-        let tab = self.tabs.get(&tab_id)?;
+        let tab = self.core.tabs.get(&tab_id)?;
         Some(projected_share(
             tab.get_viewport(),
             tab.get_selectable_tiled_panes_count(),
@@ -170,7 +170,7 @@ impl Screen {
         start_suppressed: bool,
         target: ClientTabIndexOrPaneId,
     ) -> AgentPlacement {
-        let Some(floor) = floor_of(self.agent_pane_min_size) else {
+        let Some(floor) = floor_of(self.core.agent_pane_min_size) else {
             return AgentPlacement::unchanged(target);
         };
         if start_suppressed || !is_agent_spawn(invoked_with) {
@@ -194,6 +194,7 @@ impl Screen {
             | ClientTabIndexOrPaneId::PaneIdOrClient(pane_id, _) => {
                 let source = self.tab_id_containing_pane(pane_id);
                 let client_id = self
+                    .core
                     .active_tab_ids
                     .iter()
                     .find(|(_, tab_id)| Some(**tab_id) == source)
@@ -210,7 +211,7 @@ impl Screen {
         let (Some(source_tab_id), Some(client_id)) = (source_tab_id, client_id) else {
             return AgentPlacement::unchanged(target);
         };
-        let Some(source) = self.tabs.get(&source_tab_id) else {
+        let Some(source) = self.core.tabs.get(&source_tab_id) else {
             return AgentPlacement::unchanged(target);
         };
         let tiled_without_direction = match placement {
@@ -231,6 +232,7 @@ impl Screen {
             return AgentPlacement::unchanged(target);
         }
         let candidates: Vec<Candidate> = self
+            .core
             .tabs
             .values()
             .filter(|tab| {
@@ -257,7 +259,7 @@ impl Screen {
                     Ok(tab_id) => {
                         created_tab_id = Some(tab_id);
                         // The pane arrives after the tab's layout lands; hold its slot.
-                        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                        if let Some(tab) = self.core.tabs.get_mut(&tab_id) {
                             tab.agent_layout_slot_expected = true;
                         }
                         (tab_id, None)
@@ -322,7 +324,8 @@ impl Screen {
             };
             tab_id
                 .is_none_or(|tab| {
-                    !self.tabs.contains_key(&tab) || self.deferred_tab_closes.contains(&tab)
+                    !self.core.tabs.contains_key(&tab)
+                        || self.core.deferred_tab_closes.contains(&tab)
                 })
                 .then_some(LaunchReason::DestinationClosed)
         });
@@ -362,7 +365,7 @@ impl Screen {
                 false,
             ),
             AgentPlacement::Tab(id) | AgentPlacement::Suppressed(Some(id)) => {
-                if let Some(tab) = self.tabs.get_mut(&id) {
+                if let Some(tab) = self.core.tabs.get_mut(&id) {
                     tab.agent_tab_cleanup_allowed = false;
                 }
                 (id, false)
@@ -371,7 +374,7 @@ impl Screen {
                 let id = self
                     .tab_a_client_is_looking_at(client_id)
                     .ok_or("no current tab for suppressed agent")?;
-                if let Some(tab) = self.tabs.get_mut(&id) {
+                if let Some(tab) = self.core.tabs.get_mut(&id) {
                     tab.agent_tab_cleanup_allowed = false;
                 }
                 (id, false)
@@ -380,13 +383,13 @@ impl Screen {
                 let id = self
                     .new_tab_for_adopted_pane(invoked_with, client_id, false)
                     .map_err(|error| format!("cannot create agent tab: {error:#}"))?;
-                if let Some(tab) = self.tabs.get_mut(&id) {
+                if let Some(tab) = self.core.tabs.get_mut(&id) {
                     tab.agent_tab_waiting_for_pane = true;
                     // The pane arrives after the tab's layout lands; hold its slot.
                     tab.agent_layout_slot_expected = true;
                 }
                 if let Some(name) = name
-                    && let Some(tab) = self.tabs.get_mut(&id)
+                    && let Some(tab) = self.core.tabs.get_mut(&id)
                 {
                     tab.name = name;
                     tab.set_user_named(true);
@@ -397,10 +400,11 @@ impl Screen {
                 return Err("automatic placement does not reserve a tab".into())
             },
         };
-        if self.deferred_tab_closes.contains(&tab_id) {
+        if self.core.deferred_tab_closes.contains(&tab_id) {
             return Err(format!("tab {tab_id} is closing"));
         }
         let tab = self
+            .core
             .tabs
             .get(&tab_id)
             .ok_or_else(|| format!("tab {tab_id} does not exist"))?;
@@ -420,7 +424,7 @@ impl Screen {
             return true;
         }
         let owned_empty = placement.created
-            && self.tabs.get(&placement.tab_id).is_some_and(|tab| {
+            && self.core.tabs.get(&placement.tab_id).is_some_and(|tab| {
                 placement
                     .lifetime
                     .ptr_eq(&std::sync::Arc::downgrade(&tab.agent_tab_lifetime))
@@ -436,6 +440,6 @@ impl Screen {
                     error
                 })
                 .is_ok()
-            && !self.tabs.contains_key(&placement.tab_id)
+            && !self.core.tabs.contains_key(&placement.tab_id)
     }
 }

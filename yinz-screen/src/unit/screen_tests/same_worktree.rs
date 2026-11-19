@@ -53,14 +53,15 @@ impl Scene {
         let (mut screen, jobs) = screen_with_background_jobs(SIZE);
         new_tab(&mut screen, 1, TAB);
         screen
+            .core
             .tabs
             .get_mut(&TAB)
             .unwrap()
             .set_pane_frames(PaneFrameStyle::Full);
         let (to_screen, instructions) = channels::unbounded();
-        screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+        screen.core.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
         let (to_server, renders) = channels::unbounded();
-        screen.bus.senders.to_server = Some(SenderWithContext::new(to_server));
+        screen.core.bus.senders.to_server = Some(SenderWithContext::new(to_server));
         Self {
             screen,
             instructions,
@@ -72,6 +73,7 @@ impl Scene {
 
     fn add(&mut self, id: u32, placement: NewPanePlacement) {
         self.screen
+            .core
             .tabs
             .get_mut(&TAB)
             .unwrap()
@@ -89,17 +91,13 @@ impl Scene {
     }
 
     fn report(&mut self, id: u32, agent: Option<AgentInfo>) {
-        self.screen
-            .tabs
-            .get_mut(&TAB)
-            .unwrap()
-            .get_pane_with_id_mut(pane(id))
-            .unwrap()
-            .set_agent_info(agent);
+        super::super::agent_reports::apply_pane_agent_report(&mut self.screen, pane(id), agent)
+            .unwrap();
     }
 
     fn focus(&mut self, id: u32, client: ClientId) {
         self.screen
+            .core
             .tabs
             .get_mut(&TAB)
             .unwrap()
@@ -136,7 +134,7 @@ impl Scene {
             let (instruction, _) = self
                 .instructions
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .unwrap_or_else(|error| panic!("worktree title {title:?} did not render: {error:?}; roots={:?}; focus={:?}; output={}", self.screen.tabs[&TAB].agent_worktrees, self.screen.tabs[&TAB].get_active_pane_id(CLIENT), self.text(CLIENT)));
+                .unwrap_or_else(|error| panic!("worktree title {title:?} did not render: {error:?}; roots={:?}; focus={:?}; output={}", self.screen.core.tabs[&TAB].agent_worktrees, self.screen.core.tabs[&TAB].get_active_pane_id(CLIENT), self.text(CLIENT)));
             if let ScreenInstruction::AgentWorktreeResolved {
                 cwd,
                 generation,
@@ -209,31 +207,30 @@ fn same_worktree_titles_follow_each_viewers_focus_and_clear_after_agent_changes(
     }
     scene
         .screen
-        .terminal_hosts
-        .insert(TerminalId::new(3), "remote".into());
+        .set_pane_host(TerminalId::new(3), Some("remote".into()))
+        .unwrap();
     scene.render();
     assert!(!scene.text(CLIENT).contains('👯'));
     assert!(!scene.text(OTHER).contains("👯 [3]"));
-    scene.screen.terminal_hosts.clear();
-    scene.report(1, Some(agent(Some(repo.path()))));
     scene
         .screen
-        .tabs
-        .get_mut(&TAB)
-        .unwrap()
-        .get_pane_with_id_mut(pane(1))
-        .unwrap()
-        .hold(Some(0), false, RunCommand::default());
+        .set_pane_host(TerminalId::new(3), None)
+        .unwrap();
+    scene.report(1, Some(agent(Some(repo.path()))));
+    super::super::replay_pending_plugin_events(
+        &mut scene.screen,
+        vec![ScreenInstruction::HoldPane(
+            pane(1),
+            Some(0),
+            RunCommand::default(),
+        )],
+    )
+    .unwrap();
     scene.render();
     assert!(!scene.text(CLIENT).contains("👯 [1]"));
-    scene
-        .screen
-        .tabs
-        .get_mut(&TAB)
-        .unwrap()
-        .close_pane(pane(3), false, None);
+    scene.screen.close_pane_explicitly(pane(3), None);
     scene.render();
-    assert!(!scene.screen.tabs[&TAB]
+    assert!(!scene.screen.core.tabs[&TAB]
         .agent_worktrees
         .contains_key(&pane(3)));
 }
@@ -251,7 +248,7 @@ fn same_worktree_titles_cross_tiled_and_floating_layers_and_stack_lists() {
                 scene.add(3, NewPanePlacement::default());
                 scene.focus(1, CLIENT);
             }
-            *scene.screen.stacked_pane_list.borrow_mut() = stacked;
+            *scene.screen.core.stacked_pane_list.borrow_mut() = stacked;
             scene.add(
                 2,
                 if stacked {

@@ -197,46 +197,49 @@ fn a_reload_applies_every_field_of_the_screen_config() {
         notification_position,
         notification_timeout_secs,
     } = applied;
-    assert_eq!(screen.overlay_tab_plugins, overlay_tab_plugins);
-    assert_eq!(screen.plugin_aliases, plugin_aliases);
+    assert_eq!(screen.core.overlay_tab_plugins, overlay_tab_plugins);
+    assert_eq!(screen.core.plugin_aliases, plugin_aliases);
 
     // an explicit light hue paints the pair's light theme over `theme`; the test below covers
     // `theme` on its own
-    assert_eq!(Some(screen.style.colors), host_theme_light);
+    assert_eq!(Some(screen.core.style.colors), host_theme_light);
     assert_ne!(Some(theme), host_theme_light);
-    assert_eq!(screen.themes, themes);
-    assert_eq!(screen.theme_name, theme_name);
-    assert_eq!(screen.theme_dark_name, theme_dark_name);
-    assert_eq!(screen.theme_light_name, theme_light_name);
+    assert_eq!(screen.core.themes, themes);
+    assert_eq!(screen.core.theme_name, theme_name);
+    assert_eq!(screen.core.theme_dark_name, theme_dark_name);
+    assert_eq!(screen.core.theme_light_name, theme_light_name);
     // A reload is per client: it never changes the pane palette or what shared
     // applications are told. Those follow `SetApplicationThemeConfig` only.
-    assert_ne!(screen.style.terminal, terminal_theme);
-    assert_ne!(screen.application_theme, application_theme);
+    assert_ne!(screen.core.style.terminal, terminal_theme);
+    assert_ne!(screen.core.application_theme, application_theme);
     assert_eq!(
-        screen.style.application,
+        screen.core.style.application,
         yinz_types::style::ApplicationBaseline::default()
     );
-    assert_eq!(screen.style.agent_theme_mapping, agent_theme_mapping);
-    assert_eq!(screen.terminal_themes, terminal_themes);
-    assert_eq!(screen.host_theme_dark_styling, host_theme_dark);
-    assert_eq!(screen.host_theme_light_styling, host_theme_light);
-    assert_eq!(screen.configured_explicit_theme_hue, explicit_theme_hue);
+    assert_eq!(screen.core.style.agent_theme_mapping, agent_theme_mapping);
+    assert_eq!(screen.core.terminal_themes, terminal_themes);
+    assert_eq!(screen.core.host_theme_dark_styling, host_theme_dark);
+    assert_eq!(screen.core.host_theme_light_styling, host_theme_light);
     assert_eq!(
-        screen.default_mode_info.style.rounded_corners,
+        screen.core.configured_explicit_theme_hue,
+        explicit_theme_hue
+    );
+    assert_eq!(
+        screen.core.default_mode_info.style.rounded_corners,
         rounded_corners
     );
     assert_eq!(
-        screen.default_mode_info.style.hide_session_name,
+        screen.core.default_mode_info.style.hide_session_name,
         hide_session_name
     );
-    assert_eq!(screen.pane_frame_style, pane_frame_style);
-    assert_eq!(screen.max_agent_width, max_agent_width);
+    assert_eq!(screen.core.pane_frame_style, pane_frame_style);
+    assert_eq!(screen.core.max_agent_width, max_agent_width);
     assert_eq!(
-        screen.default_mode_info.max_agent_width,
+        screen.core.default_mode_info.max_agent_width,
         Some(max_agent_width)
     );
     assert_eq!(
-        screen.mode_info[&client_id].max_agent_width,
+        screen.core.mode_info[&client_id].max_agent_width,
         Some(max_agent_width)
     );
     assert_eq!(
@@ -244,79 +247,88 @@ fn a_reload_applies_every_field_of_the_screen_config() {
         max_agent_width
     );
     assert_eq!(screen.tab_groups_enabled(), tab_groups);
-    assert_eq!(screen.arrow_fonts, !simplified_ui);
-    assert_eq!(screen.pane_animations, pane_animations);
-    assert_eq!(screen.styled_underlines, styled_underlines);
-    assert_eq!(screen.background_opacity, background_opacity);
-    assert_eq!(screen.osc8_hyperlinks, osc8_hyperlinks);
-    assert_eq!(screen.default_mode_info.base_mode, default_mode);
-    assert_eq!(Some(screen.default_shell.clone()), default_shell);
-    match &screen.default_shell_action {
+    assert_eq!(screen.core.arrow_fonts, !simplified_ui);
+    assert_eq!(screen.core.pane_animations, pane_animations);
+    assert_eq!(screen.core.styled_underlines, styled_underlines);
+    assert_eq!(screen.core.background_opacity, background_opacity);
+    assert_eq!(screen.core.osc8_hyperlinks, osc8_hyperlinks);
+    assert_eq!(screen.core.default_mode_info.base_mode, default_mode);
+    assert_eq!(Some(screen.core.default_shell.clone()), default_shell);
+    match &screen.core.default_shell_action {
         Some(TerminalAction::RunCommand(run_command)) => {
             assert_eq!(run_command.cwd, default_cwd);
         },
         other => panic!("the default shell action carries the cwd, got {other:?}"),
     }
-    assert_eq!(screen.default_editor, default_editor);
-    assert_eq!(screen.default_layout_name, default_layout_name);
-    assert_eq!(screen.layout_dir, layout_dir);
-    assert_eq!(screen.auto_layout, auto_layout);
-    assert_eq!(*screen.stacked_resize.borrow(), stacked_resize);
-    assert_eq!(*screen.stacked_pane_list.borrow(), stacked_pane_list);
-    assert_eq!(screen.agent_pane_min_size, agent_pane_min_size);
-    assert_eq!(screen.agent_double_escape, agent_double_escape);
-    assert_eq!(screen.advanced_mouse_actions, advanced_mouse_actions);
-    assert_eq!(screen.mouse_scroll_resize, mouse_scroll_resize);
-    assert_eq!(screen.mouse_hover_effects, mouse_hover_effects);
-    assert_eq!(screen.focus_follows_mouse, focus_follows_mouse);
-    assert_eq!(screen.mouse_click_through, mouse_click_through);
+    assert_eq!(screen.core.default_editor, default_editor);
+    assert_eq!(screen.core.default_layout_name, default_layout_name);
+    assert_eq!(screen.core.layout_dir, layout_dir);
+    assert_eq!(screen.core.auto_layout, auto_layout);
+    assert_eq!(*screen.core.stacked_resize.borrow(), stacked_resize);
+    assert_eq!(*screen.core.stacked_pane_list.borrow(), stacked_pane_list);
+    assert_eq!(screen.core.agent_pane_min_size, agent_pane_min_size);
+    assert_eq!(screen.core.agent_double_escape, agent_double_escape);
+    assert_eq!(screen.core.advanced_mouse_actions, advanced_mouse_actions);
+    assert_eq!(screen.core.mouse_scroll_resize, mouse_scroll_resize);
+    assert_eq!(screen.core.mouse_hover_effects, mouse_hover_effects);
+    assert_eq!(screen.core.focus_follows_mouse, focus_follows_mouse);
+    assert_eq!(screen.core.mouse_click_through, mouse_click_through);
     assert_eq!(
-        screen.context_menu_on_right_click,
+        screen.menus.context_menu_on_right_click,
         context_menu_on_right_click
     );
     assert_eq!(
-        screen.context_menu_override_agent_mouse,
+        screen.menus.context_menu_override_agent_mouse,
         context_menu_override_agent_mouse
     );
-    for tab in screen.tabs.values() {
+    for tab in screen.core.tabs.values() {
         assert_eq!(
             tab.context_menu_override_agent_mouse,
             context_menu_override_agent_mouse
         );
     }
-    assert_eq!(screen.context_menu.items(), context_menu.items());
-    assert_eq!(screen.osc133_command_selection, osc133_command_selection);
-    assert_eq!(screen.word_separators, word_separators);
-    assert_eq!(screen.copy_options.command, copy_command);
-    assert_eq!(Some(screen.copy_options.clipboard), copy_clipboard);
-    assert_eq!(screen.copy_options.copy_on_select, copy_on_select);
+    assert_eq!(screen.menus.context_menu.items(), context_menu.items());
     assert_eq!(
-        screen.explicitly_disable_kitty_keyboard_protocol,
+        screen.core.osc133_command_selection,
+        osc133_command_selection
+    );
+    assert_eq!(screen.core.word_separators, word_separators);
+    assert_eq!(screen.core.copy_options.command, copy_command);
+    assert_eq!(Some(screen.core.copy_options.clipboard), copy_clipboard);
+    assert_eq!(screen.core.copy_options.copy_on_select, copy_on_select);
+    assert_eq!(
+        screen.core.explicitly_disable_kitty_keyboard_protocol,
         !support_kitty_keyboard_protocol
     );
     assert_eq!(
-        screen.support_kitty_graphics_protocol,
+        screen.core.support_kitty_graphics_protocol,
         support_kitty_graphics_protocol
     );
     assert_eq!(
-        screen.host_notification_protocol,
+        screen.core.host_notification_protocol,
         host_notification_protocol
     );
-    assert_eq!(screen.nested_session_handling, nested_session_handling);
     assert_eq!(
-        screen.paste_buffer_read_enabled,
+        screen.nested.nested_session_handling,
+        nested_session_handling
+    );
+    assert_eq!(
+        screen.core.paste_buffer_read_enabled,
         dangerously_enable_paste_buffer_read
     );
-    assert_eq!(screen.visual_bell, visual_bell);
-    assert_eq!(screen.session_is_mirrored, session_is_mirrored);
-    assert_eq!(screen.session_serialization, session_serialization);
-    assert_eq!(screen.serialize_pane_viewport, serialize_pane_viewport);
+    assert_eq!(screen.core.visual_bell, visual_bell);
+    assert_eq!(screen.core.session_is_mirrored, session_is_mirrored);
+    assert_eq!(screen.core.session_serialization, session_serialization);
+    assert_eq!(screen.core.serialize_pane_viewport, serialize_pane_viewport);
     assert_eq!(
-        screen.scrollback_lines_to_serialize,
+        screen.core.scrollback_lines_to_serialize,
         scrollback_lines_to_serialize
     );
-    assert_eq!(screen.notification_position, notification_position);
-    assert_eq!(screen.notification_timeout_secs, notification_timeout_secs);
+    assert_eq!(screen.notices.notification_position, notification_position);
+    assert_eq!(
+        screen.notices.notification_timeout_secs,
+        notification_timeout_secs
+    );
 }
 
 /// The option reaches a pane that is already open, and undoes what the app negotiated before
@@ -458,7 +470,7 @@ fn a_reload_enabling_mirroring_reconciles_client_tabs_and_pane_focus() {
         } else {
             clients[0]
         };
-        let expected_tab = screen.active_tab_ids[&reference_client];
+        let expected_tab = screen.core.active_tab_ids[&reference_client];
         let expected_pane = screen.get_active_pane_id(&reference_client);
         let mut config = test_screen_config();
         config.session_is_mirrored = true;
@@ -467,19 +479,20 @@ fn a_reload_enabling_mirroring_reconciles_client_tabs_and_pane_focus() {
             .unwrap();
 
         for client in clients {
-            assert_eq!(screen.active_tab_ids[&client], expected_tab);
+            assert_eq!(screen.core.active_tab_ids[&client], expected_tab);
             assert_eq!(screen.get_active_pane_id(&client), expected_pane);
-            for (tab_id, tab) in &screen.tabs {
+            for (tab_id, tab) in &screen.core.tabs {
                 assert_eq!(tab.has_connected_client(&client), *tab_id == expected_tab);
             }
         }
-        let tab_history = screen.tab_history.clone();
+        let tab_history = screen.core.tab_history.clone();
         screen
             .reconfigure(config, Keybinds::default(), clients[2])
             .unwrap();
-        assert_eq!(screen.tab_history, tab_history);
+        assert_eq!(screen.core.tab_history, tab_history);
 
         let next_tab = screen
+            .core
             .tabs
             .values()
             .find(|tab| tab.id != expected_tab)
@@ -489,12 +502,12 @@ fn a_reload_enabling_mirroring_reconciles_client_tabs_and_pane_focus() {
             .switch_active_tab(next_position, None, true, clients[2])
             .unwrap();
         for client in clients {
-            assert_eq!(screen.active_tab_ids[&client], next_id);
+            assert_eq!(screen.core.active_tab_ids[&client], next_id);
             assert_eq!(
                 screen.get_active_pane_id(&client),
                 screen.get_active_pane_id(&clients[2])
             );
-            for (tab_id, tab) in &screen.tabs {
+            for (tab_id, tab) in &screen.core.tabs {
                 assert_eq!(tab.has_connected_client(&client), *tab_id == next_id);
             }
         }
@@ -542,7 +555,7 @@ fn a_reload_with_no_theme_pair_paints_the_theme() {
         .reconfigure(config, Keybinds::default(), crate::ClientId::new(1))
         .unwrap();
 
-    assert_eq!(screen.style.colors, styling(1));
+    assert_eq!(screen.core.style.colors, styling(1));
 }
 
 /// Reloads recolor retained cells, and no pane output follows to paint them.
@@ -596,7 +609,7 @@ fn a_reload_that_changes_the_theme_or_mapping_repaints_mapped_cells() {
     assert!(mapped.contains("MAPPED") && !mapped.contains(source_color));
     drain_background_jobs(&background_jobs);
 
-    assert!(screen.host_terminal_theme_mode.is_none());
+    assert!(screen.core.host_terminal_theme_mode.is_none());
     let mut theme = test_screen_config();
     theme.theme.exit_code_success.base = PaletteColor::Rgb((9, 8, 7));
     screen

@@ -35,7 +35,7 @@ fn clearing_targeted_scroll_flushes_output_and_syncs_only_target_viewers() {
             (target_tab, TerminalId::new(1), target),
             (other_tab, TerminalId::new(2), other),
         ] {
-            let tab = screen.tabs.get_mut(&tab_id).unwrap();
+            let tab = screen.core.tabs.get_mut(&tab_id).unwrap();
             tab.handle_pty_bytes(terminal, b"line\r\n".repeat(40))
                 .unwrap();
             tab.get_pane_with_id_mut(pane_id)
@@ -47,7 +47,7 @@ fn clearing_targeted_scroll_flushes_output_and_syncs_only_target_viewers() {
             assert!(pane.is_scrolled());
             assert!(!pane.dump_screen(true, None).contains("pending output"));
         }
-        screen.mode_info.insert(
+        screen.core.mode_info.insert(
             ClientId::new(1),
             ModeInfo {
                 mode: InputMode::Scroll,
@@ -62,13 +62,14 @@ fn clearing_targeted_scroll_flushes_output_and_syncs_only_target_viewers() {
                     ..Default::default()
                 };
                 screen
+                    .core
                     .tabs
                     .get_mut(&target_tab)
                     .unwrap()
                     .add_client(client, Some(mode.clone()))
                     .unwrap();
-                screen.active_tab_ids.insert(client, target_tab);
-                screen.mode_info.insert(client, mode);
+                screen.core.active_tab_ids.insert(client, target_tab);
+                screen.core.mode_info.insert(client, mode);
             }
         }
         server.try_iter().for_each(drop);
@@ -80,10 +81,14 @@ fn clearing_targeted_scroll_flushes_output_and_syncs_only_target_viewers() {
             .unwrap());
         assert!(server.is_empty());
         assert!(screen.clear_scroll_for_pane_id(target).unwrap());
-        let pane = screen.tabs[&target_tab].get_pane_with_id(target).unwrap();
+        let pane = screen.core.tabs[&target_tab]
+            .get_pane_with_id(target)
+            .unwrap();
         assert!(!pane.is_scrolled());
         assert!(pane.dump_screen(true, None).contains("pending output"));
-        let pane = screen.tabs[&other_tab].get_pane_with_id(other).unwrap();
+        let pane = screen.core.tabs[&other_tab]
+            .get_pane_with_id(other)
+            .unwrap();
         assert!(pane.is_scrolled());
         assert!(!pane.dump_screen(true, None).contains("pending output"));
         let mut changed_clients = server
@@ -142,6 +147,7 @@ fn warp_departures_notify_plugins_and_subscribers_without_closing_processes() {
                 .map(|(_, _, prepared)| prepared.slots.clone())
                 .unwrap_or_else(|| vec![PaneId::Terminal(TerminalId::new(1))]);
             let remaining: Vec<_> = screen
+                .core
                 .tabs
                 .values()
                 .flat_map(|tab| tab.get_all_pane_ids())
@@ -150,7 +156,7 @@ fn warp_departures_notify_plugins_and_subscribers_without_closing_processes() {
             assert!(!remaining.is_empty());
             let fake_os = FakeInputOutput::default();
             let messages = fake_os.server_to_client_messages.clone();
-            screen.bus.os_input = Some(Box::new(fake_os));
+            screen.core.bus.os_input = Some(Box::new(fake_os));
             for (client, panes) in [
                 (100, departing.clone()),
                 (101, departing.iter().chain(&remaining).copied().collect()),
@@ -164,9 +170,9 @@ fn warp_departures_notify_plugins_and_subscribers_without_closing_processes() {
             }
             messages.lock().unwrap().clear();
             let (to_plugin, plugins): ChannelWithContext<PluginInstruction> = channels::unbounded();
-            screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+            screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
             let (to_pty, pty): ChannelWithContext<PtyInstruction> = channels::unbounded();
-            screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+            screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
             let release = |id| {
                 if failed {
                     Err("release failed".to_owned())
@@ -235,6 +241,7 @@ fn warp_departures_notify_plugins_and_subscribers_without_closing_processes() {
                 );
                 assert_eq!(
                     screen
+                        .core
                         .pane_render_subscribers
                         .contains_key(&ClientId::new(client)),
                     failed || client == 101
@@ -242,7 +249,7 @@ fn warp_departures_notify_plugins_and_subscribers_without_closing_processes() {
             }
             if !failed {
                 assert_eq!(
-                    screen.pane_render_subscribers[&ClientId::new(101)].pane_ids,
+                    screen.core.pane_render_subscribers[&ClientId::new(101)].pane_ids,
                     remaining.into_iter().collect()
                 );
             }
@@ -269,9 +276,13 @@ fn destination_local_group_placement_does_not_notify_departure() {
             create_new_screen_with_message_capture(Size { cols: 80, rows: 24 });
         new_tab(&mut screen, 1, TAB_0);
         let (tab_id, reply) = queue_warp_group(&mut screen, placement);
-        let pending = screen.pending_group_placements.remove(&tab_id).unwrap();
+        let pending = screen
+            .warp
+            .pending_group_placements
+            .remove(&tab_id)
+            .unwrap();
         let (to_plugin, plugins): ChannelWithContext<PluginInstruction> = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
         apply_warp_group(&mut screen, tab_id);
         screen.subscribe_to_pane_renders(
             ClientId::new(100),
@@ -279,7 +290,7 @@ fn destination_local_group_placement_does_not_notify_departure() {
             None,
             false,
         );
-        screen.pending_group_placements.insert(tab_id, pending);
+        screen.warp.pending_group_placements.insert(tab_id, pending);
         screen
             .finish_warp_group(
                 tab_id,
@@ -291,10 +302,10 @@ fn destination_local_group_placement_does_not_notify_departure() {
             .recv_timeout(std::time::Duration::from_secs(1))
             .unwrap()
             .unwrap();
-        assert!(screen.tabs[&TAB_0]
+        assert!(screen.core.tabs[&TAB_0]
             .get_pane_with_id(PaneId::Terminal(TERMINAL_50))
             .is_some());
-        assert!(screen.pane_render_subscribers[&ClientId::new(100)]
+        assert!(screen.core.pane_render_subscribers[&ClientId::new(100)]
             .pane_ids
             .contains(&yinz_types::data::PaneId::Terminal(TERMINAL_50)));
         assert!(plugins
@@ -439,7 +450,7 @@ fn visible_and_hidden_plugin_companions_keep_their_launch_configuration() {
     ] {
         let mut screen = create_new_screen(Size { cols: 80, rows: 8 }, false, false);
         let (to_plugin, _plugin_receiver) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
         new_tab(&mut screen, 1, TabId::new(0));
         new_tab(&mut screen, 2, TabId::new(1));
         let plugin = PaneId::Plugin(crate::PluginId::new(50));
@@ -532,7 +543,7 @@ fn visible_and_hidden_plugin_companions_keep_their_launch_configuration() {
             .unwrap();
         let (tx, rx) = crossbeam::channel::bounded(1);
         if let Some(placement) = placement {
-            screen.pending_group_placements.insert(
+            screen.warp.pending_group_placements.insert(
                 destination_id,
                 (
                     placement,
@@ -544,6 +555,7 @@ fn visible_and_hidden_plugin_companions_keep_their_launch_configuration() {
             );
         }
         screen
+            .warp
             .pending_warp_relationships
             .insert(destination_id, prepared.relationships.unwrap());
         let Run::Plugin(plugin_run) = run.clone() else {
@@ -576,7 +588,7 @@ fn visible_and_hidden_plugin_companions_keep_their_launch_configuration() {
             screen.get_active_pane_id(&ClientId::new(1)),
             Some(PaneId::Terminal(TerminalId::new(160)))
         );
-        let destination = screen.tabs.get_mut(&final_tab).unwrap();
+        let destination = screen.core.tabs.get_mut(&final_tab).unwrap();
         let plugin = PaneId::Plugin(crate::PluginId::new(150));
         let cover = PaneId::Terminal(TerminalId::new(160));
         let subject = PaneId::Terminal(TerminalId::new(101));
@@ -752,7 +764,7 @@ fn an_adopted_focused_tab_pane_without_attached_clients_is_placed_without_focus(
         None
     );
     let (to_screen, receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
     screen
         .place_adopted_pane(
             crate::TerminalId::new(50),
@@ -805,7 +817,7 @@ fn an_adopted_pane_that_already_exited_is_held_or_closed_as_its_command_says() {
         let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
         new_tab(&mut screen, 1, TabId::new(0));
         let (to_screen, receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
-        screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+        screen.core.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
         screen
             .place_adopted_pane(
                 crate::TerminalId::new(50),
@@ -880,7 +892,7 @@ fn an_adopted_agent_pane_lands_in_the_focused_tab_however_crowded_it_is() {
     // floor; a warp's placement is not its to change.
     let client_id = ClientId::new(1);
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
-    screen.agent_pane_min_size = Size { cols: 40, rows: 10 };
+    screen.core.agent_pane_min_size = Size { cols: 40, rows: 10 };
     new_tab(&mut screen, 1, TabId::new(0));
     for pid in 2..5 {
         add_pane_to_tab(
@@ -891,7 +903,7 @@ fn an_adopted_agent_pane_lands_in_the_focused_tab_however_crowded_it_is() {
         );
     }
     let (to_plugin, plugin_receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
 
     let (invoked_with, mut placement, target) = adopted_pane_new_pane(
         &mut screen,
@@ -921,7 +933,7 @@ fn an_adopted_agent_pane_lands_in_the_focused_tab_however_crowded_it_is() {
 fn warping_a_visible_editor_carries_its_subject() {
     let mut screen = screen_with_a_scrollback_editor_open();
     let (to_pty, receiver): ChannelWithContext<PtyInstruction> = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
     let (tab_id, terminals, prepared) = screen
         .prepare_pane_group(Some(PaneId::Terminal(TerminalId::new(9))), ClientId::new(1))
         .expect("selection")
@@ -948,7 +960,7 @@ fn warping_a_visible_editor_carries_its_subject() {
     assert!(payload.source_instance_id.is_none());
     assert!(slots
         .iter()
-        .all(|id| screen.tabs[&tab_id].get_pane_with_id(*id).is_none()));
+        .all(|id| screen.core.tabs[&tab_id].get_pane_with_id(*id).is_none()));
     assert!(receiver
         .try_iter()
         .all(|(instruction, _)| !matches!(instruction, PtyInstruction::ClosePane(_, _))));
@@ -976,7 +988,7 @@ fn a_release_that_failed_leaves_the_pane_where_it_was() {
         "the reason includes the typed pane identity, title and state",
     );
     assert!(
-        screen.tabs.values().any(|tab| tab
+        screen.core.tabs.values().any(|tab| tab
             .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(1)))
             .is_some()),
         "the pane was taken out of its tab by a warp that never happened",
@@ -986,11 +998,11 @@ fn a_release_that_failed_leaves_the_pane_where_it_was() {
 #[test]
 fn the_hidden_half_of_a_scrollback_editor_pair_cannot_be_warped_refused() {
     let screen = screen_with_a_scrollback_editor_open();
-    let before = screen.tabs[&TabId::new(0)].get_all_pane_ids();
+    let before = screen.core.tabs[&TabId::new(0)].get_all_pane_ids();
     assert!(screen
         .prepare_pane_group(Some(PaneId::Terminal(TerminalId::new(1))), ClientId::new(1))
         .is_err());
-    assert_eq!(screen.tabs[&TabId::new(0)].get_all_pane_ids(), before);
+    assert_eq!(screen.core.tabs[&TabId::new(0)].get_all_pane_ids(), before);
 }
 
 /// A pane spawned to replace one that closed meanwhile (after a slow SSH connection, say)
@@ -1002,7 +1014,7 @@ fn a_replacement_for_a_pane_that_is_gone_is_closed_on_the_pty_thread() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, TabId::new(0));
     let (to_pty, pty_receiver): ChannelWithContext<PtyInstruction> = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
 
     let placed = screen.replace_pane(
         PaneId::Terminal(crate::TerminalId::new(50)),
@@ -1032,7 +1044,7 @@ fn a_replacement_for_a_pane_that_is_gone_is_closed_on_the_pty_thread() {
 fn warping_an_editor_pair_never_closes_either_process() {
     let mut screen = screen_with_a_scrollback_editor_open();
     let (to_pty, receiver): ChannelWithContext<PtyInstruction> = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
     let (tab_id, terminals, prepared) = screen
         .prepare_pane_group(Some(PaneId::Terminal(TerminalId::new(9))), ClientId::new(1))
         .expect("selection")
@@ -1057,7 +1069,7 @@ fn warping_an_editor_pair_never_closes_either_process() {
     assert!(payload.relationships.is_some());
     assert!(slots
         .iter()
-        .all(|id| screen.tabs[&tab_id].get_pane_with_id(*id).is_none()));
+        .all(|id| screen.core.tabs[&tab_id].get_pane_with_id(*id).is_none()));
     assert!(receiver
         .try_iter()
         .all(|(instruction, _)| !matches!(instruction, PtyInstruction::ClosePane(_, _))));
@@ -1066,11 +1078,11 @@ fn warping_an_editor_pair_never_closes_either_process() {
 #[test]
 fn warping_a_hidden_replacement_subject_is_refused() {
     let screen = screen_with_a_pane_replaced_in_place();
-    let before = screen.tabs[&TabId::new(0)].get_all_pane_ids();
+    let before = screen.core.tabs[&TabId::new(0)].get_all_pane_ids();
     assert!(screen
         .prepare_pane_group(Some(PaneId::Terminal(TerminalId::new(1))), ClientId::new(1))
         .is_err());
-    assert_eq!(screen.tabs[&TabId::new(0)].get_all_pane_ids(), before);
+    assert_eq!(screen.core.tabs[&TabId::new(0)].get_all_pane_ids(), before);
 }
 
 #[test]
@@ -1081,6 +1093,7 @@ fn a_pane_a_plugin_hid_cannot_be_warped() {
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(1))
         .expect("TEST")
@@ -1088,7 +1101,7 @@ fn a_pane_a_plugin_hid_cannot_be_warped() {
     assert!(screen
         .prepare_pane_group(Some(PaneId::Terminal(TerminalId::new(2))), ClientId::new(1))
         .is_err());
-    assert!(screen.tabs[&TabId::new(1)]
+    assert!(screen.core.tabs[&TabId::new(1)]
         .get_pane_with_id(PaneId::Terminal(TerminalId::new(2)))
         .is_some());
 }
@@ -1096,7 +1109,7 @@ fn a_pane_a_plugin_hid_cannot_be_warped() {
 #[test]
 fn the_sessions_last_pane_and_its_editor_can_be_warped() {
     let mut screen = screen_with_a_scrollback_editor_open();
-    screen.tabs.retain(|id, _| *id == TabId::new(0));
+    screen.core.tabs.retain(|id, _| *id == TabId::new(0));
     let (_, terminals, _) = screen
         .prepare_pane_group(Some(PaneId::Terminal(TerminalId::new(9))), ClientId::new(1))
         .expect("the last companion group can leave the session")
@@ -1109,9 +1122,9 @@ fn the_sessions_only_pane_can_be_warped() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, TabId::new(0));
     let (to_pty, pty): ChannelWithContext<PtyInstruction> = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
     let (to_server, server): ChannelWithContext<ServerInstruction> = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(to_server));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(to_server));
     let (response_tx, response_rx) = yinz_bus::warp::pane_warp_reply();
 
     screen
@@ -1145,22 +1158,22 @@ fn the_sessions_only_pane_can_be_warped() {
         .expect("warp response")
         .expect("warped pane");
     assert_eq!(payload.host_id, SupervisorId::new("host-1"));
-    assert_eq!(screen.in_flight_pane_warps, 1);
+    assert_eq!(screen.warp.in_flight_pane_warps, 1);
     screen
         .settle_tabs()
         .expect("retain the rollback destination");
-    assert_eq!(screen.tabs.len(), 1);
-    assert_eq!(screen.active_tab_ids[&ClientId::new(1)], TabId::new(0));
+    assert_eq!(screen.core.tabs.len(), 1);
+    assert_eq!(screen.core.active_tab_ids[&ClientId::new(1)], TabId::new(0));
     assert!(!server
         .try_iter()
         .any(|(instruction, _)| matches!(instruction, ServerInstruction::Render(None))));
     // Stands in for the `PaneWarpFinished` the dropped hold sends.
     drop(hold);
-    screen.in_flight_pane_warps = 0;
+    screen.warp.in_flight_pane_warps = 0;
     screen
         .settle_tabs()
         .expect("close the emptied source session");
-    assert!(screen.tabs.is_empty());
+    assert!(screen.core.tabs.is_empty());
     assert!(server
         .try_iter()
         .any(|(instruction, _)| matches!(instruction, ServerInstruction::Render(None))));
@@ -1178,7 +1191,7 @@ fn a_pane_released_after_its_caller_left_is_taken_back_with_its_hold() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, TabId::new(0));
     let (to_pty, pty): ChannelWithContext<PtyInstruction> = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
     let (response_tx, response_rx) = yinz_bus::warp::pane_warp_reply();
     screen
         .warp_pane(
@@ -1222,9 +1235,9 @@ fn a_pane_released_after_its_caller_left_is_taken_back_with_its_hold() {
         hold.is_some(),
         "the session must stay open until it is placed"
     );
-    assert_eq!(screen.in_flight_pane_warps, 1);
+    assert_eq!(screen.warp.in_flight_pane_warps, 1);
     screen.settle_tabs().expect("keep the emptied tab");
-    assert_eq!(screen.tabs.len(), 1);
+    assert_eq!(screen.core.tabs.len(), 1);
 }
 
 fn adopted_pane_finish(
@@ -1252,7 +1265,7 @@ fn an_adopted_terminal_without_a_pane_is_given_back() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, TabId::new(0));
     let (to_pty, pty): ChannelWithContext<PtyInstruction> = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
     let (finish, placed) = adopted_pane_finish(1, "yinz pty-host adopt placed");
     screen.finish_adopted_pane(finish);
     assert!(pty.try_recv().is_err(), "a placed pane is kept");
@@ -1281,7 +1294,7 @@ fn an_adopted_pane_is_checked_before_its_replayed_exit_can_close_it() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
     new_tab(&mut screen, 1, TabId::new(0));
     let (to_screen, receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
     let (finish, _placed) = adopted_pane_finish(50, "yinz pty-host adopt exited");
     let mut finish = Some(finish);
     screen
@@ -1329,9 +1342,9 @@ fn closing_a_pending_group_tab_releases_its_warp_hold() {
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
     let (to_screen, receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
     let (response, response_rx) = crossbeam::channel::unbounded();
-    screen.pending_group_placements.insert(
+    screen.warp.pending_group_placements.insert(
         TabId::new(1),
         (
             yinz_types::data::WarpPlacement::FocusedTab,
@@ -1339,12 +1352,12 @@ fn closing_a_pending_group_tab_releases_its_warp_hold() {
             ClientId::new(1),
             Some(response),
             Some(yinz_bus::warp::PaneWarpHold::new(
-                screen.bus.senders.clone(),
+                screen.core.bus.senders.clone(),
             )),
         ),
     );
     screen.close_tab_by_id(TabId::new(1)).expect("close tab");
-    assert!(screen.pending_group_placements.is_empty());
+    assert!(screen.warp.pending_group_placements.is_empty());
     assert!(response_rx.try_recv().unwrap().is_err());
     assert!(receiver
         .try_iter()
@@ -1376,6 +1389,7 @@ fn a_tabs_last_pane_can_still_be_warped() {
 
     assert_eq!(
         screen
+            .core
             .tabs
             .get(&TabId::new(1))
             .expect("TEST")
@@ -1467,7 +1481,7 @@ fn a_remote_pane_leaves_its_tab_like_any_other() {
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
     let somewhere = |screen: &Screen| {
-        screen.tabs.values().any(|tab| {
+        screen.core.tabs.values().any(|tab| {
             tab.get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(1)))
                 .is_some()
         })
@@ -1924,7 +1938,7 @@ fn a_tab_holding_a_pane_a_plugin_hid_can_be_warped() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
-    let tab = screen.tabs.get_mut(&TabId::new(0)).expect("TEST");
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).expect("TEST");
     tab.new_pane(
         PaneId::Terminal(crate::TerminalId::new(3)),
         None,
@@ -1952,6 +1966,7 @@ fn a_tab_holding_a_pane_a_plugin_hid_can_be_warped() {
         )
         .unwrap();
     screen
+        .warp
         .pending_warp_relationships
         .insert(destination_id, prepared.relationships.unwrap());
     screen
@@ -1967,7 +1982,7 @@ fn a_tab_holding_a_pane_a_plugin_hid_can_be_warped() {
             None,
         )
         .expect("apply parked companion with new IDs");
-    let destination = &screen.tabs[&destination_id];
+    let destination = &screen.core.tabs[&destination_id];
     assert!(destination.has_non_suppressed_pane_with_pid(&PaneId::Terminal(TerminalId::new(101))));
     assert!(!destination.has_non_suppressed_pane_with_pid(&PaneId::Terminal(TerminalId::new(103))));
     let parked: Vec<_> = destination
@@ -1983,7 +1998,7 @@ fn a_tab_holding_a_hidden_floating_pane_can_be_warped() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
-    let tab = screen.tabs.get_mut(&TabId::new(0)).expect("TEST");
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).expect("TEST");
     tab.new_pane(
         PaneId::Terminal(crate::TerminalId::new(3)),
         None,
@@ -2015,7 +2030,7 @@ fn the_sessions_only_tab_can_be_warped() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, TabId::new(0));
 
-    assert_eq!(screen.tabs.len(), 1);
+    assert_eq!(screen.core.tabs.len(), 1);
     let (tab_index, terminal_ids, _) = screen
         .check_tab_can_be_warped(Some(TabId::new(0)), crate::ClientId::new(1))
         .expect("the only tab should still be movable");
@@ -2083,6 +2098,7 @@ fn a_tab_warp_carries_whether_the_user_named_the_tab() {
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(1))
         .unwrap()
@@ -2109,7 +2125,7 @@ fn a_tab_of_nothing_but_plugin_panes_has_nothing_to_warp() {
     // move, so moving it would be an elaborate way of opening a new tab.
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, TabId::new(0));
-    let tab = screen.tabs.get_mut(&TabId::new(0)).expect("TEST");
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).expect("TEST");
     tab.close_pane(PaneId::Terminal(crate::TerminalId::new(1)), false, None);
 
     assert_eq!(
@@ -2128,7 +2144,7 @@ fn a_tab_whose_ui_strip_reaches_past_it_can_be_warped() {
     // in this session over the shape of a status bar.
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, TabId::new(0));
-    let tab = screen.tabs.get_mut(&TabId::new(0)).expect("TEST");
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).expect("TEST");
     for pane_id in [2, 3] {
         tab.new_pane(
             PaneId::Terminal(crate::TerminalId::new(pane_id)),
@@ -2171,7 +2187,7 @@ fn a_tab_whose_ui_strip_reaches_past_it_can_be_warped() {
 
     // the premise: the ui strip reaches past the panes under it, so the tab is
     // not a rectangle and no layout describes it
-    let tab = screen.tabs.get(&TabId::new(0)).expect("TEST");
+    let tab = screen.core.tabs.get(&TabId::new(0)).expect("TEST");
     let strip = tab
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
@@ -2209,18 +2225,18 @@ fn a_tab_whose_ui_strip_reaches_past_it_can_be_warped() {
 #[test]
 fn a_hidden_stack_list_member_cannot_be_warped_refused() {
     let screen = screen_with_a_stack_list();
-    let before = screen.tabs[&TabId::new(0)].get_all_pane_ids();
+    let before = screen.core.tabs[&TabId::new(0)].get_all_pane_ids();
     assert!(screen
         .prepare_pane_group(Some(PaneId::Terminal(TerminalId::new(1))), ClientId::new(1))
         .is_err());
-    assert_eq!(screen.tabs[&TabId::new(0)].get_all_pane_ids(), before);
+    assert_eq!(screen.core.tabs[&TabId::new(0)].get_all_pane_ids(), before);
 }
 
 #[test]
 fn warping_a_visible_stack_member_removes_the_whole_list() {
     let mut screen = screen_with_a_stack_list();
     let (to_pty, receiver): ChannelWithContext<PtyInstruction> = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
     let (tab_id, terminals, prepared) = screen
         .prepare_pane_group(Some(PaneId::Terminal(TerminalId::new(3))), ClientId::new(1))
         .expect("selection")
@@ -2245,7 +2261,7 @@ fn warping_a_visible_stack_member_removes_the_whole_list() {
     assert!(payload.relationships.is_some());
     assert!(slots
         .iter()
-        .all(|id| screen.tabs[&tab_id].get_pane_with_id(*id).is_none()));
+        .all(|id| screen.core.tabs[&tab_id].get_pane_with_id(*id).is_none()));
     assert!(receiver
         .try_iter()
         .all(|(instruction, _)| !matches!(instruction, PtyInstruction::ClosePane(_, _))));
@@ -2254,35 +2270,35 @@ fn warping_a_visible_stack_member_removes_the_whole_list() {
 #[test]
 fn the_sessions_last_stack_list_can_be_warped() {
     let mut screen = screen_with_a_stack_list();
-    screen.tabs.retain(|id, _| *id == TabId::new(0));
+    screen.core.tabs.retain(|id, _| *id == TabId::new(0));
     let (_, _, prepared) = screen
         .prepare_pane_group(Some(PaneId::Terminal(TerminalId::new(3))), ClientId::new(1))
         .expect("the last stack can leave the session")
         .expect("companions");
     assert_eq!(
         prepared.slots.len(),
-        screen.tabs[&TabId::new(0)].get_all_pane_ids().len()
+        screen.core.tabs[&TabId::new(0)].get_all_pane_ids().len()
     );
 }
 
 #[test]
 fn warping_a_hidden_editor_member_is_refused() {
     let screen = screen_with_an_editor_on_a_hidden_stack_list_member();
-    let before = screen.tabs[&TabId::new(0)].get_all_pane_ids();
+    let before = screen.core.tabs[&TabId::new(0)].get_all_pane_ids();
     assert!(screen
         .prepare_pane_group(Some(PaneId::Terminal(TerminalId::new(8))), ClientId::new(1))
         .is_err());
-    assert_eq!(screen.tabs[&TabId::new(0)].get_all_pane_ids(), before);
+    assert_eq!(screen.core.tabs[&TabId::new(0)].get_all_pane_ids(), before);
 }
 
 #[test]
 fn warping_the_subject_of_a_hidden_editor_is_refused() {
     let screen = screen_with_an_editor_on_a_hidden_stack_list_member();
-    let before = screen.tabs[&TabId::new(0)].get_all_pane_ids();
+    let before = screen.core.tabs[&TabId::new(0)].get_all_pane_ids();
     assert!(screen
         .prepare_pane_group(Some(PaneId::Terminal(TerminalId::new(3))), ClientId::new(1))
         .is_err());
-    assert_eq!(screen.tabs[&TabId::new(0)].get_all_pane_ids(), before);
+    assert_eq!(screen.core.tabs[&TabId::new(0)].get_all_pane_ids(), before);
 }
 
 #[test]
@@ -2294,7 +2310,7 @@ fn a_stack_list_member_and_the_pane_it_stands_in_for_are_each_keyed_by_themselve
     // each is under its own id - the association is in `restored_by`, so neither
     // has to be re-keyed when either of them moves.
     let mut screen = screen_with_a_stack_list();
-    let tab = screen.tabs.get_mut(&TabId::new(0)).expect("TEST");
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).expect("TEST");
     tab.replace_pane_with_editor_pane(
         PaneId::Terminal(crate::TerminalId::new(8)),
         PaneId::Terminal(crate::TerminalId::new(3)),
@@ -2379,7 +2395,7 @@ fn a_stack_lists_synthetic_geoms_describe_one_stack_filling_the_visible_panes_re
     // builder is checked by neither. The members are not in the grid, so their
     // geometry is synthesised here or nowhere.
     let screen = screen_with_a_stack_list();
-    let tab = screen.tabs.get(&TabId::new(0)).expect("TEST");
+    let tab = screen.core.tabs.get(&TabId::new(0)).expect("TEST");
     let in_the_grid: Vec<PaneId> = tab.get_tiled_panes().map(|(pane_id, _)| *pane_id).collect();
     assert_eq!(
         in_the_grid,
@@ -2482,7 +2498,7 @@ fn warping_a_tab_does_not_kill_the_children_of_its_hidden_stack_list_members() {
     // one, so killing it kills a pane the far end is about to show.
     let mut screen = screen_with_a_stack_list();
     let (to_pty, pty_receiver): ChannelWithContext<PtyInstruction> = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
 
     screen.empty_and_close_tab(TabId::new(0));
 
@@ -2507,6 +2523,7 @@ fn screen_with_an_overlay_over_a_tab() -> Screen {
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .expect("TEST")
@@ -2568,7 +2585,7 @@ fn warping_a_tab_re_homes_the_overlay_it_leaves_behind() {
     // session rather than following the tab or being killed for it.
     let mut screen = screen_with_an_overlay_over_a_tab();
     let (to_pty, pty_receiver): ChannelWithContext<PtyInstruction> = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
 
     screen.empty_and_close_tab(TabId::new(0));
 
@@ -2587,6 +2604,7 @@ fn warping_a_tab_re_homes_the_overlay_it_leaves_behind() {
     );
     assert!(
         screen
+            .core
             .tabs
             .get(&TabId::new(1))
             .expect("TEST")
@@ -2603,7 +2621,7 @@ fn warping_the_last_tab_closes_its_overlay() {
     let mut screen = screen_with_an_overlay_over_a_tab();
     screen.close_tab_by_id(TabId::new(1)).expect("TEST");
     let (to_pty, pty_receiver): ChannelWithContext<PtyInstruction> = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
 
     screen.empty_and_close_tab(TabId::new(0));
 
@@ -2629,6 +2647,7 @@ fn a_tab_whose_only_process_is_an_overlay_has_nothing_to_warp() {
     // empty payload, which is an elaborate way of opening a new tab.
     let mut screen = screen_with_an_overlay_over_a_tab();
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .expect("TEST")
@@ -2649,6 +2668,7 @@ fn a_tab_with_a_replacement_chain_can_be_warped() {
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .expect("TEST")
@@ -2784,7 +2804,7 @@ fn warp_group_restores_a_hidden_editor_chain_and_selected_stack_member() {
         .prepare_pane_group(Some(selected), ClientId::new(1))
         .unwrap()
         .unwrap();
-    let source = screen.tabs.get_mut(&TabId::new(0)).expect("source");
+    let source = screen.core.tabs.get_mut(&TabId::new(0)).expect("source");
     let slots = source
         .warp_pane_ids(Some(selected))
         .expect("visible selection");
@@ -2811,6 +2831,7 @@ fn warp_group_restores_a_hidden_editor_chain_and_selected_stack_member() {
         )
         .unwrap();
     destination_screen
+        .warp
         .pending_warp_relationships
         .insert(destination_id, relationships.clone());
     let terminal_ids: Vec<_> = prepared
@@ -2834,7 +2855,11 @@ fn warp_group_restores_a_hidden_editor_chain_and_selected_stack_member() {
             None,
         )
         .expect("construct stack companions in a short tab");
-    let destination = destination_screen.tabs.get_mut(&destination_id).unwrap();
+    let destination = destination_screen
+        .core
+        .tabs
+        .get_mut(&destination_id)
+        .unwrap();
     assert_eq!(destination.warp_relationships(&slots), relationships);
     let restored = destination.arrangement_stacks();
     assert_eq!(restored[0].members, original[0].members);
@@ -2851,7 +2876,7 @@ fn warp_mixed_floating_slots_preserve_repeated_plugin_id_order() {
     use yinz_types::input::layout::FloatingPaneLayout;
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     let (to_plugin, _receiver) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
     let tab_id = TabId::new(0);
     screen
         .new_tab(tab_id, (vec![], vec![]), None, Some(ClientId::new(1)))
@@ -2864,7 +2889,7 @@ fn warp_mixed_floating_slots_preserve_repeated_plugin_id_order() {
         name: Some(name.into()),
         ..Default::default()
     };
-    screen.pending_warp_relationships.insert(
+    screen.warp.pending_warp_relationships.insert(
         tab_id,
         WarpRelationships {
             hidden: vec![
@@ -2922,7 +2947,7 @@ fn warp_mixed_floating_slots_preserve_repeated_plugin_id_order() {
             None,
         )
         .expect("apply mixed slots");
-    let tab = screen.tabs.get_mut(&tab_id).unwrap();
+    let tab = screen.core.tabs.get_mut(&tab_id).unwrap();
     let hidden = PaneId::Plugin(crate::PluginId::new(21));
     let visible = PaneId::Plugin(crate::PluginId::new(22));
     assert_eq!(
@@ -2964,12 +2989,12 @@ fn warp_adoption_preserves_explicit_floating_layouts_over_destination_template()
             }],
         ] {
             let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-            screen.default_layout.template = Some((
+            screen.core.default_layout.template = Some((
                 TiledPaneLayout::default(),
                 vec![FloatingPaneLayout::default()],
             ));
             let (to_plugin, receiver) = channels::unbounded();
-            screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+            screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
             let plugin = RunPluginOrAlias::RunPlugin(
                 yinz_runtime::plugin_location::run_plugin_from_url("yinz:strider").unwrap(),
             );
@@ -3001,7 +3026,10 @@ fn warp_adoption_preserves_explicit_floating_layouts_over_destination_template()
                     None,
                 )
                 .expect("queue adoption");
-            assert_eq!(screen.warped_tab_groups.is_empty(), placement.is_some());
+            assert_eq!(
+                screen.warp.warped_tab_groups.is_empty(),
+                placement.is_some()
+            );
             let (layout, transmitted_floating, tab_id, focus, client_id) = receiver
                 .try_iter()
                 .find_map(|(instruction, _)| match instruction {
@@ -3027,7 +3055,7 @@ fn warp_adoption_preserves_explicit_floating_layouts_over_destination_template()
 
             // Resolve the same fallback as the plugin thread, then apply only the allocated ID.
             let floating =
-                transmitted_floating.unwrap_or_else(|| screen.default_layout.new_tab().1);
+                transmitted_floating.unwrap_or_else(|| screen.core.default_layout.new_tab().1);
             let plugin_id = crate::PluginId::new(150);
             screen
                 .apply_layout(
@@ -3043,7 +3071,7 @@ fn warp_adoption_preserves_explicit_floating_layouts_over_destination_template()
                 )
                 .expect("apply standalone plugin without destination template slots");
             let pane_id = PaneId::Plugin(plugin_id);
-            assert!(screen.tabs[&tab_id].has_non_suppressed_pane_with_pid(&pane_id));
+            assert!(screen.core.tabs[&tab_id].has_non_suppressed_pane_with_pid(&pane_id));
             assert_eq!(screen.get_active_pane_id(&client_id), Some(pane_id));
         }
     }
@@ -3103,6 +3131,7 @@ fn warp_group_acknowledges_new_tab_fallback() {
         new_tab(&mut screen, 1, TabId::new(0));
         let (tab_id, rx) = queue_warp_group(&mut screen, placement);
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
@@ -3112,9 +3141,8 @@ fn warp_group_acknowledges_new_tab_fallback() {
         rx.try_recv()
             .expect("placement reply")
             .expect("new tab fallback succeeded");
-        assert!(
-            screen.tabs[&tab_id].has_non_suppressed_pane_with_pid(&PaneId::Terminal(TERMINAL_50))
-        );
+        assert!(screen.core.tabs[&tab_id]
+            .has_non_suppressed_pane_with_pid(&PaneId::Terminal(TERMINAL_50)));
     }
 }
 
@@ -3122,7 +3150,7 @@ fn warp_group_acknowledges_new_tab_fallback() {
 fn warp_group_uses_destination_default_floating_geometry() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, TabId::new(0));
-    let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
     let ordinary = PaneId::Terminal(TerminalId::new(2));
     tab.new_pane(
         ordinary,
@@ -3142,7 +3170,7 @@ fn warp_group_uses_destination_default_floating_geometry() {
     rx.try_recv()
         .expect("placement reply")
         .expect("placement succeeded");
-    let pane = screen.tabs[&TabId::new(0)]
+    let pane = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(TERMINAL_50))
         .unwrap();
     assert_eq!(
@@ -3168,9 +3196,8 @@ fn warp_group_acknowledges_new_tab_and_missing_destination() {
         rx.try_recv()
             .expect("placement reply")
             .expect("new tab fallback");
-        assert!(
-            screen.tabs[&tab_id].has_non_suppressed_pane_with_pid(&PaneId::Terminal(TERMINAL_50))
-        );
+        assert!(screen.core.tabs[&tab_id]
+            .has_non_suppressed_pane_with_pid(&PaneId::Terminal(TERMINAL_50)));
     }
 }
 
@@ -3195,14 +3222,14 @@ fn warp_floating_stack_requires_room_for_headers_and_content() {
                 rows: floating_rows * 2,
             })
             .unwrap();
-        let destination = &screen.tabs[&target_id];
+        let destination = &screen.core.tabs[&target_id];
         let original_ids = destination.get_all_pane_ids();
         let original_geom = destination
             .get_pane_with_id(PaneId::Terminal(TerminalId::new(9)))
             .unwrap()
             .position_and_size();
         let (tx, rx) = crossbeam::channel::bounded(1);
-        screen.pending_group_placements.insert(
+        screen.warp.pending_group_placements.insert(
             source_id,
             (
                 yinz_types::data::WarpPlacement::Floating,
@@ -3218,8 +3245,8 @@ fn warp_floating_stack_requires_room_for_headers_and_content() {
         rx.try_recv().expect("placement acknowledged").unwrap();
         let placed = floating_rows == 6;
         let retained_id = if placed { target_id } else { source_id };
-        assert_eq!(screen.tabs.contains_key(&source_id), !placed);
-        let destination = &screen.tabs[&target_id];
+        assert_eq!(screen.core.tabs.contains_key(&source_id), !placed);
+        let destination = &screen.core.tabs[&target_id];
         assert_eq!(
             destination
                 .get_pane_with_id(PaneId::Terminal(TerminalId::new(9)))
@@ -3231,7 +3258,7 @@ fn warp_floating_stack_requires_room_for_headers_and_content() {
             assert_eq!(destination.get_all_pane_ids(), original_ids);
             assert!(!destination.are_floating_panes_visible());
         }
-        let retained = screen.tabs.get_mut(&retained_id).unwrap();
+        let retained = screen.core.tabs.get_mut(&retained_id).unwrap();
         assert!(slots
             .iter()
             .all(|id| retained.get_pane_with_id(*id).is_some()));
@@ -3255,7 +3282,7 @@ fn warp_floating_stack_requires_room_for_headers_and_content() {
 fn screen_with_a_transferred_floating_stack() -> Screen {
     let mut screen = screen_with_an_editor_on_a_hidden_stack_list_member();
     let selected = PaneId::Terminal(TerminalId::new(1));
-    let source = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+    let source = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
     source
         .rename_pane_by_pane_id(
             PaneId::Terminal(TerminalId::new(3)),
@@ -3265,7 +3292,7 @@ fn screen_with_a_transferred_floating_stack() -> Screen {
     let slots = source.warp_pane_ids(Some(selected)).unwrap();
     let relationships = source.warp_relationships(&slots);
     let panes = source.extract_warp_panes(&slots);
-    let destination = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+    let destination = screen.core.tabs.get_mut(&TabId::new(1)).unwrap();
     for pane in panes {
         let id = pane.pid();
         if id == selected {
@@ -3317,7 +3344,7 @@ fn floating_stack_resize_synchronizes_hidden_members_without_redundant_requests(
     use yinz_types::geometry::{Direction, Resize, ResizeStrategy};
 
     let mut screen = screen_with_a_transferred_floating_stack();
-    let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+    let tab = screen.core.tabs.get_mut(&TabId::new(1)).unwrap();
     let displayed = PaneId::Terminal(TerminalId::new(1));
     let (tx, rx) = channels::unbounded::<(PtyWriteInstruction, ErrorContext)>();
     tab.senders.to_pty_writer = Some(SenderWithContext::new(tx));
@@ -3392,7 +3419,7 @@ fn floating_stack_shrink_hides_headers_and_growth_restores_mouse_selection() {
 
     for terminal_resize in [false, true] {
         let mut screen = screen_with_a_transferred_floating_stack();
-        let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+        let tab = screen.core.tabs.get_mut(&TabId::new(1)).unwrap();
         let client = ClientId::new(1);
         let displayed = PaneId::Terminal(TerminalId::new(1));
         tab.show_floating_panes();
@@ -3484,7 +3511,7 @@ fn mouse_selects_hidden_members_of_a_transferred_floating_stack() {
 
     for pinned in [false, true] {
         let mut screen = screen_with_a_transferred_floating_stack();
-        let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+        let tab = screen.core.tabs.get_mut(&TabId::new(1)).unwrap();
         let client_id = ClientId::new(1);
         let mut selected = PaneId::Terminal(TerminalId::new(1));
         let slots = tab.warp_pane_ids(Some(selected)).unwrap();
@@ -3558,7 +3585,7 @@ fn fullscreen_floating_stack_content_targets_the_displayed_member() {
 
     for no_ui in [false, true] {
         let mut screen = screen_with_a_transferred_floating_stack();
-        let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+        let tab = screen.core.tabs.get_mut(&TabId::new(1)).unwrap();
         let client_id = ClientId::new(1);
         let displayed = PaneId::Terminal(TerminalId::new(1));
         let hidden = [2, 8].map(|id| PaneId::Terminal(TerminalId::new(id)));
@@ -3625,7 +3652,7 @@ fn fullscreen_floating_stack_content_targets_the_displayed_member() {
 #[test]
 fn tiled_mutations_preserve_a_transferred_floating_stack() {
     let mut screen = screen_with_a_transferred_floating_stack();
-    let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+    let tab = screen.core.tabs.get_mut(&TabId::new(1)).unwrap();
     tab.new_pane(
         PaneId::Terminal(TerminalId::new(10)),
         None,
@@ -3652,7 +3679,7 @@ fn tiled_mutations_preserve_a_transferred_floating_stack() {
 fn floating_stack_layout_serialization_keeps_every_subject_on_the_floating_layer() {
     let screen = screen_with_a_transferred_floating_stack();
     let tab_id = TabId::new(1);
-    let tab = &screen.tabs[&tab_id];
+    let tab = &screen.core.tabs[&tab_id];
     assert!(tab.stack_list_serialization_geoms().is_empty());
     let full_rect = tab
         .get_floating_panes()
@@ -3868,6 +3895,7 @@ fn warp_held_revalidation_recovers_every_released_peer() {
                 let preserved_id = PaneId::Terminal(TerminalId::new(3));
                 for id in [PaneId::Terminal(held_id), preserved_id] {
                     screen
+                        .core
                         .tabs
                         .get_mut(&TAB_0)
                         .unwrap()
@@ -3888,7 +3916,7 @@ fn warp_held_revalidation_recovers_every_released_peer() {
                 let held: HashMap<_, _> = ids
                     .iter()
                     .filter_map(|id| {
-                        screen.tabs[&tab_id]
+                        screen.core.tabs[&tab_id]
                             .get_pane_with_id(PaneId::Terminal(*id))
                             .unwrap()
                             .held_for_warp()
@@ -3917,7 +3945,7 @@ fn warp_held_revalidation_recovers_every_released_peer() {
                     .collect();
                 assert_eq!(expected.len(), 2);
                 released.sort_by_key(|(id, _)| (*id == held_id) != held_first);
-                let tab = screen.tabs.get_mut(&tab_id).unwrap();
+                let tab = screen.core.tabs.get_mut(&tab_id).unwrap();
                 if failure == "closed" {
                     tab.close_pane(PaneId::Terminal(held_id), false, None);
                 } else {
@@ -3934,7 +3962,7 @@ fn warp_held_revalidation_recovers_every_released_peer() {
                 }
                 let remaining = tab.get_all_pane_ids();
                 let (to_pty, receiver) = channels::unbounded();
-                screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+                screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
                 let error = screen
                     .take_released_tab_for_warp(tab_id, released, prepared)
                     .unwrap_err();
@@ -3964,7 +3992,7 @@ fn warp_held_revalidation_recovers_every_released_peer() {
                 } else {
                     assert_eq!(recovery, expected);
                 }
-                let tab = &screen.tabs[&tab_id];
+                let tab = &screen.core.tabs[&tab_id];
                 assert_eq!(tab.get_all_pane_ids(), remaining);
                 assert_eq!(
                     tab.get_pane_with_id(preserved_id).unwrap().held_for_warp(),
@@ -4008,7 +4036,7 @@ fn warp_adopted_agent_exit_takes_precedence_over_transferred_state() {
                 run_id: Some("run".into()),
             };
             let (to_screen, receiver) = channels::unbounded();
-            screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+            screen.core.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
             screen
                 .place_adopted_pane(
                     TERMINAL_50,
@@ -4029,7 +4057,7 @@ fn warp_adopted_agent_exit_takes_precedence_over_transferred_state() {
                 .unwrap();
             // Apply the queued state changes in order, using the same pane methods as Screen.
             for (instruction, _) in receiver.try_iter() {
-                let tab = screen.tabs.get_mut(&TAB_0).unwrap();
+                let tab = screen.core.tabs.get_mut(&TAB_0).unwrap();
                 match instruction {
                     ScreenInstruction::RequestPaneRedraw(_) => {
                         panic!("held or exited transfer requested redraw")
@@ -4055,7 +4083,7 @@ fn warp_adopted_agent_exit_takes_precedence_over_transferred_state() {
                     _ => {},
                 }
             }
-            let pane = screen.tabs[&TAB_0].get_pane_with_id(pane_id);
+            let pane = screen.core.tabs[&TAB_0].get_pane_with_id(pane_id);
             if kind == "close" {
                 assert!(pane.is_none());
             } else {
@@ -4091,6 +4119,7 @@ fn warp_held_state_survives_single_pane_tab_and_companion_transfers() {
                 ..Default::default()
             };
             let pane = screen
+                .core
                 .tabs
                 .get_mut(&TAB_0)
                 .unwrap()
@@ -4101,7 +4130,7 @@ fn warp_held_state_survives_single_pane_tab_and_companion_transfers() {
             pane.handle_pty_bytes(b"saved scrollback\r\n".to_vec());
             let expected = pane.held_for_warp().unwrap();
             let (to_pty, pty) = channels::unbounded();
-            screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+            screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
             let payload = if kind == "pane" {
                 let (tx, rx) = yinz_bus::warp::pane_warp_reply();
                 screen
@@ -4126,6 +4155,7 @@ fn warp_held_state_survives_single_pane_tab_and_companion_transfers() {
                     .unwrap();
                 assert!(
                     screen
+                        .core
                         .tabs
                         .get_mut(&TAB_0)
                         .unwrap()
@@ -4246,6 +4276,7 @@ fn warp_held_state_survives_single_pane_tab_and_companion_transfers() {
             assert_eq!(payload.held, Some(expected));
             assert!(payload.contents.unwrap().contains("saved scrollback"));
             assert!(screen
+                .core
                 .tabs
                 .values()
                 .all(|tab| tab.get_pane_with_id(pane_id).is_none()));
@@ -4275,6 +4306,7 @@ fn warp_held_replacements_resume_only_when_the_pane_stays_in_the_source() {
                     let pane_id = PaneId::Terminal(terminal_id);
                     let live_id = TerminalId::new(if kind == "pane" { 2 } else { 9 });
                     let pane = screen
+                        .core
                         .tabs
                         .get_mut(&TAB_0)
                         .unwrap()
@@ -4298,12 +4330,12 @@ fn warp_held_replacements_resume_only_when_the_pane_stays_in_the_source() {
                         ..Default::default()
                     };
                     let (to_pty, pty) = channels::unbounded();
-                    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty.clone()));
-                    for tab in screen.tabs.values_mut() {
+                    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty.clone()));
+                    for tab in screen.core.tabs.values_mut() {
                         tab.senders.to_pty = Some(SenderWithContext::new(to_pty.clone()));
                     }
                     let (to_plugin, plugin) = channels::unbounded();
-                    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+                    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
                     let (pane_tx, pane_rx) = yinz_bus::warp::pane_warp_reply();
                     let (tab_tx, tab_rx) = crossbeam::channel::bounded(1);
                     let deadline = if outcome == "timeout" {
@@ -4434,13 +4466,14 @@ fn warp_held_replacements_resume_only_when_the_pane_stays_in_the_source() {
                         assert!(reruns.is_empty(), "no source replacement after transfer");
                         assert!(hooks.is_empty());
                         assert!(screen
+                            .core
                             .tabs
                             .values()
                             .all(|tab| tab.get_pane_with_id(pane_id).is_none()));
                     } else {
                         assert_eq!(reruns, vec![(pane_id, replacement.clone())]);
                         assert_eq!(hooks, vec![HookPoint::AgentStart]);
-                        let tab = screen.tabs.get_mut(&TAB_0).unwrap();
+                        let tab = screen.core.tabs.get_mut(&TAB_0).unwrap();
                         let pane = tab.get_pane_with_id(pane_id).unwrap();
                         assert!(!pane.is_held());
                         assert_eq!(
@@ -4451,6 +4484,7 @@ fn warp_held_replacements_resume_only_when_the_pane_stays_in_the_source() {
                         assert!(tab.take_pending_respawn(pane_id).is_none());
                         let live_pane = PaneId::Terminal(live_id);
                         let tab = screen
+                            .core
                             .tabs
                             .values_mut()
                             .find(|tab| tab.get_pane_with_id(live_pane).is_some())
@@ -4474,6 +4508,7 @@ fn warp_old_destination_and_failed_release_leave_held_panes_restartable() {
         new_tab(&mut screen, 2, TabId::new(1));
         let pane_id = PaneId::Terminal(TerminalId::new(8));
         screen
+            .core
             .tabs
             .get_mut(&TAB_0)
             .unwrap()
@@ -4481,7 +4516,7 @@ fn warp_old_destination_and_failed_release_leave_held_panes_restartable() {
             .unwrap()
             .hold(None, true, RunCommand::default());
         let (to_pty, pty) = channels::unbounded();
-        screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+        screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
         let (tx, rx) = crossbeam::channel::bounded(1);
         screen
             .warp_tab(
@@ -4507,6 +4542,7 @@ fn warp_old_destination_and_failed_release_leave_held_panes_restartable() {
         let error = rx.recv().unwrap().unwrap_err();
         assert!(supported || error.contains("terminal_8"), "{error}");
         assert!(screen
+            .core
             .tabs
             .get_mut(&TAB_0)
             .unwrap()
@@ -4528,7 +4564,7 @@ fn warp_mixed_tab_keeps_terminal_8_distinct_from_status_bar_plugin_8() {
         false,
     );
     let (to_plugin, _plugins) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
     new_tab(&mut screen, 99, TabId::new(1));
     let plugin = RunPluginOrAlias::RunPlugin(
         yinz_runtime::plugin_location::run_plugin_from_url("yinz:status-bar").unwrap(),
@@ -4571,7 +4607,7 @@ fn warp_mixed_tab_keeps_terminal_8_distinct_from_status_bar_plugin_8() {
         )
         .unwrap();
     let (to_pty, pty) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
     let (tx, rx) = crossbeam::channel::bounded(1);
     screen
         .warp_tab(
@@ -4654,6 +4690,7 @@ fn pane_and_tab_warp_capture_actual_paste_mode() {
             new_tab(&mut screen, 1, TabId::new(0));
             new_tab(&mut screen, 2, TabId::new(1));
             screen
+                .core
                 .tabs
                 .get_mut(&TabId::new(0))
                 .unwrap()
@@ -4670,7 +4707,7 @@ fn pane_and_tab_warp_capture_actual_paste_mode() {
                 .take_released_pane_for_warp(TerminalId::new(1), Err("adoption refused".into()))
                 .is_err());
             assert_eq!(
-                screen.tabs[&TabId::new(0)]
+                screen.core.tabs[&TabId::new(0)]
                     .get_pane_with_id(PaneId::Terminal(TerminalId::new(1)))
                     .unwrap()
                     .supports_bracketed_paste(),
@@ -4891,8 +4928,9 @@ fn pane_and_tab_warps_preserve_history_independently_of_session_save_settings() 
                 let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
                 new_tab(&mut screen, 1, TabId::new(0));
                 new_tab(&mut screen, 2, TabId::new(1));
-                screen.scrollback_lines_to_serialize = saved_lines;
+                screen.core.scrollback_lines_to_serialize = saved_lines;
                 let pane = screen
+                    .core
                     .tabs
                     .get_mut(&TabId::new(0))
                     .unwrap()
@@ -4931,6 +4969,7 @@ fn pane_and_tab_warps_preserve_history_independently_of_session_save_settings() 
                         .unwrap()
                 };
                 let destination = screen
+                    .core
                     .tabs
                     .get_mut(&TabId::new(1))
                     .unwrap()
@@ -5027,8 +5066,9 @@ fn agent_theme_history_travels_through_pane_and_tab_warps() {
         let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
         new_tab(&mut screen, 1, TabId::new(0));
         new_tab(&mut screen, 2, TabId::new(1));
-        screen.scrollback_lines_to_serialize = Some(0);
+        screen.core.scrollback_lines_to_serialize = Some(0);
         let pane = screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
@@ -5081,6 +5121,7 @@ fn agent_theme_history_travels_through_pane_and_tab_warps() {
             "second"
         );
         let pane = screen
+            .core
             .tabs
             .get_mut(&TabId::new(1))
             .unwrap()
@@ -5115,6 +5156,7 @@ fn warp_snapshot_invalid_cursor_falls_back_before_transfer() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, TabId::new(0));
     let pane = screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -5139,6 +5181,7 @@ fn warp_snapshot_budget_and_partial_parser_fall_back_without_truncating_state() 
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, TabId::new(0));
     let pane = screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()

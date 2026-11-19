@@ -20,7 +20,8 @@ pub(super) struct PendingArrangement {
 
 impl Screen {
     pub(super) fn arrangement_notice(&self, message: String) {
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_screen(ScreenInstruction::Notify(message, None, None, None))
             .non_fatal();
@@ -31,7 +32,7 @@ impl Screen {
         groups: Vec<ProjectPaneGroup>,
         client_id: ClientId,
     ) -> Result<()> {
-        if self.pending_arrangement.is_some() {
+        if self.core.pending_arrangement.is_some() {
             self.arrangement_notice("Arrange panes: destination tabs are still loading".into());
             return Ok(());
         }
@@ -39,17 +40,18 @@ impl Screen {
     }
 
     pub(super) fn resume_pending_arrangement(&mut self) -> Result<()> {
-        let Some(pending) = &self.pending_arrangement else {
+        let Some(pending) = &self.core.pending_arrangement else {
             return Ok(());
         };
         if pending
             .destinations
             .values()
-            .any(|id| self.tabs.get(id).is_some_and(|tab| tab.is_pending()))
+            .any(|id| self.core.tabs.get(id).is_some_and(|tab| tab.is_pending()))
         {
             return Ok(());
         }
         let pending = self
+            .core
             .pending_arrangement
             .take()
             .context("missing pending arrangement")?;
@@ -65,6 +67,7 @@ impl Screen {
         // Validate the entire request before touching any pane. A delayed snapshot may
         // name a pane that has since closed or become suppressed.
         let eligible: HashMap<PaneId, TabId> = self
+            .core
             .tabs
             .values()
             .flat_map(|tab| {
@@ -80,6 +83,7 @@ impl Screen {
             })
             .collect();
         let original_stacks: Vec<_> = self
+            .core
             .tabs
             .values()
             .flat_map(|tab| tab.arrangement_stacks())
@@ -100,6 +104,7 @@ impl Screen {
             }
         }
         let focused: Vec<_> = self
+            .core
             .connected_clients
             .borrow()
             .iter()
@@ -127,6 +132,7 @@ impl Screen {
                 .map(|id| PaneId::Terminal(TerminalId::new(*id)))
                 .collect();
             let mut candidates: Vec<_> = self
+                .core
                 .tabs
                 .values()
                 .filter(|tab| !reserved.contains(&tab.id))
@@ -136,7 +142,7 @@ impl Screen {
                     .iter()
                     .filter(|pane| eligible.get(pane) == Some(&tab.id))
                     .count();
-                let matching = self.arrangement_projects.get(&tab.id) == Some(&group.identity)
+                let matching = self.core.arrangement_projects.get(&tab.id) == Some(&group.identity)
                     || (count > 0
                         && eligible
                             .iter()
@@ -152,7 +158,7 @@ impl Screen {
                 candidates
                     .first()
                     .filter(|tab| {
-                        self.arrangement_projects.get(&tab.id) == Some(&group.identity)
+                        self.core.arrangement_projects.get(&tab.id) == Some(&group.identity)
                             || panes.iter().any(|pane| eligible.get(pane) == Some(&tab.id))
                     })
                     .map(|tab| tab.id)
@@ -205,7 +211,7 @@ impl Screen {
             prepared = vec![];
             let mut rejected = HashSet::new();
             for (index, (group, destination, panes, layout)) in selected.iter().enumerate() {
-                let tab = destination.and_then(|id| self.tabs.get(&id));
+                let tab = destination.and_then(|id| self.core.tabs.get(&id));
                 let size = tab
                     .map(|tab| {
                         let viewport = tab.get_viewport();
@@ -219,7 +225,8 @@ impl Screen {
                     .iter()
                     .copied()
                     .filter(|pane| {
-                        self.tabs
+                        self.core
+                            .tabs
                             .get(&eligible[pane])
                             .is_some_and(|tab| tab.arrangement_pane_ids().contains(pane))
                     })
@@ -341,21 +348,22 @@ impl Screen {
                         self.new_tab(
                             id,
                             (
-                                self.default_layout.swap_tiled_layouts.clone(),
-                                self.default_layout.swap_floating_layouts.clone(),
+                                self.core.default_layout.swap_tiled_layouts.clone(),
+                                self.core.default_layout.swap_floating_layouts.clone(),
                             ),
                             Some(group.name.clone()),
                             None,
                         )?;
                         self.assign_tab_group(id, Some(client_id));
-                        let (mut layout, _) = self.default_layout.new_tab();
+                        let (mut layout, _) = self.core.default_layout.new_tab();
                         // Keep plugin slots and their properties, but start no new processes.
                         for run in layout.extract_run_instructions() {
                             if !matches!(run, Some(Run::Plugin(_))) {
                                 layout.ignore_run_instruction(run);
                             }
                         }
-                        self.bus
+                        self.core
+                            .bus
                             .senders
                             .send_to_plugin(PluginInstruction::NewTab(
                                 None,
@@ -376,7 +384,7 @@ impl Screen {
                 destinations.insert(group.identity.clone(), id);
                 groups.push(group.clone());
             }
-            self.pending_arrangement = Some(PendingArrangement {
+            self.core.pending_arrangement = Some(PendingArrangement {
                 groups,
                 client_id,
                 destinations,
@@ -398,7 +406,7 @@ impl Screen {
             })
             .collect();
         // All filesystem reads and geometry checks precede extraction.
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             if sources.contains(&tab.id) || reserved.contains(&tab.id) {
                 tab.prepare_arrangement();
             }
@@ -417,16 +425,17 @@ impl Screen {
                     group.name
                 ));
             }
-            self.arrangement_projects
+            self.core
+                .arrangement_projects
                 .insert(*destination, group.identity.clone());
         }
         for (_, destination, _, layout, order, stacks) in prepared {
-            if let Some(tab) = self.tabs.get_mut(&destination) {
+            if let Some(tab) = self.core.tabs.get_mut(&destination) {
                 tab.restore_arrangement_stacks(&stacks);
                 tab.arrange_existing_panes(&layout, &order)?;
             }
         }
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             if sources.contains(&tab.id) && !reserved.contains(&tab.id) {
                 tab.restore_arrangement_stack_visibility(&original_stacks);
             }
@@ -436,6 +445,7 @@ impl Screen {
                 .non_fatal();
         }
         let empty: Vec<_> = self
+            .core
             .tabs
             .values()
             .filter(|tab| {
@@ -446,8 +456,9 @@ impl Screen {
         for id in empty {
             self.close_tab_by_id(id)?;
         }
-        self.arrangement_projects
-            .retain(|id, _| self.tabs.contains_key(id));
+        self.core
+            .arrangement_projects
+            .retain(|id, _| self.core.tabs.contains_key(id));
         self.log_and_report_session_state()?;
         Ok(())
     }

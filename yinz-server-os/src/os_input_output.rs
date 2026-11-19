@@ -1,7 +1,7 @@
 use crate::{ClientId, PaneId, TerminalId};
 use yinz_bus::os_input_output::{
-    ClientTransport, RemotePanes, ServerEnvironment, TerminalIo, TerminalProcesses,
-    TerminalSupervision,
+    ClientTransport, RemotePanes, ServerEnvironment, SupervisorThemeHooks, TerminalIo,
+    TerminalProcesses, TerminalSupervision,
 };
 use yinz_types::internal_ids::{ProcessId, SessionName};
 use yinz_types::style::default_palette;
@@ -1118,6 +1118,34 @@ fn check_bubblewrap_launch(_root: &Path, _cmd: &RunCommand) -> Result<()> {
     Err(anyhow!("Bubblewrap agent environments require Linux"))
 }
 
+impl SupervisorThemeHooks for ServerOsInputOutput {
+    fn retain_agent_theme(
+        &self,
+        terminal_id: TerminalId,
+        event: yinz_types::agent::theme::AgentThemeEvent,
+    ) -> Result<()> {
+        self.pty_backend.retain_agent_theme(terminal_id, event)
+    }
+    fn detected_agent_theme(
+        &self,
+        terminal_id: TerminalId,
+        child_pid: ProcessId,
+    ) -> Option<yinz_types::agent::theme::DetectedAgentTheme> {
+        let pid = self
+            .pty_backend
+            .tcgetpgrp(terminal_id)
+            .and_then(|pid| u32::try_from(pid).ok())
+            .filter(|pid| *pid > 0)
+            .unwrap_or(child_pid.get());
+        self.detected_themes
+            .lock()
+            .ok()?
+            .entry(terminal_id)
+            .or_default()
+            .poll(Some(pid), yinz_process::agent_theme::ExecutionTarget::Local)
+    }
+}
+
 impl TerminalIo for ServerOsInputOutput {
     fn set_terminal_size_using_terminal_id(
         &self,
@@ -1136,13 +1164,6 @@ impl TerminalIo for ServerOsInputOutput {
     }
     fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize> {
         self.pty_backend.write_to_tty_stdin(terminal_id, buf)
-    }
-    fn retain_agent_theme(
-        &self,
-        terminal_id: TerminalId,
-        event: yinz_types::agent::theme::AgentThemeEvent,
-    ) -> Result<()> {
-        self.pty_backend.retain_agent_theme(terminal_id, event)
     }
     fn tcdrain(&self, terminal_id: TerminalId) -> Result<()> {
         self.pty_backend.tcdrain(terminal_id)
@@ -1633,8 +1654,8 @@ fn restored_claude_publisher(
     }
 }
 
-impl ServerEnvironment for ServerOsInputOutput {
-    fn observe_restored_claude(
+impl ServerOsInputOutput {
+    pub fn observe_restored_claude(
         &self,
         terminal: TerminalId,
         conversation: String,
@@ -1657,6 +1678,9 @@ impl ServerEnvironment for ServerOsInputOutput {
             .context("start restored Claude observer")?;
         Ok(())
     }
+}
+
+impl ServerEnvironment for ServerOsInputOutput {
     fn load_palette(&self) -> Palette {
         default_palette()
     }
@@ -1717,24 +1741,6 @@ impl ServerEnvironment for ServerOsInputOutput {
         }
 
         (cwds, cmds)
-    }
-    fn detected_agent_theme(
-        &self,
-        terminal_id: TerminalId,
-        child_pid: ProcessId,
-    ) -> Option<yinz_types::agent::theme::DetectedAgentTheme> {
-        let pid = self
-            .pty_backend
-            .tcgetpgrp(terminal_id)
-            .and_then(|pid| u32::try_from(pid).ok())
-            .filter(|pid| *pid > 0)
-            .unwrap_or(child_pid.get());
-        self.detected_themes
-            .lock()
-            .ok()?
-            .entry(terminal_id)
-            .or_default()
-            .poll(Some(pid), yinz_process::agent_theme::ExecutionTarget::Local)
     }
     fn get_foreground_cmds(
         &self,

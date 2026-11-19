@@ -336,9 +336,11 @@ fn a_departing_client_leaves_no_host_notification_state_behind() {
     screen.add_client(crate::ClientId::new(2)).unwrap();
     screen.set_client_host_terminal_env(crate::ClientId::new(2), kitty_env());
     assert!(screen
+        .core
         .client_notification_protocols
         .contains_key(&ClientId::new(2)));
     assert!(screen
+        .core
         .client_host_terminal_env
         .contains_key(&ClientId::new(2)));
 
@@ -346,12 +348,14 @@ fn a_departing_client_leaves_no_host_notification_state_behind() {
 
     assert!(
         !screen
+            .core
             .client_notification_protocols
             .contains_key(&ClientId::new(2)),
         "the resolved notification protocol is forgotten"
     );
     assert!(
         !screen
+            .core
             .client_host_terminal_env
             .contains_key(&ClientId::new(2)),
         "the reported host environment is forgotten"
@@ -391,6 +395,7 @@ fn codex_plan_notifications_preserve_metadata_and_report_once() {
         let terminal = TerminalId::new(7);
         let pane_id = PaneId::Terminal(terminal);
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
@@ -440,7 +445,7 @@ fn codex_plan_notifications_preserve_metadata_and_report_once() {
         )
         .unwrap();
         let (sender, receiver) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
         let pane = screen
             .get_active_tab_mut(ClientId::new(1))
             .unwrap()
@@ -508,7 +513,7 @@ fn codex_plan_notifications_ignore_unrelated_or_incomplete_text() {
         };
         crate::screen::apply_pane_agent_report(&mut screen, pane, Some(agent.clone())).unwrap();
         let (sender, receiver) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
         screen.forward_desktop_notifications(vec![notification], TerminalId::new(1));
         assert_eq!(screen.get_pane_info(pane).unwrap().agent, Some(agent));
         assert!(agent_events(&receiver).is_empty());
@@ -555,7 +560,7 @@ fn codex_plan_notifications_require_an_idle_reported_conversation() {
         let agent = (case != "no-agent").then_some(agent);
         crate::screen::apply_pane_agent_report(&mut screen, pane, agent.clone()).unwrap();
         let (sender, receiver) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
         screen.forward_desktop_notifications(
             vec![PendingNotification::Osc9 {
                 body: PLAN_PROMPT.into(),
@@ -574,6 +579,7 @@ fn notifications_omit_recipients_with_no_terminal_output() {
     let quiet = ClientId::new(2);
     screen.add_client(quiet).unwrap();
     screen
+        .core
         .client_notification_protocols
         .insert(quiet, NotificationProtocol::Off);
     screen.forward_desktop_notifications(

@@ -967,6 +967,7 @@ fn subscriber_ansi_flag_preserved_in_subscription() {
 
     assert!(
         !screen
+            .core
             .pane_render_subscribers
             .get(&ClientId::new(100))
             .unwrap()
@@ -975,6 +976,7 @@ fn subscriber_ansi_flag_preserved_in_subscription() {
     );
     assert!(
         screen
+            .core
             .pane_render_subscribers
             .get(&ClientId::new(101))
             .unwrap()
@@ -1023,6 +1025,7 @@ fn subscriber_ansi_and_plain_receive_different_content() {
 
     // Reset previous viewports to force delivery
     screen
+        .core
         .pane_render_subscribers
         .get_mut(&ClientId::new(100))
         .unwrap()
@@ -1032,6 +1035,7 @@ fn subscriber_ansi_and_plain_receive_different_content() {
             vec!["old".to_string()],
         );
     screen
+        .core
         .pane_render_subscribers
         .get_mut(&ClientId::new(101))
         .unwrap()

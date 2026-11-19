@@ -60,32 +60,35 @@ impl Screen {
 
     fn subscriber_client(&self) -> Option<ClientId> {
         // Choose independently of pane contents, including cached grids on inactive tabs.
-        self.connected_clients
+        self.core
+            .connected_clients
             .borrow()
             .iter()
-            .filter(|id| !self.watcher_clients.contains_key(id))
+            .filter(|id| !self.core.watcher_clients.contains_key(id))
             .copied()
             .min()
             .or_else(|| {
-                self.followed_client_id
-                    .filter(|id| !self.watcher_clients.contains_key(id))
+                self.core
+                    .followed_client_id
+                    .filter(|id| !self.core.watcher_clients.contains_key(id))
             })
     }
 
     pub(super) fn mark_subscriber_pane_dirty(&mut self, pane_id: PaneId) {
         if self
+            .core
             .pane_render_subscribers
             .values()
             .any(|sub| sub.pane_ids.contains(&pane_id))
         {
-            self.pane_subscriber_dirty_panes.insert(pane_id);
+            self.core.pane_subscriber_dirty_panes.insert(pane_id);
         }
     }
 
     pub(super) fn subscriber_snapshots_pending(&self) -> bool {
-        !self.pane_render_subscribers.is_empty()
-            && (self.pane_subscriber_snapshots_dirty
-                || !self.pane_subscriber_dirty_panes.is_empty())
+        !self.core.pane_render_subscribers.is_empty()
+            && (self.core.pane_subscriber_snapshots_dirty
+                || !self.core.pane_subscriber_dirty_panes.is_empty())
     }
 
     pub(super) fn subscribe_to_pane_renders(
@@ -103,7 +106,7 @@ impl Screen {
             let server_pane_id: PaneId = *pane_id;
             let mut found = false;
 
-            for tab in self.tabs.values() {
+            for tab in self.core.tabs.values() {
                 if let Some(pane) = tab.get_pane_with_id(server_pane_id) {
                     let get_full_scrollback = scrollback.is_some();
                     let max_lines = scrollback.filter(|&n| n != 0);
@@ -118,7 +121,7 @@ impl Screen {
                     )
                     .into_owned();
 
-                    if let Some(os_input) = &self.bus.os_input {
+                    if let Some(os_input) = &self.core.bus.os_input {
                         let scrollback_data = if scrollback.is_some() {
                             Some(contents.lines_above_viewport.clone())
                         } else {
@@ -142,7 +145,7 @@ impl Screen {
                 }
             }
 
-            if !found && let Some(os_input) = &self.bus.os_input {
+            if !found && let Some(os_input) = &self.core.bus.os_input {
                 let _ = os_input.send_to_client(
                     subscriber_client_id,
                     ServerToClientMsg::LogError {
@@ -153,7 +156,7 @@ impl Screen {
         }
 
         if !valid_pane_ids.is_empty() {
-            self.pane_render_subscribers.insert(
+            self.core.pane_render_subscribers.insert(
                 subscriber_client_id,
                 PaneRenderSubscription {
                     pane_ids: valid_pane_ids,
@@ -164,12 +167,12 @@ impl Screen {
         }
     }
     pub(super) fn deliver_to_pane_subscribers(&mut self, report: Option<&PaneRenderReport>) {
-        if self.pane_render_subscribers.is_empty() {
-            self.pane_subscriber_dirty_panes.clear();
-            self.pane_subscriber_snapshots_dirty = false;
+        if self.core.pane_render_subscribers.is_empty() {
+            self.core.pane_subscriber_dirty_panes.clear();
+            self.core.pane_subscriber_snapshots_dirty = false;
             return;
         }
-        if !self.subscriber_snapshots_pending() || self.deferred_subscriber_renders {
+        if !self.subscriber_snapshots_pending() || self.core.deferred_subscriber_renders {
             return;
         }
         let client = self.subscriber_client();
@@ -177,17 +180,19 @@ impl Screen {
         let mut ansi_pane_map = HashMap::new();
         for (ansi, map) in [(false, &mut pane_map), (true, &mut ansi_pane_map)] {
             let pane_ids: HashSet<_> = self
+                .core
                 .pane_render_subscribers
                 .values()
                 .filter(|sub| sub.ansi == ansi)
                 .flat_map(|sub| sub.pane_ids.iter().copied())
                 .filter(|id| {
-                    self.pane_subscriber_snapshots_dirty
-                        || self.pane_subscriber_dirty_panes.contains(id)
+                    self.core.pane_subscriber_snapshots_dirty
+                        || self.core.pane_subscriber_dirty_panes.contains(id)
                 })
                 .collect();
             for pane_id in pane_ids {
                 if let Some(pane) = self
+                    .core
                     .tabs
                     .values()
                     .find_map(|tab| tab.get_pane_with_id(pane_id))
@@ -200,8 +205,8 @@ impl Screen {
             }
         }
         self.deliver_subscriber_updates_from_map(&pane_map, Some(&ansi_pane_map));
-        self.pane_subscriber_dirty_panes.clear();
-        self.pane_subscriber_snapshots_dirty = false;
+        self.core.pane_subscriber_dirty_panes.clear();
+        self.core.pane_subscriber_snapshots_dirty = false;
     }
     pub(super) fn deliver_subscriber_updates_from_map(
         &mut self,
@@ -212,7 +217,7 @@ impl Screen {
         let mut updates_to_send: Vec<(ClientId, ServerToClientMsg)> = Vec::new();
         let mut dead_subscribers: Vec<ClientId> = Vec::new();
 
-        for (subscriber_id, subscription) in &self.pane_render_subscribers {
+        for (subscriber_id, subscription) in &self.core.pane_render_subscribers {
             let effective_map = if subscription.ansi {
                 ansi_pane_map.unwrap_or(pane_map)
             } else {
@@ -244,7 +249,7 @@ impl Screen {
 
         // Send updates and track dead subscribers
         for (subscriber_id, msg) in &updates_to_send {
-            if let Some(os_input) = &self.bus.os_input
+            if let Some(os_input) = &self.core.bus.os_input
                 && os_input
                     .send_to_client(*subscriber_id, msg.clone())
                     .is_err()
@@ -261,30 +266,31 @@ impl Screen {
             if let ServerToClientMsg::PaneRenderUpdate {
                 pane_id, viewport, ..
             } = msg
-                && let Some(subscription) = self.pane_render_subscribers.get_mut(&subscriber_id)
+                && let Some(subscription) =
+                    self.core.pane_render_subscribers.get_mut(&subscriber_id)
             {
                 subscription.previous_viewports.insert(pane_id, viewport);
             }
         }
 
         for id in dead_subscribers {
-            self.pane_render_subscribers.remove(&id);
+            self.core.pane_render_subscribers.remove(&id);
         }
     }
     pub(super) fn notify_pane_closed_to_subscribers(&mut self, pane_id: yinz_types::data::PaneId) {
-        self.pane_subscriber_dirty_panes.remove(&pane_id);
+        self.core.pane_subscriber_dirty_panes.remove(&pane_id);
         let mut dead_subscribers = Vec::new();
 
-        for (subscriber_id, subscription) in &mut self.pane_render_subscribers {
+        for (subscriber_id, subscription) in &mut self.core.pane_render_subscribers {
             if subscription.pane_ids.remove(&pane_id) {
-                if let Some(os_input) = &self.bus.os_input {
+                if let Some(os_input) = &self.core.bus.os_input {
                     let _ = os_input.send_to_client(
                         *subscriber_id,
                         ServerToClientMsg::SubscribedPaneClosed { pane_id },
                     );
                 }
                 if subscription.pane_ids.is_empty() {
-                    if let Some(os_input) = &self.bus.os_input {
+                    if let Some(os_input) = &self.core.bus.os_input {
                         let _ = os_input.send_to_client(
                             *subscriber_id,
                             ServerToClientMsg::Exit {
@@ -298,7 +304,7 @@ impl Screen {
         }
 
         for id in dead_subscribers {
-            self.pane_render_subscribers.remove(&id);
+            self.core.pane_render_subscribers.remove(&id);
         }
     }
 }

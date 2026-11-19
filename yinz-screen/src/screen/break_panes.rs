@@ -41,7 +41,7 @@ impl Screen {
         pane_id: PaneId,
         dont_swap_if_suppressed: bool,
     ) -> Option<ExtractedPaneWithSource> {
-        let tab = self.tabs.get_mut(&source)?;
+        let tab = self.core.tabs.get_mut(&source)?;
         let original = tab.placement_for_extraction(pane_id);
         let respawn = tab.take_pending_respawn(pane_id);
         match tab.extract_pane_leaving_tab(pane_id, dont_swap_if_suppressed) {
@@ -154,7 +154,7 @@ impl Screen {
                 None,
                 client_id,
             )?;
-            if let Some(tab) = self.tabs.get_mut(&tab_id) {
+            if let Some(tab) = self.core.tabs.get_mut(&tab_id) {
                 tab.focus_pane_with_id(active_pane_id, false, false, client_id)?;
             }
             return Ok(());
@@ -171,6 +171,7 @@ impl Screen {
         );
         self.new_tab(tab_index, swap_layouts, None, Some(client_id))?;
         let source = self
+            .core
             .tabs
             .get_mut(&source_tab_id)
             .with_context(err_context)?;
@@ -187,7 +188,7 @@ impl Screen {
             .with_context(err_context);
         };
         let active_pane_run_instruction = active_pane.invoked_with().clone();
-        let Some(tab) = self.tabs.get_mut(&tab_index) else {
+        let Some(tab) = self.core.tabs.get_mut(&tab_index) else {
             // unreachable - the tab was created above - but the pane must still go somewhere
             self.return_extracted_pane((
                 source_tab_id,
@@ -238,23 +239,26 @@ impl Screen {
             },
         }
         if let Some(entry) = carried_respawn
-            && let Some(tab) = self.tabs.get_mut(&tab_index)
+            && let Some(tab) = self.core.tabs.get_mut(&tab_index)
         {
             tab.restore_pending_respawn(active_pane_id, entry);
         }
         let should_change_focus_to_new_tab = true;
-        self.bus.senders.send_to_plugin(PluginInstruction::NewTab(
-            None,
-            default_shell,
-            Some(tiled_panes_layout),
-            (!floating_panes_layout.is_empty()).then_some(floating_panes_layout),
-            tab_index,
-            None,  // initial_panes
-            false, // block_on_first_terminal
-            should_change_focus_to_new_tab,
-            client_id,
-            None,
-        ))?;
+        self.core
+            .bus
+            .senders
+            .send_to_plugin(PluginInstruction::NewTab(
+                None,
+                default_shell,
+                Some(tiled_panes_layout),
+                (!floating_panes_layout.is_empty()).then_some(floating_panes_layout),
+                tab_index,
+                None,  // initial_panes
+                false, // block_on_first_terminal
+                should_change_focus_to_new_tab,
+                client_id,
+                None,
+            ))?;
         Ok(())
     }
     pub fn break_multiple_panes_to_new_tab(
@@ -269,11 +273,11 @@ impl Screen {
 
         // The new tab first: creating it can fail, and a `?` once panes are out of their tabs
         // would drop them, orphaning their processes.
-        let (mut tiled_panes_layout, floating_panes_layout) = self.default_layout.new_tab();
+        let (mut tiled_panes_layout, floating_panes_layout) = self.core.default_layout.new_tab();
         let tab_index = self.get_new_tab_id();
         let swap_layouts = (
-            self.default_layout.swap_tiled_layouts.clone(),
-            self.default_layout.swap_floating_layouts.clone(),
+            self.core.default_layout.swap_tiled_layouts.clone(),
+            self.core.default_layout.swap_floating_layouts.clone(),
         );
         if should_change_focus_to_new_tab {
             self.new_tab(tab_index, swap_layouts, None, Some(client_id))?;
@@ -312,7 +316,7 @@ impl Screen {
             }
         }
 
-        let Some(tab) = self.tabs.get_mut(&tab_index) else {
+        let Some(tab) = self.core.tabs.get_mut(&tab_index) else {
             // unreachable - the tab was created above - but what was extracted must still be
             // torn down properly rather than dropped
             let homeless: Vec<PaneId> = extracted_panes
@@ -363,18 +367,21 @@ impl Screen {
             }
             tiled_panes_layout.ignore_run_instruction(run_instruction.clone());
         }
-        self.bus.senders.send_to_plugin(PluginInstruction::NewTab(
-            None,
-            default_shell,
-            Some(tiled_panes_layout),
-            (!floating_panes_layout.is_empty()).then_some(floating_panes_layout),
-            tab_index,
-            None,  // initial_panes
-            false, // block_on_first_terminal
-            should_change_focus_to_new_tab,
-            client_id,
-            None,
-        ))?;
+        self.core
+            .bus
+            .senders
+            .send_to_plugin(PluginInstruction::NewTab(
+                None,
+                default_shell,
+                Some(tiled_panes_layout),
+                (!floating_panes_layout.is_empty()).then_some(floating_panes_layout),
+                tab_index,
+                None,  // initial_panes
+                false, // block_on_first_terminal
+                should_change_focus_to_new_tab,
+                client_id,
+                None,
+            ))?;
         Ok(tab_index)
     }
     pub fn break_pane_to_new_tab(
@@ -433,6 +440,7 @@ impl Screen {
             // The put-back in `accept_transferred_panes` remains as the safety net, but it
             // cannot restore the pane's old slot in the source's tiled layout.
             let destination_has_room = self
+                .core
                 .tabs
                 .get_mut(&destination_tab_id)
                 .is_some_and(|tab| tab.has_room_for_extracted_pane(&destination_placement));
@@ -466,6 +474,8 @@ impl Screen {
                 self.report_no_room_for_moved_pane(pane_id);
             }
 
+            self.refresh_agent_worktrees();
+            self.sync_nested_guest_fullscreen_state();
             self.log_and_report_session_state()?;
         } else {
             let active_pane_id = {
@@ -474,7 +484,8 @@ impl Screen {
                     .get_active_pane_id(client_id)
                     .with_context(err_context)?
             };
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_background_jobs(BackgroundJob::DisplayPaneError(
                     vec![active_pane_id],
@@ -494,7 +505,8 @@ impl Screen {
     /// Tell the user a pane they asked to move stayed where it was. Cosmetic, so a failure to
     /// send it is logged rather than failing the move that has already been settled.
     fn report_no_room_for_moved_pane(&self, pane_id: PaneId) {
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_background_jobs(BackgroundJob::DisplayPaneError(
                 vec![pane_id],
@@ -515,6 +527,7 @@ impl Screen {
     pub(super) fn close_homeless_pane(&mut self, pane_id: PaneId) {
         self.cleanup_closed_pane(pane_id);
         let _ = self
+            .core
             .bus
             .senders
             .send_to_plugin(PluginInstruction::Update(vec![(
@@ -526,6 +539,7 @@ impl Screen {
         // not checking the result: this may be happening while the app is closing, at
         // which point the pty thread is already gone
         let _ = self
+            .core
             .bus
             .senders
             .send_to_pty(PtyInstruction::ClosePane(pane_id, None));
@@ -540,16 +554,18 @@ impl Screen {
         destination: TabId,
     ) -> Option<Vec<PaneId>> {
         let source = self.tab_containing_overlay(pane_id)?.id;
-        if source == destination || !self.tabs.contains_key(&destination) {
+        if source == destination || !self.core.tabs.contains_key(&destination) {
             return None;
         }
         let container = self
+            .core
             .tabs
             .get_mut(&source)?
             .take_overlay_container(pane_id)?;
         let members = container.pane_ids().collect();
         // Present: checked above, and nothing since has removed a tab.
-        self.tabs
+        self.core
+            .tabs
             .get_mut(&destination)?
             .accept_overlay_container(container);
         Some(members)
@@ -629,6 +645,7 @@ impl Screen {
         let mut extracted = Vec::with_capacity(to_extract.len());
         for pane_id in to_extract {
             let source = self
+                .core
                 .tabs
                 .values()
                 .find(|tab| tab.id != tab_id && tab.has_pane_with_pid(&pane_id));
@@ -665,6 +682,8 @@ impl Screen {
             self.switch_active_tab(position, None, true, client_id)
                 .with_context(err_context)?;
         }
+        self.refresh_agent_worktrees();
+        self.sync_nested_guest_fullscreen_state();
         self.log_and_report_session_state()?;
         Ok(outcome)
     }

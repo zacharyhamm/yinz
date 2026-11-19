@@ -46,6 +46,10 @@ impl<T: Clone> SenderWithContext<T> {
         Shutdown::default().sender(sender)
     }
 
+    pub fn same_channel(&self, other: &Self) -> bool {
+        self.sender.same_channel(&other.sender)
+    }
+
     /// Whether this sender's session has begun teardown. After a required send fails,
     /// resource owners can use this to distinguish shutdown cancellation from a worker failure.
     /// This does not indicate whether a message was delivered.

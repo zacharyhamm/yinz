@@ -60,11 +60,12 @@ pub(super) fn replay_pending_pane_event(
                 .handle_pty_bytes(pid, bytes, pending)
                 .context("failed to replay buffered terminal output")?;
             let _ = screen
+                .core
                 .bus
                 .senders
                 .send_to_background_jobs(BackgroundJob::RenderToClients);
         },
-        event => screen.bus.senders.send_to_screen(event)?,
+        event => screen.core.bus.senders.send_to_screen(event)?,
     }
     Ok(())
 }

@@ -10,8 +10,8 @@ use crate::os_input_output::ReleasedPane;
 use crate::ServerInstruction;
 use std::time::Duration;
 use yinz_bus::os_input_output::{
-    ClientTransport, RemotePanes, ServerEnvironment, TerminalIo, TerminalProcesses,
-    TerminalSupervision,
+    ClientTransport, RemotePanes, ServerEnvironment, SupervisorThemeHooks, TerminalIo,
+    TerminalProcesses, TerminalSupervision,
 };
 use yinz_types::data::GetPaneCwdResponse;
 use yinz_types::data::GetPaneGitProbeResponse;
@@ -236,6 +236,8 @@ impl MockOsApi {
         self.cmds_by_ppid.lock().unwrap().remove(&ppid.to_string());
     }
 }
+
+impl SupervisorThemeHooks for MockOsApi {}
 
 impl TerminalIo for MockOsApi {
     fn set_terminal_size_using_terminal_id(

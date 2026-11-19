@@ -1,8 +1,8 @@
 use super::*;
 use crate::os_input_output::AsyncReader;
 use crate::os_input_output::{
-    ClientTransport, RemotePanes, ServerEnvironment, TerminalIo, TerminalProcesses,
-    TerminalSupervision,
+    ClientTransport, RemotePanes, ServerEnvironment, SupervisorThemeHooks, TerminalIo,
+    TerminalProcesses, TerminalSupervision,
 };
 use crate::thread_bus::Bus;
 use crate::PaneId;
@@ -87,6 +87,8 @@ fn unsupported_terminal_reservation_returns_an_error() {
         "this backend does not support reserving terminal IDs"
     );
 }
+
+impl SupervisorThemeHooks for MockServerOsApi {}
 
 impl TerminalIo for MockServerOsApi {
     fn set_terminal_size_using_terminal_id(
@@ -766,4 +768,76 @@ fn cancelling_startup_writes_fails_waiters_before_ack_and_cannot_reach_a_retry()
     assert!(result.try_recv().unwrap().error_message.is_none());
     assert_eq!(mock.get_written_bytes(id), b"new input");
     assert_eq!(mock.get_written_bytes(other), b"other pane");
+}
+
+#[test]
+fn redraw_keeps_ordinary_and_managed_placements_until_final_sizes_and_forwards_direct_decisions() {
+    use crate::pty::PtyInstruction;
+    use crate::route::ManagedPlacementDecision;
+    use yinz_types::agent::launch::LaunchReason;
+    use PtyWriteInstruction::*;
+    let terminal = TerminalId::new(1);
+    let mock = MockServerOsApi::new();
+    let applied = mock.applied_resizes.clone();
+    let (mut bus, sender) = make_test_bus(mock);
+    let (pty_tx, replies) = channels::unbounded();
+    bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    let ordinary = |generation| TerminalPlaced {
+        terminal_id: terminal,
+        generation,
+        placement: None,
+    };
+    let managed = |generation| ManagedTerminalPlaced {
+        terminal_id: terminal,
+        generation,
+        decision: ManagedPlacementDecision::Rejected {
+            launch_id: "test".into(),
+            reason: LaunchReason::PlacementRevoked,
+        },
+    };
+    std::thread::scope(|scope| {
+        scope.spawn(move || pty_writer_main(bus).unwrap());
+        let check = |first| {
+            assert!(
+                matches!(replies.recv_timeout(Duration::from_secs(30)).unwrap().0, PtyInstruction::TerminalPlaced { terminal_id, generation, placement: None } if terminal_id == terminal && generation == first)
+            );
+            assert!(
+                matches!(replies.recv_timeout(Duration::from_secs(30)).unwrap().0, PtyInstruction::ManagedTerminalPlaced { terminal_id, generation, decision: ManagedPlacementDecision::Rejected{reason: LaunchReason::PlacementRevoked, ..} } if terminal_id == terminal && generation == first + 1)
+            );
+        };
+        sender.send(ordinary(1)).unwrap();
+        sender.send(managed(2)).unwrap();
+        check(1);
+        sender.send(StartCachingResizes).unwrap();
+        sender.send(ordinary(3)).unwrap();
+        sender.send(managed(4)).unwrap();
+        sender
+            .send(ResizePty(terminal, 60, 40, None, None))
+            .unwrap();
+        sender
+            .send(RedrawPty(terminal, 60, 40, Some(600), Some(800)))
+            .unwrap();
+        sender
+            .send(ResizePty(terminal, 90, 50, None, None))
+            .unwrap();
+        let (completion, barrier) = tokio::sync::oneshot::channel();
+        sender
+            .send(Write(
+                b"barrier".to_vec(),
+                terminal,
+                Some(NotificationEnd::new(completion)),
+            ))
+            .unwrap();
+        assert!(barrier.blocking_recv().unwrap().error_message.is_none());
+        assert!(replies.try_recv().is_err());
+        assert_eq!(
+            *applied.lock().unwrap(),
+            [(terminal, 60, 40), (terminal, 59, 40), (terminal, 60, 40)]
+        );
+        sender.send(ApplyCachedResizes).unwrap();
+        check(3);
+        assert_eq!(applied.lock().unwrap().last(), Some(&(terminal, 90, 50)));
+        sender.send(Exit).unwrap();
+    });
+    assert!(replies.try_recv().is_err());
 }

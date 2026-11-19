@@ -54,7 +54,7 @@ fn alt_f_opens_a_floating_pane_when_only_an_overlay_exists() {
     let size = Size { cols: 80, rows: 12 };
     let mut screen = create_non_mirrored_screen(size);
     let (pty_sender, pty_receiver) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
     new_tab(&mut screen, 1, TabId::new(0));
 
     let overlay = PaneId::Terminal(crate::TerminalId::new(2));
@@ -101,7 +101,7 @@ fn alt_f_hides_regular_floating_panes_while_an_overlay_exists() {
     let size = Size { cols: 80, rows: 12 };
     let mut screen = create_non_mirrored_screen(size);
     let (pty_sender, pty_receiver) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
     new_tab(&mut screen, 1, TabId::new(0));
     open_floating_pane(&mut screen, TabId::new(0), 2, "FLOATING", false);
     open_floating_pane(&mut screen, TabId::new(0), 3, "OVERLAY", true);
@@ -126,7 +126,7 @@ fn an_overlay_popup_still_renders_when_another_floating_pane_is_open() {
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, TabId::new(0));
     let (server_sender, server_receiver) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
     screen.render_to_clients().expect("TEST");
     while server_receiver.try_recv().is_ok() {}
 
@@ -184,31 +184,44 @@ fn an_overlay_that_awaits_placement_is_not_painted_until_it_is_placed() {
         None,
     )
     .unwrap();
-    let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
-        let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
-        SenderWithContext::new(plugin_tx)
-    });
+    let plugin_sender = screen
+        .core
+        .bus
+        .senders
+        .to_plugin
+        .clone()
+        .unwrap_or_else(|| {
+            let (plugin_tx, _plugin_rx) =
+                channels::unbounded::<(PluginInstruction, ErrorContext)>();
+            SenderWithContext::new(plugin_tx)
+        });
     let pane = PaneFactory::plugin(
         crate::PluginId::new(9),
         Default::default(),
         plugin_sender,
         "popup".to_owned(),
         "popup".to_owned(),
-        screen.sixel_image_store.clone(),
-        screen.kitty_image_store.clone(),
-        screen.terminal_emulator_colors.clone(),
-        screen.terminal_emulator_color_codes.clone(),
+        screen.core.sixel_image_store.clone(),
+        screen.core.kitty_image_store.clone(),
+        screen.core.terminal_emulator_colors.clone(),
+        screen.core.terminal_emulator_color_codes.clone(),
         Rc::new(RefCell::new(LinkHandler::new())),
-        screen.character_cell_size.clone(),
-        screen.connected_clients.borrow().iter().copied().collect(),
-        screen.style,
+        screen.core.character_cell_size.clone(),
+        screen
+            .core
+            .connected_clients
+            .borrow()
+            .iter()
+            .copied()
+            .collect(),
+        screen.core.style,
         Some(Run::Plugin(run_plugin)),
-        screen.debug,
-        screen.arrow_fonts,
-        screen.styled_underlines,
+        screen.core.debug,
+        screen.core.arrow_fonts,
+        screen.core.styled_underlines,
     );
     let pane_id = PaneId::Plugin(crate::PluginId::new(9));
-    let tab = screen.tabs.get_mut(&TabId::new(0)).expect("TEST");
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).expect("TEST");
     // the door `LaunchOrFocusPlugin { floating true; overlay true }` comes in by: overlay-ness is
     // re-derived from the configuration, and so is this
     tab.add_floating_pane(
@@ -403,7 +416,7 @@ fn waiting_modals_recover_on_error_or_resize_and_ordinary_modals_open_immediatel
         let (mut screen, _, server_rx) =
             create_new_screen_with_capture(size, false, false, true, true);
         let (plugin_tx, _plugin_rx) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
         new_tab(&mut screen, 1, TabId::new(0));
         let mut grid = grid_for_render_snapshot(size);
         render_frame_into(&mut screen, &server_rx, CLIENT_1, &mut grid);
@@ -418,6 +431,7 @@ fn waiting_modals_recover_on_error_or_resize_and_ordinary_modals_open_immediatel
         let pid = PluginId::new(9);
         let pane_id = PaneId::Plugin(pid);
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
@@ -452,7 +466,7 @@ fn waiting_modals_recover_on_error_or_resize_and_ordinary_modals_open_immediatel
                 .unwrap(),
             _ => {},
         }
-        let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+        let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
         assert!(!tab.overlay_carry_for(pane_id).awaiting_placement);
         // Reopening an existing modal must not restart the placement wait.
         tab.hide_overlay_pane(pane_id);
@@ -460,7 +474,7 @@ fn waiting_modals_recover_on_error_or_resize_and_ordinary_modals_open_immediatel
             .focus_plugin_pane(&run, true, true, false, CLIENT_1, &mut None)
             .unwrap());
         assert!(
-            !screen.tabs[&TabId::new(0)]
+            !screen.core.tabs[&TabId::new(0)]
                 .overlay_carry_for(pane_id)
                 .awaiting_placement
         );
@@ -469,7 +483,7 @@ fn waiting_modals_recover_on_error_or_resize_and_ordinary_modals_open_immediatel
         if recovery == "error" {
             assert!(frame.contains("LOAD FAILED"), "{frame}");
         }
-        let placed_at = screen.tabs[&TabId::new(0)]
+        let placed_at = screen.core.tabs[&TabId::new(0)]
             .get_pane_with_id(pane_id)
             .unwrap()
             .position_and_size();
@@ -477,7 +491,7 @@ fn waiting_modals_recover_on_error_or_resize_and_ordinary_modals_open_immediatel
         assert!(screen
             .focus_plugin_pane(&run, true, true, false, CLIENT_1, &mut None)
             .unwrap());
-        let moved_tab = &screen.tabs[&TabId::new(1)];
+        let moved_tab = &screen.core.tabs[&TabId::new(1)];
         assert!(!moved_tab.overlay_carry_for(pane_id).awaiting_placement);
         assert_eq!(
             moved_tab
@@ -497,10 +511,11 @@ fn initially_suppressed_modals_accept_geometry_before_or_after_reveal() {
             let (mut screen, _, server_rx) =
                 create_new_screen_with_capture(size, false, false, true, true);
             let (plugin_tx, _plugin_rx) = channels::unbounded();
-            screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+            screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
             new_tab(&mut screen, 1, TabId::new(0));
             open_floating_pane(&mut screen, TabId::new(0), 2, "HIDDENFLOATING", false);
             screen
+                .core
                 .tabs
                 .get_mut(&TabId::new(0))
                 .unwrap()
@@ -513,6 +528,7 @@ fn initially_suppressed_modals_accept_geometry_before_or_after_reveal() {
             let run = RunPluginOrAlias::RunPlugin(plugin);
             let pane_id = PaneId::Plugin(PluginId::new(9));
             screen
+                .core
                 .tabs
                 .get_mut(&TabId::new(0))
                 .unwrap()
@@ -527,7 +543,9 @@ fn initially_suppressed_modals_accept_geometry_before_or_after_reveal() {
                     None,
                 )
                 .unwrap();
-            let info = screen.tabs[&TabId::new(0)].get_pane_info(pane_id).unwrap();
+            let info = screen.core.tabs[&TabId::new(0)]
+                .get_pane_info(pane_id)
+                .unwrap();
             assert!(info.is_suppressed);
             assert!(!info.is_focused);
             assert_ne!(screen.active_pane_id(CLIENT_1), Some(pane_id));
@@ -536,7 +554,7 @@ fn initially_suppressed_modals_accept_geometry_before_or_after_reveal() {
 
             if !reveal_before_placement {
                 screen.change_overlay_coordinates(vec![(pane_id, popup_coordinates())], false);
-                let tab = &screen.tabs[&TabId::new(0)];
+                let tab = &screen.core.tabs[&TabId::new(0)];
                 let info = tab.get_pane_info(pane_id).unwrap();
                 assert!(info.is_suppressed);
                 assert_ne!(screen.active_pane_id(CLIENT_1), Some(pane_id));
@@ -548,6 +566,7 @@ fn initially_suppressed_modals_accept_geometry_before_or_after_reveal() {
                 new_tab(&mut screen, 3, TabId::new(1));
                 open_floating_pane(&mut screen, TabId::new(1), 4, "HIDDENFLOATING", false);
                 screen
+                    .core
                     .tabs
                     .get_mut(&TabId::new(1))
                     .unwrap()
@@ -560,7 +579,7 @@ fn initially_suppressed_modals_accept_geometry_before_or_after_reveal() {
                 .focus_plugin_pane(&run, true, true, false, CLIENT_1, &mut None)
                 .unwrap());
             assert_eq!(screen.active_pane_id(CLIENT_1), Some(pane_id));
-            let tab = &screen.tabs[&destination];
+            let tab = &screen.core.tabs[&destination];
             let info = tab.get_pane_info(pane_id).unwrap();
             assert!(!info.is_suppressed);
             assert_eq!(
@@ -573,7 +592,7 @@ fn initially_suppressed_modals_accept_geometry_before_or_after_reveal() {
                 screen.change_overlay_coordinates(vec![(pane_id, popup_coordinates())], false);
             }
             // One sizing request, with no resize or second request to rescue the reveal.
-            let tab = &screen.tabs[&destination];
+            let tab = &screen.core.tabs[&destination];
             let geom = tab.get_pane_with_id(pane_id).unwrap().position_and_size();
             assert_eq!(
                 (geom.x, geom.y, geom.cols.as_usize(), geom.rows.as_usize()),
@@ -581,11 +600,14 @@ fn initially_suppressed_modals_accept_geometry_before_or_after_reveal() {
             );
             assert!(!tab.overlay_carry_for(pane_id).awaiting_placement);
             assert!(screen
+                .core
                 .tabs
                 .values()
                 .all(|tab| !tab.are_floating_panes_visible()));
             if move_to_another_tab {
-                assert!(screen.tabs[&TabId::new(0)].get_pane_info(pane_id).is_none());
+                assert!(screen.core.tabs[&TabId::new(0)]
+                    .get_pane_info(pane_id)
+                    .is_none());
             }
             let frame = render_frame_into(&mut screen, &server_rx, CLIENT_1, &mut grid);
             assert!(frame.contains("MODAL"), "{frame}");
@@ -613,31 +635,44 @@ fn open_overlay_plugin(
         None,
     )
     .unwrap();
-    let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
-        let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
-        SenderWithContext::new(plugin_tx)
-    });
+    let plugin_sender = screen
+        .core
+        .bus
+        .senders
+        .to_plugin
+        .clone()
+        .unwrap_or_else(|| {
+            let (plugin_tx, _plugin_rx) =
+                channels::unbounded::<(PluginInstruction, ErrorContext)>();
+            SenderWithContext::new(plugin_tx)
+        });
     let popup = PaneFactory::plugin(
         plugin_id,
         Default::default(),
         plugin_sender,
         "popup".to_owned(),
         "popup".to_owned(),
-        screen.sixel_image_store.clone(),
-        screen.kitty_image_store.clone(),
-        screen.terminal_emulator_colors.clone(),
-        screen.terminal_emulator_color_codes.clone(),
+        screen.core.sixel_image_store.clone(),
+        screen.core.kitty_image_store.clone(),
+        screen.core.terminal_emulator_colors.clone(),
+        screen.core.terminal_emulator_color_codes.clone(),
         Rc::new(RefCell::new(LinkHandler::new())),
-        screen.character_cell_size.clone(),
-        screen.connected_clients.borrow().iter().copied().collect(),
-        screen.style,
+        screen.core.character_cell_size.clone(),
+        screen
+            .core
+            .connected_clients
+            .borrow()
+            .iter()
+            .copied()
+            .collect(),
+        screen.core.style,
         Some(Run::Plugin(run_plugin.clone())),
-        screen.debug,
-        screen.arrow_fonts,
-        screen.styled_underlines,
+        screen.core.debug,
+        screen.core.arrow_fonts,
+        screen.core.styled_underlines,
     );
     let popup_id = PaneId::Plugin(plugin_id);
-    let tab = screen.tabs.get_mut(&tab_id).expect("TEST");
+    let tab = screen.core.tabs.get_mut(&tab_id).expect("TEST");
     tab.show_floating_panes();
     tab.add_overlay_pane(
         popup,
@@ -665,7 +700,7 @@ fn an_overlay_popup_stays_an_overlay_when_it_follows_the_client_to_another_tab()
         .switch_active_tab(TabPosition::new(0), None, true, crate::ClientId::new(1))
         .expect("TEST");
     let (server_sender, server_receiver) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
     screen.render_to_clients().expect("TEST");
     while server_receiver.try_recv().is_ok() {}
 
@@ -676,7 +711,7 @@ fn an_overlay_popup_stays_an_overlay_when_it_follows_the_client_to_another_tab()
         TabId::new(0),
         coordinates.clone(),
     );
-    let first_tab = screen.tabs.get_mut(&TabId::new(0)).expect("TEST");
+    let first_tab = screen.core.tabs.get_mut(&TabId::new(0)).expect("TEST");
     assert!(first_tab.pane_is_overlay(popup_id));
     let placed_at = first_tab
         .get_pane_with_id(popup_id)
@@ -698,7 +733,7 @@ fn an_overlay_popup_stays_an_overlay_when_it_follows_the_client_to_another_tab()
         )
         .expect("TEST"));
 
-    let second_tab = screen.tabs.get(&TabId::new(1)).expect("TEST");
+    let second_tab = screen.core.tabs.get(&TabId::new(1)).expect("TEST");
     assert!(
         second_tab.pane_is_overlay(popup_id),
         "the popup must still be an overlay in the tab it followed the client into"
@@ -715,7 +750,7 @@ fn an_overlay_popup_stays_an_overlay_when_it_follows_the_client_to_another_tab()
 }
 
 fn floating_geom(screen: &Screen, pane_id: u32) -> PaneGeom {
-    screen.tabs[&TabId::new(0)]
+    screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(pane_id)))
         .expect("TEST")
         .position_and_size()
@@ -894,28 +929,41 @@ fn add_modal_plugin_overlay(
         None,
     )
     .unwrap();
-    let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
-        let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
-        SenderWithContext::new(plugin_tx)
-    });
+    let plugin_sender = screen
+        .core
+        .bus
+        .senders
+        .to_plugin
+        .clone()
+        .unwrap_or_else(|| {
+            let (plugin_tx, _plugin_rx) =
+                channels::unbounded::<(PluginInstruction, ErrorContext)>();
+            SenderWithContext::new(plugin_tx)
+        });
     let modal = PaneFactory::plugin(
         plugin_id,
         Default::default(),
         plugin_sender,
         "modal".to_owned(),
         "modal".to_owned(),
-        screen.sixel_image_store.clone(),
-        screen.kitty_image_store.clone(),
-        screen.terminal_emulator_colors.clone(),
-        screen.terminal_emulator_color_codes.clone(),
+        screen.core.sixel_image_store.clone(),
+        screen.core.kitty_image_store.clone(),
+        screen.core.terminal_emulator_colors.clone(),
+        screen.core.terminal_emulator_color_codes.clone(),
         Rc::new(RefCell::new(LinkHandler::new())),
-        screen.character_cell_size.clone(),
-        screen.connected_clients.borrow().iter().copied().collect(),
-        screen.style,
+        screen.core.character_cell_size.clone(),
+        screen
+            .core
+            .connected_clients
+            .borrow()
+            .iter()
+            .copied()
+            .collect(),
+        screen.core.style,
         Some(Run::Plugin(run_plugin)),
-        screen.debug,
-        screen.arrow_fonts,
-        screen.styled_underlines,
+        screen.core.debug,
+        screen.core.arrow_fonts,
+        screen.core.styled_underlines,
     );
     let modal_id = PaneId::Plugin(plugin_id);
     let tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
@@ -1187,7 +1235,7 @@ fn open_popup(screen: &mut Screen, pane_id: u32, contents: &str) {
 /// is the flag; this is the consequence.
 fn rendered_frame(screen: &mut Screen, size: Size) -> String {
     let (server_sender, server_receiver) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
     let mut grid = grid_for_render_snapshot(size);
     render_frame_into(screen, &server_receiver, crate::ClientId::new(1), &mut grid)
 }
@@ -1324,7 +1372,7 @@ fn screen_with_plugin_sender(
 ) {
     let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
     let mut screen = create_non_mirrored_screen(size);
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
     (screen, plugin_rx)
 }
 
@@ -1466,7 +1514,7 @@ fn an_overlay_is_re_resolved_against_the_surface_on_resize() {
     new_tab(&mut screen, 1, TabId::new(0));
     open_floating_pane(&mut screen, TabId::new(0), 2, "OVERLAY", true);
 
-    let before = screen.tabs[&TabId::new(0)]
+    let before = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .position_and_size();
@@ -1480,13 +1528,14 @@ fn an_overlay_is_re_resolved_against_the_surface_on_resize() {
         })
         .expect("TEST");
 
-    let after = screen.tabs[&TabId::new(0)]
+    let after = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .position_and_size();
     assert_eq!(after.cols.as_usize(), 72, "60% of the new 120 columns");
     assert!(
-        screen.tabs[&TabId::new(0)].pane_is_overlay(PaneId::Terminal(crate::TerminalId::new(2))),
+        screen.core.tabs[&TabId::new(0)]
+            .pane_is_overlay(PaneId::Terminal(crate::TerminalId::new(2))),
         "and it is still an overlay afterwards"
     );
 }
@@ -1525,7 +1574,7 @@ fn an_overlay_owns_the_mouse_where_it_is_painted_while_the_layer_is_hidden() {
         "clicking it focuses it"
     );
     assert!(
-        !screen.tabs[&TabId::new(0)].are_floating_panes_visible(),
+        !screen.core.tabs[&TabId::new(0)].are_floating_panes_visible(),
         "and does not raise the floating layer"
     );
 }
@@ -2220,7 +2269,7 @@ fn scrolling_a_terminal_overlay_in_alternate_mode_writes_to_the_overlay() {
     // the tab copies the bus senders when it is created, so the capture goes in first
     let (pty_writer_tx, pty_writer_rx) =
         channels::unbounded::<(PtyWriteInstruction, ErrorContext)>();
-    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
+    screen.core.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
     new_tab(&mut screen, 1, TabId::new(0));
     open_popup(&mut screen, 3, "OVERLAY");
     // DECSET 1049: the overlay is on the alternate screen, where scrolling is cursor keys
@@ -2269,7 +2318,7 @@ fn scrolling_a_terminal_overlay_that_tracks_the_mouse_writes_to_the_overlay() {
     // the tab copies the bus senders when it is created, so the capture goes in first
     let (pty_writer_tx, pty_writer_rx) =
         channels::unbounded::<(PtyWriteInstruction, ErrorContext)>();
-    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
+    screen.core.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
     new_tab(&mut screen, 1, TabId::new(0));
     open_popup(&mut screen, 3, "OVERLAY");
     // DECSET 1000 + 1006: report mouse buttons, in SGR encoding
@@ -2368,7 +2417,7 @@ fn an_overlay_that_named_no_size_gets_the_default_geometry() {
     new_tab(&mut screen, 1, TabId::new(0));
     open_overlay_with(&mut screen, 2, FloatingPaneCoordinates::default());
 
-    let geom = screen.tabs[&TabId::new(0)]
+    let geom = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .position_and_size();
@@ -2400,7 +2449,7 @@ fn an_overlay_defaults_only_the_axis_its_coordinates_did_not_name() {
         },
     );
 
-    let geom = screen.tabs[&TabId::new(0)]
+    let geom = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .position_and_size();
@@ -2433,7 +2482,7 @@ fn an_overlay_that_named_no_size_follows_the_surface_across_a_resize() {
         })
         .expect("TEST");
 
-    let geom = screen.tabs[&TabId::new(0)]
+    let geom = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .position_and_size();
@@ -2462,7 +2511,7 @@ fn an_overlay_that_named_no_size_keeps_the_pinned_flag_it_was_given() {
         },
     );
 
-    let geom = screen.tabs[&TabId::new(0)]
+    let geom = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .position_and_size();
@@ -2516,7 +2565,7 @@ fn an_overlay_cannot_be_the_root_of_a_stack_and_no_pane_is_lost_refusing() {
     // surface, comfortably more than the `stack_size + MIN_TERMINAL_HEIGHT` the root is measured
     // against. Without the overlay arm in `has_room_for_stack` this stack would be accepted.
     assert!(
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .get_pane_with_id(overlay)
             .expect("TEST")
             .position_and_size()
@@ -2537,7 +2586,7 @@ fn an_overlay_cannot_be_the_root_of_a_stack_and_no_pane_is_lost_refusing() {
 
     // still *tiled*, not merely still reachable: `get_pane_with_id` would also find them parked
     // in the suppressed panes, and being parked is the salvage path, not the correct outcome
-    let tiled: Vec<PaneId> = screen.tabs[&TabId::new(0)]
+    let tiled: Vec<PaneId> = screen.core.tabs[&TabId::new(0)]
         .pane_infos()
         .into_iter()
         .filter(|info| !info.is_floating && !info.is_suppressed)
@@ -2553,7 +2602,7 @@ fn an_overlay_cannot_be_the_root_of_a_stack_and_no_pane_is_lost_refusing() {
         );
     }
     assert!(
-        screen.tabs[&TabId::new(0)].pane_is_overlay(overlay),
+        screen.core.tabs[&TabId::new(0)].pane_is_overlay(overlay),
         "and the overlay is untouched"
     );
 }
@@ -2568,6 +2617,7 @@ fn an_overlay_cannot_be_the_root_of_a_stack_and_no_pane_is_lost_refusing() {
 /// honest test of whether the placement travelled.
 fn open_modal_terminal_in_tab(screen: &mut Screen, tab_id: TabId, pane_id: PaneId) {
     screen
+        .core
         .tabs
         .get_mut(&tab_id)
         .expect("TEST")
@@ -2595,7 +2645,7 @@ fn a_modal_broken_out_to_another_tab_arrives_as_a_modal() {
     let modal = PaneId::Terminal(crate::TerminalId::new(42));
     open_modal_terminal_in_tab(&mut screen, TabId::new(2), modal);
     assert!(
-        screen.tabs[&TabId::new(2)].pane_is_overlay(modal),
+        screen.core.tabs[&TabId::new(2)].pane_is_overlay(modal),
         "pre-condition"
     );
 
@@ -2611,18 +2661,18 @@ fn a_modal_broken_out_to_another_tab_arrives_as_a_modal() {
     assert!(outcome.succeeded(), "{outcome:?}");
     assert_eq!(outcome.moved, vec![modal]);
     assert!(
-        screen.tabs[&TabId::new(3)].pane_is_overlay(modal),
+        screen.core.tabs[&TabId::new(3)].pane_is_overlay(modal),
         "it is an overlay in the tab it landed in"
     );
     assert!(
-        screen.tabs[&TabId::new(3)]
+        screen.core.tabs[&TabId::new(3)]
             .overlay_placement_for(modal)
             .expect("TEST")
             .is_modal(),
         "and a modal, not merely a dismissible overlay"
     );
     assert!(
-        !screen.tabs[&TabId::new(3)].are_floating_panes_visible(),
+        !screen.core.tabs[&TabId::new(3)].are_floating_panes_visible(),
         "an overlay arriving does not raise the destination's floating layer"
     );
 }
@@ -2639,15 +2689,15 @@ fn a_modal_broken_out_to_a_new_tab_arrives_as_a_modal() {
         .expect("TEST");
 
     assert!(
-        screen.tabs[&new_tab_id].pane_is_overlay(modal),
+        screen.core.tabs[&new_tab_id].pane_is_overlay(modal),
         "an overlay broken out to a new tab is still an overlay there"
     );
-    assert!(screen.tabs[&new_tab_id]
+    assert!(screen.core.tabs[&new_tab_id]
         .overlay_placement_for(modal)
         .expect("TEST")
         .is_modal());
     assert!(
-        !screen.tabs[&TabId::new(2)].has_pane_with_pid(&modal),
+        !screen.core.tabs[&TabId::new(2)].has_pane_with_pid(&modal),
         "and no longer in the tab it came from"
     );
 }
@@ -2681,14 +2731,14 @@ fn a_resize_keystroke_on_an_overlay_leaves_the_pane_behind_it_alone() {
     ]
     .iter()
     .map(|id| {
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .get_pane_with_id(*id)
             .expect("TEST")
             .position_and_size()
     })
     .collect();
     assert_eq!(
-        screen.tabs[&TabId::new(0)].get_active_pane_id(crate::ClientId::new(1)),
+        screen.core.tabs[&TabId::new(0)].get_active_pane_id(crate::ClientId::new(1)),
         Some(PaneId::Terminal(crate::TerminalId::new(3))),
         "pre-condition: the overlay has the keyboard"
     );
@@ -2708,7 +2758,7 @@ fn a_resize_keystroke_on_an_overlay_leaves_the_pane_behind_it_alone() {
     ]
     .iter()
     .map(|id| {
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .get_pane_with_id(*id)
             .expect("TEST")
             .position_and_size()
@@ -2729,7 +2779,7 @@ fn a_resize_keystroke_resizes_the_overlay_that_has_the_keyboard() {
     new_tab(&mut screen, 1, TabId::new(0));
     open_floating_pane(&mut screen, TabId::new(0), 2, "OVERLAY", true);
 
-    let before = screen.tabs[&TabId::new(0)]
+    let before = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .position_and_size();
@@ -2743,7 +2793,7 @@ fn a_resize_keystroke_resizes_the_overlay_that_has_the_keyboard() {
         )
         .expect("TEST");
 
-    let after = screen.tabs[&TabId::new(0)]
+    let after = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .position_and_size();
@@ -2767,17 +2817,17 @@ fn a_resize_keystroke_reaches_an_overlay_over_a_fullscreen_floating_pane() {
         .unwrap()
         .toggle_active_pane_fullscreen(crate::ClientId::new(1));
     assert_eq!(
-        screen.tabs[&TabId::new(0)].fullscreen_pane_id(),
+        screen.core.tabs[&TabId::new(0)].fullscreen_pane_id(),
         Some(PaneId::Terminal(crate::TerminalId::new(2))),
         "the floating pane is the one that went fullscreen"
     );
     open_overlay_with(&mut screen, 3, overlay_coordinates());
 
-    let floating_before = screen.tabs[&TabId::new(0)]
+    let floating_before = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .position_and_size();
-    let before = screen.tabs[&TabId::new(0)]
+    let before = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(3)))
         .expect("TEST")
         .position_and_size();
@@ -2791,7 +2841,7 @@ fn a_resize_keystroke_reaches_an_overlay_over_a_fullscreen_floating_pane() {
         )
         .expect("TEST");
 
-    let after = screen.tabs[&TabId::new(0)]
+    let after = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(3)))
         .expect("TEST")
         .position_and_size();
@@ -2801,7 +2851,7 @@ fn a_resize_keystroke_reaches_an_overlay_over_a_fullscreen_floating_pane() {
     );
     assert_eq!(
         floating_before,
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
             .expect("TEST")
             .position_and_size(),
@@ -2819,11 +2869,11 @@ fn a_fullscreen_keystroke_expands_the_overlay_that_has_the_keyboard() {
     new_tab(&mut screen, 1, TabId::new(0));
     open_overlay_with(&mut screen, 2, overlay_coordinates());
 
-    let tiled_before = screen.tabs[&TabId::new(0)]
+    let tiled_before = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(1)))
         .expect("TEST")
         .position_and_size();
-    let before = screen.tabs[&TabId::new(0)]
+    let before = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .position_and_size();
@@ -2833,7 +2883,7 @@ fn a_fullscreen_keystroke_expands_the_overlay_that_has_the_keyboard() {
         .unwrap()
         .toggle_active_pane_fullscreen(crate::ClientId::new(1));
 
-    let tab = &screen.tabs[&TabId::new(0)];
+    let tab = &screen.core.tabs[&TabId::new(0)];
     assert!(
         tab.get_pane_info(PaneId::Terminal(crate::TerminalId::new(2)))
             .expect("TEST")
@@ -2877,7 +2927,7 @@ fn a_fullscreen_keystroke_expands_the_overlay_that_has_the_keyboard() {
         .toggle_active_pane_fullscreen(crate::ClientId::new(1));
     assert_eq!(
         before,
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
             .expect("TEST")
             .position_and_size(),
@@ -2913,7 +2963,7 @@ fn a_refused_fullscreen_press_repaints_what_the_expansion_covered() {
     // one grid across both renders, because the ghost is the frame the second render *fails* to
     // paint over - a fresh grid per render could not show it
     let (server_sender, server_receiver) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
     let mut grid = grid_for_render_snapshot(size);
     let expanded = render_frame_into(
         &mut screen,
@@ -2932,7 +2982,9 @@ fn a_refused_fullscreen_press_repaints_what_the_expansion_covered() {
         .toggle_pane_fullscreen(modal_id);
 
     assert!(
-        screen.tabs[&TabId::new(0)].fullscreen_pane_id().is_none(),
+        screen.core.tabs[&TabId::new(0)]
+            .fullscreen_pane_id()
+            .is_none(),
         "a press naming a modal puts the expansion back, even though it may not expand the modal"
     );
     let collapsed = render_frame_into(
@@ -2992,7 +3044,7 @@ fn an_expanded_overlay_follows_the_viewport_a_ui_pane_leaves() {
         .get_active_tab_mut(crate::ClientId::new(1))
         .unwrap()
         .toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(3)));
-    let lower = screen.tabs[&TabId::new(0)]
+    let lower = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .position_and_size();
@@ -3006,7 +3058,7 @@ fn an_expanded_overlay_follows_the_viewport_a_ui_pane_leaves() {
         .unwrap()
         .set_pane_selectable(PaneId::Terminal(crate::TerminalId::new(2)), false);
 
-    let tab = &screen.tabs[&TabId::new(0)];
+    let tab = &screen.core.tabs[&TabId::new(0)];
     // the upper pane is what the viewport is now: the lower one is chrome, and the two of them
     // tile the whole surface between them
     let viewport = tab
@@ -3049,7 +3101,7 @@ fn a_fullscreen_keystroke_on_an_overlay_leaves_a_fullscreen_floating_pane_alone(
         .toggle_active_pane_fullscreen(crate::ClientId::new(1));
     open_overlay_with(&mut screen, 3, overlay_coordinates());
 
-    let floating_before = screen.tabs[&TabId::new(0)]
+    let floating_before = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .position_and_size();
@@ -3060,14 +3112,14 @@ fn a_fullscreen_keystroke_on_an_overlay_leaves_a_fullscreen_floating_pane_alone(
         .toggle_active_pane_fullscreen(crate::ClientId::new(1));
 
     assert!(
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .get_pane_info(PaneId::Terminal(crate::TerminalId::new(3)))
             .expect("TEST")
             .is_fullscreen,
         "the overlay is what the keystroke expanded"
     );
     assert!(
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .get_pane_info(PaneId::Terminal(crate::TerminalId::new(2)))
             .expect("TEST")
             .is_fullscreen,
@@ -3075,7 +3127,7 @@ fn a_fullscreen_keystroke_on_an_overlay_leaves_a_fullscreen_floating_pane_alone(
     );
     assert_eq!(
         floating_before,
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
             .expect("TEST")
             .position_and_size(),
@@ -3094,7 +3146,7 @@ fn a_ctrl_drag_on_an_overlay_frame_resizes_it() {
     new_tab(&mut screen, 1, TabId::new(0));
     open_overlay_with(&mut screen, 2, overlay_coordinates());
 
-    let before = screen.tabs[&TabId::new(0)]
+    let before = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .position_and_size();
@@ -3112,7 +3164,7 @@ fn a_ctrl_drag_on_an_overlay_frame_resizes_it() {
     screen.handle_mouse_event(motion, crate::ClientId::new(1));
     screen.handle_mouse_event(release, crate::ClientId::new(1));
 
-    let after = screen.tabs[&TabId::new(0)]
+    let after = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .position_and_size();
@@ -3216,14 +3268,14 @@ fn a_ctrl_scroll_on_an_overlay_leaves_the_panes_behind_it_alone() {
     ]
     .iter()
     .map(|id| {
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .get_pane_with_id(*id)
             .expect("TEST")
             .position_and_size()
     })
     .collect();
     assert_eq!(
-        screen.tabs[&TabId::new(0)].get_active_pane_id(crate::ClientId::new(1)),
+        screen.core.tabs[&TabId::new(0)].get_active_pane_id(crate::ClientId::new(1)),
         Some(PaneId::Terminal(crate::TerminalId::new(3))),
         "pre-condition: the overlay has the keyboard"
     );
@@ -3246,7 +3298,7 @@ fn a_ctrl_scroll_on_an_overlay_leaves_the_panes_behind_it_alone() {
     ]
     .iter()
     .map(|id| {
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .get_pane_with_id(*id)
             .expect("TEST")
             .position_and_size()
@@ -3271,7 +3323,7 @@ fn a_ctrl_scroll_on_a_modal_changes_nothing() {
     let before: Vec<PaneGeom> = [PaneId::Terminal(crate::TerminalId::new(1)), modal]
         .iter()
         .map(|id| {
-            screen.tabs[&TabId::new(0)]
+            screen.core.tabs[&TabId::new(0)]
                 .get_pane_with_id(*id)
                 .expect("TEST")
                 .position_and_size()
@@ -3292,7 +3344,7 @@ fn a_ctrl_scroll_on_a_modal_changes_nothing() {
     let after: Vec<PaneGeom> = [PaneId::Terminal(crate::TerminalId::new(1)), modal]
         .iter()
         .map(|id| {
-            screen.tabs[&TabId::new(0)]
+            screen.core.tabs[&TabId::new(0)]
                 .get_pane_with_id(*id)
                 .expect("TEST")
                 .position_and_size()
@@ -3312,17 +3364,19 @@ fn a_resize_keystroke_on_a_modal_changes_nothing() {
     let modal = PaneId::Terminal(crate::TerminalId::new(42));
     open_modal_terminal_in_tab(&mut screen, TabId::new(2), modal);
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(2))
         .expect("TEST")
         .set_force_render();
 
-    let before = screen.tabs[&TabId::new(2)]
+    let before = screen.core.tabs[&TabId::new(2)]
         .get_pane_with_id(modal)
         .expect("TEST")
         .position_and_size();
 
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(2))
         .expect("TEST")
@@ -3333,7 +3387,7 @@ fn a_resize_keystroke_on_a_modal_changes_nothing() {
         .expect("TEST");
 
     assert_eq!(
-        screen.tabs[&TabId::new(2)]
+        screen.core.tabs[&TabId::new(2)]
             .get_pane_with_id(modal)
             .expect("TEST")
             .position_and_size(),
@@ -3379,7 +3433,7 @@ fn a_press_on_an_overlay_frame_does_not_drag_the_floating_pane_beneath_it() {
     new_tab(&mut screen, 1, TabId::new(0));
     open_floating_pane(&mut screen, TabId::new(0), 2, "FLOATING", false);
     assert!(
-        screen.tabs[&TabId::new(0)].are_floating_panes_visible(),
+        screen.core.tabs[&TabId::new(0)].are_floating_panes_visible(),
         "pre-condition: the layer is up, which is what the buggy test consulted"
     );
 
@@ -3521,15 +3575,15 @@ fn a_modal_broken_out_to_the_neighbouring_tab_arrives_as_a_modal() {
         .expect("TEST");
 
     assert!(
-        screen.tabs[&TabId::new(1)].pane_is_overlay(modal),
+        screen.core.tabs[&TabId::new(1)].pane_is_overlay(modal),
         "it is an overlay in the tab it landed in"
     );
-    assert!(screen.tabs[&TabId::new(1)]
+    assert!(screen.core.tabs[&TabId::new(1)]
         .overlay_placement_for(modal)
         .expect("TEST")
         .is_modal());
     assert!(
-        !screen.tabs[&TabId::new(1)].are_floating_panes_visible(),
+        !screen.core.tabs[&TabId::new(1)].are_floating_panes_visible(),
         "and did not raise that tab's floating layer on the way in"
     );
 }
@@ -3565,37 +3619,38 @@ fn a_modal_broken_out_to_its_own_new_tab_arrives_as_a_modal() {
         "pre-condition"
     );
 
-    let tabs_before: HashSet<TabId> = screen.tabs.keys().copied().collect();
+    let tabs_before: HashSet<TabId> = screen.core.tabs.keys().copied().collect();
     screen
         .break_pane(None, Box::new(Layout::default()), crate::ClientId::new(1))
         .expect("TEST");
     let new_tab_id = *screen
+        .core
         .tabs
         .keys()
         .find(|tab_id| !tabs_before.contains(tab_id))
         .expect("the break was refused");
 
     assert!(
-        screen.tabs[&new_tab_id].pane_is_overlay(modal),
+        screen.core.tabs[&new_tab_id].pane_is_overlay(modal),
         "it is an overlay in the tab it made"
     );
     assert!(
-        screen.tabs[&new_tab_id]
+        screen.core.tabs[&new_tab_id]
             .overlay_placement_for(modal)
             .expect("TEST")
             .is_modal(),
         "and a modal, not merely a dismissible overlay"
     );
     assert!(
-        !screen.tabs[&new_tab_id].are_floating_panes_visible(),
+        !screen.core.tabs[&new_tab_id].are_floating_panes_visible(),
         "and did not raise the new tab's floating layer on the way in"
     );
     assert!(
-        !screen.tabs[&TabId::new(0)].has_pane_with_pid(&modal),
+        !screen.core.tabs[&TabId::new(0)].has_pane_with_pid(&modal),
         "and is no longer in the tab it came from"
     );
     assert_eq!(
-        screen.tabs[&TabId::new(0)].get_selectable_tiled_panes_count(),
+        screen.core.tabs[&TabId::new(0)].get_selectable_tiled_panes_count(),
         2,
         "which kept both of the panes the overlay was covering"
     );
@@ -3613,25 +3668,25 @@ fn an_overlay_can_be_broken_out_over_a_single_tiled_pane() {
     let modal = PaneId::Terminal(crate::TerminalId::new(2));
     open_modal_terminal_in_tab(&mut screen, TabId::new(0), modal);
     assert_eq!(
-        screen.tabs[&TabId::new(0)].get_selectable_tiled_panes_count(),
+        screen.core.tabs[&TabId::new(0)].get_selectable_tiled_panes_count(),
         1,
         "pre-condition: nothing but the overlay and the pane it covers"
     );
 
-    let tabs_before: HashSet<TabId> = screen.tabs.keys().copied().collect();
+    let tabs_before: HashSet<TabId> = screen.core.tabs.keys().copied().collect();
     screen
         .break_pane(None, Box::new(Layout::default()), crate::ClientId::new(1))
         .expect("TEST");
     let new_tab_id = *screen
+        .core
         .tabs
         .keys()
         .find(|tab_id| !tabs_before.contains(tab_id))
         .expect("the break was refused");
 
-    assert!(screen.tabs[&new_tab_id].pane_is_overlay(modal));
-    assert!(
-        screen.tabs[&TabId::new(0)].has_pane_with_pid(&PaneId::Terminal(crate::TerminalId::new(1)))
-    );
+    assert!(screen.core.tabs[&new_tab_id].pane_is_overlay(modal));
+    assert!(screen.core.tabs[&TabId::new(0)]
+        .has_pane_with_pid(&PaneId::Terminal(crate::TerminalId::new(1))));
 }
 
 /// An overlay does not tile, so the new tab still wants the layout's pane underneath it. The
@@ -3643,7 +3698,7 @@ fn breaking_an_overlay_out_still_spawns_the_new_tabs_own_pane() {
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, TabId::new(0));
     let (plugin_tx, plugin_rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
 
     open_modal_terminal_in_tab(
         &mut screen,
@@ -3679,7 +3734,7 @@ fn focus_follows_mouse_lands_on_an_overlay_over_a_visible_floating_layer() {
     new_tab(&mut screen, 1, TabId::new(0));
     open_floating_pane(&mut screen, TabId::new(0), 2, "FLOATING", false);
     assert!(
-        screen.tabs[&TabId::new(0)].are_floating_panes_visible(),
+        screen.core.tabs[&TabId::new(0)].are_floating_panes_visible(),
         "pre-condition"
     );
 
@@ -4024,7 +4079,7 @@ fn a_modal_survives_a_display_clear_armed_by_a_tiled_pane_behind_it() {
 
 /// A floating pane at an explicit place on the surface, so that a click can be aimed at it.
 fn open_floating_pane_at(screen: &mut Screen, pane_id: u32, x: usize, y: usize) {
-    let tab = screen.tabs.get_mut(&TabId::new(0)).expect("TEST");
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).expect("TEST");
     tab.new_pane(
         PaneId::Terminal(crate::TerminalId::new(pane_id)),
         None,
@@ -4054,7 +4109,7 @@ fn screen_with_floating_panes_under_an_overlay(size: Size, kind: OverlayKind) ->
     open_floating_pane_at(&mut screen, 4, 5, 10);
     open_overlay_of_kind(&mut screen, 3, "OVERLAY", kind);
     assert!(
-        screen.tabs[&TabId::new(0)].are_floating_panes_visible(),
+        screen.core.tabs[&TabId::new(0)].are_floating_panes_visible(),
         "the floating layer is up, which is what makes the panes underneath clickable"
     );
     assert_eq!(
@@ -4331,7 +4386,7 @@ fn a_focus_move_at_the_edge_under_a_modal_does_not_bubble_to_the_host() {
     new_tab(&mut screen, 1, TabId::new(0));
     open_overlay_of_kind(&mut screen, 2, "MODAL", OverlayKind::Modal);
     let (server_sender, server_receiver) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
 
     screen
         .move_focus_left_or_previous_tab(crate::ClientId::new(1))
@@ -4465,7 +4520,7 @@ fn a_focus_move_at_the_edge_under_a_dismissible_overlay_does_not_bubble_to_the_h
     new_tab(&mut screen, 1, TabId::new(0));
     open_overlay_of_kind(&mut screen, 2, "POPUP", OverlayKind::Dismissible);
     let (server_sender, server_receiver) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
     let assert_nothing_bubbled = |what: &str| {
         while let Ok((instruction, _)) = server_receiver.try_recv() {
             assert!(
@@ -4577,7 +4632,7 @@ fn a_panel_carried_after_its_client_switched_tabs_arrives_unfocused() {
             )
             .expect("TEST");
 
-        let destination = &screen.tabs[&TabId::new(0)];
+        let destination = &screen.core.tabs[&TabId::new(0)];
         for child in children {
             assert!(
                 destination.pane_is_overlay(child),
@@ -4655,8 +4710,8 @@ fn moving_within_a_stack_list_releases_a_dismissible_overlay() {
     let size = Size { cols: 80, rows: 20 };
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, TabId::new(0));
-    *screen.stacked_pane_list.borrow_mut() = true;
-    let tab = screen.tabs.get_mut(&TabId::new(0)).expect("TEST");
+    *screen.core.stacked_pane_list.borrow_mut() = true;
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).expect("TEST");
     for pane_id in [
         PaneId::Terminal(crate::TerminalId::new(2)),
         PaneId::Terminal(crate::TerminalId::new(3)),
@@ -4816,7 +4871,7 @@ fn a_guest_hand_back_under_a_modal_does_not_bubble_to_the_host() {
     new_tab(&mut screen, 1, TabId::new(0));
     open_overlay_of_kind(&mut screen, 2, "MODAL", OverlayKind::Modal);
     let (server_sender, server_receiver) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
 
     screen.handle_nested_session_message_from_pane(
         PaneId::Terminal(crate::TerminalId::new(1)),
@@ -5032,7 +5087,7 @@ fn a_moved_and_resized_overlay_keeps_its_geometry_across_a_tab_move() {
         )
         .expect("TEST");
 
-    let after = screen.tabs[&TabId::new(1)]
+    let after = screen.core.tabs[&TabId::new(1)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(3)))
         .expect("TEST")
         .position_and_size();
@@ -5151,7 +5206,7 @@ fn a_dragged_overlay_revealed_onto_another_tab_arrives_shown_and_still_dragged()
         coordinates.clone(),
     );
 
-    let geom = screen.tabs[&TabId::new(0)]
+    let geom = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(popup_id)
         .expect("TEST")
         .position_and_size();
@@ -5169,13 +5224,14 @@ fn a_dragged_overlay_revealed_onto_another_tab_arrives_shown_and_still_dragged()
         MouseEvent::new_left_release_event(to),
         crate::ClientId::new(1),
     );
-    let dropped_at = screen.tabs[&TabId::new(0)]
+    let dropped_at = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(popup_id)
         .expect("TEST")
         .position_and_size();
 
     // Esc puts the column away, and the user asks for it back from the other tab
     assert!(screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .expect("TEST")
@@ -5194,14 +5250,14 @@ fn a_dragged_overlay_revealed_onto_another_tab_arrives_shown_and_still_dragged()
         )
         .expect("TEST"));
 
-    let second_tab = screen.tabs.get(&TabId::new(1)).expect("TEST");
+    let second_tab = screen.core.tabs.get(&TabId::new(1)).expect("TEST");
     assert!(
         second_tab.overlays_are_rendered(),
         "the reveal half of the move still happens - a pane asked for by name comes back shown"
     );
     // the plugin restating its placement, as agent does the instant it hears where it landed
     screen.change_overlay_coordinates(vec![(popup_id, coordinates)], false);
-    let after = screen.tabs[&TabId::new(1)]
+    let after = screen.core.tabs[&TabId::new(1)]
         .get_pane_with_id(popup_id)
         .expect("TEST")
         .position_and_size();
@@ -5233,25 +5289,25 @@ fn suppressing_an_overlay_hides_it_in_place() {
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, TabId::new(0));
     open_floating_pane(&mut screen, TabId::new(0), 2, "OVERLAY", true);
-    let before = screen.tabs[&TabId::new(0)]
+    let before = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .position_and_size();
 
-    assert!(
-        screen.tabs[&TabId::new(0)].pane_is_overlay(PaneId::Terminal(crate::TerminalId::new(2)))
-    );
+    assert!(screen.core.tabs[&TabId::new(0)]
+        .pane_is_overlay(PaneId::Terminal(crate::TerminalId::new(2))));
     screen
         .tab_containing_overlay_mut(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .hide_overlay_pane(PaneId::Terminal(crate::TerminalId::new(2)));
 
     assert!(
-        screen.tabs[&TabId::new(0)].pane_is_overlay(PaneId::Terminal(crate::TerminalId::new(2))),
+        screen.core.tabs[&TabId::new(0)]
+            .pane_is_overlay(PaneId::Terminal(crate::TerminalId::new(2))),
         "still an overlay, and still loaded - hiding is not closing"
     );
     assert!(
-        !screen.tabs[&TabId::new(0)].overlays_are_rendered(),
+        !screen.core.tabs[&TabId::new(0)].overlays_are_rendered(),
         "but nothing is drawn for it"
     );
     let frame = rendered_frame(&mut screen, size);
@@ -5264,7 +5320,7 @@ fn suppressing_an_overlay_hides_it_in_place() {
         .tab_containing_overlay_mut(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .show_overlay_pane(PaneId::Terminal(crate::TerminalId::new(2)));
-    let after = screen.tabs[&TabId::new(0)]
+    let after = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .position_and_size();
@@ -5299,7 +5355,7 @@ fn overlay_permission_prompts_restore_visibility_and_preserve_placement() {
                 let mut screen = create_non_mirrored_screen(size);
                 let (plugin_tx, plugin_rx) = channels::unbounded();
                 let plugin_sender = SenderWithContext::new(plugin_tx);
-                screen.bus.senders.to_plugin = Some(plugin_sender.clone());
+                screen.core.bus.senders.to_plugin = Some(plugin_sender.clone());
                 new_tab(&mut screen, 1, TabId::new(0));
                 let pid = PluginId::new(9);
                 let pane_id = PaneId::Plugin(pid);
@@ -5309,24 +5365,30 @@ fn overlay_permission_prompts_restore_visibility_and_preserve_placement() {
                     plugin_sender,
                     "overlay".to_owned(),
                     "overlay".to_owned(),
-                    screen.sixel_image_store.clone(),
-                    screen.kitty_image_store.clone(),
-                    screen.terminal_emulator_colors.clone(),
-                    screen.terminal_emulator_color_codes.clone(),
+                    screen.core.sixel_image_store.clone(),
+                    screen.core.kitty_image_store.clone(),
+                    screen.core.terminal_emulator_colors.clone(),
+                    screen.core.terminal_emulator_color_codes.clone(),
                     Rc::new(RefCell::new(LinkHandler::new())),
-                    screen.character_cell_size.clone(),
-                    screen.connected_clients.borrow().iter().copied().collect(),
-                    screen.style,
+                    screen.core.character_cell_size.clone(),
+                    screen
+                        .core
+                        .connected_clients
+                        .borrow()
+                        .iter()
+                        .copied()
+                        .collect(),
+                    screen.core.style,
                     None,
-                    screen.debug,
-                    screen.arrow_fonts,
-                    screen.styled_underlines,
+                    screen.core.debug,
+                    screen.core.arrow_fonts,
+                    screen.core.styled_underlines,
                 );
                 let coordinates = FloatingPaneCoordinates {
                     height: Some(PercentOrFixed::Fixed(12)),
                     ..overlay_coordinates()
                 };
-                let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+                let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
                 tab.add_overlay_pane(
                     pane,
                     pane_id,
@@ -5373,7 +5435,7 @@ fn overlay_permission_prompts_restore_visibility_and_preserve_placement() {
                         PermissionStatus::Denied
                     };
                     assert!(plugin_rx.try_iter().any(|(instruction, _)| matches!(instruction, PluginInstruction::PermissionAnswer { status, .. } if status == expected)));
-                    let tab = screen.tabs.get(&TabId::new(0)).unwrap();
+                    let tab = screen.core.tabs.get(&TabId::new(0)).unwrap();
                     assert_eq!(tab.get_active_pane_id(CLIENT_1), focus);
                     assert_eq!(tab.overlay_carry_for(pane_id).hidden, hidden);
                     assert_eq!(
@@ -5402,6 +5464,7 @@ fn a_hidden_overlay_survives_a_resize_and_returns_proportional() {
     new_tab(&mut screen, 1, TabId::new(0));
     open_floating_pane(&mut screen, TabId::new(0), 2, "OVERLAY", true);
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .expect("TEST")
@@ -5413,12 +5476,13 @@ fn a_hidden_overlay_survives_a_resize_and_returns_proportional() {
     };
     screen.resize_to_screen(bigger).expect("TEST");
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .expect("TEST")
         .show_overlay_pane(PaneId::Terminal(crate::TerminalId::new(2)));
 
-    let geom = screen.tabs[&TabId::new(0)]
+    let geom = screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("TEST")
         .position_and_size();
@@ -5438,16 +5502,17 @@ fn a_tab_holding_only_a_hidden_overlay_has_no_overlays_to_render() {
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, TabId::new(0));
     open_floating_pane(&mut screen, TabId::new(0), 2, "OVERLAY", true);
-    assert!(screen.tabs[&TabId::new(0)].overlays_are_rendered());
+    assert!(screen.core.tabs[&TabId::new(0)].overlays_are_rendered());
 
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .expect("TEST")
         .hide_overlay_pane(PaneId::Terminal(crate::TerminalId::new(2)));
-    assert!(!screen.tabs[&TabId::new(0)].overlays_are_rendered());
+    assert!(!screen.core.tabs[&TabId::new(0)].overlays_are_rendered());
     assert_ne!(
-        screen.tabs[&TabId::new(0)].get_active_pane_id(crate::ClientId::new(1)),
+        screen.core.tabs[&TabId::new(0)].get_active_pane_id(crate::ClientId::new(1)),
         Some(PaneId::Terminal(crate::TerminalId::new(2))),
         "and the keyboard is not left on a pane nobody can see"
     );
@@ -5464,30 +5529,44 @@ fn an_overlay_in_a_background_tab_is_still_a_broadcast_target() {
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
-    let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
-        let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
-        SenderWithContext::new(plugin_tx)
-    });
+    let plugin_sender = screen
+        .core
+        .bus
+        .senders
+        .to_plugin
+        .clone()
+        .unwrap_or_else(|| {
+            let (plugin_tx, _plugin_rx) =
+                channels::unbounded::<(PluginInstruction, ErrorContext)>();
+            SenderWithContext::new(plugin_tx)
+        });
     let overlay = PaneFactory::plugin(
         crate::PluginId::new(9),
         Default::default(),
         plugin_sender,
         "overlay".to_owned(),
         "overlay".to_owned(),
-        screen.sixel_image_store.clone(),
-        screen.kitty_image_store.clone(),
-        screen.terminal_emulator_colors.clone(),
-        screen.terminal_emulator_color_codes.clone(),
+        screen.core.sixel_image_store.clone(),
+        screen.core.kitty_image_store.clone(),
+        screen.core.terminal_emulator_colors.clone(),
+        screen.core.terminal_emulator_color_codes.clone(),
         Rc::new(RefCell::new(LinkHandler::new())),
-        screen.character_cell_size.clone(),
-        screen.connected_clients.borrow().iter().copied().collect(),
-        screen.style,
+        screen.core.character_cell_size.clone(),
+        screen
+            .core
+            .connected_clients
+            .borrow()
+            .iter()
+            .copied()
+            .collect(),
+        screen.core.style,
         None,
-        screen.debug,
-        screen.arrow_fonts,
-        screen.styled_underlines,
+        screen.core.debug,
+        screen.core.arrow_fonts,
+        screen.core.styled_underlines,
     );
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .expect("TEST")
@@ -5508,7 +5587,7 @@ fn an_overlay_in_a_background_tab_is_still_a_broadcast_target() {
         .go_to_tab(TabNumber::new(2), crate::ClientId::new(1))
         .expect("TEST");
     assert_eq!(
-        screen.active_tab_ids.get(&ClientId::new(1)),
+        screen.core.active_tab_ids.get(&ClientId::new(1)),
         Some(&TabId::new(1))
     );
 
@@ -5546,7 +5625,7 @@ fn an_overlay_would_be_caught_by_the_tab_suppression_loop() {
     open_floating_pane(&mut screen, TabId::new(0), 2, "OVERLAY", true);
 
     assert!(
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .has_non_suppressed_pane_with_pid(&PaneId::Terminal(crate::TerminalId::new(2))),
         "the tab loop would claim this overlay, so the overlay arm must be reached first"
     );
@@ -5630,6 +5709,7 @@ fn launch_or_focus_plugin_focuses_a_hidden_overlay() {
 
     // Esc in agent: `hide_self` -> `ScreenInstruction::SuppressPane` -> `hide_overlay_pane`
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -5687,7 +5767,7 @@ fn screen_with_diverging_tab_ids(size: Size) -> Screen {
         "TEST"
     );
     assert_eq!(
-        screen.active_tab_ids.get(&ClientId::new(1)).copied(),
+        screen.core.active_tab_ids.get(&ClientId::new(1)).copied(),
         Some(TabId::new(1)),
         "TEST"
     );
@@ -5714,6 +5794,7 @@ fn revealing_a_plugin_overlay_in_the_focused_tab_does_not_switch_tabs() {
     );
     // Esc in agent
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(1))
         .expect("TEST")
@@ -5731,7 +5812,7 @@ fn revealing_a_plugin_overlay_in_the_focused_tab_does_not_switch_tabs() {
         .expect("TEST"));
 
     assert_eq!(
-        screen.active_tab_ids.get(&ClientId::new(1)).copied(),
+        screen.core.active_tab_ids.get(&ClientId::new(1)).copied(),
         Some(TabId::new(1)),
         "a reveal leaves the client on the tab it is looking at - tab id 1 is at position 0, and \
          reading its id as a position walks the client over to tab id 2"
@@ -5775,7 +5856,7 @@ fn focusing_a_plugin_without_moving_it_goes_to_the_tab_that_holds_it() {
         .expect("TEST"));
 
     assert_eq!(
-        screen.active_tab_ids.get(&ClientId::new(1)).copied(),
+        screen.core.active_tab_ids.get(&ClientId::new(1)).copied(),
         Some(TabId::new(2)),
         "the client is taken to the tab that holds the plugin, named by position - id 2 is past \
          the end of the tab bar and used to resolve to nothing at all"
@@ -5786,6 +5867,7 @@ fn focusing_a_plugin_without_moving_it_goes_to_the_tab_that_holds_it() {
     );
     assert!(
         screen
+            .core
             .tabs
             .get(&TabId::new(2))
             .expect("TEST")
@@ -5825,12 +5907,13 @@ fn a_plugin_overlay_still_moves_to_the_focused_tab_when_ids_and_positions_disagr
         .expect("TEST"));
 
     assert_eq!(
-        screen.active_tab_ids.get(&ClientId::new(1)).copied(),
+        screen.core.active_tab_ids.get(&ClientId::new(1)).copied(),
         Some(TabId::new(1)),
         "the pane comes to the client, so the client does not go anywhere"
     );
     assert!(
         screen
+            .core
             .tabs
             .get(&TabId::new(1))
             .expect("TEST")
@@ -5839,6 +5922,7 @@ fn a_plugin_overlay_still_moves_to_the_focused_tab_when_ids_and_positions_disagr
     );
     assert!(
         !screen
+            .core
             .tabs
             .get(&TabId::new(2))
             .expect("TEST")
@@ -5865,7 +5949,7 @@ fn a_plugin_pane_is_not_extracted_for_a_client_with_no_tab() {
         TabId::new(2),
         popup_coordinates(),
     );
-    screen.active_tab_ids.remove(&ClientId::new(1));
+    screen.core.active_tab_ids.remove(&ClientId::new(1));
 
     let found = screen
         .focus_plugin_pane(
@@ -5881,6 +5965,7 @@ fn a_plugin_pane_is_not_extracted_for_a_client_with_no_tab() {
     assert!(found, "the pane is still found - it is only not moved");
     assert!(
         screen
+            .core
             .tabs
             .get(&TabId::new(2))
             .expect("TEST")
@@ -5962,6 +6047,7 @@ fn launch_or_focus_plugin_takes_the_keyboard_back_from_a_sibling_overlay() {
     );
 
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -5995,13 +6081,13 @@ fn launch_or_focus_plugin_takes_the_keyboard_back_from_a_sibling_overlay() {
 fn summoning_a_linked_overlay_moves_and_reveals_the_whole_panel() {
     let client_id = crate::ClientId::new(1);
     let geom = |screen: &Screen, tab_id, pane_id| {
-        screen.tabs[&tab_id]
+        screen.core.tabs[&tab_id]
             .get_pane_with_id(pane_id)
             .expect("TEST")
             .position_and_size()
     };
     let drag = |screen: &mut Screen, pane_id, tab_id| {
-        let before = screen.tabs[&tab_id].multipane_info(pane_id).unwrap();
+        let before = screen.core.tabs[&tab_id].multipane_info(pane_id).unwrap();
         let from = Position::new(before.y as i32, (before.x + 5) as u16);
         let to = Position::new(before.y as i32 + 2, (before.x + 8) as u16);
         screen.handle_mouse_event(MouseEvent::new_left_press_event(from), client_id);
@@ -6038,6 +6124,7 @@ fn summoning_a_linked_overlay_moves_and_reveals_the_whole_panel() {
                     ),
                 ];
                 screen
+                    .core
                     .tabs
                     .get_mut(&TabId::new(0))
                     .unwrap()
@@ -6057,6 +6144,7 @@ fn summoning_a_linked_overlay_moves_and_reveals_the_whole_panel() {
                 if previously_placed {
                     let before = geom(&screen, TabId::new(0), pair[1].1);
                     screen
+                        .core
                         .tabs
                         .get_mut(&TabId::new(0))
                         .unwrap()
@@ -6079,6 +6167,7 @@ fn summoning_a_linked_overlay_moves_and_reveals_the_whole_panel() {
                 for (index, (_, id)) in pair.iter().enumerate() {
                     if hidden[index] {
                         screen
+                            .core
                             .tabs
                             .get_mut(&TabId::new(0))
                             .unwrap()
@@ -6110,19 +6199,21 @@ fn summoning_a_linked_overlay_moves_and_reveals_the_whole_panel() {
                     completion_rx.try_recv().expect("TEST").affected_pane_id,
                     Some(pair[requested].1)
                 );
-                assert_eq!(screen.active_tab_ids[&client_id], TabId::new(1));
+                assert_eq!(screen.core.active_tab_ids[&client_id], TabId::new(1));
                 assert_eq!(screen.active_pane_id(client_id), Some(pair[requested].1));
                 for (index, (_, id)) in pair.iter().enumerate() {
                     assert!(
-                        !screen.tabs[&TabId::new(0)].has_pane_with_pid(id),
+                        !screen.core.tabs[&TabId::new(0)].has_pane_with_pid(id),
                         "both halves must leave"
                     );
                     assert!(
-                        screen.tabs[&TabId::new(1)].pane_is_overlay(*id),
+                        screen.core.tabs[&TabId::new(1)].pane_is_overlay(*id),
                         "both halves must arrive"
                     );
                     assert!(
-                        !screen.tabs[&TabId::new(1)].overlay_carry_for(*id).hidden,
+                        !screen.core.tabs[&TabId::new(1)]
+                            .overlay_carry_for(*id)
+                            .hidden,
                         "both halves are revealed"
                     );
                     let after = geom(&screen, TabId::new(1), *id);
@@ -6159,7 +6250,7 @@ fn summoning_a_linked_overlay_moves_and_reveals_the_whole_panel() {
                     }
                 }
                 assert_eq!(geom(&screen, TabId::new(0), unrelated), unrelated_before);
-                assert!(!screen.tabs[&TabId::new(1)].has_pane_with_pid(&unrelated));
+                assert!(!screen.core.tabs[&TabId::new(1)].has_pane_with_pid(&unrelated));
             }
         }
     }
@@ -6219,6 +6310,7 @@ fn a_dismissible_overlay_survives_its_tab_closing() {
     let size = Size { cols: 80, rows: 12 };
     let (mut screen, popup_id) = screen_with_an_overlay_on_the_second_tab(size);
     assert!(screen
+        .core
         .tabs
         .get(&TabId::new(1))
         .expect("TEST")
@@ -6226,9 +6318,10 @@ fn a_dismissible_overlay_survives_its_tab_closing() {
 
     screen.close_tab(crate::ClientId::new(1)).expect("TEST");
 
-    assert_eq!(screen.tabs.len(), 1, "the tab itself is gone");
+    assert_eq!(screen.core.tabs.len(), 1, "the tab itself is gone");
     assert!(
         screen
+            .core
             .tabs
             .get(&TabId::new(0))
             .expect("TEST")
@@ -6247,9 +6340,9 @@ fn an_overlay_that_outlives_its_tab_is_not_unloaded() {
     let (mut screen, popup_id) = screen_with_an_overlay_on_the_second_tab(size);
 
     let (pty_sender, pty_receiver) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
     let (plugin_sender, plugin_receiver) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_sender));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_sender));
 
     screen.close_tab(crate::ClientId::new(1)).expect("TEST");
 
@@ -6289,7 +6382,11 @@ fn an_overlay_follows_its_tab_s_client_when_the_tab_closes() {
 
     screen.close_tab(crate::ClientId::new(1)).expect("TEST");
 
-    let client_landed_on = *screen.active_tab_ids.get(&ClientId::new(1)).expect("TEST");
+    let client_landed_on = *screen
+        .core
+        .active_tab_ids
+        .get(&ClientId::new(1))
+        .expect("TEST");
     assert_eq!(
         client_landed_on,
         TabId::new(1),
@@ -6297,6 +6394,7 @@ fn an_overlay_follows_its_tab_s_client_when_the_tab_closes() {
     );
     assert!(
         screen
+            .core
             .tabs
             .get(&client_landed_on)
             .expect("TEST")
@@ -6305,6 +6403,7 @@ fn an_overlay_follows_its_tab_s_client_when_the_tab_closes() {
     );
     assert!(
         !screen
+            .core
             .tabs
             .get(&TabId::new(0))
             .expect("TEST")
@@ -6338,6 +6437,7 @@ fn an_overlay_on_a_tab_nobody_is_on_falls_back_to_the_first_tab() {
 
     assert!(
         screen
+            .core
             .tabs
             .get(&TabId::new(0))
             .expect("TEST")
@@ -6369,7 +6469,7 @@ fn both_halves_of_a_panel_land_on_the_same_tab_when_their_tab_closes() {
 
     screen.close_tab(crate::ClientId::new(1)).expect("TEST");
 
-    let surviving_tab = screen.tabs.get(&TabId::new(0)).expect("TEST");
+    let surviving_tab = screen.core.tabs.get(&TabId::new(0)).expect("TEST");
     assert!(
         surviving_tab.pane_is_overlay(conversation_id) && surviving_tab.pane_is_overlay(agents_id),
         "both halves move, and to the same tab"
@@ -6396,11 +6496,11 @@ fn a_modal_overlay_closes_with_its_tab_while_a_dismissible_one_survives() {
         add_modal_plugin_overlay(&mut screen, yinz_types::internal_ids::PluginId::new(8));
 
     let (pty_sender, pty_receiver) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
 
     screen.close_tab(crate::ClientId::new(1)).expect("TEST");
 
-    let surviving_tab = screen.tabs.get(&TabId::new(0)).expect("TEST");
+    let surviving_tab = screen.core.tabs.get(&TabId::new(0)).expect("TEST");
     assert!(
         surviving_tab.pane_is_overlay(popup_id),
         "the dismissible overlay survives"
@@ -6424,6 +6524,7 @@ fn an_overlay_set_aside_stays_set_aside_when_its_tab_closes() {
     let size = Size { cols: 80, rows: 12 };
     let (mut screen, popup_id) = screen_with_an_overlay_on_the_second_tab(size);
     assert!(screen
+        .core
         .tabs
         .get_mut(&TabId::new(1))
         .expect("TEST")
@@ -6431,7 +6532,7 @@ fn an_overlay_set_aside_stays_set_aside_when_its_tab_closes() {
 
     screen.close_tab(crate::ClientId::new(1)).expect("TEST");
 
-    let surviving_tab = screen.tabs.get(&TabId::new(0)).expect("TEST");
+    let surviving_tab = screen.core.tabs.get(&TabId::new(0)).expect("TEST");
     assert!(surviving_tab.pane_is_overlay(popup_id));
     assert!(
         surviving_tab.overlay_carry_for(popup_id).hidden,
@@ -6453,13 +6554,13 @@ fn an_overlay_does_not_keep_the_session_alive_when_the_last_tab_closes() {
         popup_coordinates(),
     );
     let (server_sender, server_receiver) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
     let (pty_sender, pty_receiver) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
 
     screen.close_tab(crate::ClientId::new(1)).expect("TEST");
 
-    assert!(screen.tabs.is_empty(), "no tab is left");
+    assert!(screen.core.tabs.is_empty(), "no tab is left");
     assert!(
         std::iter::from_fn(|| server_receiver.try_recv().ok())
             .any(|(instruction, _)| matches!(instruction, ServerInstruction::Render(None))),
@@ -6478,10 +6579,11 @@ fn an_overlay_moves_to_a_surviving_tab_when_the_last_terminal_leaves() {
     let size = Size { cols: 80, rows: 12 };
     let (mut screen, popup_id) = screen_with_an_overlay_on_the_second_tab(size);
     let (server_sender, _server_receiver) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
 
     // the user exits the shell in the tab's only pane
     assert!(screen
+        .core
         .tabs
         .get_mut(&TabId::new(1))
         .expect("TEST")
@@ -6490,11 +6592,12 @@ fn an_overlay_moves_to_a_surviving_tab_when_the_last_terminal_leaves() {
     screen.settle_tabs().expect("TEST");
 
     assert!(
-        !screen.tabs.contains_key(&TabId::new(1)),
+        !screen.core.tabs.contains_key(&TabId::new(1)),
         "an overlay alone does not keep its source tab alive"
     );
     assert!(
         screen
+            .core
             .tabs
             .get(&TabId::new(0))
             .expect("TEST")
@@ -6509,13 +6612,14 @@ fn settling_closes_every_tab_when_only_overlays_remain() {
     let size = Size { cols: 80, rows: 12 };
     let (mut screen, popup_id) = screen_with_an_overlay_on_the_second_tab(size);
     let (server_sender, server_receiver) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
     let (pty_sender, pty_receiver) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
 
     // both shells exit before a single render tick
     for (tab_id, terminal_id) in [(TabId::new(0), 1), (TabId::new(1), 2)] {
         assert!(screen
+            .core
             .tabs
             .get_mut(&tab_id)
             .expect("TEST")
@@ -6524,7 +6628,7 @@ fn settling_closes_every_tab_when_only_overlays_remain() {
     }
     screen.settle_tabs().expect("TEST");
 
-    assert!(screen.tabs.is_empty());
+    assert!(screen.core.tabs.is_empty());
     assert!(std::iter::from_fn(|| server_receiver.try_recv().ok())
         .any(|(instruction, _)| matches!(instruction, ServerInstruction::Render(None))));
     let torn_down = panes_torn_down_by_pty(&pty_receiver);
@@ -6575,7 +6679,7 @@ fn a_client_that_is_not_on_an_overlay_may_only_put_the_expansion_back() {
         .unwrap()
         .toggle_active_pane_fullscreen(crate::ClientId::new(1));
     assert!(
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .get_pane_info(PaneId::Terminal(crate::TerminalId::new(3)))
             .expect("TEST")
             .is_fullscreen,
@@ -6587,14 +6691,14 @@ fn a_client_that_is_not_on_an_overlay_may_only_put_the_expansion_back() {
         .unwrap()
         .toggle_active_pane_fullscreen(crate::ClientId::new(2));
     assert!(
-        !screen.tabs[&TabId::new(0)]
+        !screen.core.tabs[&TabId::new(0)]
             .get_pane_info(PaneId::Terminal(crate::TerminalId::new(3)))
             .expect("TEST")
             .is_fullscreen,
         "the other client's press put it back"
     );
     assert!(
-        !screen.tabs[&TabId::new(0)].is_fullscreen_active(),
+        !screen.core.tabs[&TabId::new(0)].is_fullscreen_active(),
         "and went no further than that - the tiled pane it is on is untouched"
     );
 
@@ -6603,7 +6707,7 @@ fn a_client_that_is_not_on_an_overlay_may_only_put_the_expansion_back() {
         .unwrap()
         .toggle_active_pane_fullscreen(crate::ClientId::new(2));
     assert_eq!(
-        screen.tabs[&TabId::new(0)].fullscreen_pane_id(),
+        screen.core.tabs[&TabId::new(0)].fullscreen_pane_id(),
         Some(PaneId::Terminal(crate::TerminalId::new(1))),
         "now that the screen is its own again, the next press is about its own pane"
     );
@@ -6631,7 +6735,7 @@ fn an_expanded_overlay_fills_the_viewport_a_resize_leaves() {
         })
         .expect("TEST");
 
-    let tab = &screen.tabs[&TabId::new(0)];
+    let tab = &screen.core.tabs[&TabId::new(0)];
     // the lone tiled pane fills the viewport, so it is what the expansion should have grown to
     let viewport = tab
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(1)))
@@ -6704,6 +6808,7 @@ fn multipane_structural_commands_and_transfers_keep_mixed_children_contained() {
             screen.settle_tabs().unwrap();
             let assert_contained = |screen: &Screen| {
                 let tab = screen
+                    .core
                     .tabs
                     .values()
                     .find(|tab| tab.has_pane_with_pid(&plugin))
@@ -6718,7 +6823,7 @@ fn multipane_structural_commands_and_transfers_keep_mixed_children_contained() {
                 children[selected],
                 PaneId::Terminal(crate::TerminalId::new(2))
             ]));
-            let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+            let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
             assert!(tab.extract_pane(children[selected], true).is_none());
             assert!(tab
                 .toggle_pane_embed_or_floating_for_pane_id(children[selected], None)
@@ -6730,7 +6835,7 @@ fn multipane_structural_commands_and_transfers_keep_mixed_children_contained() {
                 ])
                 .is_none());
             assert_contained(&screen);
-            let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+            let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
             tab.new_stacked_pane(
                 PaneId::Terminal(crate::TerminalId::new(99)),
                 None,
@@ -6753,11 +6858,13 @@ fn multipane_structural_commands_and_transfers_keep_mixed_children_contained() {
                 (terminal, FloatingPaneCoordinates::default()),
             ]);
             assert_eq!(
-                screen.tabs[&TabId::new(0)].multipane_info(plugin).unwrap(),
+                screen.core.tabs[&TabId::new(0)]
+                    .multipane_info(plugin)
+                    .unwrap(),
                 before
             );
             assert_contained(&screen);
-            let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+            let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
             tab.hide_overlay_pane(children[selected]);
             assert!(children.iter().all(|id| tab.overlay_carry_for(*id).hidden));
             tab.show_overlay_pane(children[1 - selected]);
@@ -6776,10 +6883,11 @@ fn multipane_structural_commands_and_transfers_keep_mixed_children_contained() {
                 )
                 .unwrap();
             assert_contained(&screen);
-            assert!(screen.tabs[&TabId::new(1)].has_pane_with_pid(&plugin));
+            assert!(screen.core.tabs[&TabId::new(1)].has_pane_with_pid(&plugin));
             // No plugin event or repair runs between any operation and these assertions.
             screen.close_pane_explicitly(children[selected], None);
             assert!(screen
+                .core
                 .tabs
                 .values()
                 .all(|tab| children.iter().all(|id| !tab.has_pane_with_pid(id))));
@@ -6807,7 +6915,7 @@ fn multipane_creation_focus_switches_to_the_children_tab_only_when_requested() {
         });
         new_tab(&mut screen, 2, TabId::new(1));
         let previous_pane = screen.active_pane_id(CLIENT_1);
-        assert_eq!(screen.active_tab_ids[&CLIENT_1], TabId::new(1));
+        assert_eq!(screen.core.active_tab_ids[&CLIENT_1], TabId::new(1));
         screen
             .multipane_command(
                 MultipaneOperation::Create {
@@ -6824,7 +6932,7 @@ fn multipane_creation_focus_switches_to_the_children_tab_only_when_requested() {
             )
             .unwrap();
         assert_eq!(
-            screen.active_tab_ids[&CLIENT_1],
+            screen.core.active_tab_ids[&CLIENT_1],
             TabId::new(if focus.is_some() { 0 } else { 1 })
         );
         assert_eq!(
@@ -6842,7 +6950,7 @@ fn multipane_close_self_restores_a_replaced_child_and_only_closes_the_temporary_
         rows: 40,
     });
     let (pty_sender, pty_receiver) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
     new_tab(&mut screen, 1, TabId::new(0));
     let children = [7, 8].map(|id| {
         open_overlay_plugin(
@@ -6871,6 +6979,7 @@ fn multipane_close_self_restores_a_replaced_child_and_only_closes_the_temporary_
         .unwrap();
     let temporary = PaneId::Plugin(PluginId::new(9));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -6884,7 +6993,7 @@ fn multipane_close_self_restores_a_replaced_child_and_only_closes_the_temporary_
         )
         .unwrap();
     assert_eq!(
-        screen.tabs[&TabId::new(0)].stands_in_for_a_pane(temporary),
+        screen.core.tabs[&TabId::new(0)].stands_in_for_a_pane(temporary),
         Some(children[0])
     );
     assert!(panes_torn_down_by_pty(&pty_receiver).is_empty());
@@ -6895,7 +7004,7 @@ fn multipane_close_self_restores_a_replaced_child_and_only_closes_the_temporary_
     )
     .unwrap();
 
-    let tab = &screen.tabs[&TabId::new(0)];
+    let tab = &screen.core.tabs[&TabId::new(0)];
     assert!(!tab.has_pane_with_pid(&temporary));
     for child in children {
         assert_eq!(tab.multipane_info(child), Some(info.clone()));
@@ -6938,13 +7047,14 @@ fn multipane_scrollback_editor_exit_restores_the_child_while_ordinary_exits_hold
         .unwrap();
     let editor = PaneId::Terminal(crate::TerminalId::new(9));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
         .replace_pane_with_editor_pane(editor, original)
         .unwrap();
     assert_eq!(
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .multipane_info(editor)
             .unwrap()
             .children,
@@ -6956,7 +7066,7 @@ fn multipane_scrollback_editor_exit_restores_the_child_while_ordinary_exits_hold
         vec![ScreenInstruction::ClosePane(editor, None, None, Some(0))],
     )
     .unwrap();
-    let tab = &screen.tabs[&TabId::new(0)];
+    let tab = &screen.core.tabs[&TabId::new(0)];
     assert!(
         !tab.has_pane_with_pid(&editor),
         "the exited editor must leave its slot"
@@ -6970,7 +7080,7 @@ fn multipane_scrollback_editor_exit_restores_the_child_while_ordinary_exits_hold
         vec![ScreenInstruction::ClosePane(original, None, None, Some(17))],
     )
     .unwrap();
-    let tab = &screen.tabs[&TabId::new(0)];
+    let tab = &screen.core.tabs[&TabId::new(0)];
     assert_eq!(tab.multipane_info(original).unwrap(), info);
     assert!(tab.get_pane_with_id(original).unwrap().is_held());
 }
@@ -6992,7 +7102,7 @@ fn multipane_replacing_a_child_with_the_last_working_pane_retains_the_tab() {
                 .unwrap();
             let terminal = PaneId::Terminal(crate::TerminalId::new(1));
             if floating {
-                let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+                let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
                 let pane = tab.extract_pane(terminal, true).unwrap();
                 tab.add_floating_pane(pane, terminal, None, true, Some(CLIENT_1))
                     .unwrap();
@@ -7046,11 +7156,11 @@ fn multipane_replacing_a_child_with_the_last_working_pane_retains_the_tab() {
             }
             screen.settle_tabs().unwrap();
             assert_eq!(
-                screen.active_tab_ids[&CLIENT_1],
+                screen.core.active_tab_ids[&CLIENT_1],
                 TabId::new(0),
                 "replacement must not move the client to the other usable tab"
             );
-            let tab = &screen.tabs[&TabId::new(0)];
+            let tab = &screen.core.tabs[&TabId::new(0)];
             assert!(tab.has_selectable_panes());
             let updated = tab.multipane_info(terminal).unwrap();
             assert_eq!(updated.id, info.id);
@@ -7063,7 +7173,7 @@ fn multipane_replacing_a_child_with_the_last_working_pane_retains_the_tab() {
                 .switch_active_tab(TabPosition::new(0), None, true, CLIENT_1)
                 .unwrap();
             screen.settle_tabs().unwrap();
-            assert_eq!(screen.active_tab_ids[&CLIENT_1], TabId::new(0));
+            assert_eq!(screen.core.active_tab_ids[&CLIENT_1], TabId::new(0));
 
             // Replacing with an overlay later must preserve the container's retention.
             let overlay = open_overlay_plugin(
@@ -7077,9 +7187,9 @@ fn multipane_replacing_a_child_with_the_last_working_pane_retains_the_tab() {
                 .replace_pane_with_existing_pane(terminal, overlay, false, None)
                 .unwrap();
             screen.settle_tabs().unwrap();
-            assert_eq!(screen.active_tab_ids[&CLIENT_1], TabId::new(0));
+            assert_eq!(screen.core.active_tab_ids[&CLIENT_1], TabId::new(0));
             assert_eq!(
-                screen.tabs[&TabId::new(0)]
+                screen.core.tabs[&TabId::new(0)]
                     .multipane_info(overlay)
                     .unwrap()
                     .id,
@@ -7128,8 +7238,10 @@ fn multipane_rejected_adoption_changes_nothing_and_child_replacement_retains_the
     ] {
         assert!(screen.multipane_command(operation, CLIENT_1).is_err());
         for child in [first, second] {
-            assert!(screen.tabs[&TabId::new(0)].has_pane_with_pid(&child));
-            assert!(screen.tabs[&TabId::new(0)].multipane_info(child).is_none());
+            assert!(screen.core.tabs[&TabId::new(0)].has_pane_with_pid(&child));
+            assert!(screen.core.tabs[&TabId::new(0)]
+                .multipane_info(child)
+                .is_none());
         }
     }
     let info = screen
@@ -7150,21 +7262,26 @@ fn multipane_rejected_adoption_changes_nothing_and_child_replacement_retains_the
         .unwrap();
     assert_eq!(updated.children, [terminal, second]);
     assert_eq!(updated.id, info.id);
-    assert!(screen.tabs[&TabId::new(0)].multipane_info(first).is_none());
+    assert!(screen.core.tabs[&TabId::new(0)]
+        .multipane_info(first)
+        .is_none());
     assert!(screen
         .multipane_command(create([terminal, second], 5000), CLIENT_1)
         .is_err());
     let command = screen.replacement_exit_command(terminal).unwrap();
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
         .hold_pane(terminal, Some(17), false, command);
     assert_eq!(
-        screen.tabs[&TabId::new(0)].multipane_info(second).unwrap(),
+        screen.core.tabs[&TabId::new(0)]
+            .multipane_info(second)
+            .unwrap(),
         updated
     );
-    assert!(screen.tabs[&TabId::new(0)]
+    assert!(screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(terminal)
         .unwrap()
         .is_held());
@@ -7211,6 +7328,7 @@ fn multipane_transfer_carries_replacements_and_tab_closure_keeps_the_container()
         .unwrap();
     let editor = PaneId::Terminal(crate::TerminalId::new(9));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -7219,8 +7337,8 @@ fn multipane_transfer_carries_replacements_and_tab_closure_keeps_the_container()
     screen
         .break_multiple_panes_to_tab_with_id(vec![editor, second], TabId::new(1), false, CLIENT_1)
         .unwrap();
-    assert!(!screen.tabs[&TabId::new(0)].has_pane_with_pid(&first));
-    let destination = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+    assert!(!screen.core.tabs[&TabId::new(0)].has_pane_with_pid(&first));
+    let destination = screen.core.tabs.get_mut(&TabId::new(1)).unwrap();
     assert!(destination.has_pane_with_pid(&first));
     assert_eq!(
         destination.multipane_info(second).unwrap().children,
@@ -7233,13 +7351,16 @@ fn multipane_transfer_carries_replacements_and_tab_closure_keeps_the_container()
     assert!(destination.warp_pane_ids(Some(first)).is_err());
     screen.close_tab_by_id(TabId::new(1)).unwrap();
     assert_eq!(
-        screen.tabs[&TabId::new(0)].multipane_info(first).unwrap(),
+        screen.core.tabs[&TabId::new(0)]
+            .multipane_info(first)
+            .unwrap(),
         info
     );
     let close = screen.close_self_instruction(PluginId::new(8), CLIENT_1);
     assert!(matches!(&close, ScreenInstruction::ClosePane(id, Some(_), _, _) if *id == second));
     crate::screen::replay_pending_plugin_events(&mut screen, vec![close]).unwrap();
     assert!(screen
+        .core
         .tabs
         .values()
         .all(|tab| !tab.has_pane_with_pid(&first) && !tab.has_pane_with_pid(&second)));
@@ -7259,6 +7380,7 @@ fn closing_a_multipane_repaints_the_idle_terminal_underneath() {
         let mut grid = grid_for_render_snapshot(size);
         let underlying = PaneId::Terminal(crate::TerminalId::new(1));
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
@@ -7309,7 +7431,7 @@ fn retained_multipane_repairs_focus_when_the_last_working_pane_exits() {
             rows: 40,
         });
         let (writer, writes) = channels::unbounded();
-        screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(writer));
+        screen.core.bus.senders.to_pty_writer = Some(SenderWithContext::new(writer));
         new_tab(&mut screen, 1, TabId::new(0));
         open_floating_pane(&mut screen, TabId::new(0), 2, "FIRST", false);
         open_floating_pane(&mut screen, TabId::new(0), 3, "SECOND", false);
@@ -7333,7 +7455,7 @@ fn retained_multipane_repairs_focus_when_the_last_working_pane_exits() {
                 CLIENT_1,
             )
             .unwrap();
-        let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+        let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
         tab.set_pane_selectable(children[0], first_selectable);
         if hidden {
             assert!(tab.hide_overlay_pane(children[0]));
@@ -7341,11 +7463,12 @@ fn retained_multipane_repairs_focus_when_the_last_working_pane_exits() {
         assert_eq!(tab.get_active_pane_id(CLIENT_1), Some(underlying));
         tab.close_pane(underlying, false, Some(0));
         screen.settle_tabs().unwrap();
-        assert!(screen.tabs.contains_key(&TabId::new(0)));
+        assert!(screen.core.tabs.contains_key(&TabId::new(0)));
         let expected = children[usize::from(!first_selectable)];
         assert_eq!(screen.active_pane_id(CLIENT_1), Some(expected));
         writes.try_iter().for_each(drop);
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
@@ -7393,12 +7516,14 @@ fn multipane_children_receive_visibility_after_transfer_hide_and_reveal() {
     // Both tabs retain their visibility during the move: only container adoption can notify
     // the children that they have arrived on a visible tab.
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
         .visible(false)
         .unwrap();
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(1))
         .unwrap()
@@ -7433,7 +7558,7 @@ fn multipane_children_receive_visibility_after_transfer_hide_and_reveal() {
         .break_multiple_panes_to_tab_with_id(vec![children[0]], TabId::new(1), false, CLIENT_1)
         .unwrap();
     assert_visible(true);
-    let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+    let tab = screen.core.tabs.get_mut(&TabId::new(1)).unwrap();
     assert!(tab.hide_overlay_pane(children[0]));
     assert_visible(false);
     assert!(tab.show_overlay_pane(children[1]));
@@ -7444,7 +7569,7 @@ fn multipane_children_receive_visibility_after_transfer_hide_and_reveal() {
     events.try_iter().for_each(drop);
     for child in children {
         for launch in [false, true] {
-            let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+            let tab = screen.core.tabs.get_mut(&TabId::new(1)).unwrap();
             assert!(tab.hide_overlay_pane(child));
             assert_visible(false);
             let run_plugin = match tab.get_pane_with_id(child).unwrap().invoked_with() {
@@ -7462,7 +7587,11 @@ fn multipane_children_receive_visibility_after_transfer_hide_and_reveal() {
                         .focus_pane_with_id(child, true, false, CLIENT_1)
                         .unwrap();
                 }
-                assert!(!screen.tabs[&TabId::new(1)].overlay_carry_for(child).hidden);
+                assert!(
+                    !screen.core.tabs[&TabId::new(1)]
+                        .overlay_carry_for(child)
+                        .hidden
+                );
                 assert_eq!(screen.active_pane_id(CLIENT_1), Some(child));
                 if attempt == 0 {
                     assert_visible(true);
@@ -7476,7 +7605,7 @@ fn multipane_children_receive_visibility_after_transfer_hide_and_reveal() {
         .break_multiple_panes_to_tab_with_id(vec![children[1]], TabId::new(0), false, CLIENT_1)
         .unwrap();
     assert_visible(false);
-    let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
     assert!(tab.hide_overlay_pane(children[0]));
     assert_visible(false);
     tab.focus_pane_with_id(children[1], false, false, CLIENT_1)
@@ -7491,6 +7620,7 @@ fn pane_tabs_lazy_children_receive_only_owning_tab_input_and_one_mode_update() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
     let (sender, receiver) = channels::unbounded();
     screen
+        .core
         .bus
         .senders
         .replace_to_plugin(SenderWithContext::new(sender));
@@ -7499,7 +7629,7 @@ fn pane_tabs_lazy_children_receive_only_owning_tab_input_and_one_mode_update() {
     new_tab(&mut screen, 1, owner);
     let first = PluginId::new(100);
     let child = PluginId::new(101);
-    let tab = screen.tabs.get_mut(&owner).unwrap();
+    let tab = screen.core.tabs.get_mut(&owner).unwrap();
     tab.new_pane(
         PaneId::Plugin(first),
         None,
@@ -7572,6 +7702,7 @@ fn disconnected_plugin_grids_are_removed_from_inactive_suppressed_and_overlay_pa
         screen.add_client(high).unwrap();
         for (id, suppressed) in [(70, false), (71, true)] {
             screen
+                .core
                 .tabs
                 .get_mut(&TabId::new(0))
                 .unwrap()
@@ -7619,7 +7750,7 @@ fn disconnected_plugin_grids_are_removed_from_inactive_suppressed_and_overlay_pa
         // The low grid survives a tab switch, even though high is still viewing tab zero.
         let os = FakeInputOutput::default();
         let messages = os.server_to_client_messages.clone();
-        screen.bus.os_input = Some(Box::new(os));
+        screen.core.bus.os_input = Some(Box::new(os));
         screen.subscribe_to_pane_renders(subscriber, panes.clone(), None, ansi);
         assert!(messages.lock().unwrap()[&subscriber].iter().all(|msg| matches!(msg,
             ServerToClientMsg::PaneRenderUpdate { viewport, .. } if viewport.concat().contains("low-grid"))));
@@ -7662,7 +7793,7 @@ fn disconnected_plugin_grids_are_removed_from_inactive_suppressed_and_overlay_pa
             )
             .unwrap();
         for pane in panes {
-            assert!(screen.tabs[&TabId::new(0)]
+            assert!(screen.core.tabs[&TabId::new(0)]
                 .get_pane_with_id(pane)
                 .unwrap()
                 .pane_contents(Some(low), false, None)
@@ -7678,6 +7809,7 @@ fn suppressed_plugins_are_active_tab_broadcast_targets_without_duplicates() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
     let (sender, receiver) = channels::unbounded();
     screen
+        .core
         .bus
         .senders
         .replace_to_plugin(SenderWithContext::new(sender));
@@ -7685,6 +7817,7 @@ fn suppressed_plugins_are_active_tab_broadcast_targets_without_duplicates() {
     let client = ClientId::new(1);
     let plugin = PluginId::new(9);
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -7707,6 +7840,7 @@ fn suppressed_plugins_are_active_tab_broadcast_targets_without_duplicates() {
     ] {
         assert_eq!(screen.targeted_plugin_ids(client, event_type), vec![plugin]);
         screen
+            .core
             .background_plugin_subscriptions
             .entry((plugin, client))
             .or_default()
@@ -7735,7 +7869,7 @@ fn suppressed_plugins_are_active_tab_broadcast_targets_without_duplicates() {
     assert!(matches!(updates[1].2, Event::TabUpdate(_)));
     assert!(matches!(updates[2].2, Event::PaneUpdate(_)));
     assert!(matches!(updates[3].2, Event::InputReceived));
-    screen.background_plugin_subscriptions.clear();
+    screen.core.background_plugin_subscriptions.clear();
     new_tab(&mut screen, 2, TabId::new(1));
     screen.go_to_tab(TabNumber::new(2), client).unwrap();
     assert!(!screen
@@ -7769,7 +7903,7 @@ fn configured_overlay_screen() -> (
         )
         .unwrap();
     let (tx, ptys) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(tx));
     (screen, plugins, ptys)
 }
 
@@ -7895,10 +8029,10 @@ fn configured_overlay_coalesces_launches_selects_unloaded_tabs_and_survives_relo
         descriptor.initial_cwd.as_deref(),
         Some(std::path::Path::new("/focused"))
     );
-    let info = screen.tabs[&TabId::new(0)].pane_tabs_info(id).unwrap();
+    let info = screen.core.tabs[&TabId::new(0)].pane_tabs_info(id).unwrap();
     assert!(info.overlay_group);
     assert_eq!(
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .overlay_placement_for(info.pane_id)
             .unwrap()
             .background_opacity,
@@ -7917,6 +8051,7 @@ fn configured_overlay_coalesces_launches_selects_unloaded_tabs_and_survives_relo
         )
         .unwrap();
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -7938,13 +8073,14 @@ fn configured_overlay_coalesces_launches_selects_unloaded_tabs_and_survives_relo
         .unwrap();
     launch_configured_overlay(&mut screen, &absolute_second, CLIENT_1);
     assert_eq!(
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .pane_tabs_info(id)
             .unwrap()
             .active,
         1
     );
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -7958,7 +8094,7 @@ fn configured_overlay_coalesces_launches_selects_unloaded_tabs_and_survives_relo
         )
         .unwrap();
     launch_configured_overlay(&mut screen, "file:overlay-custom.scm", CLIENT_1);
-    let tab = &screen.tabs[&TabId::new(0)];
+    let tab = &screen.core.tabs[&TabId::new(0)];
     let info = tab.pane_tabs_info(id).unwrap();
     assert_eq!(info.active, 0);
     assert_eq!(info.tabs[0].descriptor.label, "First");
@@ -7968,13 +8104,14 @@ fn configured_overlay_coalesces_launches_selects_unloaded_tabs_and_survives_relo
         .try_iter()
         .any(|(event, _)| matches!(event, PluginInstruction::LoadPaneTab { .. })));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
         .close_pane_tabs(id)
         .unwrap();
     launch_configured_overlay(&mut screen, "file:overlay-custom.scm", CLIENT_1);
-    assert!(screen.pending_overlay_tabs.is_none());
+    assert!(screen.core.pending_overlay_tabs.is_none());
 }
 
 #[test]
@@ -7986,7 +8123,7 @@ fn configured_overlay_load_failure_releases_pending_launch_and_retry_reuses_slot
     screen
         .pane_tab_loaded(id, index, generation, Err("load failed".into()))
         .unwrap();
-    assert!(screen.pending_overlay_tabs.is_none());
+    assert!(screen.core.pending_overlay_tabs.is_none());
     launch_configured_overlay(&mut screen, "yinz:strider", CLIENT_1);
     let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
     screen
@@ -8003,7 +8140,11 @@ fn configured_overlay_load_failure_releases_pending_launch_and_retry_reuses_slot
         .pane_tab_loaded(id, index, generation, Err("permission denied".into()))
         .unwrap();
     assert!(matches!(
-        screen.tabs[&TabId::new(0)].pane_tabs_info(id).unwrap().tabs[index].state,
+        screen.core.tabs[&TabId::new(0)]
+            .pane_tabs_info(id)
+            .unwrap()
+            .tabs[index]
+            .state,
         yinz_types::pane_tabs::PaneTabLoadState::Failed(_)
     ));
     launch_configured_overlay(&mut screen, "yinz:configuration", CLIENT_1);
@@ -8017,17 +8158,17 @@ fn configured_overlay_load_failure_releases_pending_launch_and_retry_reuses_slot
 fn configured_overlay_follows_tabs_without_agents_and_preserves_geometry() {
     for mirrored in [false, true] {
         let (mut screen, events, ptys) = configured_overlay_screen();
-        screen.session_is_mirrored = mirrored;
+        screen.core.session_is_mirrored = mirrored;
         new_tab(&mut screen, 1, TabId::new(0));
         new_tab(&mut screen, 2, TabId::new(1));
         let other = ClientId::new(2);
         screen.add_client(other).unwrap();
         if !mirrored {
             screen
-                .switch_active_tab(screen.tabs[&TabId::new(0)].position, None, true, other)
+                .switch_active_tab(screen.core.tabs[&TabId::new(0)].position, None, true, other)
                 .unwrap();
         }
-        screen.overlay_tab_plugins =
+        screen.core.overlay_tab_plugins =
             Config::from_kdl("overlay_tab_plugins { \"file:/custom.scm\"; }", None)
                 .unwrap()
                 .resolved_overlay_tab_plugins()
@@ -8047,24 +8188,27 @@ fn configured_overlay_follows_tabs_without_agents_and_preserves_geometry() {
             .unwrap();
         let pane = PaneId::Plugin(PluginId::new(100));
         screen.change_overlay_coordinates(vec![(pane, popup_coordinates())], true);
-        let source = *screen.active_tab_ids.get(&CLIENT_1).unwrap();
+        let source = *screen.core.active_tab_ids.get(&CLIENT_1).unwrap();
         let target = if source == TabId::new(0) {
             TabId::new(1)
         } else {
             TabId::new(0)
         };
-        let destination_focus = screen.tabs[&target].get_active_pane_id(CLIENT_1);
+        let destination_focus = screen.core.tabs[&target].get_active_pane_id(CLIENT_1);
         assert!(matches!(destination_focus, Some(PaneId::Terminal(_))));
         assert_eq!(screen.get_active_pane_id(&CLIENT_1), Some(pane));
-        let placement = screen.tabs[&source].overlay_placement_for(pane);
+        let placement = screen.core.tabs[&source].overlay_placement_for(pane);
         screen
-            .switch_active_tab(screen.tabs[&target].position, None, true, CLIENT_1)
+            .switch_active_tab(screen.core.tabs[&target].position, None, true, CLIENT_1)
             .unwrap();
-        assert!(screen.tabs[&target].pane_is_overlay(pane));
-        assert_eq!(screen.tabs[&target].overlay_placement_for(pane), placement);
-        assert!(!screen.tabs[&source].pane_is_overlay(pane));
+        assert!(screen.core.tabs[&target].pane_is_overlay(pane));
+        assert_eq!(
+            screen.core.tabs[&target].overlay_placement_for(pane),
+            placement
+        );
+        assert!(!screen.core.tabs[&source].pane_is_overlay(pane));
         assert_eq!(screen.get_active_pane_id(&CLIENT_1), destination_focus);
-        assert_eq!(screen.active_tab_ids[&other], target);
+        assert_eq!(screen.core.active_tab_ids[&other], target);
         if mirrored {
             assert_eq!(screen.get_active_pane_id(&other), destination_focus);
         }
@@ -8095,9 +8239,10 @@ fn configured_overlay_stays_with_remaining_viewer_until_the_last_client_leaves()
                 .unwrap();
             let pane = PaneId::Plugin(PluginId::new(100));
             screen.change_overlay_coordinates(vec![(pane, popup_coordinates())], true);
-            let id = screen.tabs[&source].pane_tabs_of(pane).unwrap();
+            let id = screen.core.tabs[&source].pane_tabs_of(pane).unwrap();
             if focus_other {
                 screen
+                    .core
                     .tabs
                     .get_mut(&source)
                     .unwrap()
@@ -8106,37 +8251,48 @@ fn configured_overlay_stays_with_remaining_viewer_until_the_last_client_leaves()
             }
             let remaining_focus = screen.get_active_pane_id(&other);
             assert_eq!(remaining_focus == Some(pane), focus_other);
-            let info = screen.tabs[&source].pane_tabs_info(id).unwrap();
-            let placement = screen.tabs[&source].overlay_placement_for(pane);
+            let info = screen.core.tabs[&source].pane_tabs_info(id).unwrap();
+            let placement = screen.core.tabs[&source].overlay_placement_for(pane);
             let target = if new_destination {
                 new_tab(&mut screen, 3, TabId::new(2));
                 TabId::new(2)
             } else {
                 screen
-                    .switch_active_tab(screen.tabs[&TabId::new(0)].position, None, true, CLIENT_1)
+                    .switch_active_tab(
+                        screen.core.tabs[&TabId::new(0)].position,
+                        None,
+                        true,
+                        CLIENT_1,
+                    )
                     .unwrap();
                 TabId::new(0)
             };
 
-            assert_eq!(screen.active_tab_ids[&CLIENT_1], target);
-            assert_eq!(screen.active_tab_ids[&other], source);
-            assert!(screen.tabs[&source].has_connected_client(&other));
-            assert!(screen.tabs[&source].pane_is_overlay(pane));
-            assert_eq!(screen.tabs[&source].pane_tabs_info(id), Some(info));
-            assert_eq!(screen.tabs[&source].overlay_placement_for(pane), placement);
+            assert_eq!(screen.core.active_tab_ids[&CLIENT_1], target);
+            assert_eq!(screen.core.active_tab_ids[&other], source);
+            assert!(screen.core.tabs[&source].has_connected_client(&other));
+            assert!(screen.core.tabs[&source].pane_is_overlay(pane));
+            assert_eq!(screen.core.tabs[&source].pane_tabs_info(id), Some(info));
+            assert_eq!(
+                screen.core.tabs[&source].overlay_placement_for(pane),
+                placement
+            );
             assert_eq!(screen.get_active_pane_id(&other), remaining_focus);
-            assert!(!screen.tabs[&target].pane_is_overlay(pane));
+            assert!(!screen.core.tabs[&target].pane_is_overlay(pane));
 
             let destination_focus = screen.get_active_pane_id(&CLIENT_1);
             assert!(matches!(destination_focus, Some(PaneId::Terminal(_))));
             screen
-                .switch_active_tab(screen.tabs[&target].position, None, true, other)
+                .switch_active_tab(screen.core.tabs[&target].position, None, true, other)
                 .unwrap();
-            assert!(screen.tabs[&source].has_no_connected_clients());
-            assert!(!screen.tabs[&source].pane_is_overlay(pane));
-            assert!(screen.tabs[&target].pane_is_overlay(pane));
-            assert!(screen.tabs[&target].pane_tabs_info(id).is_some());
-            assert_eq!(screen.tabs[&target].overlay_placement_for(pane), placement);
+            assert!(screen.core.tabs[&source].has_no_connected_clients());
+            assert!(!screen.core.tabs[&source].pane_is_overlay(pane));
+            assert!(screen.core.tabs[&target].pane_is_overlay(pane));
+            assert!(screen.core.tabs[&target].pane_tabs_info(id).is_some());
+            assert_eq!(
+                screen.core.tabs[&target].overlay_placement_for(pane),
+                placement
+            );
             assert_eq!(screen.get_active_pane_id(&CLIENT_1), destination_focus);
             assert!(matches!(
                 screen.get_active_pane_id(&other),
@@ -8176,7 +8332,7 @@ fn configured_overlay_skips_explicit_placement_and_background_launches() {
                 None,
             )
             .unwrap();
-        assert!(screen.pending_overlay_tabs.is_none());
+        assert!(screen.core.pending_overlay_tabs.is_none());
     }
     assert!(!events
         .try_iter()
@@ -8191,7 +8347,12 @@ fn configured_overlay_plugin_launch_uses_acting_clients_tab_and_new_groups_use_r
     let other = ClientId::new(2);
     screen.add_client(other).unwrap();
     screen
-        .switch_active_tab(screen.tabs[&TabId::new(0)].position, None, true, CLIENT_1)
+        .switch_active_tab(
+            screen.core.tabs[&TabId::new(0)].position,
+            None,
+            true,
+            CLIENT_1,
+        )
         .unwrap();
     launch_configured_overlay(&mut screen, "yinz:strider", other);
     let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
@@ -8205,6 +8366,7 @@ fn configured_overlay_plugin_launch_uses_acting_clients_tab_and_new_groups_use_r
         .unwrap();
     let pane = PaneId::Plugin(PluginId::new(100));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(1))
         .unwrap()
@@ -8226,10 +8388,10 @@ fn configured_overlay_plugin_launch_uses_acting_clients_tab_and_new_groups_use_r
             None,
         )
         .unwrap();
-    assert!(screen.tabs[&TabId::new(0)].pane_is_overlay(pane));
-    assert_eq!(screen.active_tab_ids[&other], TabId::new(1));
+    assert!(screen.core.tabs[&TabId::new(0)].pane_is_overlay(pane));
+    assert_eq!(screen.core.active_tab_ids[&other], TabId::new(1));
     assert_eq!(screen.get_active_pane_id(&CLIENT_1), Some(pane));
-    let info = screen.tabs[&TabId::new(0)]
+    let info = screen.core.tabs[&TabId::new(0)]
         .pane_tabs_infos()
         .next()
         .unwrap();
@@ -8246,7 +8408,7 @@ fn configured_overlay_plugin_launch_uses_acting_clients_tab_and_new_groups_use_r
         )
         .unwrap();
     assert_eq!(
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .pane_tabs_info(info.id)
             .unwrap()
             .tabs
@@ -8254,6 +8416,7 @@ fn configured_overlay_plugin_launch_uses_acting_clients_tab_and_new_groups_use_r
         2
     );
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -8283,7 +8446,7 @@ fn configured_overlay_plugin_launch_uses_acting_clients_tab_and_new_groups_use_r
         )
         .unwrap();
     assert_eq!(
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .pane_tabs_infos()
             .next()
             .unwrap()
@@ -8398,6 +8561,7 @@ fn configured_overlay_coalesced_completions_load_each_requested_slot() {
     let (mut screen, events, ptys) = configured_overlay_screen();
     new_tab(&mut screen, 1, TabId::new(0));
     screen
+        .core
         .overlay_tab_plugins
         .push(yinz_types::pane_tabs::PaneTabDescriptor {
             label: "Third".into(),
@@ -8426,7 +8590,7 @@ fn configured_overlay_coalesced_completions_load_each_requested_slot() {
     );
     assert!(second.try_recv().is_err());
     assert!(third.try_recv().is_err());
-    let id = screen.tabs[&TabId::new(0)]
+    let id = screen.core.tabs[&TabId::new(0)]
         .pane_tabs_infos()
         .next()
         .unwrap()
@@ -8466,7 +8630,7 @@ fn configured_overlay_coalesced_completions_load_each_requested_slot() {
         Some(PaneId::Plugin(PluginId::new(102)))
     );
     assert_eq!(
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .pane_tabs_info(id)
             .unwrap()
             .active,
@@ -8496,6 +8660,7 @@ fn configured_overlay_launch_completion_reports_failure_and_closure() {
         let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
         if close {
             screen
+                .core
                 .tabs
                 .get_mut(&TabId::new(0))
                 .unwrap()
@@ -8555,13 +8720,17 @@ fn configured_overlay_initial_configuration_and_caller_metadata_survive_loading(
             .pane_tab_loaded(id, index, generation, Ok((PluginId::new(100), request)))
             .unwrap();
         launch_configured_overlay(&mut screen, "custom", CLIENT_1);
-        let id = screen.tabs[&TabId::new(0)]
+        let id = screen.core.tabs[&TabId::new(0)]
             .pane_tabs_infos()
             .next()
             .unwrap()
             .id;
         assert_eq!(
-            screen.tabs[&TabId::new(0)].pane_tabs_info(id).unwrap().tabs[index].descriptor,
+            screen.core.tabs[&TabId::new(0)]
+                .pane_tabs_info(id)
+                .unwrap()
+                .tabs[index]
+                .descriptor,
             descriptor
         );
         launch_configured_overlay(&mut screen, "yinz:strider", CLIENT_1);
@@ -8636,9 +8805,15 @@ fn configured_overlay_coalesced_loads_keep_originating_clients() {
             let other = ClientId::new(2);
             screen.add_client(other).unwrap();
             screen
-                .switch_active_tab(screen.tabs[&TabId::new(0)].position, None, true, CLIENT_1)
+                .switch_active_tab(
+                    screen.core.tabs[&TabId::new(0)].position,
+                    None,
+                    true,
+                    CLIENT_1,
+                )
                 .unwrap();
             screen
+                .core
                 .overlay_tab_plugins
                 .push(yinz_types::pane_tabs::PaneTabDescriptor {
                     label: "Third".into(),
@@ -8742,14 +8917,14 @@ fn configured_overlay_coalesced_loads_keep_originating_clients() {
                         .unwrap();
                 }
             }
-            let tab = &screen.tabs[&TabId::new(1)];
+            let tab = &screen.core.tabs[&TabId::new(1)];
             let info = tab
                 .pane_tabs_infos()
                 .find(|info| info.overlay_group)
                 .unwrap();
             assert_eq!(info.active, 2);
             assert_eq!(tab.get_active_pane_id(other), Some(info.pane_id));
-            assert!(!screen.tabs[&TabId::new(0)]
+            assert!(!screen.core.tabs[&TabId::new(0)]
                 .pane_tabs_infos()
                 .any(|info| info.overlay_group));
             for (index, mut completion) in completions {
@@ -8816,6 +8991,7 @@ fn move_pane_to_tab_group_carries_overlay_container_and_focus() {
         .switch_active_tab(TabPosition::new(0), None, true, CLIENT_1)
         .unwrap();
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -8829,12 +9005,12 @@ fn move_pane_to_tab_group_carries_overlay_container_and_focus() {
             &mut HashSet::new(),
         )
         .unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT_1], TabId::new(1));
+    assert_eq!(screen.core.active_tab_ids[&CLIENT_1], TabId::new(1));
     assert_eq!(screen.get_active_pane_id(&CLIENT_1), Some(second));
-    let destination = &screen.tabs[&TabId::new(1)];
+    let destination = &screen.core.tabs[&TabId::new(1)];
     assert_eq!(destination.multipane_info(second).unwrap().id, info.id);
     for pane in [first, second] {
         assert!(destination.pane_is_overlay(pane));
-        assert!(!screen.tabs[&TabId::new(0)].has_pane_with_pid(&pane));
+        assert!(!screen.core.tabs[&TabId::new(0)].has_pane_with_pid(&pane));
     }
 }

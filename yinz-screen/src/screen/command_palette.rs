@@ -104,31 +104,32 @@ fn pane_label(pane: &PaneInfo) -> String {
 
 impl Screen {
     pub(super) fn reconcile_project_contexts(&mut self) {
-        for client in self.active_tab_ids.keys().copied().collect::<Vec<_>>() {
+        for client in self.core.active_tab_ids.keys().copied().collect::<Vec<_>>() {
             let focused = self.get_active_pane_id(&client);
             let project = focused
-                .and_then(|pane| self.pane_projects.get(&pane))
+                .and_then(|pane| self.core.pane_projects.get(&pane))
                 .cloned();
-            let state = self.client_projects.entry(client).or_default();
+            let state = self.palette.client_projects.entry(client).or_default();
             if (state.focused != focused || state.focused_project != project) && project.is_some() {
                 if state.current != project
                     && let Some(name) = &project
                 {
-                    self.last_project.remember(name);
+                    self.core.last_project.remember(name);
                 }
                 state.current.clone_from(&project);
             }
             if state
                 .current
                 .as_ref()
-                .is_none_or(|name| !self.projects.contains(name))
+                .is_none_or(|name| !self.core.projects.contains(name))
             {
                 state.current = project.clone().or_else(|| {
-                    self.last_project
+                    self.core
+                        .last_project
                         .name()
-                        .filter(|name| self.projects.contains(*name))
+                        .filter(|name| self.core.projects.contains(*name))
                         .cloned()
-                        .or_else(|| self.projects.first().cloned())
+                        .or_else(|| self.core.projects.first().cloned())
                 });
             }
             state.focused = focused;
@@ -137,19 +138,20 @@ impl Screen {
     }
 
     pub(crate) fn toggle_command_palette(&mut self, client_id: ClientId) {
-        if self.permission_modal_open(client_id) {
+        if self.permissions.permission_modal_open(client_id) {
             return;
         }
         if self.close_command_palette(client_id) {
             return;
         }
-        let Some(tab_id) = self.active_tab_ids.get(&client_id).copied() else {
+        let Some(tab_id) = self.core.active_tab_ids.get(&client_id).copied() else {
             return;
         };
         let Some(pane_id) = self.get_active_pane_id(&client_id) else {
             return;
         };
         let Some(source) = self
+            .core
             .tabs
             .get(&tab_id)
             .and_then(|tab| tab.pane_infos().into_iter().find(|pane| pane.id == pane_id))
@@ -157,12 +159,13 @@ impl Screen {
             return;
         };
         self.close_context_menu(client_id);
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_server(ServerInstruction::SetCommandPaletteOpen(client_id, true))
             .context("failed to lock input when opening command palette")
             .non_fatal();
-        self.command_palettes.insert(
+        self.palette.command_palettes.insert(
             client_id,
             CommandPaletteState {
                 widget: CommandPalette::default(),
@@ -180,7 +183,7 @@ impl Screen {
                 painted: None,
                 backing: TranslucentOverlayBacking::default(),
                 watcher_backing: TranslucentOverlayBacking::default(),
-                backing_style: self.style,
+                backing_style: self.core.style,
                 quota_image: None,
                 quota_view: 0,
                 shortcut_keybinds: Vec::new(),
@@ -194,8 +197,9 @@ impl Screen {
         self.refresh_command_palettes();
         self.schedule_palette_agent_labels_tick(client_id);
         self.open_plugin_palette(client_id);
-        if self.command_palettes.len() == 1 {
-            self.bus
+        if self.palette.command_palettes.len() == 1 {
+            self.core
+                .bus
                 .senders
                 .send_to_background_jobs(
                     yinz_bus::background_jobs::BackgroundJob::WatchCommandPaletteSessions(true),
@@ -205,14 +209,14 @@ impl Screen {
     }
 
     pub(crate) fn open_agents(&mut self, client_id: ClientId) {
-        if self.permission_modal_open(client_id) {
+        if self.permissions.permission_modal_open(client_id) {
             return;
         }
         self.cancel_theme_preview(client_id);
-        if !self.command_palette_is_open(client_id) {
+        if !self.palette.command_palette_is_open(client_id) {
             self.toggle_command_palette(client_id);
         }
-        if let Some(state) = self.command_palettes.get_mut(&client_id) {
+        if let Some(state) = self.palette.command_palettes.get_mut(&client_id) {
             state.selection.clear();
             state.agents.cancel();
             state.set_suspended(false);
@@ -220,7 +224,7 @@ impl Screen {
             state.widget.open_picker(EntryKind::Agent);
         }
         self.refresh_command_palettes();
-        if let Some(state) = self.command_palettes.get_mut(&client_id)
+        if let Some(state) = self.palette.command_palettes.get_mut(&client_id)
             && let Some(id) = state
                 .widget
                 .agent_presentations
@@ -236,19 +240,10 @@ impl Screen {
         self.take_command_palette(client_id).is_some()
     }
 
-    pub(super) fn command_palette_is_open(&self, client_id: ClientId) -> bool {
-        self.command_palettes.contains_key(&client_id)
-    }
-
-    pub(super) fn palette_owns_input(&self, client_id: ClientId) -> bool {
-        self.command_palettes
-            .get(&client_id)
-            .is_some_and(|s| !s.suspended)
-    }
-
     fn release_palette_input(&self, client_id: ClientId) {
-        if !self.command_palette_is_open(client_id) {
-            self.bus
+        if !self.palette.command_palette_is_open(client_id) {
+            self.core
+                .bus
                 .senders
                 .send_to_server(ServerInstruction::SetCommandPaletteOpen(client_id, false))
                 .context("failed to restore input mode when closing command palette")
@@ -257,9 +252,11 @@ impl Screen {
     }
 
     fn take_command_palette(&mut self, client_id: ClientId) -> Option<CommandPaletteState> {
-        let mut state = self.command_palettes.remove(&client_id)?;
+        let mut state = self.palette.command_palettes.remove(&client_id)?;
         if state.selection.captures_mouse() {
-            self.command_palette_mouse_captures.insert(client_id);
+            self.palette
+                .command_palette_mouse_captures
+                .insert(client_id);
         }
         state.selection.clear();
         self.cancel_theme_preview(client_id);
@@ -270,8 +267,9 @@ impl Screen {
         state.agents.cancel();
         self.dismiss_plugin_palette(client_id, &mut state);
         self.release_palette_input(client_id);
-        if self.command_palettes.is_empty() {
-            self.bus
+        if self.palette.command_palettes.is_empty() {
+            self.core
+                .bus
                 .senders
                 .send_to_background_jobs(
                     yinz_bus::background_jobs::BackgroundJob::WatchCommandPaletteSessions(false),
@@ -279,7 +277,7 @@ impl Screen {
                 .non_fatal();
         }
         // Also restores clipped graphics and any cells exposed by a tab switch.
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             tab.set_should_clear_display_before_rendering();
             tab.set_force_render();
         }
@@ -288,10 +286,11 @@ impl Screen {
 
     pub(super) fn dismiss_stale_command_palettes(&mut self) {
         let stale: Vec<_> = self
+            .palette
             .command_palettes
             .iter()
             .filter(|(client, state)| {
-                self.active_tab_ids.get(client) != Some(&state.context.tab_id)
+                self.core.active_tab_ids.get(client) != Some(&state.context.tab_id)
             })
             .map(|(client, _)| *client)
             .collect();
@@ -302,15 +301,16 @@ impl Screen {
 
     pub(super) fn command_palette_surface(&self, client_id: ClientId) -> Option<Viewport> {
         if self
+            .palette
             .command_palettes
             .get(&client_id)
             .is_some_and(|s| s.suspended)
         {
             return None;
         }
-        let tab_id = *self.active_tab_ids.get(&client_id)?;
+        let tab_id = *self.core.active_tab_ids.get(&client_id)?;
         let mut surface = self.tab_surface(tab_id)?;
-        if let Some(size) = self.client_sizes.get(&client_id) {
+        if let Some(size) = self.core.client_sizes.get(&client_id) {
             surface.cols = surface.cols.min(size.cols);
             surface.rows = surface.rows.min(size.rows);
         }
@@ -330,7 +330,7 @@ impl Screen {
         }
         let copy_key = !toggle
             && key.as_ref().is_some_and(|key| {
-                self.mode_info.get(&client_id).is_some_and(|mode| {
+                self.core.mode_info.get(&client_id).is_some_and(|mode| {
                     let binding_for_mode = |input_mode| {
                         mode.keybinds
                             .iter()
@@ -352,8 +352,9 @@ impl Screen {
                 })
             });
         if copy_key
-            && self.palette_owns_input(client_id)
+            && self.palette.palette_owns_input(client_id)
             && self
+                .palette
                 .command_palettes
                 .get(&client_id)
                 .is_some_and(|state| state.selection.selected_text().is_some())
@@ -361,7 +362,7 @@ impl Screen {
             self.copy_selection(client_id).non_fatal();
             return true;
         }
-        let Some(state) = self.command_palettes.get_mut(&client_id) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client_id) else {
             return false;
         };
         if state.suspended {
@@ -400,7 +401,7 @@ impl Screen {
         }
         self.handle_palette_outcome(client_id, outcome);
         self.refresh_theme_preview(client_id);
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             tab.pending_agent_escapes
                 .retain(|(client, _), _| *client != client_id);
         }
@@ -413,21 +414,27 @@ impl Screen {
         event: &MouseEvent,
         client_id: ClientId,
     ) -> bool {
-        if self.command_palette_mouse_captures.contains(&client_id) {
+        if self
+            .palette
+            .command_palette_mouse_captures
+            .contains(&client_id)
+        {
             if event.event_type == MouseEventType::Release {
-                self.command_palette_mouse_captures.remove(&client_id);
+                self.palette
+                    .command_palette_mouse_captures
+                    .remove(&client_id);
             }
             return true;
         }
         let Some(surface) = self.command_palette_surface(client_id) else {
             if event.event_type == MouseEventType::Release
-                && let Some(state) = self.command_palettes.get_mut(&client_id)
+                && let Some(state) = self.palette.command_palettes.get_mut(&client_id)
             {
                 state.selection.release(event.position);
             }
-            return self.palette_owns_input(client_id);
+            return self.palette.palette_owns_input(client_id);
         };
-        let Some(state) = self.command_palettes.get_mut(&client_id) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client_id) else {
             return false;
         };
         if event.event_type == MouseEventType::Motion && !state.selection.captures_mouse() {
@@ -435,11 +442,11 @@ impl Screen {
         }
         let mut layout = state
             .widget
-            .layout_with_arrow_fonts(surface, self.arrow_fonts);
+            .layout_with_arrow_fonts(surface, self.core.arrow_fonts);
         if state.quota_image.is_some() && state.quota_view == state.widget.view {
             layout.use_quota_image();
         }
-        let chunks = state.widget.chunks(&layout, &self.style);
+        let chunks = state.widget.chunks(&layout, &self.core.style);
         state
             .selection
             .reconcile(&layout, state.widget.view, &chunks);
@@ -457,7 +464,9 @@ impl Screen {
                 .is_some_and(|y| layout.rect.contains(event.position.column(), y));
             if !inside {
                 self.close_command_palette(client_id);
-                self.command_palette_mouse_captures.insert(client_id);
+                self.palette
+                    .command_palette_mouse_captures
+                    .insert(client_id);
             } else if event.left {
                 if state.widget.mouse_control(&layout, event.position) {
                     state.selection.capture_control();
@@ -470,8 +479,10 @@ impl Screen {
                         .selection
                         .start(&layout, state.widget.view, &chunks, event.position);
                 }
-                if !self.command_palettes.contains_key(&client_id) {
-                    self.command_palette_mouse_captures.insert(client_id);
+                if !self.palette.command_palettes.contains_key(&client_id) {
+                    self.palette
+                        .command_palette_mouse_captures
+                        .insert(client_id);
                 }
             }
             self.refresh_theme_preview(client_id);
@@ -489,7 +500,7 @@ impl Screen {
                     let outcome = state.widget.click(&layout, position);
                     self.handle_palette_outcome(client_id, outcome);
                 }
-            } else if self.copy_options.copy_on_select {
+            } else if self.core.copy_options.copy_on_select {
                 self.copy_selection(client_id).non_fatal();
             }
             self.refresh_theme_preview(client_id);
@@ -498,49 +509,31 @@ impl Screen {
         true
     }
 
-    pub(super) fn palette_captures_mouse(&self, client_id: ClientId) -> bool {
-        self.command_palette_mouse_captures.contains(&client_id)
-            || self
-                .command_palettes
-                .get(&client_id)
-                .is_some_and(|state| state.selection.captures_mouse())
-    }
-
     pub(super) fn copy_palette_selection(&mut self, client_id: ClientId) -> bool {
         let Some(surface) = self.command_palette_surface(client_id) else {
             return false;
         };
-        let Some(state) = self.command_palettes.get_mut(&client_id) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client_id) else {
             return false;
         };
         let mut layout = state
             .widget
-            .layout_with_arrow_fonts(surface, self.arrow_fonts);
+            .layout_with_arrow_fonts(surface, self.core.arrow_fonts);
         if state.quota_image.is_some() && state.quota_view == state.widget.view {
             layout.use_quota_image();
         }
-        let chunks = state.widget.chunks(&layout, &self.style);
+        let chunks = state.widget.chunks(&layout, &self.core.style);
         state
             .selection
             .reconcile(&layout, state.widget.view, &chunks);
         let text = state.selection.selected_text();
         let tab_id = state.context.tab_id;
         if let Some(text) = text
-            && let Some(tab) = self.tabs.get(&tab_id)
+            && let Some(tab) = self.core.tabs.get(&tab_id)
         {
             tab.copy_text_to_clipboard(&text).non_fatal();
         }
         true
-    }
-
-    pub(super) fn invalidate_command_palette_backing(
-        &mut self,
-        client: ClientId,
-        damage: &[CellRect],
-    ) {
-        if let Some(state) = self.command_palettes.get_mut(&client) {
-            state.backing.invalidate(damage);
-        }
     }
 
     pub(super) fn prepare_command_palette_render(&mut self) {
@@ -548,6 +541,7 @@ impl Screen {
         self.refresh_command_palettes();
         self.refresh_palette_history_titles();
         let layouts: Vec<_> = self
+            .palette
             .command_palettes
             .iter()
             .filter_map(|(client, state)| {
@@ -556,41 +550,42 @@ impl Screen {
                     *client,
                     state
                         .widget
-                        .layout_with_arrow_fonts(surface, self.arrow_fonts)
+                        .layout_with_arrow_fonts(surface, self.core.arrow_fonts)
                         .rect,
                 ))
             })
             .collect();
         for (client, rect) in layouts {
-            let Some(state) = self.command_palettes.get_mut(&client) else {
+            let Some(state) = self.palette.command_palettes.get_mut(&client) else {
                 continue;
             };
             let geometry_changed = state
                 .painted
                 .replace(rect)
                 .is_some_and(|previous| previous != rect);
-            if state.backing_style != self.style {
+            if state.backing_style != self.core.style {
                 state.backing = TranslucentOverlayBacking::default();
                 state.watcher_backing = TranslucentOverlayBacking::default();
-                state.backing_style = self.style;
+                state.backing_style = self.core.style;
             }
             let mut needs_backing = state.backing.prepare(
                 rect,
-                self.background_opacity,
-                *self.terminal_emulator_colors.borrow(),
-                self.style.colors.text_unselected.background,
-                &self.terminal_emulator_color_codes.borrow(),
+                self.core.background_opacity,
+                *self.core.terminal_emulator_colors.borrow(),
+                self.core.style.colors.text_unselected.background,
+                &self.core.terminal_emulator_color_codes.borrow(),
             );
-            if self.followed_client_id == Some(client) && !self.watcher_clients.is_empty() {
+            if self.core.followed_client_id == Some(client) && !self.core.watcher_clients.is_empty()
+            {
                 needs_backing |= state.watcher_backing.prepare(
                     rect,
-                    self.background_opacity,
-                    *self.terminal_emulator_colors.borrow(),
-                    self.style.colors.text_unselected.background,
-                    &self.terminal_emulator_color_codes.borrow(),
+                    self.core.background_opacity,
+                    *self.core.terminal_emulator_colors.borrow(),
+                    self.core.style.colors.text_unselected.background,
+                    &self.core.terminal_emulator_color_codes.borrow(),
                 );
             }
-            if let Some(tab) = self.tabs.get_mut(&state.context.tab_id) {
+            if let Some(tab) = self.core.tabs.get_mut(&state.context.tab_id) {
                 if geometry_changed {
                     tab.set_should_clear_display_before_rendering();
                     tab.set_force_render();
@@ -612,21 +607,26 @@ impl Screen {
             let Some(surface) = self.command_palette_surface(client) else {
                 continue;
             };
-            let Some(state) = self.command_palettes.get_mut(&client) else {
+            let Some(state) = self.palette.command_palettes.get_mut(&client) else {
                 continue;
             };
             let mut layout = state
                 .widget
-                .layout_with_arrow_fonts(surface, self.arrow_fonts);
+                .layout_with_arrow_fonts(surface, self.core.arrow_fonts);
             let cell = if !watcher
                 && self
+                    .core
                     .kitty_host_capabilities
                     .borrow()
                     .get(&client)
                     .copied()
                     .unwrap_or(false)
             {
-                self.client_cell_pixel_sizes.get(&client).copied().flatten()
+                self.core
+                    .client_cell_pixel_sizes
+                    .get(&client)
+                    .copied()
+                    .flatten()
             } else {
                 None
             };
@@ -640,9 +640,9 @@ impl Screen {
                 crate::ui::command_palette::QuotaImage::prepare(
                     &mut state.quota_image,
                     layout.quota_image(),
-                    self.style,
+                    self.core.style,
                     cell,
-                    self.kitty_image_store.clone(),
+                    self.core.kitty_image_store.clone(),
                 )
                 .context("preparing palette quota image")
                 .unwrap_or_else(|error| {
@@ -656,13 +656,13 @@ impl Screen {
             if layout.rect.is_empty() {
                 continue;
             }
-            let mut chunks = state.widget.chunks(&layout, &self.style);
+            let mut chunks = state.widget.chunks(&layout, &self.core.style);
             if !watcher {
                 state
                     .selection
                     .reconcile(&layout, state.widget.view, &chunks);
             }
-            state.selection.highlight(&mut chunks, &self.style);
+            state.selection.highlight(&mut chunks, &self.core.style);
             let cursor = state
                 .widget
                 .cursor(&layout)
@@ -671,12 +671,12 @@ impl Screen {
                 .add_translucent_overlay(
                     client,
                     layout.rect,
-                    self.background_opacity,
+                    self.core.background_opacity,
                     chunks,
                     cursor,
-                    *self.terminal_emulator_colors.borrow(),
-                    self.style.colors.text_unselected.background,
-                    &self.terminal_emulator_color_codes.borrow(),
+                    *self.core.terminal_emulator_colors.borrow(),
+                    self.core.style.colors.text_unselected.background,
+                    &self.core.terminal_emulator_color_codes.borrow(),
                     if watcher {
                         &mut state.watcher_backing
                     } else {
@@ -766,7 +766,8 @@ impl Screen {
                 None,
                 None,
                 None,
-                self.tabs
+                self.core
+                    .tabs
                     .get(&tab_id)
                     .is_some_and(|tab| tab.are_floating_panes_visible()),
             )),
@@ -848,7 +849,7 @@ impl Screen {
                 &["workspace"],
                 Builtin::Picker(EntryKind::TabGroup),
             );
-            if let Some(group) = self.tab_group_ids.get(&tab_id) {
+            if let Some(group) = self.core.tab_group_ids.get(&tab_id) {
                 command(
                     "rename-tab-group",
                     "Rename tab group…",
@@ -973,12 +974,17 @@ impl Screen {
                 Builtin::Picker(kind),
             ));
         }
-        for id in self.tab_groups.keys().filter(|_| self.tab_groups_enabled()) {
+        for id in self
+            .core
+            .tab_groups
+            .keys()
+            .filter(|_| self.tab_groups_enabled())
+        {
             entries.push((
                 Entry {
                     id: format!("tab-group:{id}"),
                     label: escape_literal(&self.tab_group_name(*id).unwrap_or_default()),
-                    description: if self.tab_group_ids.get(&tab_id) == Some(id) {
+                    description: if self.core.tab_group_ids.get(&tab_id) == Some(id) {
                         "Current".into()
                     } else {
                         String::new()
@@ -991,8 +997,9 @@ impl Screen {
             ));
         }
         entries.extend(self.warp_palette_entries(state.warp_source.as_ref()));
-        for name in &self.projects {
+        for name in &self.core.projects {
             let source = self
+                .core
                 .project_sources
                 .get(name)
                 .map(String::as_str)
@@ -1022,7 +1029,7 @@ impl Screen {
         state.agents.refresh_labels(
             live.iter().map(|agent| agent.label_source()).collect(),
             client,
-            &self.bus.senders,
+            &self.core.bus.senders,
         );
         state.widget.agent_metadata = live.iter().map(|a| (a.id(), a.metadata.clone())).collect();
         let focused_pane = self.get_active_pane_id(&client);
@@ -1030,10 +1037,12 @@ impl Screen {
             .iter()
             .filter_map(|agent| {
                 agent.presentation().map(|mut presentation| {
-                    presentation.focused =
-                        agent.session == self.session_name && Some(agent.pane.id) == focused_pane;
-                    presentation.hook_flash = agent.session == self.session_name
-                        && self.agent_hook_is_flashing(&agent.pane, self.frame_now());
+                    presentation.focused = agent.session == self.core.session_name
+                        && Some(agent.pane.id) == focused_pane;
+                    presentation.hook_flash = agent.session == self.core.session_name
+                        && self
+                            .agents
+                            .agent_hook_is_flashing(&agent.pane, self.frame_now());
                     if let Some(labels) = state.agents.labels.get(&agent.id()) {
                         presentation.project.clone_from(&labels.project);
                         presentation.branch.clone_from(&labels.branch);
@@ -1083,7 +1092,7 @@ impl Screen {
                 Builtin::Inspect(agent),
             )
         }));
-        for name in self.themes.keys() {
+        for name in self.core.themes.keys() {
             entries.push((
                 Entry {
                     id: format!("theme:{name}"),
@@ -1097,9 +1106,10 @@ impl Screen {
             ));
         }
         let mode_info = self
+            .core
             .mode_info
             .get(&client)
-            .unwrap_or(&self.default_mode_info);
+            .unwrap_or(&self.core.default_mode_info);
         if state.shortcut_keybinds != mode_info.keybinds {
             state.shortcuts.clear();
             state.shortcut_keybinds.clone_from(&mode_info.keybinds);
@@ -1119,6 +1129,7 @@ impl Screen {
                     direction: *direction,
                 }),
                 Builtin::Action(GoToTabById { id }) => self
+                    .core
                     .tabs
                     .get(id)
                     .and_then(|tab| TabNumber::try_from(tab.position).ok())
@@ -1138,6 +1149,7 @@ impl Screen {
                     pane_name,
                     ..
                 }) if self
+                    .core
                     .tabs
                     .get(&tab_id)
                     .is_some_and(|tab| tab.are_floating_panes_visible()) =>
@@ -1237,9 +1249,10 @@ impl Screen {
             ));
         };
         for session in self
+            .core
             .peer_sessions_cache
             .values()
-            .filter(|s| s.name != self.session_name)
+            .filter(|s| s.name != self.core.session_name)
         {
             for (prefix, kind, target) in [
                 ("warp-tab", EntryKind::WarpTabSession, EntryKind::WarpTab),
@@ -1299,15 +1312,19 @@ impl Screen {
     fn run_palette_warp(&mut self, client: ClientId, source: SessionName, target: WarpTarget) {
         use yinz_bus::warp::{warp_pane_from_session, warp_tab_from_session, WARP_PULL_TIMEOUT};
         let Some(session) = self
+            .core
             .peer_sessions_cache
             .get(&source)
-            .filter(|s| s.name != self.session_name)
+            .filter(|s| s.name != self.core.session_name)
         else {
-            if let Some(state) = self.command_palettes.get_mut(&client) {
+            if let Some(state) = self.palette.command_palettes.get_mut(&client) {
                 state
                     .widget
                     .set_error("Source session no longer exists".into());
-                notify(&self.bus.senders, "Source session no longer exists".into());
+                notify(
+                    &self.core.bus.senders,
+                    "Source session no longer exists".into(),
+                );
             }
             return;
         };
@@ -1327,11 +1344,14 @@ impl Screen {
             }),
         };
         if !valid {
-            if let Some(state) = self.command_palettes.get_mut(&client) {
+            if let Some(state) = self.palette.command_palettes.get_mut(&client) {
                 state
                     .widget
                     .set_error("Warp target no longer exists".into());
-                notify(&self.bus.senders, "Warp target no longer exists".into());
+                notify(
+                    &self.core.bus.senders,
+                    "Warp target no longer exists".into(),
+                );
             }
             return;
         }
@@ -1340,8 +1360,8 @@ impl Screen {
             WarpTarget::AllTabs => tabs.iter().map(|tab| tab.tab_id).collect(),
             WarpTarget::Pane(_) => vec![],
         };
-        let destination = self.session_name.clone();
-        let senders = self.bus.senders.clone();
+        let destination = self.core.session_name.clone();
+        let senders = self.core.bus.senders.clone();
         self.close_command_palette(client);
         let spawned = std::thread::Builder::new()
             .name("palette_warp".into())
@@ -1377,7 +1397,8 @@ impl Screen {
                     .non_fatal();
             });
         if let Err(error) = spawned {
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_screen(ScreenInstruction::Notify(
                     format!("Failed to start palette warp: {error}"),
@@ -1390,22 +1411,18 @@ impl Screen {
         }
     }
 
-    pub(super) fn invalidate_palette_agent_labels(&mut self) {
-        for state in self.command_palettes.values_mut() {
-            state.agents.invalidate_labels();
-        }
-    }
-
     fn refresh_command_palettes(&mut self) {
         self.reconcile_project_contexts();
         let clients: Vec<_> = self
+            .palette
             .command_palettes
             .iter()
             .map(|(client, state)| (*client, state.context.pane_id, state.context.tab_id))
             .collect();
         for (client, pane, tab) in clients {
-            if let Some(mut state) = self.command_palettes.remove(&client) {
+            if let Some(mut state) = self.palette.command_palettes.remove(&client) {
                 state.context.current_project = self
+                    .palette
                     .client_projects
                     .get(&client)
                     .and_then(|state| state.current.clone());
@@ -1424,21 +1441,21 @@ impl Screen {
                 state
                     .shortcuts
                     .retain(|id, _| state.actions.contains_key(id));
-                self.command_palettes.insert(client, state);
+                self.palette.command_palettes.insert(client, state);
             }
         }
     }
 
     pub(super) fn palette_target_exists(&self, pane: PaneId, tab: TabId, action: &Action) -> bool {
-        if !self.tabs.contains_key(&tab) || self.tab_containing_pane(pane).is_none() {
+        if !self.core.tabs.contains_key(&tab) || self.tab_containing_pane(pane).is_none() {
             return false;
         }
         match action {
             Action::FocusPaneByPaneId { pane_id } => self.tab_containing_pane(*pane_id).is_some(),
-            Action::GoToTabById { id } => self.tabs.contains_key(id),
+            Action::GoToTabById { id } => self.core.tabs.contains_key(id),
             Action::SwitchTabGroup { id }
             | Action::RenameTabGroup { id, .. }
-            | Action::CloseTabGroup { id } => self.tab_groups.contains_key(id),
+            | Action::CloseTabGroup { id } => self.core.tab_groups.contains_key(id),
             _ => true,
         }
     }
@@ -1455,7 +1472,7 @@ impl Screen {
                 direction: Some(_),
                 ..
             }
-        ) && !self.tabs.get(&tab).is_some_and(|tab| {
+        ) && !self.core.tabs.get(&tab).is_some_and(|tab| {
             !tab.are_floating_panes_visible() && tab.get_tiled_pane_ids().contains(&pane)
         }) {
             return Err(
@@ -1468,6 +1485,7 @@ impl Screen {
     fn handle_palette_outcome(&mut self, client: ClientId, outcome: Outcome) {
         if outcome == Outcome::Cancel
             && self
+                .palette
                 .theme_preview
                 .as_ref()
                 .is_some_and(|preview| preview.client == client)
@@ -1488,7 +1506,7 @@ impl Screen {
             self.close_command_palette(client);
             return;
         }
-        let Some(state) = self.command_palettes.get(&client) else {
+        let Some(state) = self.palette.command_palettes.get(&client) else {
             return;
         };
         let pane = state.context.pane_id;
@@ -1500,11 +1518,14 @@ impl Screen {
         };
         let label = state.widget.action_label(&id);
         let Some(builtin) = state.actions.get(&id).cloned() else {
-            if let Some(state) = self.command_palettes.get_mut(&client) {
+            if let Some(state) = self.palette.command_palettes.get_mut(&client) {
                 state
                     .widget
                     .set_error("Destination no longer exists".into());
-                notify(&self.bus.senders, "Destination no longer exists".into());
+                notify(
+                    &self.core.bus.senders,
+                    "Destination no longer exists".into(),
+                );
             }
             return;
         };
@@ -1516,7 +1537,7 @@ impl Screen {
                         name,
                         values.first().is_some_and(|v| v == "Save permanently"),
                     );
-                } else if let Some(state) = self.command_palettes.get_mut(&client) {
+                } else if let Some(state) = self.palette.command_palettes.get_mut(&client) {
                     state.widget.open_form(Form::new(
                         id,
                         escape_literal(&format!("Apply theme {name}")),
@@ -1543,7 +1564,7 @@ impl Screen {
                 return;
             },
             Builtin::AgentFilters => {
-                self.open_agent_filters(client);
+                self.palette.open_agent_filters(client);
                 return;
             },
             Builtin::Agent(action) => {
@@ -1551,9 +1572,9 @@ impl Screen {
                 return;
             },
             Builtin::WarpSource(source, kind) => {
-                let valid =
-                    source != self.session_name && self.peer_sessions_cache.contains_key(&source);
-                if let Some(state) = self.command_palettes.get_mut(&client) {
+                let valid = source != self.core.session_name
+                    && self.core.peer_sessions_cache.contains_key(&source);
+                if let Some(state) = self.palette.command_palettes.get_mut(&client) {
                     if valid {
                         state.warp_source = Some(source);
                         state.widget.open_picker(kind);
@@ -1561,7 +1582,10 @@ impl Screen {
                         state
                             .widget
                             .set_error("Source session no longer exists".into());
-                        notify(&self.bus.senders, "Source session no longer exists".into());
+                        notify(
+                            &self.core.bus.senders,
+                            "Source session no longer exists".into(),
+                        );
                     }
                 }
                 self.refresh_command_palettes();
@@ -1573,23 +1597,27 @@ impl Screen {
                 return;
             },
             Builtin::Project(name) => {
-                if self.projects.contains(&name) {
-                    notify(&self.bus.senders, format!("Current project: {name}"));
-                    self.last_project.remember(&name);
-                    self.client_projects.entry(client).or_default().current = Some(name);
-                    if let Some(state) = self.command_palettes.get_mut(&client) {
+                if self.core.projects.contains(&name) {
+                    notify(&self.core.bus.senders, format!("Current project: {name}"));
+                    self.core.last_project.remember(&name);
+                    self.palette
+                        .client_projects
+                        .entry(client)
+                        .or_default()
+                        .current = Some(name);
+                    if let Some(state) = self.palette.command_palettes.get_mut(&client) {
                         state.widget.back();
                         state.widget.clear_searches();
                     }
-                } else if let Some(state) = self.command_palettes.get_mut(&client) {
+                } else if let Some(state) = self.palette.command_palettes.get_mut(&client) {
                     state.widget.set_error("Project no longer exists".into());
-                    notify(&self.bus.senders, "Project no longer exists".into());
+                    notify(&self.core.bus.senders, "Project no longer exists".into());
                 }
                 self.refresh_plugin_palette(client, false);
                 return;
             },
             Builtin::Picker(kind) => {
-                if let Some(state) = self.command_palettes.get_mut(&client) {
+                if let Some(state) = self.palette.command_palettes.get_mut(&client) {
                     state.widget.open_picker(kind);
                 }
                 self.refresh_plugin_palette(client, false);
@@ -1601,15 +1629,15 @@ impl Screen {
                 } else {
                     match self.palette_form(id, kind, pane, tab) {
                         Ok(form) => {
-                            if let Some(state) = self.command_palettes.get_mut(&client) {
+                            if let Some(state) = self.palette.command_palettes.get_mut(&client) {
                                 state.widget.open_form(form);
                             }
                         },
                         Err(error) => {
-                            if let Some(state) = self.command_palettes.get_mut(&client) {
+                            if let Some(state) = self.palette.command_palettes.get_mut(&client) {
                                 state.widget.set_error(error.clone());
                                 notify(
-                                    &self.bus.senders,
+                                    &self.core.bus.senders,
                                     format!("Could not {}: {error}", label.to_lowercase()),
                                 );
                             }
@@ -1633,7 +1661,8 @@ impl Screen {
         }) {
             Ok(action) => {
                 self.close_command_palette(client);
-                self.bus
+                self.core
+                    .bus
                     .senders
                     .send_to_screen(ScreenInstruction::ActivateCommandPaletteAction {
                         label,
@@ -1645,10 +1674,10 @@ impl Screen {
                     .non_fatal();
             },
             Err(error) => {
-                if let Some(state) = self.command_palettes.get_mut(&client) {
+                if let Some(state) = self.palette.command_palettes.get_mut(&client) {
                     state.widget.set_error(error.clone());
                     notify(
-                        &self.bus.senders,
+                        &self.core.bus.senders,
                         format!("Could not {}: {error}", label.to_lowercase()),
                     );
                 }
@@ -1663,7 +1692,7 @@ impl Screen {
         pane: PaneId,
         tab: TabId,
     ) -> std::result::Result<Form, String> {
-        let tab = self.tabs.get(&tab).ok_or("Tab no longer exists")?;
+        let tab = self.core.tabs.get(&tab).ok_or("Tab no longer exists")?;
         let pane = tab
             .pane_infos()
             .into_iter()
@@ -1675,6 +1704,7 @@ impl Screen {
                 vec![Field::text(
                     "Name",
                     &self
+                        .core
                         .tab_groups
                         .get(&id)
                         .ok_or("Group no longer exists")?
@@ -1688,7 +1718,7 @@ impl Screen {
                 let tabs = self.group_tabs(id);
                 let panes: usize = tabs
                     .iter()
-                    .filter_map(|id| self.tabs.get(id))
+                    .filter_map(|id| self.core.tabs.get(id))
                     .map(|tab| tab.pane_infos().len())
                     .sum();
                 (
@@ -1757,7 +1787,7 @@ impl Screen {
     }
 
     fn shell_command_in(&self, cwd: std::path::PathBuf) -> RunCommandAction {
-        let mut command = match self.default_shell_action.clone() {
+        let mut command = match self.core.default_shell_action.clone() {
             Some(TerminalAction::RunCommand(command)) => RunCommandAction::from(command),
             _ => RunCommandAction {
                 command: yinz_bus::pty::get_default_shell(),
@@ -1770,11 +1800,12 @@ impl Screen {
 
     /// Opens a local shell in a new project, whatever the palette was opened from.
     pub(super) fn open_palette_terminal(&mut self, client: ClientId, cwd: std::path::PathBuf) {
-        let Some(state) = self.command_palettes.get(&client) else {
+        let Some(state) = self.palette.command_palettes.get(&client) else {
             return;
         };
         let (pane, tab) = (state.context.pane_id, state.context.tab_id);
         let floating = self
+            .core
             .tabs
             .get(&tab)
             .is_some_and(|tab| tab.are_floating_panes_visible());
@@ -1782,16 +1813,20 @@ impl Screen {
         command.target = yinz_types::command::PaneTarget::Local;
         let action = new_pane(None, None, Some(command), floating);
         if !self.palette_target_exists(pane, tab, &action) {
-            if let Some(state) = self.command_palettes.get_mut(&client) {
+            if let Some(state) = self.palette.command_palettes.get_mut(&client) {
                 state
                     .widget
                     .set_error("Destination no longer exists".into());
             }
-            notify(&self.bus.senders, "Destination no longer exists".into());
+            notify(
+                &self.core.bus.senders,
+                "Destination no longer exists".into(),
+            );
             return;
         }
         self.close_command_palette(client);
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_screen(ScreenInstruction::ActivateCommandPaletteAction {
                 label: "Open terminal".into(),
@@ -1810,7 +1845,7 @@ impl Screen {
         tab: TabId,
         values: Vec<String>,
     ) -> std::result::Result<Action, String> {
-        if !self.tabs.contains_key(&tab) || self.tab_containing_pane(pane).is_none() {
+        if !self.core.tabs.contains_key(&tab) || self.tab_containing_pane(pane).is_none() {
             return Err("Target no longer exists".into());
         }
         let name = values.first().cloned().unwrap_or_default();
@@ -1824,13 +1859,13 @@ impl Screen {
         }
         Ok(match kind {
             FormKind::RenameTabGroup(id) => {
-                if !self.tab_groups.contains_key(&id) {
+                if !self.core.tab_groups.contains_key(&id) {
                     return Err("Group no longer exists".into());
                 }
                 Action::RenameTabGroup { id, name }
             },
             FormKind::CloseTabGroup(id) => {
-                if !self.tab_groups.contains_key(&id) {
+                if !self.core.tab_groups.contains_key(&id) {
                     return Err("Group no longer exists".into());
                 }
                 Action::CloseTabGroup { id }
@@ -1870,8 +1905,9 @@ impl Screen {
         label: String,
     ) {
         let target_exists = self.palette_target_exists(pane, tab, &action);
-        if !self.active_tab_ids.contains_key(&client) || !target_exists {
-            self.bus
+        if !self.core.active_tab_ids.contains_key(&client) || !target_exists {
+            self.core
+                .bus
                 .senders
                 .send_to_screen(ScreenInstruction::Notify(
                     format!(
@@ -1886,14 +1922,18 @@ impl Screen {
             return;
         }
         if let Err(error) = self.validate_palette_split(pane, tab, &action) {
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_screen(ScreenInstruction::Notify(error, None, None, None))
                 .non_fatal();
             return;
         }
-        if matches!(&action, Action::MoveTabByTabId { .. }) && self.tabs.len() < 2 {
-            notify(&self.bus.senders, "Tab was not moved: no other tab".into());
+        if matches!(&action, Action::MoveTabByTabId { .. }) && self.core.tabs.len() < 2 {
+            notify(
+                &self.core.bus.senders,
+                "Tab was not moved: no other tab".into(),
+            );
             return;
         }
         let departure = match &action {
@@ -1901,7 +1941,7 @@ impl Screen {
             _ => None,
         };
         if let Some(message) = departure {
-            notify(&self.bus.senders, message);
+            notify(&self.core.bus.senders, message);
         }
         self.run_overlay_actions(pane, vec![action], client, Some((tab, label)));
     }
@@ -1914,6 +1954,7 @@ impl Screen {
         client: ClientId,
     ) -> Result<()> {
         if !self
+            .core
             .tabs
             .get(&tab)
             .is_some_and(|tab| tab.has_pane_with_pid(&pane))
@@ -1925,14 +1966,17 @@ impl Screen {
                 .adjacent_group_tab(tab, direction != Direction::Left)
                 .and_then(|position| self.get_tab_id_at_position(position));
             let Some(destination) = destination.filter(|destination| *destination != tab) else {
-                notify(&self.bus.senders, "Pane was not moved: no other tab".into());
+                notify(
+                    &self.core.bus.senders,
+                    "Pane was not moved: no other tab".into(),
+                );
                 return Ok(());
             };
             let outcome = self
                 .break_multiple_panes_to_tab_with_id(vec![pane], destination, true, client)
                 .context("failed to move palette pane")?;
             if !outcome.moved.contains(&pane) {
-                notify(&self.bus.senders, "Pane was not moved".into());
+                notify(&self.core.bus.senders, "Pane was not moved".into());
                 return Ok(());
             }
             self.focus_pane_with_id(pane, false, false, client)
@@ -1946,18 +1990,19 @@ impl Screen {
             let destination = self
                 .break_multiple_panes_to_new_tab(
                     vec![pane],
-                    self.default_shell_action.clone(),
+                    self.core.default_shell_action.clone(),
                     true,
                     None,
                     client,
                 )
                 .context("failed to move palette pane to new tab")?;
             if !self
+                .core
                 .tabs
                 .get(&destination)
                 .is_some_and(|tab| tab.has_pane_with_pid(&pane))
             {
-                notify(&self.bus.senders, "Pane was not moved".into());
+                notify(&self.core.bus.senders, "Pane was not moved".into());
                 return Ok(());
             }
         }
@@ -1966,7 +2011,7 @@ impl Screen {
             Some(_) => "Move pane to next tab",
             None => "Move pane to new tab",
         };
-        notify(&self.bus.senders, format!("Completed: {label}"));
+        notify(&self.core.bus.senders, format!("Completed: {label}"));
         Ok(())
     }
 }
@@ -2030,33 +2075,73 @@ impl Screen {
         &self,
         now: std::time::Instant,
     ) -> std::collections::HashSet<String> {
-        if self.agent_hook_flashes.is_empty() {
+        if self.agents.flash_panes().len() == 0 {
             return Default::default();
         }
         self.live_palette_agents()
             .iter()
             .filter(|agent| {
-                agent.session == self.session_name && self.agent_hook_is_flashing(&agent.pane, now)
+                agent.session == self.core.session_name
+                    && self.agents.agent_hook_is_flashing(&agent.pane, now)
             })
             .map(|agent| agent.id())
             .collect()
     }
 
     pub(super) fn palette_hook_flashes_are_visible(&self, now: std::time::Instant) -> bool {
-        if self.command_palettes.is_empty() || self.agent_hook_flashes.is_empty() {
+        if self.palette.command_palettes.is_empty() || self.agents.flash_panes().len() == 0 {
             return false;
         }
         let flashing = self.flashing_palette_agent_ids(now);
         !flashing.is_empty()
-            && self.command_palettes.iter().any(|(client, state)| {
+            && self.palette.command_palettes.iter().any(|(client, state)| {
                 self.command_palette_surface(*client)
                     .is_some_and(|surface| {
                         state.widget.has_visible_flashing_agent(
                             surface,
-                            self.arrow_fonts,
+                            self.core.arrow_fonts,
                             &flashing,
                         )
                     })
             })
+    }
+}
+
+impl crate::screen::CommandPaletteController {
+    pub(in crate::screen) fn command_palette_is_open(&self, client_id: ClientId) -> bool {
+        self.command_palettes.contains_key(&client_id)
+    }
+    pub(in crate::screen) fn palette_owns_input(&self, client_id: ClientId) -> bool {
+        self.command_palettes
+            .get(&client_id)
+            .is_some_and(|s| !s.suspended)
+    }
+    pub(in crate::screen) fn palette_captures_mouse(&self, client_id: ClientId) -> bool {
+        self.command_palette_mouse_captures.contains(&client_id)
+            || self
+                .command_palettes
+                .get(&client_id)
+                .is_some_and(|state| state.selection.captures_mouse())
+    }
+    pub(in crate::screen) fn invalidate_command_palette_backing(
+        &mut self,
+        client: ClientId,
+        damage: &[CellRect],
+    ) {
+        if let Some(state) = self.command_palettes.get_mut(&client) {
+            state.backing.invalidate(damage);
+        }
+    }
+    pub(in crate::screen) fn invalidate_palette_agent_labels(&mut self) {
+        for state in self.command_palettes.values_mut() {
+            state.agents.invalidate_labels();
+        }
+    }
+}
+
+impl super::CommandPaletteController {
+    pub(super) fn on_client_removed(&mut self, client_id: ClientId) {
+        self.command_palette_mouse_captures.remove(&client_id);
+        self.client_projects.remove(&client_id);
     }
 }

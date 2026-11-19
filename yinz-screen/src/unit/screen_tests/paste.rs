@@ -33,13 +33,13 @@ fn client_paste_sends_one_preprocessed_write_with_completion() {
                 },
                 client,
             );
-            assert!(screen.context_menu_is_open(client));
+            assert!(screen.menus.context_menu_is_open(client));
             capture.pty_writer_rx.try_iter().for_each(drop);
             let (tx, mut result) = oneshot::channel();
             screen
                 .paste_from_client("\r".into(), client, Some(NotificationEnd::new(tx)))
                 .unwrap();
-            assert!(!screen.context_menu_is_open(client));
+            assert!(!screen.menus.context_menu_is_open(client));
             assert!(!screen.active_pane_is_scrolled(client));
             let instructions: Vec<_> = capture.pty_writer_rx.try_iter().collect();
             assert_eq!(instructions.len(), 1);

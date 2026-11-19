@@ -49,6 +49,7 @@ fn tab_with_bar(screen: &mut Screen, index: u32, height: usize, alias: bool) -> 
         )
         .unwrap();
     screen
+        .core
         .tabs
         .get_mut(&id)
         .unwrap()
@@ -57,7 +58,7 @@ fn tab_with_bar(screen: &mut Screen, index: u32, height: usize, alias: bool) -> 
 }
 
 fn assert_bar_height(screen: &Screen, index: u32, height: usize) {
-    let tab = &screen.tabs[&TabId::new(index as usize)];
+    let tab = &screen.core.tabs[&TabId::new(index as usize)];
     let bar = tab
         .get_pane_with_id(PaneId::Plugin(PluginId::new(index + 1)))
         .unwrap();
@@ -77,7 +78,7 @@ fn tab_bar_height_follows_group_count_and_preserves_explicit_layout_heights() {
         for configured in [1, 2, 3] {
             let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
             let (sender, _receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
-            screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+            screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
             let layout = tab_with_bar(&mut screen, 0, configured, alias);
             tab_with_bar(&mut screen, 1, configured, alias);
             screen.sync_tab_bar_rows().unwrap();
@@ -102,7 +103,7 @@ fn tab_bar_height_follows_group_count_and_preserves_explicit_layout_heights() {
             screen.close_tab_by_id(TabId::new(1)).unwrap();
             screen.sync_tab_bar_rows().unwrap();
             assert_bar_height(&screen, 0, collapsed);
-            let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+            let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
             tab.unset_fullscreen();
             tab.override_layout(
                 layout,
@@ -128,11 +129,11 @@ fn tab_bar_height_follows_group_count_and_preserves_explicit_layout_heights() {
 fn tab_bar_height_changes_preserve_fullscreen() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
     let (sender, _receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     tab_with_bar(&mut screen, 0, 2, false);
     screen.sync_tab_bar_rows().unwrap();
     for count in [2, 1] {
-        let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+        let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
         tab.toggle_pane_no_ui_fullscreen(PaneId::Terminal(TerminalId::new(1)));
         assert!(tab.is_fullscreen_active());
         tab.set_tab_group_count(count).unwrap();
@@ -147,10 +148,10 @@ fn tab_bar_height_changes_preserve_fullscreen() {
 fn tab_bar_expansion_keeps_valid_geometry_when_the_screen_is_too_short() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
     let (sender, receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     tab_with_bar(&mut screen, 0, 2, false);
     screen.sync_tab_bar_rows().unwrap();
-    let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
     tab.resize_whole_tab(Size { cols: 80, rows: 2 }).unwrap();
     tab.set_tab_group_count(2).unwrap();
     let bar = tab
@@ -177,7 +178,7 @@ fn tab_bar_expansion_keeps_valid_geometry_when_the_screen_is_too_short() {
 fn collapsed_tab_bar_restores_its_configured_height_and_expands_after_restore() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
     let (sender, _receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     tab_with_bar(&mut screen, 0, 2, false);
     screen.sync_tab_bar_rows().unwrap();
     assert_bar_height(&screen, 0, 1);
@@ -199,7 +200,7 @@ fn collapsed_tab_bar_restores_its_configured_height_and_expands_after_restore() 
         _ => panic!("tab bar plugin"),
     };
     let mut restored = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
-    restored.bus.senders.to_plugin = screen.bus.senders.to_plugin.clone();
+    restored.core.bus.senders.to_plugin = screen.core.bus.senders.to_plugin.clone();
     restored
         .new_tab(TabId::new(0), (vec![], vec![]), None, Some(CLIENT))
         .unwrap();
@@ -219,6 +220,7 @@ fn collapsed_tab_bar_restores_its_configured_height_and_expands_after_restore() 
         .unwrap();
     restored.sync_tab_bar_rows().unwrap();
     restored
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -281,7 +283,7 @@ fn web_agents_snapshot_tracks_moves_renames_and_project_group_names() {
             }));
         });
     }
-    screen.pane_projects.insert(
+    screen.core.pane_projects.insert(
         PaneId::Terminal(TerminalId::new(3)),
         "Shared Project".into(),
     );
@@ -325,7 +327,7 @@ fn web_agents_snapshot_tracks_moves_renames_and_project_group_names() {
             name: "Release".into()
         })
     );
-    screen.default_mode_info.tab_groups = Some(false);
+    screen.core.default_mode_info.tab_groups = Some(false);
     let disabled = web_agents_snapshot(&mut screen);
     assert_eq!(
         disabled
@@ -335,7 +337,7 @@ fn web_agents_snapshot_tracks_moves_renames_and_project_group_names() {
             .tab_group,
         row.tab_group
     );
-    screen.default_mode_info.tab_groups = Some(true);
+    screen.core.default_mode_info.tab_groups = Some(true);
     assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
     screen
         .tab_group_action(
@@ -362,6 +364,7 @@ fn warped_tabs_carry_their_groups_displayed_name() {
         let mut screen = grouped_screen();
         if let Some(project) = project {
             screen
+                .core
                 .pane_projects
                 .insert(PaneId::Terminal(TerminalId::new(1)), project.to_owned());
         }
@@ -385,12 +388,13 @@ fn warped_groups_stay_together_when_project_labels_change() {
         let mut source = grouped_screen();
         for (terminal, project) in [(1, "alpha"), (3, "beta")] {
             source
+                .core
                 .pane_projects
                 .insert(PaneId::Terminal(TerminalId::new(terminal)), project.into());
         }
         let mut destination = grouped_screen();
         if existing {
-            destination.tab_groups.get_mut(&1).unwrap().name = "alpha + beta".into();
+            destination.core.tab_groups.get_mut(&1).unwrap().name = "alpha + beta".into();
         }
         let mut arrivals = vec![];
         for (tab, project) in [(0, "alpha"), (2, "beta")] {
@@ -409,15 +413,18 @@ fn warped_groups_stay_together_when_project_labels_change() {
                 .unwrap();
             assert_eq!(
                 payload.source_instance_id,
-                Some(source.instance_id.to_string())
+                Some(source.core.instance_id.to_string())
             );
             let arrived = adopt_grouped_tab(&mut destination, *payload);
-            let terminal = destination.tabs[&arrived].get_all_pane_ids()[0];
-            destination.pane_projects.insert(terminal, project.into());
+            let terminal = destination.core.tabs[&arrived].get_all_pane_ids()[0];
+            destination
+                .core
+                .pane_projects
+                .insert(terminal, project.into());
             arrivals.push(arrived);
             assert_eq!(
                 destination
-                    .tab_group_name(destination.tab_group_ids[&arrivals[0]])
+                    .tab_group_name(destination.core.tab_group_ids[&arrivals[0]])
                     .as_deref(),
                 Some(if arrivals.len() == 1 {
                     "alpha"
@@ -426,8 +433,8 @@ fn warped_groups_stay_together_when_project_labels_change() {
                 })
             );
         }
-        let group = destination.tab_group_ids[&arrivals[0]];
-        assert_eq!(destination.tab_group_ids[&arrivals[1]], group);
+        let group = destination.core.tab_group_ids[&arrivals[0]];
+        assert_eq!(destination.core.tab_group_ids[&arrivals[1]], group);
         assert_eq!(group, if existing { 1 } else { 2 });
     }
 }
@@ -436,9 +443,9 @@ fn warped_groups_stay_together_when_project_labels_change() {
 fn warped_group_identity_includes_the_source_instance_and_expires_with_the_group() {
     let source = grouped_screen();
     let other_source = grouped_screen();
-    assert_ne!(source.instance_id, other_source.instance_id);
-    let source = source.instance_id.to_string();
-    let other_source = other_source.instance_id.to_string();
+    assert_ne!(source.core.instance_id, other_source.core.instance_id);
+    let source = source.core.instance_id.to_string();
+    let other_source = other_source.core.instance_id.to_string();
     let payload = |instance: &str, id, name: &str| yinz_types::data::WarpedTab {
         source_instance_id: Some(instance.into()),
         tiled_layout: TiledPaneLayout {
@@ -460,23 +467,39 @@ fn warped_group_identity_includes_the_source_instance_and_expires_with_the_group
         (&other_source, 0, "first", 4),
     ] {
         let tab = adopt_grouped_tab(&mut destination, payload(instance, id, name));
-        assert_eq!(destination.tab_group_ids[&tab], expected);
+        assert_eq!(destination.core.tab_group_ids[&tab], expected);
     }
-    assert_eq!(destination.warped_tab_groups.len(), 3);
+    assert_eq!(destination.warp.warped_tab_groups.len(), 3);
     for tab in destination.group_tabs(2) {
         destination.close_tab_by_id(tab).unwrap();
     }
-    assert_eq!(destination.warped_tab_groups.len(), 2);
+    assert_eq!(destination.warp.warped_tab_groups.len(), 2);
     assert!(!destination
+        .warp
         .warped_tab_groups
         .contains_key(&(source.clone(), 0)));
     let tab = adopt_grouped_tab(&mut destination, payload(&source, 0, "Group 1"));
-    assert_eq!(destination.tab_group_ids[&tab], 1);
+    assert_eq!(destination.core.tab_group_ids[&tab], 1);
+    let remapped = adopt_grouped_tab(&mut destination, payload(&source, 9, "temporary"));
+    let prior = destination.core.tab_group_ids[&remapped];
+    let layout = TiledPaneLayout {
+        tab_group: Some(TabGroupInfo {
+            id: 1,
+            name: "Group 1".into(),
+        }),
+        ..Default::default()
+    };
+    destination.restore_tab_group(remapped, &layout);
+    assert!(destination.core.tabs.contains_key(&remapped));
+    assert!(!destination.core.tab_groups.contains_key(&prior));
+    let next = adopt_grouped_tab(&mut destination, payload(&source, 9, "second"));
+    assert_eq!(destination.core.tab_group_ids[&next], 3);
+    assert_eq!(destination.warp.warped_tab_groups[&(other_source, 0)], 4);
 }
 
 fn adopt_grouped_tab(screen: &mut Screen, payload: yinz_types::data::WarpedTab) -> TabId {
     let (to_plugin, receiver) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
     let tab = screen.get_new_tab_id();
     screen
         .place_adopted_tab(
@@ -527,26 +550,29 @@ fn adopted_tabs_match_group_labels_using_destination_ids() {
         (None, false, false, 1),
     ] {
         let mut screen = grouped_screen();
-        screen.tab_groups.get_mut(&0).unwrap().name = if duplicate {
+        screen.core.tab_groups.get_mut(&0).unwrap().name = if duplicate {
             "Group 1".into()
         } else {
             "Default".into()
         };
         if project {
             screen
+                .core
                 .pane_projects
                 .insert(PaneId::Terminal(TerminalId::new(2)), "工程".into());
         }
         let saved_name = screen
+            .core
             .tab_groups
             .get(&expected_group)
             .map(|g| g.name.clone());
         let preferred = screen
+            .core
             .tab_groups
             .get(&expected_group)
             .and_then(|g| g.preferred);
         let (to_plugin, receiver) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
         let tab = screen.get_new_tab_id();
         screen
             .place_adopted_tab(
@@ -572,13 +598,13 @@ fn adopted_tabs_match_group_labels_using_destination_ids() {
                 None,
             )
             .unwrap();
-        assert_eq!(screen.tab_group_ids[&tab], expected_group, "{name:?}");
-        assert!(screen.warped_tab_groups.is_empty());
+        assert_eq!(screen.core.tab_group_ids[&tab], expected_group, "{name:?}");
+        assert!(screen.warp.warped_tab_groups.is_empty());
         assert_eq!(
-            screen.tab_groups[&expected_group].name,
+            screen.core.tab_groups[&expected_group].name,
             saved_name.unwrap_or_else(|| name.unwrap().to_owned()),
         );
-        assert_eq!(screen.tab_groups[&expected_group].preferred, preferred);
+        assert_eq!(screen.core.tab_groups[&expected_group].preferred, preferred);
         let layout = receiver
             .try_iter()
             .find_map(|(instruction, _)| match instruction {
@@ -592,7 +618,7 @@ fn adopted_tabs_match_group_labels_using_destination_ids() {
         );
         assert!(!layout.group_focused);
         assert_eq!(
-            screen.next_tab_group_id,
+            screen.core.next_tab_group_id,
             if expected_group == 2 { 3 } else { 2 }
         );
     }
@@ -608,11 +634,12 @@ fn rolled_back_tabs_restore_group_identity_and_existing_names() {
     ] {
         let mut screen = grouped_screen();
         if duplicate {
-            screen.tab_groups.get_mut(&0).unwrap().name = "Group 1".into();
+            screen.core.tab_groups.get_mut(&0).unwrap().name = "Group 1".into();
         }
         if project {
             for (terminal, name) in [(2, "departing"), (4, "remaining")] {
                 screen
+                    .core
                     .pane_projects
                     .insert(PaneId::Terminal(TerminalId::new(terminal)), name.to_owned());
             }
@@ -636,16 +663,20 @@ fn rolled_back_tabs_restore_group_identity_and_existing_names() {
             }
         );
         screen.empty_and_close_tab(TabId::new(1));
-        assert_eq!(screen.tab_groups.contains_key(&1), !pruned);
+        assert_eq!(screen.core.tab_groups.contains_key(&1), !pruned);
         if project && !pruned {
             assert_eq!(screen.tab_group_name(1).as_deref(), Some("remaining"));
         }
-        let preferred = screen.tab_groups.get(&1).and_then(|group| group.preferred);
+        let preferred = screen
+            .core
+            .tab_groups
+            .get(&1)
+            .and_then(|group| group.preferred);
         let (to_plugin, receiver) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
         let restored = screen.get_new_tab_id();
-        let source = (screen.instance_id.to_string(), group.id);
-        screen.warped_tab_groups.insert(source.clone(), 0);
+        let source = (screen.core.instance_id.to_string(), group.id);
+        screen.warp.warped_tab_groups.insert(source.clone(), 0);
         screen
             .place_adopted_tab(
                 yinz_types::data::WarpedTab {
@@ -664,20 +695,20 @@ fn rolled_back_tabs_restore_group_identity_and_existing_names() {
                 None,
             )
             .unwrap();
-        assert_eq!(screen.tab_group_ids[&restored], group.id);
-        assert_eq!(screen.warped_tab_groups[&source], 0);
+        assert_eq!(screen.core.tab_group_ids[&restored], group.id);
+        assert_eq!(screen.warp.warped_tab_groups[&source], 0);
         let expected_name = if pruned {
             group.name.as_str()
         } else {
             "Group 1"
         };
-        assert_eq!(screen.tab_groups[&1].name, expected_name);
-        assert_eq!(screen.tab_groups[&1].preferred, preferred);
-        assert_eq!(screen.tab_group_ids[&TabId::new(0)], 0);
+        assert_eq!(screen.core.tab_groups[&1].name, expected_name);
+        assert_eq!(screen.core.tab_groups[&1].preferred, preferred);
+        assert_eq!(screen.core.tab_group_ids[&TabId::new(0)], 0);
         if !pruned {
-            assert_eq!(screen.tab_group_ids[&TabId::new(3)], group.id);
+            assert_eq!(screen.core.tab_group_ids[&TabId::new(3)], group.id);
         }
-        assert_eq!(screen.next_tab_group_id, 2);
+        assert_eq!(screen.core.next_tab_group_id, 2);
         let layout = receiver
             .try_iter()
             .find_map(|(instruction, _)| match instruction {
@@ -699,7 +730,7 @@ fn rolled_back_tabs_restore_group_identity_and_existing_names() {
 #[test]
 fn group_names_follow_distinct_projects_in_tab_order() {
     let mut screen = grouped_screen();
-    screen.pane_projects = [(1, "x"), (3, "y"), (2, "z"), (4, "z")]
+    screen.core.pane_projects = [(1, "x"), (3, "y"), (2, "z"), (4, "z")]
         .into_iter()
         .map(|(id, name)| (PaneId::Terminal(TerminalId::new(id)), name.to_owned()))
         .collect();
@@ -714,6 +745,7 @@ fn group_names_follow_distinct_projects_in_tab_order() {
     screen.close_tab_by_id(TabId::new(2)).unwrap();
     assert_eq!(screen.tab_group_name(0).unwrap(), "x");
     screen
+        .core
         .pane_projects
         .remove(&PaneId::Terminal(TerminalId::new(1)));
     assert_eq!(screen.tab_group_name(0).unwrap(), "Group 0");
@@ -726,13 +758,16 @@ fn default_group_uses_projects_and_falls_back_when_none_are_known() {
     new_tab(&mut screen, 2, TabId::new(1));
     assert_eq!(screen.tab_group_name(0).unwrap(), "Default");
     screen
+        .core
         .pane_projects
         .insert(PaneId::Terminal(TerminalId::new(1)), "x".into());
     screen
+        .core
         .pane_projects
         .insert(PaneId::Terminal(TerminalId::new(99)), "unrelated".into());
     assert_eq!(screen.tab_group_name(0).unwrap(), "x");
     screen
+        .core
         .pane_projects
         .insert(PaneId::Terminal(TerminalId::new(1)), "\n\r".into());
     assert_eq!(screen.tab_group_name(0).unwrap(), "Default");
@@ -754,12 +789,15 @@ fn group_names_include_each_project_within_a_tab_without_branch_labels() {
         )
         .unwrap();
     screen
+        .core
         .pane_projects
         .insert(PaneId::Terminal(TerminalId::new(1)), "x".into());
     screen
+        .core
         .pane_projects
         .insert(PaneId::Terminal(TerminalId::new(9)), "y".into());
     screen
+        .core
         .tab_projects
         .insert(TabId::new(0), "x:main + y:topic".into());
     assert_eq!(screen.tab_group_name(0).unwrap(), "x + y");
@@ -769,9 +807,9 @@ fn group_names_include_each_project_within_a_tab_without_branch_labels() {
 fn group_navigation_uses_local_order_and_remembers_tabs() {
     let mut screen = grouped_screen();
     screen.switch_tab_next(None, true, CLIENT).unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(1));
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(1));
     screen.switch_tab_prev(None, true, CLIENT).unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(3));
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(3));
     screen
         .tab_group_action(
             Action::SwitchTabGroup { id: 0 },
@@ -780,7 +818,7 @@ fn group_navigation_uses_local_order_and_remembers_tabs() {
             &mut HashSet::new(),
         )
         .unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(2));
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(2));
     screen
         .tab_group_action(
             Action::GoToTabInGroup {
@@ -791,13 +829,13 @@ fn group_navigation_uses_local_order_and_remembers_tabs() {
             &mut HashSet::new(),
         )
         .unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(0));
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(0));
     screen.toggle_tab(CLIENT).unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(2));
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(2));
     screen
         .tab_group_action(Action::GoToNextTabGroup, CLIENT, None, &mut HashSet::new())
         .unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(3));
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(3));
     screen.go_to_tab(TabNumber::new(1), CLIENT).unwrap();
     assert_eq!(
         screen.group_for_client(Some(CLIENT)),
@@ -825,7 +863,7 @@ fn group_navigation_defers_stable_targets_until_tabs_load() {
                 &mut switches,
             )
             .unwrap();
-        assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(3));
+        assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(3));
         assert_eq!(switches, HashSet::from([(target, CLIENT)]));
         if let Some(closed) = closed {
             screen.close_tab_by_id(closed).unwrap();
@@ -844,16 +882,16 @@ fn group_navigation_defers_stable_targets_until_tabs_load() {
                     None,
                 )
                 .unwrap();
-            assert!(!screen.tabs[&target].is_pending());
+            assert!(!screen.core.tabs[&target].is_pending());
             if closed.is_some() {
-                assert_eq!(screen.tabs[&target].position, TabPosition::new(3));
+                assert_eq!(screen.core.tabs[&target].position, TabPosition::new(3));
             }
         }
         assert!(!screen.has_pending_tabs());
         screen.apply_deferred_tab_switches(&mut switches).unwrap();
         assert!(switches.is_empty());
         assert_eq!(
-            screen.active_tab_ids[&CLIENT],
+            screen.core.active_tab_ids[&CLIENT],
             if closed == Some(target) {
                 TabId::new(3)
             } else {
@@ -880,7 +918,7 @@ fn group_navigation_to_loaded_tab_waits_for_other_pending_tabs() {
             &mut switches,
         )
         .unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(3));
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(3));
     assert_eq!(switches, HashSet::from([(TabId::new(1), CLIENT)]));
 }
 
@@ -888,14 +926,14 @@ fn group_navigation_to_loaded_tab_waits_for_other_pending_tabs() {
 fn new_group_tab_captures_membership_before_layout_arrives() {
     let mut screen = grouped_screen();
     let (tx, rx): ChannelWithContext<PluginInstruction> = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     screen
         .tab_group_action(Action::NewTabGroup, CLIENT, None, &mut HashSet::new())
         .unwrap();
-    let tab = screen.tabs.keys().next_back().copied().unwrap();
-    let group = screen.tab_group_ids[&tab];
-    assert_eq!(screen.tab_groups[&group].name, "Group 2");
-    assert!(screen.tabs[&tab].is_pending());
+    let tab = screen.core.tabs.keys().next_back().copied().unwrap();
+    let group = screen.core.tab_group_ids[&tab];
+    assert_eq!(screen.core.tab_groups[&group].name, "Group 2");
+    assert!(screen.core.tabs[&tab].is_pending());
     assert!(rx
         .try_iter()
         .any(|(i, _)| matches!(i, PluginInstruction::NewTab(..))));
@@ -920,22 +958,22 @@ fn new_group_tab_captures_membership_before_layout_arrives() {
             None,
         )
         .unwrap();
-    assert_eq!(screen.tab_group_ids[&tab], group);
+    assert_eq!(screen.core.tab_group_ids[&tab], group);
     let next = screen.get_new_tab_id();
     new_tab(&mut screen, 10, next);
-    assert_eq!(screen.tab_group_ids[&next], group);
+    assert_eq!(screen.core.tab_group_ids[&next], group);
 }
 
 #[test]
 fn closing_tabs_removes_only_empty_groups_and_relocates_focus() {
     let mut screen = grouped_screen();
     screen.close_tab_by_id(TabId::new(3)).unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(1));
-    assert_eq!(screen.tab_groups.len(), 2);
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(1));
+    assert_eq!(screen.core.tab_groups.len(), 2);
     screen.close_tab_by_id(TabId::new(1)).unwrap();
     assert_eq!(screen.group_for_client(Some(CLIENT)), 0);
-    assert_eq!(screen.tab_groups.len(), 1);
-    assert!(!screen.tab_groups.contains_key(&1));
+    assert_eq!(screen.core.tab_groups.len(), 1);
+    assert!(!screen.core.tab_groups.contains_key(&1));
     assert!(screen
         .tab_group_action(
             Action::RenameTabGroup {
@@ -958,6 +996,7 @@ fn closing_group_syncs_scroll_mode_for_every_relocated_client() {
         screen.go_to_tab(TabNumber::new(2), other).unwrap();
         for id in if destination_scrolled { [0, 2] } else { [1, 3] } {
             let pane = screen
+                .core
                 .tabs
                 .get_mut(&TabId::new(id))
                 .unwrap()
@@ -1024,6 +1063,7 @@ fn closing_tab_skips_unusable_group_history_and_preferences() {
                 }
                 let unusable = TabId::new(1);
                 screen
+                    .core
                     .tabs
                     .get_mut(&unusable)
                     .unwrap()
@@ -1033,14 +1073,16 @@ fn closing_tab_skips_unusable_group_history_and_preferences() {
                     screen
                         .new_tab(unusable, (vec![], vec![]), None, Some(CLIENT))
                         .unwrap();
-                    screen.tab_group_ids.insert(unusable, 1);
+                    screen.core.tab_group_ids.insert(unusable, 1);
                     // Keep the unusable tab first in group order even after recreating it.
-                    screen.tabs.get_mut(&unusable).unwrap().position = TabPosition::new(1);
-                    screen.tabs.get_mut(&TabId::new(2)).unwrap().position = TabPosition::new(2);
-                    screen.tabs.get_mut(&TabId::new(3)).unwrap().position = TabPosition::new(3);
-                    screen.tabs.get_mut(&source).unwrap().position = TabPosition::new(4);
+                    screen.core.tabs.get_mut(&unusable).unwrap().position = TabPosition::new(1);
+                    screen.core.tabs.get_mut(&TabId::new(2)).unwrap().position =
+                        TabPosition::new(2);
+                    screen.core.tabs.get_mut(&TabId::new(3)).unwrap().position =
+                        TabPosition::new(3);
+                    screen.core.tabs.get_mut(&source).unwrap().position = TabPosition::new(4);
                 }
-                screen.tab_history.insert(
+                screen.core.tab_history.insert(
                     CLIENT,
                     if remembered_by == "history" {
                         vec![unusable]
@@ -1048,11 +1090,11 @@ fn closing_tab_skips_unusable_group_history_and_preferences() {
                         vec![]
                     },
                 );
-                screen.tab_groups.get_mut(&1).unwrap().preferred =
+                screen.core.tab_groups.get_mut(&1).unwrap().preferred =
                     (remembered_by == "preferred").then_some(unusable);
                 screen.close_tab_by_id(source).unwrap();
                 assert_eq!(
-                    screen.active_tab_ids[&CLIENT],
+                    screen.core.active_tab_ids[&CLIENT],
                     TabId::new(3),
                     "pending={pending}, remembered_by={remembered_by}, fallback={fallback_group}"
                 );
@@ -1071,11 +1113,12 @@ fn group_navigation_recovers_hidden_preferred_terminal() {
         let mut screen = grouped_screen();
         let hidden = PaneId::Terminal(TerminalId::new(3));
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(2))
             .unwrap()
             .suppress_pane(hidden, None);
-        assert!(!screen.tabs[&TabId::new(2)].has_selectable_panes());
+        assert!(!screen.core.tabs[&TabId::new(2)].has_selectable_panes());
         let metadata = screen.get_layout_metadata(None, None);
         let (raw, _) =
             yinz_session::session_serialization::serialize_session_layout(metadata.into()).unwrap();
@@ -1084,9 +1127,9 @@ fn group_navigation_recovers_hidden_preferred_terminal() {
         screen
             .tab_group_action(action, CLIENT, None, &mut HashSet::new())
             .unwrap();
-        assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(2));
+        assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(2));
         assert_eq!(screen.get_active_pane_id(&CLIENT), Some(hidden));
-        assert!(screen.tabs[&TabId::new(2)].has_selectable_panes());
+        assert!(screen.core.tabs[&TabId::new(2)].has_selectable_panes());
     }
 }
 
@@ -1109,9 +1152,9 @@ fn palette_moves_stay_in_source_group_and_wrap_in_both_directions() {
             screen
                 .move_command_palette_pane(pane, source, Some(direction), CLIENT)
                 .unwrap();
-            assert_eq!(screen.active_tab_ids[&CLIENT], destination);
-            assert_eq!(screen.tab_group_ids[&destination], 0);
-            assert!(screen.tabs[&destination].has_pane_with_pid(&pane));
+            assert_eq!(screen.core.active_tab_ids[&CLIENT], destination);
+            assert_eq!(screen.core.tab_group_ids[&destination], 0);
+            assert!(screen.core.tabs[&destination].has_pane_with_pid(&pane));
             assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
         }
     }
@@ -1125,12 +1168,12 @@ fn palette_move_from_singleton_group_reports_no_other_tab() {
         let source = TabId::new(3);
         let pane = PaneId::Terminal(TerminalId::new(4));
         let (tx, rx) = channels::unbounded();
-        screen.bus.senders.to_screen = Some(SenderWithContext::new(tx));
+        screen.core.bus.senders.to_screen = Some(SenderWithContext::new(tx));
         screen
             .move_command_palette_pane(pane, source, Some(direction), CLIENT)
             .unwrap();
-        assert_eq!(screen.tabs.len(), 3);
-        assert_eq!(screen.active_tab_ids[&CLIENT], source);
+        assert_eq!(screen.core.tabs.len(), 3);
+        assert_eq!(screen.core.active_tab_ids[&CLIENT], source);
         assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
         assert!(rx.try_iter().any(|(instruction, _)| matches!(
             instruction,
@@ -1144,20 +1187,29 @@ fn closing_a_tab_keeps_group_history_ready_for_toggle() {
     let mut screen = grouped_screen();
     new_tab(&mut screen, 5, TabId::new(4));
     screen.close_tab_by_id(TabId::new(4)).unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(3));
-    assert_eq!(screen.tab_groups[&1].preferred, Some(TabId::new(3)));
-    assert!(!screen.tab_history[&CLIENT].contains(&TabId::new(4)));
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(3));
+    assert_eq!(screen.core.tab_groups[&1].preferred, Some(TabId::new(3)));
+    assert!(!screen.core.tab_history[&CLIENT].contains(&TabId::new(4)));
     screen.toggle_tab(CLIENT).unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(1));
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(1));
 }
 
 #[test]
 fn group_close_and_reorder_preserve_other_groups() {
     let mut screen = grouped_screen();
     screen.move_active_tab_to_left(CLIENT).unwrap();
-    assert_eq!(screen.tabs[&TabId::new(0)].position, TabPosition::new(0));
-    assert_eq!(screen.tabs[&TabId::new(2)].position, TabPosition::new(2));
-    assert_eq!(screen.tabs[&TabId::new(3)].position, TabPosition::new(1));
+    assert_eq!(
+        screen.core.tabs[&TabId::new(0)].position,
+        TabPosition::new(0)
+    );
+    assert_eq!(
+        screen.core.tabs[&TabId::new(2)].position,
+        TabPosition::new(2)
+    );
+    assert_eq!(
+        screen.core.tabs[&TabId::new(3)].position,
+        TabPosition::new(1)
+    );
     screen
         .tab_group_action(
             Action::CloseTabGroup { id: 1 },
@@ -1166,9 +1218,9 @@ fn group_close_and_reorder_preserve_other_groups() {
             &mut HashSet::new(),
         )
         .unwrap();
-    assert_eq!(screen.tabs.len(), 2);
-    assert!(screen.tabs.contains_key(&TabId::new(0)));
-    assert!(screen.tabs.contains_key(&TabId::new(2)));
+    assert_eq!(screen.core.tabs.len(), 2);
+    assert!(screen.core.tabs.contains_key(&TabId::new(0)));
+    assert!(screen.core.tabs.contains_key(&TabId::new(2)));
 }
 
 #[test]
@@ -1176,7 +1228,7 @@ fn closing_last_group_confirms_before_removing_its_guarding_plugin() {
     for destination in ["none", "pending", "nonselectable", "loaded"] {
         let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
         let (plugin_tx, _plugin_rx) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
         new_tab(&mut screen, 1, TabId::new(0));
         new_tab(&mut screen, 2, TabId::new(1));
         let plugin = PluginId::new(42);
@@ -1190,6 +1242,7 @@ fn closing_last_group_confirms_before_removing_its_guarding_plugin() {
                 new_tab(&mut screen, 3, other);
                 if destination == "nonselectable" {
                     screen
+                        .core
                         .tabs
                         .get_mut(&other)
                         .unwrap()
@@ -1209,9 +1262,9 @@ fn closing_last_group_confirms_before_removing_its_guarding_plugin() {
         }
         let acting_client = ClientId::new(2);
         screen.add_client(acting_client).unwrap();
-        let before = screen.tab_group_ids.clone();
+        let before = screen.core.tab_group_ids.clone();
         let (tx, rx) = channels::unbounded();
-        screen.bus.senders.to_screen = Some(SenderWithContext::new(tx));
+        screen.core.bus.senders.to_screen = Some(SenderWithContext::new(tx));
         let (completion_tx, mut completion_rx) = tokio::sync::oneshot::channel();
         screen
             .tab_group_action(
@@ -1240,8 +1293,8 @@ fn closing_last_group_confirms_before_removing_its_guarding_plugin() {
             });
         if destination == "loaded" {
             assert!(launch.is_none());
-            assert_eq!(screen.tabs.len(), 1);
-            assert!(screen.tabs.contains_key(&TabId::new(2)));
+            assert_eq!(screen.core.tabs.len(), 1);
+            assert!(screen.core.tabs.contains_key(&TabId::new(2)));
             assert!(!screen.quit_is_guarded());
         } else {
             let (plugin, client, completion) = launch.expect(destination);
@@ -1258,12 +1311,11 @@ fn closing_last_group_confirms_before_removing_its_guarding_plugin() {
             assert!(completion_rx.try_recv().is_err());
             drop(completion);
             assert!(completion_rx.try_recv().is_ok());
-            assert_eq!(screen.tab_group_ids, before, "{destination}");
-            assert!(
-                screen.tabs[&TabId::new(0)].has_pane_with_pid(&PaneId::Plugin(PluginId::new(42)))
-            );
+            assert_eq!(screen.core.tab_group_ids, before, "{destination}");
+            assert!(screen.core.tabs[&TabId::new(0)]
+                .has_pane_with_pid(&PaneId::Plugin(PluginId::new(42))));
             assert!(screen.quit_is_guarded());
-            assert!(screen.deferred_tab_closes.is_empty());
+            assert!(screen.core.deferred_tab_closes.is_empty());
         }
     }
 }
@@ -1281,8 +1333,8 @@ fn closing_last_unguarded_group_closes_every_tab() {
             &mut HashSet::new(),
         )
         .unwrap();
-    assert!(screen.tabs.is_empty());
-    assert!(screen.tab_groups.is_empty());
+    assert!(screen.core.tabs.is_empty());
+    assert!(screen.core.tab_groups.is_empty());
 }
 
 #[test]
@@ -1301,8 +1353,8 @@ fn group_focus_is_per_client() {
             &mut HashSet::new(),
         )
         .unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(2));
-    assert_eq!(screen.active_tab_ids[&other], TabId::new(0));
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(2));
+    assert_eq!(screen.core.active_tab_ids[&other], TabId::new(0));
 }
 
 #[test]
@@ -1320,6 +1372,7 @@ fn saved_groups_round_trip_names_order_membership_and_preferred_tabs() {
         )
         .unwrap();
     screen
+        .core
         .pane_projects
         .insert(PaneId::Terminal(TerminalId::new(1)), "project".into());
     assert_eq!(screen.tab_group_name(0).unwrap(), "project");
@@ -1347,9 +1400,9 @@ fn saved_groups_round_trip_names_order_membership_and_preferred_tabs() {
             .unwrap();
         restored.restore_tab_group(id, layout);
     }
-    assert_eq!(restored.tab_groups[&0].name, "工程");
-    assert_eq!(restored.tab_groups[&1].preferred, Some(TabId::new(3)));
-    assert_eq!(restored.next_tab_group_id, 2);
+    assert_eq!(restored.core.tab_groups[&0].name, "工程");
+    assert_eq!(restored.core.tab_groups[&1].preferred, Some(TabId::new(3)));
+    assert_eq!(restored.core.next_tab_group_id, 2);
     for (index, (_, layout, _)) in layout.tabs.into_iter().enumerate() {
         restored
             .apply_layout(
@@ -1373,29 +1426,34 @@ fn saved_groups_round_trip_names_order_membership_and_preferred_tabs() {
             &mut HashSet::new(),
         )
         .unwrap();
-    assert_eq!(restored.active_tab_ids[&CLIENT], TabId::new(2));
+    assert_eq!(restored.core.active_tab_ids[&CLIENT], TabId::new(2));
 }
 
 #[test]
 fn last_pane_exit_removes_group_but_pending_tabs_keep_it_alive() {
     let mut screen = grouped_screen();
     for id in [1, 3] {
-        screen.tabs.get_mut(&TabId::new(id)).unwrap().close_pane(
-            PaneId::Terminal(TerminalId::new(id as u32 + 1)),
-            false,
-            None,
-        );
+        screen
+            .core
+            .tabs
+            .get_mut(&TabId::new(id))
+            .unwrap()
+            .close_pane(
+                PaneId::Terminal(TerminalId::new(id as u32 + 1)),
+                false,
+                None,
+            );
     }
     screen.settle_tabs().unwrap();
-    assert!(!screen.tab_groups.contains_key(&1));
+    assert!(!screen.core.tab_groups.contains_key(&1));
     let pending = screen.get_new_tab_id();
     screen
         .new_tab(pending, (vec![], vec![]), None, Some(CLIENT))
         .unwrap();
     screen.close_tab_by_id(TabId::new(0)).unwrap();
     screen.close_tab_by_id(TabId::new(2)).unwrap();
-    assert!(screen.tab_groups.contains_key(&0));
-    assert!(screen.tabs[&pending].is_pending());
+    assert!(screen.core.tab_groups.contains_key(&0));
+    assert!(screen.core.tabs[&pending].is_pending());
 }
 
 #[test]
@@ -1432,13 +1490,13 @@ fn move_pane_between_groups_follows_both_directions_and_wraps() {
             screen
                 .tab_group_action(action.clone(), CLIENT, None, &mut HashSet::new())
                 .unwrap();
-            assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(destination));
+            assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(destination));
             assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
             assert_eq!(
-                screen.tabs[&TabId::new(destination)].pane_id_is_floating(&pane),
+                screen.core.tabs[&TabId::new(destination)].pane_id_is_floating(&pane),
                 floating
             );
-            assert!(!screen.tabs[&TabId::new(source)].has_pane_with_pid(&pane));
+            assert!(!screen.core.tabs[&TabId::new(source)].has_pane_with_pid(&pane));
         }
     }
 }
@@ -1461,6 +1519,7 @@ fn move_pane_between_groups_syncs_scroll_mode_with_final_focus() {
                     (destination, resident, !source_scrolled),
                 ] {
                     let pane = screen
+                        .core
                         .tabs
                         .get_mut(&tab)
                         .unwrap()
@@ -1478,11 +1537,11 @@ fn move_pane_between_groups_syncs_scroll_mode_with_final_focus() {
                     .tab_group_action(action.clone(), CLIENT, None, &mut HashSet::new())
                     .unwrap();
 
-                assert_eq!(screen.active_tab_ids[&CLIENT], destination);
+                assert_eq!(screen.core.active_tab_ids[&CLIENT], destination);
                 assert_eq!(screen.get_active_pane_id(&CLIENT), Some(moved));
                 for (pane, scrolled) in [(moved, source_scrolled), (resident, !source_scrolled)] {
                     assert_eq!(
-                        screen.tabs[&destination]
+                        screen.core.tabs[&destination]
                             .get_pane_with_id(pane)
                             .unwrap()
                             .scroll_position()
@@ -1517,7 +1576,7 @@ fn move_pane_between_groups_syncs_scroll_mode_with_final_focus() {
                 for (client, mode) in changes {
                     screen.change_mode(mode, None, client).unwrap();
                 }
-                assert_eq!(screen.mode_info[&CLIENT].mode, expected_mode);
+                assert_eq!(screen.core.mode_info[&CLIENT].mode, expected_mode);
                 assert_eq!(screen.active_pane_is_scrolled(CLIENT), source_scrolled);
             }
         }
@@ -1529,9 +1588,10 @@ fn move_pane_to_group_uses_history_then_preferred_then_first_loaded_tab() {
     for (history, preferred, expected) in [(true, true, 0), (false, true, 2), (false, false, 0)] {
         let mut screen = grouped_screen();
         screen
+            .core
             .tab_history
             .insert(CLIENT, if history { vec![TabId::new(0)] } else { vec![] });
-        screen.tab_groups.get_mut(&0).unwrap().preferred = preferred.then_some(TabId::new(2));
+        screen.core.tab_groups.get_mut(&0).unwrap().preferred = preferred.then_some(TabId::new(2));
         let pane = screen.get_active_pane_id(&CLIENT).unwrap();
         screen
             .tab_group_action(
@@ -1541,14 +1601,14 @@ fn move_pane_to_group_uses_history_then_preferred_then_first_loaded_tab() {
                 &mut HashSet::new(),
             )
             .unwrap();
-        assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(expected));
+        assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(expected));
         assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
         screen.settle_tabs().unwrap();
         assert!(
-            !screen.tabs.contains_key(&TabId::new(3)),
+            !screen.core.tabs.contains_key(&TabId::new(3)),
             "empty source tab is cleaned up"
         );
-        assert_eq!(screen.tabs.len(), 3, "no replacement tab");
+        assert_eq!(screen.core.tabs.len(), 3, "no replacement tab");
     }
 }
 
@@ -1591,7 +1651,7 @@ fn move_pane_to_group_skips_pending_groups() {
             &mut HashSet::new(),
         )
         .unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(3));
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(3));
     assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
 }
 
@@ -1601,12 +1661,13 @@ fn move_pane_to_group_without_destination_or_room_preserves_pane_and_focus() {
         let mut screen = grouped_screen();
         let source = TabId::new(3);
         if no_other_group {
-            for group in screen.tab_group_ids.values_mut() {
+            for group in screen.core.tab_group_ids.values_mut() {
                 *group = 1;
             }
             screen.prune_tab_groups();
         } else {
             screen
+                .core
                 .tabs
                 .get_mut(&TabId::new(2))
                 .unwrap()
@@ -1615,7 +1676,7 @@ fn move_pane_to_group_without_destination_or_room_preserves_pane_and_focus() {
         }
         let pane = screen.get_active_pane_id(&CLIENT).unwrap();
         let (sender, errors) = channels::unbounded();
-        screen.bus.senders.to_background_jobs = Some(SenderWithContext::new(sender));
+        screen.core.bus.senders.to_background_jobs = Some(SenderWithContext::new(sender));
         screen
             .tab_group_action(
                 Action::MovePaneToNextTabGroup,
@@ -1630,10 +1691,10 @@ fn move_pane_to_group_without_destination_or_room_preserves_pane_and_focus() {
                     "No other tab groups to add pane to!"
                 } else { "Could not move pane to tab group!" }
         )));
-        assert_eq!(screen.active_tab_ids[&CLIENT], source);
+        assert_eq!(screen.core.active_tab_ids[&CLIENT], source);
         assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
-        assert!(screen.tabs[&source].has_pane_with_pid(&pane));
-        assert_eq!(screen.tabs.len(), 4);
+        assert!(screen.core.tabs[&source].has_pane_with_pid(&pane));
+        assert_eq!(screen.core.tabs.len(), 4);
     }
 }
 
@@ -1652,9 +1713,9 @@ fn moving_last_pane_out_of_group_removes_group_without_replacement() {
         .unwrap();
     screen.settle_tabs().unwrap();
     assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
-    assert_eq!(screen.tabs.len(), 2);
-    assert_eq!(screen.tab_groups.len(), 1);
-    assert!(screen.tab_groups.contains_key(&0));
+    assert_eq!(screen.core.tabs.len(), 2);
+    assert_eq!(screen.core.tab_groups.len(), 1);
+    assert!(screen.core.tab_groups.contains_key(&0));
 }
 
 #[test]
@@ -1685,8 +1746,9 @@ fn cli_group_lookup_uses_display_names_and_lowest_id() {
         )
         .unwrap();
     assert_eq!(screen.group_for_client(Some(CLIENT)), 0);
-    assert_eq!(screen.tab_groups.len(), 2);
+    assert_eq!(screen.core.tab_groups.len(), 2);
     screen
+        .core
         .pane_projects
         .insert(PaneId::Terminal(TerminalId::new(2)), "project".into());
     screen
@@ -1711,7 +1773,7 @@ fn cli_group_lookup_uses_display_names_and_lowest_id() {
             &mut HashSet::new(),
         )
         .unwrap();
-    assert_eq!(screen.tab_groups[&1].name, "cleanname");
+    assert_eq!(screen.core.tab_groups[&1].name, "cleanname");
     assert_eq!(screen.tab_group_name(1).as_deref(), Some("project"));
 }
 
@@ -1747,7 +1809,7 @@ fn cli_group_errors_reach_completion() {
 fn cli_group_creation_waits_for_layout_and_reports_group_id() {
     let mut screen = grouped_screen();
     let (tx, rx): ChannelWithContext<PluginInstruction> = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let (done, mut result) = tokio::sync::oneshot::channel();
     screen
         .tab_group_action(
@@ -1774,8 +1836,8 @@ fn cli_group_creation_waits_for_layout_and_reports_group_id() {
             }
         })
         .unwrap();
-    let group = screen.tab_group_ids[&tab];
-    assert_eq!(screen.tab_groups[&group].name, "named");
+    let group = screen.core.tab_group_ids[&tab];
+    assert_eq!(screen.core.tab_groups[&group].name, "named");
     screen
         .land_layout(
             TiledPaneLayout::default(),
@@ -1800,16 +1862,16 @@ fn cli_group_creation_waits_for_layout_and_reports_group_id() {
 #[test]
 fn disabled_groups_use_all_tabs_and_preserve_assignments() {
     let mut screen = grouped_screen();
-    let original = screen.tab_group_ids.clone();
+    let original = screen.core.tab_group_ids.clone();
     let mut config = ScreenConfig::from_config(&Config::default());
     config.tab_groups = false;
     screen
         .reconfigure(config.clone(), Keybinds::default(), CLIENT)
         .unwrap();
     screen.switch_tab_next(None, true, CLIENT).unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(0));
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(0));
     screen.switch_tab_prev(None, true, CLIENT).unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(3));
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(3));
     screen
         .tab_group_action(
             Action::GoToTabInGroup {
@@ -1820,11 +1882,14 @@ fn disabled_groups_use_all_tabs_and_preserve_assignments() {
             &mut HashSet::new(),
         )
         .unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(1));
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(1));
     screen.toggle_tab(CLIENT).unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(3));
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(3));
     screen.move_active_tab_to_left(CLIENT).unwrap();
-    assert_eq!(screen.tabs[&TabId::new(3)].position, TabPosition::new(2));
+    assert_eq!(
+        screen.core.tabs[&TabId::new(3)].position,
+        TabPosition::new(2)
+    );
     for action in [
         Action::NewTabGroup,
         Action::GoToNextTabGroup,
@@ -1837,19 +1902,19 @@ fn disabled_groups_use_all_tabs_and_preserve_assignments() {
         screen
             .tab_group_action(action, CLIENT, None, &mut HashSet::new())
             .unwrap();
-        assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(3));
-        assert_eq!(screen.tab_group_ids, original);
-        assert_eq!(screen.tabs.len(), 4);
+        assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(3));
+        assert_eq!(screen.core.tab_group_ids, original);
+        assert_eq!(screen.core.tabs.len(), 4);
     }
-    assert_eq!(screen.tab_groups[&1].name, "Group 1");
+    assert_eq!(screen.core.tab_groups[&1].name, "Group 1");
     config.tab_groups = true;
     screen
         .reconfigure(config, Keybinds::default(), CLIENT)
         .unwrap();
-    assert_eq!(screen.tab_group_ids, original);
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(3));
+    assert_eq!(screen.core.tab_group_ids, original);
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(3));
     screen.switch_tab_next(None, true, CLIENT).unwrap();
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(1));
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(1));
 }
 
 #[test]
@@ -1857,10 +1922,11 @@ fn disabled_group_bar_serialization_retains_two_row_layout() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
     let (sender, _receiver) = yinz_runtime::channels::unbounded();
     screen
+        .core
         .bus
         .senders
         .replace_to_plugin(SenderWithContext::new(sender));
-    screen.default_mode_info.tab_groups = Some(false);
+    screen.core.default_mode_info.tab_groups = Some(false);
     let layout = yinz_config::kdl::layout::from_kdl(
         r#"layout { tab {
         pane size=2 borderless=true { plugin location="yinz:tab-bar"; }
@@ -1894,7 +1960,7 @@ fn disabled_group_bar_serialization_retains_two_row_layout() {
             None,
         )
         .unwrap();
-    assert_eq!(screen.tabs[&TabId::new(0)].get_viewport().y, 1);
+    assert_eq!(screen.core.tabs[&TabId::new(0)].get_viewport().y, 1);
     let metadata = screen.get_layout_metadata(None, None);
     let (raw, _) =
         yinz_session::session_serialization::serialize_session_layout(metadata.into()).unwrap();

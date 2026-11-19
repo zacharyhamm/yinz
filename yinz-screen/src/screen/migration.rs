@@ -60,26 +60,29 @@ impl Screen {
     ) -> Result<()> {
         migration::validate_operation(operation)?;
         anyhow::ensure!(
-            self.migration.is_none(),
+            self.transfer.migration.is_none(),
             "this session already has an active migration"
         );
         anyhow::ensure!(
-            self.preparing_migration
+            self.transfer
+                .preparing_migration
                 .as_deref()
                 .is_none_or(|active| active == operation),
             "another session migration is preparing"
         );
-        self.preparing_migration = Some(operation.into());
+        self.transfer.preparing_migration = Some(operation.into());
         // Stop accepting new routed actions and attachments, while admitting
         // completion events for work already dispatched to the other threads.
-        self.bus
+        self.core
+            .bus
             .senders
             .session_update_quiesced
             .store(true, std::sync::atomic::Ordering::Release);
         let mut pending = Vec::new();
-        if !self.watcher_clients.is_empty() {
-            for watcher in self.watcher_clients.keys() {
-                self.bus
+        if !self.core.watcher_clients.is_empty() {
+            for watcher in self.core.watcher_clients.keys() {
+                self.core
+                    .bus
                     .senders
                     .send_to_server(
                         yinz_bus::server_instruction::ServerInstruction::DetachSession(
@@ -91,26 +94,19 @@ impl Screen {
             }
             pending.push(PreparationWork::WatcherDisconnect);
         }
-        if !self.pending_warps.is_empty()
-            || !self.pending_tab_warps.is_empty()
-            || !self.pending_pane_groups.is_empty()
-            || !self.pending_group_placements.is_empty()
-            || self.in_flight_pane_warps != 0
-            || !self.pending_tab_adoptions.is_empty()
-            || !self.pending_warp_relationships.is_empty()
-        {
+        if self.warp.has_in_flight_work() {
             pending.push(PreparationWork::PaneTransfer);
         }
-        if self.has_pending_tabs() || self.pending_arrangement.is_some() {
+        if self.has_pending_tabs() || self.core.pending_arrangement.is_some() {
             pending.push(PreparationWork::Layout);
         }
-        if !self.resolving_plugins.is_empty()
-            || !self.animating_plugin_loads.is_empty()
-            || self.pending_overlay_tabs.is_some()
+        if !self.core.resolving_plugins.is_empty()
+            || !self.core.animating_plugin_loads.is_empty()
+            || self.core.pending_overlay_tabs.is_some()
         {
             pending.push(PreparationWork::PluginLoad);
         }
-        for tab in self.tabs.values_mut() {
+        for tab in self.core.tabs.values_mut() {
             tab.prepare_migration()
                 .context("prepare tab for session update")?;
             if tab.migration_pending() && !pending.contains(&PreparationWork::TerminalPlacement) {
@@ -130,19 +126,22 @@ impl Screen {
             return Ok(());
         }
         let plugins: Vec<_> = self
+            .core
             .tabs
             .values_mut()
             .flat_map(|tab| tab.prepare_migration_overlays())
             .collect();
         for id in plugins {
             self.cleanup_closed_pane(id);
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_pty(PtyInstruction::ClosePane(id, None))
                 .context("unload transient plugin UI for session update")?;
         }
         let (inventory, _, terminals, held) = self.migration_inventory(client)?;
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_pty(PtyInstruction::SessionMigration(
                 PtyRequest::PrepareUpdate {
@@ -156,7 +155,7 @@ impl Screen {
     }
 
     fn migration_output_pending(&mut self) -> bool {
-        self.tabs.values_mut().any(|tab| {
+        self.core.tabs.values_mut().any(|tab| {
             tab.get_all_pane_ids().iter().any(|id| {
                 tab.get_pane_with_id_mut(*id)
                     .and_then(|pane| pane.terminal_io_mut())
@@ -169,6 +168,7 @@ impl Screen {
     /// its reply, then fence the resulting PTY writes before taking the snapshot.
     pub(super) fn advance_migration_drain(&mut self) {
         if !self
+            .transfer
             .migration
             .as_ref()
             .is_some_and(|state| state.pending_host_drain.is_some())
@@ -176,7 +176,7 @@ impl Screen {
         {
             return;
         }
-        if let Some(state) = self.migration.as_mut()
+        if let Some(state) = self.transfer.migration.as_mut()
             && let Some(addresses) = state.pending_host_drain.take()
         {
             let operation = state.operation.clone();
@@ -271,20 +271,23 @@ impl Screen {
     }
 
     pub(super) fn migration_blocks_normal_work(&self) -> bool {
-        self.preparing_migration.is_none()
+        self.transfer.preparing_migration.is_none()
             && self
+                .core
                 .bus
                 .senders
                 .session_update_quiesced
                 .load(std::sync::atomic::Ordering::Acquire)
     }
     pub(super) fn migration_reports_suspended(&self) -> bool {
-        self.bus
+        self.core
+            .bus
             .senders
             .session_update_quiesced
             .load(std::sync::atomic::Ordering::Acquire)
-            && self.preparing_migration.is_none()
+            && self.transfer.preparing_migration.is_none()
             && !self
+                .transfer
                 .migration
                 .as_ref()
                 .is_some_and(|state| state.stage == Stage::Finishing)
@@ -295,26 +298,23 @@ impl Screen {
         client: ClientId,
     ) -> Result<PreparedSessionMigration> {
         anyhow::ensure!(
-            self.watcher_clients.is_empty(),
+            self.core.watcher_clients.is_empty(),
             "disconnect read-only watchers and retry the session update"
         );
         anyhow::ensure!(
-            self.pending_warps.is_empty()
-                && self.pending_tab_warps.is_empty()
-                && self.pending_pane_groups.is_empty()
-                && self.pending_group_placements.is_empty()
-                && self.in_flight_pane_warps == 0,
+            !self.warp.has_in_flight_work(),
             "a pane transfer is already active"
         );
         anyhow::ensure!(
-            !self.has_pending_tabs() && self.pending_arrangement.is_none(),
+            !self.has_pending_tabs() && self.core.pending_arrangement.is_none(),
             "a layout is still being applied; retry after it finishes"
         );
         anyhow::ensure!(
-            self.resolving_plugins.is_empty() && self.animating_plugin_loads.is_empty(),
+            self.core.resolving_plugins.is_empty() && self.core.animating_plugin_loads.is_empty(),
             "a plugin is still loading; retry after it finishes"
         );
         let mut ordered: Vec<_> = self
+            .core
             .tabs
             .values()
             .map(|tab| (tab.position, tab.id))
@@ -329,7 +329,11 @@ impl Screen {
             let (_, ids, tab) = self
                 .check_tab_can_be_warped(Some(id), client)
                 .map_err(|e| anyhow!("{e}"))?;
-            let current = self.tabs.get(&id).context("migration tab disappeared")?;
+            let current = self
+                .core
+                .tabs
+                .get(&id)
+                .context("migration tab disappeared")?;
             current
                 .migration_state()
                 .map_err(|e| anyhow!("tab {id}: {e}"))?;
@@ -347,6 +351,7 @@ impl Screen {
                         held.insert(*terminal, state);
                     }
                     if let Some(host) = self
+                        .core
                         .bus
                         .os_input
                         .as_ref()
@@ -366,21 +371,24 @@ impl Screen {
         }
         anyhow::ensure!(!tabs.is_empty(), "there are no tabs to migrate");
         let clients = self
+            .core
             .connected_clients
             .borrow()
             .iter()
             .map(|id| ClientFocus {
                 client_id: *id,
-                tab_id: self.active_tab_ids.get(id).copied(),
+                tab_id: self.core.active_tab_ids.get(id).copied(),
                 pane_id: self.get_active_pane_id(id),
-                tab_history: self.tab_history.get(id).cloned().unwrap_or_default(),
-                pane_history: self.pane_history.get(id).cloned().unwrap_or_default(),
+                tab_history: self.core.tab_history.get(id).cloned().unwrap_or_default(),
+                pane_history: self.core.pane_history.get(id).cloned().unwrap_or_default(),
                 mode_info: self
+                    .core
                     .mode_info
                     .get(id)
-                    .unwrap_or(&self.default_mode_info)
+                    .unwrap_or(&self.core.default_mode_info)
                     .clone(),
                 marked_panes: self
+                    .core
                     .current_pane_group
                     .borrow()
                     .clone_inner()
@@ -391,21 +399,23 @@ impl Screen {
         Ok((
             SessionMigrationInventory {
                 format: SESSION_MIGRATION_FORMAT,
-                session_name: self.session_name.clone(),
-                instance_id: self.instance_id.to_string(),
+                session_name: self.core.session_name.clone(),
+                instance_id: self.core.instance_id.to_string(),
                 tabs,
                 clients,
                 remote_hosts: remote_hosts.into_iter().collect(),
-                global_last_active_tab: self.global_last_active_tab_id,
+                global_last_active_tab: self.core.global_last_active_tab_id,
                 tab_group_preferences: self
+                    .core
                     .tab_groups
                     .iter()
                     .map(|(id, group)| (*id, group.preferred))
                     .collect(),
                 paneless_plugins: self
+                    .core
                     .paneless_plugins
                     .iter()
-                    .filter(|(id, _)| !self.failed_paneless_plugins.contains(id))
+                    .filter(|(id, _)| !self.core.failed_paneless_plugins.contains(id))
                     .map(|(_, run)| run.clone())
                     .collect(),
                 display_size: Some(self.surface_size()),
@@ -423,9 +433,9 @@ impl Screen {
         &mut self,
         event: ScreenInstruction,
     ) -> Option<ScreenInstruction> {
-        let Some(state) = &self.migration else {
-            if self.preparing_migration.is_some() && !Self::preparation_admits(&event) {
-                self.migration_deferred.push_back(event);
+        let Some(state) = &self.transfer.migration else {
+            if self.transfer.preparing_migration.is_some() && !Self::preparation_admits(&event) {
+                self.transfer.migration_deferred.push_back(event);
                 return None;
             }
             return Some(event);
@@ -491,14 +501,14 @@ impl Screen {
         if allowed {
             Some(event)
         } else {
-            self.migration_deferred.push_back(event);
+            self.transfer.migration_deferred.push_back(event);
             None
         }
     }
 
     pub(super) fn next_migration_event(&mut self) -> Option<ScreenInstruction> {
-        if self.preparing_migration.is_none() && !self.migration_blocks_normal_work() {
-            self.migration_deferred.pop_front()
+        if self.transfer.preparing_migration.is_none() && !self.migration_blocks_normal_work() {
+            self.transfer.migration_deferred.pop_front()
         } else {
             None
         }
@@ -511,6 +521,7 @@ impl Screen {
         addresses: &HashMap<TerminalId, crate::os_input_output::ReleasedPane>,
     ) -> Result<MigrationTab> {
         let tab = self
+            .core
             .tabs
             .get(&id)
             .context("missing source tab during snapshot")?;
@@ -542,6 +553,7 @@ impl Screen {
                     .then(|| pane.current_title()),
                 bracketed_paste: pane.supports_bracketed_paste(),
                 agent: self
+                    .core
                     .tabs
                     .get(&id)
                     .and_then(|tab| tab.get_pane_with_id(*pane_id))
@@ -567,7 +579,7 @@ impl Screen {
             local_replay: vec![],
             state: tab.migration_state().map_err(|e| anyhow!("{e}"))?,
             payload: WarpedTab {
-                source_instance_id: Some(self.instance_id.to_string()),
+                source_instance_id: Some(self.core.instance_id.to_string()),
                 relationships: prepared.relationships.clone(),
                 name: prepared.name.clone(),
                 user_named: prepared.user_named,
@@ -582,7 +594,7 @@ impl Screen {
 
     fn remove_migration_tabs(&mut self, prepared: &[(TabId, PreparedTabWarp)]) {
         for (id, prepared) in prepared {
-            if let Some(tab) = self.tabs.get_mut(id) {
+            if let Some(tab) = self.core.tabs.get_mut(id) {
                 let removed = tab.extract_warp_panes(&prepared.slots);
                 for pane in removed {
                     // The process is already released. Never send ClosePane for
@@ -597,7 +609,8 @@ impl Screen {
                         PaneId::Terminal(_) => None,
                     };
                     if let Some(retire) = retire {
-                        self.bus
+                        self.core
+                            .bus
                             .senders
                             .send_to_pty(retire)
                             .context("retire source pane without a process")
@@ -629,11 +642,12 @@ impl Screen {
                 let result: Result<()> = (|| {
                     migration::validate_operation(&operation)?;
                     anyhow::ensure!(
-                        self.migration.is_none(),
+                        self.transfer.migration.is_none(),
                         "this session already has an active migration"
                     );
                     let (inventory, _, terminals, held) = self.migration_inventory(client)?;
-                    self.bus
+                    self.core
+                        .bus
                         .senders
                         .send_to_pty(PtyInstruction::SessionMigration(PtyRequest::Prepare {
                             inventory,
@@ -656,7 +670,7 @@ impl Screen {
             } => {
                 let result: Result<()> = (|| {
                     migration::validate_operation(&operation)?;
-                    if let Some(state) = &self.migration {
+                    if let Some(state) = &self.transfer.migration {
                         anyhow::ensure!(
                             state.operation == operation,
                             "another session migration is active"
@@ -670,7 +684,8 @@ impl Screen {
                         ));
                     }
                     anyhow::ensure!(
-                        self.preparing_migration
+                        self.transfer
+                            .preparing_migration
                             .as_deref()
                             .is_none_or(|active| active == operation),
                         "another session migration is preparing"
@@ -687,8 +702,8 @@ impl Screen {
                         ownership: vec![],
                     };
                     migration::save_snapshot(&snapshot, &document)?;
-                    self.preparing_migration = None;
-                    self.migration = Some(MigrationState {
+                    self.transfer.preparing_migration = None;
+                    self.transfer.migration = Some(MigrationState {
                         operation: operation.clone(),
                         path: snapshot,
                         stage: Stage::Pausing,
@@ -703,12 +718,14 @@ impl Screen {
                         replay_tabs: Default::default(),
                         pending_host_drain: None,
                     });
-                    self.bus
+                    self.core
+                        .bus
                         .senders
                         .session_update_quiesced
                         .store(true, std::sync::atomic::Ordering::Release);
                     let (tx, rx) = std::sync::mpsc::channel();
                     if let Err(error) = self
+                        .core
                         .bus
                         .senders
                         .send_to_plugin(yinz_bus::plugins::PluginInstruction::QuiesceForUpdate {
@@ -720,7 +737,7 @@ impl Screen {
                         self.cancel_migration_preparation(format!("{error:#}"));
                         return Ok(());
                     }
-                    let senders = self.bus.senders.clone();
+                    let senders = self.core.bus.senders.clone();
                     std::thread::spawn(move || {
                         let result = rx
                             .recv_timeout(std::time::Duration::from_secs(65))
@@ -740,11 +757,11 @@ impl Screen {
                 }
             },
             ScreenRequest::PluginsPaused { operation, result } => {
-                let Some(mut state) = self.migration.take() else {
+                let Some(mut state) = self.transfer.migration.take() else {
                     return;
                 };
                 if state.operation != operation || state.stage != Stage::Pausing {
-                    self.migration = Some(state);
+                    self.transfer.migration = Some(state);
                     return;
                 }
                 match result {
@@ -764,8 +781,9 @@ impl Screen {
                             held: state.held.clone(),
                             deadline: state.deadline,
                         };
-                        self.migration = Some(state);
+                        self.transfer.migration = Some(state);
                         if let Err(error) = self
+                            .core
                             .bus
                             .senders
                             .send_to_pty(PtyInstruction::SessionMigration(instruction))
@@ -776,7 +794,8 @@ impl Screen {
                     },
                     Err(error) => {
                         self.resume_migration_plugins(&operation);
-                        self.bus
+                        self.core
+                            .bus
                             .senders
                             .session_update_quiesced
                             .store(false, std::sync::atomic::Ordering::Release);
@@ -787,7 +806,7 @@ impl Screen {
                 }
             },
             ScreenRequest::ReadersPaused { operation, result } => {
-                let Some(state) = self.migration.as_ref() else {
+                let Some(state) = self.transfer.migration.as_ref() else {
                     return;
                 };
                 if state.operation != operation || state.stage != Stage::Pausing {
@@ -795,7 +814,7 @@ impl Screen {
                 }
                 let (tx, rx) = crossbeam::channel::bounded(1);
                 let deadline = state.deadline;
-                let senders = self.bus.senders.clone();
+                let senders = self.core.bus.senders.clone();
                 if let Err(error) = senders.send_to_pty_writer(
                     yinz_bus::pty_writer::PtyWriteInstruction::MigrationBarrier {
                         deadline,
@@ -824,16 +843,16 @@ impl Screen {
                 });
             },
             ScreenRequest::InputDrained { operation, result } => {
-                let Some(mut state) = self.migration.take() else {
+                let Some(mut state) = self.transfer.migration.take() else {
                     return;
                 };
                 if state.operation != operation || state.stage != Stage::Pausing {
-                    self.migration = Some(state);
+                    self.transfer.migration = Some(state);
                     return;
                 }
                 if result.is_ok() && self.migration_output_pending() {
                     state.pending_host_drain = result.ok();
-                    self.migration = Some(state);
+                    self.transfer.migration = Some(state);
                     return;
                 }
                 let prepared = (|| {
@@ -870,8 +889,9 @@ impl Screen {
                             deadline: state.deadline,
                             path: state.path.clone(),
                         };
-                        self.migration = Some(state);
+                        self.transfer.migration = Some(state);
                         if let Err(error) = self
+                            .core
                             .bus
                             .senders
                             .send_to_pty(PtyInstruction::SessionMigration(instruction))
@@ -879,7 +899,7 @@ impl Screen {
                         {
                             // Sending failed, so no terminal ownership changed.
                             // Revert the journal before allowing source actions.
-                            if let Some(state) = self.migration.as_mut() {
+                            if let Some(state) = self.transfer.migration.as_mut() {
                                 state.stage = Stage::Pausing;
                                 state.snapshot.phase = MigrationPhase::Prepared;
                                 migration::save_snapshot(&state.path, &state.snapshot)
@@ -890,13 +910,15 @@ impl Screen {
                         }
                     },
                     Err(error) => {
-                        self.bus
+                        self.core
+                            .bus
                             .senders
                             .send_to_pty(PtyInstruction::SessionMigration(PtyRequest::Resume))
                             .context("resume untouched source session")
                             .non_fatal();
                         self.resume_migration_plugins(&state.operation);
-                        self.bus
+                        self.core
+                            .bus
                             .senders
                             .session_update_quiesced
                             .store(false, std::sync::atomic::Ordering::Release);
@@ -907,11 +929,11 @@ impl Screen {
                 }
             },
             ScreenRequest::Released { operation, results } => {
-                let Some(mut state) = self.migration.take() else {
+                let Some(mut state) = self.transfer.migration.take() else {
                     return;
                 };
                 if state.operation != operation || state.stage != Stage::Releasing {
-                    self.migration = Some(state);
+                    self.transfer.migration = Some(state);
                     return;
                 }
                 // PTY durably records each transition before reporting the batch.
@@ -941,9 +963,9 @@ impl Screen {
                     // Keep the migration guard installed while closing the last
                     // source tab; settle_tabs must not retire this server.
                     let prepared = state.prepared.clone();
-                    self.migration = Some(state);
+                    self.transfer.migration = Some(state);
                     self.remove_migration_tabs(&prepared);
-                    let Some(retained) = self.migration.take() else {
+                    let Some(retained) = self.transfer.migration.take() else {
                         return;
                     };
                     state = retained;
@@ -965,7 +987,7 @@ impl Screen {
                     }).map_err(|e|format!("{e:#}"));
                     let _ = reply.send(result);
                 }
-                self.migration = Some(state);
+                self.transfer.migration = Some(state);
             },
             ScreenRequest::Adopt {
                 operation,
@@ -975,7 +997,7 @@ impl Screen {
             } => {
                 let result: Result<()> = (|| {
                     let mut document = migration::load_snapshot(&snapshot, &operation)?;
-                    if let Some(state) = self.migration.as_ref()
+                    if let Some(state) = self.transfer.migration.as_ref()
                         && state.operation == operation
                         && state.stage == Stage::Recovery
                         && state.prepared.is_empty()
@@ -984,17 +1006,18 @@ impl Screen {
                         // adoption. Hand back this process's ownership before retrying
                         // from its original grid and durable detached output.
                         let (aborted, received) = crossbeam::channel::bounded(1);
-                        self.bus
+                        self.core
+                            .bus
                             .senders
                             .send_to_pty(PtyInstruction::SessionMigration(PtyRequest::Abort {
                                 operation: operation.clone(),
                                 reply: aborted,
                             }))
                             .context("reconcile failed source readoption")?;
-                        if let Some(state) = self.migration.as_mut() {
+                        if let Some(state) = self.transfer.migration.as_mut() {
                             state.stage = Stage::Recovering;
                         }
-                        let senders = self.bus.senders.clone();
+                        let senders = self.core.bus.senders.clone();
                         let retry_reply = reply.clone();
                         std::thread::spawn(move || {
                             let result = received
@@ -1025,18 +1048,19 @@ impl Screen {
                         });
                         return Ok(());
                     }
-                    if let Some(state) = self.migration.as_mut()
+                    if let Some(state) = self.transfer.migration.as_mut()
                         && state.operation == operation
                         && matches!(state.stage, Stage::Releasing | Stage::Recovery)
                         && !state.prepared.is_empty()
-                        && document.inventory.instance_id == self.instance_id.to_string()
+                        && document.inventory.instance_id == self.core.instance_id.to_string()
                     {
                         state.stage = Stage::Recovering;
                         if let Some(release) = state.release_reply.take() {
                             let _ = release
                                 .send(Err("source recovery superseded the release request".into()));
                         }
-                        self.bus
+                        self.core
+                            .bus
                             .senders
                             .send_to_pty(PtyInstruction::SessionMigration(
                                 PtyRequest::ReconcileSource {
@@ -1049,7 +1073,7 @@ impl Screen {
                             .context("reconcile partially released source ownership")?;
                         return Ok(());
                     }
-                    if let Some(state) = &self.migration {
+                    if let Some(state) = &self.transfer.migration {
                         anyhow::ensure!(
                             state.operation == operation,
                             "another migration is active"
@@ -1074,14 +1098,15 @@ impl Screen {
                         document.errors.is_empty(),
                         "snapshot has unresolved ownership errors; recover those before adoption"
                     );
-                    anyhow::ensure!(self.tabs.values().all(|tab|tab.get_all_pane_ids().iter().all(|id|!matches!(id,PaneId::Terminal(_)))),"replacement session already contains live or held terminals; refusing to overwrite them");
+                    anyhow::ensure!(self.core.tabs.values().all(|tab|tab.get_all_pane_ids().iter().all(|id|!matches!(id,PaneId::Terminal(_)))),"replacement session already contains live or held terminals; refusing to overwrite them");
                     for tab in &document.tabs {
                         tab.payload
                             .validate_relationships()
                             .map_err(|e| anyhow!("{e}"))?;
                     }
                     for run in &document.inventory.paneless_plugins {
-                        self.bus
+                        self.core
+                            .bus
                             .senders
                             .send_to_plugin(
                                 yinz_bus::plugins::PluginInstruction::LoadBackgroundPlugin(
@@ -1096,11 +1121,12 @@ impl Screen {
                     // precede replacement loads, which start only after Finish.
                     document.phase = MigrationPhase::Adopting;
                     migration::save_snapshot(&snapshot, &document)?;
-                    self.bus
+                    self.core
+                        .bus
                         .senders
                         .session_update_quiesced
                         .store(true, std::sync::atomic::Ordering::Release);
-                    self.migration = Some(MigrationState {
+                    self.transfer.migration = Some(MigrationState {
                         operation,
                         path: snapshot.clone(),
                         stage: Stage::Adopting,
@@ -1115,7 +1141,8 @@ impl Screen {
                         replay_tabs: Default::default(),
                         pending_host_drain: None,
                     });
-                    self.bus
+                    self.core
+                        .bus
                         .senders
                         .send_to_pty(PtyInstruction::SessionMigration(PtyRequest::Adopt {
                             snapshot: Box::new(document),
@@ -1136,12 +1163,12 @@ impl Screen {
                 path,
                 reply,
             } => {
-                let Some(mut state) = self.migration.take() else {
+                let Some(mut state) = self.transfer.migration.take() else {
                     let _ = reply.send(Err("destination migration disappeared".into()));
                     return;
                 };
                 if state.operation != snapshot.operation {
-                    self.migration = Some(state);
+                    self.transfer.migration = Some(state);
                     let _ = reply.send(Err("stale session adoption result".into()));
                     return;
                 }
@@ -1149,7 +1176,7 @@ impl Screen {
                     Err(error) => {
                         state.stage = Stage::Recovery;
                         state.snapshot = *snapshot;
-                        self.migration = Some(state);
+                        self.transfer.migration = Some(state);
                         let _ = reply.send(Err(error));
                     },
                     Ok(adopted) => {
@@ -1179,9 +1206,9 @@ impl Screen {
                             }
                         }
                         state.path = path;
-                        self.migration = Some(state);
+                        self.transfer.migration = Some(state);
                         if let Some(error) = error {
-                            self.fail_migration_adoption(format!("{error:#}"));
+                            self.transfer.fail_migration_adoption(format!("{error:#}"));
                         }
                     },
                 }
@@ -1193,28 +1220,28 @@ impl Screen {
                 reply,
                 result,
             } => {
-                let Some(mut state) = self.migration.take() else {
+                let Some(mut state) = self.transfer.migration.take() else {
                     let _ = reply.send(Err(
                         "source migration disappeared during reconciliation".into()
                     ));
                     return;
                 };
                 if state.operation != operation || state.stage != Stage::Recovering {
-                    self.migration = Some(state);
+                    self.transfer.migration = Some(state);
                     let _ = reply.send(Err("stale source reconciliation result".into()));
                     return;
                 }
                 match result {
                     Err(error) => {
                         state.stage = Stage::Recovery;
-                        self.migration = Some(state);
+                        self.transfer.migration = Some(state);
                         let _ = reply.send(Err(error));
                     },
                     Ok(snapshot) => {
                         state.snapshot = *snapshot;
                         state.stage = Stage::Released;
                         let prepared = state.prepared.clone();
-                        self.migration = Some(state);
+                        self.transfer.migration = Some(state);
                         self.remove_migration_tabs(&prepared);
                         self.session_migration(ScreenRequest::Adopt {
                             operation,
@@ -1225,9 +1252,10 @@ impl Screen {
                     },
                 }
             },
-            ScreenRequest::Abort { operation, reply } => match self.migration.as_ref() {
+            ScreenRequest::Abort { operation, reply } => match self.transfer.migration.as_ref() {
                 None => {
                     if self
+                        .transfer
                         .preparing_migration
                         .as_deref()
                         .is_some_and(|active| active != operation)
@@ -1235,8 +1263,9 @@ impl Screen {
                         let _ =
                             reply.send(Err("a different session migration is preparing".into()));
                     } else {
-                        self.preparing_migration = None;
-                        self.bus
+                        self.transfer.preparing_migration = None;
+                        self.core
+                            .bus
                             .senders
                             .session_update_quiesced
                             .store(false, std::sync::atomic::Ordering::Release);
@@ -1254,14 +1283,16 @@ impl Screen {
                     let _ = reply.send(Ok(()));
                 },
                 Some(state) if state.stage == Stage::Pausing => {
-                    self.migration = None;
-                    self.bus
+                    self.transfer.migration = None;
+                    self.core
+                        .bus
                         .senders
                         .send_to_pty(PtyInstruction::SessionMigration(PtyRequest::Resume))
                         .context("resume cancelled source preparation")
                         .non_fatal();
                     self.resume_migration_plugins(&operation);
-                    self.bus
+                    self.core
+                        .bus
                         .senders
                         .session_update_quiesced
                         .store(false, std::sync::atomic::Ordering::Release);
@@ -1274,6 +1305,7 @@ impl Screen {
                     ) && state.prepared.is_empty() =>
                 {
                     let sent = self
+                        .core
                         .bus
                         .senders
                         .send_to_pty(PtyInstruction::SessionMigration(PtyRequest::Abort {
@@ -1283,7 +1315,7 @@ impl Screen {
                         .context("release destination before source recovery");
                     match sent {
                         Ok(()) => {
-                            if let Some(state) = self.migration.as_mut() {
+                            if let Some(state) = self.transfer.migration.as_mut() {
                                 state.stage = Stage::Recovering;
                             }
                         },
@@ -1301,13 +1333,13 @@ impl Screen {
                 result,
                 reply,
             } => {
-                let Some(mut state) = self.migration.take() else {
+                let Some(mut state) = self.transfer.migration.take() else {
                     let _ =
                         reply.send(Err("destination migration disappeared during abort".into()));
                     return;
                 };
                 if state.operation != operation {
-                    self.migration = Some(state);
+                    self.transfer.migration = Some(state);
                     let _ = reply.send(Err("stale migration abort".into()));
                     return;
                 }
@@ -1315,16 +1347,17 @@ impl Screen {
                     // The PTY thread acknowledged every handback before any
                     // source can re-adopt. Remove only the destination's pane
                     // objects; ClosePane on a live terminal would kill it.
-                    let ids: Vec<_> = self.tabs.keys().copied().collect();
+                    let ids: Vec<_> = self.core.tabs.keys().copied().collect();
                     for id in ids {
-                        if let Some(tab) = self.tabs.get_mut(&id) {
+                        if let Some(tab) = self.core.tabs.get_mut(&id) {
                             let pane_ids = tab.get_all_pane_ids();
                             let _ = tab.extract_warp_panes(&pane_ids);
                         }
-                        self.tabs.remove(&id);
-                        self.pending_warp_relationships.remove(&id);
+                        self.core.tabs.remove(&id);
+                        self.warp.pending_warp_relationships.remove(&id);
                     }
-                    self.active_tab_ids.clear();
+                    self.core.active_tab_ids.clear();
+                    self.active_tabs_changed();
                     state.pending_tabs.clear();
                     state.snapshot.phase = MigrationPhase::Released;
                     state.snapshot.errors.clear();
@@ -1342,11 +1375,11 @@ impl Screen {
                 if result.is_err() {
                     state.stage = Stage::Recovery;
                 }
-                self.migration = Some(state);
+                self.transfer.migration = Some(state);
                 let _ = reply.send(result);
             },
             ScreenRequest::TabReplayed { operation, tab } => {
-                if let Some(state) = self.migration.as_mut()
+                if let Some(state) = self.transfer.migration.as_mut()
                     && state.operation == operation
                     && state.stage == Stage::Adopting
                 {
@@ -1361,14 +1394,19 @@ impl Screen {
                 reply,
             } => {
                 let result = (|| -> Result<()> {
-                    let state = self.migration.as_ref().context("no migration is active")?;
+                    let state = self
+                        .transfer
+                        .migration
+                        .as_ref()
+                        .context("no migration is active")?;
                     anyhow::ensure!(
                         state.operation == operation
                             && matches!(state.stage, Stage::Released | Stage::Adopted),
                         "migration is not ready to rename its endpoint"
                     );
-                    if self.session_name == name {
+                    if self.core.session_name == name {
                         let ownership = self
+                            .core
                             .bus
                             .senders
                             .session_ownership
@@ -1392,7 +1430,7 @@ impl Screen {
                             .context("rename migration session endpoint")?;
                     }
                     anyhow::ensure!(
-                        self.session_name == name,
+                        self.core.session_name == name,
                         "session endpoint rename was refused"
                     );
                     Ok(())
@@ -1402,6 +1440,7 @@ impl Screen {
             },
             ScreenRequest::Finish { operation, reply } => {
                 if self
+                    .transfer
                     .completed_migration
                     .as_ref()
                     .is_some_and(|(completed, _, _)| completed == &operation)
@@ -1410,7 +1449,11 @@ impl Screen {
                     return;
                 }
                 let result = (|| -> Result<()> {
-                    let state = self.migration.as_mut().context("no migration is active")?;
+                    let state = self
+                        .transfer
+                        .migration
+                        .as_mut()
+                        .context("no migration is active")?;
                     anyhow::ensure!(
                         state.operation == operation,
                         "stale session migration finish"
@@ -1438,7 +1481,7 @@ impl Screen {
                         return Ok(());
                     }
                     let (tx, rx) = std::sync::mpsc::channel();
-                    if let Err(error) = self.bus.senders.send_to_plugin(
+                    if let Err(error) = self.core.bus.senders.send_to_plugin(
                         yinz_bus::plugins::PluginInstruction::ResumeAfterUpdate {
                             operation: operation.clone(),
                             reply: tx,
@@ -1450,7 +1493,7 @@ impl Screen {
                         });
                         return Ok(());
                     }
-                    let senders = self.bus.senders.clone();
+                    let senders = self.core.bus.senders.clone();
                     std::thread::spawn(move || {
                         let result = rx
                             .recv_timeout(std::time::Duration::from_secs(65))
@@ -1470,7 +1513,7 @@ impl Screen {
                 }
             },
             ScreenRequest::PluginsResumed { operation, result } => {
-                let Some(state) = self.migration.as_mut() else {
+                let Some(state) = self.transfer.migration.as_mut() else {
                     return;
                 };
                 if state.operation != operation || state.stage != Stage::Finishing {
@@ -1479,14 +1522,16 @@ impl Screen {
                 let replies = std::mem::take(&mut state.finish_replies);
                 let activation = (|| -> Result<()> {
                     let state = self
+                        .transfer
                         .migration
                         .as_ref()
                         .context("migration disappeared before commit")?;
-                    self.bus
+                    self.core
+                        .bus
                         .senders
                         .send_to_pty(PtyInstruction::SessionMigration(PtyRequest::Resume))
                         .context("resume migrated terminal output")?;
-                    for tab in self.tabs.values_mut() {
+                    for tab in self.core.tabs.values_mut() {
                         for id in tab.get_all_pane_ids() {
                             if let Some(pane) = tab.get_pane_with_id_mut(id) {
                                 pane.set_warp_pending(false);
@@ -1495,11 +1540,11 @@ impl Screen {
                     }
                     let map = state.snapshot.mapping.panes.clone();
                     let source =
-                        state.snapshot.inventory.instance_id == self.instance_id.to_string();
+                        state.snapshot.inventory.instance_id == self.core.instance_id.to_string();
                     // Process exit notifications may have arrived while readers
                     // were paused. Preserve those, mapping source IDs on rollback;
                     // stale structural callbacks must not target reused IDs.
-                    self.migration_deferred.retain_mut(|event| {
+                    self.transfer.migration_deferred.retain_mut(|event| {
                         let id = match event {
                             ScreenInstruction::HoldPane(id, ..)
                             | ScreenInstruction::ClosePane(id, ..) => id,
@@ -1514,7 +1559,8 @@ impl Screen {
                         }
                         true
                     });
-                    self.bus
+                    self.core
+                        .bus
                         .senders
                         .session_update_quiesced
                         .store(false, std::sync::atomic::Ordering::Release);
@@ -1524,14 +1570,14 @@ impl Screen {
                 let result = match activation {
                     Ok(()) => {
                         if result.is_ok() {
-                            if let Some(state) = self.migration.take() {
-                                self.completed_migration = Some((
+                            if let Some(state) = self.transfer.migration.take() {
+                                self.transfer.completed_migration = Some((
                                     operation.clone(),
                                     state.snapshot.inventory,
                                     state.snapshot.mapping,
                                 ));
                             }
-                        } else if let Some(state) = self.migration.as_mut() {
+                        } else if let Some(state) = self.transfer.migration.as_mut() {
                             // The coordinator has durably committed to this
                             // owner before Finish. Keep terminals usable so a
                             // client can repair plugin errors or permissions,
@@ -1541,7 +1587,7 @@ impl Screen {
                         result
                     },
                     Err(error) => {
-                        if let Some(state) = self.migration.as_mut() {
+                        if let Some(state) = self.transfer.migration.as_mut() {
                             state.stage = Stage::Adopted;
                         }
                         Err(error)
@@ -1558,7 +1604,7 @@ impl Screen {
                 reply,
             } => {
                 let result = (|| -> Result<()> {
-                    let (inventory, mapping) = if let Some(state) = &self.migration {
+                    let (inventory, mapping) = if let Some(state) = &self.transfer.migration {
                         anyhow::ensure!(
                             state.operation == operation
                                 && matches!(
@@ -1573,6 +1619,7 @@ impl Screen {
                         )
                     } else {
                         let (completed, inventory, mapping) = self
+                            .transfer
                             .completed_migration
                             .as_ref()
                             .context("no completed migration has client state")?;
@@ -1589,7 +1636,8 @@ impl Screen {
                         .context("source client was not captured by this migration")?;
                     self.restore_migration_client(focus, destination, &mapping)?;
                     self.force_client_repaint(destination);
-                    self.pending_update_client_ready
+                    self.transfer
+                        .pending_update_client_ready
                         .insert(destination, (operation.clone(), source));
                     self.render().context("render restored migration client")?;
                     Ok(())
@@ -1602,7 +1650,8 @@ impl Screen {
 
     fn resume_migration_plugins(&self, operation: &str) {
         let (reply, _) = std::sync::mpsc::channel();
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_plugin(yinz_bus::plugins::PluginInstruction::ResumeAfterUpdate {
                 operation: operation.into(),
@@ -1613,32 +1662,28 @@ impl Screen {
     }
 
     fn cancel_migration_preparation(&mut self, error: String) {
-        let Some(mut state) = self.migration.take() else {
+        let Some(mut state) = self.transfer.migration.take() else {
             return;
         };
         if state.stage != Stage::Pausing {
-            self.migration = Some(state);
+            self.transfer.migration = Some(state);
             return;
         }
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_pty(PtyInstruction::SessionMigration(PtyRequest::Resume))
             .context("resume untouched migration source")
             .non_fatal();
         self.resume_migration_plugins(&state.operation);
-        self.bus
+        self.core
+            .bus
             .senders
             .session_update_quiesced
             .store(false, std::sync::atomic::Ordering::Release);
         if let Some(reply) = state.release_reply.take() {
             let _ = reply.send(Err(error));
         }
-    }
-
-    pub(super) fn migration_tab_pending(&self, tab: TabId) -> bool {
-        self.migration
-            .as_ref()
-            .is_some_and(|s| s.pending_tabs.contains_key(&tab))
     }
 
     fn restore_migration_client(
@@ -1648,7 +1693,7 @@ impl Screen {
         mapping: &SessionMigrationMap,
     ) -> Result<()> {
         anyhow::ensure!(
-            self.connected_clients.borrow().contains(&destination),
+            self.core.connected_clients.borrow().contains(&destination),
             "migration client has not attached"
         );
         let tab = |id: TabId| {
@@ -1666,95 +1711,88 @@ impl Screen {
                 .map(|(_, to)| *to)
         };
         let mut mode = focus.mode_info.clone();
-        mode.session_name = Some(self.session_name.clone());
-        self.mode_info.insert(destination, mode.clone());
-        for tab in self.tabs.values_mut() {
+        mode.session_name = Some(self.core.session_name.clone());
+        self.core.mode_info.insert(destination, mode.clone());
+        for tab in self.core.tabs.values_mut() {
             tab.change_mode_info(mode.clone(), destination);
         }
         // A late reattach can follow a natural process exit or a plugin repair
         // that replaced its pane. Keep the valid focus chosen by AddClient
         // when the original target has since disappeared.
         if let Some(tab_id) = focus.tab_id.and_then(tab)
-            && let Some(position) = self.tabs.get(&tab_id).map(|tab| tab.position)
+            && let Some(position) = self.core.tabs.get(&tab_id).map(|tab| tab.position)
         {
             self.switch_active_tab(position, None, true, destination)
                 .context("restore migrated client tab")?;
             if let Some(pane_id) = focus.pane_id.and_then(pane)
                 && self
+                    .core
                     .tabs
                     .get(&tab_id)
                     .is_some_and(|tab| tab.get_pane_with_id(pane_id).is_some())
             {
-                self.tabs
+                self.core
+                    .tabs
                     .get_mut(&tab_id)
                     .context("missing migrated focus tab")?
                     .focus_pane_with_id(pane_id, false, false, destination)
                     .context("restore migrated client pane")?;
             }
         }
-        self.tab_history.insert(
+        self.core.tab_history.insert(
             destination,
             focus
                 .tab_history
                 .iter()
                 .filter_map(|id| tab(*id))
-                .filter(|id| self.tabs.contains_key(id))
+                .filter(|id| self.core.tabs.contains_key(id))
                 .collect(),
         );
-        self.pane_history.insert(
+        self.core.pane_history.insert(
             destination,
             focus
                 .pane_history
                 .iter()
                 .filter_map(|id| pane(*id))
                 .filter(|id| {
-                    self.tabs
+                    self.core
+                        .tabs
                         .values()
                         .any(|tab| tab.get_pane_with_id(*id).is_some())
                 })
                 .collect(),
         );
-        self.current_pane_group.borrow_mut().restore_client_group(
-            destination,
-            focus
-                .marked_panes
-                .iter()
-                .filter_map(|id| pane(*id))
-                .filter(|id| {
-                    self.tabs
-                        .values()
-                        .any(|tab| tab.get_pane_with_id(*id).is_some())
-                })
-                .collect(),
-        );
+        self.core
+            .current_pane_group
+            .borrow_mut()
+            .restore_client_group(
+                destination,
+                focus
+                    .marked_panes
+                    .iter()
+                    .filter_map(|id| pane(*id))
+                    .filter(|id| {
+                        self.core
+                            .tabs
+                            .values()
+                            .any(|tab| tab.get_pane_with_id(*id).is_some())
+                    })
+                    .collect(),
+            );
         self.broadcast_mode_update(mode, Some(destination))
             .context("restore migrated mode presentation")?;
         Ok(())
     }
 
-    pub(super) fn fail_migration_adoption(&mut self, error: String) {
-        if let Some(state) = self.migration.as_mut() {
-            state.stage = Stage::Recovery;
-            state.snapshot.phase = MigrationPhase::Recovery;
-            state.snapshot.errors.push(error.clone());
-            migration::save_snapshot(&state.path, &state.snapshot)
-                .context("record failed session placement")
-                .non_fatal();
-            if let Some(reply) = state.adoption_reply.take() {
-                let _ = reply.send(Err(error));
-            }
-        }
-    }
-
     fn finish_migration_replay(&mut self) {
-        let Some(mut state) = self.migration.take() else {
+        let Some(mut state) = self.transfer.migration.take() else {
             return;
         };
         if state.stage != Stage::Adopting
             || !state.pending_tabs.is_empty()
             || !state.replay_tabs.is_empty()
         {
-            self.migration = Some(state);
+            self.transfer.migration = Some(state);
             return;
         }
         let result: Result<()> = (|| {
@@ -1764,11 +1802,11 @@ impl Screen {
             migration::save_snapshot(&state.path, &state.snapshot)?;
             Ok(())
         })();
-        self.migration = Some(state);
+        self.transfer.migration = Some(state);
         match result {
-            Err(error) => self.fail_migration_adoption(format!("{error:#}")),
+            Err(error) => self.transfer.fail_migration_adoption(format!("{error:#}")),
             Ok(()) => {
-                if let Some(state) = self.migration.as_mut()
+                if let Some(state) = self.transfer.migration.as_mut()
                     && let Some(reply) = state.adoption_reply.take()
                 {
                     let _ = reply.send(Ok(state.snapshot.mapping.clone()));
@@ -1782,11 +1820,17 @@ impl Screen {
         inventory: &SessionMigrationInventory,
         mapping: &SessionMigrationMap,
     ) -> Result<()> {
-        let restoring_source = inventory.instance_id == self.instance_id.to_string();
+        let restoring_source = inventory.instance_id == self.core.instance_id.to_string();
         for focus in &inventory.clients {
             // Numeric client IDs belong to a server incarnation. A replacement
             // bootstrap connection can happen to reuse an original user's ID.
-            if restoring_source && self.connected_clients.borrow().contains(&focus.client_id) {
+            if restoring_source
+                && self
+                    .core
+                    .connected_clients
+                    .borrow()
+                    .contains(&focus.client_id)
+            {
                 self.restore_migration_client(focus, focus.client_id, mapping)?;
             }
         }
@@ -1802,6 +1846,7 @@ impl Screen {
             // Its eventual disconnect must not replace the restored default
             // with whichever tab happened to be placed last.
             let bootstrap_clients: Vec<_> = self
+                .core
                 .connected_clients
                 .borrow()
                 .iter()
@@ -1812,6 +1857,7 @@ impl Screen {
                 })
                 .collect();
             let position = self
+                .core
                 .tabs
                 .get(&tab)
                 .context("missing migrated default tab")?
@@ -1820,10 +1866,10 @@ impl Screen {
                 self.switch_active_tab(position, None, true, client)
                     .context("restore migration bootstrap focus")?;
             }
-            self.global_last_active_tab_id = tab;
+            self.core.global_last_active_tab_id = tab;
         }
         for (id, preferred) in &inventory.tab_group_preferences {
-            if let Some(group) = self.tab_groups.get_mut(id) {
+            if let Some(group) = self.core.tab_groups.get_mut(id) {
                 group.preferred = preferred.and_then(mapped_tab);
             }
         }
@@ -1831,11 +1877,11 @@ impl Screen {
     }
 
     pub(super) fn finish_migration_tab(&mut self, tab_id: TabId, slots: &[PaneId]) {
-        let Some(mut state) = self.migration.take() else {
+        let Some(mut state) = self.transfer.migration.take() else {
             return;
         };
         let Some(source) = state.pending_tabs.remove(&tab_id) else {
-            self.migration = Some(state);
+            self.transfer.migration = Some(state);
             return;
         };
         let result: Result<()> = (|| {
@@ -1854,7 +1900,8 @@ impl Screen {
                     .iter()
                     .find(|(id, _)| id == source_id)
                 {
-                    self.tabs
+                    self.core
+                        .tabs
                         .get_mut(&tab_id)
                         .and_then(|t| t.get_pane_with_id_mut(*destination_id))
                         .context("adopted terminal was not placed")?
@@ -1862,7 +1909,8 @@ impl Screen {
                         .map_err(|e| anyhow!("restore {source_id:?}: {e}"))?;
                 }
             }
-            self.tabs
+            self.core
+                .tabs
                 .get_mut(&tab_id)
                 .context("missing migrated tab state")?
                 .restore_migration_state(source.state, &state.snapshot.mapping.panes)
@@ -1870,9 +1918,36 @@ impl Screen {
             migration::save_snapshot(&state.path, &state.snapshot)?;
             Ok(())
         })();
-        self.migration = Some(state);
+        self.transfer.migration = Some(state);
         if let Err(error) = result {
-            self.fail_migration_adoption(format!("{error:#}"));
+            self.transfer.fail_migration_adoption(format!("{error:#}"));
         }
+    }
+}
+
+impl crate::screen::MigrationController {
+    pub(in crate::screen) fn migration_tab_pending(&self, tab: TabId) -> bool {
+        self.migration
+            .as_ref()
+            .is_some_and(|s| s.pending_tabs.contains_key(&tab))
+    }
+    pub(in crate::screen) fn fail_migration_adoption(&mut self, error: String) {
+        if let Some(state) = self.migration.as_mut() {
+            state.stage = Stage::Recovery;
+            state.snapshot.phase = MigrationPhase::Recovery;
+            state.snapshot.errors.push(error.clone());
+            migration::save_snapshot(&state.path, &state.snapshot)
+                .context("record failed session placement")
+                .non_fatal();
+            if let Some(reply) = state.adoption_reply.take() {
+                let _ = reply.send(Err(error));
+            }
+        }
+    }
+}
+
+impl super::MigrationController {
+    pub(super) fn on_client_removed(&mut self, client_id: ClientId) {
+        self.pending_update_client_ready.remove(&client_id);
     }
 }

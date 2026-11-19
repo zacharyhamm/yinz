@@ -23,7 +23,7 @@ fn screen_with_a_settled_toast(size: Size, now: Instant) -> Screen {
         Notification::new(NotificationId::new(0), TEXT.to_owned(), None, None, now);
     notification.reveal = Tween::settled(1.0);
     notification.y_offset = Tween::settled(0.0);
-    screen.notifications.push(notification);
+    screen.notices.notifications.push(notification);
     screen
 }
 
@@ -37,8 +37,9 @@ fn toast_on_a_larger_tab_uses_that_tabs_bounds() {
     let client = ClientId::new(1);
     let now = Instant::now();
     let mut screen = screen_with_a_settled_toast(large, now);
-    screen.notification_position = yinz_types::input::options::NotificationPosition::BottomRight;
-    screen.pinned_now = Some(now);
+    screen.notices.notification_position =
+        yinz_types::input::options::NotificationPosition::BottomRight;
+    screen.core.pinned_now = Some(now);
     new_tab(&mut screen, 2, TabId::new(1));
     screen.add_client(ClientId::new(2)).unwrap();
     screen.set_client_size(ClientId::new(2), small).unwrap();
@@ -86,7 +87,7 @@ fn every_frame_of_a_slide_out_reports_the_columns_it_just_uncovered() {
     let width = notification_width(TEXT, size.cols).expect("the toast fits");
 
     // settle the cache on the fully-revealed toast
-    screen.pinned_now = Some(start);
+    screen.core.pinned_now = Some(start);
     let damage = screen.prepare_notification_damage(start, surface);
     assert!(
         damaged_columns(&damage).is_empty(),
@@ -101,7 +102,7 @@ fn every_frame_of_a_slide_out_reports_the_columns_it_just_uncovered() {
     let mut frames_with_damage = 0;
     for frame in 1..=20 {
         let now = start + Duration::from_millis(frame * 16);
-        screen.pinned_now = Some(now);
+        screen.core.pinned_now = Some(now);
         let damage = screen.prepare_notification_damage(now, surface);
         let columns = damaged_columns(&damage);
         if columns.is_empty() {
@@ -134,7 +135,7 @@ fn a_toast_sliding_in_never_asks_for_a_repaint() {
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, TabId::new(0));
     let surface = screen.surface_size();
-    screen.notifications.push(Notification::new(
+    screen.notices.notifications.push(Notification::new(
         NotificationId::new(0),
         TEXT.to_owned(),
         None,
@@ -144,7 +145,7 @@ fn a_toast_sliding_in_never_asks_for_a_repaint() {
 
     for frame in 0..=20 {
         let now = start + Duration::from_millis(frame * 16);
-        screen.pinned_now = Some(now);
+        screen.core.pinned_now = Some(now);
         let damage = screen.prepare_notification_damage(now, surface);
         assert!(
             damaged_columns(&damage).is_empty(),
@@ -182,7 +183,7 @@ fn a_second_toast_arriving_mid_glide_never_jumps_the_survivors() {
     // a second toast arrives, pushing the first away from the corner
     let arrival = start + Duration::from_millis(16);
     screen.with_notification_stack_change(arrival, |screen| {
-        screen.notifications.insert(
+        screen.notices.notifications.insert(
             0,
             Notification::new(
                 NotificationId::new(1),
@@ -198,7 +199,7 @@ fn a_second_toast_arriving_mid_glide_never_jumps_the_survivors() {
     let mid_glide = arrival + Duration::from_millis(80);
     let before_the_third = painted_row(&screen, mid_glide);
     screen.with_notification_stack_change(mid_glide, |screen| {
-        screen.notifications.insert(
+        screen.notices.notifications.insert(
             0,
             Notification::new(
                 NotificationId::new(2),
@@ -228,6 +229,7 @@ fn a_second_toast_arriving_mid_glide_never_jumps_the_survivors() {
     }
 
     let heights: Vec<usize> = screen
+        .notices
         .notifications
         .iter()
         .map(|notification| {
@@ -249,7 +251,7 @@ fn animations_stop_being_live_once_everything_has_settled() {
     let start = Instant::now();
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.notifications.push(Notification::new(
+    screen.notices.notifications.push(Notification::new(
         NotificationId::new(0),
         TEXT.to_owned(),
         None,
@@ -271,7 +273,7 @@ fn animations_stop_being_live_once_everything_has_settled() {
     let settled = start + Duration::from_secs(2);
     screen.reap_settled_notifications(settled);
     assert!(
-        screen.notifications.is_empty(),
+        screen.notices.notifications.is_empty(),
         "it slid out and was reaped"
     );
     assert!(!screen.animations_are_live(settled));
@@ -285,7 +287,7 @@ fn a_toast_dismissed_before_it_arrived_leaves_sooner_than_a_settled_one() {
     let start = Instant::now();
 
     let mut early = create_non_mirrored_screen(size);
-    early.notifications.push(Notification::new(
+    early.notices.notifications.push(Notification::new(
         NotificationId::new(0),
         TEXT.to_owned(),
         None,
@@ -307,7 +309,7 @@ fn a_toast_dismissed_before_it_arrived_leaves_sooner_than_a_settled_one() {
             .find(|frame| {
                 let now = killed_at + Duration::from_millis(frame * 8);
                 screen.reap_settled_notifications(now);
-                screen.notifications.is_empty()
+                screen.notices.notifications.is_empty()
             })
             .expect("it leaves within half a second either way")
     };
@@ -333,7 +335,7 @@ fn a_toast_only_frame_leaves_the_cursor_in_the_active_pane() {
     let size = Size { cols: 80, rows: 20 };
     let start = Instant::now();
     let mut screen = screen_with_a_settled_toast(size, start);
-    screen.pinned_now = Some(start);
+    screen.core.pinned_now = Some(start);
     let server_receiver = screen_wired_to_server(&mut screen);
     let expected = pane_cursor(&mut screen, crate::ClientId::new(1));
 
@@ -378,7 +380,7 @@ fn a_toast_covering_the_cursor_hides_it_until_it_leaves() {
     let size = Size { cols: 80, rows: 20 };
     let start = Instant::now();
     let mut screen = screen_with_a_settled_toast(size, start);
-    screen.pinned_now = Some(start);
+    screen.core.pinned_now = Some(start);
     let server_receiver = screen_wired_to_server(&mut screen);
 
     // park the pane's cursor under the toast rather than moving the toast: where a toast settles
@@ -431,9 +433,12 @@ fn a_toast_covering_the_cursor_hides_it_until_it_leaves() {
         .dismiss_notification(NotificationId::new(0), start)
         .unwrap();
     let gone_at = start + Duration::from_secs(1);
-    screen.pinned_now = Some(gone_at);
+    screen.core.pinned_now = Some(gone_at);
     screen.reap_settled_notifications(gone_at);
-    assert!(screen.notifications.is_empty(), "the toast slid out");
+    assert!(
+        screen.notices.notifications.is_empty(),
+        "the toast slid out"
+    );
 
     let (cursor, snapshot) = render_frame_and_cursor_into(
         &mut screen,
@@ -463,7 +468,7 @@ fn notification_movement_and_expiry_repaint_an_agent_margin() {
     tab.get_pane_with_id_mut(id)
         .unwrap()
         .set_detected_agent(true);
-    screen.pinned_now = Some(start);
+    screen.core.pinned_now = Some(start);
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(size);
     let initial = render_frame_into(&mut screen, &receiver, client, &mut grid);
@@ -482,7 +487,7 @@ fn notification_movement_and_expiry_repaint_an_agent_margin() {
     };
     let old = screen.notification_cell_rects(viewport, start, ClientId::new(1));
     assert!(old.iter().all(|rect| !rect.intersects_geom(&pane)));
-    screen.notifications[0].y_offset = Tween::settled(5.0);
+    screen.notices.notifications[0].y_offset = Tween::settled(5.0);
     let moved = render_frame_into(&mut screen, &receiver, client, &mut grid);
     assert!(moved.contains(TEXT));
     assert_eq!(moved.matches(TEXT).count(), 1, "{moved}");
@@ -501,7 +506,7 @@ fn notification_movement_and_expiry_repaint_an_agent_margin() {
         .dismiss_notification(NotificationId::new(0), start)
         .unwrap();
     let gone = start + Duration::from_secs(1);
-    screen.pinned_now = Some(gone);
+    screen.core.pinned_now = Some(gone);
     screen.reap_settled_notifications(gone);
     let expired = render_frame_into(&mut screen, &receiver, client, &mut grid);
     assert!(!expired.contains(TEXT));

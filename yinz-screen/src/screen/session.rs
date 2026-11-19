@@ -33,10 +33,11 @@ impl Screen {
         client_id: ClientId,
         relabel_supervisors: bool,
     ) -> Result<()> {
-        if name == self.session_name {
+        if name == self.core.session_name {
             return Ok(());
         }
         let ownership = self
+            .core
             .bus
             .senders
             .session_ownership
@@ -45,10 +46,10 @@ impl Screen {
         let has_ownership = ownership.is_some();
         {
             let err_context = || "Failed to rename session".to_string();
-            let old_session_name = self.session_name.clone();
+            let old_session_name = self.core.session_name.clone();
             let transaction = || -> Result<()> {
                 if !has_ownership
-                    && (self.peer_sessions_cache.contains_key(&name)
+                    && (self.core.peer_sessions_cache.contains_key(&name)
                         || YINZ_SOCK_DIR
                             .join(&name)
                             .try_exists()
@@ -56,7 +57,7 @@ impl Screen {
                 {
                     return Err(anyhow!("A session by this name already exists."));
                 }
-                if self.resurrectable_sessions_cache.contains_key(&name)
+                if self.core.resurrectable_sessions_cache.contains_key(&name)
                     || yinz_runtime::consts::session_info_folder_for_session(&name)
                         .try_exists()
                         .context("check destination session cache")?
@@ -65,10 +66,11 @@ impl Screen {
                         "A resurrectable session by this name exists, cannot use this name."
                     ));
                 }
-                if relabel_supervisors && let Some(os_input) = &self.bus.os_input {
+                if relabel_supervisors && let Some(os_input) = &self.core.bus.os_input {
                     os_input.rename_pty_host_session(&old_session_name, &name)?;
                 }
                 let result = self
+                    .core
                     .bus
                     .senders
                     .session_checkpoint
@@ -80,7 +82,8 @@ impl Screen {
                         )
                         .context("rename IPC socket")
                         .inspect_err(|_| {
-                            self.bus
+                            self.core
+                                .bus
                                 .senders
                                 .session_checkpoint
                                 .rename(&name, &old_session_name)
@@ -90,7 +93,7 @@ impl Screen {
                     });
                 if relabel_supervisors
                     && result.is_err()
-                    && let Some(os_input) = &self.bus.os_input
+                    && let Some(os_input) = &self.core.bus.os_input
                 {
                     os_input
                         .rename_pty_host_session(&name, &old_session_name)
@@ -104,7 +107,7 @@ impl Screen {
                 None => transaction(),
             };
             if let Err(error) = renamed {
-                if let Some(os_input) = &self.bus.os_input {
+                if let Some(os_input) = &self.core.bus.os_input {
                     os_input
                         .send_to_client(
                             client_id,
@@ -121,13 +124,13 @@ impl Screen {
             }
 
             // update state
-            self.bus.senders.session.set(name.clone());
-            self.session_name = name.clone();
-            self.default_mode_info.session_name = Some(name.clone());
-            for mode_info in self.mode_info.values_mut() {
+            self.core.bus.senders.session.set(name.clone());
+            self.core.session_name = name.clone();
+            self.core.default_mode_info.session_name = Some(name.clone());
+            for mode_info in self.core.mode_info.values_mut() {
                 mode_info.session_name = Some(name.clone());
             }
-            for tab in self.tabs.values_mut() {
+            for tab in self.core.tabs.values_mut() {
                 tab.rename_session(name.clone()).with_context(err_context)?;
             }
 
@@ -135,9 +138,10 @@ impl Screen {
             self.log_and_report_session_state()
                 .with_context(err_context)?;
 
-            let connected_client_ids: Vec<ClientId> = self.active_tab_ids.keys().copied().collect();
+            let connected_client_ids: Vec<ClientId> =
+                self.core.active_tab_ids.keys().copied().collect();
             for client_id in connected_client_ids {
-                if let Some(os_input) = &mut self.bus.os_input {
+                if let Some(os_input) = &mut self.core.bus.os_input {
                     let _ = os_input.send_to_client(
                         client_id,
                         ServerToClientMsg::RenamedSession { name: name.clone() },
@@ -158,14 +162,14 @@ impl Screen {
 
         #[cfg(not(test))]
         let (available_layouts, _layout_errors) = yinz_config::layout::list_available_layouts(
-            self.layout_dir.clone(),
-            &self.default_layout_name,
+            self.core.layout_dir.clone(),
+            &self.core.default_layout_name,
         );
         #[cfg(test)]
         let available_layouts = vec![];
 
         let creation_time = {
-            let sock_path = YINZ_SOCK_DIR.join(&self.session_name);
+            let sock_path = YINZ_SOCK_DIR.join(&self.core.session_name);
             std::fs::metadata(&sock_path)
                 .ok()
                 .and_then(|f| f.created().ok().or_else(|| f.modified().ok()))
@@ -174,20 +178,22 @@ impl Screen {
                 .unwrap_or_default()
         };
         let session_info = SessionInfo {
-            name: self.session_name.clone(),
-            web_peer_instance: Some(self.instance_id.to_string()),
+            name: self.core.session_name.clone(),
+            web_peer_instance: Some(self.core.instance_id.to_string()),
             tabs: tab_infos,
             panes: pane_manifest,
-            connected_clients: self.active_tab_ids.keys().len(),
+            connected_clients: self.core.active_tab_ids.keys().len(),
             is_current_session: true,
             available_layouts,
             plugins: Default::default(),
             tab_history: self
+                .core
                 .tab_history
                 .iter()
                 .map(|(id, history)| (*id, history.clone()))
                 .collect(),
             pane_history: self
+                .core
                 .pane_history
                 .iter()
                 .map(|(k, v)| (*k, v.clone()))
@@ -195,17 +201,18 @@ impl Screen {
             creation_time,
         };
 
-        let session_layout_metadata = if self.session_serialization {
-            self.session_save_layout_metadata(Some(self.default_shell.clone()))
+        let session_layout_metadata = if self.core.session_serialization {
+            self.session_save_layout_metadata(Some(self.core.default_shell.clone()))
         } else {
             // Create empty metadata if serialization is disabled
-            SessionLayoutMetadata::new(self.default_layout.clone())
+            SessionLayoutMetadata::new(self.core.default_layout.clone())
         };
 
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_pty(PtyInstruction::SaveSessionToDisk {
-                session_name: self.session_name.clone(),
+                session_name: self.core.session_name.clone(),
                 session_info,
                 session_layout_metadata,
                 completion_tx,
@@ -241,7 +248,11 @@ impl Screen {
         let passing_through = pane_id_to_focus.is_some() || tab_number_to_focus.is_some();
         // A resize can overtake this instruction and record a size for the unattached client. The
         // client sent it after the size this instruction carries, so it is the current one.
-        let client_size = self.client_sizes.remove(&client_id).unwrap_or(client_size);
+        let client_size = self
+            .core
+            .client_sizes
+            .remove(&client_id)
+            .unwrap_or(client_size);
         let size_at_registration = (!passing_through).then_some(client_size);
         let retired_source =
             match self.register_client_transaction(client_id, departed, size_at_registration, true)
@@ -288,7 +299,8 @@ impl Screen {
                 .context("placing the attaching client at its destination")
                 .non_fatal();
             attach_traces_waiting_for_first_render.remove(&client_id);
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_server(ServerInstruction::ClientAttachFailed(client_id))
                 .context("disconnecting client after failed destination sizing")
@@ -331,8 +343,8 @@ impl Screen {
     /// `Reconfigure` changed `agent_double_escape`: every tab takes the new value and forgets
     /// the half-typed escapes it was counting under the old one.
     pub(super) fn set_agent_double_escape(&mut self, enabled: bool) {
-        self.agent_double_escape = enabled;
-        for tab in self.tabs.values_mut() {
+        self.core.agent_double_escape = enabled;
+        for tab in self.core.tabs.values_mut() {
             tab.agent_double_escape = enabled;
             tab.pending_agent_escapes.clear();
         }
@@ -341,7 +353,7 @@ impl Screen {
     /// `reconfigure` painted the static theme; put the session's effective hue back on top of
     /// it, against the possibly changed dark/light definitions.
     pub(super) fn reapply_theme_after_reconfigure(&mut self, explicit_theme_hue: Option<ThemeHue>) {
-        if explicit_theme_hue != self.configured_explicit_theme_hue {
+        if explicit_theme_hue != self.core.configured_explicit_theme_hue {
             self.apply_configured_explicit_theme_hue(explicit_theme_hue)
                 .non_fatal();
         } else {

@@ -51,13 +51,8 @@ pub(super) struct BrowserFrame {
 
 impl Screen {
     pub(super) fn notification_browser_is_visible(&self, client_id: ClientId) -> bool {
-        self.notification_browsers.contains_key(&client_id)
-            && !self.command_palette_is_open(client_id)
-    }
-
-    /// The notifications the browser lists, newest first.
-    fn browser_entries(&self) -> Vec<&NotificationRecord> {
-        self.notification_history.iter().rev().collect()
+        self.notices.notification_browsers.contains_key(&client_id)
+            && !self.palette.command_palette_is_open(client_id)
     }
 
     fn browser_selected_index(
@@ -70,41 +65,13 @@ impl Screen {
             .unwrap_or(0)
     }
 
-    pub(super) fn open_notification_browser(&mut self, client_id: ClientId) {
-        let selected = self.browser_entries().first().map(|record| record.info.id);
-        self.notification_browsers.insert(
-            client_id,
-            NotificationBrowser {
-                selected,
-                ..NotificationBrowser::default()
-            },
-        );
-    }
-
-    pub(super) fn close_notification_browser(&mut self, client_id: ClientId) {
-        self.notification_browsers.remove(&client_id);
-    }
-
-    /// A notification arrived: keep every open browser's window on the entries it was showing. A
-    /// browser that had nothing to select selects the arrival, so the next one cannot take it.
-    pub(super) fn notification_browsers_saw_arrival(&mut self) {
-        let newest = self.browser_entries().first().map(|record| record.info.id);
-        for browser in self.notification_browsers.values_mut() {
-            if browser.selected.is_some() {
-                browser.first += 1;
-            } else {
-                browser.selected = newest;
-            }
-        }
-    }
-
     pub(super) fn notification_browser_frame(
         &self,
         client_id: ClientId,
         viewport: Viewport,
     ) -> Option<BrowserFrame> {
-        let browser = self.notification_browsers.get(&client_id)?;
-        let entries = self.browser_entries();
+        let browser = self.notices.notification_browsers.get(&client_id)?;
+        let entries = self.notices.browser_entries();
         let selected = Self::browser_selected_index(browser, &entries);
         let texts: Vec<String> = if entries.is_empty() {
             vec![EMPTY_BROWSER_TEXT.to_owned()]
@@ -116,7 +83,7 @@ impl Screen {
         };
         let mut layout = notification_browser_layout(
             viewport,
-            self.notification_position,
+            self.notices.notification_position,
             &texts.iter().map(String::as_str).collect::<Vec<_>>(),
             selected,
             browser.expanded,
@@ -130,7 +97,7 @@ impl Screen {
         {
             // Keep both one-column viewport margins without changing width or wrapping.
             let shift = viewport.cols.saturating_sub(layout.width + 2).min(2);
-            if self.notification_position.is_left() {
+            if self.notices.notification_position.is_left() {
                 entry.x += shift;
             } else {
                 entry.x -= shift;
@@ -155,9 +122,10 @@ impl Screen {
             .notification_browser_viewport(client_id)
             .and_then(|viewport| self.notification_browser_frame(client_id, viewport))
             .map(|frame| frame.layout.first);
-        if let (Some(first), Some(browser)) =
-            (first, self.notification_browsers.get_mut(&client_id))
-        {
+        if let (Some(first), Some(browser)) = (
+            first,
+            self.notices.notification_browsers.get_mut(&client_id),
+        ) {
             browser.first = first;
         }
     }
@@ -198,11 +166,11 @@ impl Screen {
         };
         for entry in &frame.layout.entries {
             let declaration = if !frame.ids.is_empty() && entry.index == frame.selected {
-                let mut declaration = self.style.colors.text_selected;
-                declaration.emphasis_0 = self.style.colors.frame_selected.base;
+                let mut declaration = self.core.style.colors.text_selected;
+                declaration.emphasis_0 = self.core.style.colors.frame_selected.base;
                 declaration
             } else {
-                self.style.colors.text_unselected
+                self.core.style.colors.text_unselected
             };
             let chunks = notification_box_chunks(
                 &entry.lines,
@@ -231,16 +199,17 @@ impl Screen {
         client_id: ClientId,
     ) -> bool {
         let ids: Vec<NotificationId> = self
+            .notices
             .browser_entries()
             .iter()
             .map(|record| record.info.id)
             .collect();
         let towards_older = match direction {
-            Direction::Down => self.notification_position.is_top(),
-            Direction::Up => !self.notification_position.is_top(),
+            Direction::Down => self.notices.notification_position.is_top(),
+            Direction::Up => !self.notices.notification_position.is_top(),
             Direction::Left | Direction::Right => return false,
         };
-        let Some(browser) = self.notification_browsers.get_mut(&client_id) else {
+        let Some(browser) = self.notices.notification_browsers.get_mut(&client_id) else {
             return false;
         };
         if ids.is_empty() {
@@ -266,7 +235,7 @@ impl Screen {
 
     /// Show or hide the full text of the selected entry. Returns whether anything changed.
     pub(super) fn toggle_notification_detail(&mut self, client_id: ClientId) -> bool {
-        let Some(browser) = self.notification_browsers.get_mut(&client_id) else {
+        let Some(browser) = self.notices.notification_browsers.get_mut(&client_id) else {
             return false;
         };
         browser.expanded = !browser.expanded;
@@ -277,10 +246,10 @@ impl Screen {
     /// Activate the selected entry, as a click on its toast would, and leave the mode - with or
     /// without anything to activate, since Enter always means "done browsing".
     pub(super) fn activate_selected_notification(&mut self, client_id: ClientId, now: Instant) {
-        let Some(browser) = self.notification_browsers.get(&client_id) else {
+        let Some(browser) = self.notices.notification_browsers.get(&client_id) else {
             return;
         };
-        let entries = self.browser_entries();
+        let entries = self.notices.browser_entries();
         let target = entries
             .get(Self::browser_selected_index(browser, &entries))
             .map(|record| (record.info.id, record.pane_id, record.on_click.clone()));
@@ -294,7 +263,7 @@ impl Screen {
         let target = self
             .pending_notification()
             .map(|record| (record.info.id, record.pane_id, record.on_click.clone()));
-        if self.notification_browsers.contains_key(&client_id) {
+        if self.notices.notification_browsers.contains_key(&client_id) {
             self.leave_notification_browser(client_id);
         }
         if let Some((id, pane_id, on_click)) = target {
@@ -309,13 +278,15 @@ impl Screen {
     /// Routed through the server for the reason `sync_scroll_mode_on_focus` gives: the server
     /// holds the mode keys resolve against.
     fn leave_notification_browser(&mut self, client_id: ClientId) {
-        self.close_notification_browser(client_id);
+        self.notices.close_notification_browser(client_id);
         let base_mode = self
+            .core
             .mode_info
             .get(&client_id)
             .and_then(|mode_info| mode_info.base_mode)
             .unwrap_or_else(|| self.base_input_mode());
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_server(ServerInstruction::ChangeMode(client_id, base_mode, None))
             .with_context(|| format!("failed to leave notifications mode for client {client_id}"))
@@ -342,6 +313,7 @@ impl Screen {
         };
         let column = event.position.column();
         if self
+            .notices
             .notification_return_retry_layout(viewport, now, client_id)
             .is_some_and(|(rect, _)| rect.contains(column, line))
         {
@@ -374,12 +346,44 @@ impl Screen {
             && !event.ctrl;
         if is_plain_left_press {
             if let Some(id) = frame.ids.get(hit.index).copied()
-                && let Some(browser) = self.notification_browsers.get_mut(&client_id)
+                && let Some(browser) = self.notices.notification_browsers.get_mut(&client_id)
             {
                 browser.selected = Some(id);
             }
             self.activate_selected_notification(client_id, now);
         }
         true
+    }
+}
+
+impl crate::screen::NotificationController {
+    /// The notifications the browser lists, newest first.
+    pub(in crate::screen) fn browser_entries(&self) -> Vec<&NotificationRecord> {
+        self.notification_history.iter().rev().collect()
+    }
+    pub(in crate::screen) fn open_notification_browser(&mut self, client_id: ClientId) {
+        let selected = self.browser_entries().first().map(|record| record.info.id);
+        self.notification_browsers.insert(
+            client_id,
+            NotificationBrowser {
+                selected,
+                ..NotificationBrowser::default()
+            },
+        );
+    }
+    pub(in crate::screen) fn close_notification_browser(&mut self, client_id: ClientId) {
+        self.notification_browsers.remove(&client_id);
+    }
+    /// A notification arrived: keep every open browser's window on the entries it was showing. A
+    /// browser that had nothing to select selects the arrival, so the next one cannot take it.
+    pub(in crate::screen) fn notification_browsers_saw_arrival(&mut self) {
+        let newest = self.browser_entries().first().map(|record| record.info.id);
+        for browser in self.notification_browsers.values_mut() {
+            if browser.selected.is_some() {
+                browser.first += 1;
+            } else {
+                browser.selected = newest;
+            }
+        }
     }
 }

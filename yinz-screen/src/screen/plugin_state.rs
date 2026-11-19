@@ -34,8 +34,9 @@ impl Screen {
         let mut plugin_updates = vec![];
         let mut tab_infos_for_screen_state = BTreeMap::new();
         let plugin_tab_names = self.plugin_tab_names();
-        for tab in self.tabs.values() {
+        for tab in self.core.tabs.values() {
             let all_focused_clients: Vec<ClientId> = self
+                .core
                 .active_tab_ids
                 .iter()
                 .filter(|(_c_id, tab_position)| **tab_position == tab.id)
@@ -51,7 +52,7 @@ impl Screen {
                 group: self.tab_group_info(tab.id),
                 position: tab.position,
                 name: plugin_tab_names[&tab.id].clone(),
-                active: self.active_tab_ids.values().any(|i| i == &tab.id),
+                active: self.core.active_tab_ids.values().any(|i| i == &tab.id),
                 panes_to_hide: tab.panes_to_hide_count(),
                 is_fullscreen_active: tab.is_fullscreen_active(),
                 is_sync_panes_active: tab.is_sync_panes_active(),
@@ -68,19 +69,20 @@ impl Screen {
                 selectable_floating_panes_count,
                 tab_id: tab.id,
                 has_bell_notification: tab.tab_has_pending_bell
-                    && !self.active_tab_ids.values().any(|i| i == &tab.id),
+                    && !self.core.active_tab_ids.values().any(|i| i == &tab.id),
                 is_flashing_bell: tab.tab_bell_flash
-                    && !self.active_tab_ids.values().any(|i| i == &tab.id),
+                    && !self.core.active_tab_ids.values().any(|i| i == &tab.id),
             };
             tab_infos_for_screen_state.insert(tab.position, tab_info_for_screen);
         }
-        for (client_id, active_tab_index) in self.active_tab_ids.iter() {
+        for (client_id, active_tab_index) in self.core.active_tab_ids.iter() {
             let mut plugin_tab_updates = vec![];
-            for tab in self.tabs.values() {
-                let other_focused_clients: Vec<ClientId> = if self.session_is_mirrored {
+            for tab in self.core.tabs.values() {
+                let other_focused_clients: Vec<ClientId> = if self.core.session_is_mirrored {
                     vec![]
                 } else {
-                    self.active_tab_ids
+                    self.core
+                        .active_tab_ids
                         .iter()
                         .filter(|(c_id, tab_position)| {
                             **tab_position == tab.id && *c_id != client_id
@@ -126,7 +128,7 @@ impl Screen {
             }
             plugin_tab_updates.sort_by_key(|a| a.position);
             let target_plugin_ids = self.targeted_plugin_ids(*client_id, EventType::TabUpdate);
-            if self.cli_event_subscribers_present && target_plugin_ids.is_empty() {
+            if self.core.cli_event_subscribers_present && target_plugin_ids.is_empty() {
                 plugin_updates.push((
                     Some(CLI_EVENTS_ONLY_TARGET),
                     None,
@@ -143,8 +145,10 @@ impl Screen {
         }
         let tab_infos: Vec<_> = tab_infos_for_screen_state.into_values().collect();
         // Background services keep tracking tabs while no terminal client is attached.
-        if self.active_tab_ids.is_empty() {
-            for ((plugin_id, client_id), subscriptions) in &self.background_plugin_subscriptions {
+        if self.core.active_tab_ids.is_empty() {
+            for ((plugin_id, client_id), subscriptions) in
+                &self.core.background_plugin_subscriptions
+            {
                 if subscriptions.contains(&EventType::TabUpdate) {
                     plugin_updates.push((
                         Some(*plugin_id),
@@ -155,7 +159,8 @@ impl Screen {
             }
         }
         if !self.migration_reports_suspended() {
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_plugin(PluginInstruction::Update(plugin_updates))
                 .context("failed to update tabs")?;
@@ -163,9 +168,9 @@ impl Screen {
         Ok(tab_infos)
     }
     pub(super) fn generate_and_report_pane_state(&mut self) -> Result<PaneManifest> {
-        self.agent_events.dirty = true;
+        self.agents.invalidate_event_snapshot();
         let mut pane_manifest = PaneManifest::default();
-        for tab in self.tabs.values() {
+        for tab in self.core.tabs.values() {
             pane_manifest.panes.insert(tab.position, tab.pane_infos());
         }
         // A plugin pane is not a process in a folder, so it is left without one.
@@ -174,13 +179,14 @@ impl Screen {
                 continue;
             };
             pane_info.cwd = self
+                .core
                 .terminal_cwds
                 .get(&terminal_id)
                 .map(|cwd| cwd.to_string_lossy().into_owned());
-            pane_info.host = self.terminal_hosts.get(&terminal_id).cloned();
+            pane_info.host = self.core.terminal_hosts.get(&terminal_id).cloned();
         }
         let mut plugin_updates = vec![];
-        let client_ids: Vec<ClientId> = self.active_tab_ids.keys().copied().collect();
+        let client_ids: Vec<ClientId> = self.core.active_tab_ids.keys().copied().collect();
         for client_id in client_ids {
             let target_plugin_ids = self.targeted_plugin_ids(client_id, EventType::PaneUpdate);
             for plugin_id in target_plugin_ids {
@@ -191,8 +197,10 @@ impl Screen {
                 ));
             }
         }
-        if self.active_tab_ids.is_empty() {
-            for ((plugin_id, client_id), subscriptions) in &self.background_plugin_subscriptions {
+        if self.core.active_tab_ids.is_empty() {
+            for ((plugin_id, client_id), subscriptions) in
+                &self.core.background_plugin_subscriptions
+            {
                 if subscriptions.contains(&EventType::PaneUpdate) {
                     plugin_updates.push((
                         Some(*plugin_id),
@@ -204,7 +212,7 @@ impl Screen {
         }
         // No plugin wants the manifest but a `yinz events` client does: address it to no
         // plugin, and the plugin thread forwards it without loading anything.
-        if self.cli_event_subscribers_present && plugin_updates.is_empty() {
+        if self.core.cli_event_subscribers_present && plugin_updates.is_empty() {
             plugin_updates.push((
                 Some(CLI_EVENTS_ONLY_TARGET),
                 None,
@@ -212,7 +220,8 @@ impl Screen {
             ));
         }
         if !plugin_updates.is_empty() && !self.migration_reports_suspended() {
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_plugin(PluginInstruction::Update(plugin_updates))
                 .context("failed to update pane state")?;
@@ -249,7 +258,7 @@ impl Screen {
         let mut pane_entries = Vec::new();
         let tab_names = self.plugin_tab_names();
 
-        for tab in self.tabs.values() {
+        for tab in self.core.tabs.values() {
             let pane_infos = tab.pane_infos();
 
             for pane_info in pane_infos {
@@ -267,7 +276,7 @@ impl Screen {
         let mut tab_infos = Vec::new();
         let tab_names = self.plugin_tab_names();
 
-        for tab in self.tabs.values() {
+        for tab in self.core.tabs.values() {
             if let Some(tab_info) = self.get_tab_info(tab.id, &tab_names) {
                 tab_infos.push(tab_info);
             }
@@ -280,7 +289,7 @@ impl Screen {
     }
 
     pub(super) fn get_current_tab_info(&self, client_id: ClientId) -> Result<Option<TabInfo>> {
-        match self.active_tab_ids.get(&client_id) {
+        match self.core.active_tab_ids.get(&client_id) {
             Some(active_tab_id) => Ok(self.get_tab_info(*active_tab_id, &self.plugin_tab_names())),
             None => Ok(None),
         }
@@ -320,7 +329,7 @@ impl Screen {
     pub(super) fn plugin_tab_names(&self) -> HashMap<TabId, String> {
         // Positions, because the `#1`/`#2` a collision earns are read off the tab
         // bar left to right. Ids would number by age instead, which is invisible.
-        let mut by_position: Vec<&Tab> = self.tabs.values().collect();
+        let mut by_position: Vec<&Tab> = self.core.tabs.values().collect();
         by_position.sort_by_key(|tab| tab.position);
 
         let mut project_counts: HashMap<&str, usize> = HashMap::new();
@@ -385,13 +394,13 @@ impl Screen {
         if !tab.tab_name_is_automatic() || tab.lent_pane_title().is_some() {
             return None;
         }
-        self.tab_projects.get(&tab.id).map(String::as_str)
+        self.core.tab_projects.get(&tab.id).map(String::as_str)
     }
 
     pub(super) fn update_plugin_tab_names(&mut self) -> bool {
         let current = self.plugin_tab_names();
-        if current != self.last_plugin_tab_names {
-            self.last_plugin_tab_names = current;
+        if current != self.core.last_plugin_tab_names {
+            self.core.last_plugin_tab_names = current;
             true
         } else {
             false
@@ -407,8 +416,9 @@ impl Screen {
         self.update_active_pane_ids();
         let pane_manifest = self.generate_and_report_pane_state()?;
         let mut session_info = self
+            .core
             .peer_sessions_cache
-            .get(&self.session_name)
+            .get(&self.core.session_name)
             .cloned()
             .context("current session missing from peer sessions cache")?;
         session_info.panes = pane_manifest;
@@ -416,32 +426,37 @@ impl Screen {
     }
 
     pub(super) fn log_and_report_session_state(&mut self) -> Result<()> {
+        #[cfg(test)]
+        if let Some(observe) = self.core.publication_observer.as_mut() {
+            observe("report");
+        }
         self.sync_tab_bar_rows()?;
+        self.sync_nested_guest_fullscreen_state();
         self.update_active_pane_ids();
         // generate own session info
         let pane_manifest = self.generate_and_report_pane_state()?;
         let tab_infos = self.generate_and_report_tab_state()?;
         // Lazy-load layouts on first call if cache is empty
         // After that, cache is updated by watcher via UpdateAvailableLayouts instruction
-        if self.cached_layouts.is_empty() {
+        if self.core.cached_layouts.is_empty() {
             #[cfg(not(test))]
             {
                 let (layouts, errors) = yinz_config::layout::list_available_layouts(
-                    self.layout_dir.clone(),
-                    &self.default_layout_name,
+                    self.core.layout_dir.clone(),
+                    &self.core.default_layout_name,
                 );
-                self.cached_layouts = layouts;
-                self.cached_layout_errors = errors;
+                self.core.cached_layouts = layouts;
+                self.core.cached_layout_errors = errors;
             }
             #[cfg(test)]
             {
-                self.cached_layouts = vec![];
-                self.cached_layout_errors = vec![];
+                self.core.cached_layouts = vec![];
+                self.core.cached_layout_errors = vec![];
             }
         }
-        let available_layouts = self.cached_layouts.clone();
+        let available_layouts = self.core.cached_layouts.clone();
         let creation_time = {
-            let sock_path = YINZ_SOCK_DIR.join(&self.session_name);
+            let sock_path = YINZ_SOCK_DIR.join(&self.core.session_name);
             std::fs::metadata(&sock_path)
                 .ok()
                 .and_then(|f| f.created().ok().or_else(|| f.modified().ok()))
@@ -450,20 +465,22 @@ impl Screen {
                 .unwrap_or_default()
         };
         let session_info = SessionInfo {
-            name: self.session_name.clone(),
+            name: self.core.session_name.clone(),
             web_peer_instance: None,
             tabs: tab_infos,
             panes: pane_manifest,
-            connected_clients: self.active_tab_ids.keys().len(),
+            connected_clients: self.core.active_tab_ids.keys().len(),
             is_current_session: true,
             available_layouts,
             plugins: Default::default(), // these are filled in by the wasm thread
             tab_history: self
+                .core
                 .tab_history
                 .iter()
                 .map(|(id, history)| (*id, history.clone()))
                 .collect(),
             pane_history: self
+                .core
                 .pane_history
                 .iter()
                 .map(|(k, v)| (*k, v.clone()))
@@ -477,30 +494,34 @@ impl Screen {
         if self.migration_reports_suspended() {
             return Ok(());
         }
-        session_info.web_peer_instance = Some(self.instance_id.to_string());
+        session_info.web_peer_instance = Some(self.core.instance_id.to_string());
         let err_context = || "Failed to report session info".to_string();
 
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_background_jobs(BackgroundJob::ReportSessionInfo(
-                self.session_name.to_owned(),
+                self.core.session_name.to_owned(),
                 session_info.clone(),
             ))
             .with_context(err_context)?;
 
-        self.peer_sessions_cache
-            .insert(self.session_name.clone(), session_info);
+        self.core
+            .peer_sessions_cache
+            .insert(self.core.session_name.clone(), session_info);
         let mut live_sessions: Vec<SessionInfo> =
-            self.peer_sessions_cache.values().cloned().collect();
+            self.core.peer_sessions_cache.values().cloned().collect();
         for info in live_sessions.iter_mut() {
-            info.is_current_session = info.name == self.session_name;
+            info.is_current_session = info.name == self.core.session_name;
         }
         let resurrectable_sessions: Vec<(SessionName, Duration)> = self
+            .core
             .resurrectable_sessions_cache
             .iter()
             .map(|(n, d)| (n.clone(), *d))
             .collect();
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_plugin(PluginInstruction::Update(vec![(
                 None,
@@ -514,8 +535,9 @@ impl Screen {
     pub(super) fn dump_layout_to_hd(&mut self) -> Result<()> {
         let err_context = || "Failed to log and report session state".to_string();
         let session_layout_metadata =
-            self.session_save_layout_metadata(Some(self.default_shell.clone()));
-        self.bus
+            self.session_save_layout_metadata(Some(self.core.default_shell.clone()));
+        self.core
+            .bus
             .senders
             .send_to_plugin(PluginInstruction::LogLayoutToHd(session_layout_metadata))
             .with_context(err_context)?;
@@ -528,30 +550,32 @@ impl Screen {
         resurrectable_sessions: BTreeMap<SessionName, Duration>,
     ) -> Result<()> {
         // Disk scans can lag a screen update, or omit this session before its first save.
-        if let Some(current) = self.peer_sessions_cache.get(&self.session_name) {
+        if let Some(current) = self.core.peer_sessions_cache.get(&self.core.session_name) {
             let mut current = current.clone();
-            if let Some(scanned) = new_session_infos.get(&self.session_name) {
+            if let Some(scanned) = new_session_infos.get(&self.core.session_name) {
                 current.creation_time = scanned.creation_time;
             }
-            new_session_infos.insert(self.session_name.clone(), current);
+            new_session_infos.insert(self.core.session_name.clone(), current);
         }
-        self.peer_sessions_cache = new_session_infos;
-        self.resurrectable_sessions_cache = resurrectable_sessions;
-        self.bus
+        self.core.peer_sessions_cache = new_session_infos;
+        self.core.resurrectable_sessions_cache = resurrectable_sessions;
+        self.core
+            .bus
             .senders
             .send_to_plugin(PluginInstruction::Update(vec![(
                 None,
                 None,
                 Event::SessionUpdate(
-                    self.peer_sessions_cache.values().cloned().collect(),
-                    self.resurrectable_sessions_cache
+                    self.core.peer_sessions_cache.values().cloned().collect(),
+                    self.core
+                        .resurrectable_sessions_cache
                         .iter()
                         .map(|(n, c)| (n.clone(), *c))
                         .collect(),
                 ),
             )]))
             .context("failed to update session info")?;
-        if !self.command_palettes.is_empty() {
+        if !self.palette.command_palettes.is_empty() {
             self.render()
                 .context("failed to refresh palette sessions")?;
         }
@@ -560,29 +584,30 @@ impl Screen {
 
     pub(super) fn restart_layout_watcher(&mut self) {
         // Aborting cannot retract results already queued on the screen bus.
-        self.layout_watcher_generation += 1;
-        self.layout_watcher = None;
+        self.core.layout_watcher_generation += 1;
+        self.core.layout_watcher = None;
         let (layouts, errors) = yinz_config::layout::list_available_layouts(
-            self.layout_dir.clone(),
-            &self.default_layout_name,
+            self.core.layout_dir.clone(),
+            &self.core.default_layout_name,
         );
-        self.update_available_layouts(self.layout_watcher_generation, layouts, errors);
-        if self.config_file_path.is_none() {
+        self.update_available_layouts(self.core.layout_watcher_generation, layouts, errors);
+        if self.core.config_file_path.is_none() {
             return;
         }
         let Some(layout_dir) = self
+            .core
             .layout_dir
             .clone()
             .or_else(yinz_runtime::home::default_layout_dir)
         else {
             return;
         };
-        let Some(to_screen) = self.bus.senders.to_screen.clone() else {
+        let Some(to_screen) = self.core.bus.senders.to_screen.clone() else {
             return;
         };
-        let generation = self.layout_watcher_generation;
-        let default_layout_name = self.default_layout_name.clone();
-        self.layout_watcher = Some(LayoutWatcher(
+        let generation = self.core.layout_watcher_generation;
+        let default_layout_name = self.core.default_layout_name.clone();
+        self.core.layout_watcher = Some(LayoutWatcher(
             crate::global_async_runtime::get_tokio_runtime().spawn(
                 yinz_config::config::watch_layout_dir_changes(
                     layout_dir,
@@ -611,10 +636,11 @@ impl Screen {
         layouts: Vec<LayoutInfo>,
         errors: Vec<LayoutWithError>,
     ) {
-        if generation != self.layout_watcher_generation {
+        if generation != self.core.layout_watcher_generation {
             return;
         }
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_plugin(PluginInstruction::LayoutListUpdate(
                 layouts.clone(),
@@ -622,7 +648,7 @@ impl Screen {
             ))
             .context("reporting changed layouts to plugins")
             .non_fatal();
-        self.cached_layouts = layouts;
-        self.cached_layout_errors = errors;
+        self.core.cached_layouts = layouts;
+        self.core.cached_layout_errors = errors;
     }
 }

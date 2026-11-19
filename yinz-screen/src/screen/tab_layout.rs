@@ -38,7 +38,7 @@ impl Screen {
             if result.is_err() {
                 break;
             }
-            if !self.tabs.contains_key(&tab_result.tab_index) {
+            if !self.core.tabs.contains_key(&tab_result.tab_index) {
                 result = self.new_tab(
                     tab_result.tab_index,
                     (
@@ -51,6 +51,7 @@ impl Screen {
             }
             if result.is_ok() {
                 result = self
+                    .core
                     .tabs
                     .get_mut(&tab_result.tab_index)
                     .context("override tab is missing")
@@ -111,6 +112,7 @@ impl Screen {
                 .collect();
             if result.is_ok() {
                 result = self
+                    .core
                     .tabs
                     .get_mut(&tab_result.tab_index)
                     .context("override tab is missing")
@@ -150,7 +152,7 @@ impl Screen {
                 self.retain_only_existing_panes_in_pane_groups();
             }
             for tab_id in tabs_to_close {
-                if self.tabs.contains_key(&tab_id) {
+                if self.core.tabs.contains_key(&tab_id) {
                     self.close_tab_by_id(tab_id)?;
                 }
             }
@@ -160,6 +162,8 @@ impl Screen {
             }
         }
 
+        self.refresh_agent_worktrees();
+        self.sync_nested_guest_fullscreen_state();
         self.replay_events_waiting_for_layout(pending);
 
         if !self.has_pending_tabs() {
@@ -182,7 +186,12 @@ impl Screen {
         tab_id: TabId,
         layout_failure: Option<(ClientId, &str)>,
     ) -> Result<()> {
-        if let Some(tab) = self.tabs.get_mut(&tab_id).filter(|tab| tab.is_pending()) {
+        if let Some(tab) = self
+            .core
+            .tabs
+            .get_mut(&tab_id)
+            .filter(|tab| tab.is_pending())
+        {
             tab.fail_pending_agent_placements(
                 "destination layout failed; inspect the retained pane and tab before retrying",
             );
@@ -190,7 +199,7 @@ impl Screen {
                 self.teardown_tab(tab_id, false, layout_failure)?;
             } else {
                 tab.finish_pending_layout();
-                self.opening_layout_landed = true;
+                self.core.opening_layout_landed = true;
             }
         }
         Ok(())
@@ -218,7 +227,8 @@ impl Screen {
             completion.set_error_message(message.clone());
         }
         if let Some(pane_id) = self.get_active_pane_id(&client_id) {
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_background_jobs(BackgroundJob::DisplayPaneError(
                     vec![pane_id],
@@ -227,7 +237,8 @@ impl Screen {
                 .context("failed to display rejected layout error")
                 .non_fatal();
         }
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_server(ServerInstruction::LogError(vec![message], client_id, None))
             .context("failed to report rejected layout")
@@ -237,6 +248,7 @@ impl Screen {
     fn discard_spawned_layout_panes(&mut self, pane_ids: Vec<PaneId>, pending: &mut PendingEvents) {
         for pane_id in pane_ids {
             if let Some(tab) = self
+                .core
                 .tabs
                 .values_mut()
                 .find(|tab| tab.has_pane_with_pid(&pane_id))
@@ -244,7 +256,8 @@ impl Screen {
                 tab.extract_pane_leaving_tab(pane_id, true);
             }
             pending.waiting_for_pane.remove(&pane_id);
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_pty(PtyInstruction::ClosePane(pane_id, None))
                 .context("failed to close pane from rejected layout")
@@ -278,7 +291,7 @@ impl Screen {
             .as_ref()
             .and_then(|c| c.agent_tab.as_ref())
             .is_some_and(|target| {
-                !self.tabs.get(&tab_id).is_some_and(|tab| {
+                !self.core.tabs.get(&tab_id).is_some_and(|tab| {
                     target
                         .lifetime
                         .ptr_eq(&std::sync::Arc::downgrade(&tab.agent_tab_lifetime))
@@ -356,15 +369,15 @@ impl Screen {
             blocking_terminal,
         );
         if let Ok(source) = &applied {
-            self.opening_layout_landed = true;
+            self.core.opening_layout_landed = true;
             if let Some(source) = source {
                 pending.remove_client_plugin_output(*source);
             }
         }
         let layout_failed = applied.is_err();
         if let Err(error) = applied {
-            if self.migration_tab_pending(tab_id) {
-                self.fail_migration_adoption(format!(
+            if self.transfer.migration_tab_pending(tab_id) {
+                self.transfer.fail_migration_adoption(format!(
                     "migration layout {tab_id} failed: {error:#}"
                 ));
             }
@@ -376,10 +389,11 @@ impl Screen {
             self.discard_spawned_layout_panes(spawned_panes, pending);
             let retained = if !retained_terminals.is_empty() {
                 let retention = (|| {
-                    if !self.tabs.contains_key(&tab_id) {
+                    if !self.core.tabs.contains_key(&tab_id) {
                         self.new_tab(tab_id, (vec![], vec![]), None, None)?;
                     }
-                    self.tabs
+                    self.core
+                        .tabs
                         .get_mut(&tab_id)
                         .context("missing adopted-pane destination")?
                         .retain_adopted_layout_terminals(retained_terminals, client_id)
@@ -396,7 +410,8 @@ impl Screen {
                             "; could not finish retaining transferred terminals: {error:#}"
                         ));
                         adopted_commands.keys().all(|id| {
-                            self.tabs
+                            self.core
+                                .tabs
                                 .values()
                                 .any(|tab| tab.has_pane_with_pid(&PaneId::Terminal(*id)))
                         })
@@ -412,25 +427,7 @@ impl Screen {
                     self.fire_agent_start_for_new_pane(*pane_id);
                 }
             }
-            if let Some((_, _, _, Some(response), _)) =
-                self.pending_group_placements.remove(&tab_id)
-            {
-                // Receipt is successful when the recovery tab owns the transferred supervisors;
-                // the source must not roll those terminals back after a rejected layout.
-                let _ = response.send(if retained {
-                    Ok(())
-                } else {
-                    Err(anyhow!(message.clone()))
-                });
-            }
-            self.pending_warp_relationships.remove(&tab_id);
-            if let Some(response) = self.pending_tab_adoptions.remove(&tab_id) {
-                let _ = response.send(if retained {
-                    Ok(())
-                } else {
-                    Err(anyhow!(message.clone()))
-                });
-            }
+            self.warp.reject_layout(tab_id, retained, &message);
             self.report_layout_error(message, client_id, &mut completion_tx);
         }
         for pane_id in &new_terminal_pane_ids {
@@ -459,10 +456,10 @@ impl Screen {
                 self.switch_active_tab(tab_position, None, true, client_id)?;
             }
         } else if should_change_focus_to_new_tab && !layout_failed {
-            let client_id_to_switch = if self.active_tab_ids.contains_key(&client_id) {
+            let client_id_to_switch = if self.core.active_tab_ids.contains_key(&client_id) {
                 Some(client_id)
             } else {
-                self.active_tab_ids.keys().next().copied()
+                self.core.active_tab_ids.keys().next().copied()
             };
             if let Some(client_id_to_switch) = client_id_to_switch {
                 pending.tab_switches.insert((tab_id, client_id_to_switch));
@@ -487,9 +484,15 @@ impl Screen {
                     continue;
                 }
                 let pane_id = PaneId::Plugin(*plugin_id);
-                let plugin_exists = self.tabs.values().any(|tab| tab.has_plugin(*plugin_id));
+                let plugin_exists = self
+                    .core
+                    .tabs
+                    .values()
+                    .any(|tab| tab.has_plugin(*plugin_id));
                 if plugin_exists {
-                    self.render_blocker.register_blocking_plugin(*plugin_id);
+                    self.core
+                        .render_blocker
+                        .register_blocking_plugin(*plugin_id);
                     if let Some(pending_events) = pending.waiting_for_pane.remove(&pane_id) {
                         replay_pending_plugin_events(self, pending_events)?;
                     }
@@ -501,8 +504,10 @@ impl Screen {
             self.log_and_report_session_state()?;
         }
 
+        self.refresh_agent_worktrees();
+        self.sync_nested_guest_fullscreen_state();
         self.replay_events_waiting_for_layout(pending);
-        if let Some(response) = self.pending_tab_adoptions.remove(&tab_id) {
+        if let Some(response) = self.warp.pending_tab_adoptions.remove(&tab_id) {
             let _ = response.send(Ok(()));
         }
 
@@ -512,7 +517,7 @@ impl Screen {
     /// Only interactive clients viewing this tab contribute to its bounds.
     /// Without a contributing viewer, the tab retains its current geometry.
     pub(super) fn tab_surface_size(&self, tab_id: TabId) -> Option<Size> {
-        self.min_client_size(|client_id| self.active_tab_ids.get(client_id) == Some(&tab_id))
+        self.min_client_size(|client_id| self.core.active_tab_ids.get(client_id) == Some(&tab_id))
     }
 
     /// Reflow tabs against their viewers and remember a fallback size for creating detached tabs.
@@ -525,7 +530,7 @@ impl Screen {
         // `and` evaluates every tab while retaining the first error: tabs are sized independently,
         // so one that cannot finish must not strand the others at a stale size.
         let mut result = Ok(());
-        for tab_id in self.tabs.keys().copied().collect::<Vec<_>>() {
+        for tab_id in self.core.tabs.keys().copied().collect::<Vec<_>>() {
             result = result.and(self.reflow_tab(tab_id));
         }
         result.context("failed to reflow every tab")?;
@@ -536,7 +541,7 @@ impl Screen {
     /// Reflow for a client that is joining. Only its own tab failing is a reason to turn it away:
     /// another viewer's tab retries on the next frame whether or not this client stays.
     pub(super) fn reflow_tabs_for_arrival(&mut self, client_id: ClientId) -> Result<()> {
-        if let Some(tab_id) = self.active_tab_ids.get(&client_id).copied() {
+        if let Some(tab_id) = self.core.active_tab_ids.get(&client_id).copied() {
             self.reflow_tab(tab_id)?;
         }
         self.reflow_all_tabs()
@@ -567,15 +572,16 @@ impl Screen {
         client_id: ClientId,
     ) -> Result<()> {
         if self
+            .core
             .tabs
             .get(&tab_id)
             .is_none_or(|tab| tab.is_pending() || tab.has_selectable_panes())
         {
             return Ok(());
         }
-        let everyone_moves = self.session_is_mirrored;
+        let everyone_moves = self.core.session_is_mirrored;
         let Some(tab_size) = self.min_client_size(|id| {
-            everyone_moves || *id == client_id || self.active_tab_ids.get(id) == Some(&tab_id)
+            everyone_moves || *id == client_id || self.core.active_tab_ids.get(id) == Some(&tab_id)
         }) else {
             return Ok(());
         };
@@ -583,22 +589,25 @@ impl Screen {
     }
 
     fn reflow_tab_to(&mut self, tab_id: TabId, tab_size: Size) -> Result<()> {
-        if let Some(tab) = self.tabs.get_mut(&tab_id)
-            && (tab.get_display_area() != tab_size || self.tabs_needing_reflow.contains(&tab_id))
+        if let Some(tab) = self.core.tabs.get_mut(&tab_id)
+            && (tab.get_display_area() != tab_size
+                || self.core.tabs_needing_reflow.contains(&tab_id))
         {
             // A failed resize finishes the layout but still has pane sizes left to send.
-            self.tabs_needing_reflow.insert(tab_id);
+            self.core.tabs_needing_reflow.insert(tab_id);
             tab.resize_whole_tab_to(tab_size)
                 .with_context(|| format!("failed to lay out tab {tab_id} at {tab_size:?}"))?;
-            self.tabs_needing_reflow.remove(&tab_id);
+            self.core.tabs_needing_reflow.remove(&tab_id);
             tab.set_force_render();
+            self.permission_surfaces_changed();
+            self.sync_nested_guest_fullscreen_state();
         }
         Ok(())
     }
 
     /// This tab's display area at the screen origin.
     pub(super) fn tab_surface(&self, tab_id: TabId) -> Option<Viewport> {
-        let tab = self.tabs.get(&tab_id)?;
+        let tab = self.core.tabs.get(&tab_id)?;
         let size = self
             .tab_surface_size(tab_id)
             .unwrap_or_else(|| tab.get_display_area());
@@ -612,7 +621,8 @@ impl Screen {
 
     /// The display area of the tab this client is viewing, which its overlays are laid out against.
     pub(super) fn client_surface(&self, client_id: ClientId) -> Option<Viewport> {
-        self.active_tab_ids
+        self.core
+            .active_tab_ids
             .get(&client_id)
             .and_then(|tab_id| self.tab_surface(*tab_id))
     }

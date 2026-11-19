@@ -18,6 +18,9 @@ const MARKER: &str = "floating-plugin-marker";
 #[path = "agent_launch_transaction.rs"]
 mod agent_launch_transaction;
 
+#[path = "restored_agent_adoption.rs"]
+mod restored_agent_adoption;
+
 #[path = "remote_startup.rs"]
 mod remote_startup;
 #[path = "session_update_real.rs"]

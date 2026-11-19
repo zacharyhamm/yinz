@@ -96,7 +96,7 @@ fn client_timezone_failed_registration_clears_provisional_report_without_attachm
     assert!(screen
         .register_client_transaction(SECOND, None, None, true)
         .is_err());
-    assert!(!screen.client_timezones.contains_key(&SECOND));
+    assert!(!screen.core.client_timezones.contains_key(&SECOND));
     assert_eq!(screen.client_timezone(SECOND).report(), None);
     assert!(changes(&capture).is_empty());
 }

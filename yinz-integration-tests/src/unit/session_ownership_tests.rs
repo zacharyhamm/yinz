@@ -47,7 +47,7 @@ fn concurrent_creators_attach_without_reinitializing_panes() {
         let spawner = Box::new(move |path| {
             barrier.wait();
             let thread = std::thread::spawn(move || {
-                yinz_server::start_server_impl(Box::new(os), path, false);
+                yinz_server::start_server_impl(None, Box::new(os), path, false);
                 returned.send(()).unwrap();
             });
             *server_thread.lock().unwrap() = Some(thread);

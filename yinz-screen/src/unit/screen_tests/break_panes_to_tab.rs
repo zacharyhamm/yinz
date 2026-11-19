@@ -24,6 +24,7 @@ fn break_panes_to_tab_with_id_moves_a_pane_when_id_and_position_diverge() {
     assert_eq!(outcome.destination_tab_id, Some(TabId::new(3)));
     assert!(
         screen
+            .core
             .tabs
             .get(&TabId::new(3))
             .unwrap()
@@ -32,6 +33,7 @@ fn break_panes_to_tab_with_id_moves_a_pane_when_id_and_position_diverge() {
     );
     assert!(
         !screen
+            .core
             .tabs
             .get(&TabId::new(2))
             .unwrap()
@@ -63,13 +65,14 @@ fn break_panes_to_tab_with_id_is_a_no_op_for_a_nonexistent_tab_id() {
     assert_eq!(outcome.affected_tab_id(), None, "so the plugin is told no");
     assert!(
         screen
+            .core
             .tabs
             .get(&TabId::new(2))
             .unwrap()
             .has_pane_with_pid(&pane_to_move),
         "The pane is untouched"
     );
-    assert_eq!(screen.tabs.len(), 2, "and so are the tabs");
+    assert_eq!(screen.core.tabs.len(), 2, "and so are the tabs");
 }
 
 #[test]
@@ -92,6 +95,7 @@ fn break_panes_to_tab_never_destroys_a_pane_it_could_not_move() {
         assert!(!outcome.succeeded(), "tab id {bad_tab_id}: {outcome:?}");
         assert!(
             screen
+                .core
                 .tabs
                 .get(&TabId::new(2))
                 .unwrap()
@@ -124,6 +128,7 @@ fn break_panes_to_tab_leaves_a_pane_that_is_already_in_the_destination() {
     assert_eq!(outcome.already_in_destination, vec![pane]);
     assert!(outcome.moved.is_empty(), "nothing needed moving");
     assert!(screen
+        .core
         .tabs
         .get(&TabId::new(3))
         .unwrap()
@@ -137,6 +142,7 @@ fn break_panes_to_tab_with_id_keeps_a_floating_pane_floating() {
     add_pane_to_tab(&mut screen, TabId::new(2), pane_to_move, true);
     assert!(
         screen
+            .core
             .tabs
             .get(&TabId::new(2))
             .unwrap()
@@ -156,6 +162,7 @@ fn break_panes_to_tab_with_id_keeps_a_floating_pane_floating() {
     assert!(outcome.succeeded(), "{outcome:?}");
     assert!(
         screen
+            .core
             .tabs
             .get(&TabId::new(3))
             .unwrap()
@@ -183,7 +190,7 @@ fn break_panes_to_tab_with_id_focuses_the_destination_tab() {
         .expect("TEST");
 
     assert_eq!(
-        screen.active_tab_ids.get(&ClientId::new(1)),
+        screen.core.active_tab_ids.get(&ClientId::new(1)),
         Some(&TabId::new(3)),
         "Focus follows the panes, and lands on the tab id rather than the position"
     );
@@ -245,13 +252,14 @@ fn break_panes_to_tab_with_index_resolves_a_position_and_not_an_id() {
     assert!(outcome.succeeded(), "{outcome:?}");
     assert!(
         screen
+            .core
             .tabs
             .get(&TabId::new(3))
             .unwrap()
             .has_pane_with_pid(&pane_to_move),
         "The pane is in the tab the user pointed at"
     );
-    assert_eq!(screen.tabs.len(), 2, "and no tab was swept away");
+    assert_eq!(screen.core.tabs.len(), 2, "and no tab was swept away");
 }
 
 #[test]

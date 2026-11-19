@@ -7,7 +7,7 @@ use interprocess::local_socket::Stream as LocalSocketStream;
 use yinz_runtime::errors::prelude::*;
 use yinz_server::os_input_output::{
     AdoptedTerminal, AsyncReader, ClientTransport, RemoteEndpoint, RemotePanes, ResolvedSpawn,
-    ServerEnvironment, TerminalIo, TerminalProcesses, TerminalSupervision,
+    ServerEnvironment, SupervisorThemeHooks, TerminalIo, TerminalProcesses, TerminalSupervision,
 };
 use yinz_server::panes::PaneId;
 use yinz_server::pty_host::client::{ReleasedPane, ReleasedPtyHost, ReleasedRemotePane};
@@ -109,6 +109,24 @@ impl FakeServerOsApi {
     }
 }
 
+impl SupervisorThemeHooks for FakeServerOsApi {
+    fn retain_agent_theme(
+        &self,
+        terminal_id: TerminalId,
+        event: yinz_types::agent::theme::AgentThemeEvent,
+    ) -> Result<()> {
+        self.shared_ptys.retain_agent_theme(terminal_id, event);
+        Ok(())
+    }
+    fn detected_agent_theme(
+        &self,
+        terminal_id: TerminalId,
+        _child_pid: ProcessId,
+    ) -> Option<yinz_types::agent::theme::DetectedAgentTheme> {
+        self.shared_ptys.detected_theme(terminal_id)
+    }
+}
+
 impl TerminalIo for FakeServerOsApi {
     fn set_terminal_size_using_terminal_id(
         &self,
@@ -143,14 +161,6 @@ impl TerminalIo for FakeServerOsApi {
             .into_iter()
             .map(|(terminal_id, (cols, rows))| (terminal_id, cols, rows))
             .collect()
-    }
-    fn retain_agent_theme(
-        &self,
-        terminal_id: TerminalId,
-        event: yinz_types::agent::theme::AgentThemeEvent,
-    ) -> Result<()> {
-        self.shared_ptys.retain_agent_theme(terminal_id, event);
-        Ok(())
     }
     fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize> {
         if self.shared_ptys.append_stdin(terminal_id, buf) {
@@ -521,13 +531,6 @@ impl ServerEnvironment for FakeServerOsApi {
                 Some((*terminal_id, foreground_commands.get(terminal_id)?.clone()))
             })
             .collect()
-    }
-    fn detected_agent_theme(
-        &self,
-        terminal_id: TerminalId,
-        _child_pid: ProcessId,
-    ) -> Option<yinz_types::agent::theme::DetectedAgentTheme> {
-        self.shared_ptys.detected_theme(terminal_id)
     }
     fn write_to_file(&mut self, buf: String, file: Option<String>) -> Result<()> {
         if let Some(file) = file {

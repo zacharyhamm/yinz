@@ -4,7 +4,7 @@ use yinz_types::internal_ids::{PluginId, TabId};
 
 /// The project a plugin says each tab is on, as `SetTabProjects` carries it.
 fn set_projects(screen: &mut Screen, projects: &[(usize, &str)]) {
-    screen.tab_projects = projects
+    screen.core.tab_projects = projects
         .iter()
         .map(|(tab_id, project)| (TabId::new(*tab_id), (*project).to_owned()))
         .collect();
@@ -26,7 +26,7 @@ fn name_of(screen: &Screen, tab_id: TabId) -> String {
     {
         assert_eq!(pane.tab_name, name);
     }
-    if screen.active_tab_ids.get(&client) == Some(&tab_id) {
+    if screen.core.active_tab_ids.get(&client) == Some(&tab_id) {
         assert_eq!(
             screen.get_current_tab_info(client).unwrap().unwrap().name,
             name
@@ -980,7 +980,7 @@ fn arrangement_group(identity: &str, pane_ids: &[u32]) -> yinz_types::data::Proj
 
 fn capture_arrangement_loads(screen: &mut Screen) -> Receiver<(PluginInstruction, ErrorContext)> {
     let (sender, receiver) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     receiver
 }
 
@@ -1066,7 +1066,7 @@ fn arrangement_loads_new_tab_chrome_without_spawning_template_terminals() {
                 r#"pane size={bottom} borderless=true {{ plugin location="yinz:status-bar"; }}"#
             )
         };
-        *screen.default_layout = yinz_config::kdl::layout::from_kdl(
+        *screen.core.default_layout = yinz_config::kdl::layout::from_kdl(
             &format!(
                 r#"layout {{ new_tab_template {{
                 {bars}
@@ -1107,18 +1107,23 @@ fn arrangement_loads_new_tab_chrome_without_spawning_template_terminals() {
         screen
             .arrange_project_panes(groups.clone(), ClientId::new(1))
             .unwrap();
-        assert!(screen.pending_arrangement.is_some());
-        assert_eq!(screen.tabs[&TabId::new(0)].arrangement_pane_ids().len(), 4);
+        assert!(screen.core.pending_arrangement.is_some());
+        assert_eq!(
+            screen.core.tabs[&TabId::new(0)]
+                .arrangement_pane_ids()
+                .len(),
+            4
+        );
         // A second request must neither move panes nor allocate more tabs.
         screen
             .arrange_project_panes(groups.clone(), ClientId::new(1))
             .unwrap();
-        assert_eq!(screen.tabs.len(), 3);
+        assert_eq!(screen.core.tabs.len(), 3);
         apply_arrangement_loads(&mut screen, &receiver);
-        assert!(screen.pending_arrangement.is_none());
+        assert!(screen.core.pending_arrangement.is_none());
         assert_eq!(screen.get_active_pane_id(&ClientId::new(1)), focused);
         for id in [1, 2] {
-            let tab = &screen.tabs[&TabId::new(id)];
+            let tab = &screen.core.tabs[&TabId::new(id)];
             assert_eq!(
                 tab.get_tiled_pane_ids().len(),
                 (if top == 0 { 0 } else { 2 }) + if id == 1 { 2 } else { 1 }
@@ -1134,6 +1139,7 @@ fn arrangement_loads_new_tab_chrome_without_spawning_template_terminals() {
             assert_eq!(tab.tiled_and_floating_pane_ids(), tab.get_tiled_pane_ids());
         }
         let before: Vec<_> = screen
+            .core
             .tabs
             .values()
             .map(|tab| tab.get_tiled_pane_ids())
@@ -1141,10 +1147,11 @@ fn arrangement_loads_new_tab_chrome_without_spawning_template_terminals() {
         screen
             .arrange_project_panes(groups, ClientId::new(1))
             .unwrap();
-        assert!(screen.pending_arrangement.is_none());
+        assert!(screen.core.pending_arrangement.is_none());
         assert_eq!(
             before,
             screen
+                .core
                 .tabs
                 .values()
                 .map(|tab| tab.get_tiled_pane_ids())
@@ -1181,8 +1188,13 @@ fn arrangement_cancels_when_a_destination_closes_during_loading() {
         .unwrap();
     screen.close_tab_by_id(TabId::new(1)).unwrap();
     apply_arrangement_loads(&mut screen, &receiver);
-    assert!(screen.pending_arrangement.is_none());
-    assert_eq!(screen.tabs[&TabId::new(0)].arrangement_pane_ids().len(), 2);
+    assert!(screen.core.pending_arrangement.is_none());
+    assert_eq!(
+        screen.core.tabs[&TabId::new(0)]
+            .arrangement_pane_ids()
+            .len(),
+        2
+    );
 }
 
 #[test]
@@ -1198,7 +1210,7 @@ fn arrangement_consolidates_without_changing_ids_focus_or_explicit_names() {
     for id in 0..4 {
         new_tab(&mut screen, id + 1, TabId::new(id as usize));
     }
-    screen.tabs.get_mut(&TabId::new(0)).unwrap().name = "keep this".into();
+    screen.core.tabs.get_mut(&TabId::new(0)).unwrap().name = "keep this".into();
     let groups = vec![
         arrangement_group("repo-a", &[3, 1]),
         arrangement_group("repo-b", &[4, 2]),
@@ -1206,14 +1218,15 @@ fn arrangement_consolidates_without_changing_ids_focus_or_explicit_names() {
     screen
         .arrange_project_panes(groups.clone(), ClientId::new(1))
         .unwrap();
-    assert_eq!(screen.tabs.len(), 2);
-    assert_eq!(screen.tabs[&TabId::new(0)].name, "keep this");
+    assert_eq!(screen.core.tabs.len(), 2);
+    assert_eq!(screen.core.tabs[&TabId::new(0)].name, "keep this");
     assert_eq!(
         screen.get_active_pane_id(&ClientId::new(1)),
         Some(PaneId::Terminal(TerminalId::new(4)))
     );
     let state = |screen: &Screen| {
         screen
+            .core
             .tabs
             .values()
             .map(|tab| {
@@ -1259,7 +1272,7 @@ fn arrangement_rejects_duplicate_ids_and_executable_layouts_before_movement() {
             ClientId::new(1),
         )
         .unwrap();
-    assert_eq!(screen.tabs.len(), 2);
+    assert_eq!(screen.core.tabs.len(), 2);
     let directory = tempfile::tempdir().unwrap();
     std::fs::create_dir(directory.path().join(".yinz")).unwrap();
     std::fs::write(
@@ -1272,9 +1285,13 @@ fn arrangement_rejects_duplicate_ids_and_executable_layouts_before_movement() {
     screen
         .arrange_project_panes(vec![group], ClientId::new(1))
         .unwrap();
-    assert_eq!(screen.tabs.len(), 2);
-    assert!(screen.tabs[&TabId::new(0)].has_pane_with_pid(&PaneId::Terminal(TerminalId::new(1))));
-    assert!(screen.tabs[&TabId::new(1)].has_pane_with_pid(&PaneId::Terminal(TerminalId::new(2))));
+    assert_eq!(screen.core.tabs.len(), 2);
+    assert!(
+        screen.core.tabs[&TabId::new(0)].has_pane_with_pid(&PaneId::Terminal(TerminalId::new(1)))
+    );
+    assert!(
+        screen.core.tabs[&TabId::new(1)].has_pane_with_pid(&PaneId::Terminal(TerminalId::new(2)))
+    );
 }
 
 #[test]
@@ -1300,7 +1317,7 @@ fn arrangement_keeps_floating_geometry_and_agent_records() {
             ClientId::new(1),
         )
         .unwrap();
-    let tab = screen.tabs.get_mut(&TabId::new(2)).unwrap();
+    let tab = screen.core.tabs.get_mut(&TabId::new(2)).unwrap();
     tab.toggle_pane_embed_or_floating_for_pane_id(floating, Some(ClientId::new(1)))
         .unwrap();
     let agent =
@@ -1315,6 +1332,7 @@ fn arrangement_keeps_floating_geometry_and_agent_records() {
         )
         .unwrap();
     let tab = screen
+        .core
         .tabs
         .values()
         .find(|tab| tab.has_pane_with_pid(&floating))
@@ -1411,7 +1429,7 @@ fn arrangement_manifest_preserves_nested_layout_traversal_order() {
     screen
         .arrange_project_panes(vec![group], ClientId::new(1))
         .unwrap();
-    let ids: Vec<_> = screen.tabs[&TabId::new(0)]
+    let ids: Vec<_> = screen.core.tabs[&TabId::new(0)]
         .pane_infos()
         .into_iter()
         .map(|info| info.id)
@@ -1463,7 +1481,7 @@ fn arrangement_preserves_boundary_bars_on_repeated_application() {
             ..Default::default()
         },
     );
-    let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+    let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
     for id in [10, 11] {
         tab.set_pane_selectable(PaneId::Terminal(TerminalId::new(id)), false);
     }
@@ -1480,7 +1498,7 @@ fn arrangement_preserves_boundary_bars_on_repeated_application() {
         screen
             .arrange_project_panes(vec![arrangement_group("repo", &[1, 2])], ClientId::new(1))
             .unwrap();
-        let tab = &screen.tabs[&TabId::new(0)];
+        let tab = &screen.core.tabs[&TabId::new(0)];
         assert_eq!(tab.get_viewport(), viewport);
         for (id, geom) in &bars {
             assert_eq!(
@@ -1526,7 +1544,7 @@ fn arrangement_counts_final_membership_and_rechecks_rejected_projects() {
             )
             .unwrap();
         let ids = |tab| {
-            let mut ids = screen.tabs[&TabId::new(tab)].get_tiled_pane_ids();
+            let mut ids = screen.core.tabs[&TabId::new(tab)].get_tiled_pane_ids();
             ids.sort();
             ids
         };
@@ -1547,7 +1565,7 @@ fn arrangement_counts_final_membership_and_rechecks_rejected_projects() {
                 "cols={cols}, reject={reject_second}"
             );
         }
-        assert_eq!(screen.tabs.len(), 2);
+        assert_eq!(screen.core.tabs.len(), 2);
     }
 }
 
@@ -1561,11 +1579,11 @@ fn arrangement_splits_original_lists_by_project_and_preserves_separate_stacks() 
         true,
         true,
     );
-    *screen.stacked_pane_list.borrow_mut() = true;
+    *screen.core.stacked_pane_list.borrow_mut() = true;
     let pane = |id| PaneId::Terminal(TerminalId::new(id));
     for (tab_id, ids) in [(0, vec![1, 2, 3, 4, 5, 6, 7]), (1, vec![8, 9])] {
         new_tab(&mut screen, ids[0], TabId::new(tab_id));
-        let tab = screen.tabs.get_mut(&TabId::new(tab_id)).unwrap();
+        let tab = screen.core.tabs.get_mut(&TabId::new(tab_id)).unwrap();
         for id in &ids[1..] {
             tab.new_pane(
                 pane(*id),
@@ -1608,10 +1626,11 @@ fn arrangement_splits_original_lists_by_project_and_preserves_separate_stacks() 
             .unwrap();
         apply_arrangement_loads(&mut screen, &receiver);
         screen.render().unwrap();
-        assert_eq!(screen.tabs.len(), 3);
+        assert_eq!(screen.core.tabs.len(), 3);
         assert_eq!(screen.get_active_pane_id(&ClientId::new(1)), Some(pane(2)));
         let destination = |id| {
             screen
+                .core
                 .tabs
                 .values()
                 .find(|tab| tab.has_pane_with_pid(&pane(id)))
@@ -1638,7 +1657,7 @@ fn arrangement_splits_original_lists_by_project_and_preserves_separate_stacks() 
                 .visible,
             pane(2)
         );
-        for tab in screen.tabs.values() {
+        for tab in screen.core.tabs.values() {
             let tiled = tab.get_tiled_pane_ids();
             for (i, id) in tiled.iter().enumerate() {
                 let a = tab.get_pane_with_id(*id).unwrap().position_and_size();
@@ -1661,6 +1680,7 @@ fn arrangement_splits_original_lists_by_project_and_preserves_separate_stacks() 
             }
         }
         let state: Vec<_> = screen
+            .core
             .tabs
             .values()
             .flat_map(|tab| {
@@ -1681,16 +1701,17 @@ fn arrangement_stack_header_preflight_leaves_a_rejected_stack_untouched() {
     let mut screen = screen_with_a_stack_list();
     // A layout slot fits a terminal but not a three-member list and its headers.
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
         .resize_whole_tab(Size { cols: 80, rows: 5 })
         .unwrap();
-    let before = screen.tabs[&TabId::new(0)].pane_infos();
+    let before = screen.core.tabs[&TabId::new(0)].pane_infos();
     screen
         .arrange_project_panes(vec![arrangement_group("a", &[1, 2, 3])], ClientId::new(1))
         .unwrap();
-    assert_eq!(screen.tabs[&TabId::new(0)].pane_infos(), before);
+    assert_eq!(screen.core.tabs[&TabId::new(0)].pane_infos(), before);
 }
 
 #[test]
@@ -1704,7 +1725,7 @@ fn arrangement_render_keeps_unknown_floats_and_floating_only_destinations_alive(
         true,
     );
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(tx));
     let pane = |id| PaneId::Terminal(TerminalId::new(id));
     arrangement_test_tab(
         &mut screen,
@@ -1717,6 +1738,7 @@ fn arrangement_render_keeps_unknown_floats_and_floating_only_destinations_alive(
     );
     new_tab(&mut screen, 3, TabId::new(1));
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -1724,6 +1746,7 @@ fn arrangement_render_keeps_unknown_floats_and_floating_only_destinations_alive(
         .unwrap();
     // Reserve the destination so the source is left with only its unknown float.
     screen
+        .core
         .arrangement_projects
         .insert(TabId::new(1), "known".into());
     screen
@@ -1731,7 +1754,7 @@ fn arrangement_render_keeps_unknown_floats_and_floating_only_destinations_alive(
         .unwrap();
     screen.render().unwrap();
     assert!(
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .get_pane_info(pane(2))
             .unwrap()
             .is_floating
@@ -1740,9 +1763,9 @@ fn arrangement_render_keeps_unknown_floats_and_floating_only_destinations_alive(
         .arrange_project_panes(vec![arrangement_group("float", &[2])], ClientId::new(1))
         .unwrap();
     screen.render().unwrap();
-    assert_eq!(screen.tabs.len(), 2);
+    assert_eq!(screen.core.tabs.len(), 2);
     assert!(
-        screen.tabs[&TabId::new(0)]
+        screen.core.tabs[&TabId::new(0)]
             .get_pane_info(pane(2))
             .unwrap()
             .is_floating
@@ -1763,7 +1786,7 @@ fn arrangement_selects_the_first_unknown_member_when_the_visible_member_leaves()
     screen
         .arrange_project_panes(vec![arrangement_group("a", &[2, 9])], ClientId::new(1))
         .unwrap();
-    let source = &screen.tabs[&TabId::new(0)];
+    let source = &screen.core.tabs[&TabId::new(0)];
     let stacks = source.arrangement_stacks();
     assert_eq!(stacks.len(), 1);
     assert_eq!(stacks[0].members, vec![pane(1), pane(3)]);
@@ -1801,6 +1824,7 @@ fn waiting_agent_bell_tracks_all_panes_and_moves_between_tabs() {
     };
     let pane = |id| PaneId::Terminal(TerminalId::new(id));
     screen
+        .core
         .tabs
         .get_mut(&source)
         .unwrap()
@@ -1819,6 +1843,7 @@ fn waiting_agent_bell_tracks_all_panes_and_moves_between_tabs() {
         "the overlay still waits"
     );
     screen
+        .core
         .tabs
         .get_mut(&source)
         .unwrap()
@@ -1826,6 +1851,7 @@ fn waiting_agent_bell_tracks_all_panes_and_moves_between_tabs() {
     assert!(!name_of(&screen, source).contains('🔔'));
     apply_pane_agent_report(&mut screen, pane(3), Some(waiting.clone())).unwrap();
     screen
+        .core
         .tabs
         .get_mut(&source)
         .unwrap()
@@ -1854,6 +1880,7 @@ fn waiting_agent_bell_tracks_all_panes_and_moves_between_tabs() {
         "switching tabs preserves the bell"
     );
     screen
+        .core
         .tabs
         .get_mut(&destination)
         .unwrap()
@@ -1873,10 +1900,10 @@ fn session_snapshots_refresh_display_names_without_changing_layout_names() {
         set_projects(&mut screen, &[(0, project), (1, project)]);
         screen.log_and_report_session_state().unwrap();
         let names = screen.plugin_tab_names();
-        let session = &screen.peer_sessions_cache[&screen.session_name];
+        let session = &screen.core.peer_sessions_cache[&screen.core.session_name];
         for tab in &session.tabs {
             assert_eq!(tab.name, names[&tab.tab_id]);
-            assert_eq!(tab.position, screen.tabs[&tab.tab_id].position);
+            assert_eq!(tab.position, screen.core.tabs[&tab.tab_id].position);
         }
         let layout = screen.get_layout_metadata(None, None).to_layout_metadata();
         assert_eq!(

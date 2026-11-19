@@ -284,10 +284,10 @@ impl Browser {
 
 impl Screen {
     pub(super) fn refresh_palette_history_titles(&mut self) {
-        for state in self.command_palettes.values_mut() {
+        for state in self.palette.command_palettes.values_mut() {
             state.widget.set_agent_header_flash(None, false);
         }
-        if !self.command_palettes.values().any(|state| {
+        if !self.palette.command_palettes.values().any(|state| {
             state
                 .agents
                 .browsers
@@ -298,7 +298,7 @@ impl Screen {
         }
         let live = self.live_palette_agents();
         let flashing = self.flashing_palette_agent_ids(self.frame_now());
-        for state in self.command_palettes.values_mut() {
+        for state in self.palette.command_palettes.values_mut() {
             let Some(browser) = state.agents.browsers.get_mut(&state.widget.view) else {
                 continue;
             };
@@ -372,8 +372,8 @@ impl Screen {
                     metadata.insert(k.into(), v.clone());
                 }
             }
-            if session == &self.session_name
-                && let Some(project) = self.pane_projects.get(&pane.id)
+            if session == &self.core.session_name
+                && let Some(project) = self.core.pane_projects.get(&pane.id)
             {
                 metadata.insert("project".into(), project.clone());
             }
@@ -387,15 +387,16 @@ impl Screen {
                 tab,
             ));
         };
-        for tab in self.tabs.values() {
+        for tab in self.core.tabs.values() {
             for pane in tab.pane_infos() {
-                add(&self.session_name, pane, LiveAgentTab::Local(tab.id));
+                add(&self.core.session_name, pane, LiveAgentTab::Local(tab.id));
             }
         }
         for (socket_name, session) in self
+            .core
             .peer_sessions_cache
             .iter()
-            .filter(|(_, session)| session.name != self.session_name)
+            .filter(|(_, session)| session.name != self.core.session_name)
         {
             for (&position, panes) in &session.panes.panes {
                 for pane in panes {
@@ -421,7 +422,7 @@ impl Screen {
         live: Option<LiveAgent>,
         action: Option<HistoryAction>,
     ) {
-        let Some(state) = self.command_palettes.get_mut(&client) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client) else {
             return;
         };
         state.agents.cancel();
@@ -573,7 +574,7 @@ impl Screen {
                 });
             }
         }
-        let Some(state) = self.command_palettes.get_mut(&client) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client) else {
             return;
         };
         let Some(browser) = state.agents.browsers.get_mut(&state.widget.view) else {
@@ -779,7 +780,7 @@ impl Screen {
     }
 
     pub(super) fn schedule_palette_history_tick(&mut self, client: ClientId) {
-        let Some(state) = self.command_palettes.get_mut(&client) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client) else {
             return;
         };
         let view = state.widget.view;
@@ -791,7 +792,7 @@ impl Screen {
         }
         browser.generation += 1;
         let generation = browser.generation;
-        let senders = self.bus.senders.clone();
+        let senders = self.core.bus.senders.clone();
         let opening = state.agents.opening;
         crate::global_async_runtime::get_tokio_runtime().spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -809,7 +810,7 @@ impl Screen {
     }
 
     fn refresh_palette_usage(&mut self, client: ClientId) {
-        let Some(state) = self.command_palettes.get_mut(&client) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client) else {
             return;
         };
         let view = state.widget.view;
@@ -830,7 +831,7 @@ impl Screen {
             return;
         };
         let provider = agent.kind.replace('◆', "");
-        let reason = live.usage_unavailable(&self.session_name);
+        let reason = live.usage_unavailable(&self.core.session_name);
         if let Some(reason) = reason {
             let usage = yinz_types::agent::control::ProviderUsage {
                 provider,
@@ -844,11 +845,13 @@ impl Screen {
             state.widget.set_agent_usage(usage);
             return;
         }
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_plugin(yinz_bus::plugins::PluginInstruction::PaletteAgent(
                 Box::new(yinz_bus::command_palette::AgentRequest {
                     timezone: self
+                        .core
                         .client_timezones
                         .get(&client)
                         .cloned()
@@ -866,37 +869,8 @@ impl Screen {
             .non_fatal();
     }
 
-    pub(super) fn palette_usage_reply(
-        &mut self,
-        client: ClientId,
-        opening: u64,
-        view: u64,
-        mut usage: yinz_types::agent::control::ProviderUsage,
-    ) {
-        let Some(state) = self
-            .command_palettes
-            .get_mut(&client)
-            .filter(|s| s.agents.opening == opening)
-        else {
-            return;
-        };
-        let Some(browser) = state.agents.browsers.get_mut(&view) else {
-            return;
-        };
-        if usage.status != yinz_types::agent::control::ProviderUsageStatus::Ok
-            && let Some(old) = &browser.usage
-        {
-            usage.windows = old.windows.clone();
-            usage.observed_at_ms = old.observed_at_ms;
-        }
-        browser.usage = Some(usage.clone());
-        if state.widget.view == view {
-            state.widget.set_agent_usage(usage);
-        }
-    }
-
     pub(super) fn refresh_palette_history(&mut self, client: ClientId, query_changed: bool) {
-        let Some(state) = self.command_palettes.get_mut(&client) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client) else {
             return;
         };
         if query_changed
@@ -992,7 +966,7 @@ impl Screen {
         generation: u64,
     ) {
         let live = self.live_palette_agents();
-        let Some(state) = self.command_palettes.get_mut(&client).filter(|s| {
+        let Some(state) = self.palette.command_palettes.get_mut(&client).filter(|s| {
             s.agents.opening == opening && s.widget.view == view && !s.agents.pending()
         }) else {
             return;
@@ -1072,7 +1046,7 @@ impl Screen {
         {
             return Err("Agent disappeared or changed identity; Focus is unavailable");
         }
-        Ok(if target.session == self.session_name {
+        Ok(if target.session == self.core.session_name {
             Action::FocusPaneByPaneId {
                 pane_id: target.pane.id,
             }
@@ -1091,14 +1065,14 @@ impl Screen {
         let action = match self.live_agent_focus_action(&target) {
             Ok(action) => action,
             Err(message) => {
-                if let Some(state) = self.command_palettes.get_mut(&client) {
-                    super::notify(&self.bus.senders, message.into());
+                if let Some(state) = self.palette.command_palettes.get_mut(&client) {
+                    super::notify(&self.core.bus.senders, message.into());
                     state.widget.set_error(message.into());
                 }
                 return;
             },
         };
-        let Some(state) = self.command_palettes.get(&client) else {
+        let Some(state) = self.palette.command_palettes.get(&client) else {
             return;
         };
         let (pane, tab) = (state.context.pane_id, state.context.tab_id);
@@ -1106,47 +1080,8 @@ impl Screen {
         self.dispatch_command_palette_action(pane, tab, action, client, "Focus agent".into());
     }
 
-    pub(super) fn open_agent_filters(&mut self, client: ClientId) {
-        let Some(state) = self.command_palettes.get_mut(&client) else {
-            return;
-        };
-        state.agents.cancel();
-        let archive = state.agents.browsers.contains_key(&state.widget.view);
-        let fields = if archive { ARCHIVE_FIELDS } else { LIVE_FIELDS };
-        let query = match AgentQuery::parse(state.widget.query(), fields) {
-            Ok(q) => q,
-            Err(e) => {
-                state.widget.set_error(e);
-                return;
-            },
-        };
-        state.agents.step += 1;
-        state
-            .widget
-            .push_view((1 << 63) + state.agents.step, "Filters".into());
-        state.widget.open_form(Form::new(
-            if archive {
-                "archive-filter-form"
-            } else {
-                "live-filter-form"
-            }
-            .into(),
-            "Agent filters (blank removes filter)".into(),
-            std::iter::once(Field::text("Search", &query.text))
-                .chain(fields.iter().map(|key| {
-                    Field::text(
-                        key,
-                        query.filters.get(*key).map(String::as_str).unwrap_or(""),
-                    )
-                }))
-                .collect(),
-            "Apply",
-            false,
-        ));
-    }
-
     pub(super) fn history_palette_outcome(&mut self, client: ClientId, outcome: &Outcome) -> bool {
-        let Some(state) = self.command_palettes.get_mut(&client) else {
+        let Some(state) = self.palette.command_palettes.get_mut(&client) else {
             return false;
         };
         if let Outcome::Submit { id, values } = outcome
@@ -1190,7 +1125,7 @@ impl Screen {
                 .agents
                 .browsers
                 .get_mut(&state.widget.view)
-                .and_then(|browser| browser.prompt_action(&self.session_name, values))
+                .and_then(|browser| browser.prompt_action(&self.core.session_name, values))
             {
                 // A background history request may still be pending while composing.
                 state.agents.cancel();
@@ -1213,7 +1148,7 @@ impl Screen {
             return self.accept_prompt_picker(client, index);
         }
         if id == "history-filters" {
-            self.open_agent_filters(client);
+            self.palette.open_agent_filters(client);
             return true;
         }
         let Some(browser) = state.agents.browsers.get_mut(&state.widget.view) else {
@@ -1285,3 +1220,72 @@ impl Screen {
 #[cfg(test)]
 #[path = "../unit/palette_history.rs"]
 mod tests;
+
+impl crate::screen::CommandPaletteController {
+    pub(in crate::screen) fn palette_usage_reply(
+        &mut self,
+        client: ClientId,
+        opening: u64,
+        view: u64,
+        mut usage: yinz_types::agent::control::ProviderUsage,
+    ) {
+        let Some(state) = self
+            .command_palettes
+            .get_mut(&client)
+            .filter(|s| s.agents.opening == opening)
+        else {
+            return;
+        };
+        let Some(browser) = state.agents.browsers.get_mut(&view) else {
+            return;
+        };
+        if usage.status != yinz_types::agent::control::ProviderUsageStatus::Ok
+            && let Some(old) = &browser.usage
+        {
+            usage.windows = old.windows.clone();
+            usage.observed_at_ms = old.observed_at_ms;
+        }
+        browser.usage = Some(usage.clone());
+        if state.widget.view == view {
+            state.widget.set_agent_usage(usage);
+        }
+    }
+    pub(in crate::screen) fn open_agent_filters(&mut self, client: ClientId) {
+        let Some(state) = self.command_palettes.get_mut(&client) else {
+            return;
+        };
+        state.agents.cancel();
+        let archive = state.agents.browsers.contains_key(&state.widget.view);
+        let fields = if archive { ARCHIVE_FIELDS } else { LIVE_FIELDS };
+        let query = match AgentQuery::parse(state.widget.query(), fields) {
+            Ok(q) => q,
+            Err(e) => {
+                state.widget.set_error(e);
+                return;
+            },
+        };
+        state.agents.step += 1;
+        state
+            .widget
+            .push_view((1 << 63) + state.agents.step, "Filters".into());
+        state.widget.open_form(Form::new(
+            if archive {
+                "archive-filter-form"
+            } else {
+                "live-filter-form"
+            }
+            .into(),
+            "Agent filters (blank removes filter)".into(),
+            std::iter::once(Field::text("Search", &query.text))
+                .chain(fields.iter().map(|key| {
+                    Field::text(
+                        key,
+                        query.filters.get(*key).map(String::as_str).unwrap_or(""),
+                    )
+                }))
+                .collect(),
+            "Apply",
+            false,
+        ));
+    }
+}

@@ -31,9 +31,9 @@ fn screen() -> (Screen, Captured) {
         false,
     );
     let (to_pty, pty) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
     let (to_plugin, plugins) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
     new_tab(&mut screen, 1, TAB);
     (screen, Captured { pty, plugins })
 }
@@ -64,7 +64,7 @@ fn completion() -> (
 /// The agent exits and its hook opens over it, as `ShowPane::in_place_of_hooked_pane` asks;
 /// then the hook runs its gate in its own place, as `OpenCommandPaneInPlaceOfPlugin` asks.
 fn merge_queue_stack(screen: &mut Screen) {
-    let tab = screen.tabs.get_mut(&TAB).unwrap();
+    let tab = screen.core.tabs.get_mut(&TAB).unwrap();
     tab.hold_pane(AGENT, Some(0), false, RunCommand::default());
     assert!(screen.replace_pane(
         HOOK,
@@ -85,7 +85,7 @@ fn merge_queue_stack(screen: &mut Screen) {
         ClientTabIndexOrPaneId::PaneId(HOOK),
         &mut done,
     ));
-    let tab = screen.tabs.get_mut(&TAB).unwrap();
+    let tab = screen.core.tabs.get_mut(&TAB).unwrap();
     tab.hold_pane(GATE, Some(1), false, held_gate());
     tab.focus_pane_with_id(GATE, false, false, CLIENT).unwrap();
 }
@@ -110,10 +110,12 @@ fn ctrl_c_on_the_held_gate_leaves_the_hook_in_the_slot_over_its_suppressed_agent
     let (mut screen, captured) = screen();
     merge_queue_stack(&mut screen);
     let (to_screen, from_tab) = channels::unbounded();
-    screen.tabs.get_mut(&TAB).unwrap().senders.to_screen = Some(SenderWithContext::new(to_screen));
+    screen.core.tabs.get_mut(&TAB).unwrap().senders.to_screen =
+        Some(SenderWithContext::new(to_screen));
     closed_by_pty(&captured);
 
     screen
+        .core
         .tabs
         .get_mut(&TAB)
         .unwrap()
@@ -140,11 +142,11 @@ fn ctrl_c_on_the_held_gate_leaves_the_hook_in_the_slot_over_its_suppressed_agent
         Some(true),
         "the agent is still behind it"
     );
-    let tab = screen.tabs.get(&TAB).unwrap();
+    let tab = screen.core.tabs.get(&TAB).unwrap();
     assert_eq!(tab.stands_in_for_a_pane(HOOK), Some(AGENT));
     assert_eq!(closed_by_pty(&captured), vec![GATE]);
-    assert!(!screen.destroyed_panes.contains(&HOOK));
-    assert!(!screen.destroyed_panes.contains(&AGENT));
+    assert!(!screen.core.destroyed_panes.contains(&HOOK));
+    assert!(!screen.core.destroyed_panes.contains(&AGENT));
 }
 
 #[test]
@@ -156,7 +158,7 @@ fn opening_in_place_of_a_suppressed_or_missing_pane_closes_the_new_pane_and_says
         (PaneId::Plugin(PluginId::new(7)), AGENT, "suppressed"),
     ] {
         let (mut screen, captured) = screen();
-        let tab = screen.tabs.get_mut(&TAB).unwrap();
+        let tab = screen.core.tabs.get_mut(&TAB).unwrap();
         tab.suppress_pane_and_replace_with_pid(
             AGENT,
             HOOK,
@@ -298,6 +300,7 @@ fn replacing_with_an_existing_pane_refuses_a_target_without_a_slot_and_moves_not
     merge_queue_stack(&mut screen);
     let elsewhere = PaneId::Terminal(TerminalId::new(5));
     screen
+        .core
         .tabs
         .get_mut(&TAB)
         .unwrap()
@@ -341,7 +344,12 @@ fn replacing_with_an_existing_pane_refuses_a_target_without_a_slot_and_moves_not
     assert_eq!(suppressed(&screen, HOOK), Some(false));
     assert_eq!(suppressed(&screen, AGENT), Some(true));
     assert_eq!(
-        screen.tabs.get(&TAB).unwrap().stands_in_for_a_pane(HOOK),
+        screen
+            .core
+            .tabs
+            .get(&TAB)
+            .unwrap()
+            .stands_in_for_a_pane(HOOK),
         Some(AGENT)
     );
     assert_eq!(closed_by_pty(&captured), vec![GATE]);

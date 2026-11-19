@@ -633,6 +633,7 @@ pub enum PtyWriteContext {
     Write,
     RetainAgentTheme,
     ResizePty,
+    RedrawPty,
     StartCachingResizes,
     ApplyCachedResizes,
     Exit,

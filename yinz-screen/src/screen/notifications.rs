@@ -36,18 +36,23 @@ impl Screen {
     }
 
     pub(super) fn pending_notification(&self) -> Option<&NotificationRecord> {
-        self.notification_history.iter().rev().find(|record| {
-            record.pending
-                && (self.notification_is_actionable(record)
-                    || self.notifications.iter().any(|notification| {
-                        notification.id == record.info.id && !notification.is_dismissing()
-                    }))
-        })
+        self.notices
+            .notification_history
+            .iter()
+            .rev()
+            .find(|record| {
+                record.pending
+                    && (self.notification_is_actionable(record)
+                        || self.notices.notifications.iter().any(|notification| {
+                            notification.id == record.info.id && !notification.is_dismissing()
+                        }))
+            })
     }
 
     pub(super) fn consume_notification(&mut self, id: NotificationId, now: Instant) {
         self.with_notification_stack_change(now, |screen| {
             if let Some(record) = screen
+                .notices
                 .notification_history
                 .iter_mut()
                 .find(|record| record.info.id == id)
@@ -63,9 +68,10 @@ impl Screen {
         target: &NotificationRecord,
     ) -> Option<String> {
         let mode_info = self
+            .core
             .mode_info
             .get(&client_id)
-            .unwrap_or(&self.default_mode_info);
+            .unwrap_or(&self.core.default_mode_info);
         let (_, bindings) = mode_info
             .keybinds
             .iter()
@@ -88,22 +94,6 @@ impl Screen {
             "dismiss"
         };
         Some(format!("{shortcut} to {action}"))
-    }
-
-    fn notification_stack_width(
-        &self,
-        cols: usize,
-        target: Option<NotificationId>,
-        footer: Option<&str>,
-    ) -> Option<usize> {
-        self.notifications
-            .iter()
-            .flat_map(|notification| {
-                let footer = footer.filter(|_| target == Some(notification.id));
-                std::iter::once(notification.text.as_str()).chain(footer)
-            })
-            .filter_map(|text| notification_width(text, cols))
-            .max()
     }
 
     /// Lay out live notifications once for both rendering and mouse hit-testing.
@@ -133,11 +123,14 @@ impl Screen {
         let target = self.pending_notification();
         let hint = target.and_then(|target| self.notification_activation_hint(client_id, target));
         let target = target.map(|record| record.info.id);
-        let Some(width) = self.notification_stack_width(viewport.cols, target, hint.as_deref())
+        let Some(width) =
+            self.notices
+                .notification_stack_width(viewport.cols, target, hint.as_deref())
         else {
             return vec![];
         };
         let wrapped: Vec<(Vec<String>, Option<String>)> = self
+            .notices
             .notifications
             .iter()
             .map(|notification| {
@@ -151,9 +144,15 @@ impl Screen {
             .iter()
             .map(|(lines, footer)| notification_height(lines.len() + usize::from(footer.is_some())))
             .collect();
-        let origins = notification_origins(viewport, self.notification_position, &heights, width);
+        let origins = notification_origins(
+            viewport,
+            self.notices.notification_position,
+            &heights,
+            width,
+        );
 
-        self.notifications
+        self.notices
+            .notifications
             .iter()
             .zip(wrapped)
             .zip(origins)
@@ -165,8 +164,12 @@ impl Screen {
                     .round()
                     .max(0.0) as usize;
                 let reveal = notification.reveal.value(now);
-                let (revealed_x, visible_cols) =
-                    notification_reveal_bounds(x, width, self.notification_position, reveal);
+                let (revealed_x, visible_cols) = notification_reveal_bounds(
+                    x,
+                    width,
+                    self.notices.notification_position,
+                    reveal,
+                );
                 NotificationLayout {
                     notification,
                     lines,
@@ -193,6 +196,7 @@ impl Screen {
         let cols = self.surface_size().cols;
         let target = self.pending_notification();
         let hint = self
+            .core
             .connected_clients
             .borrow()
             .iter()
@@ -201,10 +205,14 @@ impl Screen {
             })
             .max_by_key(|hint| notification_width(hint, cols));
         let target = target.map(|record| record.info.id);
-        let Some(width) = self.notification_stack_width(cols, target, hint.as_deref()) else {
+        let Some(width) = self
+            .notices
+            .notification_stack_width(cols, target, hint.as_deref())
+        else {
             return vec![];
         };
-        self.notifications
+        self.notices
+            .notifications
             .iter()
             .map(|notification| {
                 (
@@ -216,44 +224,6 @@ impl Screen {
                 )
             })
             .collect()
-    }
-
-    /// Re-aim every survivor's displacement so a stack change is a glide rather than a jump.
-    ///
-    /// Each toast's painted row is `settled + y_offset`. When the stack changes, `settled` moves by
-    /// `settled_row_delta`; adding that same delta to `y_offset` leaves the painted row exactly
-    /// where it was, and re-aiming at zero from there walks it to its new home. That is the whole
-    /// fix for a second toast arriving mid-glide: nothing is recomputed from a stored "before"
-    /// layout, so nothing can snap to a position it was never at.
-    fn retarget_notification_displacement(
-        &mut self,
-        before: &[(NotificationId, usize)],
-        after: &[(NotificationId, usize)],
-        now: Instant,
-    ) {
-        let position = self.notification_position;
-        for notification in self.notifications.iter_mut() {
-            let Some(delta) = settled_row_delta(position, before, after, notification.id) else {
-                continue;
-            };
-            if delta == 0 {
-                continue;
-            }
-            // painted row = settled row + offset. The settled row just moved by `delta`, so the
-            // offset has to move by *minus* delta for the painted row to come out unchanged - that
-            // is the whole trick, and getting the sign wrong sends the toast gliding in from the
-            // wrong side before settling in the right place.
-            let from = notification.y_offset.value(now) - delta as f32;
-            notification.y_offset.redirect(
-                now,
-                from,
-                0.0,
-                // speed, not duration: a one-row correction should not take as long as a whole
-                // toast's worth of displacement
-                scaled_duration(from, DISPLACE_SPAN, DISPLACE_DURATION),
-                DISPLACE_EASING,
-            );
-        }
     }
 
     /// Note that the stack is about to change, run `change`, then glide the survivors into place.
@@ -269,7 +239,8 @@ impl Screen {
         let before = self.canonical_stack_heights();
         change(self);
         let after = self.canonical_stack_heights();
-        self.retarget_notification_displacement(&before, &after, now);
+        self.notices
+            .retarget_notification_displacement(&before, &after, now);
     }
 
     /// The cells the toasts paint into `viewport` at `now`.
@@ -314,18 +285,19 @@ impl Screen {
         // Almost every frame in a session's life has no toast anywhere near it. Bail before
         // touching the client list or solving any geometry, but only once the *last* frame had no
         // toasts either - the frame after the final one still has damage to repair.
-        if self.notifications.is_empty()
-            && self.notification_browsers.is_empty()
-            && self.notification_return_retry_until.is_empty()
-            && self.last_notification_fill.is_empty()
+        if self.notices.notifications.is_empty()
+            && self.notices.notification_browsers.is_empty()
+            && self.notices.notification_return_retry_until.is_empty()
+            && self.notices.last_notification_fill.is_empty()
         {
             return vec![];
         }
         let regular_client_ids: Vec<ClientId> = self
+            .core
             .connected_clients
             .borrow()
             .iter()
-            .filter(|client_id| !self.watcher_clients.contains_key(client_id))
+            .filter(|client_id| !self.core.watcher_clients.contains_key(client_id))
             .copied()
             .collect();
         if regular_client_ids.is_empty() {
@@ -335,7 +307,7 @@ impl Screen {
         let mut clients_by_tab: BTreeMap<Option<TabId>, Vec<ClientId>> = BTreeMap::new();
         for client_id in regular_client_ids {
             clients_by_tab
-                .entry(self.active_tab_ids.get(&client_id).copied())
+                .entry(self.core.active_tab_ids.get(&client_id).copied())
                 .or_default()
                 .push(client_id);
         }
@@ -357,15 +329,17 @@ impl Screen {
                 // remove rather than insert an empty vec when nothing is painted, so the map
                 // empties out again once the last toast is gone and the early-out above can fire
                 let previous = if painted.is_empty() {
-                    self.last_notification_fill.remove(client_id)
+                    self.notices.last_notification_fill.remove(client_id)
                 } else {
-                    self.last_notification_fill
+                    self.notices
+                        .last_notification_fill
                         .insert(*client_id, painted.clone())
                 }
                 .unwrap_or_default();
                 let exposed = overlay_damage(&previous, &painted);
                 // No pane supplies replacement chunks for empty floating-only tab areas.
-                self.invalidate_command_palette_backing(*client_id, &exposed);
+                self.palette
+                    .invalidate_command_palette_backing(*client_id, &exposed);
                 for rect in exposed {
                     if !damage.contains(&rect) {
                         damage.push(rect);
@@ -379,7 +353,7 @@ impl Screen {
             // cache of its own - drop the entry so this frame repaints it rather than deciding
             // nothing changed
             for client_id in &client_ids {
-                self.unowned_strip_fill.remove(client_id);
+                self.core.unowned_strip_fill.remove(client_id);
             }
             damage_by_tab.push((tab_id, damage));
         }
@@ -399,33 +373,11 @@ impl Screen {
             self.notification_cell_rects(viewport, now, client_id)
         };
         rects.extend(
-            self.notification_return_retry_layout(viewport, now, client_id)
+            self.notices
+                .notification_return_retry_layout(viewport, now, client_id)
                 .map(|(rect, _)| rect),
         );
         rects
-    }
-
-    pub(super) fn notification_return_retry_layout(
-        &self,
-        viewport: Viewport,
-        now: Instant,
-        client_id: ClientId,
-    ) -> Option<(CellRect, Vec<String>)> {
-        if now >= *self.notification_return_retry_until.get(&client_id)? {
-            return None;
-        }
-        // Leave the toast stack at its usual edge.
-        let position = match self.notification_position {
-            NotificationPosition::TopLeft => NotificationPosition::BottomLeft,
-            NotificationPosition::TopRight => NotificationPosition::BottomRight,
-            NotificationPosition::BottomLeft => NotificationPosition::TopLeft,
-            NotificationPosition::BottomRight => NotificationPosition::TopRight,
-        };
-        let cols = notification_width(RETURN_RETRY_MESSAGE, viewport.cols)?;
-        let lines = notification_lines(RETURN_RETRY_MESSAGE, cols);
-        let rows = notification_height(lines.len());
-        let (x, y) = notification_origins(viewport, position, &[rows], cols).pop()?;
-        Some((CellRect { x, y, cols, rows }, lines))
     }
 
     pub(super) fn render_notifications(
@@ -435,8 +387,12 @@ impl Screen {
         client_id: ClientId,
         now: Instant,
     ) -> Result<()> {
-        let retry = self.notification_return_retry_layout(viewport, now, client_id);
-        if self.notifications.is_empty() && self.notification_browsers.is_empty() && retry.is_none()
+        let retry = self
+            .notices
+            .notification_return_retry_layout(viewport, now, client_id);
+        if self.notices.notifications.is_empty()
+            && self.notices.notification_browsers.is_empty()
+            && retry.is_none()
         {
             return Ok(());
         }
@@ -452,14 +408,14 @@ impl Screen {
                         layout.x,
                         layout.y,
                         layout.width,
-                        &self.style,
+                        &self.core.style,
                         layout.reveal,
                     );
                     let (chunks, _) = notification_reveal(
                         &chunks,
                         layout.x,
                         layout.width,
-                        self.notification_position,
+                        self.notices.notification_position,
                         layout.reveal,
                     );
                     output.add_character_chunks_to_multiple_clients(
@@ -470,8 +426,15 @@ impl Screen {
                 }
             }
             if let Some((rect, lines)) = retry {
-                let chunks =
-                    notification_chunks(&lines, None, rect.x, rect.y, rect.cols, &self.style, 1.0);
+                let chunks = notification_chunks(
+                    &lines,
+                    None,
+                    rect.x,
+                    rect.y,
+                    rect.cols,
+                    &self.core.style,
+                    1.0,
+                );
                 output.add_character_chunks_to_multiple_clients(
                     chunks,
                     std::iter::once(client_id),
@@ -499,6 +462,7 @@ impl Screen {
     ) -> Option<(NotificationId, Option<PaneId>, Option<NotificationClick>)> {
         let line = usize::try_from(position.line()).ok()?;
         if self
+            .notices
             .notification_return_retry_layout(viewport, now, client_id)
             .is_some_and(|(rect, _)| rect.contains(position.column(), line))
         {
@@ -533,12 +497,12 @@ impl Screen {
     /// to how much of it is showing, so one dismissed a third of the way in leaves in about a third
     /// of the time rather than snapping to full width and sliding back out from there.
     pub(super) fn dismiss_notification(&mut self, id: NotificationId, now: Instant) -> Result<()> {
-        if self.notification_history.iter().any(|record| {
+        if self.notices.notification_history.iter().any(|record| {
             record.info.id == id && record.pending && !self.notification_is_actionable(record)
         }) {
             self.consume_notification(id, now);
         }
-        if let Some(notification) = self.notifications.iter_mut().find(|n| n.id == id)
+        if let Some(notification) = self.notices.notifications.iter_mut().find(|n| n.id == id)
             && !notification.is_dismissing()
         {
             let revealed = notification.reveal.value(now);
@@ -616,7 +580,8 @@ impl Screen {
             // Both clients, because which of them the message has to be addressed to depends on
             // whether the plugin is shared, and only the plugin thread knows that. See
             // `plugins::client_for_notification_click`.
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_plugin(PluginInstruction::NotificationClicked {
                     plugin_id: on_click.plugin_id,
@@ -640,11 +605,13 @@ impl Screen {
     ) -> Result<()> {
         let previous = self.active_pane_id(client_id);
         let result = self.focus_notification_target(pane_id, should_float_if_hidden, client_id);
-        if !self.watcher_clients.contains_key(&client_id)
+        if !self.core.watcher_clients.contains_key(&client_id)
             && let (Some(previous), Some(current)) = (previous, self.active_pane_id(client_id))
             && previous != current
         {
-            self.notification_return_panes.insert(client_id, previous);
+            self.notices
+                .notification_return_panes
+                .insert(client_id, previous);
         }
         result
     }
@@ -690,7 +657,8 @@ impl Screen {
         float_if_hidden: bool,
         client_id: ClientId,
     ) {
-        self.tabs
+        self.core
+            .tabs
             .get_mut(&tab_id)
             .context("notification focus destination tab disappeared")
             .and_then(|tab| tab.focus_pane_with_id(pane_id, float_if_hidden, false, client_id))
@@ -699,10 +667,11 @@ impl Screen {
     }
 
     pub(super) fn notification_tab_focus(&self, tab: TabId) -> Vec<(ClientId, Option<PaneId>)> {
-        self.active_tab_ids
+        self.core
+            .active_tab_ids
             .iter()
             .filter(|(client, active)| {
-                **active == tab && !self.watcher_clients.contains_key(client)
+                **active == tab && !self.core.watcher_clients.contains_key(client)
             })
             .map(|(&client, _)| (client, self.active_pane_id(client)))
             .collect()
@@ -724,11 +693,11 @@ impl Screen {
     }
 
     pub(super) fn return_from_notification(&mut self, client_id: ClientId) -> Result<()> {
-        let Some(&pane_id) = self.notification_return_panes.get(&client_id) else {
+        let Some(&pane_id) = self.notices.notification_return_panes.get(&client_id) else {
             return Ok(());
         };
         if self.get_active_tab(client_id).is_err()
-            || self.watcher_clients.contains_key(&client_id)
+            || self.core.watcher_clients.contains_key(&client_id)
             || self.active_pane_id(client_id) == Some(pane_id)
         {
             return Ok(());
@@ -736,7 +705,7 @@ impl Screen {
         let layouts_pending = self.has_pending_tabs();
         let Some(tab) = self.tab_containing_pane(pane_id) else {
             if !layouts_pending {
-                self.notification_return_panes.remove(&client_id);
+                self.notices.notification_return_panes.remove(&client_id);
             }
             return Ok(());
         };
@@ -749,7 +718,8 @@ impl Screen {
         }
         if layouts_pending {
             let now = self.frame_now();
-            self.notification_return_retry_until
+            self.notices
+                .notification_return_retry_until
                 .insert(client_id, now + RETURN_RETRY_DURATION);
             self.sync_animation_clock(now)?;
             return self.render();
@@ -758,6 +728,7 @@ impl Screen {
         self.focus_notification_target(pane_id, false, client_id)?;
         if self.active_pane_id(client_id) == Some(pane_id)
             && self
+                .notices
                 .notification_return_retry_until
                 .remove(&client_id)
                 .is_some()
@@ -776,19 +747,126 @@ impl Screen {
     /// fires - a stalled screen thread, a dead task - cannot strand a dismissed toast in the stack.
     /// Whatever renders next reaps it.
     pub(super) fn reap_settled_notifications(&mut self, now: Instant) {
-        if !self.notifications.iter().any(|n| n.is_gone(now)) {
+        if !self.notices.notifications.iter().any(|n| n.is_gone(now)) {
             return;
         }
         self.with_notification_stack_change(now, |screen| {
-            screen.notifications.retain(|n| !n.is_gone(now));
+            screen.notices.notifications.retain(|n| !n.is_gone(now));
         });
     }
+}
 
+impl crate::screen::NotificationController {
+    pub(in crate::screen) fn notification_stack_width(
+        &self,
+        cols: usize,
+        target: Option<NotificationId>,
+        footer: Option<&str>,
+    ) -> Option<usize> {
+        self.notifications
+            .iter()
+            .flat_map(|notification| {
+                let footer = footer.filter(|_| target == Some(notification.id));
+                std::iter::once(notification.text.as_str()).chain(footer)
+            })
+            .filter_map(|text| notification_width(text, cols))
+            .max()
+    }
+    /// Re-aim every survivor's displacement so a stack change is a glide rather than a jump.
+    ///
+    /// Each toast's painted row is `settled + y_offset`. When the stack changes, `settled` moves by
+    /// `settled_row_delta`; adding that same delta to `y_offset` leaves the painted row exactly
+    /// where it was, and re-aiming at zero from there walks it to its new home. That is the whole
+    /// fix for a second toast arriving mid-glide: nothing is recomputed from a stored "before"
+    /// layout, so nothing can snap to a position it was never at.
+    pub(in crate::screen) fn retarget_notification_displacement(
+        &mut self,
+        before: &[(NotificationId, usize)],
+        after: &[(NotificationId, usize)],
+        now: Instant,
+    ) {
+        let position = self.notification_position;
+        for notification in self.notifications.iter_mut() {
+            let Some(delta) = settled_row_delta(position, before, after, notification.id) else {
+                continue;
+            };
+            if delta == 0 {
+                continue;
+            }
+            // painted row = settled row + offset. The settled row just moved by `delta`, so the
+            // offset has to move by *minus* delta for the painted row to come out unchanged - that
+            // is the whole trick, and getting the sign wrong sends the toast gliding in from the
+            // wrong side before settling in the right place.
+            let from = notification.y_offset.value(now) - delta as f32;
+            notification.y_offset.redirect(
+                now,
+                from,
+                0.0,
+                // speed, not duration: a one-row correction should not take as long as a whole
+                // toast's worth of displacement
+                scaled_duration(from, DISPLACE_SPAN, DISPLACE_DURATION),
+                DISPLACE_EASING,
+            );
+        }
+    }
+    pub(in crate::screen) fn notification_return_retry_layout(
+        &self,
+        viewport: Viewport,
+        now: Instant,
+        client_id: ClientId,
+    ) -> Option<(CellRect, Vec<String>)> {
+        if now >= *self.notification_return_retry_until.get(&client_id)? {
+            return None;
+        }
+        // Leave the toast stack at its usual edge.
+        let position = match self.notification_position {
+            NotificationPosition::TopLeft => NotificationPosition::BottomLeft,
+            NotificationPosition::TopRight => NotificationPosition::BottomRight,
+            NotificationPosition::BottomLeft => NotificationPosition::TopLeft,
+            NotificationPosition::BottomRight => NotificationPosition::TopRight,
+        };
+        let cols = notification_width(RETURN_RETRY_MESSAGE, viewport.cols)?;
+        let lines = notification_lines(RETURN_RETRY_MESSAGE, cols);
+        let rows = notification_height(lines.len());
+        let (x, y) = notification_origins(viewport, position, &[rows], cols).pop()?;
+        Some((CellRect { x, y, cols, rows }, lines))
+    }
     /// Whether any toast still wants a frame.
     ///
     /// Derived from the toasts themselves rather than from a registration list, so it cannot get
     /// stuck reporting `true` and leave the clock running over an idle session.
-    pub(super) fn notifications_are_animating(&self, now: Instant) -> bool {
+    pub(in crate::screen) fn notifications_are_animating(&self, now: Instant) -> bool {
         self.notifications.iter().any(|n| !n.is_settled(now))
+    }
+}
+
+impl super::NotificationController {
+    pub(super) fn clear_return_target(&mut self, client_id: ClientId) {
+        self.notification_return_panes.remove(&client_id);
+        self.notification_return_retry_until.remove(&client_id);
+    }
+}
+
+impl super::NotificationController {
+    pub(super) fn on_client_removed(&mut self, client_id: ClientId) {
+        self.notification_mouse_captures.remove(&client_id);
+        self.close_notification_browser(client_id);
+    }
+}
+
+impl super::NotificationController {
+    pub(super) fn forget_paint(&mut self, client_id: ClientId) {
+        self.last_notification_fill.remove(&client_id);
+    }
+}
+
+impl super::NotificationController {
+    pub(super) fn on_reconfigure(
+        &mut self,
+        notification_position: super::NotificationPosition,
+        notification_timeout_secs: super::ElapsedSeconds,
+    ) {
+        self.notification_position = notification_position;
+        self.notification_timeout_secs = notification_timeout_secs;
     }
 }

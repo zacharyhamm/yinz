@@ -37,6 +37,7 @@ fn a_deleted_startup_directory_returns_an_error() {
         std::env::set_current_dir(directory.path()).unwrap();
         directory.close().unwrap();
         let error = start_server(
+            None,
             Box::new(crate::capturing_os::CapturingOs::default()),
             PathBuf::from("unused.sock"),
         )

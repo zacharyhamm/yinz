@@ -50,7 +50,7 @@ fn tiled() -> NewPanePlacement {
 
 fn screen_with_floor() -> Screen {
     let mut screen = create_new_screen(SURFACE, false, false);
-    screen.agent_pane_min_size = FLOOR;
+    screen.core.agent_pane_min_size = FLOOR;
     screen
 }
 
@@ -80,7 +80,7 @@ fn target_of(
 
 fn plugin_capture(screen: &mut Screen) -> Receiver<(PluginInstruction, ErrorContext)> {
     let (to_plugin, plugin_receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
     plugin_receiver
 }
 
@@ -180,7 +180,7 @@ fn an_agent_stays_in_the_focused_tab_while_its_share_clears_the_floor() {
     let (placed, focus, _) = target_of(&mut screen, Some(run("claude")), tiled(), target);
     assert_eq!(placed, target);
     assert_eq!(focus, None);
-    assert_eq!(screen.tabs.len(), 1, "no tab was made");
+    assert_eq!(screen.core.tabs.len(), 1, "no tab was made");
 }
 
 #[test]
@@ -202,7 +202,7 @@ fn an_agent_moves_to_the_roomiest_other_tab_when_the_focused_tab_is_crowded() {
         Some(CLIENT),
         "the spawn wanted focus, and a tab index places without a client"
     );
-    assert_eq!(screen.tabs.len(), 3, "no tab was made");
+    assert_eq!(screen.core.tabs.len(), 3, "no tab was made");
 }
 
 #[test]
@@ -242,6 +242,7 @@ fn an_agent_opens_a_new_tab_when_every_tab_is_crowded() {
     assert_eq!(focus, None, "the layout landing moves the client");
     assert!(
         screen
+            .core
             .tabs
             .get(&TabId::new(2))
             .is_some_and(|tab| tab.is_pending()),
@@ -249,6 +250,7 @@ fn an_agent_opens_a_new_tab_when_every_tab_is_crowded() {
     );
     assert!(
         screen
+            .core
             .tabs
             .get(&TabId::new(2))
             .is_some_and(|tab| !tab.has_no_connected_clients()),
@@ -289,6 +291,7 @@ fn a_tab_made_for_an_unfocused_spawn_does_not_take_the_client_along() {
     // connected to both.
     assert!(
         screen
+            .core
             .tabs
             .get(&TabId::new(1))
             .is_some_and(|tab| tab.has_no_connected_clients()),
@@ -296,12 +299,16 @@ fn a_tab_made_for_an_unfocused_spawn_does_not_take_the_client_along() {
     );
     assert!(
         screen
+            .core
             .tabs
             .get(&TabId::new(0))
             .is_some_and(|tab| !tab.has_no_connected_clients()),
         "the client is still in the tab it was looking at"
     );
-    assert_eq!(screen.active_tab_ids.get(&CLIENT), Some(&TabId::new(0)));
+    assert_eq!(
+        screen.core.active_tab_ids.get(&CLIENT),
+        Some(&TabId::new(0))
+    );
 }
 
 /// `yinz run -- claude` is a client of its own with no screen. The tab it is crowding, and
@@ -314,7 +321,7 @@ fn a_spawn_from_a_client_with_no_screen_acts_for_the_attached_one() {
     tab_with_panes(&mut screen, TabId::new(1), 10, 1);
     screen.go_to_tab(TabNumber::new(1), CLIENT).expect("TEST");
     let cli_client: ClientId = crate::ClientId::new(42);
-    assert!(!screen.active_tab_ids.contains_key(&cli_client));
+    assert!(!screen.core.active_tab_ids.contains_key(&cli_client));
     let (placed, focus, _) = target_of(
         &mut screen,
         Some(run("claude")),
@@ -397,11 +404,12 @@ fn a_fullscreen_tab_is_not_a_candidate() {
     tab_with_panes(&mut screen, TabId::new(2), 20, 3);
     screen.go_to_tab(TabNumber::new(1), CLIENT).expect("TEST");
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(1))
         .expect("TEST")
         .toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(10)));
-    assert!(screen.tabs[&TabId::new(1)].is_fullscreen_active());
+    assert!(screen.core.tabs[&TabId::new(1)].is_fullscreen_active());
     screen.go_to_tab(TabNumber::new(0), CLIENT).expect("TEST");
     let (placed, _, _) = target_of(
         &mut screen,
@@ -421,7 +429,7 @@ fn a_plain_shell_is_never_moved() {
         let (placed, _, _) = target_of(&mut screen, invoked_with, tiled(), target);
         assert_eq!(placed, target);
     }
-    assert_eq!(screen.tabs.len(), 1);
+    assert_eq!(screen.core.tabs.len(), 1);
 }
 
 /// Behind an interpreter only the script names the agent - an argument that happens to
@@ -443,7 +451,7 @@ fn an_agent_name_among_an_interpreters_arguments_does_not_move_the_pane() {
         let (placed, _, _) = target_of(&mut screen, Some(invoked_with), tiled(), target);
         assert_eq!(placed, target, "{command} {args:?}");
     }
-    assert_eq!(screen.tabs.len(), 1);
+    assert_eq!(screen.core.tabs.len(), 1);
 }
 
 #[test]
@@ -504,11 +512,12 @@ fn a_pane_with_no_preference_tiles_where_it_is_sent_unless_the_floating_layer_is
         true,
     );
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .expect("TEST")
         .show_floating_panes();
-    assert!(screen.tabs[&TabId::new(0)].are_floating_panes_visible());
+    assert!(screen.core.tabs[&TabId::new(0)].are_floating_panes_visible());
     let (placed, _, kept) = target_of(
         &mut screen,
         Some(run("claude")),
@@ -554,12 +563,12 @@ fn a_zero_floor_disables_the_rule() {
         Size { rows: 0, cols: 0 },
     ] {
         let mut screen = screen_with_floor();
-        screen.agent_pane_min_size = floor;
+        screen.core.agent_pane_min_size = floor;
         tab_with_panes(&mut screen, TabId::new(0), 1, 4);
         let target = ClientTabIndexOrPaneId::ClientId(CLIENT);
         let (placed, _, _) = target_of(&mut screen, Some(run("claude")), tiled(), target);
         assert_eq!(placed, target, "{floor:?}");
-        assert_eq!(screen.tabs.len(), 1);
+        assert_eq!(screen.core.tabs.len(), 1);
     }
 }
 
@@ -760,7 +769,7 @@ fn a_failed_layout_override_preserves_pending_state_for_caller_cleanup() {
             .is_err());
     }
 
-    let tab = screen.tabs.get_mut(&TabId::new(1)).expect("TEST");
+    let tab = screen.core.tabs.get_mut(&TabId::new(1)).expect("TEST");
     assert!(tab.is_pending());
     tab.override_layout(
         layout,
@@ -893,7 +902,7 @@ fn explicit_agent_tab_survives_reordering_but_not_close_and_id_reuse() {
         .resolve_agent_tab(AgentPlacement::Tab(TabId::new(1)), None, CLIENT)
         .unwrap();
     let delayed = first.clone();
-    screen.tabs.get_mut(&TabId::new(1)).unwrap().position = TabPosition::new(0);
+    screen.core.tabs.get_mut(&TabId::new(1)).unwrap().position = TabPosition::new(0);
     let result = place_reserved_agent(&mut screen, 20, first)
         .blocking_recv()
         .unwrap();
@@ -909,6 +918,7 @@ fn explicit_agent_tab_survives_reordering_but_not_close_and_id_reuse() {
     assert!(result.error_message.unwrap().contains("closed"));
     assert!(result.affected_tab_id.is_none());
     assert!(!screen
+        .core
         .tabs
         .values()
         .any(|tab| tab.has_pane_with_pid(&PaneId::Terminal(crate::TerminalId::new(21)))));
@@ -923,7 +933,7 @@ fn new_agent_tab_completion_waits_for_layout_and_does_not_change_focus() {
     let mut screen = screen_with_floor();
     tab_with_panes(&mut screen, TabId::new(0), 1, 1);
     let _plugins = plugin_capture(&mut screen);
-    let focus = screen.active_tab_ids.clone();
+    let focus = screen.core.active_tab_ids.clone();
     let target = screen
         .resolve_agent_tab(
             AgentPlacement::NewTab(Some("review".into())),
@@ -932,7 +942,7 @@ fn new_agent_tab_completion_waits_for_layout_and_does_not_change_focus() {
         )
         .unwrap();
     let tab_id = target.tab_id;
-    assert_eq!(screen.tabs[&tab_id].name, "review");
+    assert_eq!(screen.core.tabs[&tab_id].name, "review");
     let mut completion = place_reserved_agent(&mut screen, 20, target.clone());
     assert!(matches!(
         completion.try_recv(),
@@ -943,6 +953,7 @@ fn new_agent_tab_completion_waits_for_layout_and_does_not_change_focus() {
         "pending work prevents cleanup"
     );
     screen
+        .core
         .tabs
         .get_mut(&tab_id)
         .unwrap()
@@ -951,7 +962,7 @@ fn new_agent_tab_completion_waits_for_layout_and_does_not_change_focus() {
     assert!(result.error_message.is_none());
     assert_eq!(result.affected_tab_id, Some(tab_id));
     assert_eq!(result.created_tab_id, Some(tab_id));
-    assert_eq!(screen.active_tab_ids, focus);
+    assert_eq!(screen.core.active_tab_ids, focus);
     assert!(
         !screen.cleanup_agent_tab(&target),
         "populated tabs must survive"
@@ -969,6 +980,7 @@ fn launch_transaction_empty_created_tab_cleanup_requires_exclusive_activity() {
             .resolve_agent_tab(AgentPlacement::NewTab(None), None, CLIENT)
             .unwrap();
         screen
+            .core
             .tabs
             .get_mut(&target.tab_id)
             .unwrap()
@@ -982,6 +994,7 @@ fn launch_transaction_empty_created_tab_cleanup_requires_exclusive_activity() {
             // Another launch used the tab, even if its own reservation was later released.
             let other = PaneId::Terminal(crate::TerminalId::new(21));
             screen
+                .core
                 .tabs
                 .get_mut(&target.tab_id)
                 .unwrap()
@@ -991,12 +1004,12 @@ fn launch_transaction_empty_created_tab_cleanup_requires_exclusive_activity() {
         }
         screen.close_pane_explicitly(owned, None);
         assert_eq!(screen.cleanup_agent_tab(&target), !shared);
-        assert_eq!(screen.tabs.contains_key(&target.tab_id), shared);
+        assert_eq!(screen.core.tabs.contains_key(&target.tab_id), shared);
         if !shared {
             tab_with_panes(&mut screen, target.tab_id, 30, 1);
             assert!(screen.cleanup_agent_tab(&target));
             assert!(
-                screen.tabs.contains_key(&target.tab_id),
+                screen.core.tabs.contains_key(&target.tab_id),
                 "idempotent cleanup must preserve a replacement tab"
             );
         }
@@ -1025,7 +1038,7 @@ fn closing_pending_agent_destination_fails_all_launches_and_cleanup_cannot_delet
         screen.cleanup_agent_tab(&target),
         "the launch-owned incarnation is already gone"
     );
-    assert!(screen.tabs.contains_key(&target.tab_id));
+    assert!(screen.core.tabs.contains_key(&target.tab_id));
 }
 
 #[test]
@@ -1039,12 +1052,13 @@ fn only_drained_empty_launch_created_tabs_are_cleaned_up() {
         .unwrap();
     assert!(!screen.cleanup_agent_tab(&target));
     screen
+        .core
         .tabs
         .get_mut(&target.tab_id)
         .unwrap()
         .finish_pending_layout();
     assert!(screen.cleanup_agent_tab(&target));
-    assert!(!screen.tabs.contains_key(&target.tab_id));
+    assert!(!screen.core.tabs.contains_key(&target.tab_id));
     let existing = screen
         .resolve_agent_tab(AgentPlacement::Tab(TabId::new(0)), None, CLIENT)
         .unwrap();
@@ -1062,7 +1076,7 @@ fn late_agent_layout_cannot_land_in_recreated_tab() {
         .unwrap();
     screen.close_tab_by_id(target.tab_id).unwrap();
     tab_with_panes(&mut screen, target.tab_id, 30, 1);
-    let before = screen.tabs[&target.tab_id].get_all_pane_ids();
+    let before = screen.core.tabs[&target.tab_id].get_all_pane_ids();
     screen
         .land_layout(
             TiledPaneLayout::default(),
@@ -1079,7 +1093,7 @@ fn late_agent_layout_cannot_land_in_recreated_tab() {
             &mut Default::default(),
         )
         .unwrap();
-    assert_eq!(screen.tabs[&TabId::new(1)].get_all_pane_ids(), before);
+    assert_eq!(screen.core.tabs[&TabId::new(1)].get_all_pane_ids(), before);
 }
 
 #[test]
@@ -1096,7 +1110,7 @@ fn failed_pending_agent_layout_reports_failure_without_deleting_the_pane() {
     let result = completion.blocking_recv().unwrap();
     assert!(result.error_message.unwrap().contains("layout failed"));
     assert!(result.affected_tab_id.is_none());
-    assert!(screen.tabs[&target.tab_id]
+    assert!(screen.core.tabs[&target.tab_id]
         .has_pane_with_pid(&PaneId::Terminal(crate::TerminalId::new(20))));
     assert!(!screen.cleanup_agent_tab(&target));
 }
@@ -1131,14 +1145,14 @@ fn empty_new_agent_tab_survives_layout_before_delayed_startup() {
         )
         .unwrap();
     screen.settle_tabs().unwrap();
-    assert!(screen.tabs.contains_key(&target.tab_id));
+    assert!(screen.core.tabs.contains_key(&target.tab_id));
     let result = place_reserved_agent(&mut screen, 20, target.clone())
         .blocking_recv()
         .unwrap();
     assert!(result.error_message.is_none(), "{result:?}");
     assert_eq!(result.affected_tab_id, Some(target.tab_id));
-    assert_eq!(screen.tabs[&target.tab_id].name, "review");
-    assert!(screen.tabs[&target.tab_id].is_user_named());
+    assert_eq!(screen.core.tabs[&target.tab_id].name, "review");
+    assert!(screen.core.tabs[&target.tab_id].is_user_named());
 }
 
 #[test]
@@ -1154,7 +1168,7 @@ fn a_deferred_tab_close_already_rejects_agent_arrivals() {
         .unwrap();
     screen.close_tab_by_id(TabId::new(0)).unwrap();
     assert!(
-        screen.tabs.contains_key(&TabId::new(0)),
+        screen.core.tabs.contains_key(&TabId::new(0)),
         "close waits for the other pending layout"
     );
     assert!(screen
@@ -1178,8 +1192,8 @@ fn suppressed_launch_resolution_prefers_the_originating_plugins_current_tab() {
     let plugin = PaneId::Plugin(yinz_types::internal_ids::PluginId::new(42));
     add_pane_to_tab(&mut screen, TabId::new(0), plugin, false);
     tab_with_panes(&mut screen, TabId::new(1), 10, 1);
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(1));
-    let focus = screen.active_tab_ids.clone();
+    assert_eq!(screen.core.active_tab_ids[&CLIENT], TabId::new(1));
+    let focus = screen.core.active_tab_ids.clone();
 
     for (originating_pane, requested, expected) in [
         (Some(plugin), None, TabId::new(0)),
@@ -1205,7 +1219,7 @@ fn suppressed_launch_resolution_prefers_the_originating_plugins_current_tab() {
         assert_eq!(destination.tab_id, expected);
         assert_eq!(gate.snapshot().destination.unwrap().tab_id, expected);
         assert!(!destination.created);
-        assert_eq!(screen.active_tab_ids, focus);
+        assert_eq!(screen.core.active_tab_ids, focus);
     }
 
     // Resolving a supplied tab still validates it instead of choosing the plugin's tab.
@@ -1226,7 +1240,7 @@ fn suppressed_launch_resolution_prefers_the_originating_plugins_current_tab() {
     assert!(gate.snapshot().destination.is_none());
 
     // A present origin whose tab is closing must fail, even with another active client tab.
-    screen.deferred_tab_closes.insert(TabId::new(0));
+    screen.core.deferred_tab_closes.insert(TabId::new(0));
     let gate = LaunchGate::new("test.suppressed.closing".into(), true);
     assert!(screen
         .resolve_launch_tab(
@@ -1251,13 +1265,13 @@ fn suppressed_agent_launch_completes_in_the_reserved_tab_without_layout_or_focus
         let mut screen = screen_with_floor();
         tab_with_panes(&mut screen, TabId::new(0), 1, 4);
         tab_with_panes(&mut screen, TabId::new(1), 10, 1);
-        let active_tabs = screen.active_tab_ids.clone();
+        let active_tabs = screen.core.active_tab_ids.clone();
         let destination = screen
             .resolve_agent_tab(AgentPlacement::Suppressed(requested), None, CLIENT)
             .unwrap();
         let tab_id = destination.tab_id;
         assert_eq!(tab_id, requested.unwrap_or(active_tabs[&CLIENT]));
-        let tab = &screen.tabs[&tab_id];
+        let tab = &screen.core.tabs[&tab_id];
         let focus = tab.get_active_pane_id(CLIENT);
         let geometry: Vec<_> = tab
             .get_all_pane_ids()
@@ -1288,9 +1302,9 @@ fn suppressed_agent_launch_completes_in_the_reserved_tab_without_layout_or_focus
         assert_eq!(result.affected_tab_id, Some(tab_id));
         assert!(result.error_message.is_none());
         assert!(result.created_tab_id.is_none());
-        assert_eq!(screen.tabs.len(), 2);
-        assert_eq!(screen.active_tab_ids, active_tabs);
-        let tab = &screen.tabs[&tab_id];
+        assert_eq!(screen.core.tabs.len(), 2);
+        assert_eq!(screen.core.active_tab_ids, active_tabs);
+        let tab = &screen.core.tabs[&tab_id];
         assert!(tab.get_pane_info(pane).unwrap().is_suppressed);
         assert_eq!(tab.get_active_pane_id(CLIENT), focus);
         for (id, geom) in geometry {
@@ -1346,7 +1360,7 @@ fn ui_plugin_ids() -> HashMap<RunPluginOrAlias, Vec<yinz_types::internal_ids::Pl
 
 fn screen_with_default_layout(crowded: bool) -> Screen {
     let mut screen = screen_with_floor();
-    screen.default_layout = Box::new(shipped_default_layout());
+    screen.core.default_layout = Box::new(shipped_default_layout());
     tab_with_panes(&mut screen, TabId::new(0), 1, if crowded { 4 } else { 1 });
     screen
 }
@@ -1448,6 +1462,7 @@ fn place_managed_agent(
 /// As the screen's reflow lays a tab out for its viewers.
 fn resize_tab(screen: &mut Screen, tab_id: TabId, rows: usize) {
     screen
+        .core
         .tabs
         .get_mut(&tab_id)
         .unwrap()
@@ -1459,7 +1474,7 @@ fn resize_tab(screen: &mut Screen, tab_id: TabId, rows: usize) {
 }
 
 fn load_ui_plugins(screen: &mut Screen, tab_id: TabId) {
-    let tab = screen.tabs.get_mut(&tab_id).unwrap();
+    let tab = screen.core.tabs.get_mut(&tab_id).unwrap();
     tab.set_pane_selectable(TAB_BAR, false);
     tab.set_pane_selectable(STATUS_BAR, false);
 }
@@ -1481,7 +1496,7 @@ fn assert_agent_fills_default_layout(
     assert_eq!(snapshot.revoked, None, "{case}");
     assert_eq!(snapshot.slot.map(|slot| slot.pane_id), Some(pane), "{case}");
 
-    let tab = &screen.tabs[&tab_id];
+    let tab = &screen.core.tabs[&tab_id];
     let geom = |id: PaneId| {
         let geom = tab.get_pane_with_id(id).unwrap().position_and_size();
         (geom.x, geom.y, geom.cols.as_usize(), geom.rows.as_usize())
@@ -1564,7 +1579,10 @@ fn an_explicit_new_agent_tab_gives_its_pane_the_default_layouts_content_slot() {
             (completion, gate)
         } else {
             land_asked_layout(&mut screen, asked, &mut pending);
-            assert!(screen.tabs[&tab_id].has_reserved_layout_slot(), "{case}");
+            assert!(
+                screen.core.tabs[&tab_id].has_reserved_layout_slot(),
+                "{case}"
+            );
             if !matches!(arrival, Arrival::BeforePluginsLoad) {
                 load_ui_plugins(&mut screen, tab_id);
             }
@@ -1613,7 +1631,10 @@ fn an_agent_rerouted_out_of_a_crowded_tab_gets_the_default_layouts_content_slot(
         let mut rows = SURFACE.rows;
         if delayed_replay {
             land_asked_layout(&mut screen, asked, &mut PendingEvents::default());
-            assert!(screen.tabs[&tab_id].has_reserved_layout_slot(), "{case}");
+            assert!(
+                screen.core.tabs[&tab_id].has_reserved_layout_slot(),
+                "{case}"
+            );
             rows = 30;
             resize_tab(&mut screen, tab_id, rows);
             load_ui_plugins(&mut screen, tab_id);
@@ -1636,10 +1657,10 @@ fn only_tabs_opened_for_an_agent_hold_a_layout_slot() {
     let tab_id = screen
         .new_tab_for_adopted_pane(Some(run("claude")), CLIENT, false)
         .unwrap();
-    assert!(!screen.tabs[&tab_id].agent_layout_slot_expected);
+    assert!(!screen.core.tabs[&tab_id].agent_layout_slot_expected);
     let asked = layouts_asked_for(&plugins).remove(0);
     land_asked_layout(&mut screen, asked, &mut PendingEvents::default());
-    assert!(!screen.tabs[&tab_id].has_reserved_layout_slot());
+    assert!(!screen.core.tabs[&tab_id].has_reserved_layout_slot());
 
     // As project arrangement lands a new tab and moves panes into it: an agent placed in that
     // tab afterwards is admitted beside them, as in any tab with content.
@@ -1649,7 +1670,7 @@ fn only_tabs_opened_for_an_agent_hold_a_layout_slot() {
     screen
         .new_tab(tab_id, (vec![], vec![]), None, None)
         .unwrap();
-    let (mut layout, floating) = screen.default_layout.new_tab();
+    let (mut layout, floating) = screen.core.default_layout.new_tab();
     layout.ignore_run_instruction(None);
     screen
         .land_layout(
@@ -1669,16 +1690,17 @@ fn only_tabs_opened_for_an_agent_hold_a_layout_slot() {
         .unwrap();
     drop(plugins);
     load_ui_plugins(&mut screen, tab_id);
-    assert!(!screen.tabs[&tab_id].has_reserved_layout_slot());
+    assert!(!screen.core.tabs[&tab_id].has_reserved_layout_slot());
     let arranged_id = PaneId::Terminal(crate::TerminalId::new(1));
     let pane = screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
         .extract_pane(arranged_id, true)
         .unwrap();
     {
-        let tab = screen.tabs.get_mut(&tab_id).unwrap();
+        let tab = screen.core.tabs.get_mut(&tab_id).unwrap();
         let _ = tab.accept_arranged_pane(pane, crate::screen::ExtractedPanePlacement::Tiled);
         tab.arrange_existing_panes(&TiledPaneLayout::default(), &[arranged_id])
             .unwrap();
@@ -1698,7 +1720,7 @@ fn only_tabs_opened_for_an_agent_hold_a_layout_slot() {
     let result = completion.blocking_recv().unwrap();
     assert!(result.error_message.is_none(), "{result:?}");
     assert!(gate.snapshot().slot.is_some());
-    let tab = &screen.tabs[&tab_id];
+    let tab = &screen.core.tabs[&tab_id];
     assert_eq!(tab.tiled_content_pane_count(), 2);
     // Worker admission splits the arranged pane and leaves the swap layout to the user.
     assert!(tab.swap_layout_info().1);

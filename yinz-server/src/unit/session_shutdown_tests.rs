@@ -197,6 +197,7 @@ fn failed_worker_spawns_preserve_partial_startup_until_the_server_queue_disconne
             );
             let mut starting = None;
             let result = init_session(
+                None,
                 &mut starting,
                 Box::new(crate::capturing_os::CapturingOs::default()),
                 to_server,

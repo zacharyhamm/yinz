@@ -22,9 +22,9 @@ struct Fixture {
 fn fixture() -> Fixture {
     let (mut screen, capture) = create_new_screen_with_forward_capture(Size { cols: 80, rows: 24 });
     let (to_screen, screen_rx) = channels::unbounded();
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
     let (to_plugin, plugins) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
     new_tab(&mut screen, PANE, TAB);
     let mut fixture = Fixture {
         screen,
@@ -103,7 +103,7 @@ impl Fixture {
         self.screen
             .command_palette_handles_input(&None, b"Change theme", false, CLIENT);
         self.key(BareKey::Enter);
-        assert!(self.screen.theme_preview.is_some());
+        assert!(self.screen.palette.theme_preview.is_some());
     }
 
     fn key(&mut self, key: BareKey) {
@@ -156,12 +156,13 @@ fn with_pair(fixture: &mut Fixture) -> (Styling, Styling) {
     let mut day = Styling::default();
     day.text_unselected.background = yinz_types::colors::PaletteColor::Rgb((238, 238, 238));
     let screen = &mut fixture.screen;
-    screen.themes = BTreeMap::from([("night".into(), night), ("day".into(), day)]);
-    screen.terminal_themes = BTreeMap::from([("night".into(), dark()), ("day".into(), light())]);
-    screen.theme_dark_name = Some("night".into());
-    screen.theme_light_name = Some("day".into());
-    screen.host_theme_dark_styling = Some(night);
-    screen.host_theme_light_styling = Some(day);
+    screen.core.themes = BTreeMap::from([("night".into(), night), ("day".into(), day)]);
+    screen.core.terminal_themes =
+        BTreeMap::from([("night".into(), dark()), ("day".into(), light())]);
+    screen.core.theme_dark_name = Some("night".into());
+    screen.core.theme_light_name = Some("day".into());
+    screen.core.host_theme_dark_styling = Some(night);
+    screen.core.host_theme_light_styling = Some(day);
     fixture.set_theme(paired_application_theme(Some(dark()), Some(light())));
     fixture.drain();
     (night, day)
@@ -226,7 +227,7 @@ fn application_baseline_without_terminal_theme_uses_stable_fallbacks() {
         f.answers(PANE),
         expected(fallback.theme, HostTerminalThemeMode::Light)
     );
-    assert_eq!(f.screen.style.terminal, None);
+    assert_eq!(f.screen.core.style.terminal, None);
 }
 
 #[test]
@@ -272,18 +273,18 @@ fn application_baseline_ignores_theme_preview() {
     let preview = light();
     let mut preview_styling = Styling::default();
     preview_styling.text_unselected.background = yinz_types::colors::PaletteColor::Rgb((1, 2, 3));
-    f.screen.themes = BTreeMap::from([
+    f.screen.core.themes = BTreeMap::from([
         ("preview".into(), preview_styling),
-        ("zzz".into(), f.screen.style.colors),
+        ("zzz".into(), f.screen.core.style.colors),
     ]);
-    f.screen.terminal_themes = BTreeMap::from([("preview".into(), preview)]);
-    f.screen.theme_name = Some("zzz".into());
+    f.screen.core.terminal_themes = BTreeMap::from([("preview".into(), preview)]);
+    f.screen.core.theme_name = Some("zzz".into());
     f.open_theme_picker();
     f.key(BareKey::Up);
-    assert_eq!(f.screen.style.terminal, Some(preview));
+    assert_eq!(f.screen.core.style.terminal, Some(preview));
     assert_eq!(f.answers(PANE), baseline);
     f.screen.close_command_palette(CLIENT);
-    assert_eq!(f.screen.style.terminal, Some(dark()));
+    assert_eq!(f.screen.core.style.terminal, Some(dark()));
     assert_eq!(f.answers(PANE), baseline);
 
     // A saved theme is a session-wide change and does move the answers.
@@ -311,7 +312,7 @@ fn application_baseline_follows_pins_and_announces_once() {
         f.appearance_notifications(),
         vec![(PANE, "\x1b[?997;2n".to_owned())]
     );
-    assert_eq!(f.screen.style.terminal, Some(light()));
+    assert_eq!(f.screen.core.style.terminal, Some(light()));
     assert_eq!(
         f.answers(PANE),
         expected(light(), HostTerminalThemeMode::Light)
@@ -328,7 +329,7 @@ fn application_baseline_follows_pins_and_announces_once() {
         .update_host_terminal_theme_mode(HostTerminalThemeMode::Dark)
         .unwrap();
     assert!(f.appearance_notifications().is_empty());
-    assert_eq!(f.screen.style.terminal, Some(light()));
+    assert_eq!(f.screen.core.style.terminal, Some(light()));
     assert_eq!(
         f.answers(PANE),
         expected(light(), HostTerminalThemeMode::Light)
@@ -351,14 +352,14 @@ fn application_baseline_follows_pins_and_announces_once() {
 fn application_baseline_survives_client_mode_change() {
     let mut f = fixture();
     f.set_theme(static_application_theme(Some(light())));
-    let baseline = f.screen.style.application;
+    let baseline = f.screen.core.style.application;
     f.screen
         .change_mode(InputMode::Locked, None, CLIENT)
         .unwrap();
     f.screen
         .change_mode(InputMode::Normal, None, CLIENT)
         .unwrap();
-    assert_eq!(f.screen.style.application, baseline);
+    assert_eq!(f.screen.core.style.application, baseline);
     // A tab created afterwards copies the screen's style.
     new_tab(&mut f.screen, 2, TabId::new(1));
     assert_eq!(
@@ -411,6 +412,7 @@ fn application_baseline_reaches_floating_suppressed_and_new_panes() {
         false,
     );
     f.screen
+        .core
         .tabs
         .get_mut(&TAB)
         .unwrap()
@@ -425,6 +427,7 @@ fn application_baseline_reaches_floating_suppressed_and_new_panes() {
     for id in [1, 2, 3, 4] {
         let pane = f
             .screen
+            .core
             .tabs
             .get_mut(&TAB)
             .unwrap()
@@ -464,7 +467,7 @@ fn application_baseline_ignores_per_client_reconfigure() {
         .reconfigure(config.clone(), Keybinds::default(), ClientId::new(2))
         .unwrap();
     assert!(f.appearance_notifications().is_empty());
-    assert_eq!(f.screen.style.terminal, Some(dark()));
+    assert_eq!(f.screen.core.style.terminal, Some(dark()));
     assert_eq!(f.answers(PANE), baseline);
 
     // The same theme delivered as the session's theme does change them, once.
@@ -473,7 +476,7 @@ fn application_baseline_ignores_per_client_reconfigure() {
         f.appearance_notifications(),
         vec![(PANE, "\x1b[?997;2n".to_owned())]
     );
-    assert_eq!(f.screen.style.terminal, Some(light()));
+    assert_eq!(f.screen.core.style.terminal, Some(light()));
     assert_eq!(
         f.answers(PANE),
         expected(light(), HostTerminalThemeMode::Light)
@@ -488,9 +491,9 @@ fn application_baseline_keeps_render_palette_on_baseline_under_auto_pair() {
         .update_host_terminal_theme_mode(HostTerminalThemeMode::Light)
         .unwrap();
     // The viewer's chrome follows its terminal; panes and answers stay on the baseline.
-    assert_eq!(f.screen.style.colors, day);
-    assert_eq!(f.screen.style.terminal, Some(dark()));
-    assert_eq!(f.screen.tabs[&TAB].style.terminal, Some(dark()));
+    assert_eq!(f.screen.core.style.colors, day);
+    assert_eq!(f.screen.core.style.terminal, Some(dark()));
+    assert_eq!(f.screen.core.tabs[&TAB].style.terminal, Some(dark()));
     assert_eq!(
         f.answers(PANE),
         expected(dark(), HostTerminalThemeMode::Dark)
@@ -529,15 +532,15 @@ fn application_baseline_toggle_uses_baseline_mode() {
 /// Preview `alpha` (with a terminal block) from a picker opened on `beta`, then ask the
 /// server to save it, returning the save request.
 fn preview_and_save_alpha(f: &mut Fixture) -> uuid::Uuid {
-    let beta = f.screen.style.colors;
+    let beta = f.screen.core.style.colors;
     let mut alpha = beta;
     alpha.text_unselected.background = yinz_types::colors::PaletteColor::Rgb((1, 2, 3));
-    f.screen.themes = BTreeMap::from([("alpha".into(), alpha), ("beta".into(), beta)]);
-    f.screen.terminal_themes = BTreeMap::from([("alpha".into(), light())]);
-    f.screen.theme_name = Some("beta".into());
+    f.screen.core.themes = BTreeMap::from([("alpha".into(), alpha), ("beta".into(), beta)]);
+    f.screen.core.terminal_themes = BTreeMap::from([("alpha".into(), light())]);
+    f.screen.core.theme_name = Some("beta".into());
     f.open_theme_picker();
     f.key(BareKey::Up);
-    assert_eq!(f.screen.style.terminal, Some(light()));
+    assert_eq!(f.screen.core.style.terminal, Some(light()));
     f.screen.save_palette_theme(CLIENT, "alpha".into(), false);
     f.capture
         .server_rx
@@ -559,11 +562,11 @@ fn application_baseline_theme_save_restores_render_to_baseline() {
     f.set_theme(static_application_theme(Some(dark())));
     let request = preview_and_save_alpha(&mut f);
     f.set_theme(static_application_theme(Some(light())));
-    assert_eq!(f.screen.style.terminal, Some(light()));
+    assert_eq!(f.screen.core.style.terminal, Some(light()));
     f.screen.palette_theme_saved(CLIENT, request, Ok(()));
-    assert!(f.screen.theme_preview.is_none());
-    assert_eq!(f.screen.style.terminal, Some(light()));
-    assert_eq!(f.screen.tabs[&TAB].style.terminal, Some(light()));
+    assert!(f.screen.palette.theme_preview.is_none());
+    assert_eq!(f.screen.core.style.terminal, Some(light()));
+    assert_eq!(f.screen.core.tabs[&TAB].style.terminal, Some(light()));
     assert_eq!(
         f.answers(PANE),
         expected(light(), HostTerminalThemeMode::Light)
@@ -575,9 +578,9 @@ fn application_baseline_theme_save_restores_render_to_baseline() {
     f.set_theme(static_application_theme(Some(dark())));
     let request = preview_and_save_alpha(&mut f);
     f.screen.palette_theme_saved(CLIENT, request, Ok(()));
-    assert!(f.screen.theme_preview.is_none());
-    assert_eq!(f.screen.style.terminal, Some(dark()));
-    assert_eq!(f.screen.tabs[&TAB].style.terminal, Some(dark()));
+    assert!(f.screen.palette.theme_preview.is_none());
+    assert_eq!(f.screen.core.style.terminal, Some(dark()));
+    assert_eq!(f.screen.core.tabs[&TAB].style.terminal, Some(dark()));
     assert_eq!(
         f.answers(PANE),
         expected(dark(), HostTerminalThemeMode::Dark)
@@ -595,9 +598,9 @@ fn application_baseline_preview_normal_entry_keeps_baseline_terminal() {
     // A filter that matches no theme previews the viewer's own chrome.
     f.screen
         .command_palette_handles_input(&None, b"no such theme", false, CLIENT);
-    assert!(f.screen.theme_preview.is_some());
-    assert_eq!(f.screen.style.colors, day);
-    assert_eq!(f.screen.style.terminal, Some(dark()));
+    assert!(f.screen.palette.theme_preview.is_some());
+    assert_eq!(f.screen.core.style.colors, day);
+    assert_eq!(f.screen.core.style.terminal, Some(dark()));
 }
 
 #[test]
@@ -627,7 +630,7 @@ fn application_baseline_explicit_light_hue_without_terminal_block_answers_light_
     );
     assert_eq!(f.answers(PANE), light);
     // Panes keep rendering host defaults: there is no block to paint with.
-    assert_eq!(f.screen.style.terminal, None);
+    assert_eq!(f.screen.core.style.terminal, None);
 
     // A viewer's dark reports change neither the answers nor the PTY.
     f.screen

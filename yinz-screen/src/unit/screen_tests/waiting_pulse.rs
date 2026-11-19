@@ -38,7 +38,7 @@ fn effect_colors(screen: &Screen, style: PaneFrameStyle, color: PaletteColor) ->
     if style != PaneFrameStyle::Titles {
         return vec![color.into()];
     }
-    let colors = &screen.style.colors;
+    let colors = &screen.core.style.colors;
     [
         colors.ribbon_selected.background,
         colors.ribbon_unselected.background,
@@ -48,7 +48,7 @@ fn effect_colors(screen: &Screen, style: PaneFrameStyle, color: PaletteColor) ->
 }
 
 fn waiting_since(screen: &Screen) -> Option<Instant> {
-    screen.tabs[&TAB]
+    screen.core.tabs[&TAB]
         .get_pane_with_id(WAITING)
         .unwrap()
         .waiting_pulse_started_at()
@@ -57,8 +57,8 @@ fn waiting_since(screen: &Screen) -> Option<Instant> {
 fn set_readable_ribbon_colors(screen: &mut Screen) {
     // Keep pulse and override colors readable so these tests can observe their precedence.
     for ribbon in [
-        &mut screen.style.colors.ribbon_selected,
-        &mut screen.style.colors.ribbon_unselected,
+        &mut screen.core.style.colors.ribbon_selected,
+        &mut screen.core.style.colors.ribbon_unselected,
     ] {
         ribbon.background = PaletteColor::Rgb((0, 0, 0));
         ribbon.base = PaletteColor::Rgb((255, 255, 255));
@@ -74,9 +74,9 @@ fn pair(
     let (mut screen, jobs) = screen_with_background_jobs(SIZE);
     set_readable_ribbon_colors(&mut screen);
     new_tab(&mut screen, if floating { 0 } else { 1 }, TAB);
-    *screen.stacked_pane_list.borrow_mut() = list;
-    screen.terminal_emulator_colors.borrow_mut().fg = PaletteColor::Rgb((100, 150, 200));
-    let tab = screen.tabs.get_mut(&TAB).unwrap();
+    *screen.core.stacked_pane_list.borrow_mut() = list;
+    screen.core.terminal_emulator_colors.borrow_mut().fg = PaletteColor::Rgb((100, 150, 200));
+    let tab = screen.core.tabs.get_mut(&TAB).unwrap();
     tab.set_pane_frames(style);
     for id in if floating { 1..=2 } else { 2..=2 } {
         let placement = if floating {
@@ -123,7 +123,10 @@ fn pair(
         .unwrap();
     }
     screen.render_to_clients().unwrap();
-    assert_eq!(screen.tabs[&TAB].get_active_pane_id(CLIENT), Some(FOCUSED));
+    assert_eq!(
+        screen.core.tabs[&TAB].get_active_pane_id(CLIENT),
+        Some(FOCUSED)
+    );
     drain_background_jobs(&jobs);
     (screen, jobs)
 }
@@ -143,17 +146,17 @@ fn waiting_pulse_repaints_idle_frames_boundaries_and_both_stack_headers() {
         apply_pane_agent_report(&mut screen, WAITING, Some(waiting())).unwrap();
         let start = waiting_since(&screen).unwrap();
         let (server_tx, server_rx) = channels::unbounded();
-        screen.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
+        screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
         let mut grid = grid_for_render_snapshot(SIZE);
-        screen.tabs.get_mut(&TAB).unwrap().set_force_render();
-        screen.pinned_now = Some(start);
+        screen.core.tabs.get_mut(&TAB).unwrap().set_force_render();
+        screen.core.pinned_now = Some(start);
         render_frame_into(&mut screen, &server_rx, CLIENT, &mut grid);
         assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
         assert!(drain_background_jobs(&jobs).contains(&BackgroundJob::StartAnimationClock(PERIOD)));
         let base = grid.as_character_lines();
 
         let peak = start + Duration::from_millis(900);
-        screen.pinned_now = Some(peak);
+        screen.core.pinned_now = Some(peak);
         screen.on_animation_tick(peak).unwrap();
         assert!(drain_background_jobs(&jobs).contains(&BackgroundJob::RenderToClients));
         render_frame_into(&mut screen, &server_rx, CLIENT, &mut grid);
@@ -165,13 +168,13 @@ fn waiting_pulse_repaints_idle_frames_boundaries_and_both_stack_headers() {
             "floating={floating}, stacked={stacked}, list={list}, style={style:?}"
         );
 
-        screen.pinned_now = Some(start + Duration::from_millis(1800));
+        screen.core.pinned_now = Some(start + Duration::from_millis(1800));
         render_frame_into(&mut screen, &server_rx, CLIENT, &mut grid);
         assert!(
             grid.as_character_lines() == base,
             "a full cycle returns to the base frame: floating={floating}, stacked={stacked}, list={list}, style={style:?}"
         );
-        assert!(screen.tabs[&TAB]
+        assert!(screen.core.tabs[&TAB]
             .get_pane_with_id(WAITING)
             .unwrap()
             .stack_list_entry_label(false)
@@ -190,10 +193,10 @@ fn waiting_pulse_shared_boundary_loses_to_focus_and_stops_after_removing_frames(
             ] {
                 let (mut screen, jobs) = screen_with_background_jobs(SIZE);
                 set_readable_ribbon_colors(&mut screen);
-                screen.terminal_emulator_colors.borrow_mut().fg =
+                screen.core.terminal_emulator_colors.borrow_mut().fg =
                     PaletteColor::Rgb((100, 150, 200));
                 new_tab(&mut screen, 1, TAB);
-                let tab = screen.tabs.get_mut(&TAB).unwrap();
+                let tab = screen.core.tabs.get_mut(&TAB).unwrap();
                 tab.set_pane_frames(initial_style);
                 tab.new_pane(
                     FOCUSED,
@@ -219,26 +222,28 @@ fn waiting_pulse_shared_boundary_loses_to_focus_and_stops_after_removing_frames(
                 screen.render_to_clients().unwrap();
                 drain_background_jobs(&jobs);
                 apply_pane_agent_report(&mut screen, waiting_pane, Some(waiting())).unwrap();
-                let start = screen.tabs[&TAB]
+                let start = screen.core.tabs[&TAB]
                     .get_pane_with_id(waiting_pane)
                     .unwrap()
                     .waiting_pulse_started_at()
                     .unwrap();
                 let (server_tx, server_rx) = channels::unbounded();
-                screen.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
+                screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
                 let mut grid = grid_for_render_snapshot(SIZE);
-                screen.tabs.get_mut(&TAB).unwrap().set_force_render();
-                screen.pinned_now = Some(start);
+                screen.core.tabs.get_mut(&TAB).unwrap().set_force_render();
+                screen.core.pinned_now = Some(start);
                 render_frame_into(&mut screen, &server_rx, CLIENT, &mut grid);
                 let base = grid.as_character_lines();
-                screen.pinned_now = Some(start + Duration::from_millis(900));
+                screen.core.pinned_now = Some(start + Duration::from_millis(900));
                 render_frame_into(&mut screen, &server_rx, CLIENT, &mut grid);
                 assert_eq!(
                     screen.animation_clock_period(start),
                     (initial_style != PaneFrameStyle::None).then_some(PERIOD)
                 );
                 if initial_style != PaneFrameStyle::None {
-                    let pane = screen.tabs[&TAB].get_pane_with_id(waiting_pane).unwrap();
+                    let pane = screen.core.tabs[&TAB]
+                        .get_pane_with_id(waiting_pane)
+                        .unwrap();
                     let lines = grid.as_character_lines();
                     assert!(lines[pane.y()]
                         .iter()
@@ -247,13 +252,14 @@ fn waiting_pulse_shared_boundary_loses_to_focus_and_stops_after_removing_frames(
                         .take(pane.cols())
                         .any(|(peak, base)| peak.styles.foreground != base.styles.foreground),
                         "direction={direction:?}, waiting_pane={waiting_pane:?}, style={initial_style:?}");
-                    assert!(screen.tabs[&TAB]
+                    assert!(screen.core.tabs[&TAB]
                         .get_pane_with_id(waiting_pane)
                         .unwrap()
                         .waiting_pulse()
                         .is_some());
                     drain_background_jobs(&jobs);
                     screen
+                        .core
                         .tabs
                         .get_mut(&TAB)
                         .unwrap()
@@ -267,7 +273,9 @@ fn waiting_pulse_shared_boundary_loses_to_focus_and_stops_after_removing_frames(
                         .contains(&BackgroundJob::StartAnimationClock(PERIOD)));
                 }
                 assert_eq!(screen.animation_clock_period(start), None);
-                let pane = screen.tabs[&TAB].get_pane_with_id(waiting_pane).unwrap();
+                let pane = screen.core.tabs[&TAB]
+                    .get_pane_with_id(waiting_pane)
+                    .unwrap();
                 assert_eq!(pane.waiting_pulse(), None);
                 assert_eq!(pane.waiting_pulse_started_at(), Some(start));
             }
@@ -287,13 +295,13 @@ fn waiting_pulse_overrides_stop_the_clock_and_clearing_resumes_the_episode() {
         apply_pane_agent_report(&mut screen, WAITING, Some(waiting())).unwrap();
         let start = waiting_since(&screen).unwrap();
         let (server_tx, server_rx) = channels::unbounded();
-        screen.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
+        screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
         let mut grid = grid_for_render_snapshot(SIZE);
-        screen.pinned_now = Some(start + Duration::from_millis(900));
-        screen.tabs.get_mut(&TAB).unwrap().set_force_render();
+        screen.core.pinned_now = Some(start + Duration::from_millis(900));
+        screen.core.tabs.get_mut(&TAB).unwrap().set_force_render();
         render_frame_into(&mut screen, &server_rx, CLIENT, &mut grid);
         let peak = grid.as_character_lines();
-        let pane = screen.tabs[&TAB].get_pane_with_id(WAITING).unwrap();
+        let pane = screen.core.tabs[&TAB].get_pane_with_id(WAITING).unwrap();
         let (x, y) = (pane.x(), pane.y());
         let pulse_colors = effect_colors(&screen, style, PaletteColor::Rgb((127, 142, 157)));
         let col = (x..x + pane.cols())
@@ -307,16 +315,17 @@ fn waiting_pulse_overrides_stop_the_clock_and_clearing_resumes_the_episode() {
         assert!(drain_background_jobs(&jobs).contains(&BackgroundJob::StartAnimationClock(PERIOD)));
 
         screen
+            .core
             .tabs
             .get_mut(&TAB)
             .unwrap()
             .add_highlight_pane_frame_color_override(WAITING, None, None);
-        screen.tabs.get_mut(&TAB).unwrap().set_force_render();
+        screen.core.tabs.get_mut(&TAB).unwrap().set_force_render();
         render_frame_into(&mut screen, &server_rx, CLIENT, &mut grid);
         let highlight = effect_colors(
             &screen,
             style,
-            screen.style.colors.frame_highlight.emphasis_0,
+            screen.core.style.colors.frame_highlight.emphasis_0,
         );
         assert!(grid.as_character_lines()[y][col]
             .styles
@@ -324,7 +333,7 @@ fn waiting_pulse_overrides_stop_the_clock_and_clearing_resumes_the_episode() {
             .is_some_and(|color| highlight.contains(&color)));
         assert_eq!(screen.animation_clock_period(start), None);
         assert_eq!(
-            screen.tabs[&TAB]
+            screen.core.tabs[&TAB]
                 .get_pane_with_id(WAITING)
                 .unwrap()
                 .waiting_pulse(),
@@ -332,17 +341,18 @@ fn waiting_pulse_overrides_stop_the_clock_and_clearing_resumes_the_episode() {
         );
         assert!(drain_background_jobs(&jobs).contains(&BackgroundJob::StopAnimationClock));
         let overridden = grid.as_character_lines();
-        screen.pinned_now = Some(start);
+        screen.core.pinned_now = Some(start);
         render_frame_into(&mut screen, &server_rx, CLIENT, &mut grid);
         assert!(grid.as_character_lines() == overridden);
 
         screen
+            .core
             .tabs
             .get_mut(&TAB)
             .unwrap()
             .clear_pane_frame_color_override(WAITING, None);
-        screen.pinned_now = Some(start + Duration::from_millis(900));
-        screen.tabs.get_mut(&TAB).unwrap().set_force_render();
+        screen.core.pinned_now = Some(start + Duration::from_millis(900));
+        screen.core.tabs.get_mut(&TAB).unwrap().set_force_render();
         render_frame_into(&mut screen, &server_rx, CLIENT, &mut grid);
         assert!(grid.as_character_lines() == peak);
         assert_eq!(waiting_since(&screen), Some(start));
@@ -357,6 +367,7 @@ fn waiting_pulse_overrides_respect_other_viewers_and_watchers() {
     let other = ClientId::new(2);
     screen.add_client(other).unwrap();
     screen
+        .core
         .tabs
         .get_mut(&TAB)
         .unwrap()
@@ -364,25 +375,26 @@ fn waiting_pulse_overrides_respect_other_viewers_and_watchers() {
         .unwrap();
     apply_pane_agent_report(&mut screen, WAITING, Some(waiting())).unwrap();
     let start = waiting_since(&screen).unwrap();
-    screen.pinned_now = Some(start + Duration::from_millis(900));
+    screen.core.pinned_now = Some(start + Duration::from_millis(900));
     screen
+        .core
         .tabs
         .get_mut(&TAB)
         .unwrap()
         .add_highlight_pane_frame_color_override(WAITING, None, Some(CLIENT));
     let (server_tx, server_rx) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
     let mut grid = grid_for_render_snapshot(SIZE);
-    let pane = screen.tabs[&TAB].get_pane_with_id(WAITING).unwrap();
+    let pane = screen.core.tabs[&TAB].get_pane_with_id(WAITING).unwrap();
     let (x, y) = (pane.x(), pane.y());
     for (client, expected) in [
         (
             CLIENT,
-            AnsiCode::from(screen.style.colors.frame_highlight.emphasis_0),
+            AnsiCode::from(screen.core.style.colors.frame_highlight.emphasis_0),
         ),
         (other, AnsiCode::RgbCode((127, 142, 157))),
     ] {
-        screen.tabs.get_mut(&TAB).unwrap().set_force_render();
+        screen.core.tabs.get_mut(&TAB).unwrap().set_force_render();
         render_frame_into(&mut screen, &server_rx, client, &mut grid);
         assert_eq!(
             grid.as_character_lines()[y][x].styles.foreground,
@@ -402,11 +414,12 @@ fn waiting_pulse_overrides_respect_other_viewers_and_watchers() {
     assert!(drain_background_jobs(&jobs).contains(&BackgroundJob::StopAnimationClock));
 
     screen
+        .core
         .tabs
         .get_mut(&TAB)
         .unwrap()
         .clear_pane_frame_color_override(WAITING, Some(CLIENT));
-    screen.tabs.get_mut(&TAB).unwrap().set_force_render();
+    screen.core.tabs.get_mut(&TAB).unwrap().set_force_render();
     render_frame_into(&mut screen, &server_rx, watcher, &mut grid);
     assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
     assert_eq!(
@@ -433,6 +446,7 @@ fn waiting_pulse_grouped_frames_boundaries_and_list_borders_keep_precedence_over
         let (mut screen, jobs) = pair(floating, stacked, list, style);
         if list {
             screen
+                .core
                 .tabs
                 .get_mut(&TAB)
                 .unwrap()
@@ -449,13 +463,14 @@ fn waiting_pulse_grouped_frames_boundaries_and_list_borders_keep_precedence_over
                 .unwrap();
         }
         apply_pane_agent_report(&mut screen, waiting_pane, Some(waiting())).unwrap();
-        let start = screen.tabs[&TAB]
+        let start = screen.core.tabs[&TAB]
             .get_pane_with_id(waiting_pane)
             .unwrap()
             .waiting_pulse_started_at()
             .unwrap();
-        screen.pinned_now = Some(start + Duration::from_millis(900));
+        screen.core.pinned_now = Some(start + Duration::from_millis(900));
         screen
+            .core
             .tabs
             .get_mut(&TAB)
             .unwrap()
@@ -463,23 +478,22 @@ fn waiting_pulse_grouped_frames_boundaries_and_list_borders_keep_precedence_over
         screen.render_to_clients().unwrap();
         assert_eq!(screen.animation_clock_period(start), None);
         drain_background_jobs(&jobs);
-        screen.current_pane_group.borrow_mut().add_pane_id_to_group(
-            waiting_pane,
-            SIZE,
-            None,
-            &CLIENT,
-        );
+        screen
+            .core
+            .current_pane_group
+            .borrow_mut()
+            .add_pane_id_to_group(waiting_pane, SIZE, None, &CLIENT);
         let (server_tx, server_rx) = channels::unbounded();
-        screen.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
+        screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
         let mut grid = grid_for_render_snapshot(SIZE);
-        screen.tabs.get_mut(&TAB).unwrap().set_force_render();
+        screen.core.tabs.get_mut(&TAB).unwrap().set_force_render();
         render_frame_into(&mut screen, &server_rx, CLIENT, &mut grid);
         let expected = effect_colors(
             &screen,
             style,
             yinz_types::animation::blend(
-                screen.style.colors.frame_highlight.emphasis_0,
-                screen.style.colors.text_unselected.base,
+                screen.core.style.colors.frame_highlight.emphasis_0,
+                screen.core.style.colors.text_unselected.base,
                 0.7,
             ),
         );
@@ -492,7 +506,7 @@ fn waiting_pulse_grouped_frames_boundaries_and_list_borders_keep_precedence_over
             "floating={floating}, stacked={stacked}, list={list}, style={style:?}, pane={waiting_pane:?}, expected={expected:?}");
         assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
         assert_eq!(
-            screen.tabs[&TAB]
+            screen.core.tabs[&TAB]
                 .get_pane_with_id(waiting_pane)
                 .unwrap()
                 .waiting_pulse_started_at(),
@@ -507,11 +521,11 @@ fn waiting_pulse_wins_shared_idle_boundary_in_both_pane_id_orders() {
     for ids in [[1, 2, 3], [3, 2, 1]] {
         let [focused, idle, waiting_pane] = ids.map(|id| PaneId::Terminal(TerminalId::new(id)));
         let (mut screen, _jobs) = screen_with_background_jobs(SIZE);
-        let mut unselected = screen.style.colors.text_unselected;
+        let mut unselected = screen.core.style.colors.text_unselected;
         unselected.base = PaletteColor::Rgb((100, 150, 200));
-        screen.style.colors.frame_unselected = Some(unselected);
+        screen.core.style.colors.frame_unselected = Some(unselected);
         new_tab(&mut screen, ids[0], TAB);
-        let tab = screen.tabs.get_mut(&TAB).unwrap();
+        let tab = screen.core.tabs.get_mut(&TAB).unwrap();
         tab.set_pane_frames(PaneFrameStyle::None);
         for pane in [idle, waiting_pane] {
             tab.new_pane(
@@ -535,21 +549,21 @@ fn waiting_pulse_wins_shared_idle_boundary_in_both_pane_id_orders() {
         let waiting_boundary = tab.get_pane_with_id(waiting_pane).unwrap().x() - 1;
         assert!(focused_boundary < waiting_boundary);
         apply_pane_agent_report(&mut screen, waiting_pane, Some(waiting())).unwrap();
-        let start = screen.tabs[&TAB]
+        let start = screen.core.tabs[&TAB]
             .get_pane_with_id(waiting_pane)
             .unwrap()
             .waiting_pulse_started_at()
             .unwrap();
         let (server_tx, server_rx) = channels::unbounded();
-        screen.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
+        screen.core.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
         let mut grid = grid_for_render_snapshot(SIZE);
-        screen.tabs.get_mut(&TAB).unwrap().set_force_render();
+        screen.core.tabs.get_mut(&TAB).unwrap().set_force_render();
         for (elapsed, expected) in [
             (0, (100, 150, 200)),
             (900, (127, 142, 157)),
             (1800, (100, 150, 200)),
         ] {
-            screen.pinned_now = Some(start + Duration::from_millis(elapsed));
+            screen.core.pinned_now = Some(start + Duration::from_millis(elapsed));
             render_frame_into(&mut screen, &server_rx, CLIENT, &mut grid);
             assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
             let lines = grid.as_character_lines();
@@ -563,13 +577,14 @@ fn waiting_pulse_wins_shared_idle_boundary_in_both_pane_id_orders() {
                 assert_eq!(row[focused_boundary].character, '│');
                 assert_eq!(
                     row[focused_boundary].styles.foreground,
-                    Some(AnsiCode::from(screen.style.colors.frame_selected.base)),
+                    Some(AnsiCode::from(screen.core.style.colors.frame_selected.base)),
                     "focus stays dominant: pane IDs {ids:?}, elapsed {elapsed}ms"
                 );
             }
         }
         // Focus the only neighbor: every shared cell now belongs to its focused border.
         screen
+            .core
             .tabs
             .get_mut(&TAB)
             .unwrap()
@@ -578,20 +593,21 @@ fn waiting_pulse_wins_shared_idle_boundary_in_both_pane_id_orders() {
         screen.render_to_clients().unwrap();
         assert_eq!(screen.animation_clock_period(start), None);
         assert_eq!(
-            screen.tabs[&TAB]
+            screen.core.tabs[&TAB]
                 .get_pane_with_id(waiting_pane)
                 .unwrap()
                 .waiting_pulse(),
             None
         );
         assert_eq!(
-            screen.tabs[&TAB]
+            screen.core.tabs[&TAB]
                 .get_pane_with_id(waiting_pane)
                 .unwrap()
                 .waiting_pulse_started_at(),
             Some(start)
         );
         screen
+            .core
             .tabs
             .get_mut(&TAB)
             .unwrap()
@@ -603,6 +619,7 @@ fn waiting_pulse_wins_shared_idle_boundary_in_both_pane_id_orders() {
         let other = ClientId::new(2);
         screen.add_client(other).unwrap();
         screen
+            .core
             .tabs
             .get_mut(&TAB)
             .unwrap()
@@ -615,6 +632,7 @@ fn waiting_pulse_wins_shared_idle_boundary_in_both_pane_id_orders() {
             "the first client still sees the pulse"
         );
         screen
+            .core
             .tabs
             .get_mut(&TAB)
             .unwrap()
@@ -627,6 +645,7 @@ fn waiting_pulse_wins_shared_idle_boundary_in_both_pane_id_orders() {
             "both clients suppress the boundary"
         );
         screen
+            .core
             .tabs
             .get_mut(&TAB)
             .unwrap()
@@ -663,6 +682,7 @@ fn waiting_pulse_survives_focus_for_any_client_until_waiting_clears() {
     let start = waiting_since(&screen).unwrap();
     for pane in [WAITING, FOCUSED] {
         screen
+            .core
             .tabs
             .get_mut(&TAB)
             .unwrap()
@@ -683,6 +703,7 @@ fn waiting_pulse_survives_focus_for_any_client_until_waiting_clears() {
     let other = ClientId::new(2);
     screen.add_client(other).unwrap();
     screen
+        .core
         .tabs
         .get_mut(&TAB)
         .unwrap()
@@ -692,10 +713,10 @@ fn waiting_pulse_survives_focus_for_any_client_until_waiting_clears() {
     apply_pane_agent_report(&mut screen, WAITING, None).unwrap();
     apply_pane_agent_report(&mut screen, WAITING, Some(waiting())).unwrap();
     let start = waiting_since(&screen).unwrap();
-    screen.pinned_now = Some(start + Duration::from_millis(900));
+    screen.core.pinned_now = Some(start + Duration::from_millis(900));
     screen.render_to_clients().unwrap();
     assert_eq!(waiting_since(&screen), Some(start));
-    let pane = screen.tabs[&TAB].get_pane_with_id(WAITING).unwrap();
+    let pane = screen.core.tabs[&TAB].get_pane_with_id(WAITING).unwrap();
     assert_eq!(pane.waiting_pulse().unwrap(), 0.7);
     assert!(pane.stack_list_entry_label(false).contains('🔔'));
     assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
@@ -712,7 +733,7 @@ fn waiting_pulse_survives_focus_for_any_client_until_waiting_clears() {
     .unwrap();
     screen.render_to_clients().unwrap();
     assert_eq!(waiting_since(&screen), None);
-    let pane = screen.tabs[&TAB].get_pane_with_id(WAITING).unwrap();
+    let pane = screen.core.tabs[&TAB].get_pane_with_id(WAITING).unwrap();
     assert_eq!(pane.waiting_pulse(), None);
     assert!(!pane.stack_list_entry_label(false).contains('🔔'));
     assert_eq!(screen.animation_clock_period(start), None);
@@ -724,13 +745,13 @@ fn waiting_pulse_clock_stops_for_hidden_borders_and_disabled_animations() {
     let (mut screen, jobs) = pair(false, false, false, PaneFrameStyle::Full);
     apply_pane_agent_report(&mut screen, WAITING, Some(waiting())).unwrap();
     let start = waiting_since(&screen).unwrap();
-    screen.pinned_now = Some(start + Duration::from_millis(900));
+    screen.core.pinned_now = Some(start + Duration::from_millis(900));
     screen.render_to_clients().unwrap();
     screen.set_pane_animations(false);
     screen.render_to_clients().unwrap();
     assert_eq!(screen.animation_clock_period(start), None);
     assert_eq!(
-        screen.tabs[&TAB]
+        screen.core.tabs[&TAB]
             .get_pane_with_id(WAITING)
             .unwrap()
             .waiting_pulse(),
@@ -742,6 +763,7 @@ fn waiting_pulse_clock_stops_for_hidden_borders_and_disabled_animations() {
     screen.render_to_clients().unwrap();
     assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
     screen
+        .core
         .tabs
         .get_mut(&TAB)
         .unwrap()
@@ -749,11 +771,13 @@ fn waiting_pulse_clock_stops_for_hidden_borders_and_disabled_animations() {
     screen.render_to_clients().unwrap();
     assert_eq!(screen.animation_clock_period(start), None);
     screen
+        .core
         .tabs
         .get_mut(&TAB)
         .unwrap()
         .toggle_pane_fullscreen(FOCUSED);
     screen
+        .core
         .tabs
         .get_mut(&TAB)
         .unwrap()
@@ -762,6 +786,7 @@ fn waiting_pulse_clock_stops_for_hidden_borders_and_disabled_animations() {
     screen.render_to_clients().unwrap();
     assert_eq!(screen.animation_clock_period(start), None);
     screen
+        .core
         .tabs
         .get_mut(&TAB)
         .unwrap()
@@ -771,6 +796,7 @@ fn waiting_pulse_clock_stops_for_hidden_borders_and_disabled_animations() {
     assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
     // A fullscreen floating pane also hides every tiled border behind it.
     screen
+        .core
         .tabs
         .get_mut(&TAB)
         .unwrap()
@@ -786,20 +812,26 @@ fn waiting_pulse_clock_stops_for_hidden_borders_and_disabled_animations() {
         )
         .unwrap();
     screen
+        .core
         .tabs
         .get_mut(&TAB)
         .unwrap()
         .toggle_pane_fullscreen(PaneId::Terminal(TerminalId::new(4)));
     screen.render_to_clients().unwrap();
     assert_eq!(screen.animation_clock_period(start), None);
-    screen.tabs.get_mut(&TAB).unwrap().hide_floating_panes();
+    screen
+        .core
+        .tabs
+        .get_mut(&TAB)
+        .unwrap()
+        .hide_floating_panes();
     screen.render_to_clients().unwrap();
     assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
 
     // Faster effects keep their cadence while a slow waiting pulse is active.
-    screen.fading_frame_panes.insert(WAITING);
+    screen.core.fading_frame_panes.insert(WAITING);
     assert_eq!(screen.animation_clock_period(start), Some(FRAME_PERIOD));
-    screen.fading_frame_panes.clear();
+    screen.core.fading_frame_panes.clear();
     new_tab(&mut screen, 3, TabId::new(1));
     screen.render_to_clients().unwrap();
     assert_eq!(
@@ -813,7 +845,12 @@ fn waiting_pulse_clock_stops_for_hidden_borders_and_disabled_animations() {
     apply_pane_agent_report(&mut screen, WAITING, Some(waiting())).unwrap();
     screen.render_to_clients().unwrap();
     assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
-    screen.tabs.get_mut(&TAB).unwrap().hide_floating_panes();
+    screen
+        .core
+        .tabs
+        .get_mut(&TAB)
+        .unwrap()
+        .hide_floating_panes();
     screen.render_to_clients().unwrap();
     assert_eq!(screen.animation_clock_period(start), None);
     assert!(waiting_since(&screen).is_some());
@@ -824,7 +861,7 @@ fn waiting_pulse_counts_exterior_shared_boundaries_when_the_pane_is_covered() {
     for direction in [Direction::Right, Direction::Down] {
         let (mut screen, jobs) = screen_with_background_jobs(SIZE);
         new_tab(&mut screen, 2, TAB);
-        let tab = screen.tabs.get_mut(&TAB).unwrap();
+        let tab = screen.core.tabs.get_mut(&TAB).unwrap();
         tab.set_pane_frames(PaneFrameStyle::None);
         tab.new_pane(
             WAITING,
@@ -862,10 +899,10 @@ fn waiting_pulse_counts_exterior_shared_boundaries_when_the_pane_is_covered() {
         .unwrap();
         apply_pane_agent_report(&mut screen, WAITING, Some(waiting())).unwrap();
         let start = waiting_since(&screen).unwrap();
-        screen.pinned_now = Some(start + Duration::from_millis(900));
+        screen.core.pinned_now = Some(start + Duration::from_millis(900));
         screen.render_to_clients().unwrap();
         assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
-        assert!(screen.tabs[&TAB]
+        assert!(screen.core.tabs[&TAB]
             .get_pane_with_id(WAITING)
             .unwrap()
             .waiting_pulse()
@@ -883,6 +920,7 @@ fn waiting_pulse_counts_exterior_shared_boundaries_when_the_pane_is_covered() {
             coordinates.height = Some(PercentOrFixed::Fixed(geom.rows.as_usize() + 1));
         }
         screen
+            .core
             .tabs
             .get_mut(&TAB)
             .unwrap()
@@ -891,7 +929,7 @@ fn waiting_pulse_counts_exterior_shared_boundaries_when_the_pane_is_covered() {
         screen.render_to_clients().unwrap();
         assert_eq!(screen.animation_clock_period(start), None);
         assert_eq!(
-            screen.tabs[&TAB]
+            screen.core.tabs[&TAB]
                 .get_pane_with_id(WAITING)
                 .unwrap()
                 .waiting_pulse(),
@@ -906,8 +944,8 @@ fn waiting_pulse_counts_exterior_shared_boundaries_when_the_pane_is_covered() {
 fn waiting_pulse_counts_only_the_hidden_stack_members_header() {
     for floating in [false, true] {
         let (mut screen, jobs) = pair(floating, false, false, PaneFrameStyle::Full);
-        *screen.stacked_pane_list.borrow_mut() = true;
-        let tab = screen.tabs.get_mut(&TAB).unwrap();
+        *screen.core.stacked_pane_list.borrow_mut() = true;
+        let tab = screen.core.tabs.get_mut(&TAB).unwrap();
         tab.restore_warp_relationships(
             &[WAITING, FOCUSED],
             &WarpRelationships {
@@ -924,20 +962,20 @@ fn waiting_pulse_counts_only_the_hidden_stack_members_header() {
         )
         .unwrap();
         screen.render_to_clients().unwrap();
-        assert!(screen.tabs[&TAB].pane_is_hidden_stack_list_member(&WAITING));
+        assert!(screen.core.tabs[&TAB].pane_is_hidden_stack_list_member(&WAITING));
         apply_pane_agent_report(&mut screen, WAITING, Some(waiting())).unwrap();
         let start = waiting_since(&screen).unwrap();
-        screen.pinned_now = Some(start + Duration::from_millis(900));
+        screen.core.pinned_now = Some(start + Duration::from_millis(900));
         screen.render_to_clients().unwrap();
         assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
-        let pulse = screen.tabs[&TAB]
+        let pulse = screen.core.tabs[&TAB]
             .get_pane_with_id(WAITING)
             .unwrap()
             .waiting_pulse();
         assert!(pulse.is_some());
         drain_background_jobs(&jobs);
 
-        let tab = screen.tabs.get_mut(&TAB).unwrap();
+        let tab = screen.core.tabs.get_mut(&TAB).unwrap();
         let visible = tab.get_pane_with_id(FOCUSED).unwrap();
         let geom = visible.current_geom();
         let offset = visible.get_content_offset();
@@ -972,7 +1010,7 @@ fn waiting_pulse_counts_only_the_hidden_stack_members_header() {
             "floating={floating}"
         );
         assert_eq!(
-            screen.tabs[&TAB]
+            screen.core.tabs[&TAB]
                 .get_pane_with_id(WAITING)
                 .unwrap()
                 .waiting_pulse(),
@@ -985,6 +1023,7 @@ fn waiting_pulse_counts_only_the_hidden_stack_members_header() {
         coordinates.y = Some(PercentOrFixed::Fixed(geom.y));
         coordinates.height = Some(PercentOrFixed::Fixed(6));
         screen
+            .core
             .tabs
             .get_mut(&TAB)
             .unwrap()
@@ -1000,6 +1039,7 @@ fn waiting_pulse_counts_only_the_hidden_stack_members_header() {
 
         coordinates.y = Some(PercentOrFixed::Fixed(geom.y + 2));
         screen
+            .core
             .tabs
             .get_mut(&TAB)
             .unwrap()
@@ -1009,7 +1049,7 @@ fn waiting_pulse_counts_only_the_hidden_stack_members_header() {
         assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
         assert_eq!(waiting_since(&screen), Some(start));
         assert_eq!(
-            screen.tabs[&TAB]
+            screen.core.tabs[&TAB]
                 .get_pane_with_id(WAITING)
                 .unwrap()
                 .waiting_pulse(),
@@ -1022,7 +1062,7 @@ fn waiting_pulse_counts_only_the_hidden_stack_members_header() {
 #[test]
 fn waiting_pulse_survives_floating_focus_and_watchers() {
     let (mut screen, _) = pair(false, false, false, PaneFrameStyle::Full);
-    let tab = screen.tabs.get_mut(&TAB).unwrap();
+    let tab = screen.core.tabs.get_mut(&TAB).unwrap();
     tab.focus_pane_with_id(WAITING, false, false, CLIENT)
         .unwrap();
     tab.new_pane(
@@ -1041,6 +1081,7 @@ fn waiting_pulse_survives_floating_focus_and_watchers() {
     screen.render_to_clients().unwrap();
     assert_eq!(waiting_since(&screen), Some(start));
     screen
+        .core
         .tabs
         .get_mut(&TAB)
         .unwrap()
@@ -1048,8 +1089,9 @@ fn waiting_pulse_survives_floating_focus_and_watchers() {
         .unwrap();
     let watcher = ClientId::new(2);
     screen.add_watcher_client(watcher).unwrap();
-    screen.active_tab_ids.insert(watcher, TAB);
+    screen.core.active_tab_ids.insert(watcher, TAB);
     screen
+        .core
         .tabs
         .get_mut(&TAB)
         .unwrap()
@@ -1058,7 +1100,7 @@ fn waiting_pulse_survives_floating_focus_and_watchers() {
     screen.render().unwrap();
     assert_eq!(waiting_since(&screen), Some(start));
     screen.set_followed_client(CLIENT).unwrap();
-    screen.active_tab_ids.remove(&watcher);
+    screen.core.active_tab_ids.remove(&watcher);
     screen.remove_client(CLIENT).unwrap();
     screen.render_to_clients().unwrap();
     assert_eq!(waiting_since(&screen), Some(start));
@@ -1091,7 +1133,7 @@ fn hook_flash_clock_repaints_collapsed_and_list_stack_titles() {
             let (mut screen, _jobs) = pair(false, true, list, style);
             let agent_pane = if cover_under { FOCUSED } else { WAITING };
             if cover_under {
-                let tab = screen.tabs.get_mut(&TAB).unwrap();
+                let tab = screen.core.tabs.get_mut(&TAB).unwrap();
                 tab.new_pane(
                     PaneId::Terminal(TerminalId::new(3)),
                     None,
@@ -1145,7 +1187,7 @@ fn hook_flash_clock_repaints_collapsed_and_list_stack_titles() {
             agent.wait_needs_a_person = false;
             apply_pane_agent_report(&mut screen, agent_pane, Some(agent)).unwrap();
             let start = Instant::now();
-            screen.pinned_now = Some(start);
+            screen.core.pinned_now = Some(start);
             let hook = HookEvent {
                 hook_event_name: "PreCompact".into(),
                 ..Default::default()
@@ -1170,7 +1212,7 @@ fn hook_flash_clock_repaints_collapsed_and_list_stack_titles() {
             )
             .unwrap();
             let (sender, receiver) = channels::unbounded();
-            screen.bus.senders.to_server = Some(SenderWithContext::new(sender));
+            screen.core.bus.senders.to_server = Some(SenderWithContext::new(sender));
             let mut grid = grid_for_render_snapshot(SIZE);
             render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
             assert_eq!(
@@ -1189,15 +1231,15 @@ fn hook_flash_clock_repaints_collapsed_and_list_stack_titles() {
             };
             assert_eq!(
                 color(&grid),
-                Some(screen.style.colors.text_unselected.emphasis_0.into())
+                Some(screen.core.style.colors.text_unselected.emphasis_0.into())
             );
-            screen.pinned_now = Some(start + Duration::from_millis(150));
+            screen.core.pinned_now = Some(start + Duration::from_millis(150));
             screen.on_animation_tick(screen.frame_now()).unwrap();
             render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
             assert_eq!(screen.animation_clock_period(screen.frame_now()), None);
             assert_eq!(
                 color(&grid),
-                Some(screen.style.colors.text_unselected.emphasis_2.into())
+                Some(screen.core.style.colors.text_unselected.emphasis_2.into())
             );
         }
     }

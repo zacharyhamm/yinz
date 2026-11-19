@@ -61,7 +61,7 @@ fn lifecycle_atomic_snapshot_replay_and_filtered_checkpoints() {
     assert!(
         live.last().unwrap()["sequence"].as_u64() > initial.last().unwrap()["sequence"].as_u64()
     );
-    screen.agent_events.remove(WATCHER);
+    screen.agents.agent_events.remove(WATCHER);
     report(&mut screen, hook("Stop"));
     let replay = start(
         &mut screen,
@@ -263,7 +263,7 @@ fn lifecycle_expiry_restart_and_cursor_rejection() {
         .as_str()
         .unwrap()
         .to_owned();
-    screen.agent_events.remove(WATCHER);
+    screen.agents.agent_events.remove(WATCHER);
     for i in 0..4100 {
         screen.publish_agent_event(PANE, "state_changed", json!({"test":i}));
     }
@@ -288,7 +288,7 @@ fn lifecycle_expiry_restart_and_cursor_rejection() {
     );
     assert_eq!(gap[0]["event_type"], "gap");
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(tx));
     for (key, value) in [
         ("host", json!("wrong")),
         ("session", json!("wrong")),
@@ -344,7 +344,7 @@ fn lifecycle_project_probe_rejects_stale_result_before_ready() {
     let (mut screen, messages, _writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let filters = EventSubscription {
         projects: vec!["yinz".into()],
         ..Default::default()
@@ -385,7 +385,7 @@ fn lifecycle_slow_subscriber_is_removed_without_affecting_history() {
     let (mut screen, messages, _writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(tx));
     start(&mut screen, &messages, Default::default());
     // The test deliberately never drains this subscriber while producing facts.
     for i in 0..4100 {
@@ -446,7 +446,7 @@ fn lifecycle_conversation_reset_closure_exit_and_background_notifications() {
     assert!(all
         .iter()
         .any(|e| e["event_type"] == "state_changed" && e["state"] == "exited"));
-    screen.tabs.clear();
+    screen.core.tabs.clear();
     let all = events(&mut screen, &messages);
     assert!(all.iter().any(|e| e["event_type"] == "pane_closed"
         && e["pane_id"] == "terminal_7"
@@ -467,7 +467,7 @@ fn lifecycle_filters_combine_or_with_and_and_replay_precedes_live() {
         .as_str()
         .unwrap()
         .to_owned();
-    screen.agent_events.remove(WATCHER);
+    screen.agents.agent_events.remove(WATCHER);
     for i in 0..70 {
         screen.publish_agent_event(PANE, "state_changed", json!({"test":i}));
     }
@@ -570,7 +570,7 @@ fn lifecycle_invalid_project_does_not_reject_other_subscriptions() {
     let (mut screen, messages, _writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     screen.subscribe_agent_events(
         WATCHER,
         EventSubscription {
@@ -949,7 +949,7 @@ fn lifecycle_project_uncertainty_is_immediate_and_replayed_after_resolution() {
     let (mut screen, messages, _writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let probe = || {
         rx.try_iter()
             .find_map(|(message, _)| match message {
@@ -974,6 +974,7 @@ fn lifecycle_project_uncertainty_is_immediate_and_replayed_after_resolution() {
         .unwrap()
         .to_owned();
     screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -1207,7 +1208,7 @@ fn lifecycle_pending_projects_retry_without_invalidation() {
             setup_on_target("codex", PaneTarget::ssh("test-host").unwrap());
         report(&mut screen, hook("SessionStart"));
         let (tx, rx) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
         let probe = || {
             rx.try_iter().find_map(|(m, _)| match m {
                 PluginInstruction::ResolveAgentEventProjects { version, .. } => Some(version),
@@ -1228,7 +1229,7 @@ fn lifecycle_pending_projects_retry_without_invalidation() {
             let before = Instant::now();
             screen.apply_agent_event_projects(version, BTreeMap::from([("yinz".into(), Ok(None))]));
             assert!(events(&mut screen, &messages).is_empty());
-            let timeout = screen.agent_control_deadline().unwrap();
+            let timeout = screen.agents.agent_control_deadline().unwrap();
             assert!(timeout <= Duration::from_millis(100));
             screen.retry_agent_event_projects(before);
             assert!(probe().is_none());
@@ -1278,10 +1279,10 @@ fn lifecycle_pending_projects_retry_without_invalidation() {
             fact["projects"],
             if member { json!(["yinz"]) } else { json!([]) }
         );
-        screen.agent_events.remove(WATCHER);
+        screen.agents.agent_events.remove(WATCHER);
         screen.retry_agent_event_projects(Instant::now() + Duration::from_secs(1));
         assert!(probe().is_none());
-        assert!(screen.agent_events.deadline().is_none());
+        assert!(screen.agents.agent_events.deadline().is_none());
     }
 }
 
@@ -1290,7 +1291,7 @@ fn lifecycle_waits_for_all_requested_projects_and_cancels_pending_subscriptions(
     let (mut screen, messages, _writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let probe = || {
         rx.try_iter().find_map(|(m, _)| match m {
             PluginInstruction::ResolveAgentEventProjects { version, .. } => Some(version),
@@ -1317,7 +1318,7 @@ fn lifecycle_waits_for_all_requested_projects_and_cancels_pending_subscriptions(
     assert!(events(&mut screen, &messages).is_empty());
     screen.retry_agent_event_projects(Instant::now() + Duration::from_millis(100));
     assert_eq!(probe(), Some(version));
-    screen.agent_events.remove(WATCHER);
+    screen.agents.agent_events.remove(WATCHER);
     screen.apply_agent_event_projects(
         version,
         BTreeMap::from([
@@ -1328,7 +1329,7 @@ fn lifecycle_waits_for_all_requested_projects_and_cancels_pending_subscriptions(
     screen.retry_agent_event_projects(Instant::now() + Duration::from_secs(1));
     assert!(probe().is_none());
     assert!(events(&mut screen, &messages).is_empty());
-    assert!(screen.agent_events.deadline().is_none());
+    assert!(screen.agents.agent_events.deadline().is_none());
 }
 
 #[test]
@@ -1346,6 +1347,7 @@ fn lifecycle_warp_preserves_turn_observation_without_migrating_subscribers() {
             assert!(!handoff.events.turns.is_empty());
             let (mut destination, messages, _) = setup(kind);
             destination
+                .agents
                 .pending_agent_tracking
                 .insert(PANE, (Some(handoff.agent.clone()), Some(handoff)));
             destination.restore_staged_transfer_state(PANE);
@@ -1400,6 +1402,7 @@ fn lifecycle_identified_notification_gap_never_publishes_idle() {
         .any(|event| event["state"] == "idle"));
     assert_eq!(
         screen
+            .agents
             .agent_lifecycle
             .get(&PANE)
             .unwrap()

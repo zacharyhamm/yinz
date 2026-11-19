@@ -15,12 +15,12 @@ mod previous_release;
 #[path = "../../yinz-integration-tests/tests/unit/web_http.rs"]
 mod web_http;
 
-struct Peer {
-    receiver: IpcReceiverWithContext<ServerToClientMsg>,
-    sender: IpcSenderWithContext<ClientToServerMsg>,
+pub(super) struct Peer {
+    pub(super) receiver: IpcReceiverWithContext<ServerToClientMsg>,
+    pub(super) sender: IpcSenderWithContext<ClientToServerMsg>,
 }
 impl Peer {
-    fn connect(path: &Path) -> Self {
+    pub(super) fn connect(path: &Path) -> Self {
         // The launcher exits after daemonizing, before the child necessarily binds.
         let connected = yinz_test_support::Watched::new(None);
         let stream = std::thread::scope(|scope| {

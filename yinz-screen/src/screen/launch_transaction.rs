@@ -31,6 +31,7 @@ impl Screen {
         terminal: TerminalId,
     ) -> Result<TerminalSize, LaunchReason> {
         let gate = self
+            .core
             .bus
             .senders
             .launches
@@ -50,6 +51,7 @@ impl Screen {
             }
         }
         let tab = self
+            .core
             .tabs
             .get_mut(&slot.tab_id)
             .ok_or(LaunchReason::DestinationClosed)?;
@@ -59,6 +61,7 @@ impl Screen {
         if let (Some(controller), Some(region)) = (slot.controller, &slot.worker_region) {
             let key = (controller, slot.tab_id);
             if self
+                .core
                 .agent_worker_regions
                 .get(&key)
                 .is_none_or(|(_, current)| current != region)
@@ -67,6 +70,7 @@ impl Screen {
             }
             let members = tab.worker_region_members(slot.pane_id);
             let owned: Vec<_> = self
+                .core
                 .agent_worker_stacks
                 .get(&key)
                 .into_iter()
@@ -104,25 +108,30 @@ impl Screen {
     pub(super) fn revalidate_launches(&mut self) {
         // Retire ownership as soon as a live group dissolves, including after its launches
         // have finished. A later user-created group must not revive that old region UUID.
-        let keys: Vec<_> = self.agent_worker_regions.keys().copied().collect();
+        let keys: Vec<_> = self.core.agent_worker_regions.keys().copied().collect();
         for key in keys {
             let live: Vec<_> = self
+                .core
                 .agent_worker_stacks
                 .get(&key)
                 .into_iter()
                 .flatten()
                 .copied()
                 .filter(|pane| {
-                    self.tabs
+                    self.core
+                        .tabs
                         .get(&key.1)
                         .is_some_and(|tab| tab.can_anchor_tiled_stack(*pane))
                 })
                 .collect();
-            let valid = self.tabs.get_mut(&key.1).is_some_and(|tab| {
+            let valid = self.core.tabs.get_mut(&key.1).is_some_and(|tab| {
                 let lifetime_matches =
-                    self.agent_worker_regions.get(&key).is_some_and(|(old, _)| {
-                        old.ptr_eq(&std::sync::Arc::downgrade(&tab.agent_tab_lifetime))
-                    });
+                    self.core
+                        .agent_worker_regions
+                        .get(&key)
+                        .is_some_and(|(old, _)| {
+                            old.ptr_eq(&std::sync::Arc::downgrade(&tab.agent_tab_lifetime))
+                        });
                 live.first().is_some_and(|root| {
                     let members = tab.worker_region_members(*root);
                     lifetime_matches
@@ -131,26 +140,27 @@ impl Screen {
                 })
             });
             if valid {
-                self.agent_worker_stacks.insert(key, live);
+                self.core.agent_worker_stacks.insert(key, live);
             } else {
-                self.agent_worker_regions.remove(&key);
-                self.agent_worker_stacks.remove(&key);
+                self.core.agent_worker_regions.remove(&key);
+                self.core.agent_worker_stacks.remove(&key);
             }
         }
-        let terminals: Vec<_> = self.managed_reservations.keys().copied().collect();
+        let terminals: Vec<_> = self.core.managed_reservations.keys().copied().collect();
         for terminal in terminals {
-            let Some(gate) = self.bus.senders.launches.gate(terminal) else {
+            let Some(gate) = self.core.bus.senders.launches.gate(terminal) else {
                 continue;
             };
             if gate.snapshot().finished {
-                self.managed_reservations.remove(&terminal);
+                self.core.managed_reservations.remove(&terminal);
                 continue;
             }
             if let Err(reason) = self.validate_launch_slot(terminal) {
                 gate.revoke(reason);
-                self.managed_reservations.remove(&terminal);
+                self.core.managed_reservations.remove(&terminal);
                 // Queued teardown uses the original, non-reusable terminal allocation.
-                self.bus
+                self.core
+                    .bus
                     .senders
                     .send_to_screen(ScreenInstruction::ClosePane(
                         PaneId::Terminal(terminal),
@@ -167,15 +177,12 @@ impl Screen {
         let PaneId::Terminal(terminal) = spawned.pane_id else {
             return false;
         };
-        let Some(gate) = self.bus.senders.launches.gate(terminal) else {
+        let Some(gate) = self.core.bus.senders.launches.gate(terminal) else {
             return false;
         };
         let state = gate.snapshot();
         if state.finished {
-            return self
-                .agent_launches
-                .get(&spawned.pane_id)
-                .is_some_and(|saved| saved == &spawned);
+            return self.agents.launch_matches(&spawned);
         }
         if state.cleanup_unknown
             || state.exited
@@ -186,6 +193,7 @@ impl Screen {
             return false;
         }
         if self
+            .core
             .tabs
             .get(
                 &state
@@ -199,7 +207,7 @@ impl Screen {
         {
             return false;
         }
-        self.agent_launches.insert(spawned.pane_id, spawned);
+        self.agents.register_spawn(spawned);
         gate.registered();
         true
     }

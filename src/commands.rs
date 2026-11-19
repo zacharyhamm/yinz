@@ -359,13 +359,26 @@ fn get_os_input<OsInputOutput>(
     }
 }
 
+pub(crate) fn restored_agent_observer(
+    os: &yinz_server_os::ServerOsInputOutput,
+) -> yinz_server::RestoredAgentObserver {
+    let os = os.clone();
+    std::sync::Arc::new(move |terminal, conversation, publish| {
+        os.observe_restored_claude(terminal, conversation, publish)
+    })
+}
+
 pub(crate) fn start_server(path: PathBuf, debug: bool, termios: Option<String>) {
     // Set instance-wide debug mode
     yinz_runtime::consts::DEBUG_MODE.set(debug).unwrap();
     let os_input = startup_stage("server.os_backend", || {
         get_os_input(|| get_server_os_input_from_termios_arg(termios.as_deref()))
     });
-    if let Err(error) = start_server_impl(Box::new(os_input), path) {
+    if let Err(error) = start_server_impl(
+        Some(restored_agent_observer(&os_input)),
+        Box::new(os_input),
+        path,
+    ) {
         eprintln!("Could not start server: {error:#}");
         crate::remote_commands::exit(1);
     }

@@ -148,6 +148,7 @@ impl Screen {
             && let Some(key_with_modifier) = key_with_modifier
         {
             let _ = self
+                .core
                 .bus
                 .senders
                 .send_to_plugin(PluginInstruction::Update(vec![(
@@ -162,7 +163,7 @@ impl Screen {
         // focus or layout change it causes then closes the menu, which is what pressing an
         // unrelated key while a menu is up means anyway.
         if self.context_menu_handles_key(&key_with_modifier, client_id) {
-            for tab in self.tabs.values_mut() {
+            for tab in self.core.tabs.values_mut() {
                 tab.pending_agent_escapes
                     .retain(|(client, _), _| *client != client_id);
             }
@@ -246,21 +247,22 @@ impl Screen {
         client_id: ClientId,
     ) -> Result<()> {
         let browser_owned_input = self.notification_browser_owns_input(client_id);
-        let new_mode = if self.command_palette_is_open(client_id) {
+        let new_mode = if self.palette.command_palette_is_open(client_id) {
             InputMode::Locked
         } else {
             new_mode
         };
         let mut mode_info = self
+            .core
             .mode_info
             .get(&client_id)
             .cloned()
-            .unwrap_or_else(|| self.default_mode_info.clone());
+            .unwrap_or_else(|| self.core.default_mode_info.clone());
         let previous_mode = mode_info.mode;
         mode_info.mode = new_mode;
         mode_info.base_mode = base_mode;
-        if mode_info.session_name.as_ref() != Some(&self.session_name) {
-            mode_info.session_name = Some(self.session_name.clone());
+        if mode_info.session_name.as_ref() != Some(&self.core.session_name) {
+            mode_info.session_name = Some(self.core.session_name.clone());
         }
 
         if previous_mode != InputMode::Select && new_mode == InputMode::Select {
@@ -270,7 +272,7 @@ impl Screen {
             // every tab, not just the active one: the selection is finished on the tab it was
             // started on even if focus moved to another tab in the meantime (a tab with no
             // keyboard selection for this client is a no-op)
-            for tab in self.tabs.values_mut() {
+            for tab in self.core.tabs.values_mut() {
                 tab.finish_text_selection(client_id);
             }
         }
@@ -283,13 +285,13 @@ impl Screen {
             active_tab!(self, client_id, |tab: &mut Tab| tab.clear_search(client_id));
         }
 
-        if !self.command_palette_is_open(client_id) {
+        if !self.palette.command_palette_is_open(client_id) {
             if new_mode == InputMode::Notifications {
-                if !self.notification_browsers.contains_key(&client_id) {
-                    self.open_notification_browser(client_id);
+                if !self.notices.notification_browsers.contains_key(&client_id) {
+                    self.notices.open_notification_browser(client_id);
                 }
             } else {
-                self.close_notification_browser(client_id);
+                self.notices.close_notification_browser(client_id);
             }
         }
 
@@ -311,21 +313,21 @@ impl Screen {
             active_pane.store_pane_name();
         }
 
-        self.style = yinz_types::style::Style {
-            agent_theme_mapping: self.style.agent_theme_mapping,
-            terminal: self.style.terminal,
-            application: self.style.application,
+        self.core.style = yinz_types::style::Style {
+            agent_theme_mapping: self.core.style.agent_theme_mapping,
+            terminal: self.core.style.terminal,
+            application: self.core.style.application,
             ..mode_info.style
         };
-        self.mode_info.insert(client_id, mode_info.clone());
-        for tab in self.tabs.values_mut() {
+        self.core.mode_info.insert(client_id, mode_info.clone());
+        for tab in self.core.tabs.values_mut() {
             tab.change_mode_info(mode_info.clone(), client_id);
             tab.mark_active_pane_for_rerender(client_id);
             tab.update_input_modes()?;
         }
         // Notify background plugins subscribed to ModeUpdate
         let mut bg_updates = vec![];
-        for ((bg_pid, bg_cid), subs) in &self.background_plugin_subscriptions {
+        for ((bg_pid, bg_cid), subs) in &self.core.background_plugin_subscriptions {
             if subs.contains(&EventType::ModeUpdate) && *bg_cid == client_id {
                 bg_updates.push((
                     Some(*bg_pid),
@@ -335,7 +337,8 @@ impl Screen {
             }
         }
         if !bg_updates.is_empty() {
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_plugin(PluginInstruction::Update(bg_updates))
                 .context("failed to update background plugins with mode info")?;
@@ -344,7 +347,7 @@ impl Screen {
         // after the mode update so the original ModeInfo cannot overwrite those hints.
         if browser_owned_input != self.notification_browser_owns_input(client_id)
             && let Some(pane_id) = self.get_active_pane_id(&client_id)
-            && self.dimmed_clients.contains(&client_id)
+            && self.nested.dimmed_clients.contains(&client_id)
                 != self.should_route_keys_to_pane(client_id, pane_id)
         {
             self.report_key_passthrough_state(client_id, pane_id, pane_id);
@@ -361,7 +364,7 @@ impl Screen {
         if default_mode == InputMode::Scroll {
             return Ok(());
         }
-        let current_mode = match self.mode_info.get(&client_id) {
+        let current_mode = match self.core.mode_info.get(&client_id) {
             Some(mode_info) => mode_info.mode,
             None => return Ok(()),
         };
@@ -375,7 +378,8 @@ impl Screen {
         // input mode (current_input_modes, used for keybind resolution) is updated and not
         // just the mode_info used for rendering. A direct change_mode() would desync the two:
         // the status line would show Scroll while keys still resolved in the old mode.
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_server(ServerInstruction::ChangeMode(client_id, new_mode, None))
             .with_context(|| format!("failed to sync scroll mode on focus for client {client_id}"))
@@ -400,7 +404,7 @@ impl Screen {
     // a pane's scroll position changed by pane id rather than by the acting client's own focus
     // (e.g. ScrollUpInPaneId, used by plugins).
     pub(super) fn sync_scroll_mode_for_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        let client_ids: Vec<ClientId> = self.active_tab_ids.keys().copied().collect();
+        let client_ids: Vec<ClientId> = self.core.active_tab_ids.keys().copied().collect();
         for client_id in client_ids {
             if self.active_pane_id(client_id) == Some(pane_id) {
                 self.sync_scroll_mode_on_focus(client_id)?;
@@ -420,7 +424,8 @@ impl Screen {
             )
         };
 
-        let connected_client_ids: Vec<ClientId> = self.active_tab_ids.keys().copied().collect();
+        let connected_client_ids: Vec<ClientId> =
+            self.core.active_tab_ids.keys().copied().collect();
         for client_id in connected_client_ids {
             self.change_mode(new_mode, base_mode, client_id)
                 .with_context(err_context)?;
@@ -437,8 +442,8 @@ impl Screen {
     ) -> Vec<PluginId> {
         let mut plugin_ids = Vec::new();
         // Active-tab plugins
-        if let Some(active_tab_id) = self.active_tab_ids.get(&client_id)
-            && let Some(tab) = self.tabs.get(active_tab_id)
+        if let Some(active_tab_id) = self.core.active_tab_ids.get(&client_id)
+            && let Some(tab) = self.core.tabs.get(active_tab_id)
         {
             plugin_ids.extend(tab.get_plugin_ids_including_suppressed());
         }
@@ -456,7 +461,7 @@ impl Screen {
         // already walks `overlay_panes`, hidden ones included, so it keeps the ordinary routing
         // for every event type.
         if matches!(event_type, EventType::TabUpdate | EventType::PaneUpdate) {
-            for tab in self.tabs.values() {
+            for tab in self.core.tabs.values() {
                 // Retained pane-tab children keep their state subscriptions while hidden.
                 for plugin_id in tab.overlay_plugin_ids().into_iter().chain(
                     tab.pane_tabs_infos()
@@ -469,7 +474,7 @@ impl Screen {
             }
         }
         // Background plugins subscribed to this event type
-        for ((bg_pid, bg_cid), subs) in &self.background_plugin_subscriptions {
+        for ((bg_pid, bg_cid), subs) in &self.core.background_plugin_subscriptions {
             if subs.contains(&event_type) && *bg_cid == client_id && !plugin_ids.contains(bg_pid) {
                 plugin_ids.push(*bg_pid);
             }
@@ -486,7 +491,7 @@ impl Screen {
         let client_ids: Vec<ClientId> = if let Some(cid) = target_client_id {
             vec![cid]
         } else {
-            self.active_tab_ids.keys().copied().collect()
+            self.core.active_tab_ids.keys().copied().collect()
         };
         for client_id in client_ids {
             let plugin_ids = self.targeted_plugin_ids(client_id, EventType::ModeUpdate);
@@ -499,7 +504,8 @@ impl Screen {
             }
         }
         if !plugin_updates.is_empty() {
-            self.bus
+            self.core
+                .bus
                 .senders
                 .send_to_plugin(PluginInstruction::Update(plugin_updates))
                 .context("failed to broadcast mode update")?;

@@ -33,6 +33,7 @@ pub enum PtyWriteInstruction {
     },
     Write(Vec<u8>, TerminalId, Option<NotificationEnd>),
     RetainAgentTheme(TerminalId, yinz_types::agent::theme::AgentThemeEvent),
+    RedrawPty(TerminalId, u16, u16, Option<u16>, Option<u16>),
     ResizePty(TerminalId, u16, u16, Option<u16>, Option<u16>),
     TerminalPlaced {
         terminal_id: TerminalId,
@@ -100,6 +101,7 @@ impl Drop for PendingWrite {
 pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
     let err_context = || "failed to write to pty".to_string();
     let mut pending: HashMap<TerminalId, VecDeque<PendingWrite>> = HashMap::new();
+    let mut caching = false;
     let mut placements = Vec::new();
     let mut migration_barriers: Vec<(
         std::time::Instant,
@@ -125,7 +127,7 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
             .clone()
             .context("no OS input API found")
             .with_context(err_context)?;
-        let os_input: &mut dyn crate::os_input_output::TerminalIo = os_input.as_mut();
+        let os_input = os_input.as_mut();
 
         // Process the instruction if we received one
         if let Some((event, mut err_ctx)) = event {
@@ -199,6 +201,23 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                         .with_context(err_context);
                     resize_result.non_fatal();
                 },
+                PtyWriteInstruction::RedrawPty(id, cols, rows, width, height) => {
+                    if caching {
+                        os_input.apply_cached_resizes();
+                    }
+                    let nudge = if cols == 1 { 2 } else { cols.saturating_sub(1) };
+                    os_input
+                        .set_terminal_size_using_terminal_id(id, nudge, rows, None, None)
+                        .context("nudge pane size for redraw")
+                        .non_fatal();
+                    os_input
+                        .set_terminal_size_using_terminal_id(id, cols, rows, width, height)
+                        .context("restore pane size after redraw")
+                        .non_fatal();
+                    if caching {
+                        os_input.cache_resizes();
+                    }
+                },
                 PtyWriteInstruction::RetainAgentTheme(terminal_id, event) => {
                     os_input
                         .retain_agent_theme(terminal_id, event)
@@ -236,19 +255,26 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                     // so we do this to play nice and always only send the last resize instruction to
                     // each pane
                     // the logic for this happens in the main Screen event loop
-                    os_input.cache_resizes();
+                    if !caching {
+                        os_input.cache_resizes();
+                    }
+                    caching = true;
                 },
                 PtyWriteInstruction::ApplyCachedResizes => {
                     os_input.apply_cached_resizes();
-                    for placement in placements.drain(..) {
-                        bus.senders
-                            .send_to_pty(placement)
-                            .context("acknowledge terminal placement after resizing")?;
-                    }
+                    caching = false;
                 },
                 PtyWriteInstruction::Exit => {
                     return Ok(());
                 },
+            }
+        }
+
+        if !caching {
+            for placement in placements.drain(..) {
+                bus.senders
+                    .send_to_pty(placement)
+                    .context("acknowledge terminal placement after resizing")?;
             }
         }
 

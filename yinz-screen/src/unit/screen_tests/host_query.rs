@@ -10,12 +10,13 @@ fn forward_host_query_when_idle_dispatches_immediately() {
     let token = screen.forward_host_query(pane_id, query.clone());
 
     assert_eq!(
-        screen.forward_in_flight_token,
+        screen.core.forward_in_flight_token,
         Some(token),
         "slot must flip to in-flight for the dispatched token"
     );
     assert_eq!(
         screen
+            .core
             .pending_forwarded_queries
             .get(&token)
             .map(|e| e.pane_id),
@@ -47,9 +48,9 @@ fn forward_host_query_when_busy_queues_instead_of_dispatching() {
     let forwards = capture.drain_forward_queries();
     assert_eq!(forwards.len(), 1, "second call must not dispatch yet");
     assert_eq!(forwards[0].0, first_token);
-    assert_eq!(screen.forward_queue.len(), 1);
-    assert_eq!(screen.forward_queue[0].token, second_token);
-    assert_eq!(screen.forward_queue[0].pane_id, second_pane);
+    assert_eq!(screen.core.forward_queue.len(), 1);
+    assert_eq!(screen.core.forward_queue[0].token, second_token);
+    assert_eq!(screen.core.forward_queue[0].pane_id, second_pane);
 }
 
 #[test]
@@ -69,11 +70,11 @@ fn handle_reply_writes_to_pane_pty_and_releases_slot() {
     assert_eq!(writes.len(), 1, "one pty write expected");
     assert_eq!(writes[0], (reply, TerminalId::new(7)));
     assert!(
-        screen.forward_in_flight_token.is_none(),
+        screen.core.forward_in_flight_token.is_none(),
         "slot released so the next queued forward can dispatch"
     );
     assert!(
-        !screen.pending_forwarded_queries.contains_key(&token),
+        !screen.core.pending_forwarded_queries.contains_key(&token),
         "token entry must have been removed from the map"
     );
 }
@@ -98,10 +99,11 @@ fn handle_reply_dispatches_next_queued_forward() {
     let forwards = capture.drain_forward_queries();
     assert_eq!(forwards.len(), 1, "next queued forward must dispatch");
     assert_eq!(forwards[0].0, second_token);
-    assert!(screen.forward_queue.is_empty());
-    assert_eq!(screen.forward_in_flight_token, Some(second_token));
+    assert!(screen.core.forward_queue.is_empty());
+    assert_eq!(screen.core.forward_in_flight_token, Some(second_token));
     assert_eq!(
         screen
+            .core
             .pending_forwarded_queries
             .get(&second_token)
             .map(|e| e.pane_id),
@@ -123,15 +125,15 @@ fn clipboard_read_is_dropped_when_the_option_is_off() {
         capture.drain_forward_queries().is_empty(),
         "an opted-out clipboard read must never reach the host terminal"
     );
-    assert!(screen.clipboard_forward_in_flight_token.is_none());
-    assert!(screen.pending_clipboard_forwards.is_empty());
+    assert!(screen.core.clipboard_forward_in_flight_token.is_none());
+    assert!(screen.core.pending_clipboard_forwards.is_empty());
 }
 
 #[test]
 fn clipboard_read_is_forwarded_asynchronously_when_enabled() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    screen.paste_buffer_read_enabled = true;
+    screen.core.paste_buffer_read_enabled = true;
     let pane_id = PaneId::Terminal(crate::TerminalId::new(5));
 
     let token = screen.forward_host_query(pane_id, clipboard_query());
@@ -142,16 +144,17 @@ fn clipboard_read_is_forwarded_asynchronously_when_enabled() {
         vec![(token, b"\x1b]52;c;?\x1b\\".to_vec(), true)],
         "the query must go out marked as async so the client omits its barrier"
     );
-    assert_eq!(screen.clipboard_forward_in_flight_token, Some(token));
+    assert_eq!(screen.core.clipboard_forward_in_flight_token, Some(token));
     assert_eq!(
         screen
+            .core
             .pending_clipboard_forwards
             .get(&token)
             .map(|e| e.pane_id),
         Some(pane_id)
     );
     assert!(
-        screen.forward_in_flight_token.is_none(),
+        screen.core.forward_in_flight_token.is_none(),
         "the barrier-serialized slot must stay free"
     );
 }
@@ -160,7 +163,7 @@ fn clipboard_read_is_forwarded_asynchronously_when_enabled() {
 fn a_pending_clipboard_read_does_not_block_other_host_queries() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    screen.paste_buffer_read_enabled = true;
+    screen.core.paste_buffer_read_enabled = true;
     let clipboard_token = screen.forward_host_query(
         PaneId::Terminal(crate::TerminalId::new(1)),
         clipboard_query(),
@@ -176,9 +179,9 @@ fn a_pending_clipboard_read_does_not_block_other_host_queries() {
     );
     assert_eq!(forwards[0].0, clipboard_token);
     assert_eq!(forwards[1].0, colour_token);
-    assert_eq!(screen.forward_in_flight_token, Some(colour_token));
+    assert_eq!(screen.core.forward_in_flight_token, Some(colour_token));
     assert_eq!(
-        screen.clipboard_forward_in_flight_token,
+        screen.core.clipboard_forward_in_flight_token,
         Some(clipboard_token)
     );
 }
@@ -187,7 +190,7 @@ fn a_pending_clipboard_read_does_not_block_other_host_queries() {
 fn a_real_clipboard_reply_is_written_to_the_pane_verbatim() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    screen.paste_buffer_read_enabled = true;
+    screen.core.paste_buffer_read_enabled = true;
     let token = screen.forward_host_query(
         PaneId::Terminal(crate::TerminalId::new(8)),
         clipboard_query(),
@@ -203,15 +206,15 @@ fn a_real_clipboard_reply_is_written_to_the_pane_verbatim() {
         capture.drain_pty_writes(),
         vec![(reply, TerminalId::new(8))]
     );
-    assert!(screen.clipboard_forward_in_flight_token.is_none());
-    assert!(screen.pending_clipboard_forwards.is_empty());
+    assert!(screen.core.clipboard_forward_in_flight_token.is_none());
+    assert!(screen.core.pending_clipboard_forwards.is_empty());
 }
 
 #[test]
 fn an_unanswered_clipboard_read_resolves_as_an_empty_clipboard() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    screen.paste_buffer_read_enabled = true;
+    screen.core.paste_buffer_read_enabled = true;
     let token = screen.forward_host_query(
         PaneId::Terminal(crate::TerminalId::new(9)),
         clipboard_query(),
@@ -232,7 +235,7 @@ fn an_unanswered_clipboard_read_resolves_as_an_empty_clipboard() {
 fn a_late_clipboard_reply_is_discarded() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    screen.paste_buffer_read_enabled = true;
+    screen.core.paste_buffer_read_enabled = true;
     let token = screen.forward_host_query(
         PaneId::Terminal(crate::TerminalId::new(9)),
         clipboard_query(),
@@ -257,7 +260,7 @@ fn a_late_clipboard_reply_is_discarded() {
 fn a_second_clipboard_read_waits_for_the_first() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    screen.paste_buffer_read_enabled = true;
+    screen.core.paste_buffer_read_enabled = true;
     let first_token = screen.forward_host_query(
         PaneId::Terminal(crate::TerminalId::new(1)),
         clipboard_query(),
@@ -274,15 +277,15 @@ fn a_second_clipboard_read_waits_for_the_first() {
         "a host can only show one consent prompt at a time"
     );
     assert_eq!(forwards[0].0, first_token);
-    assert_eq!(screen.clipboard_forward_queue.len(), 1);
-    assert_eq!(screen.clipboard_forward_queue[0].token, second_token);
+    assert_eq!(screen.core.clipboard_forward_queue.len(), 1);
+    assert_eq!(screen.core.clipboard_forward_queue[0].token, second_token);
 }
 
 #[test]
 fn a_queued_clipboard_read_for_a_closed_pane_is_skipped() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    screen.paste_buffer_read_enabled = true;
+    screen.core.paste_buffer_read_enabled = true;
     let first_token = screen.forward_host_query(
         PaneId::Terminal(crate::TerminalId::new(1)),
         clipboard_query(),
@@ -301,8 +304,8 @@ fn a_queued_clipboard_read_for_a_closed_pane_is_skipped() {
         capture.drain_forward_queries().is_empty(),
         "the queued read belongs to a pane no tab owns"
     );
-    assert!(screen.clipboard_forward_queue.is_empty());
-    assert!(screen.clipboard_forward_in_flight_token.is_none());
+    assert!(screen.core.clipboard_forward_queue.is_empty());
+    assert!(screen.core.clipboard_forward_in_flight_token.is_none());
 }
 
 #[test]
@@ -311,7 +314,7 @@ fn clear_nested_guest_does_not_notify_guest_focus_lost_on_teardown() {
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
     let pane_id = PaneId::Terminal(crate::TerminalId::new(7));
     let client_id = ClientId::new(1);
-    screen.nested_guest_choices.insert(
+    screen.nested.nested_guest_choices.insert(
         (client_id, pane_id),
         super::super::NestedGuestChoice::Descend,
     );
@@ -333,7 +336,7 @@ fn remove_client_notifies_guest_focus_lost_on_live_ascend() {
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
     let pane_id = PaneId::Terminal(crate::TerminalId::new(7));
     let client_id = ClientId::new(1);
-    screen.nested_guest_choices.insert(
+    screen.nested.nested_guest_choices.insert(
         (client_id, pane_id),
         super::super::NestedGuestChoice::Descend,
     );
@@ -355,11 +358,12 @@ fn suspend_nested_guest_preserves_choices_for_later_revival() {
     let (mut screen, _capture) = create_new_screen_with_forward_capture(size);
     let pane_id = PaneId::Terminal(crate::TerminalId::new(7));
     let client_id = ClientId::new(1);
-    screen.nested_guest_choices.insert(
+    screen.nested.nested_guest_choices.insert(
         (client_id, pane_id),
         super::super::NestedGuestChoice::Descend,
     );
     screen
+        .nested
         .nested_guest_tracker
         .on_announce(pane_id, std::time::Instant::now());
 
@@ -367,7 +371,7 @@ fn suspend_nested_guest_preserves_choices_for_later_revival() {
 
     assert!(
         screen
-            .nested_guest_choices
+            .nested.nested_guest_choices
             .contains_key(&(client_id, pane_id)),
         "suspend must preserve the client's descend choice so a re-announcing guest can be revived \
          into the exact prior state"
@@ -380,7 +384,7 @@ fn clear_nested_guest_discards_choices_unlike_suspend() {
     let (mut screen, _capture) = create_new_screen_with_forward_capture(size);
     let pane_id = PaneId::Terminal(crate::TerminalId::new(7));
     let client_id = ClientId::new(1);
-    screen.nested_guest_choices.insert(
+    screen.nested.nested_guest_choices.insert(
         (client_id, pane_id),
         super::super::NestedGuestChoice::Descend,
     );
@@ -389,6 +393,7 @@ fn clear_nested_guest_discards_choices_unlike_suspend() {
 
     assert!(
         !screen
+            .nested
             .nested_guest_choices
             .contains_key(&(client_id, pane_id)),
         "a full teardown (Bye/ClosePane) must discard choices, distinguishing it from suspend"
@@ -420,7 +425,7 @@ fn handle_reply_with_unknown_token_is_silent_noop() {
         "unknown token must not produce any pty write"
     );
     assert_eq!(
-        screen.forward_in_flight_token,
+        screen.core.forward_in_flight_token,
         Some(first_token),
         "in-flight token must still be the original"
     );
@@ -459,7 +464,7 @@ fn late_timeout_after_real_reply_does_not_clobber_next_in_flight() {
     let dispatched = capture.drain_forward_queries();
     assert_eq!(dispatched.len(), 1, "B must dispatch on A's release");
     assert_eq!(dispatched[0].0, token_b);
-    assert_eq!(screen.forward_in_flight_token, Some(token_b));
+    assert_eq!(screen.core.forward_in_flight_token, Some(token_b));
     // Drain the real reply's pty write so the late-timeout assertion
     // below only sees writes (or absence thereof) caused by step 3.
     let real_writes = capture.drain_pty_writes();
@@ -472,12 +477,12 @@ fn late_timeout_after_real_reply_does_not_clobber_next_in_flight() {
         .expect("late timeout must be a no-op, not an error");
 
     assert_eq!(
-        screen.forward_in_flight_token,
+        screen.core.forward_in_flight_token,
         Some(token_b),
         "B's slot must NOT be released by A's late timeout"
     );
     assert_eq!(
-        screen.forward_queue.front().map(|p| p.token),
+        screen.core.forward_queue.front().map(|p| p.token),
         Some(token_c),
         "C must still be queued — A's late timeout must not have popped it"
     );
@@ -522,7 +527,7 @@ fn timeout_for_in_flight_token_releases_slot_with_cache_fallback() {
         "\u{1b}]11;rgb:0000/0000/0000\u{1b}\\",
     );
     assert_eq!(
-        screen.forward_in_flight_token,
+        screen.core.forward_in_flight_token,
         Some(queued_token),
         "queued forward dispatched on slot release"
     );
@@ -535,7 +540,7 @@ fn token_counter_wraps_skipping_sentinel() {
     // sentinel and is skipped, so the next allocation yields 1.
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    screen.next_forward_token = u32::MAX;
+    screen.core.next_forward_token = u32::MAX;
 
     let t1 = screen.forward_host_query(PaneId::Terminal(crate::TerminalId::new(1)), bg_query());
     // Clear the in-flight slot so the next call actually allocates
@@ -564,14 +569,14 @@ fn plugin_pane_reply_is_dropped_without_write() {
     // don't have a pty).
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    screen.pending_forwarded_queries.insert(
+    screen.core.pending_forwarded_queries.insert(
         77,
         super::super::PendingForwardEntry {
             pane_id: PaneId::Plugin(crate::PluginId::new(42)),
             query: bg_query(),
         },
     );
-    screen.forward_in_flight_token = Some(77);
+    screen.core.forward_in_flight_token = Some(77);
 
     screen
         .handle_forwarded_reply_from_host(77, b"\x1b]11;rgb:0/0/0\x1b\\".to_vec())
@@ -582,11 +587,11 @@ fn plugin_pane_reply_is_dropped_without_write() {
         "plugin-pane token must not produce a pty write"
     );
     assert!(
-        !screen.pending_forwarded_queries.contains_key(&77),
+        !screen.core.pending_forwarded_queries.contains_key(&77),
         "map entry must still be cleared even when the reply is dropped"
     );
     assert!(
-        screen.forward_in_flight_token.is_none(),
+        screen.core.forward_in_flight_token.is_none(),
         "slot still released"
     );
 }

@@ -22,7 +22,8 @@ pub(super) struct PermissionModal {
     allow: bool,
     scroll: usize,
     painted: Option<CellRect>,
-    pressed: Option<usize>,
+    // The outer option retains ownership of the release after its hit is invalidated.
+    pressed: Option<Option<(usize, ContextMenuLayout)>>,
 }
 
 impl PermissionModal {
@@ -101,7 +102,7 @@ impl PermissionModal {
         self.scroll = self.layout(viewport).window_start;
         if self.scroll != previous {
             // Invalidate the hit while retaining capture of the matching release.
-            self.pressed = self.pressed.map(|_| usize::MAX);
+            self.pressed = self.pressed.as_ref().map(|_| None);
         }
     }
     fn show_selection(&mut self, viewport: Viewport) {
@@ -119,25 +120,16 @@ impl PermissionModal {
 }
 
 impl Screen {
-    pub(super) fn permission_modal_clients(&self) -> impl Iterator<Item = ClientId> + '_ {
-        self.permission_modals
-            .iter()
-            .filter_map(|modal| modal.client)
-    }
-    pub(super) fn permission_modal_open(&self, client: ClientId) -> bool {
-        self.permission_modals
-            .iter()
-            .any(|modal| modal.client == Some(client))
-    }
     pub(super) fn open_permission_modal(&mut self, _plugin: PluginId, request: PluginPermission) {
         if self
+            .permissions
             .permission_modals
             .iter()
             .any(|modal| modal.request.request_id == request.request_id)
         {
             return;
         }
-        self.permission_modals.push(PermissionModal {
+        self.permissions.permission_modals.push(PermissionModal {
             request,
             client: None,
             allow: false,
@@ -149,15 +141,17 @@ impl Screen {
     }
     pub(super) fn assign_permission_modals(&mut self) {
         let clients: Vec<_> = self
+            .core
             .active_tab_ids
             .keys()
             .filter(|id| {
-                self.connected_clients.borrow().contains(id)
-                    && !self.watcher_clients.contains_key(id)
+                self.core.connected_clients.borrow().contains(id)
+                    && !self.core.watcher_clients.contains_key(id)
             })
             .copied()
             .collect();
         let fallback = self
+            .permissions
             .permission_last_client
             .filter(|id| clients.contains(id))
             .or_else(|| clients.first().copied());
@@ -166,9 +160,14 @@ impl Screen {
             .map(|id| (*id, self.get_active_pane_id(id)))
             .collect();
         let mut presented = vec![];
-        for modal in &mut self.permission_modals {
+        for modal in &mut self.permissions.permission_modals {
             if modal.client.is_some_and(|client| clients.contains(&client)) {
                 continue;
+            }
+            if modal.pressed.take().is_some()
+                && let Some(client) = modal.client
+            {
+                self.permissions.permission_mouse_captures.insert(client);
             }
             modal.client = modal
                 .request
@@ -192,30 +191,32 @@ impl Screen {
         for client in presented {
             self.close_command_palette(client);
             // The modal owns the interrupted gesture, even if it closes before release.
-            if self.command_palette_mouse_captures.remove(&client) {
-                self.permission_mouse_captures.insert(client);
+            if self.palette.command_palette_mouse_captures.remove(&client) {
+                self.permissions.permission_mouse_captures.insert(client);
             }
             self.close_context_menu(client);
         }
     }
     pub(super) fn cancel_permission_modal(&mut self, token: u64) {
-        let old_len = self.permission_modals.len();
-        for modal in &self.permission_modals {
+        let old_len = self.permissions.permission_modals.len();
+        for modal in &self.permissions.permission_modals {
             if modal.request.request_id == token
                 && modal.pressed.is_some()
                 && let Some(client) = modal.client
             {
-                self.permission_mouse_captures.insert(client);
+                self.permissions.permission_mouse_captures.insert(client);
             }
         }
-        self.permission_modals
+        self.permissions
+            .permission_modals
             .retain(|modal| modal.request.request_id != token);
-        if old_len != self.permission_modals.len() {
+        if old_len != self.permissions.permission_modals.len() {
             self.force_render_under_context_menu();
         }
     }
     fn answer_permission_modal(&mut self, client: ClientId, granted: bool) {
         let Some(token) = self
+            .permissions
             .permission_modals
             .iter()
             .find(|modal| modal.client == Some(client))
@@ -224,7 +225,8 @@ impl Screen {
             return;
         };
         self.cancel_permission_modal(token);
-        self.bus
+        self.core
+            .bus
             .senders
             .send_to_plugin(PluginInstruction::PermissionAnswer {
                 request_id: token,
@@ -243,11 +245,12 @@ impl Screen {
         key: &Option<KeyWithModifier>,
         client: ClientId,
     ) -> bool {
-        if !self.watcher_clients.contains_key(&client) {
-            self.permission_last_client = Some(client);
+        if !self.core.watcher_clients.contains_key(&client) {
+            self.permissions.permission_last_client = Some(client);
         }
         let surface = self.command_palette_surface(client);
         let Some(modal) = self
+            .permissions
             .permission_modals
             .iter_mut()
             .find(|modal| modal.client == Some(client))
@@ -303,17 +306,18 @@ impl Screen {
         true
     }
     pub(super) fn permission_modal_mouse(&mut self, event: &MouseEvent, client: ClientId) -> bool {
-        if self.permission_mouse_captures.contains(&client) {
+        if self.permissions.permission_mouse_captures.contains(&client) {
             if event.event_type == MouseEventType::Release {
-                self.permission_mouse_captures.remove(&client);
+                self.permissions.permission_mouse_captures.remove(&client);
             }
             return true;
         }
-        if !self.watcher_clients.contains_key(&client) {
-            self.permission_last_client = Some(client);
+        if !self.core.watcher_clients.contains_key(&client) {
+            self.permissions.permission_last_client = Some(client);
         }
         let surface = self.command_palette_surface(client);
         let Some(modal) = self
+            .permissions
             .permission_modals
             .iter_mut()
             .find(|modal| modal.client == Some(client))
@@ -336,17 +340,17 @@ impl Screen {
             .and_then(|surface| context_menu_item_at(&modal.layout(surface), event.position));
         if event.event_type == MouseEventType::Press {
             // Retain capture even outside the controls if a keyboard answer closes the modal.
-            modal.pressed = Some(if event.left {
-                hit.unwrap_or(usize::MAX)
-            } else {
-                usize::MAX
-            });
+            modal.pressed = Some(
+                hit.zip(surface)
+                    .filter(|_| event.left)
+                    .map(|(hit, surface)| (hit, modal.layout(surface))),
+            );
         }
         if event.event_type == MouseEventType::Release {
             let pressed = modal.pressed.take();
             if let (Some(hit), Some(surface)) = (hit, surface)
                 && event.left
-                && Some(hit) == pressed
+                && pressed.flatten().is_some_and(|(index, _)| index == hit)
             {
                 let item_count = modal.items(surface).len();
                 let allow = hit == item_count - 1;
@@ -358,20 +362,43 @@ impl Screen {
         }
         true
     }
+    pub(super) fn permission_surfaces_changed(&mut self) {
+        let clients: Vec<_> = self.permissions.permission_modal_clients().collect();
+        for client in clients {
+            let surface = self.command_palette_surface(client);
+            for modal in self
+                .permissions
+                .permission_modals
+                .iter_mut()
+                .filter(|modal| modal.client == Some(client))
+            {
+                if let Some(surface) = surface {
+                    modal.set_scroll(modal.scroll, surface);
+                    if let Some(Some((_, prior))) = &modal.pressed
+                        && *prior != modal.layout(surface)
+                    {
+                        modal.pressed = Some(None);
+                    }
+                } else if modal.pressed.is_some() {
+                    modal.pressed = Some(None);
+                }
+            }
+        }
+    }
     pub(super) fn prepare_permission_modal_render(&mut self) {
-        let clients: Vec<_> = self.permission_modal_clients().collect();
+        let clients: Vec<_> = self.permissions.permission_modal_clients().collect();
         for client in clients {
             let Some(surface) = self.command_palette_surface(client) else {
                 continue;
             };
             let Some(modal) = self
+                .permissions
                 .permission_modals
                 .iter_mut()
                 .find(|modal| modal.client == Some(client))
             else {
                 continue;
             };
-            modal.set_scroll(modal.scroll, surface);
             let layout = modal.layout(surface);
             let rect = CellRect {
                 x: layout.x,
@@ -380,7 +407,6 @@ impl Screen {
                 rows: layout.height(),
             };
             if modal.painted.replace(rect).is_some_and(|old| old != rect) {
-                modal.pressed = modal.pressed.map(|_| usize::MAX);
                 self.force_render_under_context_menu();
             }
         }
@@ -389,7 +415,7 @@ impl Screen {
         let previous_stack = output.set_floating_panes_stack(None);
         let result = (|| -> Result<()> {
             let mut clients = std::collections::HashSet::new();
-            for modal in &self.permission_modals {
+            for modal in &self.permissions.permission_modals {
                 let Some(client) = modal.client.filter(|client| clients.insert(*client)) else {
                     continue;
                 };
@@ -399,7 +425,7 @@ impl Screen {
                 let layout = modal.layout(surface);
                 output.add_character_chunks_to_client(
                     client,
-                    context_menu_chunks(&layout, Some(modal.selected(surface)), &self.style),
+                    context_menu_chunks(&layout, Some(modal.selected(surface)), &self.core.style),
                     None,
                 )?;
                 output.add_post_vte_instruction_to_client(client, "\u{1b}[?25l");
@@ -408,5 +434,26 @@ impl Screen {
         })();
         output.set_floating_panes_stack(previous_stack);
         result
+    }
+}
+
+impl crate::screen::PermissionModalController {
+    pub(in crate::screen) fn permission_modal_clients(
+        &self,
+    ) -> impl Iterator<Item = ClientId> + '_ {
+        self.permission_modals
+            .iter()
+            .filter_map(|modal| modal.client)
+    }
+    pub(in crate::screen) fn permission_modal_open(&self, client: ClientId) -> bool {
+        self.permission_modals
+            .iter()
+            .any(|modal| modal.client == Some(client))
+    }
+}
+
+impl super::PermissionModalController {
+    pub(super) fn on_client_removed(&mut self, client_id: ClientId) {
+        self.permission_mouse_captures.remove(&client_id);
     }
 }

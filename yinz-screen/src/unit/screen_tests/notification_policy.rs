@@ -22,7 +22,7 @@ fn policy_screen() -> (Screen, ServerReceiver, PluginReceiver, PluginInstanceId)
     new_tab(&mut screen, 1, TabId::new(0));
     screen.set_host_notification_protocol(HostNotificationProtocol::Osc99);
     let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     screen.set_notification_policy(Some(POLICY), None).unwrap();
     while server.try_recv().is_ok() {}
     (screen, server, rx, PluginInstanceId::default())
@@ -60,7 +60,9 @@ fn decide(
     instance: PluginInstanceId,
     decision: NotificationDecision,
 ) {
-    screen.bind_notification_request(NotificationId::new(id), POLICY, instance);
+    screen
+        .notices
+        .bind_notification_request(NotificationId::new(id), POLICY, instance);
     screen
         .resolve_notification(NotificationId::new(id), decision, POLICY, instance)
         .unwrap();
@@ -101,12 +103,12 @@ fn pending_activation_skips_unresolved_and_suppressed_entries() {
     screen.activate_last_notification(client_id, Instant::now());
     assert_eq!(screen.get_active_pane_id(&client_id), Some(first));
     decide(&mut screen, 1, instance, NotificationDecision::Suppress);
-    assert_eq!(screen.notifications.len(), 1);
+    assert_eq!(screen.notices.notifications.len(), 1);
     screen.activate_last_notification(client_id, Instant::now());
     assert_eq!(screen.get_active_pane_id(&client_id), Some(first));
     assert!(screen.pending_notification().is_none());
-    assert_eq!(screen.notification_history.len(), 2);
-    assert!(!screen.notification_history[1].pending);
+    assert_eq!(screen.notices.notification_history.len(), 2);
+    assert!(!screen.notices.notification_history[1].pending);
 }
 
 #[test]
@@ -146,8 +148,8 @@ fn desktop_only_entries_require_a_live_pane_or_callback_and_suppression_never_ta
             .receive_toast("suppressed".into(), pane, click, None, None)
             .unwrap();
         decide(&mut screen, 2, instance, NotificationDecision::Suppress);
-        assert_eq!(screen.notifications.len(), 1);
-        assert_eq!(screen.notification_history.len(), 3);
+        assert_eq!(screen.notices.notifications.len(), 1);
+        assert_eq!(screen.notices.notification_history.len(), 3);
         assert_eq!(
             screen.pending_notification().unwrap().info.id,
             NotificationId::new(u64::from(actionable))
@@ -161,7 +163,7 @@ fn desktop_only_entries_require_a_live_pane_or_callback_and_suppression_never_ta
             screen.activate_last_notification(client, Instant::now());
         }
         assert!(screen.pending_notification().is_none());
-        assert!(!screen.notification_history[2].pending);
+        assert!(!screen.notices.notification_history[2].pending);
     }
 }
 
@@ -192,6 +194,7 @@ fn forwarded_desktop_clicks_consume_only_the_latest_matching_pane_and_forwarded_
     screen.consume_pane_desktop_notification(pane, b"i=p1.unknown;", now);
     assert_eq!(
         screen
+            .notices
             .notification_history
             .iter()
             .map(|record| record.pending)
@@ -238,7 +241,7 @@ fn forwarded_desktop_clicks_distinguish_report_flags_and_dismiss_only_the_matchi
         let output = desktop_output(&server);
         assert!(output.contains(&format!("i={older_id}:")));
         assert!(output.contains(&format!("i={newer_id}:")));
-        assert_eq!(screen.notifications.len(), 2);
+        assert_eq!(screen.notices.notifications.len(), 2);
 
         let pane = PaneId::Terminal(TerminalId::new(1));
         let now = Instant::now();
@@ -248,10 +251,11 @@ fn forwarded_desktop_clicks_distinguish_report_flags_and_dismiss_only_the_matchi
                 format!("i={older_id};").as_bytes(),
                 now,
             );
-            assert!(!screen.notification_history[0].pending);
-            assert!(screen.notification_history[1].pending);
+            assert!(!screen.notices.notification_history[0].pending);
+            assert!(screen.notices.notification_history[1].pending);
             assert_eq!(
                 screen
+                    .notices
                     .notifications
                     .iter()
                     .filter(|notification| notification.is_dismissing())
@@ -263,6 +267,7 @@ fn forwarded_desktop_clicks_distinguish_report_flags_and_dismiss_only_the_matchi
         screen.consume_pane_desktop_notification(pane, format!("i={newer_id};").as_bytes(), now);
         assert!(screen.pending_notification().is_none());
         assert!(screen
+            .notices
             .notifications
             .iter()
             .all(|notification| notification.is_dismissing()));
@@ -286,7 +291,7 @@ fn arrivals_are_observable_and_resolutions_commit_in_order_without_blocking_rend
         matches!(&arrivals[1], (Some(POLICY), Event::NotificationRequested(n)) if n.id == NotificationId::new(0))
     );
     decide(&mut screen, 1, instance, NotificationDecision::Suppress);
-    assert!(screen.notification_history.is_empty());
+    assert!(screen.notices.notification_history.is_empty());
     screen
         .get_active_tab_mut(ClientId::new(1))
         .unwrap()
@@ -313,13 +318,14 @@ fn arrivals_are_observable_and_resolutions_commit_in_order_without_blocking_rend
     );
     assert_eq!(
         screen
+            .notices
             .notification_history
             .iter()
             .map(|r| r.info.message.as_str())
             .collect::<Vec<_>>(),
         ["rewritten: first", "second"]
     );
-    assert_eq!(screen.notifications.len(), 1);
+    assert_eq!(screen.notices.notifications.len(), 1);
     let output = desktop_output(&server);
     assert!(
         output.contains("i=yinz-notification-0")
@@ -348,7 +354,9 @@ fn forged_stale_duplicate_and_expired_replies_cannot_decide_notifications() {
     screen
         .receive_toast("original".into(), None, None, None, None)
         .unwrap();
-    screen.bind_notification_request(NotificationId::new(0), POLICY, instance);
+    screen
+        .notices
+        .bind_notification_request(NotificationId::new(0), POLICY, instance);
     screen
         .resolve_notification(
             NotificationId::new(0),
@@ -365,13 +373,13 @@ fn forged_stale_duplicate_and_expired_replies_cannot_decide_notifications() {
             PluginInstanceId::default(),
         )
         .unwrap();
-    assert!(screen.notification_history.is_empty());
+    assert!(screen.notices.notification_history.is_empty());
     screen
         .expire_notification_requests(Instant::now() + Duration::from_secs(2))
         .unwrap();
     decide(&mut screen, 0, instance, NotificationDecision::Suppress);
-    assert_eq!(screen.notification_history.len(), 1);
-    let outcome = screen.notification_history[0]
+    assert_eq!(screen.notices.notification_history.len(), 1);
+    let outcome = screen.notices.notification_history[0]
         .info
         .outcome
         .as_ref()
@@ -408,14 +416,14 @@ fn all_delivery_choices_and_policy_origin_bypass_keep_metadata() {
             },
         );
         assert_eq!(
-            screen.notifications.len(),
+            screen.notices.notifications.len(),
             usize::from(delivery != NotificationDelivery::Desktop)
         );
         assert_eq!(
             desktop_output(&server).contains("i=yinz-notification-0"),
             delivery != NotificationDelivery::Toast
         );
-        let info = &screen.notification_history[0].info;
+        let info = &screen.notices.notification_history[0].info;
         assert_eq!(
             info.outcome.as_ref().unwrap().original.plugin_id,
             Some(PluginId::new(7))
@@ -428,7 +436,7 @@ fn all_delivery_choices_and_policy_origin_bypass_keep_metadata() {
         screen
             .receive_toast("policy's own toast".into(), None, None, Some(POLICY), None)
             .unwrap();
-        assert_eq!(screen.notification_history.len(), 2);
+        assert_eq!(screen.notices.notification_history.len(), 2);
         assert!(!events(&plugins)
             .iter()
             .any(|(_, event)| matches!(event, Event::NotificationRequested(_))));
@@ -463,7 +471,10 @@ fn osc99_chunks_are_retained_until_resolution_and_passed_through_unchanged() {
         output.contains("\x1b]99;i=p1r.a:p=body:d=1:a=focus,report;body\x1b\\"),
         "{output:?}"
     );
-    assert_eq!(screen.notification_history[0].info.message, "title: body");
+    assert_eq!(
+        screen.notices.notification_history[0].info.message,
+        "title: body"
+    );
 }
 
 #[test]
@@ -499,9 +510,9 @@ fn suppression_and_close_prevent_every_display_chunk_from_reaching_the_host() {
             !output.contains("secret") && !output.contains(";body"),
             "{output:?}"
         );
-        assert_eq!(screen.notification_history.len(), 1);
+        assert_eq!(screen.notices.notification_history.len(), 1);
         assert!(
-            screen.notification_history[0]
+            screen.notices.notification_history[0]
                 .info
                 .outcome
                 .as_ref()
@@ -581,7 +592,7 @@ fn overflow_falls_back_for_the_entire_assembly_and_records_why() {
             1
         );
         assert_eq!(
-            screen.notification_history[0]
+            screen.notices.notification_history[0]
                 .info
                 .outcome
                 .as_ref()
@@ -591,7 +602,9 @@ fn overflow_falls_back_for_the_entire_assembly_and_records_why() {
             Some("assembly_overflow")
         );
         assert_eq!(
-            screen.notification_history[0].forwarded_id.as_deref(),
+            screen.notices.notification_history[0]
+                .forwarded_id
+                .as_deref(),
             Some(forwarded_id)
         );
         let pane = PaneId::Terminal(TerminalId::new(1));
@@ -601,14 +614,14 @@ fn overflow_falls_back_for_the_entire_assembly_and_records_why() {
             format!("i={mismatched_id};").as_bytes(),
             now,
         );
-        assert!(screen.notification_history[0].pending);
+        assert!(screen.notices.notification_history[0].pending);
         assert!(screen.pending_notification().is_some());
         screen.consume_pane_desktop_notification(
             pane,
             format!("i={forwarded_id};").as_bytes(),
             now,
         );
-        assert!(!screen.notification_history[0].pending);
+        assert!(!screen.notices.notification_history[0].pending);
         assert!(screen.pending_notification().is_none());
     }
 }
@@ -616,20 +629,21 @@ fn overflow_falls_back_for_the_entire_assembly_and_records_why() {
 #[test]
 fn detached_notifications_are_recorded_without_replaying_toasts_on_attach() {
     let (mut screen, server, _, instance) = policy_screen();
-    screen.connected_clients.borrow_mut().clear();
+    screen.core.connected_clients.borrow_mut().clear();
     screen
         .receive_toast("detached".into(), None, None, None, None)
         .unwrap();
     decide(&mut screen, 0, instance, NotificationDecision::Pass);
-    assert_eq!(screen.notification_history.len(), 1);
-    assert!(screen.notifications.is_empty());
+    assert_eq!(screen.notices.notification_history.len(), 1);
+    assert!(screen.notices.notifications.is_empty());
     assert!(desktop_output(&server).is_empty());
     screen
+        .core
         .connected_clients
         .borrow_mut()
         .insert(ClientId::new(1));
     screen.render_to_clients().unwrap();
-    assert!(screen.notifications.is_empty());
+    assert!(screen.notices.notifications.is_empty());
 }
 
 #[test]
@@ -639,13 +653,15 @@ fn reload_failure_and_reconfiguration_fall_back_and_reject_the_old_instance() {
         screen
             .receive_toast("original".into(), None, None, None, None)
             .unwrap();
-        screen.bind_notification_request(NotificationId::new(id), POLICY, old);
+        screen
+            .notices
+            .bind_notification_request(NotificationId::new(id), POLICY, old);
         screen
             .notification_policy_unavailable(POLICY, reason.into(), disable)
             .unwrap();
         decide(&mut screen, id, old, NotificationDecision::Suppress);
         assert_eq!(
-            screen.notification_history[id as usize]
+            screen.notices.notification_history[id as usize]
                 .info
                 .outcome
                 .as_ref()
@@ -667,13 +683,13 @@ fn reload_failure_and_reconfiguration_fall_back_and_reject_the_old_instance() {
         PluginInstanceId::default(),
         NotificationDecision::Pass,
     );
-    assert_eq!(screen.notification_history.len(), 3);
+    assert_eq!(screen.notices.notification_history.len(), 3);
     screen
         .receive_toast("reconfigure".into(), None, None, None, None)
         .unwrap();
     screen.set_notification_policy(None, None).unwrap();
     assert_eq!(
-        screen.notification_history[3]
+        screen.notices.notification_history[3]
             .info
             .outcome
             .as_ref()
@@ -692,15 +708,19 @@ fn pending_overflow_and_oversized_replacements_deliver_originals() {
             .receive_toast(format!("original-{index}"), None, None, None, None)
             .unwrap();
     }
-    assert_eq!(screen.notification_history.len(), 257);
-    assert!(screen.notification_history.iter().all(|record| record
-        .info
-        .outcome
-        .as_ref()
-        .unwrap()
-        .fallback_reason
-        .as_deref()
-        == Some("pending_overflow")));
+    assert_eq!(screen.notices.notification_history.len(), 257);
+    assert!(screen
+        .notices
+        .notification_history
+        .iter()
+        .all(|record| record
+            .info
+            .outcome
+            .as_ref()
+            .unwrap()
+            .fallback_reason
+            .as_deref()
+            == Some("pending_overflow")));
     screen
         .receive_toast("small".into(), None, None, None, None)
         .unwrap();
@@ -714,7 +734,7 @@ fn pending_overflow_and_oversized_replacements_deliver_originals() {
             delivery: None,
         },
     );
-    let info = &screen.notification_history[257].info;
+    let info = &screen.notices.notification_history[257].info;
     assert_eq!(info.message, "small");
     assert_eq!(
         info.outcome.as_ref().unwrap().fallback_reason.as_deref(),
@@ -777,7 +797,7 @@ fn completion_waiters_and_synthesized_desktop_clicks_preserve_the_plugin_callbac
         instruction,
         PluginInstruction::NotificationClicked { .. }
     )));
-    assert!(!screen.notification_history[0].pending);
+    assert!(!screen.notices.notification_history[0].pending);
 }
 
 #[test]
@@ -819,16 +839,19 @@ fn interleaved_osc99_ids_updates_and_control_queries_remain_independent() {
         )
         .unwrap();
     decide(&mut screen, 2, instance, NotificationDecision::Pass);
-    assert_eq!(screen.notification_history.len(), 3);
+    assert_eq!(screen.notices.notification_history.len(), 3);
     assert_eq!(
-        screen.notification_history[0].info.message,
+        screen.notices.notification_history[0].info.message,
         "title-b: body-b"
     );
     assert_eq!(
-        screen.notification_history[1].info.message,
+        screen.notices.notification_history[1].info.message,
         "title-a: body-a"
     );
-    assert_eq!(screen.notification_history[2].info.message, "updated");
+    assert_eq!(
+        screen.notices.notification_history[2].info.message,
+        "updated"
+    );
 }
 
 #[test]
@@ -882,8 +905,8 @@ fn missing_policy_loads_and_unbound_hooks_use_immediate_original_delivery() {
         screen
             .receive_toast("original".into(), None, None, None, None)
             .unwrap();
-        assert_eq!(screen.notification_history.len(), 1);
-        let result = screen.notification_history[0]
+        assert_eq!(screen.notices.notification_history.len(), 1);
+        let result = screen.notices.notification_history[0]
             .info
             .outcome
             .as_ref()
@@ -973,8 +996,8 @@ fn unavailable_osc99_assemblies_stay_bypassed_after_policy_enablement_and_reload
         assert!(!observed
             .iter()
             .any(|(_, event)| matches!(event, Event::NotificationRequested(_))));
-        assert_eq!(screen.notification_history.len(), 1);
-        let outcome = screen.notification_history[0]
+        assert_eq!(screen.notices.notification_history.len(), 1);
+        let outcome = screen.notices.notification_history[0]
             .info
             .outcome
             .as_ref()
@@ -985,7 +1008,9 @@ fn unavailable_osc99_assemblies_stay_bypassed_after_policy_enablement_and_reload
         );
         assert!(!outcome.suppressed);
         assert_eq!(
-            screen.notification_history[0].forwarded_id.as_deref(),
+            screen.notices.notification_history[0]
+                .forwarded_id
+                .as_deref(),
             Some(forwarded_id)
         );
         let pane = PaneId::Terminal(TerminalId::new(1));
@@ -995,14 +1020,14 @@ fn unavailable_osc99_assemblies_stay_bypassed_after_policy_enablement_and_reload
             format!("i={mismatched_id};").as_bytes(),
             now,
         );
-        assert!(screen.notification_history[0].pending);
+        assert!(screen.notices.notification_history[0].pending);
         assert!(screen.pending_notification().is_some());
         screen.consume_pane_desktop_notification(
             pane,
             format!("i={forwarded_id};").as_bytes(),
             now,
         );
-        assert!(!screen.notification_history[0].pending);
+        assert!(!screen.notices.notification_history[0].pending);
         assert!(screen.pending_notification().is_none());
 
         // Completion removes the bypass marker, so the application can reuse its ID.
@@ -1018,8 +1043,8 @@ fn unavailable_osc99_assemblies_stay_bypassed_after_policy_enablement_and_reload
         }));
         decide(&mut screen, 1, instance, NotificationDecision::Pass);
         assert!(desktop_output(&server).contains(";fresh"));
-        assert_eq!(screen.notification_history.len(), 2);
-        assert!(screen.notification_history[1]
+        assert_eq!(screen.notices.notification_history.len(), 2);
+        assert!(screen.notices.notification_history[1]
             .info
             .outcome
             .as_ref()
@@ -1070,9 +1095,9 @@ fn completing_the_oldest_bypassed_osc99_id_at_the_tracking_limit_keeps_its_marke
         assert!(!events(&plugins)
             .iter()
             .any(|(_, event)| matches!(event, Event::NotificationRequested(_))));
-        assert_eq!(screen.notification_history.len(), 1);
+        assert_eq!(screen.notices.notification_history.len(), 1);
         assert_eq!(
-            screen.notification_history[0]
+            screen.notices.notification_history[0]
                 .info
                 .outcome
                 .as_ref()
@@ -1150,7 +1175,7 @@ fn tracking_overflow_bypasses_remaining_chunks_and_pane_cleanup_releases_assembl
         .iter()
         .any(|(_, event)| matches!(event, Event::NotificationRequested(_))));
     assert_eq!(
-        screen.notification_history[0]
+        screen.notices.notification_history[0]
             .info
             .outcome
             .as_ref()
@@ -1213,9 +1238,10 @@ fn suppressed_or_informational_desktop_entries_preserve_the_older_toasts_hint() 
         let (mut screen, _, _, instance) = policy_screen();
         let client = ClientId::new(1);
         let mode = screen
+            .core
             .mode_info
             .entry(client)
-            .or_insert_with(|| screen.default_mode_info.clone());
+            .or_insert_with(|| screen.core.default_mode_info.clone());
         mode.keybinds = Config::from_default_assets()
             .unwrap()
             .keybinds
@@ -1234,7 +1260,7 @@ fn suppressed_or_informational_desktop_entries_preserve_the_older_toasts_hint() 
             .unwrap();
         decide(&mut screen, 1, instance, decision);
         assert_eq!(
-            screen.notification_history.last().unwrap().info.id,
+            screen.notices.notification_history.last().unwrap().info.id,
             NotificationId::new(1)
         );
         let layouts = screen.notification_layout(viewport, now, client);
@@ -1259,18 +1285,22 @@ fn a_toast_raised_before_the_first_client_is_shown_to_that_client_only() {
         true,
     );
     let (tx, _plugin_receiver) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
-    assert!(screen.connected_clients.borrow().is_empty());
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    assert!(screen.core.connected_clients.borrow().is_empty());
     screen
         .receive_toast("before anyone".into(), None, None, None, None)
         .unwrap();
-    assert_eq!(screen.notification_history.len(), 1);
-    assert!(screen.notifications.is_empty(), "nobody to show it to yet");
+    assert_eq!(screen.notices.notification_history.len(), 1);
+    assert!(
+        screen.notices.notifications.is_empty(),
+        "nobody to show it to yet"
+    );
 
     // `apply_layout` registers the session's first client.
     new_tab(&mut screen, 1, TabId::new(0));
     let shown = |screen: &Screen| -> Vec<String> {
         screen
+            .notices
             .notifications
             .iter()
             .map(|toast| toast.text.clone())
@@ -1283,7 +1313,7 @@ fn a_toast_raised_before_the_first_client_is_shown_to_that_client_only() {
         .receive_toast("while detached".into(), None, None, None, None)
         .unwrap();
     screen.add_client(ClientId::new(1)).unwrap();
-    assert_eq!(screen.notification_history.len(), 2);
+    assert_eq!(screen.notices.notification_history.len(), 2);
     assert!(
         shown(&screen).len() <= 1 && !shown(&screen).contains(&"while detached".to_owned()),
         "a reattach must not replay toasts: {:?}",

@@ -2,9 +2,47 @@
 use super::*;
 use yinz_types::agent::claude_permissions::{Overlay, Status, DETAIL, EVENT, LEASE_MS};
 
-impl Screen {
+pub(in crate::screen) fn owned_notification(hook: &HookEvent) -> bool {
+    hook.hook_event_name == "Notification"
+        && hook.notification_type.as_deref() == Some("permission_prompt")
+        && hook
+            .claude_permission
+            .as_ref()
+            .is_some_and(|sample| sample.status != Status::Unavailable)
+}
+
+impl super::AgentController {
+    pub(in crate::screen) fn overlay_claude_permission(&self, pane: PaneId, agent: &mut AgentInfo) {
+        if agent.kind == "claude"
+            && agent.state != AgentState::Exited
+            && self.agent_lifecycle.get(&pane).is_some_and(|l| {
+                agent.session_id.as_ref() == Some(&l.conversation)
+                    && l.claude.permission.as_ref().is_some_and(Overlay::active)
+            })
+        {
+            if agent.state != AgentState::Waiting || !agent.wait_needs_a_person {
+                agent.detail = None;
+                agent.waiting_on = Some(DETAIL.into());
+            }
+            agent.state = AgentState::Waiting;
+            agent.wait_needs_a_person = true;
+        }
+    }
+    pub(in crate::screen) fn release_claude_permission(&mut self, pane: PaneId) {
+        if let Some(overlay) = self
+            .agent_lifecycle
+            .get_mut(&pane)
+            .and_then(|l| l.claude.permission.as_mut())
+        {
+            overlay.release();
+        }
+    }
+}
+
+impl super::AgentController {
     pub(in crate::screen) fn accept_claude_permission(
         &mut self,
+        host: &impl AgentHost,
         pane: PaneId,
         hook: &mut HookEvent,
     ) -> bool {
@@ -15,8 +53,8 @@ impl Screen {
         let valid = !hook.archive_only
             && sample.source.pid != 0
             && sample.source.started != 0
-            && self.agent_process_matches(pane, "claude")
-            && self.get_pane_info(pane).is_some_and(|info| {
+            && host.agent_process_matches(pane, "claude")
+            && host.pane_info(pane).is_some_and(|info| {
                 !info.is_held
                     && !info.exited
                     && info.target == yinz_types::command::PaneTarget::Local
@@ -75,7 +113,11 @@ impl Screen {
         true
     }
 
-    pub(super) fn claude_visible(&self, pane: PaneId) -> Option<AgentInfo> {
+    pub(in crate::screen) fn claude_visible(
+        &self,
+        host: &impl AgentHost,
+        pane: PaneId,
+    ) -> Option<AgentInfo> {
         let lifecycle = self
             .agent_lifecycle
             .get(&pane)
@@ -85,13 +127,12 @@ impl Screen {
             .parent
             .clone()
             .or_else(|| self.agent_worker_waits.get(&pane).map(|w| w.parent.clone()))
-            .or_else(|| self.get_pane_info(pane).and_then(|p| p.agent))?;
+            .or_else(|| host.pane_info(pane).and_then(|p| p.agent))?;
         // Parent snapshots supply presentation only. A snapshot taken from a hook report has
         // no run id, and one taken earlier can predate a plugin's rebinding: keep the current
         // record's run and checkout metadata, or overlaying them would unbind or rebind the run.
-        if let Some(current) = self
-            .tab_containing_pane(pane)
-            .and_then(|tab| tab.pane_agent_info(pane))
+        if let Some(current) = host
+            .pane_agent(pane)
             .filter(|current| current.kind == agent.kind && current.session_id == agent.session_id)
         {
             agent.run_id = current.run_id;
@@ -124,40 +165,139 @@ impl Screen {
         self.aggregate_claude_state(pane, &mut agent);
         Some(agent)
     }
+}
 
-    pub(super) fn overlay_claude_permission(&self, pane: PaneId, agent: &mut AgentInfo) {
-        if agent.kind == "claude"
-            && agent.state != AgentState::Exited
-            && self.agent_lifecycle.get(&pane).is_some_and(|l| {
-                agent.session_id.as_ref() == Some(&l.conversation)
-                    && l.claude.permission.as_ref().is_some_and(Overlay::active)
+impl super::AgentController {
+    pub(in crate::screen) fn notification_permission_panes(&self) -> Vec<PaneId> {
+        self.agent_lifecycle
+            .iter()
+            .filter(|(_, lifecycle)| {
+                lifecycle
+                    .claude_notifications
+                    .values()
+                    .any(|notification| notification.permission_revision.is_some())
             })
-        {
-            if agent.state != AgentState::Waiting || !agent.wait_needs_a_person {
-                agent.detail = None;
-                agent.waiting_on = Some(DETAIL.into());
-            }
-            agent.state = AgentState::Waiting;
-            agent.wait_needs_a_person = true;
-        }
+            .map(|(pane, _)| *pane)
+            .collect()
     }
-
-    pub(super) fn release_claude_permission(&mut self, pane: PaneId) {
-        if let Some(overlay) = self
-            .agent_lifecycle
-            .get_mut(&pane)
-            .and_then(|l| l.claude.permission.as_mut())
-        {
-            overlay.release();
+    pub(in crate::screen) fn advance_notification_permission(
+        &mut self,
+        host: &impl AgentHost,
+        pane: PaneId,
+    ) -> Option<AgentInfo> {
+        let info = host.pane_info(pane)?;
+        let enter_revision = host.agent_enter_revision(pane);
+        let lifecycle = self.agent_lifecycle.get_mut(&pane)?;
+        let valid = !info.is_held
+            && !info.exited
+            && info.agent.as_ref().is_some_and(|agent| {
+                agent.kind == "claude" && agent.session_id.as_ref() == Some(&lifecycle.conversation)
+            });
+        let mut changed = false;
+        for notification in lifecycle.claude_notifications.values_mut() {
+            if !valid {
+                notification.permission_revision = None;
+            } else if notification
+                .permission_revision
+                .is_some_and(|revision| enter_revision > revision)
+            {
+                notification.permission_revision = None;
+                notification.waiting = None;
+                changed = true;
+            }
         }
+        if !changed {
+            return None;
+        }
+        notifications::prune_released_notification_waits(lifecycle);
+        let parent = lifecycle.claude.parent.clone()?;
+        Some(parent)
+    }
+    pub(in crate::screen) fn take_permission_waits(
+        &mut self,
+    ) -> std::collections::HashMap<PaneId, PermissionWait> {
+        std::mem::take(&mut self.claude_permission_waits)
+    }
+    pub(in crate::screen) fn advance_permission_wait(
+        &mut self,
+        host: &impl AgentHost,
+        pane: PaneId,
+        wait: PermissionWait,
+    ) -> Option<AgentInfo> {
+        let info = host.pane_info(pane)?;
+        let mut agent = info.agent?;
+        if let Some(parent) = self
+            .agent_lifecycle
+            .get(&pane)
+            .and_then(|l| l.claude.parent.as_ref())
+        {
+            agent = parent.clone();
+        } else if let Some(workers) = self.agent_worker_waits.get(&pane) {
+            agent = workers.parent.clone();
+        }
+        if info.is_held
+            || info.exited
+            || agent.kind != "claude"
+            || agent.session_id.as_deref() != Some(wait.conversation.as_str())
+            || agent.state != AgentState::Waiting
+        {
+            return None;
+        }
+        let enter_revision = host.agent_enter_revision(pane);
+        if enter_revision <= wait.input_revision {
+            self.claude_permission_waits.insert(pane, wait);
+            return None;
+        }
+        // Enter infers an answer, but an anonymous background permission prompt must
+        // not reopen a confirmed caller turn. Publishing aggregates the remaining work.
+        agent.state = if self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
+            lifecycle.kind == "claude"
+                && lifecycle.conversation == wait.conversation
+                && lifecycle.claude_confirmation == Some(true)
+        }) {
+            AgentState::Idle
+        } else {
+            AgentState::Busy
+        };
+        agent.detail = None;
+        agent.waiting_on = None;
+        agent.wait_needs_a_person = false;
+        if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
+            lifecycle.claude.parent = Some(agent.clone());
+        }
+        if let Some(workers) = self.agent_worker_waits.get_mut(&pane) {
+            workers.parent = agent.clone();
+        }
+        Some(agent)
     }
 }
 
-pub(super) fn owned_notification(hook: &HookEvent) -> bool {
-    hook.hook_event_name == "Notification"
-        && hook.notification_type.as_deref() == Some("permission_prompt")
-        && hook
-            .claude_permission
-            .as_ref()
-            .is_some_and(|sample| sample.status != Status::Unavailable)
+impl super::AgentController {
+    pub(in crate::screen) fn permission_activity(
+        &self,
+        pane: PaneId,
+        mut visible: AgentInfo,
+    ) -> AgentInfo {
+        if visible.state != AgentState::Waiting
+            && let Some(workers) = self
+                .agent_worker_waits
+                .get(&pane)
+                .filter(|w| !w.waits.is_empty())
+        {
+            visible.state = AgentState::Waiting;
+            visible.wait_needs_a_person = true;
+            visible.waiting_on = workers.waits.values().next().cloned().flatten();
+        }
+        if visible.state != AgentState::Waiting
+            && let Some(waiting) = self.agent_lifecycle.get(&pane).and_then(|lifecycle| {
+                lifecycle
+                    .claude_notifications
+                    .values()
+                    .find_map(|n| n.waiting.as_ref())
+            })
+        {
+            visible = waiting.clone();
+        }
+        visible
+    }
 }

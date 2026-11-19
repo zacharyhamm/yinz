@@ -20,7 +20,7 @@ fn moving_a_plugin_in_place_replaces_and_restores_the_active_pane() {
         let plugin_id = PaneId::Plugin(crate::PluginId::new(7));
         let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
         let (plugin_sender, _plugin_receiver) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_sender));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_sender));
         new_tab(&mut screen, 1, TabId::new(0));
         new_tab(&mut screen, 2, TabId::new(1));
         let run_plugin = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
@@ -31,6 +31,7 @@ fn moving_a_plugin_in_place_replaces_and_restores_the_active_pane() {
         )
         .unwrap();
         screen
+            .core
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
@@ -70,7 +71,7 @@ fn moving_a_plugin_in_place_replaces_and_restores_the_active_pane() {
             assert!(screen
                 .focus_plugin_pane(&run_plugin, false, true, true, client_id, &mut None)
                 .is_err());
-            let source = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+            let source = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
             assert!(source.has_non_suppressed_pane_with_pid(&plugin_id));
             let plugin = source.extract_pane(plugin_id, true).unwrap();
             let destination = screen.get_active_tab_mut(client_id).unwrap();
@@ -121,7 +122,7 @@ fn moving_a_plugin_in_place_replaces_and_restores_the_active_pane() {
         assert!(screen
             .focus_plugin_pane(&run_plugin, false, true, true, client_id, &mut None)
             .unwrap());
-        assert!(!screen.tabs[&TabId::new(0)].has_pane_with_pid(&plugin_id));
+        assert!(!screen.core.tabs[&TabId::new(0)].has_pane_with_pid(&plugin_id));
         let destination = screen.get_active_tab_mut(client_id).unwrap();
         assert_eq!(destination.get_active_pane_id(client_id), Some(plugin_id));
         assert_eq!(destination.are_floating_panes_visible(), replace_floating);
@@ -428,11 +429,11 @@ fn breaking_last_selectable_pane_preserves_work_while_its_layout_loads() {
         let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
         let server_receiver = screen_wired_to_server(&mut screen);
         let (pty_tx, pty_rx) = channels::unbounded();
-        screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+        screen.core.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
         let (screen_tx, screen_rx) = channels::unbounded();
-        screen.bus.senders.to_screen = Some(SenderWithContext::new(screen_tx));
+        screen.core.bus.senders.to_screen = Some(SenderWithContext::new(screen_tx));
         let (plugin_tx, plugin_rx) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+        screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
         if another_tab {
             new_tab(&mut screen, 3, TabId::new(0));
         }
@@ -441,6 +442,7 @@ fn breaking_last_selectable_pane_preserves_work_while_its_layout_loads() {
         if hidden_work {
             add_pane_to_tab(&mut screen, source, hidden, false);
             screen
+                .core
                 .tabs
                 .get_mut(&source)
                 .unwrap()
@@ -448,6 +450,7 @@ fn breaking_last_selectable_pane_preserves_work_while_its_layout_loads() {
         }
         let respawn = (RunCommand::default(), true);
         screen
+            .core
             .tabs
             .get_mut(&source)
             .unwrap()
@@ -455,32 +458,32 @@ fn breaking_last_selectable_pane_preserves_work_while_its_layout_loads() {
         let destination = screen.get_new_tab_id();
 
         screen
-            .break_pane(None, screen.default_layout.clone(), client_id)
+            .break_pane(None, screen.core.default_layout.clone(), client_id)
             .unwrap();
-        assert!(screen.tabs[&destination].is_pending());
-        assert!(screen.tabs[&destination].has_pane_with_pid(&moved));
-        assert!(!screen.tabs[&source].has_pane_with_pid(&moved));
+        assert!(screen.core.tabs[&destination].is_pending());
+        assert!(screen.core.tabs[&destination].has_pane_with_pid(&moved));
+        assert!(!screen.core.tabs[&source].has_pane_with_pid(&moved));
         screen.settle_tabs().unwrap();
-        assert!(screen.tabs[&destination].is_pending());
+        assert!(screen.core.tabs[&destination].is_pending());
         if !another_tab {
             assert!(
-                screen.tabs.contains_key(&source),
+                screen.core.tabs.contains_key(&source),
                 "wait for a usable destination"
             );
-            assert_eq!(screen.active_tab_ids[&client_id], source);
+            assert_eq!(screen.core.active_tab_ids[&client_id], source);
             assert_eq!(screen.active_pane_id(client_id), None);
-            let tab_count = screen.tabs.len();
+            let tab_count = screen.core.tabs.len();
             for direction in [Direction::Right, Direction::Left] {
                 screen.break_pane_to_new_tab(direction, client_id).unwrap();
-                assert_eq!(screen.active_tab_ids[&client_id], source);
+                assert_eq!(screen.core.active_tab_ids[&client_id], source);
                 assert_eq!(screen.active_pane_id(client_id), None);
-                assert_eq!(screen.tabs.len(), tab_count);
-                assert!(screen.tabs[&destination].is_pending());
-                assert!(screen.tabs[&destination].has_pane_with_pid(&moved));
+                assert_eq!(screen.core.tabs.len(), tab_count);
+                assert!(screen.core.tabs[&destination].is_pending());
+                assert!(screen.core.tabs[&destination].has_pane_with_pid(&moved));
             }
         }
-        assert!(!screen.replacement_pending);
-        assert!(screen.replacement_tab.is_none());
+        assert!(!screen.core.replacement_pending);
+        assert!(screen.core.replacement_tab.is_none());
         let requests: Vec<_> = plugin_rx
             .try_iter()
             .filter_map(|(instruction, _)| match instruction {
@@ -513,16 +516,17 @@ fn breaking_last_selectable_pane_preserves_work_while_its_layout_loads() {
             .unwrap();
         screen.settle_tabs().unwrap();
 
-        assert_eq!(screen.active_tab_ids[&client_id], destination);
+        assert_eq!(screen.core.active_tab_ids[&client_id], destination);
         assert_eq!(screen.active_pane_id(client_id), Some(moved));
-        assert_eq!(screen.tabs.contains_key(&source), hidden_work);
-        assert_eq!(screen.tabs.contains_key(&TabId::new(0)), another_tab);
+        assert_eq!(screen.core.tabs.contains_key(&source), hidden_work);
+        assert_eq!(screen.core.tabs.contains_key(&TabId::new(0)), another_tab);
         assert_eq!(
-            screen.tabs.len(),
+            screen.core.tabs.len(),
             1 + usize::from(another_tab) + usize::from(hidden_work)
         );
         assert_eq!(
             screen
+                .core
                 .tabs
                 .get_mut(&destination)
                 .unwrap()
@@ -530,7 +534,7 @@ fn breaking_last_selectable_pane_preserves_work_while_its_layout_loads() {
             Some(respawn)
         );
         if hidden_work {
-            assert!(screen.tabs[&source].has_pane_with_pid(&hidden));
+            assert!(screen.core.tabs[&source].has_pane_with_pid(&hidden));
         }
         assert!(!server_receiver
             .try_iter()
@@ -1385,7 +1389,7 @@ pub fn close_tab_by_id_verifies_screen_state() {
     new_tab(&mut screen, 2, TabId::new(1)); // ID 1
     new_tab(&mut screen, 3, TabId::new(2)); // ID 2
 
-    assert_eq!(screen.tabs.len(), 3, "Should have 3 tabs initially");
+    assert_eq!(screen.core.tabs.len(), 3, "Should have 3 tabs initially");
 
     // Verify all tabs exist
     assert!(
@@ -1404,7 +1408,11 @@ pub fn close_tab_by_id_verifies_screen_state() {
     // Close tab with ID 1
     screen.close_tab_by_id(TabId::new(1)).expect("TEST");
 
-    assert_eq!(screen.tabs.len(), 2, "Should have 2 tabs after closing one");
+    assert_eq!(
+        screen.core.tabs.len(),
+        2,
+        "Should have 2 tabs after closing one"
+    );
 
     // Verify tab with ID 1 no longer exists
     assert!(
@@ -1636,10 +1644,10 @@ fn screen_for_moving_a_pane_right() -> (Screen, MoveChannels) {
         rows: 20,
     });
     let (pty_tx, pty) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
     // before the tabs are made: each keeps its own copy of the senders
     let (plugin_tx, plugin) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
     screen
@@ -1658,6 +1666,7 @@ fn fill_tab(screen: &mut Screen, tab_id: TabId, placement: ExtractedPanePlacemen
     let floating = !matches!(placement, ExtractedPanePlacement::Tiled);
     for next in 100..200 {
         if !screen
+            .core
             .tabs
             .get_mut(&tab_id)
             .expect("TEST")
@@ -1677,6 +1686,7 @@ fn fill_tab(screen: &mut Screen, tab_id: TabId, placement: ExtractedPanePlacemen
 
 fn all_pane_ids(screen: &Screen) -> std::collections::BTreeSet<PaneId> {
     screen
+        .core
         .tabs
         .values()
         .flat_map(|tab| tab.get_all_pane_ids())
@@ -1710,7 +1720,7 @@ fn moving_a_pane_into_a_full_tab_leaves_it_in_its_own_tab() {
             },
         );
         let before = all_pane_ids(&screen);
-        let geom_before = screen.tabs[&source]
+        let geom_before = screen.core.tabs[&source]
             .get_pane_with_id(moved)
             .expect("TEST")
             .current_geom();
@@ -1724,18 +1734,21 @@ fn moving_a_pane_into_a_full_tab_leaves_it_in_its_own_tab() {
             before,
             "floating: {floating}: no pane may disappear from every tab"
         );
-        assert!(screen.tabs[&source].has_non_suppressed_pane_with_pid(&moved));
-        assert!(!screen.tabs[&destination].has_pane_with_pid(&moved));
-        assert_eq!(screen.tabs[&source].pane_id_is_floating(&moved), floating);
+        assert!(screen.core.tabs[&source].has_non_suppressed_pane_with_pid(&moved));
+        assert!(!screen.core.tabs[&destination].has_pane_with_pid(&moved));
         assert_eq!(
-            screen.tabs[&source]
+            screen.core.tabs[&source].pane_id_is_floating(&moved),
+            floating
+        );
+        assert_eq!(
+            screen.core.tabs[&source]
                 .get_pane_with_id(moved)
                 .expect("TEST")
                 .current_geom(),
             geom_before,
             "floating: {floating}: the refused pane keeps its slot"
         );
-        assert_eq!(screen.active_tab_ids[&client_id], source);
+        assert_eq!(screen.core.active_tab_ids[&client_id], source);
         assert_eq!(screen.active_pane_id(client_id), Some(moved));
         assert!(drain_background_jobs(&watched.background_jobs).iter().any(
             |job| matches!(job, BackgroundJob::DisplayPaneError(ids, _) if ids == &vec![moved])
@@ -1769,17 +1782,17 @@ fn moving_a_pane_into_a_tab_with_room_still_moves_it() {
             .expect("TEST");
 
         assert_eq!(all_pane_ids(&screen), before);
-        assert!(!screen.tabs[&source].has_pane_with_pid(&moved));
-        assert!(screen.tabs[&destination].has_non_suppressed_pane_with_pid(&moved));
+        assert!(!screen.core.tabs[&source].has_pane_with_pid(&moved));
+        assert!(screen.core.tabs[&destination].has_non_suppressed_pane_with_pid(&moved));
         assert_eq!(
-            screen.tabs[&destination].pane_id_is_floating(&moved),
+            screen.core.tabs[&destination].pane_id_is_floating(&moved),
             floating
         );
         assert_eq!(
-            screen.tabs[&destination].are_floating_panes_visible(),
+            screen.core.tabs[&destination].are_floating_panes_visible(),
             floating
         );
-        assert_eq!(screen.active_tab_ids[&client_id], destination);
+        assert_eq!(screen.core.active_tab_ids[&client_id], destination);
         assert_eq!(screen.active_pane_id(client_id), Some(moved));
         assert!(!watched.pty.try_iter().any(|(instruction, _)| matches!(
             instruction,
@@ -1806,6 +1819,7 @@ fn moving_a_plugin_into_a_full_tab_focuses_it_in_its_own_tab() {
         )
         .expect("TEST");
         screen
+            .core
             .tabs
             .get_mut(&source)
             .expect("TEST")
@@ -1832,7 +1846,7 @@ fn moving_a_plugin_into_a_full_tab_focuses_it_in_its_own_tab() {
                 ExtractedPanePlacement::Tiled
             },
         );
-        assert_eq!(screen.active_tab_ids[&client_id], destination);
+        assert_eq!(screen.core.active_tab_ids[&client_id], destination);
         let before = all_pane_ids(&screen);
 
         assert!(screen
@@ -1844,9 +1858,9 @@ fn moving_a_plugin_into_a_full_tab_focuses_it_in_its_own_tab() {
             before,
             "should_float: {should_float}: no pane may disappear from every tab"
         );
-        assert!(screen.tabs[&source].has_non_suppressed_pane_with_pid(&plugin_id));
-        assert!(!screen.tabs[&destination].has_pane_with_pid(&plugin_id));
-        assert_eq!(screen.active_tab_ids[&client_id], source);
+        assert!(screen.core.tabs[&source].has_non_suppressed_pane_with_pid(&plugin_id));
+        assert!(!screen.core.tabs[&destination].has_pane_with_pid(&plugin_id));
+        assert_eq!(screen.core.active_tab_ids[&client_id], source);
         assert_eq!(screen.active_pane_id(client_id), Some(plugin_id));
         assert!(!watched.pty.try_iter().any(|(instruction, _)| matches!(
             instruction,

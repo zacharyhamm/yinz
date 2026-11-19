@@ -14,7 +14,7 @@ fn open_new_tab() {
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
 
-    assert_eq!(screen.tabs.len(), 2, "Screen now has two tabs");
+    assert_eq!(screen.core.tabs.len(), 2, "Screen now has two tabs");
     assert_eq!(
         screen
             .get_active_tab(crate::ClientId::new(1))
@@ -119,7 +119,7 @@ pub fn close_tab() {
     new_tab(&mut screen, 2, TabId::new(2));
     screen.close_tab(crate::ClientId::new(1)).expect("TEST");
 
-    assert_eq!(screen.tabs.len(), 1, "Only one tab left");
+    assert_eq!(screen.core.tabs.len(), 1, "Only one tab left");
     assert_eq!(
         screen
             .get_active_tab(crate::ClientId::new(1))
@@ -176,14 +176,15 @@ pub fn closing_a_tab_closes_the_pane_behind_its_scrollback_editor_and_moves_park
     }
     let (to_pty, pty_receiver) = yinz_runtime::channels::unbounded();
     screen
+        .core
         .bus
         .senders
         .replace_to_pty(yinz_runtime::channels::SenderWithContext::new(to_pty));
 
     screen.close_tab(client_id).unwrap();
 
-    assert_eq!(screen.tabs.len(), 1);
-    let remaining = screen.tabs.values().next().unwrap();
+    assert_eq!(screen.core.tabs.len(), 1);
+    let remaining = screen.core.tabs.values().next().unwrap();
     let remaining_ids = remaining.get_all_pane_ids();
     assert!(remaining_ids.contains(&parked), "{remaining_ids:?}");
     assert!(!remaining_ids.contains(&original), "{remaining_ids:?}");
@@ -256,14 +257,15 @@ pub fn closing_a_tab_closes_the_pane_behind_an_in_place_replacement() {
     }
     let (to_pty, pty_receiver) = yinz_runtime::channels::unbounded();
     screen
+        .core
         .bus
         .senders
         .replace_to_pty(yinz_runtime::channels::SenderWithContext::new(to_pty));
 
     screen.close_tab(client_id).unwrap();
 
-    assert_eq!(screen.tabs.len(), 1);
-    let remaining = screen.tabs.values().next().unwrap();
+    assert_eq!(screen.core.tabs.len(), 1);
+    let remaining = screen.core.tabs.values().next().unwrap();
     let remaining_ids = remaining.get_all_pane_ids();
     assert!(remaining_ids.contains(&parked), "{remaining_ids:?}");
     assert!(!remaining_ids.contains(&original), "{remaining_ids:?}");
@@ -299,7 +301,7 @@ pub fn close_the_middle_tab() {
         .expect("TEST");
     screen.close_tab(crate::ClientId::new(1)).expect("TEST");
 
-    assert_eq!(screen.tabs.len(), 2, "Two tabs left");
+    assert_eq!(screen.core.tabs.len(), 2, "Two tabs left");
     assert_eq!(
         screen
             .get_active_tab(crate::ClientId::new(1))
@@ -587,7 +589,7 @@ fn tab_id_remains_stable_after_switch() {
     new_tab(&mut screen, 3, TabId::new(2));
 
     // Verify initial state: IDs should be 0, 1, 2
-    let initial_tab_ids: Vec<TabId> = screen.tabs.keys().copied().collect();
+    let initial_tab_ids: Vec<TabId> = screen.core.tabs.keys().copied().collect();
     assert_eq!(
         initial_tab_ids,
         [0, 1, 2].map(TabId::new),
@@ -595,19 +597,28 @@ fn tab_id_remains_stable_after_switch() {
     );
 
     // Verify initial positions match IDs
-    assert_eq!(screen.tabs.get(&TabId::new(0)).unwrap().id, TabId::new(0));
     assert_eq!(
-        screen.tabs.get(&TabId::new(0)).unwrap().position,
+        screen.core.tabs.get(&TabId::new(0)).unwrap().id,
+        TabId::new(0)
+    );
+    assert_eq!(
+        screen.core.tabs.get(&TabId::new(0)).unwrap().position,
         TabPosition::new(0)
     );
-    assert_eq!(screen.tabs.get(&TabId::new(1)).unwrap().id, TabId::new(1));
     assert_eq!(
-        screen.tabs.get(&TabId::new(1)).unwrap().position,
+        screen.core.tabs.get(&TabId::new(1)).unwrap().id,
+        TabId::new(1)
+    );
+    assert_eq!(
+        screen.core.tabs.get(&TabId::new(1)).unwrap().position,
         TabPosition::new(1)
     );
-    assert_eq!(screen.tabs.get(&TabId::new(2)).unwrap().id, TabId::new(2));
     assert_eq!(
-        screen.tabs.get(&TabId::new(2)).unwrap().position,
+        screen.core.tabs.get(&TabId::new(2)).unwrap().id,
+        TabId::new(2)
+    );
+    assert_eq!(
+        screen.core.tabs.get(&TabId::new(2)).unwrap().position,
         TabPosition::new(2)
     );
 
@@ -618,7 +629,7 @@ fn tab_id_remains_stable_after_switch() {
         .expect("TEST");
 
     // Verify BTreeMap keys (IDs) remain unchanged
-    let after_switch_tab_ids: Vec<TabId> = screen.tabs.keys().copied().collect();
+    let after_switch_tab_ids: Vec<TabId> = screen.core.tabs.keys().copied().collect();
     assert_eq!(
         after_switch_tab_ids,
         [0, 1, 2].map(TabId::new),
@@ -628,42 +639,43 @@ fn tab_id_remains_stable_after_switch() {
     // Verify IDs remain stable but positions rotate
     // Tab 0: was at position 0, rotated to position 1
     assert_eq!(
-        screen.tabs.get(&TabId::new(0)).unwrap().id,
+        screen.core.tabs.get(&TabId::new(0)).unwrap().id,
         TabId::new(0),
         "Tab with ID 0 should still have ID 0"
     );
     assert_eq!(
-        screen.tabs.get(&TabId::new(0)).unwrap().position,
+        screen.core.tabs.get(&TabId::new(0)).unwrap().position,
         TabPosition::new(1),
         "Tab with ID 0 should now be at position 1"
     );
 
     // Tab 1: was at position 1, rotated to position 2
     assert_eq!(
-        screen.tabs.get(&TabId::new(1)).unwrap().id,
+        screen.core.tabs.get(&TabId::new(1)).unwrap().id,
         TabId::new(1),
         "Tab with ID 1 should still have ID 1"
     );
     assert_eq!(
-        screen.tabs.get(&TabId::new(1)).unwrap().position,
+        screen.core.tabs.get(&TabId::new(1)).unwrap().position,
         TabPosition::new(2),
         "Tab with ID 1 should now be at position 2"
     );
 
     // Tab 2: was at position 2, rotated over the edge to position 0
     assert_eq!(
-        screen.tabs.get(&TabId::new(2)).unwrap().id,
+        screen.core.tabs.get(&TabId::new(2)).unwrap().id,
         TabId::new(2),
         "Tab with ID 2 should still have ID 2"
     );
     assert_eq!(
-        screen.tabs.get(&TabId::new(2)).unwrap().position,
+        screen.core.tabs.get(&TabId::new(2)).unwrap().position,
         TabPosition::new(0),
         "Tab with ID 2 should now be at position 0"
     );
 
     // Verify that lookup by position works correctly after the rotation
     let tab_at_pos_0 = screen
+        .core
         .tabs
         .values()
         .find(|t| t.position == TabPosition::new(0))
@@ -675,6 +687,7 @@ fn tab_id_remains_stable_after_switch() {
     );
 
     let tab_at_pos_1 = screen
+        .core
         .tabs
         .values()
         .find(|t| t.position == TabPosition::new(1))
@@ -686,6 +699,7 @@ fn tab_id_remains_stable_after_switch() {
     );
 
     let tab_at_pos_2 = screen
+        .core
         .tabs
         .values()
         .find(|t| t.position == TabPosition::new(2))
@@ -776,7 +790,7 @@ pub fn toggle_to_previous_tab_create_tabs_only() {
     new_tab(&mut screen, 3, TabId::new(2));
 
     assert_eq!(
-        screen.tab_history.get(&ClientId::new(1)).unwrap(),
+        screen.core.tab_history.get(&ClientId::new(1)).unwrap(),
         &[0, 1].map(TabId::new),
         "Tab history is invalid"
     );
@@ -791,7 +805,7 @@ pub fn toggle_to_previous_tab_create_tabs_only() {
         "Active tab toggler to previous tab"
     );
     assert_eq!(
-        screen.tab_history.get(&ClientId::new(1)).unwrap(),
+        screen.core.tab_history.get(&ClientId::new(1)).unwrap(),
         &[0, 2].map(TabId::new),
         "Tab history is invalid"
     );
@@ -806,7 +820,7 @@ pub fn toggle_to_previous_tab_create_tabs_only() {
         "Active tab toggler to previous tab"
     );
     assert_eq!(
-        screen.tab_history.get(&ClientId::new(1)).unwrap(),
+        screen.core.tab_history.get(&ClientId::new(1)).unwrap(),
         &[0, 1].map(TabId::new),
         "Tab history is invalid"
     );
@@ -836,7 +850,7 @@ pub fn toggle_to_previous_tab_delete() {
     new_tab(&mut screen, 4, TabId::new(3));
 
     assert_eq!(
-        screen.tab_history.get(&ClientId::new(1)).unwrap(),
+        screen.core.tab_history.get(&ClientId::new(1)).unwrap(),
         &[0, 1, 2].map(TabId::new),
         "Tab history is invalid"
     );
@@ -851,7 +865,7 @@ pub fn toggle_to_previous_tab_delete() {
 
     screen.toggle_tab(crate::ClientId::new(1)).expect("TEST");
     assert_eq!(
-        screen.tab_history.get(&ClientId::new(1)).unwrap(),
+        screen.core.tab_history.get(&ClientId::new(1)).unwrap(),
         &[0, 1, 3].map(TabId::new),
         "Tab history is invalid"
     );
@@ -866,7 +880,7 @@ pub fn toggle_to_previous_tab_delete() {
 
     screen.toggle_tab(crate::ClientId::new(1)).expect("TEST");
     assert_eq!(
-        screen.tab_history.get(&ClientId::new(1)).unwrap(),
+        screen.core.tab_history.get(&ClientId::new(1)).unwrap(),
         &[0, 1, 2].map(TabId::new),
         "Tab history is invalid"
     );
@@ -883,7 +897,7 @@ pub fn toggle_to_previous_tab_delete() {
         .switch_tab_prev(None, true, crate::ClientId::new(1))
         .expect("TEST");
     assert_eq!(
-        screen.tab_history.get(&ClientId::new(1)).unwrap(),
+        screen.core.tab_history.get(&ClientId::new(1)).unwrap(),
         &[0, 1, 3].map(TabId::new),
         "Tab history is invalid"
     );
@@ -899,7 +913,7 @@ pub fn toggle_to_previous_tab_delete() {
         .switch_tab_prev(None, true, crate::ClientId::new(1))
         .expect("TEST");
     assert_eq!(
-        screen.tab_history.get(&ClientId::new(1)).unwrap(),
+        screen.core.tab_history.get(&ClientId::new(1)).unwrap(),
         &[0, 3, 2].map(TabId::new),
         "Tab history is invalid"
     );
@@ -914,7 +928,7 @@ pub fn toggle_to_previous_tab_delete() {
 
     screen.close_tab(crate::ClientId::new(1)).expect("TEST");
     assert_eq!(
-        screen.tab_history.get(&ClientId::new(1)).unwrap(),
+        screen.core.tab_history.get(&ClientId::new(1)).unwrap(),
         &[0, 3].map(TabId::new),
         "Tab history is invalid"
     );
@@ -937,7 +951,7 @@ pub fn toggle_to_previous_tab_delete() {
         "Active tab toggler to previous tab"
     );
     assert_eq!(
-        screen.tab_history.get(&ClientId::new(1)).unwrap(),
+        screen.core.tab_history.get(&ClientId::new(1)).unwrap(),
         &[0, 2].map(TabId::new),
         "Tab history is invalid"
     );
@@ -1000,7 +1014,7 @@ fn update_screen_pixel_dimensions() {
         rows: 20,
     };
     let mut screen = create_new_screen(size, true, true);
-    let initial_pixel_dimensions = screen.pixel_dimensions;
+    let initial_pixel_dimensions = screen.core.pixel_dimensions;
     screen.update_pixel_dimensions(
         crate::ClientId::new(1),
         PixelDimensions {
@@ -1012,7 +1026,7 @@ fn update_screen_pixel_dimensions() {
             text_area_size: None,
         },
     );
-    let pixel_dimensions_after_first_update = screen.pixel_dimensions;
+    let pixel_dimensions_after_first_update = screen.core.pixel_dimensions;
     screen.update_pixel_dimensions(
         crate::ClientId::new(1),
         PixelDimensions {
@@ -1024,7 +1038,7 @@ fn update_screen_pixel_dimensions() {
             }),
         },
     );
-    let pixel_dimensions_after_second_update = screen.pixel_dimensions;
+    let pixel_dimensions_after_second_update = screen.core.pixel_dimensions;
     screen.update_pixel_dimensions(
         crate::ClientId::new(1),
         PixelDimensions {
@@ -1033,7 +1047,7 @@ fn update_screen_pixel_dimensions() {
             text_area_size: None,
         },
     );
-    let pixel_dimensions_after_third_update = screen.pixel_dimensions;
+    let pixel_dimensions_after_third_update = screen.core.pixel_dimensions;
     assert_eq!(
         initial_pixel_dimensions,
         PixelDimensions {
@@ -1115,7 +1129,7 @@ fn character_cell_size_is_derived_from_the_reporting_client_size() {
     );
 
     assert_eq!(
-        *screen.character_cell_size.borrow(),
+        *screen.core.character_cell_size.borrow(),
         Some(SizeInPixels {
             height: 21,
             width: 9
@@ -1162,7 +1176,7 @@ fn invalid_pixel_reports_never_publish_zero_sized_cells() {
             let mut screen = create_new_screen(size, true, true);
             screen.set_client_size(client, size).unwrap();
             assert!(!screen.update_pixel_dimensions(client, report(invalid)));
-            assert_eq!(*screen.character_cell_size.borrow(), None);
+            assert_eq!(*screen.core.character_cell_size.borrow(), None);
 
             let valid_report = if direct {
                 valid_cell
@@ -1173,9 +1187,9 @@ fn invalid_pixel_reports_never_publish_zero_sized_cells() {
                 }
             };
             assert!(screen.update_pixel_dimensions(client, report(valid_report)));
-            assert_eq!(*screen.character_cell_size.borrow(), Some(valid_cell));
+            assert_eq!(*screen.core.character_cell_size.borrow(), Some(valid_cell));
             assert!(!screen.update_pixel_dimensions(client, report(invalid)));
-            assert_eq!(*screen.character_cell_size.borrow(), Some(valid_cell));
+            assert_eq!(*screen.core.character_cell_size.borrow(), Some(valid_cell));
         }
     }
 }
@@ -1198,7 +1212,7 @@ fn character_cell_size_is_not_derived_for_a_client_of_unknown_size() {
     );
 
     assert_eq!(
-        *screen.character_cell_size.borrow(),
+        *screen.core.character_cell_size.borrow(),
         None,
         "Without the reporting client's grid size the pixel report cannot be interpreted"
     );
@@ -1243,11 +1257,11 @@ fn layout_metadata_lists_tabs_in_position_order() {
     // dumped or resurrected layout to come back in the order they arranged.
     let mut screen = create_fixed_size_screen();
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.tabs.get_mut(&TabId::new(0)).expect("TEST").name = "first".to_string();
+    screen.core.tabs.get_mut(&TabId::new(0)).expect("TEST").name = "first".to_string();
     new_tab(&mut screen, 2, TabId::new(1));
-    screen.tabs.get_mut(&TabId::new(1)).expect("TEST").name = "second".to_string();
+    screen.core.tabs.get_mut(&TabId::new(1)).expect("TEST").name = "second".to_string();
     new_tab(&mut screen, 3, TabId::new(2));
-    screen.tabs.get_mut(&TabId::new(2)).expect("TEST").name = "third".to_string();
+    screen.core.tabs.get_mut(&TabId::new(2)).expect("TEST").name = "third".to_string();
 
     // the active tab is the third one; moving it left makes the positions
     // first, third, second while the ids stay 0, 1, 2
@@ -1360,30 +1374,44 @@ fn a_reconciled_client_lands_in_a_tab_that_knows_it_is_visible() {
         .change_mode(InputMode::Locked, None, client_2)
         .expect("TEST");
     // The tab client 2 last saw. Nobody is on it, so it is off screen.
-    screen.tab_history.insert(client_2, vec![TabId::new(0)]);
-    let closing = *screen.active_tab_ids.get(&client_2).expect("TEST");
+    screen
+        .core
+        .tab_history
+        .insert(client_2, vec![TabId::new(0)]);
+    let closing = *screen.core.active_tab_ids.get(&client_2).expect("TEST");
     // Stranded: the tab no longer counts client 2 among its connected clients, while
     // `active_tab_ids` still names it - so `drain_connected_clients` will not hand it over and
     // only `reconcile_client_tabs` can see it.
     screen
+        .core
         .tabs
         .get_mut(&closing)
         .expect("TEST")
         .remove_client(client_2);
     assert!(
-        !screen.tabs.get(&TabId::new(0)).expect("TEST").is_visible(),
+        !screen
+            .core
+            .tabs
+            .get(&TabId::new(0))
+            .expect("TEST")
+            .is_visible(),
         "precondition: nobody is looking at tab 0",
     );
 
     screen.close_tab_by_id(closing).expect("TEST");
 
     assert_eq!(
-        screen.active_tab_ids.get(&client_2),
+        screen.core.active_tab_ids.get(&client_2),
         Some(&TabId::new(0)),
         "client 2 was re-homed onto the tab it last saw",
     );
     assert!(
-        screen.tabs.get(&TabId::new(0)).expect("TEST").is_visible(),
+        screen
+            .core
+            .tabs
+            .get(&TabId::new(0))
+            .expect("TEST")
+            .is_visible(),
         "the tab it landed in was told it is on screen",
     );
     assert_eq!(
@@ -1402,7 +1430,7 @@ fn rename_session_rejects_unlisted_socket_cache_and_lookup_errors_without_mutati
     new_tab(&mut screen, 1, TabId::new(0));
     let client = ClientId::new(1);
     let old: SessionName = format!("rename-old-{}", uuid::Uuid::new_v4()).into();
-    screen.session_name = old.clone();
+    screen.core.session_name = old.clone();
     std::fs::create_dir_all(&*YINZ_SOCK_DIR).unwrap();
     let old_socket = YINZ_SOCK_DIR.join(&old);
     let ownership = std::sync::Arc::new(
@@ -1411,7 +1439,7 @@ fn rename_session_rejects_unlisted_socket_cache_and_lookup_errors_without_mutati
             .unwrap(),
     );
     let _old = ownership.bind().unwrap();
-    screen.bus.senders.session_ownership = Some(std::sync::Arc::downgrade(&ownership));
+    screen.core.bus.senders.session_ownership = Some(std::sync::Arc::downgrade(&ownership));
     let cache = session_info_folder_for_session(&old);
     std::fs::create_dir_all(&cache).unwrap();
     std::fs::write(cache.join("sentinel"), "old").unwrap();
@@ -1422,19 +1450,19 @@ fn rename_session_rejects_unlisted_socket_cache_and_lookup_errors_without_mutati
         .unwrap()
         .unwrap();
     screen.rename_session(target.clone(), client).unwrap();
-    assert_eq!(screen.session_name, old);
+    assert_eq!(screen.core.session_name, old);
     assert!(!target_socket.exists());
     drop(destination_claim);
     let _target = UnixListener::bind(&target_socket).unwrap();
     screen.rename_session(target.clone(), client).unwrap();
-    assert_eq!(screen.session_name, old);
+    assert_eq!(screen.core.session_name, old);
     assert!(target_socket.exists());
     std::fs::remove_file(&target_socket).unwrap();
     std::fs::create_dir_all(&target_cache).unwrap();
     std::fs::write(target_cache.join("sentinel"), "target").unwrap();
     drop(UnixListener::bind(&target_socket).unwrap());
     screen.rename_session(target.clone(), client).unwrap();
-    assert_eq!(screen.session_name, old);
+    assert_eq!(screen.core.session_name, old);
     assert!(yinz_ipc::consts::ipc_connect(&old_socket).is_ok());
     assert_eq!(
         std::fs::read_to_string(target_cache.join("sentinel")).unwrap(),
@@ -1444,11 +1472,11 @@ fn rename_session_rejects_unlisted_socket_cache_and_lookup_errors_without_mutati
     // A self-referential link produces ELOOP instead of an absent path.
     std::os::unix::fs::symlink(&target_socket, &target_socket).unwrap();
     screen.rename_session(target.clone(), client).unwrap();
-    assert_eq!(screen.session_name, old);
+    assert_eq!(screen.core.session_name, old);
     std::fs::remove_file(&target_socket).unwrap();
     std::os::unix::fs::symlink(&target_cache, &target_cache).unwrap();
     screen.rename_session(target.clone(), client).unwrap();
-    assert_eq!(screen.session_name, old);
+    assert_eq!(screen.core.session_name, old);
     screen.rename_session(old.clone(), client).unwrap();
     assert_eq!(
         std::fs::read_to_string(cache.join("sentinel")).unwrap(),
@@ -1459,7 +1487,7 @@ fn rename_session_rejects_unlisted_socket_cache_and_lookup_errors_without_mutati
     std::fs::remove_file(&old_socket).unwrap();
     // Fail after moving the checkpoint: the missing source socket forces rollback.
     screen.rename_session(target, client).unwrap();
-    assert_eq!(screen.session_name, old);
+    assert_eq!(screen.core.session_name, old);
     assert_eq!(
         std::fs::read_to_string(cache.join("sentinel")).unwrap(),
         "old"
@@ -1488,7 +1516,7 @@ fn rename_session_reclaims_stale_destination_despite_cached_live_entry() {
     let client = ClientId::new(1);
     let old: SessionName = format!("rename-old-{}", uuid::Uuid::new_v4()).into();
     let target: SessionName = format!("rename-stale-{}", uuid::Uuid::new_v4()).into();
-    screen.session_name = old.clone();
+    screen.core.session_name = old.clone();
     std::fs::create_dir_all(&*YINZ_SOCK_DIR).unwrap();
     let old_socket = YINZ_SOCK_DIR.join(&old);
     let target_socket = YINZ_SOCK_DIR.join(&target);
@@ -1500,15 +1528,15 @@ fn rename_session_reclaims_stale_destination_despite_cached_live_entry() {
     drop(std::os::unix::net::UnixListener::bind(&target_socket).unwrap());
     // Without a claim, even a stale socket must be left alone.
     screen.rename_session(target.clone(), client).unwrap();
-    assert_eq!(screen.session_name, old);
+    assert_eq!(screen.core.session_name, old);
     assert!(target_socket.exists());
-    screen.bus.senders.session_ownership = Some(std::sync::Arc::downgrade(&ownership));
-    screen.peer_sessions_cache.insert(
+    screen.core.bus.senders.session_ownership = Some(std::sync::Arc::downgrade(&ownership));
+    screen.core.peer_sessions_cache.insert(
         target.clone(),
         yinz_types::data::SessionInfo::new(target.clone()),
     );
     screen.rename_session(target.clone(), client).unwrap();
-    assert_eq!(screen.session_name, target);
+    assert_eq!(screen.core.session_name, target);
     assert!(!old_socket.exists());
     assert!(yinz_ipc::consts::ipc_connect(&target_socket).is_ok());
     assert_eq!(
@@ -1526,7 +1554,7 @@ fn reconnect_preserves_focus_in_an_inactive_tab() {
     let pane = PaneId::Terminal(crate::TerminalId::new(2));
     for mirrored in [false, true] {
         let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
-        screen.session_is_mirrored = mirrored;
+        screen.core.session_is_mirrored = mirrored;
         new_tab(&mut screen, 1, TabId::new(0));
         add_pane_to_tab(&mut screen, TabId::new(0), pane, false);
         if mirrored {
@@ -1539,6 +1567,7 @@ fn reconnect_preserves_focus_in_an_inactive_tab() {
         };
         for client in &clients {
             screen
+                .core
                 .tabs
                 .get_mut(&TabId::new(0))
                 .unwrap()
@@ -1546,7 +1575,7 @@ fn reconnect_preserves_focus_in_an_inactive_tab() {
                 .unwrap();
         }
         new_tab(&mut screen, 3, TabId::new(1));
-        assert!(screen.tabs[&TabId::new(0)].has_no_connected_clients());
+        assert!(screen.core.tabs[&TabId::new(0)].has_no_connected_clients());
         for client in clients {
             screen.remove_client(client).unwrap();
         }

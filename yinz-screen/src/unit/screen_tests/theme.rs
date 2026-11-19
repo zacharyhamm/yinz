@@ -11,6 +11,7 @@ fn reconfigure_sends_a_plugin_pane_the_updated_client_mode_info_once() {
     let (mut screen, capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 20 });
     new_tab(&mut screen, 1, TabId::new(0));
     screen
+        .core
         .mode_info
         .insert(crate::ClientId::new(1), ModeInfo::default());
     add_pane_to_tab(
@@ -96,7 +97,7 @@ fn host_theme_first_update_emits_plugin_event() {
         events
     );
     assert_eq!(
-        screen.host_terminal_theme_mode,
+        screen.core.host_terminal_theme_mode,
         Some(yinz_types::style::HostTerminalThemeMode::Dark),
         "stored mode must be updated"
     );
@@ -154,7 +155,7 @@ fn color_palette_mode_query_short_circuits_to_dark_reply() {
     use crate::host_query::HostQuery;
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    screen.host_terminal_theme_mode = Some(yinz_types::style::HostTerminalThemeMode::Dark);
+    screen.core.host_terminal_theme_mode = Some(yinz_types::style::HostTerminalThemeMode::Dark);
 
     let token = screen.forward_host_query(
         PaneId::Terminal(crate::TerminalId::new(13)),
@@ -173,7 +174,7 @@ fn color_palette_mode_query_short_circuits_to_dark_reply() {
     assert_eq!(writes.len(), 1, "exactly one pty reply expected");
     assert_eq!(writes[0], (b"\x1b[?997;1n".to_vec(), TerminalId::new(13)));
     assert!(
-        screen.forward_in_flight_token.is_none(),
+        screen.core.forward_in_flight_token.is_none(),
         "slot must remain free; short-circuit does not occupy the queue"
     );
 }
@@ -189,7 +190,7 @@ fn color_palette_mode_query_short_circuits_to_the_baseline_light_reply() {
         .set_application_theme_config(static_application_theme(Some(light)))
         .unwrap();
     // A viewer's report does not change the answer.
-    screen.host_terminal_theme_mode = Some(yinz_types::style::HostTerminalThemeMode::Dark);
+    screen.core.host_terminal_theme_mode = Some(yinz_types::style::HostTerminalThemeMode::Dark);
 
     let _ = screen.forward_host_query(
         PaneId::Terminal(crate::TerminalId::new(4)),
@@ -207,10 +208,10 @@ fn color_palette_mode_query_falls_back_to_own_dark_theme_when_host_mode_unknown(
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
     assert!(
-        screen.host_terminal_theme_mode.is_none(),
+        screen.core.host_terminal_theme_mode.is_none(),
         "precondition: no host mode learned yet"
     );
-    screen.style.colors.text_unselected.background =
+    screen.core.style.colors.text_unselected.background =
         yinz_types::colors::PaletteColor::Rgb((0, 0, 0));
 
     let token = screen.forward_host_query(
@@ -237,11 +238,11 @@ fn color_palette_mode_query_follows_the_session_static_theme_hue_not_the_chrome(
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
     assert!(
-        screen.host_terminal_theme_mode.is_none(),
+        screen.core.host_terminal_theme_mode.is_none(),
         "precondition: no host mode learned yet"
     );
     // A viewer's dark chrome is not the session theme.
-    screen.style.colors.text_unselected.background =
+    screen.core.style.colors.text_unselected.background =
         yinz_types::colors::PaletteColor::Rgb((0, 0, 0));
     screen
         .set_application_theme_config(yinz_config::screen_config::ApplicationThemeConfig {
@@ -265,8 +266,8 @@ fn color_palette_mode_query_ignores_a_viewers_reported_host_mode() {
     use crate::host_query::HostQuery;
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    screen.host_terminal_theme_mode = Some(yinz_types::style::HostTerminalThemeMode::Light);
-    screen.style.colors.text_unselected.background =
+    screen.core.host_terminal_theme_mode = Some(yinz_types::style::HostTerminalThemeMode::Light);
+    screen.core.style.colors.text_unselected.background =
         yinz_types::colors::PaletteColor::Rgb((0, 0, 0));
 
     let _ = screen.forward_host_query(
@@ -288,7 +289,7 @@ fn color_palette_mode_query_skips_plugin_panes() {
     use crate::host_query::HostQuery;
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    screen.host_terminal_theme_mode = Some(yinz_types::style::HostTerminalThemeMode::Dark);
+    screen.core.host_terminal_theme_mode = Some(yinz_types::style::HostTerminalThemeMode::Dark);
 
     let _ = screen.forward_host_query(
         PaneId::Plugin(crate::PluginId::new(99)),
@@ -308,6 +309,7 @@ fn host_theme_reports_write_no_dsr_into_opted_in_panes() {
     new_tab(&mut screen, 1, TabId::new(0));
     let pane_id = PaneId::Terminal(TerminalId::new(1));
     let pane = screen
+        .core
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
@@ -347,8 +349,8 @@ const TEST_LIGHT_BG: (u8, u8, u8) = (238, 238, 238);
 
 fn create_new_screen_with_dark_and_light_themes(size: Size) -> (Screen, ThemeCapture) {
     let (mut screen, capture) = create_new_screen_with_theme_capture(size);
-    screen.host_theme_dark_styling = Some(styling_with_background(TEST_DARK_BG));
-    screen.host_theme_light_styling = Some(styling_with_background(TEST_LIGHT_BG));
+    screen.core.host_theme_dark_styling = Some(styling_with_background(TEST_DARK_BG));
+    screen.core.host_theme_light_styling = Some(styling_with_background(TEST_LIGHT_BG));
     // The session theme defines the same pair, the gate for manual pins.
     screen
         .set_application_theme_config(paired_application_theme(None, None))
@@ -366,12 +368,12 @@ fn explicit_theme_hue_resolves_the_session_appearance() {
         .expect("explicit hue applied");
 
     assert_eq!(
-        screen.host_terminal_theme_mode,
+        screen.core.host_terminal_theme_mode,
         Some(yinz_types::style::HostTerminalThemeMode::Light),
         "an explicit hue must become the session's effective mode"
     );
     assert_eq!(
-        screen.style.colors.text_unselected.background,
+        screen.core.style.colors.text_unselected.background,
         yinz_types::colors::PaletteColor::Rgb(TEST_LIGHT_BG),
         "Screen's own style must track the swap so later panes inherit it"
     );
@@ -396,11 +398,11 @@ fn dark_and_light_themes_without_an_explicit_hue_default_to_dark() {
         .expect("default resolved");
 
     assert_eq!(
-        screen.host_terminal_theme_mode,
+        screen.core.host_terminal_theme_mode,
         Some(yinz_types::style::HostTerminalThemeMode::Dark),
     );
     assert_eq!(
-        screen.style.colors.text_unselected.background,
+        screen.core.style.colors.text_unselected.background,
         yinz_types::colors::PaletteColor::Rgb(TEST_DARK_BG),
         "a configured dark/light pair must resolve to the dark theme rather than \
          to the unrelated static theme"
@@ -427,12 +429,12 @@ fn the_default_dark_mode_still_yields_to_the_host_terminal() {
         .expect("host report applied");
 
     assert_eq!(
-        screen.host_terminal_theme_mode,
+        screen.core.host_terminal_theme_mode,
         Some(yinz_types::style::HostTerminalThemeMode::Light),
         "the default is not a pin - the host terminal remains authoritative"
     );
     assert_eq!(
-        screen.style.colors.text_unselected.background,
+        screen.core.style.colors.text_unselected.background,
         yinz_types::colors::PaletteColor::Rgb(TEST_LIGHT_BG),
     );
 }
@@ -441,14 +443,14 @@ fn the_default_dark_mode_still_yields_to_the_host_terminal() {
 fn no_default_mode_without_both_themes_configured() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_theme_capture(size);
-    screen.host_theme_dark_styling = Some(styling_with_background(TEST_DARK_BG));
+    screen.core.host_theme_dark_styling = Some(styling_with_background(TEST_DARK_BG));
 
     screen
         .resolve_default_theme_mode()
         .expect("nothing to resolve");
 
     assert_eq!(
-        screen.host_terminal_theme_mode, None,
+        screen.core.host_terminal_theme_mode, None,
         "a lone theme_dark leaves the static theme authoritative, so the mode \
          stays genuinely unknown"
     );
@@ -471,7 +473,7 @@ fn the_default_does_not_override_an_explicit_hue() {
         .expect("default is a no-op here");
 
     assert_eq!(
-        screen.host_terminal_theme_mode,
+        screen.core.host_terminal_theme_mode,
         Some(yinz_types::style::HostTerminalThemeMode::Light),
     );
 }
@@ -490,12 +492,12 @@ fn explicit_theme_hue_outranks_ambient_host_reports() {
         .expect("ambient report absorbed");
 
     assert_eq!(
-        screen.host_terminal_theme_mode,
+        screen.core.host_terminal_theme_mode,
         Some(yinz_types::style::HostTerminalThemeMode::Light),
         "the pinned mode must survive an ambient report to the contrary"
     );
     assert_eq!(
-        screen.style.colors.text_unselected.background,
+        screen.core.style.colors.text_unselected.background,
         yinz_types::colors::PaletteColor::Rgb(TEST_LIGHT_BG),
         "the palette must not be swapped while pinned"
     );
@@ -524,7 +526,7 @@ fn manual_theme_action_pins_the_session() {
         .expect("ambient report absorbed");
 
     assert_eq!(
-        screen.host_terminal_theme_mode,
+        screen.core.host_terminal_theme_mode,
         Some(yinz_types::style::HostTerminalThemeMode::Dark),
         "a deliberate choice must not be reverted by the host terminal"
     );
@@ -551,12 +553,12 @@ fn removing_explicit_theme_hue_hands_authority_back_to_the_host() {
         .expect("unpinned");
 
     assert_eq!(
-        screen.host_terminal_theme_mode,
+        screen.core.host_terminal_theme_mode,
         Some(yinz_types::style::HostTerminalThemeMode::Dark),
         "unpinning must restore the ambient report that was suppressed"
     );
     assert_eq!(
-        screen.style.colors.text_unselected.background,
+        screen.core.style.colors.text_unselected.background,
         yinz_types::colors::PaletteColor::Rgb(TEST_DARK_BG),
         "the palette must follow the restored mode"
     );
@@ -569,14 +571,14 @@ fn pinning_the_current_hue_repaints_the_resolved_palette() {
     screen
         .update_host_terminal_theme_mode(yinz_types::style::HostTerminalThemeMode::Dark)
         .expect("host report applied");
-    screen.style.colors = styling_with_background((1, 2, 3));
+    screen.core.style.colors = styling_with_background((1, 2, 3));
 
     screen
         .apply_configured_explicit_theme_hue(Some(yinz_types::style::ThemeHue::Dark))
         .expect("explicit hue applied");
 
     assert_eq!(
-        screen.style.colors.text_unselected.background,
+        screen.core.style.colors.text_unselected.background,
         yinz_types::colors::PaletteColor::Rgb(TEST_DARK_BG),
         "pinning the hue the session is already in must still resolve the palette, \
          otherwise a reconfigure leaves the session painted with the static theme"
@@ -593,14 +595,14 @@ fn unpinning_back_to_the_current_hue_repaints_the_resolved_palette() {
     screen
         .apply_configured_explicit_theme_hue(Some(yinz_types::style::ThemeHue::Dark))
         .expect("explicit hue applied");
-    screen.style.colors = styling_with_background((1, 2, 3));
+    screen.core.style.colors = styling_with_background((1, 2, 3));
 
     screen
         .apply_configured_explicit_theme_hue(None)
         .expect("unpinned");
 
     assert_eq!(
-        screen.style.colors.text_unselected.background,
+        screen.core.style.colors.text_unselected.background,
         yinz_types::colors::PaletteColor::Rgb(TEST_DARK_BG),
         "unpinning to the mode the session is already in must still resolve the palette"
     );
@@ -615,15 +617,15 @@ fn effective_theme_mode_is_reasserted_after_a_theme_definition_change() {
         .expect("host report applied");
 
     let new_light = styling_with_background((250, 250, 250));
-    screen.host_theme_light_styling = Some(new_light);
-    screen.style.colors = styling_with_background((1, 2, 3));
+    screen.core.host_theme_light_styling = Some(new_light);
+    screen.core.style.colors = styling_with_background((1, 2, 3));
 
     screen
         .reapply_effective_theme_mode()
         .expect("mode reasserted");
 
     assert_eq!(
-        screen.style.colors.text_unselected.background,
+        screen.core.style.colors.text_unselected.background,
         yinz_types::colors::PaletteColor::Rgb((250, 250, 250)),
         "the session's mode must be re-resolved against the new definitions \
          instead of falling back to the static theme"
@@ -651,7 +653,7 @@ fn color_palette_mode_query_answers_with_the_pinned_hue() {
     screen
         .update_host_terminal_theme_mode(yinz_types::style::HostTerminalThemeMode::Dark)
         .expect("ambient report absorbed");
-    screen.style.colors.text_unselected.background =
+    screen.core.style.colors.text_unselected.background =
         yinz_types::colors::PaletteColor::Rgb((0, 0, 0));
     let _ = capture.drain_pty_writes();
 
@@ -675,15 +677,18 @@ fn picker_theme_reaches_plugins_new_panes_and_clients() {
     let (mut screen, capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 24 });
     new_tab(&mut screen, 1, TabId::new(0));
     add_pane_to_tab(&mut screen, TabId::new(0), PaneId::Plugin(PLUGIN_77), false);
-    let original = screen.style.colors;
+    let original = screen.core.style.colors;
     let preview = styling_with_background(TEST_LIGHT_BG);
-    screen.themes.insert("preview".into(), preview);
+    screen.core.themes.insert("preview".into(), preview);
     let terminal = yinz_types::style::TerminalTheme {
         foreground: (1, 2, 3),
         background: (4, 5, 6),
         ansi: [(7, 8, 9); 16],
     };
-    screen.terminal_themes.insert("preview".into(), terminal);
+    screen
+        .core
+        .terminal_themes
+        .insert("preview".into(), terminal);
     screen.toggle_command_palette(CLIENT_1);
     screen.command_palette_handles_input(&None, b"Change theme", false, CLIENT_1);
     capture.drain_plugin_updates();
@@ -696,10 +701,10 @@ fn picker_theme_reaches_plugins_new_panes_and_clients() {
     assert!(capture.drain_plugin_updates().iter().any(
         |(_, _, event)| matches!(event, Event::ModeUpdate(info) if info.style.colors == preview)
     ));
-    assert_eq!(screen.tabs[&TabId::new(0)].style.colors, preview);
+    assert_eq!(screen.core.tabs[&TabId::new(0)].style.colors, preview);
     let other = ClientId::new(2);
     screen.add_client(other).unwrap();
-    assert_eq!(screen.default_mode_info.style.colors, preview);
+    assert_eq!(screen.core.default_mode_info.style.colors, preview);
     // A background tab must inherit the preview without navigating away from the picker.
     screen
         .new_tab(TabId::new(1), (vec![], vec![]), None, Some(other))
@@ -717,26 +722,30 @@ fn picker_theme_reaches_plugins_new_panes_and_clients() {
             None,
         )
         .unwrap();
-    assert_eq!(screen.tabs[&TabId::new(1)].style.colors, preview);
+    assert_eq!(screen.core.tabs[&TabId::new(1)].style.colors, preview);
     // The preview renders its terminal block, but applications keep the baseline.
-    assert_eq!(screen.tabs[&TabId::new(1)].style.terminal, Some(terminal));
+    assert_eq!(
+        screen.core.tabs[&TabId::new(1)].style.terminal,
+        Some(terminal)
+    );
     assert_eq!(
         terminal_background_reply(&mut screen, TabId::new(1), 2),
         vec![b"\x1b]11;rgb:0000/0000/0000\x07".to_vec()]
     );
     screen.close_command_palette(CLIENT_1);
-    assert_eq!(screen.tabs[&TabId::new(0)].style.colors, original);
-    assert_eq!(screen.tabs[&TabId::new(1)].style.colors, original);
-    assert_eq!(screen.tabs[&TabId::new(1)].style.terminal, None);
+    assert_eq!(screen.core.tabs[&TabId::new(0)].style.colors, original);
+    assert_eq!(screen.core.tabs[&TabId::new(1)].style.colors, original);
+    assert_eq!(screen.core.tabs[&TabId::new(1)].style.terminal, None);
     assert_eq!(
         terminal_background_reply(&mut screen, TabId::new(1), 2),
         vec![b"\x1b]11;rgb:0000/0000/0000\x07".to_vec()]
     );
-    assert_eq!(screen.mode_info[&other].style.colors, original);
+    assert_eq!(screen.core.mode_info[&other].style.colors, original);
 }
 
 fn terminal_background_reply(screen: &mut Screen, tab: TabId, id: u32) -> Vec<Vec<u8>> {
     let pane = screen
+        .core
         .tabs
         .get_mut(&tab)
         .unwrap()
@@ -765,6 +774,7 @@ fn terminal_themes_follow_reload_switching_new_floating_and_hidden_panes() {
         true,
     );
     screen
+        .core
         .tabs
         .get_mut(&tab)
         .unwrap()
@@ -791,7 +801,7 @@ fn terminal_themes_follow_reload_switching_new_floating_and_hidden_panes() {
     screen
         .change_mode(InputMode::Locked, None, CLIENT_1)
         .unwrap();
-    assert_eq!(screen.style.terminal, Some(dark));
+    assert_eq!(screen.core.style.terminal, Some(dark));
     screen
         .change_mode(InputMode::Normal, None, CLIENT_1)
         .unwrap();
@@ -813,11 +823,11 @@ fn terminal_themes_follow_reload_switching_new_floating_and_hidden_panes() {
         vec![b"\x1b]11;rgb:0404/0505/0606\x07".to_vec()]
     );
     // Viewer host reports restyle chrome only.
-    screen.host_theme_dark_styling = Some(Styling::default());
-    screen.host_theme_light_styling = Some(Styling::default());
-    screen.theme_dark_name = Some("dark".into());
-    screen.theme_light_name = Some("light".into());
-    screen.terminal_themes = BTreeMap::from([("dark".into(), dark), ("light".into(), light)]);
+    screen.core.host_theme_dark_styling = Some(Styling::default());
+    screen.core.host_theme_light_styling = Some(Styling::default());
+    screen.core.theme_dark_name = Some("dark".into());
+    screen.core.theme_light_name = Some("light".into());
+    screen.core.terminal_themes = BTreeMap::from([("dark".into(), dark), ("light".into(), light)]);
     screen
         .update_host_terminal_theme_mode(HostTerminalThemeMode::Light)
         .unwrap();
@@ -827,7 +837,7 @@ fn terminal_themes_follow_reload_switching_new_floating_and_hidden_panes() {
             vec![b"\x1b]11;rgb:0404/0505/0606\x07".to_vec()]
         );
     }
-    assert_eq!(screen.style.terminal, Some(dark));
+    assert_eq!(screen.core.style.terminal, Some(dark));
     // A session-wide pair change switches answers and the rendered palette everywhere,
     // including hidden and newly revealed panes.
     screen
@@ -836,7 +846,7 @@ fn terminal_themes_follow_reload_switching_new_floating_and_hidden_panes() {
             ..paired_application_theme(Some(dark), Some(light))
         })
         .unwrap();
-    assert_eq!(screen.style.terminal, Some(light));
+    assert_eq!(screen.core.style.terminal, Some(light));
     for id in [10, 11, 12] {
         assert_eq!(
             terminal_background_reply(&mut screen, tab, id),
@@ -844,6 +854,7 @@ fn terminal_themes_follow_reload_switching_new_floating_and_hidden_panes() {
         );
     }
     screen
+        .core
         .tabs
         .get_mut(&tab)
         .unwrap()
@@ -856,7 +867,7 @@ fn terminal_themes_follow_reload_switching_new_floating_and_hidden_panes() {
     screen
         .set_application_theme_config(static_application_theme(None))
         .unwrap();
-    assert_eq!(screen.style.terminal, None);
+    assert_eq!(screen.core.style.terminal, None);
     for id in [10, 11, 12] {
         assert_eq!(
             terminal_background_reply(&mut screen, tab, id),

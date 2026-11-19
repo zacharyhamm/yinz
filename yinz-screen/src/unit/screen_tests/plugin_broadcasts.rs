@@ -215,7 +215,7 @@ fn early_plugin_output_survives_layout_and_replayed_cursor_renders_without_sessi
     let client_id = ClientId::new(1);
     let mut screen = create_new_screen(size, true, true);
     let (plugin_tx, plugin_rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
     let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
         "file:/path/to/fake/plugin",
         &None,
@@ -227,8 +227,8 @@ fn early_plugin_output_survives_layout_and_replayed_cursor_renders_without_sessi
         .new_tab(TabId::new(0), (vec![], vec![]), None, Some(client_id))
         .unwrap();
     // Startup sizes the client before loading plugins, but attaches it only after layout.
-    assert!(screen.client_sizes.contains_key(&client_id));
-    assert!(!screen.connected_clients.borrow().contains(&client_id));
+    assert!(screen.core.client_sizes.contains_key(&client_id));
+    assert!(!screen.core.connected_clients.borrow().contains(&client_id));
     let pending_frames = screen
         .handle_plugin_render_assets(vec![PluginRenderAsset::new(
             PLUGIN_2,
@@ -274,7 +274,7 @@ fn early_plugin_output_survives_layout_and_replayed_cursor_renders_without_sessi
     assert_eq!(cursor, Some((1, 1)));
     plugin_rx.try_iter().for_each(drop);
     let (jobs_tx, jobs_rx) = channels::unbounded();
-    screen.bus.senders.to_background_jobs = Some(SenderWithContext::new(jobs_tx));
+    screen.core.bus.senders.to_background_jobs = Some(SenderWithContext::new(jobs_tx));
     for position in [Some((2, 1)), Some((5, 3)), None] {
         super::super::replay_pending_plugin_events(
             &mut screen,
