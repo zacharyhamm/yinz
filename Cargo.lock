@@ -7007,6 +7007,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "yinz-agent-control"
+version = "0.1.2-alpha.23"
+dependencies = [
+ "log",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "unicode-width 0.2.2",
+ "uuid",
+ "yinz-bus",
+ "yinz-runtime",
+ "yinz-test-support",
+ "yinz-types",
+]
+
+[[package]]
 name = "yinz-bus"
 version = "0.1.2-alpha.23"
 dependencies = [
@@ -7567,6 +7583,7 @@ dependencies = [
  "unicode-width 0.2.2",
  "uuid",
  "vte 0.15.0",
+ "yinz-agent-control",
  "yinz-bus",
  "yinz-cli",
  "yinz-config",

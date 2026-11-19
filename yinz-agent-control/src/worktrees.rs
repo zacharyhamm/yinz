@@ -8,11 +8,11 @@ use yinz_runtime::channels::SenderWithContext;
 use yinz_runtime::errors::prelude::*;
 
 #[cfg(test)]
-#[path = "../../unit/agent_worktrees_tests.rs"]
+#[path = "unit/worktrees.rs"]
 mod tests;
 
 #[derive(Default)]
-pub(in crate::screen) struct Worktrees {
+pub struct Worktrees {
     entries: HashMap<PathBuf, Lookup>,
     generation: u64,
 }
@@ -47,7 +47,7 @@ impl Worktrees {
             let generation = self.generation;
             let lookup_cwd = cwd.clone();
             let to_screen = to_screen.clone();
-            let task = crate::global_async_runtime::get_tokio_runtime().spawn(async move {
+            let task = yinz_bus::global_async_runtime::get_tokio_runtime().spawn(async move {
                 let root = match tokio::time::timeout(
                     Duration::from_secs(5),
                     resolve_worktree(&lookup_cwd),
@@ -77,12 +77,7 @@ impl Worktrees {
         }
     }
 
-    pub(in crate::screen) fn complete(
-        &mut self,
-        cwd: &Path,
-        generation: u64,
-        root: Option<PathBuf>,
-    ) -> bool {
+    fn complete(&mut self, cwd: &Path, generation: u64, root: Option<PathBuf>) -> bool {
         let Some(entry) = self.entries.get_mut(cwd) else {
             return false;
         };
@@ -119,19 +114,16 @@ async fn resolve_worktree(cwd: &Path) -> Result<PathBuf> {
         .context("canonicalizing an agent's Git worktree")
 }
 
-impl super::AgentController {
-    pub(in crate::screen) fn refresh_agent_worktrees(
-        &mut self,
-        host: &mut impl super::host::AgentHost,
-    ) {
+impl Worktrees {
+    pub fn refresh_agent_worktrees(&mut self, host: &mut impl super::host::AgentHost) {
         let directories = host.local_agent_directories();
-        self.agent_worktrees.refresh(
+        self.refresh(
             directories.values().cloned().collect(),
             host.worktree_sender(),
         );
         self.publish_roots(host, directories);
     }
-    pub(in crate::screen) fn resolve_agent_worktree(
+    pub fn resolve_agent_worktree(
         &mut self,
         host: &mut impl super::host::AgentHost,
         cwd: PathBuf,
@@ -139,11 +131,11 @@ impl super::AgentController {
         root: Option<PathBuf>,
     ) -> bool {
         let directories = host.local_agent_directories();
-        self.agent_worktrees.refresh(
+        self.refresh(
             directories.values().cloned().collect(),
             host.worktree_sender(),
         );
-        let accepted = self.agent_worktrees.complete(&cwd, generation, root);
+        let accepted = self.complete(&cwd, generation, root);
         self.publish_roots(host, directories);
         accepted
     }
@@ -154,14 +146,7 @@ impl super::AgentController {
     ) {
         let roots = directories
             .into_iter()
-            .filter_map(|(id, cwd)| {
-                self.agent_worktrees
-                    .entries
-                    .get(&cwd)?
-                    .root
-                    .clone()
-                    .map(|root| (id, root))
-            })
+            .filter_map(|(id, cwd)| self.entries.get(&cwd)?.root.clone().map(|root| (id, root)))
             .collect();
         host.set_worktree_roots(roots);
     }

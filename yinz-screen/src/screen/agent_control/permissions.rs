@@ -17,7 +17,11 @@ impl super::AgentController {
             && agent.state != AgentState::Exited
             && self.agent_lifecycle.get(&pane).is_some_and(|l| {
                 agent.session_id.as_ref() == Some(&l.conversation)
-                    && l.claude.permission.as_ref().is_some_and(Overlay::active)
+                    && l.claude
+                        .activity
+                        .permission
+                        .as_ref()
+                        .is_some_and(Overlay::active)
             })
         {
             if agent.state != AgentState::Waiting || !agent.wait_needs_a_person {
@@ -32,7 +36,7 @@ impl super::AgentController {
         if let Some(overlay) = self
             .agent_lifecycle
             .get_mut(&pane)
-            .and_then(|l| l.claude.permission.as_mut())
+            .and_then(|l| l.claude.activity.permission.as_mut())
         {
             overlay.release();
         }
@@ -66,7 +70,7 @@ impl super::AgentController {
             && self.agent_lifecycle.get(&pane).is_some_and(|l| {
                 l.kind == "claude"
                     && l.conversation == hook.session_id
-                    && l.claude.obligations.source.as_ref() == Some(&sample.source)
+                    && l.claude.activity.obligations.source.as_ref() == Some(&sample.source)
             });
         if !valid {
             hook.claude_permission = None;
@@ -80,23 +84,24 @@ impl super::AgentController {
         // A fresh guarded read can recover an unchanged provider dialog.
         let now = Instant::now();
         let elapsed = now
-            .saturating_duration_since(lifecycle.notification_tick)
+            .saturating_duration_since(lifecycle.claude.observed_at)
             .as_millis()
             .min(u64::MAX as u128) as u64;
-        if let Some(overlay) = &mut lifecycle.claude.permission {
+        if let Some(overlay) = &mut lifecycle.claude.activity.permission {
             overlay.elapse(elapsed);
             overlay.accept(sample);
         } else {
-            lifecycle.claude.permission = Some(Overlay {
+            lifecycle.claude.activity.permission = Some(Overlay {
                 sample: sample.clone(),
                 remaining_ms: LEASE_MS,
             });
         }
         // Keep the shared tick coherent with obligation observation and handoffs.
-        lifecycle.claude.obligations.elapse(elapsed);
-        lifecycle.notification_tick = now;
+        lifecycle.claude.activity.obligations.elapse(elapsed);
+        lifecycle.claude.observed_at = now;
         let overlay = lifecycle
             .claude
+            .activity
             .permission
             .as_ref()
             .expect("accepted overlay");
@@ -124,6 +129,7 @@ impl super::AgentController {
             .filter(|l| l.kind == "claude")?;
         let mut agent = lifecycle
             .claude
+            .activity
             .parent
             .clone()
             .or_else(|| self.agent_worker_waits.get(&pane).map(|w| w.parent.clone()))
@@ -153,7 +159,8 @@ impl super::AgentController {
         }
         if agent.state != AgentState::Waiting
             && let Some(waiting) = lifecycle
-                .claude_notifications
+                .claude
+                .notifications
                 .values()
                 .find_map(|n| n.waiting.as_ref())
         {
@@ -173,7 +180,8 @@ impl super::AgentController {
             .iter()
             .filter(|(_, lifecycle)| {
                 lifecycle
-                    .claude_notifications
+                    .claude
+                    .notifications
                     .values()
                     .any(|notification| notification.permission_revision.is_some())
             })
@@ -194,7 +202,7 @@ impl super::AgentController {
                 agent.kind == "claude" && agent.session_id.as_ref() == Some(&lifecycle.conversation)
             });
         let mut changed = false;
-        for notification in lifecycle.claude_notifications.values_mut() {
+        for notification in lifecycle.claude.notifications.values_mut() {
             if !valid {
                 notification.permission_revision = None;
             } else if notification
@@ -210,7 +218,7 @@ impl super::AgentController {
             return None;
         }
         notifications::prune_released_notification_waits(lifecycle);
-        let parent = lifecycle.claude.parent.clone()?;
+        let parent = lifecycle.claude.activity.parent.clone()?;
         Some(parent)
     }
     pub(in crate::screen) fn take_permission_waits(
@@ -229,7 +237,7 @@ impl super::AgentController {
         if let Some(parent) = self
             .agent_lifecycle
             .get(&pane)
-            .and_then(|l| l.claude.parent.as_ref())
+            .and_then(|l| l.claude.activity.parent.as_ref())
         {
             agent = parent.clone();
         } else if let Some(workers) = self.agent_worker_waits.get(&pane) {
@@ -253,7 +261,7 @@ impl super::AgentController {
         agent.state = if self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
             lifecycle.kind == "claude"
                 && lifecycle.conversation == wait.conversation
-                && lifecycle.claude_confirmation == Some(true)
+                && lifecycle.claude.confirmation == Some(true)
         }) {
             AgentState::Idle
         } else {
@@ -263,7 +271,7 @@ impl super::AgentController {
         agent.waiting_on = None;
         agent.wait_needs_a_person = false;
         if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
-            lifecycle.claude.parent = Some(agent.clone());
+            lifecycle.claude.activity.parent = Some(agent.clone());
         }
         if let Some(workers) = self.agent_worker_waits.get_mut(&pane) {
             workers.parent = agent.clone();
@@ -291,7 +299,8 @@ impl super::AgentController {
         if visible.state != AgentState::Waiting
             && let Some(waiting) = self.agent_lifecycle.get(&pane).and_then(|lifecycle| {
                 lifecycle
-                    .claude_notifications
+                    .claude
+                    .notifications
                     .values()
                     .find_map(|n| n.waiting.as_ref())
             })

@@ -187,89 +187,6 @@ impl Screen {
         }
     }
 
-    fn preparation_admits(event: &ScreenInstruction) -> bool {
-        matches!(
-            event,
-            ScreenInstruction::SessionMigration(_)
-                | ScreenInstruction::Exit
-                | ScreenInstruction::PtyBytes(..)
-                | ScreenInstruction::Render
-                | ScreenInstruction::RenderToClients
-                | ScreenInstruction::RenderWriterReady
-                | ScreenInstruction::Notify(..)
-                | ScreenInstruction::RemoveClient(..)
-                | ScreenInstruction::RemoveWatcherClient(..)
-                | ScreenInstruction::AddClient(..)
-                | ScreenInstruction::AddWatcherClient(..)
-                | ScreenInstruction::ApplyLayout(..)
-                | ScreenInstruction::LayoutSpawnFailed(..)
-                | ScreenInstruction::OverrideLayoutComplete(..)
-                | ScreenInstruction::NewPane(..)
-                | ScreenInstruction::ReplacePane(..)
-                | ScreenInstruction::OpenInPlaceEditor(..)
-                | ScreenInstruction::ConfirmTerminalPlacement(..)
-                | ScreenInstruction::ClaimAgentLaunch { .. }
-                | ScreenInstruction::RegisterAgentLaunch { .. }
-                | ScreenInstruction::CommitAgentLaunch { .. }
-                | ScreenInstruction::ReleaseAgentLaunch { .. }
-                | ScreenInstruction::RemotePaneReady(..)
-                | ScreenInstruction::HoldPane(..)
-                | ScreenInstruction::ClosePane(_, None, None, _)
-                | ScreenInstruction::CloseSelf(..)
-                | ScreenInstruction::RestoreHeldPane(..)
-                | ScreenInstruction::RestoreWarpedAgentInput(..)
-                | ScreenInstruction::RequestPaneRedraw(..)
-                | ScreenInstruction::WarpReplayFinished(..)
-                | ScreenInstruction::PaneWarpFinished
-                | ScreenInstruction::PaneReleasedForWarp { .. }
-                | ScreenInstruction::TabReleasedForWarp { .. }
-                | ScreenInstruction::AdoptedPaneReady { .. }
-                | ScreenInstruction::AdoptedPaneFinished(..)
-                | ScreenInstruction::AdoptedTabReady { .. }
-                | ScreenInstruction::AddPlugin(..)
-                | ScreenInstruction::PluginPaneless { .. }
-                | ScreenInstruction::PluginResolving { .. }
-                | ScreenInstruction::PluginFailed(..)
-                | ScreenInstruction::PluginRecovered(..)
-                | ScreenInstruction::PluginUnloaded(..)
-                | ScreenInstruction::PluginBytes(..)
-                | ScreenInstruction::UpdatePluginLocation(..)
-                | ScreenInstruction::UpdatePluginLoadingStage(..)
-                | ScreenInstruction::StartPluginLoadingIndication(..)
-                | ScreenInstruction::StartClientPluginLoadingIndication(..)
-                | ScreenInstruction::StartPluginLoadingAnimation(..)
-                | ScreenInstruction::StopPluginLoadingAnimation(..)
-                | ScreenInstruction::SetSelectable(..)
-                | ScreenInstruction::SetMouseSelectionSupport(..)
-                | ScreenInstruction::ShowPluginCursor(..)
-                | ScreenInstruction::SetPaneCaption(..)
-                | ScreenInstruction::SetPaneAgent(..)
-                | ScreenInstruction::PaneTabLoaded { .. }
-                | ScreenInstruction::OverlayTabCwd { .. }
-                | ScreenInstruction::RequestStateUpdateForPlugins
-                | ScreenInstruction::UpdateBackgroundPluginSubscriptions(..)
-                | ScreenInstruction::AgentSpawned(..)
-                | ScreenInstruction::AgentWorktreeResolved { .. }
-                | ScreenInstruction::ForwardHostQuery { .. }
-                | ScreenInstruction::ForwardedReplyFromHost { .. }
-                | ScreenInstruction::ResumePaneAfterForward { .. }
-                | ScreenInstruction::DumpLayoutToPlugin { .. }
-                | ScreenInstruction::GetCellPixelSize { .. }
-                | ScreenInstruction::GetClientTimezone { .. }
-                | ScreenInstruction::ReportClientTimezones { .. }
-                | ScreenInstruction::GetFocusedPaneInfo { .. }
-                | ScreenInstruction::GetPaneInfo { .. }
-                | ScreenInstruction::GetTabInfo { .. }
-                | ScreenInstruction::GetPaneScrollback { .. }
-                | ScreenInstruction::ListPanes { .. }
-                | ScreenInstruction::ListTabs { .. }
-                | ScreenInstruction::ListNotifications { .. }
-                | ScreenInstruction::GetCurrentTabInfo { .. }
-                | ScreenInstruction::ListClientsToPlugin(..)
-                | ScreenInstruction::ReportCellPixelSize(..)
-        )
-    }
-
     pub(super) fn migration_blocks_normal_work(&self) -> bool {
         self.transfer.preparing_migration.is_none()
             && self
@@ -433,77 +350,7 @@ impl Screen {
         &mut self,
         event: ScreenInstruction,
     ) -> Option<ScreenInstruction> {
-        let Some(state) = &self.transfer.migration else {
-            if self.transfer.preparing_migration.is_some() && !Self::preparation_admits(&event) {
-                self.transfer.migration_deferred.push_back(event);
-                return None;
-            }
-            return Some(event);
-        };
-        // Finish is the coordinator's irreversible commit boundary. Plugin
-        // startup callbacks must be able to complete their normal host work
-        // before the readiness acknowledgement; old deferred source events
-        // remain separate and are discarded when commit completes.
-        if matches!(state.stage, Stage::Finishing | Stage::Repairing) {
-            return Some(event);
-        }
-        let allowed = matches!(
-            &event,
-            ScreenInstruction::SessionMigration(_)
-                | ScreenInstruction::Exit
-                | ScreenInstruction::PtyBytes(..)
-                | ScreenInstruction::Render
-                | ScreenInstruction::RenderToClients
-                | ScreenInstruction::RenderWriterReady
-                | ScreenInstruction::RemoveClient(..)
-                | ScreenInstruction::ForwardHostQuery { .. }
-                | ScreenInstruction::ForwardedReplyFromHost { .. }
-                | ScreenInstruction::ResumePaneAfterForward { .. }
-                | ScreenInstruction::Notify(..)
-                | ScreenInstruction::DumpLayoutToPlugin { .. }
-                | ScreenInstruction::GetCellPixelSize { .. }
-                | ScreenInstruction::GetClientTimezone { .. }
-                | ScreenInstruction::ReportClientTimezones { .. }
-                | ScreenInstruction::GetFocusedPaneInfo { .. }
-                | ScreenInstruction::GetPaneInfo { .. }
-                | ScreenInstruction::GetTabInfo { .. }
-                | ScreenInstruction::GetPaneScrollback { .. }
-                | ScreenInstruction::ListPanes { .. }
-                | ScreenInstruction::ListTabs { .. }
-                | ScreenInstruction::ListNotifications { .. }
-                | ScreenInstruction::GetCurrentTabInfo { .. }
-                | ScreenInstruction::ListClientsToPlugin(..)
-                | ScreenInstruction::ReportCellPixelSize(..)
-        ) || matches!(state.stage, Stage::Adopted | Stage::Finishing)
-            && matches!(
-                &event,
-                ScreenInstruction::AddClient(..)
-                    | ScreenInstruction::RecomputeTabSize(..)
-                    | ScreenInstruction::RequestRepaint(..)
-            )
-            || matches!(state.stage, Stage::Adopting | Stage::Finishing)
-                && matches!(
-                    &event,
-                    ScreenInstruction::ApplyLayout(..)
-                        | ScreenInstruction::AddPlugin(..)
-                        | ScreenInstruction::PluginBytes(..)
-                        | ScreenInstruction::SetSelectable(..)
-                        | ScreenInstruction::SetMouseSelectionSupport(..)
-                        | ScreenInstruction::ShowPluginCursor(..)
-                        | ScreenInstruction::SetPaneCaption(..)
-                        | ScreenInstruction::SetPaneAgent(..)
-                        | ScreenInstruction::RestoreHeldPane(..)
-                        | ScreenInstruction::RestoreWarpedAgentInput(..)
-                        | ScreenInstruction::RequestPaneRedraw(..)
-                        | ScreenInstruction::HoldPane(..)
-                        | ScreenInstruction::LayoutSpawnFailed(..)
-                );
-        if allowed {
-            Some(event)
-        } else {
-            self.transfer.migration_deferred.push_back(event);
-            None
-        }
+        self.transfer.defer_for_migration(event)
     }
 
     pub(super) fn next_migration_event(&mut self) -> Option<ScreenInstruction> {
@@ -1949,5 +1796,169 @@ impl crate::screen::MigrationController {
 impl super::MigrationController {
     pub(super) fn on_client_removed(&mut self, client_id: ClientId) {
         self.pending_update_client_ready.remove(&client_id);
+    }
+}
+
+impl super::MigrationController {
+    fn preparation_admits(event: &ScreenInstruction) -> bool {
+        matches!(
+            event,
+            ScreenInstruction::SessionMigration(_)
+                | ScreenInstruction::Exit
+                | ScreenInstruction::PtyBytes(..)
+                | ScreenInstruction::Render
+                | ScreenInstruction::RenderToClients
+                | ScreenInstruction::RenderWriterReady
+                | ScreenInstruction::Notify(..)
+                | ScreenInstruction::RemoveClient(..)
+                | ScreenInstruction::RemoveWatcherClient(..)
+                | ScreenInstruction::AddClient(..)
+                | ScreenInstruction::AddWatcherClient(..)
+                | ScreenInstruction::ApplyLayout(..)
+                | ScreenInstruction::LayoutSpawnFailed(..)
+                | ScreenInstruction::OverrideLayoutComplete(..)
+                | ScreenInstruction::NewPane(..)
+                | ScreenInstruction::ReplacePane(..)
+                | ScreenInstruction::OpenInPlaceEditor(..)
+                | ScreenInstruction::ConfirmTerminalPlacement(..)
+                | ScreenInstruction::ClaimAgentLaunch { .. }
+                | ScreenInstruction::RegisterAgentLaunch { .. }
+                | ScreenInstruction::CommitAgentLaunch { .. }
+                | ScreenInstruction::ReleaseAgentLaunch { .. }
+                | ScreenInstruction::RemotePaneReady(..)
+                | ScreenInstruction::HoldPane(..)
+                | ScreenInstruction::ClosePane(_, None, None, _)
+                | ScreenInstruction::CloseSelf(..)
+                | ScreenInstruction::RestoreHeldPane(..)
+                | ScreenInstruction::RestoreWarpedAgentInput(..)
+                | ScreenInstruction::RequestPaneRedraw(..)
+                | ScreenInstruction::WarpReplayFinished(..)
+                | ScreenInstruction::PaneWarpFinished
+                | ScreenInstruction::PaneReleasedForWarp { .. }
+                | ScreenInstruction::TabReleasedForWarp { .. }
+                | ScreenInstruction::AdoptedPaneReady { .. }
+                | ScreenInstruction::AdoptedPaneFinished(..)
+                | ScreenInstruction::AdoptedTabReady { .. }
+                | ScreenInstruction::AddPlugin(..)
+                | ScreenInstruction::PluginPaneless { .. }
+                | ScreenInstruction::PluginResolving { .. }
+                | ScreenInstruction::PluginFailed(..)
+                | ScreenInstruction::PluginRecovered(..)
+                | ScreenInstruction::PluginUnloaded(..)
+                | ScreenInstruction::PluginBytes(..)
+                | ScreenInstruction::UpdatePluginLocation(..)
+                | ScreenInstruction::UpdatePluginLoadingStage(..)
+                | ScreenInstruction::StartPluginLoadingIndication(..)
+                | ScreenInstruction::StartClientPluginLoadingIndication(..)
+                | ScreenInstruction::StartPluginLoadingAnimation(..)
+                | ScreenInstruction::StopPluginLoadingAnimation(..)
+                | ScreenInstruction::SetSelectable(..)
+                | ScreenInstruction::SetMouseSelectionSupport(..)
+                | ScreenInstruction::ShowPluginCursor(..)
+                | ScreenInstruction::SetPaneCaption(..)
+                | ScreenInstruction::SetPaneAgent(..)
+                | ScreenInstruction::PaneTabLoaded { .. }
+                | ScreenInstruction::OverlayTabCwd { .. }
+                | ScreenInstruction::RequestStateUpdateForPlugins
+                | ScreenInstruction::UpdateBackgroundPluginSubscriptions(..)
+                | ScreenInstruction::AgentSpawned(..)
+                | ScreenInstruction::AgentWorktreeResolved { .. }
+                | ScreenInstruction::ForwardHostQuery { .. }
+                | ScreenInstruction::ForwardedReplyFromHost { .. }
+                | ScreenInstruction::ResumePaneAfterForward { .. }
+                | ScreenInstruction::DumpLayoutToPlugin { .. }
+                | ScreenInstruction::GetCellPixelSize { .. }
+                | ScreenInstruction::GetClientTimezone { .. }
+                | ScreenInstruction::ReportClientTimezones { .. }
+                | ScreenInstruction::GetFocusedPaneInfo { .. }
+                | ScreenInstruction::GetPaneInfo { .. }
+                | ScreenInstruction::GetTabInfo { .. }
+                | ScreenInstruction::GetPaneScrollback { .. }
+                | ScreenInstruction::ListPanes { .. }
+                | ScreenInstruction::ListTabs { .. }
+                | ScreenInstruction::ListNotifications { .. }
+                | ScreenInstruction::GetCurrentTabInfo { .. }
+                | ScreenInstruction::ListClientsToPlugin(..)
+                | ScreenInstruction::ReportCellPixelSize(..)
+        )
+    }
+}
+
+impl super::MigrationController {
+    pub(super) fn defer_for_migration(
+        &mut self,
+        event: ScreenInstruction,
+    ) -> Option<ScreenInstruction> {
+        let Some(state) = &self.migration else {
+            if self.preparing_migration.is_some() && !Self::preparation_admits(&event) {
+                self.migration_deferred.push_back(event);
+                return None;
+            }
+            return Some(event);
+        };
+        // Finish is the coordinator's irreversible commit boundary. Plugin
+        // startup callbacks must be able to complete their normal host work
+        // before the readiness acknowledgement; old deferred source events
+        // remain separate and are discarded when commit completes.
+        if matches!(state.stage, Stage::Finishing | Stage::Repairing) {
+            return Some(event);
+        }
+        let allowed = matches!(
+            &event,
+            ScreenInstruction::SessionMigration(_)
+                | ScreenInstruction::Exit
+                | ScreenInstruction::PtyBytes(..)
+                | ScreenInstruction::Render
+                | ScreenInstruction::RenderToClients
+                | ScreenInstruction::RenderWriterReady
+                | ScreenInstruction::RemoveClient(..)
+                | ScreenInstruction::ForwardHostQuery { .. }
+                | ScreenInstruction::ForwardedReplyFromHost { .. }
+                | ScreenInstruction::ResumePaneAfterForward { .. }
+                | ScreenInstruction::Notify(..)
+                | ScreenInstruction::DumpLayoutToPlugin { .. }
+                | ScreenInstruction::GetCellPixelSize { .. }
+                | ScreenInstruction::GetClientTimezone { .. }
+                | ScreenInstruction::ReportClientTimezones { .. }
+                | ScreenInstruction::GetFocusedPaneInfo { .. }
+                | ScreenInstruction::GetPaneInfo { .. }
+                | ScreenInstruction::GetTabInfo { .. }
+                | ScreenInstruction::GetPaneScrollback { .. }
+                | ScreenInstruction::ListPanes { .. }
+                | ScreenInstruction::ListTabs { .. }
+                | ScreenInstruction::ListNotifications { .. }
+                | ScreenInstruction::GetCurrentTabInfo { .. }
+                | ScreenInstruction::ListClientsToPlugin(..)
+                | ScreenInstruction::ReportCellPixelSize(..)
+        ) || matches!(state.stage, Stage::Adopted | Stage::Finishing)
+            && matches!(
+                &event,
+                ScreenInstruction::AddClient(..)
+                    | ScreenInstruction::RecomputeTabSize(..)
+                    | ScreenInstruction::RequestRepaint(..)
+            )
+            || matches!(state.stage, Stage::Adopting | Stage::Finishing)
+                && matches!(
+                    &event,
+                    ScreenInstruction::ApplyLayout(..)
+                        | ScreenInstruction::AddPlugin(..)
+                        | ScreenInstruction::PluginBytes(..)
+                        | ScreenInstruction::SetSelectable(..)
+                        | ScreenInstruction::SetMouseSelectionSupport(..)
+                        | ScreenInstruction::ShowPluginCursor(..)
+                        | ScreenInstruction::SetPaneCaption(..)
+                        | ScreenInstruction::SetPaneAgent(..)
+                        | ScreenInstruction::RestoreHeldPane(..)
+                        | ScreenInstruction::RestoreWarpedAgentInput(..)
+                        | ScreenInstruction::RequestPaneRedraw(..)
+                        | ScreenInstruction::HoldPane(..)
+                        | ScreenInstruction::LayoutSpawnFailed(..)
+                );
+        if allowed {
+            Some(event)
+        } else {
+            self.migration_deferred.push_back(event);
+            None
+        }
     }
 }

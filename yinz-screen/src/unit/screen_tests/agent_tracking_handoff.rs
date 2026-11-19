@@ -8,7 +8,9 @@ fn adopt_tracking(
     fail_layout: bool,
     include_tracking: bool,
 ) -> (Screen, Receiver<(PluginInstruction, ErrorContext)>) {
-    adopt_with_observer(source, path, fail_layout, include_tracking, None)
+    let (destination, plugins, _) =
+        adopt_with_observer(source, path, fail_layout, include_tracking, None);
+    (destination, plugins)
 }
 
 fn adopt_with_observer(
@@ -17,7 +19,11 @@ fn adopt_with_observer(
     fail_layout: bool,
     include_tracking: bool,
     observer: Option<crate::RestoredAgentObserver>,
-) -> (Screen, Receiver<(PluginInstruction, ErrorContext)>) {
+) -> (
+    Screen,
+    Receiver<(PluginInstruction, ErrorContext)>,
+    Option<yinz_types::agent::tracking::AgentTrackingHandoff>,
+) {
     use yinz_types::data::{WarpHiddenPane, WarpPlacement, WarpRelationships, WarpedTab};
 
     let command = source
@@ -39,6 +45,7 @@ fn adopt_with_observer(
         held: held.clone(),
         ..Default::default()
     };
+    let outgoing = payload.agent_tracking.clone();
     let (mut destination, _, _) = setup("bash");
     destination.core.restored_observer = observer;
     destination
@@ -239,7 +246,7 @@ fn adopt_with_observer(
         !destination.restore_staged_transfer_state(PANE),
         "the staged identity must be consumed exactly once"
     );
-    (destination, plugins)
+    (destination, plugins, outgoing)
 }
 
 fn arrival_hooks(plugins: &Receiver<(PluginInstruction, ErrorContext)>) -> Vec<HookPoint> {
@@ -394,8 +401,7 @@ fn transfer_into(source: &mut Screen, destination: &mut Screen) {
     assert_eq!(handoff, decoded);
     destination
         .agents
-        .pending_agent_tracking
-        .insert(PANE, (Some(handoff.agent.clone()), Some(decoded)));
+        .stage_transfer_identity(PANE, (Some(handoff.agent.clone()), Some(decoded)));
     assert!(destination.restore_staged_transfer_state(PANE));
 }
 
@@ -444,7 +450,7 @@ fn warp_tracking_restores_osc_status_after_identity_and_without_tracking() {
             tracking.agent.session_id = Some("other conversation".into());
         }
         if mode != "no identity" {
-            destination.agents.pending_agent_tracking.insert(
+            destination.agents.stage_transfer_identity(
                 PANE,
                 (
                     (mode != "cleared identity").then_some(agent.clone()),
@@ -452,10 +458,7 @@ fn warp_tracking_restores_osc_status_after_identity_and_without_tracking() {
                 ),
             );
         }
-        destination
-            .agents
-            .pending_terminal_states
-            .insert(PANE, state);
+        destination.agents.stage_terminal_state(PANE, state);
         assert_eq!(
             destination.restore_staged_transfer_state(PANE),
             mode != "no identity"
@@ -471,10 +474,7 @@ fn warp_tracking_restores_osc_status_after_identity_and_without_tracking() {
                 .has_agent_lifecycle(PANE, "codex", "conversation"),
             mode == "tracking"
         );
-        assert!(!destination
-            .agents
-            .pending_terminal_states
-            .contains_key(&PANE));
+        assert!(!destination.agents.has_staged_terminal(PANE));
         assert!(!destination.restore_staged_transfer_state(PANE));
         assert_eq!(
             destination.get_pane_info(PANE).unwrap().program_status,
@@ -502,8 +502,7 @@ fn warp_tracking_legacy_worker_wait_cannot_be_released_by_a_newer_tool() {
     let (mut destination, _, _) = setup_tracking("claude");
     destination
         .agents
-        .pending_agent_tracking
-        .insert(PANE, (Some(handoff.agent), Some(decoded)));
+        .stage_transfer_identity(PANE, (Some(handoff.agent), Some(decoded)));
     assert!(destination.restore_staged_transfer_state(PANE));
     for event in [
         claude_worker_input("PreToolUse", "worker", Some("new-question")),
@@ -719,8 +718,7 @@ fn warp_tracking_preserves_provisional_muse_and_rejects_mismatched_identity() {
         });
         rejected
             .agents
-            .pending_agent_tracking
-            .insert(PANE, (Some(handoff.agent.clone()), Some(handoff)));
+            .stage_transfer_identity(PANE, (Some(handoff.agent.clone()), Some(handoff)));
         rejected.restore_staged_transfer_state(PANE);
         assert!(
             !rejected
@@ -1105,14 +1103,13 @@ fn warp_tracking_completed_parent_background_permission_restores_idle_after_appr
 fn warp_tracking_finalizes_requests_and_retains_launch_and_submission_history() {
     let (mut source, messages, writes) = setup_tracking("codex");
     report(&mut source, hook("SessionStart"));
-    source.agents.agent_launches.insert(
-        PANE,
-        yinz_types::agent::SpawnedAgent {
+    source
+        .agents
+        .register_spawn(yinz_types::agent::SpawnedAgent {
             pane_id: PANE,
             branch: Some("task-branch".into()),
             ..Default::default()
-        },
-    );
+        });
     let mut request = prompt(true);
     if let AgentRequest::Prompt { submission_id, .. } = &mut request {
         *submission_id = Some("warp-request".into());
@@ -1172,8 +1169,7 @@ fn warp_tracking_restores_before_a_completion_queued_before_creation() {
             .extract_warp_panes(&[PANE]);
         destination
             .agents
-            .pending_agent_tracking
-            .insert(PANE, (Some(handoff.agent.clone()), Some(handoff)));
+            .stage_transfer_identity(PANE, (Some(handoff.agent.clone()), Some(handoff)));
         let mut pending = crate::screen::thread_main::PendingEvents::default();
         let completed = hook("Stop");
         let HookOutcome::Reported(agent) = hook_outcome(kind, &completed) else {
@@ -1222,10 +1218,7 @@ fn warp_tracking_restores_before_a_completion_queued_before_creation() {
             destination.agent_status_for_test().status_available,
             "{kind}"
         );
-        assert!(!destination
-            .agents
-            .pending_agent_tracking
-            .contains_key(&PANE));
+        assert!(!destination.agents.staged_transfers().any(|id| id == PANE));
         // A later adoption acknowledgement cannot reapply the old Busy snapshot.
         destination.restore_staged_transfer_state(PANE);
         assert_eq!(
@@ -1347,17 +1340,13 @@ fn warp_tracking_retains_identified_obligations_and_run_tombstones() {
             "claude",
             claude_stop("prompt", "LAUNCH", false),
         );
-        let (mut destination, _) = adopt_tracking(&mut source, path, false, true);
+        let (mut destination, _, outgoing) =
+            adopt_with_observer(&mut source, path, false, true, None);
         assert_eq!(
             destination.agent_status_for_test().agent.state,
             AgentState::Busy
         );
-        let pending = destination
-            .agents
-            .agent_lifecycle
-            .get(&PANE)
-            .unwrap()
-            .handoff_for_test();
+        let pending = outgoing.unwrap().lifecycle.unwrap();
         assert!(pending.claude.obligations.active());
         assert!(
             pending.claude.obligations.launches[0].remaining_ms
@@ -1377,21 +1366,23 @@ fn warp_tracking_retains_identified_obligations_and_run_tombstones() {
             destination.agent_status_for_test().agent.state,
             AgentState::Idle
         );
-        assert_eq!(
-            destination
-                .agents
-                .agent_lifecycle
-                .get(&PANE)
-                .unwrap()
-                .last_message_for_test(),
-            Some("FINAL")
+        destination
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .handle_pty_bytes(TerminalId::new(7), b"\x1b[?2004h".to_vec())
+            .unwrap();
+        let (reply, result) = std::sync::mpsc::channel();
+        destination.agent_control_with_reply(
+            wait(AgentState::Idle),
+            crate::screen::agent_control::Reply::Host(reply),
         );
+        assert_eq!(result.try_recv().unwrap().message.as_deref(), Some("FINAL"));
         report_kind(
             &mut destination,
             "claude",
             native_background_launch("bash", "tool", "Bash"),
         );
-        assert!(!destination.agents.claude_background_pending_for_test());
+        assert!(!destination.agent_status_for_test().background);
     }
 }
 
@@ -1498,6 +1489,56 @@ fn claude_permission_registry_handoff_retains_overlay_watermark_and_parent() {
     }
 }
 
+// Read the generation carried by the real callback, including its destination routing.
+fn enroll_restored_claude(screen: &mut Screen) -> Instant {
+    let (callbacks, enrolled) = std::sync::mpsc::channel();
+    screen.core.restored_observer = Some(std::sync::Arc::new(move |_, _, publish| {
+        callbacks
+            .send(publish)
+            .expect("record registered publisher");
+        Ok(())
+    }));
+    let (sender, receiver) = channels::unbounded();
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(sender));
+    screen.agents.observe_restored_claude(&screen.core, PANE);
+    let publish = enrolled
+        .try_recv()
+        .expect("orphan enrolled for observation");
+    std::thread::scope(|scope| {
+        let sample = scope.spawn(move || publish(None));
+        let (
+            ScreenInstruction::ReconcileRestoredClaude {
+                pane,
+                generation,
+                expected,
+                input_revision,
+                last_hook,
+                state,
+                reply,
+            },
+            _,
+        ) = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("observer query")
+        else {
+            panic!("unexpected observer instruction")
+        };
+        let keep = screen
+            .reconcile_restored_claude(
+                pane,
+                generation,
+                &expected,
+                input_revision,
+                last_hook,
+                state,
+            )
+            .unwrap();
+        reply.send(keep).unwrap();
+        assert!(sample.join().unwrap());
+        generation
+    })
+}
+
 #[test]
 fn restored_claude_registry_reconciles_orphan_without_completing_a_turn() {
     for (command, state) in ["claude", "bash"].into_iter().flat_map(|command| {
@@ -1505,7 +1546,9 @@ fn restored_claude_registry_reconciles_orphan_without_completing_a_turn() {
     }) {
         let (mut screen, _, _) = setup(command);
         report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
-        screen.agents.agent_lifecycle.remove(&PANE);
+        screen
+            .agents
+            .remove_agent_lifecycle(&screen.core, PANE, "test orphan");
         let run = screen
             .tab_containing_pane(PANE)
             .unwrap()
@@ -1517,11 +1560,7 @@ fn restored_claude_registry_reconciles_orphan_without_completing_a_turn() {
         let info = screen.get_pane_info(PANE).unwrap();
         let expected = info.agent.unwrap();
         let revision = screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE);
-        let generation = Instant::now();
-        screen
-            .agents
-            .restored_claude_observers
-            .insert(PANE, generation);
+        let generation = enroll_restored_claude(&mut screen);
         screen
             .tab_containing_pane_mut(PANE)
             .unwrap()
@@ -1569,15 +1608,25 @@ fn restored_claude_registry_reconciles_orphan_without_completing_a_turn() {
                     Some(sample)
                 )
                 .unwrap());
-            assert_eq!(
-                screen.agents.restored_claude_observers.get(&PANE),
-                Some(&generation)
-            );
+            assert!(screen
+                .reconcile_restored_claude(
+                    PANE,
+                    generation,
+                    &expected,
+                    revision,
+                    info.last_hook_at_ms,
+                    None
+                )
+                .unwrap());
             let agent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
             assert_eq!(agent.state, sample);
             assert_eq!(agent.wait_needs_a_person, sample == AgentState::Waiting);
         }
-        assert!(!screen.agents.agent_lifecycle.contains_key(&PANE));
+        assert!(!screen.agents.has_agent_lifecycle(
+            PANE,
+            "claude",
+            expected.session_id.as_deref().unwrap()
+        ));
     }
 }
 
@@ -1593,22 +1642,17 @@ fn restored_claude_registry_rejects_superseded_observations() {
     ] {
         let (mut screen, _, _) = setup("claude");
         report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
-        let lifecycle = screen.agents.agent_lifecycle.remove(&PANE).unwrap();
+        screen
+            .agents
+            .remove_agent_lifecycle(&screen.core, PANE, "test orphan");
         let info = screen.get_pane_info(PANE).unwrap();
         let expected = info.agent.unwrap();
         let revision = screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE);
-        let generation = Instant::now();
-        screen
-            .agents
-            .restored_claude_observers
-            .insert(PANE, generation);
+        let generation = enroll_restored_claude(&mut screen);
         let mut sent_revision = revision;
         match supersede {
             "generation" => {
-                screen
-                    .agents
-                    .restored_claude_observers
-                    .insert(PANE, generation + Duration::from_secs(1));
+                assert_ne!(enroll_restored_claude(&mut screen), generation);
             },
             "input" => sent_revision = revision.wrapping_sub(1),
             "hook" => {
@@ -1628,7 +1672,19 @@ fn restored_claude_registry_rejects_superseded_observations() {
                     .set_pane_agent(PANE, Some(replacement));
             },
             "lifecycle" => {
-                screen.agents.agent_lifecycle.insert(PANE, lifecycle);
+                let hook = hook("UserPromptSubmit");
+                let event = AgentEvent::from_hook(
+                    "claude",
+                    TerminalId::new(7),
+                    &hook,
+                    serde_json::to_string(&hook).unwrap(),
+                );
+                screen
+                    .agents
+                    .observe_control_hook(&screen.core, &event, Some(&hook));
+                assert!(screen
+                    .agents
+                    .has_agent_lifecycle(PANE, "claude", &hook.session_id));
             },
             "closed" => {
                 screen.close_pane_explicitly(PANE, None);
@@ -1659,7 +1715,9 @@ fn restored_claude_observer_retires_after_authoritative_report() {
     for report in ["changed", "identical", "cleared"] {
         let (mut screen, _, _) = setup("claude");
         report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
-        screen.agents.agent_lifecycle.remove(&PANE);
+        screen
+            .agents
+            .remove_agent_lifecycle(&screen.core, PANE, "test orphan");
         let mut initial = screen.get_pane_info(PANE).unwrap().agent.unwrap();
         initial.run_id = Some("restored-run".into());
         initial.detail = Some("original activity".into());
@@ -1667,11 +1725,7 @@ fn restored_claude_observer_retires_after_authoritative_report() {
         let info = screen.get_pane_info(PANE).unwrap();
         let expected = info.agent.unwrap();
         let revision = screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE);
-        let generation = Instant::now();
-        screen
-            .agents
-            .restored_claude_observers
-            .insert(PANE, generation);
+        let generation = enroll_restored_claude(&mut screen);
         let agent = match report {
             "changed" => {
                 let mut agent = expected.clone();
@@ -1687,10 +1741,7 @@ fn restored_claude_observer_retires_after_authoritative_report() {
         };
         assert!(crate::screen::apply_pane_agent_report(&mut screen, PANE, agent.clone()).unwrap());
         assert_eq!(screen.get_pane_info(PANE).unwrap().agent, agent, "{report}");
-        assert!(
-            !screen.agents.restored_claude_observers.contains_key(&PANE),
-            "{report}"
-        );
+
         assert!(
             !screen
                 .reconcile_restored_claude(
@@ -1711,16 +1762,30 @@ fn restored_claude_observer_retires_after_authoritative_report() {
 #[test]
 fn restored_claude_observer_survives_report_deferred_for_absent_pane() {
     let (mut screen, _, _) = setup("claude");
-    let absent = PaneId::Terminal(TerminalId::new(999));
-    let generation = Instant::now();
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
     screen
         .agents
-        .restored_claude_observers
-        .insert(absent, generation);
-    assert!(!crate::screen::apply_pane_agent_report(&mut screen, absent, None).unwrap());
+        .remove_agent_lifecycle(&screen.core, PANE, "test orphan");
+    let info = screen.get_pane_info(PANE).unwrap();
+    let revision = screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE);
+    let generation = enroll_restored_claude(&mut screen);
+    // The sender reports while this pane is temporarily absent from the tab inventory.
+    let tab = screen.core.tabs.remove(&TabId::new(0)).unwrap();
+    assert!(!crate::screen::apply_pane_agent_report(&mut screen, PANE, None).unwrap());
+    screen.core.tabs.insert(TabId::new(0), tab);
+    assert!(screen
+        .reconcile_restored_claude(
+            PANE,
+            generation,
+            &info.agent.unwrap(),
+            revision,
+            info.last_hook_at_ms,
+            Some(AgentState::Idle)
+        )
+        .unwrap());
     assert_eq!(
-        screen.agents.restored_claude_observers.get(&absent),
-        Some(&generation)
+        screen.get_pane_info(PANE).unwrap().agent.unwrap().state,
+        AgentState::Idle
     );
 }
 
@@ -1729,7 +1794,9 @@ fn restored_claude_observation_starts_for_pane_and_tab_adoption_without_tracking
     for path in ["pane", "tab"] {
         let (mut source, _, _) = setup("claude");
         report_kind(&mut source, "claude", hook("UserPromptSubmit"));
-        source.agents.agent_lifecycle.remove(&PANE);
+        source
+            .agents
+            .remove_agent_lifecycle(&source.core, PANE, "test orphan");
         let (registrations, calls) = std::sync::mpsc::channel();
         let observer: crate::RestoredAgentObserver =
             std::sync::Arc::new(move |terminal, session, _| {
@@ -1743,7 +1810,7 @@ fn restored_claude_observation_starts_for_pane_and_tab_adoption_without_tracking
             .unwrap()
             .session_id
             .unwrap();
-        let (_destination, _) =
+        let (_destination, _, _) =
             adopt_with_observer(&mut source, path, false, false, Some(observer));
         assert_eq!(
             calls.try_iter().collect::<Vec<_>>(),

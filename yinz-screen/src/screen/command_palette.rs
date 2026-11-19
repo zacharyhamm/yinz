@@ -241,14 +241,8 @@ impl Screen {
     }
 
     fn release_palette_input(&self, client_id: ClientId) {
-        if !self.palette.command_palette_is_open(client_id) {
-            self.core
-                .bus
-                .senders
-                .send_to_server(ServerInstruction::SetCommandPaletteOpen(client_id, false))
-                .context("failed to restore input mode when closing command palette")
-                .non_fatal();
-        }
+        self.palette
+            .release_palette_input(&self.core.bus.senders, client_id)
     }
 
     fn take_command_palette(&mut self, client_id: ClientId) -> Option<CommandPaletteState> {
@@ -2143,5 +2137,20 @@ impl super::CommandPaletteController {
     pub(super) fn on_client_removed(&mut self, client_id: ClientId) {
         self.command_palette_mouse_captures.remove(&client_id);
         self.client_projects.remove(&client_id);
+    }
+}
+
+impl super::CommandPaletteController {
+    fn release_palette_input(
+        &self,
+        senders: &yinz_bus::thread_bus::ThreadSenders,
+        client_id: ClientId,
+    ) {
+        if !self.command_palette_is_open(client_id) {
+            senders
+                .send_to_server(ServerInstruction::SetCommandPaletteOpen(client_id, false))
+                .context("failed to restore input mode when closing command palette")
+                .non_fatal();
+        }
     }
 }

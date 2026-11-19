@@ -42,7 +42,7 @@ fn same_worktree_resolution_matches_subdirectories_and_aliases_but_not_linked_wo
     );
     let alias = temp.path().join("alias");
     std::os::unix::fs::symlink(&main, &alias).unwrap();
-    crate::global_async_runtime::get_tokio_runtime().block_on(async {
+    yinz_bus::global_async_runtime::get_tokio_runtime().block_on(async {
         let root = resolve_worktree(&main).await.unwrap();
         assert_eq!(root, main.canonicalize().unwrap());
         assert_eq!(

@@ -1,5 +1,10 @@
 use super::super::*;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(in crate::screen::agent_control) struct AgyLifecycle {
+    pub(in crate::screen::agent_control) confirmation: Option<bool>,
+}
+
 impl super::super::AgentController {
     pub(in crate::screen) fn ignore_agy_confirmation(
         &self,
@@ -20,24 +25,24 @@ impl super::super::AgentController {
                 return true;
             }
             if hook.prompt_id.as_deref().is_none_or(str::is_empty)
-                || lifecycle.claude_prompt_id != hook.prompt_id
+                || lifecycle.claude.prompt_id != hook.prompt_id
             {
                 return true;
             }
-            return !(lifecycle.agy_confirmation.is_none()
-                || (lifecycle.agy_confirmation == Some(false)
+            return !(lifecycle.agy.confirmation.is_none()
+                || (lifecycle.agy.confirmation == Some(false)
                     && hook.agy_turn_complete == Some(true)));
         }
         if hook.hook_event_name == "UserPromptSubmit" && hook.prompt_id.is_some() {
             return lifecycle.kind == "agy"
                 && lifecycle.conversation == hook.session_id
-                && (lifecycle.claude_previous_prompt_id == hook.prompt_id
-                    || (lifecycle.claude_prompt_id == hook.prompt_id
-                        && lifecycle.agy_confirmation.is_some()));
+                && (lifecycle.claude.previous_prompt_id == hook.prompt_id
+                    || (lifecycle.claude.prompt_id == hook.prompt_id
+                        && lifecycle.agy.confirmation.is_some()));
         }
         hook.hook_event_name == "Stop"
             && lifecycle.kind == "agy"
             && lifecycle.conversation == hook.session_id
-            && lifecycle.agy_confirmation == Some(true)
+            && lifecycle.agy.confirmation == Some(true)
     }
 }

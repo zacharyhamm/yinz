@@ -79,29 +79,29 @@ impl super::AgentController {
         self.release_claude_permission(pane);
         if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
             lifecycle.input_revision = Some(revision);
-            lifecycle.claude_background = None;
-            for obligation in &mut lifecycle.claude.obligations.launches {
+            lifecycle.claude.background = None;
+            for obligation in &mut lifecycle.claude.activity.obligations.launches {
                 if !obligation.settled {
                     obligation.unavailable = true;
                 }
             }
-            lifecycle.claude_notifications.clear();
-            lifecycle.claude.worker_wait_tools.clear();
-            lifecycle.claude.uncorrelated_worker_waits.clear();
-            for turn in lifecycle.claude.turns.values_mut() {
+            lifecycle.claude.notifications.clear();
+            lifecycle.claude.activity.worker_wait_tools.clear();
+            lifecycle.claude.activity.uncorrelated_worker_waits.clear();
+            for turn in lifecycle.claude.activity.turns.values_mut() {
                 turn.confirmation = Some(true);
             }
-            if let Some(parent) = &mut lifecycle.claude.parent {
+            if let Some(parent) = &mut lifecycle.claude.activity.parent {
                 parent.state = AgentState::Idle;
                 parent.detail = None;
                 parent.waiting_on = None;
                 parent.wait_needs_a_person = false;
             }
             if lifecycle.kind == "claude" {
-                lifecycle.claude_confirmation = Some(true);
+                lifecycle.claude.confirmation = Some(true);
             }
             if lifecycle.kind == "agy" {
-                lifecycle.agy_confirmation = Some(true);
+                lifecycle.agy.confirmation = Some(true);
             }
         }
         if interrupted {

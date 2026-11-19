@@ -486,13 +486,12 @@ impl Screen {
         placement: WarpPlacement,
         client_id: ClientId,
     ) -> super::ParkedPaneWarp {
-        self.warp.in_flight_pane_warps += 1;
-        super::ParkedPaneWarp {
+        self.warp.park_pane_warp(
+            &self.core.bus.senders,
             response_channel,
-            hold: yinz_bus::warp::PaneWarpHold::new(self.core.bus.senders.clone()),
             placement,
             client_id,
-        }
+        )
     }
 
     /// Starts a pane warp: refuses it outright if it cannot proceed, otherwise asks the pty
@@ -2005,6 +2004,24 @@ impl crate::screen::WarpController {
         match self.in_flight_pane_warps.checked_sub(1) {
             Some(remaining) => self.in_flight_pane_warps = remaining,
             None => log::warn!("a pane warp finished that was never started"),
+        }
+    }
+}
+
+impl super::WarpController {
+    fn park_pane_warp(
+        &mut self,
+        senders: &yinz_bus::thread_bus::ThreadSenders,
+        response_channel: yinz_bus::warp::PaneWarpReply,
+        placement: WarpPlacement,
+        client_id: ClientId,
+    ) -> super::ParkedPaneWarp {
+        self.in_flight_pane_warps += 1;
+        super::ParkedPaneWarp {
+            response_channel,
+            hold: yinz_bus::warp::PaneWarpHold::new(senders.clone()),
+            placement,
+            client_id,
         }
     }
 }

@@ -61,7 +61,7 @@ fn lifecycle_atomic_snapshot_replay_and_filtered_checkpoints() {
     assert!(
         live.last().unwrap()["sequence"].as_u64() > initial.last().unwrap()["sequence"].as_u64()
     );
-    screen.agents.agent_events.remove(WATCHER);
+    screen.agents.remove_subscriber(WATCHER);
     report(&mut screen, hook("Stop"));
     let replay = start(
         &mut screen,
@@ -263,7 +263,7 @@ fn lifecycle_expiry_restart_and_cursor_rejection() {
         .as_str()
         .unwrap()
         .to_owned();
-    screen.agents.agent_events.remove(WATCHER);
+    screen.agents.remove_subscriber(WATCHER);
     for i in 0..4100 {
         screen.publish_agent_event(PANE, "state_changed", json!({"test":i}));
     }
@@ -467,7 +467,7 @@ fn lifecycle_filters_combine_or_with_and_and_replay_precedes_live() {
         .as_str()
         .unwrap()
         .to_owned();
-    screen.agents.agent_events.remove(WATCHER);
+    screen.agents.remove_subscriber(WATCHER);
     for i in 0..70 {
         screen.publish_agent_event(PANE, "state_changed", json!({"test":i}));
     }
@@ -1279,10 +1279,10 @@ fn lifecycle_pending_projects_retry_without_invalidation() {
             fact["projects"],
             if member { json!(["yinz"]) } else { json!([]) }
         );
-        screen.agents.agent_events.remove(WATCHER);
+        screen.agents.remove_subscriber(WATCHER);
         screen.retry_agent_event_projects(Instant::now() + Duration::from_secs(1));
         assert!(probe().is_none());
-        assert!(screen.agents.agent_events.deadline().is_none());
+        assert!(screen.agents.agent_control_deadline().is_none());
     }
 }
 
@@ -1318,7 +1318,7 @@ fn lifecycle_waits_for_all_requested_projects_and_cancels_pending_subscriptions(
     assert!(events(&mut screen, &messages).is_empty());
     screen.retry_agent_event_projects(Instant::now() + Duration::from_millis(100));
     assert_eq!(probe(), Some(version));
-    screen.agents.agent_events.remove(WATCHER);
+    screen.agents.remove_subscriber(WATCHER);
     screen.apply_agent_event_projects(
         version,
         BTreeMap::from([
@@ -1329,7 +1329,7 @@ fn lifecycle_waits_for_all_requested_projects_and_cancels_pending_subscriptions(
     screen.retry_agent_event_projects(Instant::now() + Duration::from_secs(1));
     assert!(probe().is_none());
     assert!(events(&mut screen, &messages).is_empty());
-    assert!(screen.agents.agent_events.deadline().is_none());
+    assert!(screen.agents.agent_control_deadline().is_none());
 }
 
 #[test]
@@ -1348,8 +1348,7 @@ fn lifecycle_warp_preserves_turn_observation_without_migrating_subscribers() {
             let (mut destination, messages, _) = setup(kind);
             destination
                 .agents
-                .pending_agent_tracking
-                .insert(PANE, (Some(handoff.agent.clone()), Some(handoff)));
+                .stage_transfer_identity(PANE, (Some(handoff.agent.clone()), Some(handoff)));
             destination.restore_staged_transfer_state(PANE);
             assert!(events(&mut destination, &messages).is_empty());
             start(&mut destination, &messages, EventSubscription::default());

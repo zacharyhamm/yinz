@@ -19,6 +19,7 @@ struct RecordingHost {
     reject_application: bool,
     trace: RefCell<Vec<&'static str>>,
     replies: RefCell<Vec<AgentResponse>>,
+    events: RefCell<Vec<serde_json::Value>>,
 }
 
 impl RecordingHost {
@@ -40,6 +41,7 @@ impl RecordingHost {
             reject_application: false,
             trace: Default::default(),
             replies: Default::default(),
+            events: Default::default(),
         }
     }
 }
@@ -82,7 +84,7 @@ impl AgentHost for RecordingHost {
         unreachable!("unexpected host operation")
     }
     fn agent_input_revision(&self, _pane: PaneId) -> u64 {
-        unreachable!("unexpected host operation")
+        4
     }
     fn agent_input_at(&self, _pane: PaneId) -> Option<Instant> {
         unreachable!("unexpected host operation")
@@ -146,7 +148,13 @@ impl AgentHost for RecordingHost {
         _client: yinz_types::internal_ids::ClientId,
         response: yinz_types::agent::control::AgentResponse,
     ) {
-        self.trace.borrow_mut().push("reply");
+        self.trace
+            .borrow_mut()
+            .push(if response.submission_id.is_some() {
+                "wait reply"
+            } else {
+                "reply"
+            });
         self.replies.borrow_mut().push(response);
     }
     fn remove_event_subscriber(&self, _client: yinz_types::internal_ids::ClientId) {
@@ -180,10 +188,13 @@ impl AgentHost for RecordingHost {
         unreachable!("unexpected host operation")
     }
     fn event_transport_available(&self) -> bool {
-        unreachable!("unexpected host operation")
+        true
     }
-    fn send_event(&self, _client: yinz_types::internal_ids::ClientId, _event: String) -> bool {
-        unreachable!("unexpected host operation")
+    fn send_event(&self, _client: yinz_types::internal_ids::ClientId, event: String) -> bool {
+        self.events
+            .borrow_mut()
+            .push(serde_json::from_str(&event).expect("valid lifecycle event"));
+        true
     }
     fn subscription_error(&self, _client: yinz_types::internal_ids::ClientId, _message: String) {
         unreachable!("unexpected host operation")
@@ -264,6 +275,43 @@ fn restart_prepares_refreshes_and_retires_only_on_acceptance() {
         agents
             .agent_terminal_claims
             .insert(pane, (4, "claude".into(), "old".into()));
+        let id = "first-turn".to_owned();
+        agents
+            .agent_submissions
+            .entry(pane)
+            .or_default()
+            .push_back(super::Submission {
+                id: id.clone(),
+                kind: host.current.kind.clone(),
+                conversation: host.current.session_id.clone(),
+                acknowledged: true,
+                turn_id: Some("turn".into()),
+                prompt_delivery: None,
+                result: None,
+            });
+        let now = Instant::now();
+        assert!(matches!(
+            agents.wait_for_turn(
+                &host,
+                pane,
+                Reply::Client(ClientId::from(2)),
+                now,
+                id,
+                30_000,
+                host.current.session_id.clone()
+            ),
+            Some(Completion::Refresh)
+        ));
+        agents.subscribe_agent_events(&host, ClientId::from(3), Default::default());
+        let generation = host
+            .events
+            .borrow()
+            .iter()
+            .find(|event| event["event_type"] == "snapshot")
+            .expect("old pane snapshot")["pane_generation"]
+            .clone();
+        host.events.borrow_mut().clear();
+        host.trace.borrow_mut().clear();
         let result = agents.handle(
             &mut host,
             AgentRequest::Restart {
@@ -279,7 +327,14 @@ fn restart_prepares_refreshes_and_retires_only_on_acceptance() {
         } else if !apply {
             vec!["prepare", "refresh", "read old agent", "apply", "reply"]
         } else {
-            vec!["prepare", "refresh", "read old agent", "apply", "hooks"]
+            vec![
+                "prepare",
+                "refresh",
+                "read old agent",
+                "apply",
+                "wait reply",
+                "hooks",
+            ]
         };
         assert_eq!(*host.trace.borrow(), expected);
         assert_eq!(agents.agent_terminal_claims.contains_key(&pane), !apply);
@@ -288,9 +343,22 @@ fn restart_prepares_refreshes_and_retires_only_on_acceptance() {
                 panic!("missing restart completion")
             };
             assert_eq!(response.restarted.unwrap().pane_id, pane);
-            assert!(host.replies.borrow().is_empty());
+            assert!(agents.agent_controls.is_empty());
+            let replies = host.replies.borrow();
+            assert_eq!(replies.len(), 1);
+            assert_eq!(replies[0].outcome, AgentOutcome::TargetChanged);
+            assert_eq!(replies[0].submission_id.as_deref(), Some("first-turn"));
+            agents.flush_agent_events(&host);
+            let events = host.events.borrow();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0]["event_type"], "pane_replaced");
+            assert_eq!(events[0]["pane_generation"], generation);
+            assert_eq!(events[0]["conversation_id"], "old");
         } else {
             assert!(result.is_none());
+            assert_eq!(agents.agent_controls.len(), 1);
+            agents.flush_agent_events(&host);
+            assert!(host.events.borrow().is_empty());
             let replies = host.replies.borrow();
             assert_eq!(replies.len(), 1);
             assert_eq!(replies[0].outcome, AgentOutcome::Rejected);

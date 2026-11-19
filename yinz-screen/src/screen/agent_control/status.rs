@@ -91,7 +91,7 @@ impl super::AgentController {
                 && providers::draft_composer(host, pane_id, &agent.kind).is_some(),
             background: lifecycle.is_some_and(Lifecycle::event_background),
             background_tasks: lifecycle
-                .map(|lifecycle| lifecycle.claude.obligations.unresolved_tasks())
+                .map(|lifecycle| lifecycle.claude.activity.obligations.unresolved_tasks())
                 .unwrap_or_default(),
             agent,
         })

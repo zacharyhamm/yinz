@@ -330,66 +330,11 @@ impl super::AgentController {
         host: &impl AgentHost,
         pane: PaneId,
     ) {
-        let PaneId::Terminal(terminal) = pane else {
-            return;
-        };
-        let Some(info) = host.pane_info(pane) else {
-            return;
-        };
-        let Some(expected) = info
-            .agent
-            .filter(|agent| agent.kind == "claude" && agent.source == AgentSource::Reported)
-        else {
-            return;
-        };
-        let Some(conversation) = expected.session_id.clone().filter(|id| !id.is_empty()) else {
-            return;
-        };
-        if info.host.is_some()
-            || info.is_held
-            || info.exited
-            || self.agent_lifecycle.contains_key(&pane)
-        {
-            return;
+        if !self.agent_lifecycle.contains_key(&pane) {
+            self.restored_claude_observers.enroll(host, pane);
         }
-        let Some((observe, sender)) = host.restored_observer() else {
-            return;
-        };
-        let input_revision = host.agent_input_revision(pane);
-        let generation = Instant::now();
-        self.restored_claude_observers.insert(pane, generation);
-        observe(
-            terminal,
-            conversation,
-            Box::new(move |state| {
-                let (reply, response) = std::sync::mpsc::channel();
-                if sender
-                    .send(
-                        yinz_bus::screen::ScreenInstruction::ReconcileRestoredClaude {
-                            pane,
-                            generation,
-                            expected: expected.clone(),
-                            input_revision,
-                            last_hook: info.last_hook_at_ms,
-                            state,
-                            reply,
-                        },
-                    )
-                    .is_err()
-                {
-                    return false;
-                }
-                response
-                    .recv_timeout(Duration::from_secs(3))
-                    .unwrap_or(false)
-            }),
-        )
-        .context("observe adopted Claude state")
-        .non_fatal();
     }
-}
 
-impl super::AgentController {
     pub(in crate::screen) fn restored_claude_activity(
         &mut self,
         host: &impl AgentHost,
@@ -400,53 +345,23 @@ impl super::AgentController {
         last_hook: Option<i64>,
         state: Option<AgentState>,
     ) -> Option<Option<AgentInfo>> {
-        if self.restored_claude_observers.get(&pane) != Some(&generation) {
-            return None;
-        }
-        let current =
-            host.pane_info(pane)
-                .filter(|info| {
-                    !info.is_held
-                        && !info.exited
-                        && info.host.is_none()
-                        && info.last_hook_at_ms == last_hook
-                        && host.agent_input_revision(pane) == input_revision
-                        && !self.agent_lifecycle.contains_key(&pane)
-                        && !self.agent_worker_waits.contains_key(&pane)
-                        && !self.claude_permission_waits.contains_key(&pane)
-                        && self.agent_submissions.get(&pane).is_none_or(|submissions| {
-                            submissions.iter().all(|s| s.result.is_some())
-                        })
-                })
-                .and_then(|info| info.agent)
-                .filter(|agent| {
-                    agent.kind == expected.kind
-                        && agent.session_id == expected.session_id
-                        && agent.run_id == expected.run_id
-                        && agent.source == expected.source
-                        // The OS observer validates the foreground group and Claude's
-                        // process instance; invoked_with may still name the shell.
-                        && agent.state != AgentState::Exited
-                });
-        let Some(mut current) = current else {
-            self.restored_claude_observers.remove(&pane);
-            return None;
-        };
-        if let Some(state) = state.filter(|state| {
-            matches!(
-                state,
-                AgentState::Idle | AgentState::Busy | AgentState::Waiting
-            )
-        }) && current.state != state
-        {
-            current.state = state;
-            current.detail = None;
-            current.waiting_on =
-                (state == AgentState::Waiting).then(|| "approve Claude permission request".into());
-            current.wait_needs_a_person = state == AgentState::Waiting;
-            return Some(Some(current));
-        }
-        Some(None)
+        let orphan = !self.agent_lifecycle.contains_key(&pane)
+            && !self.agent_worker_waits.contains_key(&pane)
+            && !self.claude_permission_waits.contains_key(&pane)
+            && self
+                .agent_submissions
+                .get(&pane)
+                .is_none_or(|submissions| submissions.iter().all(|s| s.result.is_some()));
+        self.restored_claude_observers.activity(
+            host,
+            pane,
+            generation,
+            expected,
+            input_revision,
+            last_hook,
+            state,
+            orphan,
+        )
     }
 }
 

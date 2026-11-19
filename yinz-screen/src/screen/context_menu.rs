@@ -279,19 +279,8 @@ impl Screen {
         viewport: Viewport,
         client_id: ClientId,
     ) -> Result<()> {
-        let Some(layout) = self.menus.context_menu_layout_for(client_id, viewport) else {
-            return Ok(());
-        };
-        let selected = self
-            .menus
-            .context_menus
-            .get(&client_id)
-            .and_then(|menu| menu.selected);
-        let chunks = context_menu_chunks(&layout, selected, &self.core.style);
-        let previous_stack = output.set_floating_panes_stack(None);
-        let result = output.add_character_chunks_to_client(client_id, chunks, None);
-        output.set_floating_panes_stack(previous_stack);
-        result.context("failed to render context menu")
+        self.menus
+            .render_context_menu(&self.core.style, output, viewport, client_id)
     }
 
     /// Handle a mouse event while this client has a menu open. Always consumes the event.
@@ -782,5 +771,28 @@ impl super::ContextMenuController {
         self.context_menu = menu;
         self.context_menu_on_right_click = right_click;
         self.context_menu_override_agent_mouse = override_agent_mouse;
+    }
+}
+
+impl super::ContextMenuController {
+    pub(super) fn render_context_menu(
+        &self,
+        style: &yinz_types::style::Style,
+        output: &mut Output,
+        viewport: Viewport,
+        client_id: ClientId,
+    ) -> Result<()> {
+        let Some(layout) = self.context_menu_layout_for(client_id, viewport) else {
+            return Ok(());
+        };
+        let selected = self
+            .context_menus
+            .get(&client_id)
+            .and_then(|menu| menu.selected);
+        let chunks = context_menu_chunks(&layout, selected, style);
+        let previous_stack = output.set_floating_panes_stack(None);
+        let result = output.add_character_chunks_to_client(client_id, chunks, None);
+        output.set_floating_panes_stack(previous_stack);
+        result.context("failed to render context menu")
     }
 }

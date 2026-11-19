@@ -1,5 +1,18 @@
 use super::super::*;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::screen::agent_control) struct ClaudeLifecycle {
+    pub(in crate::screen::agent_control) activity: ClaudeActivity,
+    pub(in crate::screen::agent_control) observed_at: Instant,
+    pub(in crate::screen::agent_control) prompt_id: Option<String>,
+    pub(in crate::screen::agent_control) confirmation: Option<bool>,
+    pub(in crate::screen::agent_control) previous_prompt_id: Option<String>,
+    /// Prompt whose confirmed turn left background work running.
+    pub(in crate::screen::agent_control) background: Option<String>,
+    /// Parallel notification turns keyed by prompt ID.
+    pub(in crate::screen::agent_control) notifications: BTreeMap<String, ClaudeNotification>,
+}
+
 impl super::super::AgentController {
     pub(in crate::screen) fn ignore_claude_confirmation(
         &self,
@@ -14,12 +27,17 @@ impl super::super::AgentController {
                 lifecycle.kind == "claude"
                     && lifecycle.conversation == hook.session_id
                     && hook.prompt_id.as_ref().is_some_and(|prompt| {
-                        lifecycle.claude.turns.get(prompt).is_some_and(|turn| {
-                            turn.confirmation.is_none()
-                                || (turn.confirmation == Some(false)
-                                    && (hook.claude_turn_complete == Some(true)
-                                        || hook.is_claude_interruption()))
-                        })
+                        lifecycle
+                            .claude
+                            .activity
+                            .turns
+                            .get(prompt)
+                            .is_some_and(|turn| {
+                                turn.confirmation.is_none()
+                                    || (turn.confirmation == Some(false)
+                                        && (hook.claude_turn_complete == Some(true)
+                                            || hook.is_claude_interruption()))
+                            })
                     })
             });
         }
@@ -30,14 +48,14 @@ impl super::super::AgentController {
                     && hook
                         .prompt_id
                         .as_ref()
-                        .is_some_and(|prompt| lifecycle.claude.turns.contains_key(prompt))
+                        .is_some_and(|prompt| lifecycle.claude.activity.turns.contains_key(prompt))
             });
         }
         hook.hook_event_name == "Stop"
             && self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
                 lifecycle.kind == "claude"
                     && lifecycle.conversation == hook.session_id
-                    && lifecycle.claude_confirmation == Some(true)
+                    && lifecycle.claude.confirmation == Some(true)
             })
     }
 }
@@ -69,10 +87,10 @@ impl super::super::AgentController {
                 if hook
                     .prompt_id
                     .as_ref()
-                    .is_some_and(|id| lifecycle.claude.turns.contains_key(id))
+                    .is_some_and(|id| lifecycle.claude.activity.turns.contains_key(id))
                 {
                     "duplicate"
-                } else if lifecycle.claude_prompt_id.as_deref() != Some(predecessor) {
+                } else if lifecycle.claude.prompt_id.as_deref() != Some(predecessor) {
                     "predecessor_mismatch"
                 } else {
                     "accepted"
@@ -106,7 +124,8 @@ impl super::super::AgentController {
                 .filter(|l| l.kind == "claude" && l.conversation == hook.session_id)
         {
             hook.prompt_id = lifecycle
-                .claude_prompt_id
+                .claude
+                .prompt_id
                 .clone()
                 .filter(|id| !id.is_empty());
         }
@@ -126,7 +145,7 @@ impl super::super::AgentController {
                             // not the worker's stopped flag, determines which wait it releases.
                             && !(yinz_types::agent::hook_state_for("claude", hook) == Some(AgentState::Waiting)
                                 && hook.tool_use_id.as_ref().is_some_and(|tool| {
-                                    l.claude.released_worker_tools.get(id).is_some_and(|tools| tools.contains(tool))
+                                    l.claude.activity.released_worker_tools.get(id).is_some_and(|tools| tools.contains(tool))
                                 }))
                     })
             })
@@ -140,7 +159,7 @@ impl super::super::AgentController {
                 && l.kind == "claude"
                 && agent.session_id.as_ref() == Some(&l.conversation)
         }) {
-            lifecycle.claude.parent = Some(agent.clone());
+            lifecycle.claude.activity.parent = Some(agent.clone());
         }
     }
 }
@@ -150,9 +169,9 @@ impl super::super::AgentController {
     pub(in crate::screen) fn claude_background_pending(&self, pane: PaneId) -> bool {
         self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
             lifecycle.kind == "claude"
-                && (lifecycle.claude_background.is_some()
-                    || lifecycle.claude.obligations.active()
-                    || !lifecycle.claude_notifications.is_empty())
+                && (lifecycle.claude.background.is_some()
+                    || lifecycle.claude.activity.obligations.active()
+                    || !lifecycle.claude.notifications.is_empty())
         })
     }
 }
@@ -174,19 +193,20 @@ impl super::super::AgentController {
             return;
         };
         if hook.hook_event_name == yinz_types::agent::CLAUDE_BACKGROUND_IDLE {
-            if lifecycle.claude_background.as_ref() == Some(prompt) {
-                lifecycle.claude_background = None;
+            if lifecycle.claude.background.as_ref() == Some(prompt) {
+                lifecycle.claude.background = None;
             }
         } else if hook.hook_event_name == "Stop"
             && (hook.claude_turn_complete == Some(true)
                 || (hook.is_claude_interruption() && hook.claude_background.is_some()))
             && lifecycle
                 .claude
+                .activity
                 .turns
                 .get(prompt)
-                .is_some_and(|turn| turn.sequence >= lifecycle.claude.message_sequence)
+                .is_some_and(|turn| turn.sequence >= lifecycle.claude.activity.message_sequence)
         {
-            lifecycle.claude_background =
+            lifecycle.claude.background =
                 (hook.claude_background == Some(true)).then(|| prompt.clone());
         }
     }
@@ -248,7 +268,7 @@ impl super::super::AgentController {
         if self
             .agent_lifecycle
             .get(&pane)
-            .is_some_and(|l| l.claude.permission.is_some())
+            .is_some_and(|l| l.claude.activity.permission.is_some())
         {
             if let Some(visible) = self.claude_visible(host, pane) {
                 host.set_agent(pane, Some(visible));
@@ -265,12 +285,12 @@ impl super::super::AgentController {
         else {
             return;
         };
-        let parent = lifecycle.claude.parent.get_or_insert_with(|| {
+        let parent = lifecycle.claude.activity.parent.get_or_insert_with(|| {
             let mut parent = self
                 .agent_worker_waits
                 .get(&pane)
                 .map_or_else(|| visible.clone(), |w| w.parent.clone());
-            if lifecycle.claude_prompt_id.is_none() && !lifecycle.claude_notifications.is_empty() {
+            if lifecycle.claude.prompt_id.is_none() && !lifecycle.claude.notifications.is_empty() {
                 parent.state = AgentState::Idle;
                 parent.detail = None;
             }
@@ -282,16 +302,17 @@ impl super::super::AgentController {
             visible.waiting_on = parent.waiting_on.clone();
             visible.wait_needs_a_person = parent.wait_needs_a_person;
             if visible.state == AgentState::Idle
-                && (lifecycle.claude_background.is_some()
-                    || lifecycle.claude.obligations.active()
-                    || !lifecycle.claude_notifications.is_empty())
+                && (lifecycle.claude.background.is_some()
+                    || lifecycle.claude.activity.obligations.active()
+                    || !lifecycle.claude.notifications.is_empty())
             {
                 visible.state = AgentState::Busy;
             }
         }
         if visible.state != AgentState::Waiting
             && let Some(waiting) = lifecycle
-                .claude_notifications
+                .claude
+                .notifications
                 .values()
                 .find_map(|n| n.waiting.as_ref())
         {
@@ -324,7 +345,7 @@ impl super::super::AgentController {
                 lifecycle.kind == kind
                     && lifecycle.conversation == hook.session_id
                     && hook.prompt_id.is_some()
-                    && lifecycle.claude_prompt_id == hook.prompt_id
+                    && lifecycle.claude.prompt_id == hook.prompt_id
             })
     }
 }

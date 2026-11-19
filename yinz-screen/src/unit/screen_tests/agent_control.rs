@@ -1203,8 +1203,7 @@ fn status_only_provider_idle_wait_requires_matching_lifecycle_evidence() {
         }
         screen.agent_control(wait(AgentState::Idle), CLIENT);
         assert!(replies(&messages, CLIENT).is_empty(), "{evidence}");
-        screen.agents.agent_controls[0].deadline = Some(Instant::now());
-        screen.refresh_agent_controls();
+        screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(30));
         assert_eq!(
             replies(&messages, CLIENT)[0].outcome,
             AgentOutcome::StatusUnavailable,
@@ -1226,8 +1225,7 @@ fn supported_idle_waits_require_readiness_even_without_prompt_support() {
             .unwrap();
         screen.agent_control(wait(AgentState::Idle), CLIENT);
         assert!(replies(&messages, CLIENT).is_empty());
-        screen.agents.agent_controls[0].deadline = Some(Instant::now());
-        screen.refresh_agent_controls();
+        screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(30));
         let result = replies(&messages, CLIENT).pop().unwrap();
         assert_eq!(result.outcome, AgentOutcome::TimedOut);
         assert!(!result.agents[0].prompt_supported);
@@ -1249,8 +1247,7 @@ fn supported_idle_waits_require_readiness_even_without_prompt_support() {
         .unwrap();
     screen.agent_control(wait(AgentState::Idle), CLIENT);
     assert!(replies(&messages, CLIENT).is_empty());
-    screen.agents.agent_controls[0].deadline = Some(Instant::now());
-    screen.refresh_agent_controls();
+    screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(30));
     let result = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(result.outcome, AgentOutcome::TimedOut);
     assert!(!result.agents[0].prompt_supported);
@@ -2548,8 +2545,7 @@ fn timeout_keeps_the_claim_until_the_original_submission_is_resolved() {
     report(&mut screen, hook("SessionStart"));
     screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
     finish_paste(&writes);
-    screen.agents.agent_controls[0].deadline = Some(Instant::now());
-    screen.refresh_agent_controls();
+    screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(30));
     let timeout = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(timeout.outcome, AgentOutcome::TimedOut);
     assert!(!timeout.acknowledged);
@@ -2859,7 +2855,7 @@ impl Screen {
             AgentRequest::Prompt { pane_id, .. } => *pane_id,
             _ => PANE,
         };
-        let clearing = self.agents.agent_draft_clears.contains_key(&pane);
+        let clearing = self.agents.clearing_panes().contains(&pane);
         let prompt = matches!(request, AgentRequest::Prompt { .. });
         let now = Instant::now();
         let delay = if self
@@ -2871,7 +2867,7 @@ impl Screen {
             0
         };
         self.agent_control_at(request, client, now - Duration::from_millis(251 + delay));
-        if prompt && !clearing && self.agents.agent_draft_clears.contains_key(&pane) {
+        if prompt && !clearing && self.agents.clearing_panes().contains(&pane) {
             let marker = finish_paste(writes);
             assert!(marker.starts_with(b"\x1b[200~yz") && marker.ends_with(b"\x1b[201~"));
             self.refresh_agent_controls_at(now - Duration::from_millis(250 + delay));
@@ -3176,10 +3172,12 @@ fn failed_or_unsubmitted_clear_cannot_restore_readiness() {
                 senders.should_silently_fail = false;
                 senders.to_pty_writer = Some(SenderWithContext::new(sender));
             }
-            if reason == "timeout" {
-                screen.agents.agent_controls[0].deadline = Some(now);
-            }
-            screen.refresh_agent_controls_at(now + Duration::from_millis(501));
+            let delay = if reason == "timeout" {
+                Duration::from_secs(30)
+            } else {
+                Duration::from_millis(501)
+            };
+            screen.refresh_agent_controls_at(now + delay);
         }
         assert!(screen.agents.agent_clear_inputs.is_empty(), "{reason}");
         report_kind(&mut screen, kind, hook("SessionEnd"));
@@ -3439,12 +3437,17 @@ fn enter_is_cancelled_on_input_failure_early_acknowledgement_or_replacement() {
                 );
             },
             "closed" => screen.close_pane_explicitly(PANE, None),
-            "timeout" => screen.agents.agent_controls[0].deadline = Some(Instant::now()),
+            "timeout" => {},
             _ => unreachable!(),
         }
         finish_paste(&writes);
         drop(completion);
-        let now = Instant::now();
+        let now = Instant::now()
+            + if reason == "timeout" {
+                Duration::from_secs(30)
+            } else {
+                Duration::ZERO
+            };
         screen.refresh_agent_controls_at(now);
         screen.refresh_agent_controls_at(now + Duration::from_millis(501));
         assert!(finish_paste(&writes).is_empty(), "{reason}");
@@ -3480,8 +3483,7 @@ fn uncertain_submission_requires_explicit_recovery_and_replies_once() {
             replies(&messages, ClientId::new(2))[0].outcome,
             AgentOutcome::Rejected
         );
-        screen.agents.agent_controls[0].deadline = Some(Instant::now());
-        screen.refresh_agent_controls();
+        screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(30));
         let timed_out = replies(&messages, CLIENT);
         assert_eq!(timed_out[0].outcome, AgentOutcome::TimedOut);
         assert!(timed_out[0]
@@ -4197,15 +4199,14 @@ fn synthesized_scroll_arrows_interrupt_agent_before_delayed_enter() {
 fn lifecycle_survives_moving_a_pane_and_is_cleared_on_closure() {
     let (mut screen, messages, _) = setup("codex");
     report(&mut screen, hook("SessionStart"));
-    screen.agents.agent_launches.insert(
-        PANE,
-        yinz_types::agent::SpawnedAgent {
+    screen
+        .agents
+        .register_spawn(yinz_types::agent::SpawnedAgent {
             pane_id: PANE,
             cwd: Some("/checkout".into()),
             branch: Some("branch".into()),
             ..Default::default()
-        },
-    );
+        });
     new_tab(&mut screen, 9, TabId::new(1));
     assert!(screen
         .break_multiple_panes_to_tab_with_id(vec![PANE], TabId::new(1), false, CLIENT)
@@ -4651,8 +4652,7 @@ fn host_bridge_and_cli_share_readiness_identity_outcomes_and_recovery() {
             assert_eq!(answers()[0].outcome, AgentOutcome::Rejected);
             finish_paste(&writes);
             if end == "timeout" {
-                screen.agents.agent_controls[0].deadline = Some(Instant::now());
-                screen.refresh_agent_controls();
+                screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(30));
                 let result = answers().pop().unwrap();
                 assert_eq!(result.outcome, AgentOutcome::TimedOut);
                 assert!(!result.acknowledged);
@@ -5213,10 +5213,10 @@ fn timeout_and_input_interruption_explain_acceptance_and_conditional_recovery() 
             }
             if interrupted {
                 screen.agent_write_for_test();
+                screen.refresh_agent_controls();
             } else {
-                screen.agents.agent_controls[0].deadline = Some(Instant::now());
+                screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(30));
             }
-            screen.refresh_agent_controls();
             let response = replies(&messages, CLIENT).pop().unwrap();
             assert_eq!(
                 response.outcome,
@@ -7120,8 +7120,7 @@ fn submission_wait_survives_timeout_and_disconnect_without_resubmitting() {
                 AgentOutcome::Interrupted
             );
         } else {
-            screen.agents.agent_controls[0].deadline = Some(Instant::now());
-            screen.refresh_agent_controls();
+            screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(30));
             let timed_out = replies(&messages, CLIENT).pop().unwrap();
             assert_eq!(timed_out.outcome, AgentOutcome::TimedOut);
             assert_eq!(timed_out.submission_id.as_deref(), Some("receipt"));
@@ -7167,8 +7166,7 @@ fn submission_wait_returns_provider_interrupt_and_explicit_recovery() {
             replies(&messages, CLIENT);
         } else {
             screen.refresh_agent_controls();
-            screen.agents.agent_controls[0].deadline = Some(Instant::now());
-            screen.refresh_agent_controls();
+            screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(30));
             replies(&messages, CLIENT);
             screen.agent_control(recover(), CLIENT);
             assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
@@ -7389,8 +7387,7 @@ fn unpinned_muse_recovery_advice_quotes_the_empty_conversation() {
     screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
     finish_paste(&writes);
     screen.refresh_agent_controls();
-    screen.agents.agent_controls[0].deadline = Some(Instant::now());
-    screen.refresh_agent_controls();
+    screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(30));
     let result = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(result.outcome, AgentOutcome::TimedOut);
     assert!(result.submission_id.is_some());
@@ -7584,7 +7581,7 @@ fn plugin_agent_delayed_submit_preserves_host_input_and_identity_guards() {
                 );
             },
             "closed" => screen.close_pane_explicitly(PANE, None),
-            "timeout" => screen.agents.agent_controls[0].deadline = Some(Instant::now()),
+            "timeout" => {},
             "unload" => {
                 unregister_owner(owner);
             },
@@ -7592,7 +7589,12 @@ fn plugin_agent_delayed_submit_preserves_host_input_and_identity_guards() {
         }
         finish_paste(&writes);
         drop(completion);
-        let now = Instant::now();
+        let now = Instant::now()
+            + if reason == "timeout" {
+                Duration::from_secs(30)
+            } else {
+                Duration::ZERO
+            };
         screen.refresh_agent_controls_at(now);
         screen.refresh_agent_controls_at(now + Duration::from_millis(101));
         assert!(finish_paste(&writes).is_empty(), "{reason}");
@@ -7824,7 +7826,7 @@ fn clear_draft_cancellation_drains_writes_and_preserves_new_input() {
         let later = now + Duration::from_secs(if race == "timeout" { 31 } else { 1 });
         screen.refresh_agent_controls_at(later);
         assert!(
-            screen.agents.agent_draft_clears.contains_key(&PANE),
+            screen.agents.clearing_panes().contains(&PANE),
             "queued writes keep ownership: {race}"
         );
         screen.agent_control(recover(), ClientId::new(2));
@@ -7834,7 +7836,7 @@ fn clear_draft_cancellation_drains_writes_and_preserves_new_input() {
         );
         finish_paste(&writes);
         screen.refresh_agent_controls_at(later);
-        assert!(screen.agents.agent_draft_clears.is_empty());
+        assert!(screen.agents.clearing_panes().is_empty());
         assert!(
             finish_paste(&writes).is_empty(),
             "no destructive stage after {race}"
@@ -8935,7 +8937,7 @@ fn pi_prompt_clear_waits_after_marker_delivery_and_honors_cancellation() {
             assert_eq!(finish_paste(&writes), [3]);
         } else {
             assert!(finish_paste(&writes).is_empty());
-            assert!(screen.agents.agent_draft_clears.is_empty());
+            assert!(screen.agents.clearing_panes().is_empty());
             assert_eq!(
                 replies(&messages, CLIENT).pop().unwrap().outcome,
                 if cancellation == "typing" {
@@ -9043,7 +9045,7 @@ fn automatic_draft_clear_validates_before_writing() {
             screen.agent_control(request, CLIENT);
             assert_eq!(replies(&messages, CLIENT).len(), 1, "{kind}/{invalid}");
             assert!(finish_paste(&writes).is_empty(), "{kind}/{invalid}");
-            assert!(screen.agents.agent_draft_clears.is_empty());
+            assert!(screen.agents.clearing_panes().is_empty());
         }
     }
 }
@@ -9093,17 +9095,14 @@ fn automatic_draft_clear_cancellation_retains_result_and_drains_writer() {
         let later = now + Duration::from_secs(if race == "timeout" { 31 } else { 1 });
         screen.refresh_agent_controls_at(later);
         if race != "writer" {
-            assert!(
-                screen.agents.agent_draft_clears.contains_key(&PANE),
-                "{race}"
-            );
+            assert!(screen.agents.clearing_panes().contains(&PANE), "{race}");
             let status = screen.agent_status(PANE, None).unwrap();
             assert!(!status.ready);
             assert_eq!(status.not_ready_reason, Some(NotReadyReason::ClearingDraft));
         }
         finish_paste(&writes);
         screen.refresh_agent_controls_at(later);
-        assert!(screen.agents.agent_draft_clears.is_empty());
+        assert!(screen.agents.clearing_panes().is_empty());
         assert!(finish_paste(&writes).is_empty(), "no delivery after {race}");
         if race != "replacement" {
             screen.agent_control(
@@ -12423,7 +12422,7 @@ fn claude_steering_preparation_stops_when_permission_or_question_hooks_arrive() 
                     "no preparation, paste, or Enter after waiting"
                 );
             }
-            assert!(screen.agents.agent_draft_clears.is_empty());
+            assert!(screen.agents.clearing_panes().is_empty());
             assert!(replies(&messages, ClientId::new(2)).is_empty());
 
             report_kind(&mut screen, "claude", hook("PostToolUse"));
@@ -16579,7 +16578,7 @@ fn claude_permission_registry_recovery_clear_draft_survives_passive_reports() {
                 replies(&messages, CLIENT).is_empty(),
                 "clearing starts after cancellation and quiet"
             );
-            assert!(screen.agents.agent_draft_clears.contains_key(&PANE));
+            assert!(screen.agents.clearing_panes().contains(&PANE));
             let bytes = finish_paste(&writes);
             // Deliver during the operation as well: its captured report timestamp
             // must still match through marker verification and stable-empty proof.
@@ -16619,7 +16618,7 @@ fn claude_permission_registry_recovery_clear_draft_survives_passive_reports() {
             assert_eq!(response.outcome, AgentOutcome::Ok);
             assert!(response.agents[0].ready);
             assert_eq!(response.agents[0].agent.state, AgentState::Idle);
-            assert!(!screen.agents.agent_draft_clears.contains_key(&PANE));
+            assert!(!screen.agents.clearing_panes().contains(&PANE));
             assert_abandoned_permission_submission(&mut screen, &messages);
             assert!(finish_paste(&writes).is_empty());
         }
@@ -16684,7 +16683,7 @@ fn claude_permission_registry_recovery_retains_real_activity_fences() {
             AgentOutcome::Rejected,
             "{activity}"
         );
-        assert!(!screen.agents.agent_draft_clears.contains_key(&PANE));
+        assert!(!screen.agents.clearing_panes().contains(&PANE));
         assert!(finish_paste(&writes).is_empty());
     }
 }
@@ -16707,7 +16706,7 @@ fn claude_permission_registry_recovery_activity_interrupts_clearing() {
             crate::screen::agent_control::Reply::Client(CLIENT),
             now,
         );
-        assert!(screen.agents.agent_draft_clears.contains_key(&PANE));
+        assert!(screen.agents.clearing_panes().contains(&PANE));
         report_kind(
             &mut screen,
             "claude",
@@ -16722,7 +16721,7 @@ fn claude_permission_registry_recovery_activity_interrupts_clearing() {
             replies(&messages, CLIENT)[0].outcome,
             AgentOutcome::Interrupted
         );
-        assert!(!screen.agents.agent_draft_clears.contains_key(&PANE));
+        assert!(!screen.agents.clearing_panes().contains(&PANE));
         assert!(finish_paste(&writes).is_empty());
     }
 }

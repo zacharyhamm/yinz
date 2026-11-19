@@ -2132,7 +2132,7 @@ Deno.test("cleanup of an unfinished worker records a non-retryable refusal", asy
 Deno.test("close-completed refusal classification is pinned to the Rust CloseCompleted wording", async () => {
   const handler = await Deno.readTextFile(
     new URL(
-      "../../../yinz-screen/src/screen/agent_control/close_completed.rs",
+      "../../../yinz-agent-control/src/close_completed.rs",
       import.meta.url,
     ),
   );

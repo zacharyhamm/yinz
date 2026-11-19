@@ -10,12 +10,7 @@ mod screen;
 
 pub use screen::screen_thread_main;
 
-pub type RestoredStatePublisher = Box<dyn Fn(Option<yinz_types::agent::AgentState>) -> bool + Send>;
-pub type RestoredAgentObserver = std::sync::Arc<
-    dyn Fn(TerminalId, String, RestoredStatePublisher) -> yinz_runtime::errors::prelude::Result<()>
-        + Send
-        + Sync,
->;
+pub use yinz_agent_control::{RestoredAgentObserver, RestoredStatePublisher};
 
 // The moved files keep their `crate::` paths to shared items through these aliases, as the
 // server's root did. `plugins` is the bus's instruction module, not the plugin runtime: the

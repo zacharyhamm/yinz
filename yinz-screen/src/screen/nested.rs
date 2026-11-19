@@ -496,24 +496,9 @@ impl Screen {
         is_guest && is_tracked && has_descended
     }
 
-    fn downgrade_zoom_choice_to_descend(&mut self, pane_id: PaneId) {
-        let mut affected_clients = vec![];
-        for ((client_id, choice_pane_id), choice) in self.nested.nested_guest_choices.iter_mut() {
-            if *choice_pane_id == pane_id && *choice == NestedGuestChoice::Zoom {
-                *choice = NestedGuestChoice::Descend;
-                affected_clients.push(*client_id);
-            }
-        }
-        for client_id in affected_clients {
-            self.sync_guest_choice_indicator(client_id, pane_id);
-        }
-    }
-
     fn sync_guest_choice_indicator(&mut self, client_id: ClientId, pane_id: PaneId) {
-        let indicator = self.nested.guest_choice_indicator_for(client_id, pane_id);
-        if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
-            tab.set_guest_choice_indicator_on_pane(pane_id, client_id, indicator);
-        }
+        self.nested
+            .sync_guest_choice_indicator(&mut self.core, client_id, pane_id)
     }
 
     pub(super) fn report_key_passthrough_state(
@@ -828,54 +813,8 @@ impl Screen {
     }
 
     pub(super) fn sync_nested_guest_fullscreen_state(&mut self) {
-        if !self.nested.nested_guest_tracker.has_live_guests()
-            && self.nested.reported_guest_fullscreen.is_empty()
-        {
-            return;
-        }
-        let mut actual: HashMap<PaneId, bool> = HashMap::new();
-        for tab in self.core.tabs.values() {
-            let tab_fullscreen = tab.tiled_or_floating_fullscreen();
-            for pane_id in tab.nested_guest_pane_ids() {
-                if !self.nested.nested_guest_tracker.is_tracked(pane_id) {
-                    continue;
-                }
-                let is_fullscreen = matches!(tab_fullscreen, Some((id, true)) if id == pane_id);
-                actual.insert(pane_id, is_fullscreen);
-            }
-        }
-        let mut updates: Vec<(TerminalId, bool)> = vec![];
-        for (pane_id, is_fullscreen) in actual.iter() {
-            let previously = self.nested.reported_guest_fullscreen.get(pane_id).copied();
-            if previously != Some(*is_fullscreen) {
-                if let PaneId::Terminal(terminal_id) = pane_id {
-                    updates.push((*terminal_id, *is_fullscreen));
-                }
-                self.nested
-                    .reported_guest_fullscreen
-                    .insert(*pane_id, *is_fullscreen);
-            }
-        }
         self.nested
-            .reported_guest_fullscreen
-            .retain(|pane_id, _| actual.contains_key(pane_id));
-        for (pane_id, is_fullscreen) in actual.iter() {
-            if !is_fullscreen {
-                self.downgrade_zoom_choice_to_descend(*pane_id);
-            }
-        }
-        for (terminal_id, fullscreen) in updates {
-            let message = NestedSessionMessage::FullscreenState { fullscreen };
-            let _ = self
-                .core
-                .bus
-                .senders
-                .send_to_pty_writer(PtyWriteInstruction::Write(
-                    nested_session::encode_frame(&message),
-                    terminal_id,
-                    None,
-                ));
-        }
+            .sync_nested_guest_fullscreen_state(&mut self.core)
     }
 
     fn clients_with_pane_focused(&self, pane_id: PaneId) -> Vec<ClientId> {
@@ -1094,5 +1033,83 @@ impl super::NestedSessionController {
         }
         self.nested_guest_choices
             .retain(|(choice_client_id, _), _| *choice_client_id != client_id);
+    }
+}
+
+impl super::NestedSessionController {
+    fn sync_guest_choice_indicator(
+        &mut self,
+        core: &mut super::ScreenCore,
+        client_id: ClientId,
+        pane_id: PaneId,
+    ) {
+        let indicator = self.guest_choice_indicator_for(client_id, pane_id);
+        if let Some(tab) = core.tab_containing_pane_mut(pane_id) {
+            tab.set_guest_choice_indicator_on_pane(pane_id, client_id, indicator);
+        }
+    }
+}
+
+impl super::NestedSessionController {
+    fn downgrade_zoom_choice_to_descend(&mut self, core: &mut super::ScreenCore, pane_id: PaneId) {
+        let mut affected_clients = vec![];
+        for ((client_id, choice_pane_id), choice) in self.nested_guest_choices.iter_mut() {
+            if *choice_pane_id == pane_id && *choice == NestedGuestChoice::Zoom {
+                *choice = NestedGuestChoice::Descend;
+                affected_clients.push(*client_id);
+            }
+        }
+        for client_id in affected_clients {
+            self.sync_guest_choice_indicator(core, client_id, pane_id);
+        }
+    }
+}
+
+impl super::NestedSessionController {
+    pub(super) fn sync_nested_guest_fullscreen_state(&mut self, core: &mut super::ScreenCore) {
+        if !self.nested_guest_tracker.has_live_guests() && self.reported_guest_fullscreen.is_empty()
+        {
+            return;
+        }
+        let mut actual: HashMap<PaneId, bool> = HashMap::new();
+        for tab in core.tabs.values() {
+            let tab_fullscreen = tab.tiled_or_floating_fullscreen();
+            for pane_id in tab.nested_guest_pane_ids() {
+                if !self.nested_guest_tracker.is_tracked(pane_id) {
+                    continue;
+                }
+                let is_fullscreen = matches!(tab_fullscreen, Some((id, true)) if id == pane_id);
+                actual.insert(pane_id, is_fullscreen);
+            }
+        }
+        let mut updates: Vec<(TerminalId, bool)> = vec![];
+        for (pane_id, is_fullscreen) in actual.iter() {
+            let previously = self.reported_guest_fullscreen.get(pane_id).copied();
+            if previously != Some(*is_fullscreen) {
+                if let PaneId::Terminal(terminal_id) = pane_id {
+                    updates.push((*terminal_id, *is_fullscreen));
+                }
+                self.reported_guest_fullscreen
+                    .insert(*pane_id, *is_fullscreen);
+            }
+        }
+        self.reported_guest_fullscreen
+            .retain(|pane_id, _| actual.contains_key(pane_id));
+        for (pane_id, is_fullscreen) in actual.iter() {
+            if !is_fullscreen {
+                self.downgrade_zoom_choice_to_descend(core, *pane_id);
+            }
+        }
+        for (terminal_id, fullscreen) in updates {
+            let message = NestedSessionMessage::FullscreenState { fullscreen };
+            let _ = core
+                .bus
+                .senders
+                .send_to_pty_writer(PtyWriteInstruction::Write(
+                    nested_session::encode_frame(&message),
+                    terminal_id,
+                    None,
+                ));
+        }
     }
 }

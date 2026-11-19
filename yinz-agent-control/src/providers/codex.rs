@@ -1,7 +1,8 @@
-use super::super::{AgentHost, AgentState, PaneId};
+use crate::host::AgentHost;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::internal_ids::TerminalId;
-pub(in crate::screen) fn plan_prompt(
+use yinz_types::{agent::AgentState, pane_id::PaneId};
+pub fn plan_prompt(
     host: &impl AgentHost,
     title: &str,
     body: &str,

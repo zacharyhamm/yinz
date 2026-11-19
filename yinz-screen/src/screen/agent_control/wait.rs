@@ -556,7 +556,7 @@ impl super::AgentController {
             .and_then(|l| {
                 hook.prompt_id
                     .as_ref()
-                    .and_then(|id| l.claude.turns.get_mut(id))
+                    .and_then(|id| l.claude.activity.turns.get_mut(id))
             })
             .filter(|turn| turn.awaiting_native_submit)
         else {

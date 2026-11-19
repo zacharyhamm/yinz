@@ -144,7 +144,7 @@ impl super::AgentController {
         let source = self
             .agent_lifecycle
             .get(&pane)
-            .and_then(|l| l.claude.obligations.source.clone());
+            .and_then(|l| l.claude.activity.obligations.source.clone());
         self.closed_agent_submissions.push_back((
             now,
             proof,

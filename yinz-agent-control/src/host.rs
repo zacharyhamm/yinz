@@ -10,7 +10,7 @@ use yinz_types::{
     pane_id::PaneId,
 };
 
-pub(in crate::screen) struct PaneInput {
+pub struct PaneInput {
     pub suspended: bool,
     pub sync_active: bool,
     pub excluded_from_sync: bool,
@@ -19,7 +19,7 @@ pub(in crate::screen) struct PaneInput {
     pub bracketed_paste: bool,
 }
 
-pub(in crate::screen) struct PreparedRestart {
+pub struct PreparedRestart {
     pub command: RunCommand,
     pub previous: Option<AgentInfo>,
     pub current: AgentInfo,
@@ -27,13 +27,13 @@ pub(in crate::screen) struct PreparedRestart {
     pub result: RestartedAgent,
 }
 
-pub(in crate::screen) type RestoredObserverRegistration = (
+pub type RestoredObserverRegistration = (
     crate::RestoredAgentObserver,
     yinz_runtime::channels::SenderWithContext<yinz_bus::screen::ScreenInstruction>,
 );
 
 /// Observations and terminal mutations supplied by the owner of the pane layout.
-pub(in crate::screen) trait AgentHost {
+pub trait AgentHost {
     fn pane_info(&self, pane: PaneId) -> Option<PaneInfo>;
     fn session_name(&self) -> &str;
     fn tab_for_pane(&self, pane: PaneId) -> Option<TabId>;

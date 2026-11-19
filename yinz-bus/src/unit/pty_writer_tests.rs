@@ -841,3 +841,40 @@ fn redraw_keeps_ordinary_and_managed_placements_until_final_sizes_and_forwards_d
     });
     assert!(replies.try_recv().is_err());
 }
+
+#[test]
+fn failed_screen_turn_closes_its_resize_scope_before_the_next_instruction() {
+    use crate::{os_input_output::ResizeCache, thread_bus::ThreadSenders};
+    use PtyWriteInstruction::*;
+    let (tx, rx) = channels::unbounded();
+    let senders = ThreadSenders {
+        to_pty_writer: Some(SenderWithContext::new(tx)),
+        ..Default::default()
+    };
+    let clone = senders.clone();
+    let resize = || ResizePty(TerminalId::new(3), 80, 24, None, None);
+    let turn = || -> Result<()> {
+        let _scope = ResizeCache::new(senders.clone());
+        clone.send_to_pty_writer(resize())?;
+        Err(anyhow!("layout failed after resize"))
+    };
+    assert!(turn().is_err());
+    {
+        let _scope = ResizeCache::new(senders.clone());
+        clone.send_to_pty_writer(StartCachingResizes).unwrap();
+    }
+    clone.send_to_pty_writer(resize()).unwrap();
+    let messages: Vec<_> = rx.try_iter().map(|(instruction, _)| instruction).collect();
+    assert!(
+        matches!(
+            messages.as_slice(),
+            [
+                StartCachingResizes,
+                ResizePty(..),
+                ApplyCachedResizes,
+                ResizePty(..)
+            ]
+        ),
+        "{messages:?}"
+    );
+}

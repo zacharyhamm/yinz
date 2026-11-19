@@ -1,12 +1,12 @@
 mod close_completed;
 mod events;
 mod handoff;
-pub(super) mod host;
+pub(super) use yinz_agent_control::host;
 mod input;
 mod lifecycle;
 pub(super) mod reports;
-mod worktrees;
 use host::AgentHost;
+use yinz_agent_control::worktrees;
 pub(super) mod providers;
 mod status;
 mod submissions;
@@ -48,39 +48,29 @@ pub(super) enum Reply {
 pub(super) struct Lifecycle {
     kind: String,
     conversation: String,
-    claude: ClaudeActivity,
+    claude: providers::ClaudeLifecycle,
+    agy: providers::AgyLifecycle,
     input_revision: Option<u64>,
     /// When the last hook from this pane arrived, worker and stateless hooks included.
     pub(super) last_report: Instant,
-    notification_tick: Instant,
     /// The provider turn last reported as interrupted or failed, until the next prompt. Codex
     /// finishes a cancelled turn's tool call after its `Interrupt`, and that hook must not make
     /// the idle agent busy again. `Stop` is not an end here: a blocking Stop hook continues
     /// the same turn.
     ended_turn: Option<String>,
     closeout_turn: Option<String>,
-    claude_prompt_id: Option<String>,
-    claude_confirmation: Option<bool>,
-    claude_previous_prompt_id: Option<String>,
-    agy_confirmation: Option<bool>,
-    /// The prompt whose confirmed Claude turn left background work running, until Claude's
-    /// session registry reports idle or a later turn's confirmation replaces it.
-    claude_background: Option<String>,
-    /// Claude `<task-notification>` turns in flight, by prompt ID. They run beside the
-    /// caller's prompt tracking, which they never replace.
-    claude_notifications: BTreeMap<String, ClaudeNotification>,
     /// The final assistant text of the last completed turn, until the next caller prompt.
     last_message: Option<String>,
 }
 
 impl Lifecycle {
     pub(super) fn event_background(&self) -> bool {
-        self.claude_background.is_some() || self.claude.obligations.active()
+        self.claude.background.is_some() || self.claude.activity.obligations.active()
     }
 
     #[cfg(test)]
     pub(crate) fn claude_background_for_test(&self) -> Option<&str> {
-        self.claude_background.as_deref()
+        self.claude.background.as_deref()
     }
 
     #[cfg(test)]
@@ -97,22 +87,24 @@ impl Lifecycle {
     fn claude_notification(&self, hook: &HookEvent) -> Option<&ClaudeNotification> {
         hook.prompt_id
             .as_ref()
-            .and_then(|prompt| self.claude_notifications.get(prompt))
+            .and_then(|prompt| self.claude.notifications.get(prompt))
     }
 }
 
 impl Lifecycle {
     fn handoff(&self) -> LifecycleState {
-        let mut claude = self.claude.clone();
+        let mut claude = self.claude.activity.clone();
         claude.obligations.elapse(
-            self.notification_tick
+            self.claude
+                .observed_at
                 .elapsed()
                 .as_millis()
                 .min(u64::MAX as u128) as u64,
         );
         if let Some(permission) = &mut claude.permission {
             permission.elapse(
-                self.notification_tick
+                self.claude
+                    .observed_at
                     .elapsed()
                     .as_millis()
                     .min(u64::MAX as u128) as u64,
@@ -125,12 +117,12 @@ impl Lifecycle {
             input_revision: self.input_revision,
             ended_turn: self.ended_turn.clone(),
             closeout_turn: self.closeout_turn.clone(),
-            claude_prompt_id: self.claude_prompt_id.clone(),
-            claude_confirmation: self.claude_confirmation,
-            claude_previous_prompt_id: self.claude_previous_prompt_id.clone(),
-            agy_confirmation: self.agy_confirmation,
-            claude_background: self.claude_background.clone(),
-            claude_notifications: self.claude_notifications.clone(),
+            claude_prompt_id: self.claude.prompt_id.clone(),
+            claude_confirmation: self.claude.confirmation,
+            claude_previous_prompt_id: self.claude.previous_prompt_id.clone(),
+            agy_confirmation: self.agy.confirmation,
+            claude_background: self.claude.background.clone(),
+            claude_notifications: self.claude.notifications.clone(),
             last_message: self.last_message.clone(),
         }
     }
@@ -138,21 +130,25 @@ impl Lifecycle {
 impl From<LifecycleState> for Lifecycle {
     fn from(state: LifecycleState) -> Self {
         Self {
-            notification_tick: Instant::now(),
             last_report: Instant::now(),
             kind: state.kind,
             conversation: state.conversation,
-            claude: state.claude,
             input_revision: state.input_revision,
             ended_turn: state.ended_turn,
             closeout_turn: state.closeout_turn,
-            claude_prompt_id: state.claude_prompt_id,
-            claude_confirmation: state.claude_confirmation,
-            claude_previous_prompt_id: state.claude_previous_prompt_id,
-            agy_confirmation: state.agy_confirmation,
-            claude_background: state.claude_background,
-            claude_notifications: state.claude_notifications,
             last_message: state.last_message,
+            claude: providers::ClaudeLifecycle {
+                observed_at: Instant::now(),
+                activity: state.claude,
+                prompt_id: state.claude_prompt_id,
+                confirmation: state.claude_confirmation,
+                previous_prompt_id: state.claude_previous_prompt_id,
+                background: state.claude_background,
+                notifications: state.claude_notifications,
+            },
+            agy: providers::AgyLifecycle {
+                confirmation: state.agy_confirmation,
+            },
         }
     }
 }
@@ -272,11 +268,6 @@ enum DraftStage {
     PromptCleared {
         since: Option<Instant>,
     },
-}
-
-struct Composer {
-    empty: bool,
-    before_cursor: String,
 }
 
 /// Called only after source/conversation and permission-sample admission.
@@ -599,7 +590,7 @@ impl AgentController {
             || status.agent.kind != lifecycle.kind
             || status.background
             || lifecycle.event_background()
-            || !lifecycle.claude_notifications.is_empty()
+            || !lifecycle.claude.notifications.is_empty()
             || self
                 .agent_worker_waits
                 .get(&pane)
@@ -656,8 +647,6 @@ impl AgentController {
     }
 }
 
-impl AgentController {}
-
 #[cfg(test)]
 #[path = "../unit/agent_controller_tests.rs"]
 mod controller_tests;
@@ -686,7 +675,7 @@ pub(super) struct AgentController {
     pub(super) pending_terminal_states: HashMap<PaneId, String>,
     pub(super) warped_agent_inputs: HashMap<PaneId, TransferredInput>,
     pub(super) agent_lifecycle: HashMap<PaneId, Lifecycle>,
-    pub(super) restored_claude_observers: HashMap<PaneId, Instant>,
+    restored_claude_observers: yinz_agent_control::providers::claude_observer::RestoredObservers,
     pub(super) agent_dialog_inputs: HashMap<PaneId, DialogInput>,
     pub(super) agent_clear_inputs: HashMap<PaneId, ClearInput>,
     pub(super) agent_worker_waits: HashMap<PaneId, WorkerWaits>,

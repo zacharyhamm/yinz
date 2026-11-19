@@ -233,8 +233,18 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "yinz-agent-control",
+        &[
+            "yinz-bus",
+            "yinz-types",
+            "yinz-runtime",
+            "yinz-test-support",
+        ],
+    ),
+    (
         "yinz-screen",
         &[
+            "yinz-agent-control",
             "yinz-types",
             "yinz-runtime",
             "yinz-storage",
@@ -285,6 +295,7 @@ const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("yinz-ipc", &["yinz-plugin-api"]),
     ("yinz-cli", &["yinz-plugin-api"]),
     ("yinz-screen", &["yinz-cli", "yinz-test-support"]),
+    ("yinz-agent-control", &["yinz-test-support"]),
     (
         "yinz-pty",
         &[

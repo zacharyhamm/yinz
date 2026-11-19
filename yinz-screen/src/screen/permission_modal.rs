@@ -140,6 +140,9 @@ impl Screen {
         self.assign_permission_modals();
     }
     pub(super) fn assign_permission_modals(&mut self) {
+        if self.permissions.permission_modals.is_empty() {
+            return;
+        }
         let clients: Vec<_> = self
             .core
             .active_tab_ids
@@ -150,44 +153,11 @@ impl Screen {
             })
             .copied()
             .collect();
-        let fallback = self
-            .permissions
-            .permission_last_client
-            .filter(|id| clients.contains(id))
-            .or_else(|| clients.first().copied());
         let focused: Vec<_> = clients
             .iter()
             .map(|id| (*id, self.get_active_pane_id(id)))
             .collect();
-        let mut presented = vec![];
-        for modal in &mut self.permissions.permission_modals {
-            if modal.client.is_some_and(|client| clients.contains(&client)) {
-                continue;
-            }
-            if modal.pressed.take().is_some()
-                && let Some(client) = modal.client
-            {
-                self.permissions.permission_mouse_captures.insert(client);
-            }
-            modal.client = modal
-                .request
-                .caller
-                .and_then(|caller| {
-                    focused
-                        .iter()
-                        .find(|(_, pane)| *pane == Some(PaneId::Terminal(caller)))
-                        .map(|(id, _)| *id)
-                })
-                .or_else(|| modal.request.client_id.filter(|id| clients.contains(id)))
-                .or(fallback);
-            modal.allow = false;
-            modal.scroll = 0;
-            modal.pressed = None;
-            modal.painted = None;
-            if let Some(client) = modal.client {
-                presented.push(client);
-            }
-        }
+        let presented = self.permissions.assign(&clients, &focused);
         for client in presented {
             self.close_command_palette(client);
             // The modal owns the interrupted gesture, even if it closes before release.
@@ -366,23 +336,7 @@ impl Screen {
         let clients: Vec<_> = self.permissions.permission_modal_clients().collect();
         for client in clients {
             let surface = self.command_palette_surface(client);
-            for modal in self
-                .permissions
-                .permission_modals
-                .iter_mut()
-                .filter(|modal| modal.client == Some(client))
-            {
-                if let Some(surface) = surface {
-                    modal.set_scroll(modal.scroll, surface);
-                    if let Some(Some((_, prior))) = &modal.pressed
-                        && *prior != modal.layout(surface)
-                    {
-                        modal.pressed = Some(None);
-                    }
-                } else if modal.pressed.is_some() {
-                    modal.pressed = Some(None);
-                }
-            }
+            self.permissions.surface_changed(client, surface);
         }
     }
     pub(super) fn prepare_permission_modal_render(&mut self) {
@@ -455,5 +409,69 @@ impl crate::screen::PermissionModalController {
 impl super::PermissionModalController {
     pub(super) fn on_client_removed(&mut self, client_id: ClientId) {
         self.permission_mouse_captures.remove(&client_id);
+    }
+}
+
+impl super::PermissionModalController {
+    fn assign(
+        &mut self,
+        clients: &[ClientId],
+        focused: &[(ClientId, Option<PaneId>)],
+    ) -> Vec<ClientId> {
+        let fallback = self
+            .permission_last_client
+            .filter(|id| clients.contains(id))
+            .or_else(|| clients.first().copied());
+        let mut presented = vec![];
+        for modal in &mut self.permission_modals {
+            if modal.client.is_some_and(|client| clients.contains(&client)) {
+                continue;
+            }
+            if modal.pressed.take().is_some()
+                && let Some(client) = modal.client
+            {
+                self.permission_mouse_captures.insert(client);
+            }
+            modal.client = modal
+                .request
+                .caller
+                .and_then(|caller| {
+                    focused
+                        .iter()
+                        .find(|(_, pane)| *pane == Some(PaneId::Terminal(caller)))
+                        .map(|(id, _)| *id)
+                })
+                .or_else(|| modal.request.client_id.filter(|id| clients.contains(id)))
+                .or(fallback);
+            modal.allow = false;
+            modal.scroll = 0;
+            modal.pressed = None;
+            modal.painted = None;
+            if let Some(client) = modal.client {
+                presented.push(client);
+            }
+        }
+        presented
+    }
+}
+
+impl super::PermissionModalController {
+    fn surface_changed(&mut self, client: ClientId, surface: Option<Viewport>) {
+        for modal in self
+            .permission_modals
+            .iter_mut()
+            .filter(|modal| modal.client == Some(client))
+        {
+            if let Some(surface) = surface {
+                modal.set_scroll(modal.scroll, surface);
+                if let Some(Some((_, prior))) = &modal.pressed
+                    && *prior != modal.layout(surface)
+                {
+                    modal.pressed = Some(None);
+                }
+            } else if modal.pressed.is_some() {
+                modal.pressed = Some(None);
+            }
+        }
     }
 }

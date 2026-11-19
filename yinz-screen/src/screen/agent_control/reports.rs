@@ -119,7 +119,7 @@ impl super::AgentController {
         // A report that repeats itself costs nothing; a changed one is news to every reader of the
         // manifest.
         if changed {
-            self.refresh_agent_worktrees(host);
+            self.agent_worktrees.refresh_agent_worktrees(host);
         }
         if changed {
             AgentUpdate::Changed {
@@ -228,7 +228,7 @@ impl super::AgentController {
         }
     }
     pub(in crate::screen) fn retire_restored_observer(&mut self, pane: PaneId) {
-        self.restored_claude_observers.remove(&pane);
+        self.restored_claude_observers.retire(pane);
     }
 }
 
@@ -263,8 +263,8 @@ impl super::AgentController {
                     && !hook.is_worker()
                     && self.agent_lifecycle.get(&pane).is_none_or(|l| {
                         hook.prompt_id.is_none()
-                            || l.claude_prompt_id.is_none()
-                            || hook.prompt_id == l.claude_prompt_id
+                            || l.claude.prompt_id.is_none()
+                            || hook.prompt_id == l.claude.prompt_id
                     })
             })
         {
@@ -351,7 +351,7 @@ impl super::AgentController {
             if let Some(raw) = self
                 .agent_lifecycle
                 .get(&pane)
-                .and_then(|l| l.claude.parent.as_ref())
+                .and_then(|l| l.claude.activity.parent.as_ref())
             {
                 parent.state = raw.state;
                 parent.detail = raw.detail.clone();
@@ -378,7 +378,7 @@ impl super::AgentController {
                     .agent_lifecycle
                     .get_mut(&pane)
                     .filter(|l| report.kind == "claude" && l.conversation == hook.session_id)
-                    .map(|l| &mut l.claude);
+                    .map(|l| &mut l.claude.activity);
                 let tool = hook
                     .tool_use_id
                     .as_ref()
@@ -468,10 +468,10 @@ impl super::AgentController {
                         let notification_id = hook.and_then(|hook| {
                             hook.prompt_id
                                 .as_ref()
-                                .filter(|id| lifecycle.claude_notifications.contains_key(*id))
+                                .filter(|id| lifecycle.claude.notifications.contains_key(*id))
                                 .cloned()
                                 .or_else(|| {
-                                    (lifecycle.claude_confirmation == Some(true)
+                                    (lifecycle.claude.confirmation == Some(true)
                                         && !matches!(
                                             hook.hook_event_name.as_str(),
                                             "UserPromptSubmit" | "SessionStart" | "SessionEnd"
@@ -479,7 +479,8 @@ impl super::AgentController {
                                         && hook.claude_turn_complete.is_none())
                                     .then(|| {
                                         lifecycle
-                                            .claude_notifications
+                                            .claude
+                                            .notifications
                                             .iter()
                                             // After observation loss, anonymous or
                                             // other-prompt progress cannot answer the
@@ -492,7 +493,7 @@ impl super::AgentController {
                         });
                         if let Some(notification) = notification_id
                             .as_ref()
-                            .and_then(|id| lifecycle.claude_notifications.get_mut(id))
+                            .and_then(|id| lifecycle.claude.notifications.get_mut(id))
                         {
                             notification_report = true;
                             // A source-only failed Stop is observer evidence, not
@@ -520,12 +521,13 @@ impl super::AgentController {
                                         "StopFailure" | "Interrupt"
                                     ))
                                     && hook.prompt_id.is_some()
-                                    && lifecycle.claude_prompt_id.is_some()
-                                    && hook.prompt_id != lifecycle.claude_prompt_id
+                                    && lifecycle.claude.prompt_id.is_some()
+                                    && hook.prompt_id != lifecycle.claude.prompt_id
                             })
                         {
                             lifecycle
                                 .claude
+                                .activity
                                 .parent
                                 .clone()
                                 .or_else(|| Some(agent.clone()))
@@ -570,7 +572,7 @@ impl super::AgentController {
                     .as_ref()
                     .is_some_and(|a| a.session_id.as_ref() == Some(&l.conversation))
         }) {
-            lifecycle.claude.parent = agent.clone();
+            lifecycle.claude.activity.parent = agent.clone();
         }
         let mut visible = agent.clone();
         if let (Some(workers), Some(parent)) = (&mut workers, agent) {

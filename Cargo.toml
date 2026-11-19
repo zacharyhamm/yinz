@@ -106,6 +106,7 @@ members = [
     "yinz-terminal",
     "yinz-native-terminal",
     "yinz-terminal-graphics",
+    "yinz-agent-control",
     "yinz-screen",
     "yinz-pty",
     "yinz-server",
