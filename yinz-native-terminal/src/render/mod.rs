@@ -1,4 +1,5 @@
 pub mod atlas;
+pub mod cursor_trail;
 pub mod graphics;
 pub mod image_io;
 pub mod pacing;

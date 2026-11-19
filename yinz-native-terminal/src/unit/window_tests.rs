@@ -3590,3 +3590,263 @@ fn underline_metrics_pending_redraw_waits_for_a_drawable_before_pacing() {
         Decision::At(due + pacer.interval())
     );
 }
+
+#[test]
+fn cursor_trail_setting_toggle_preserves_retained_rows_and_paces_until_settled() {
+    use crate::emulation::screen_buffer::{CursorShape, TermSize};
+    use crate::render::cursor_trail::{CursorSnapshot, CursorTrail, TrailMesh, TRAIL_DURATION};
+
+    let mut settings = embedded_settings();
+    let mut paints = Paints::default();
+    let mut retained = RetainedScene::new();
+    let state = TerminalState::new(4, 20);
+    let mut cache = GlyphCache::new(
+        effective_font_options(&settings, 1.0, 1.0)
+            .stack(1.0)
+            .unwrap(),
+    );
+    retained.refresh(
+        SceneInputs {
+            state: &state,
+            phase: BlinkPhase::On,
+            paints: &paints,
+            cursor: CursorOptions::default(),
+            hovered_link: None,
+            preedit: None,
+        },
+        &mut cache,
+    );
+    assert!(retained.rebuilt_everything());
+
+    let mut next = settings.clone();
+    next.cursor_trail = Some(false);
+    let next_paints = paints;
+    apply_settings(&mut settings, &mut paints, &mut retained, next, next_paints);
+    assert_eq!(settings.cursor_trail, Some(false));
+    retained.refresh(
+        SceneInputs {
+            state: &state,
+            phase: BlinkPhase::On,
+            paints: &paints,
+            cursor: CursorOptions::default(),
+            hovered_link: None,
+            preedit: None,
+        },
+        &mut cache,
+    );
+    assert!(
+        !retained.rebuilt_everything(),
+        "toggling cursor_trail should not invalidate retained row buffers"
+    );
+
+    // Verify pacer keeps scheduling while trail is active and goes idle once settled.
+    let mut trail = CursorTrail::default();
+    let mut mesh = TrailMesh::default();
+    let mut pacer = Pacer::new(Some(60_000));
+    let start = Instant::now();
+    let grid = TermSize { rows: 4, cols: 20 };
+    let metrics = cache.metrics();
+    let color = [229, 229, 229];
+    trail.observe(
+        CursorSnapshot {
+            row: 0,
+            col: 1,
+            visible: true,
+            shape: CursorShape::Block,
+            color,
+        },
+        grid,
+        metrics,
+        true,
+        start,
+    );
+    trail.observe(
+        CursorSnapshot {
+            row: 3,
+            col: 18,
+            visible: true,
+            shape: CursorShape::Block,
+            color,
+        },
+        grid,
+        metrics,
+        true,
+        start,
+    );
+    assert!(trail.sample(start, &mut mesh));
+    pacer.drawn(start);
+    pacer.schedule();
+    assert_eq!(
+        redraw_decision(&pacer, Some((320, 200)), start),
+        Decision::At(start + pacer.interval())
+    );
+
+    let settled = start + TRAIL_DURATION;
+    assert!(!trail.sample(settled, &mut mesh));
+    pacer.drawn(settled);
+    assert_eq!(
+        redraw_decision(&pacer, Some((320, 200)), settled),
+        Decision::Idle
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn cursor_trail_stays_hidden_during_blink_off_without_losing_its_anchor() {
+    use crate::render::cursor_trail::HIDE_GRACE;
+    use crate::testing::painter::Painter;
+
+    let mut app = switch_app(CliArgs::default());
+    app.focused = true;
+    app.settings.cursor_blink = None;
+    let start = Instant::now();
+    Painter::apply(&mut app.state, |p| {
+        p.blinking_cursor(0, 1, CursorShape::Block)
+    });
+    assert!(!app.sample_cursor_trail(start, None));
+
+    app.blink = BlinkPhase::Off;
+    assert!(!app.sample_cursor_trail(start, None));
+    let jump = start + HIDE_GRACE + Duration::from_millis(1);
+    Painter::apply(&mut app.state, |p| {
+        p.blinking_cursor(0, 8, CursorShape::Block)
+    });
+    assert!(!app.sample_cursor_trail(jump, None));
+    assert!(app.trail_mesh.is_empty());
+
+    app.blink = BlinkPhase::On;
+    assert!(app.sample_cursor_trail(jump + Duration::from_millis(1), None));
+    assert!(!app.trail_mesh.is_empty());
+}
+
+#[test]
+#[cfg(unix)]
+fn cursor_trail_follows_ime_preedit_and_hides_without_a_cursor_range() {
+    use crate::testing::painter::Painter;
+    use winit::event::Ime;
+
+    let mut app = switch_app(CliArgs::default());
+    app.focused = true;
+    let start = Instant::now();
+    Painter::apply(&mut app.state, |p| p.cursor(0, 1, CursorShape::Block));
+    assert!(!app.sample_cursor_trail(start, None));
+
+    app.composition
+        .ime(Ime::Preedit("abc".into(), Some((3, 3))));
+    Painter::apply(&mut app.state, |p| p.cursor(0, 7, CursorShape::Block));
+    let preedit = app.composition.shown();
+    app.observe_cursor_trail(start, preedit.as_ref());
+    assert!(app.sample_cursor_trail(start, preedit.as_ref()));
+    let right_edge = |app: &App| {
+        app.trail_mesh
+            .vertices
+            .iter()
+            .map(|vertex| vertex.x)
+            .reduce(f32::max)
+            .unwrap()
+    };
+    let width = app.cache.metrics().width as f32;
+    assert_eq!(right_edge(&app), 11.0 * width);
+
+    // An IME-only update moves the trail endpoint with the rendered cursor.
+    app.composition
+        .ime(Ime::Preedit("abc".into(), Some((2, 2))));
+    let preedit = app.composition.shown();
+    assert!(app.sample_cursor_trail(start + Duration::from_millis(1), preedit.as_ref()));
+    assert_eq!(right_edge(&app), 10.0 * width);
+
+    app.composition.ime(Ime::Preedit("abc".into(), None));
+    let preedit = app.composition.shown();
+    assert!(!app.sample_cursor_trail(start + Duration::from_millis(2), preedit.as_ref()));
+    assert!(app.trail_mesh.is_empty());
+}
+
+#[test]
+fn cursor_trail_cleared_frame_resets_without_cross_screen_streak() {
+    use crate::emulation::screen_buffer::CursorShape;
+    use crate::render::cursor_trail::{CursorSnapshot, CursorTrail, TrailMesh};
+    use crate::testing::painter::Painter;
+
+    let mut state = TerminalState::new(10, 40);
+    let cache = GlyphCache::new(
+        effective_font_options(&embedded_settings(), 1.0, 1.0)
+            .stack(1.0)
+            .unwrap(),
+    );
+    let metrics = cache.metrics();
+    let mut trail = CursorTrail::default();
+    let mut mesh = TrailMesh::default();
+    let start = Instant::now();
+    let color = [229, 229, 229];
+
+    // Initial frame establishes anchor at (1, 2).
+    let first = Painter::applied(&mut state, |p| {
+        p.full_repaint();
+        p.cursor(1, 2, CursorShape::Block);
+    });
+    assert!(first.cleared);
+    trail.reset();
+    let (row, col) = state.cursor_position();
+    trail.observe(
+        CursorSnapshot {
+            row,
+            col,
+            visible: true,
+            shape: CursorShape::Block,
+            color,
+        },
+        state.size(),
+        metrics,
+        true,
+        start,
+    );
+    assert!(!trail.is_active());
+
+    // Partial frame (e.g. pane switch within tab) keeps cleared == false and starts a trail.
+    let partial = Painter::applied(&mut state, |p| {
+        p.cursor(1, 30, CursorShape::Block);
+    });
+    assert!(!partial.cleared);
+    let (row, col) = state.cursor_position();
+    trail.observe(
+        CursorSnapshot {
+            row,
+            col,
+            visible: true,
+            shape: CursorShape::Block,
+            color,
+        },
+        state.size(),
+        metrics,
+        true,
+        start + Duration::from_millis(10),
+    );
+    assert!(trail.is_active());
+    assert!(trail.sample(start + Duration::from_millis(10), &mut mesh));
+
+    // Full repaint / clear frame (e.g. tab switch) reports cleared == true; resetting suppresses a cross-tab trail.
+    let tab_switch = Painter::applied(&mut state, |p| {
+        p.full_repaint();
+        p.cursor(8, 3, CursorShape::Block);
+    });
+    assert!(tab_switch.cleared);
+    if tab_switch.cleared {
+        trail.reset();
+    }
+    let (row, col) = state.cursor_position();
+    trail.observe(
+        CursorSnapshot {
+            row,
+            col,
+            visible: true,
+            shape: CursorShape::Block,
+            color,
+        },
+        state.size(),
+        metrics,
+        true,
+        start + Duration::from_millis(20),
+    );
+    assert!(!trail.is_active());
+    assert!(!trail.sample(start + Duration::from_millis(20), &mut mesh));
+}

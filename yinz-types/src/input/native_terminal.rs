@@ -63,6 +63,7 @@ pub struct TerminalConfig {
     pub cursor_style: Option<CursorStyle>,
     pub macos_option_as_alt: Option<OptionAsAlt>,
     pub cursor_blink: Option<bool>,
+    pub cursor_trail: Option<bool>,
     pub open_links: Option<bool>,
     pub middle_click_paste: Option<bool>,
 }

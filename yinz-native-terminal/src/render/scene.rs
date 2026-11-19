@@ -16,6 +16,7 @@ use crate::emulation::terminal::TerminalState;
 use crate::input::composition::Preedit;
 use crate::input::links::LinkRun;
 use crate::render::atlas::{AtlasEntry, GlyphCache};
+use crate::render::cursor_trail::CursorSnapshot;
 use crate::text::font::{CellMetrics, FaceStyle, FontId};
 use yinz_types::input::native_terminal::OpacityMode;
 
@@ -575,6 +576,7 @@ pub struct RowContext<'a> {
     cursor_col: usize,
     cursor_shape: CursorShape,
     cursor_visible: bool,
+    cursor_visible_before_blink: bool,
     cursor_breaks_runs: Option<(usize, usize)>,
     shaping: bool,
     preedit: Option<PreeditOverlay>,
@@ -669,8 +671,7 @@ impl<'a> RowContext<'a> {
             Some(overlay) => overlay.cursor.unwrap_or(base_col),
             None => base_col,
         };
-        let cursor_visible = state.cursor_is_visible()
-            && !blinked_away
+        let cursor_visible_before_blink = state.cursor_is_visible()
             && preedit
                 .as_ref()
                 .map(|overlay| overlay.cursor.is_some())
@@ -687,7 +688,8 @@ impl<'a> RowContext<'a> {
             cursor_row,
             cursor_col,
             cursor_shape: state.cursor_shape().or(cursor.shape),
-            cursor_visible,
+            cursor_visible: cursor_visible_before_blink && !blinked_away,
+            cursor_visible_before_blink,
             cursor_breaks_runs: state
                 .cursor_is_visible()
                 .then_some((cursor_row, cursor_col)),
@@ -700,6 +702,50 @@ impl<'a> RowContext<'a> {
             only: None,
             selection: None,
         }
+    }
+
+    pub(crate) fn cursor_trail_state(&self) -> (CursorSnapshot, bool) {
+        let (row, col) = (self.cursor_row, self.cursor_col);
+        let shape = if self.cursor_hollow {
+            CursorShape::Block
+        } else {
+            self.cursor_shape
+        };
+        let color = if shape == CursorShape::Block {
+            let (cell, occupancy) = self
+                .preedit
+                .as_ref()
+                .and_then(|overlay| overlay.at(row, col))
+                .map_or_else(
+                    || {
+                        (
+                            self.state.screen().cell(row, col),
+                            self.state.occupancy(row, col),
+                        )
+                    },
+                    |(cell, occupancy, _)| (*cell, *occupancy),
+                );
+            let paint = paint_of(cell, occupancy, self.paints, self.contrast);
+            let cell_color = if self.cursor_hollow && self.selects(row, col) {
+                paint.background
+            } else {
+                paint.foreground
+            };
+            self.paints.cursor_over(cell_color)
+        } else {
+            self.paints.beam_cursor()
+        };
+        (
+            CursorSnapshot {
+                row,
+                col,
+                // Blink-off suppresses drawing while the trail keeps tracking the cursor.
+                visible: self.cursor_visible_before_blink,
+                shape,
+                color,
+            },
+            self.cursor_visible,
+        )
     }
 
     pub fn width(&self) -> u32 {

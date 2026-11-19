@@ -769,6 +769,7 @@ Config {
         cursor_style: None,
         macos_option_as_alt: None,
         cursor_blink: None,
+        cursor_trail: None,
         open_links: None,
         middle_click_paste: None,
     },

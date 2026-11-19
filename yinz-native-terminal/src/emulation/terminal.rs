@@ -37,6 +37,7 @@ impl std::error::Error for FrameError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameApplied {
     pub seq: u64,
+    pub cleared: bool,
     pub damage: Damage,
 }
 
@@ -224,6 +225,7 @@ impl TerminalState {
         };
         Ok(FrameApplied {
             seq: applied.seq,
+            cleared: applied.cleared,
             damage,
         })
     }

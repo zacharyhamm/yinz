@@ -3,6 +3,7 @@ use crate::render::renderer::bytemuck_cast;
 use crate::render::renderer::Pass;
 use crate::render::renderer::GLYPH_STRIDE;
 use crate::render::renderer::SOLID_STRIDE;
+use crate::render::renderer::TRAIL_STRIDE;
 use anyhow::{anyhow, Result};
 use glow::HasContext;
 
@@ -24,6 +25,27 @@ pub(crate) const SOLID_FRAGMENT: &str = r#"in vec3 v_color;
 out vec4 o_color;
 void main() {
     o_color = vec4(v_color, 1.0);
+}
+"#;
+
+pub(crate) const TRAIL_VERTEX: &str = r#"uniform vec2 u_viewport;
+uniform vec2 u_origin;
+in vec2 a_position;
+in vec4 a_color;
+out vec4 v_color;
+void main() {
+    v_color = a_color;
+    vec2 position = a_position + u_origin;
+    vec2 ndc = vec2(position.x / u_viewport.x * 2.0 - 1.0,
+                    1.0 - position.y / u_viewport.y * 2.0);
+    gl_Position = vec4(ndc, 0.0, 1.0);
+}
+"#;
+
+pub(crate) const TRAIL_FRAGMENT: &str = r#"in vec4 v_color;
+out vec4 o_color;
+void main() {
+    o_color = vec4(v_color.rgb * v_color.a, v_color.a);
 }
 "#;
 
@@ -89,6 +111,23 @@ pub(super) unsafe fn solid_pass(gl: &glow::Context, program: glow::Program) -> R
         gl.bind_buffer(glow::ARRAY_BUFFER, Some(pass.buffer));
         attribute(gl, program, "a_position", 2, SOLID_STRIDE, 0);
         attribute(gl, program, "a_color", 3, SOLID_STRIDE, 2 * 4);
+        Ok(pass)
+    }
+}
+
+pub(super) unsafe fn trail_pass(gl: &glow::Context, program: glow::Program) -> Result<Pass> {
+    unsafe {
+        let pass = Pass {
+            viewport: gl.get_uniform_location(program, "u_viewport"),
+            origin: gl.get_uniform_location(program, "u_origin"),
+            program,
+            vertex_array: gl.create_vertex_array().map_err(|e| anyhow!(e))?,
+            buffer: gl.create_buffer().map_err(|e| anyhow!(e))?,
+        };
+        gl.bind_vertex_array(Some(pass.vertex_array));
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(pass.buffer));
+        attribute(gl, program, "a_position", 2, TRAIL_STRIDE, 0);
+        attribute(gl, program, "a_color", 4, TRAIL_STRIDE, 2 * 4);
         Ok(pass)
     }
 }

@@ -69,6 +69,16 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
                 node
             ));
         }
+        if name == "cursor_trail"
+            && (value.as_bool().is_none()
+                || node.ty().is_some()
+                || node.entries()[0].ty().is_some())
+        {
+            return Err(kdl_parsing_error!(
+                "terminal cursor_trail must be a plain boolean true or false".to_owned(),
+                node
+            ));
+        }
         if matches!(
             name,
             "baseline_offset" | "underline_offset" | "underline_thickness"

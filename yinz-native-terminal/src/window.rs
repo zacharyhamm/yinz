@@ -1,16 +1,18 @@
 use crate::emulation::color::Paints;
+use crate::emulation::screen_buffer::CursorShape;
 use crate::emulation::selection::LocalSelection;
 use crate::emulation::terminal::{FrameApplied, TerminalState};
 use crate::input::clipboard::{Clipboard, ClipboardHandle};
-use crate::input::composition::{Composition, Reaction};
+use crate::input::composition::{Composition, Preedit, Reaction};
 use crate::input::{keyboard, links};
 use crate::platform::Platform;
 use crate::render::atlas::GlyphCache;
+use crate::render::cursor_trail::{CursorTrail, TrailMesh};
 use crate::render::pacing::{Decision, Pacer};
 use crate::render::renderer::{Frame, Renderer};
 use crate::render::retained::RetainedScene;
 use crate::render::scene::{
-    notice_scene, BlinkPhase, CursorOptions, Notice, RowScene, SceneInputs,
+    notice_scene, BlinkPhase, CursorOptions, Notice, RowContext, RowScene, SceneInputs,
 };
 use crate::session::{self, Recorder, Sender};
 use crate::text::font::{points_to_pixels, CellChange, FontOptions};
@@ -126,6 +128,8 @@ struct App {
     mouse_mode: bool,
     focused: bool,
     pacer: Pacer,
+    cursor_trail: CursorTrail,
+    trail_mesh: TrailMesh,
     blink: BlinkPhase,
     next_blink: Instant,
     scale: f64,
@@ -509,6 +513,7 @@ pub(crate) fn apply_settings(
     comparison.underline_thickness = next_settings.underline_thickness;
     comparison.initial_columns = next_settings.initial_columns;
     comparison.initial_rows = next_settings.initial_rows;
+    comparison.cursor_trail = next_settings.cursor_trail;
     if comparison != next_settings || *paints != next_paints {
         retained.mark_everything();
     }
@@ -1184,6 +1189,8 @@ impl App {
             mouse_mode: true,
             focused: true,
             pacer: Pacer::new(None),
+            cursor_trail: CursorTrail::default(),
+            trail_mesh: TrailMesh::default(),
             blink: BlinkPhase::On,
             next_blink: now + Duration::from_millis(500),
             scale: 1.0,
@@ -1374,6 +1381,7 @@ impl App {
                 return;
             },
         };
+        let previous_metrics = self.cache.metrics();
         apply_fonts(
             &mut self.active_fonts,
             &mut self.cache,
@@ -1381,6 +1389,12 @@ impl App {
             requested,
             replacement,
         );
+        if self.cache.metrics() != previous_metrics {
+            self.cursor_trail.reset();
+            if self.connection_geometry.received_frame {
+                self.observe_cursor_trail(Instant::now(), self.composition.shown().as_ref());
+            }
+        }
         self.zoom = zoom;
         self.scale = scale;
     }
@@ -1605,6 +1619,8 @@ impl App {
                     return Ok(());
                 },
             };
+        let previous_metrics = self.cache.metrics();
+        let had_trail = self.cursor_trail.is_active();
         reload.apply(
             &mut self.active_fonts,
             &mut self.cache,
@@ -1612,6 +1628,15 @@ impl App {
             &mut self.settings,
             &mut self.paints,
         );
+        if self.cache.metrics() != previous_metrics || !self.cursor_trail_enabled() {
+            self.cursor_trail.reset();
+            if had_trail {
+                self.pacer.schedule();
+            }
+        }
+        if self.connection_geometry.received_frame && self.cursor_trail_enabled() {
+            self.observe_cursor_trail(Instant::now(), self.composition.shown().as_ref());
+        }
         if let Some(surfaces) = &self.surfaces {
             surfaces
                 .window
@@ -1642,6 +1667,7 @@ impl App {
                 let first = !self.connection_geometry.received_frame;
                 self.connection_geometry.received_frame = true;
                 if first {
+                    self.cursor_trail.reset();
                     self.refresh_geometry()?;
                 }
                 self.present_frame(applied);
@@ -1691,8 +1717,66 @@ impl App {
         Ok(())
     }
 
+    fn cursor_trail_enabled(&self) -> bool {
+        self.settings.cursor_trail.unwrap_or(true)
+    }
+
+    fn configured_cursor_shape(&self) -> Option<CursorShape> {
+        self.settings.cursor_style.map(|style| match style {
+            yinz_types::input::native_terminal::CursorStyle::Block => CursorShape::Block,
+            yinz_types::input::native_terminal::CursorStyle::Bar => CursorShape::Beam,
+            yinz_types::input::native_terminal::CursorStyle::Underline => CursorShape::Underline,
+        })
+    }
+
+    fn cursor_options(&self) -> CursorOptions {
+        CursorOptions {
+            shape: self.configured_cursor_shape(),
+            blink: self.settings.cursor_blink,
+            hollow: !self.focused,
+        }
+    }
+
+    fn observe_cursor_trail(&mut self, now: Instant, preedit: Option<&Preedit>) -> bool {
+        if !self.cursor_trail_enabled() {
+            self.cursor_trail.reset();
+            return false;
+        }
+        let selection = self.selection.range();
+        let context = RowContext::new(
+            SceneInputs {
+                state: &self.state,
+                phase: self.blink,
+                paints: &self.paints,
+                cursor: self.cursor_options(),
+                hovered_link: None,
+                preedit,
+            },
+            &self.cache,
+        )
+        .with_contrast(self.retained.contrast())
+        .with_selection(selection.as_ref());
+        let (snapshot, draw_cursor) = context.cursor_trail_state();
+        self.cursor_trail
+            .observe(snapshot, context.size, context.metrics, true, now);
+        draw_cursor
+    }
+
+    fn sample_cursor_trail(&mut self, now: Instant, preedit: Option<&Preedit>) -> bool {
+        if self.connection_geometry.received_frame && self.observe_cursor_trail(now, preedit) {
+            self.cursor_trail.sample(now, &mut self.trail_mesh)
+        } else {
+            self.trail_mesh.clear();
+            false
+        }
+    }
+
     fn present_frame(&mut self, applied: FrameApplied) {
         self.retained.mark(&applied.damage);
+        if applied.cleared {
+            self.cursor_trail.reset();
+        }
+        self.observe_cursor_trail(Instant::now(), self.composition.shown().as_ref());
         if let Some(title) = self.state.take_title()
             && let Some(surfaces) = &self.surfaces
         {
@@ -1816,6 +1900,7 @@ impl App {
         }
         self.state = first.state;
         self.retained = RetainedScene::new();
+        self.cursor_trail.reset();
         if let Some(surfaces) = &mut self.surfaces {
             surfaces.renderer.clear_images();
             surfaces.window.set_title("Yinz");
@@ -1858,6 +1943,7 @@ impl App {
                 opacity: self.settings.opacity.unwrap_or(1.0),
                 mode: yinz_types::input::native_terminal::OpacityMode::Background,
             });
+        let cursor = self.cursor_options();
         let size = self.surfaces.as_ref().map(Surfaces::size);
         let Some(size) = refresh_drawable(
             size,
@@ -1866,21 +1952,7 @@ impl App {
                 state: &self.state,
                 phase: self.blink,
                 paints: &self.paints,
-                cursor: CursorOptions {
-                    shape: self.settings.cursor_style.map(|style| match style {
-                        yinz_types::input::native_terminal::CursorStyle::Block => {
-                            crate::emulation::screen_buffer::CursorShape::Block
-                        },
-                        yinz_types::input::native_terminal::CursorStyle::Bar => {
-                            crate::emulation::screen_buffer::CursorShape::Beam
-                        },
-                        yinz_types::input::native_terminal::CursorStyle::Underline => {
-                            crate::emulation::screen_buffer::CursorShape::Underline
-                        },
-                    }),
-                    blink: self.settings.cursor_blink,
-                    hollow: !self.focused,
-                },
+                cursor,
                 hovered_link: None,
                 preedit: preedit.as_ref(),
             },
@@ -1890,6 +1962,7 @@ impl App {
         };
         let padding = self.padding() as i32;
         let notice = self.switch_overlay(size, padding as u32);
+        let trail_active = self.sample_cursor_trail(Instant::now(), preedit.as_ref());
         if let Some(surfaces) = &mut self.surfaces {
             surfaces.renderer.draw_retained(
                 &self.retained,
@@ -1897,6 +1970,7 @@ impl App {
                 size,
                 Frame {
                     origin: (padding, padding),
+                    trail: trail_active.then_some(&self.trail_mesh),
                     notice: notice.as_ref(),
                     ..Default::default()
                 },
@@ -1916,6 +1990,9 @@ impl App {
                 .swap_buffers(&surfaces.context)
                 .context("present native terminal frame")?;
             self.pacer.drawn(Instant::now());
+            if trail_active {
+                self.pacer.schedule();
+            }
         }
         Ok(())
     }
@@ -1981,6 +2058,9 @@ impl App {
             WindowEvent::RedrawRequested => self.draw()?,
             WindowEvent::Focused(focused) => {
                 self.focused = focused;
+                if self.connection_geometry.received_frame {
+                    self.observe_cursor_trail(Instant::now(), self.composition.shown().as_ref());
+                }
                 self.send(ClientToServerMsg::HostTerminalFocusChanged { focused })?;
                 self.retained.mark_everything();
                 self.pacer.schedule();

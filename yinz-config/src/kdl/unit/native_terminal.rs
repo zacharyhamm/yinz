@@ -140,6 +140,7 @@ fn documented_native_terminal_example_loads() {
         .unwrap();
     let config = Config::from_kdl(example, None).unwrap();
     assert_eq!(config.terminal.font_ligatures, Some(true));
+    assert_eq!(config.terminal.cursor_trail, Some(true));
     assert_eq!(config.terminal.cell_width, Some(1.0));
     assert_eq!(config.terminal.line_height, Some(1.0));
     assert_eq!(config.terminal.baseline_offset, Some(2));
@@ -620,4 +621,56 @@ fn underline_metrics_validate_and_roundtrip_as_independent_plain_integers() {
     );
     assert!(Config::terminal_settings_from_kdl("terminal {}\nterminal {}").is_err());
     assert!(Config::terminal_settings_from_kdl("terminal { underline_offset").is_err());
+}
+
+#[test]
+fn cursor_trail_validates_roundtrips_and_overlays() {
+    assert_eq!(
+        Config::from_kdl("terminal {}", None)
+            .unwrap()
+            .terminal
+            .cursor_trail,
+        None
+    );
+    for enabled in [false, true] {
+        let config = Config::from_kdl(
+            &format!("terminal {{ cursor_trail {enabled}; padding 2; }}"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.terminal.cursor_trail, Some(enabled));
+        let text = config.to_string(false).unwrap();
+        let roundtrip = Config::from_kdl(&text, None).unwrap();
+        assert_eq!(roundtrip.terminal, config.terminal);
+        let inherited = Config::from_kdl("terminal { opacity 0.5; }", Some(config)).unwrap();
+        assert_eq!(inherited.terminal.cursor_trail, Some(enabled));
+        let overridden = Config::from_kdl(
+            &format!("terminal {{ cursor_trail {}; }}", !enabled),
+            Some(inherited),
+        )
+        .unwrap();
+        assert_eq!(overridden.terminal.cursor_trail, Some(!enabled));
+        assert_eq!(overridden.terminal.padding, Some(2.0));
+    }
+    for bad in [
+        "cursor_trail",
+        "cursor_trail 1",
+        "cursor_trail \"true\"",
+        "cursor_trail null",
+        "cursor_trail (bool)true",
+        "(bool)cursor_trail true",
+        "cursor_trail true false",
+        "cursor_trail value=true",
+        "cursor_trail true {}",
+        "cursor_trail true; cursor_trail false",
+    ] {
+        let input = format!("terminal {{ padding 4; {bad}; opacity 0.5; }}");
+        let ConfigError::KdlError(error) = Config::from_kdl(&input, None).unwrap_err() else {
+            panic!("{input}: expected KdlError");
+        };
+        assert!(
+            error.error_message.contains("cursor_trail"),
+            "{input}: {error:?}"
+        );
+    }
 }

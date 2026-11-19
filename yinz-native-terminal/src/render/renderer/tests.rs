@@ -164,3 +164,29 @@ fn the_byte_view_of_vertices_has_four_bytes_per_float() {
     let vertices = vec![1.0f32, 2.0, 3.0];
     assert_eq!(bytemuck_cast(&vertices).len(), 12);
 }
+
+#[test]
+fn trail_vertices_pack_position_normalized_rgb_and_alpha() {
+    use crate::render::cursor_trail::{TrailMesh, TrailVertex};
+    let mesh = TrailMesh {
+        vertices: vec![
+            TrailVertex {
+                x: 10.0,
+                y: 20.0,
+                color: [255, 0, 128],
+                alpha: 0.5,
+            },
+            TrailVertex {
+                x: 30.0,
+                y: 40.0,
+                color: [0, 255, 0],
+                alpha: 0.0,
+            },
+        ],
+    };
+    let mut vertices = Vec::new();
+    push_trail_vertices(&mut vertices, &mesh);
+    assert_eq!(vertices.len(), 2 * (TRAIL_STRIDE as usize / 4));
+    assert_eq!(&vertices[..6], &[10.0, 20.0, 1.0, 0.0, 128.0 / 255.0, 0.5]);
+    assert_eq!(&vertices[6..12], &[30.0, 40.0, 0.0, 1.0, 0.0, 0.0]);
+}

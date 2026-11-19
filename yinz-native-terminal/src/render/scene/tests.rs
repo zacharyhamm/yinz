@@ -1323,6 +1323,55 @@ fn a_block_cursor_inverts_its_cell() {
 }
 
 #[test]
+fn cursor_trail_matches_the_rendered_block_fill_on_concealed_cells() {
+    let mut cache = cache();
+    let metrics = cache.metrics();
+    let cell_background = [12, 34, 56];
+    for (shape, concealed) in [(CursorShape::Default, false), (CursorShape::Block, true)] {
+        let state = Painter::state(1, 4, |painter| {
+            painter.styled(0, 2, "x", |cell| {
+                cell.bg = WireColor::Rgb(12, 34, 56).pack();
+                if concealed {
+                    cell.attrs |= ATTR_HIDDEN;
+                }
+            });
+            painter.cursor(0, 2, shape);
+        });
+        for override_color in [None, Some([45, 67, 89])] {
+            let paints = Paints {
+                cursor: override_color,
+                ..Paints::default()
+            };
+            let inputs = SceneInputs {
+                state: &state,
+                phase: BlinkPhase::On,
+                paints: &paints,
+                cursor: CursorOptions::default(),
+                hovered_link: None,
+                preedit: None,
+            };
+            let (snapshot, visible) = RowContext::new(inputs, &cache).cursor_trail_state();
+            assert!(visible);
+            assert_eq!(snapshot.shape, CursorShape::Block);
+            let expected = override_color.unwrap_or(if concealed {
+                cell_background
+            } else {
+                paints.foreground
+            });
+            assert_eq!(snapshot.color, expected);
+            let scene = build_once(inputs, &mut cache);
+            assert!(scene
+                .rects
+                .iter()
+                .any(|rect| rect.x == (2 * metrics.width) as i32
+                    && rect.width == metrics.width
+                    && rect.height == metrics.height
+                    && rect.color == snapshot.color));
+        }
+    }
+}
+
+#[test]
 fn a_beam_cursor_is_a_narrow_full_height_stroke() {
     let scene = scene_of(1, 4, |painter| painter.cursor(0, 0, CursorShape::Beam));
     let metrics = cache().metrics();

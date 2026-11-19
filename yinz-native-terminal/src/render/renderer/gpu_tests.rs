@@ -2434,3 +2434,138 @@ fn underline_metrics_repeated_updates_preserve_order_over_missing_glyph_boxes() 
         }
     });
 }
+
+#[test]
+fn cursor_trail_blends_gradient_in_cursor_color_and_clears_when_settled() {
+    use crate::emulation::color::Paints;
+    use crate::emulation::screen_buffer::{CursorShape, TermSize};
+    use crate::render::cursor_trail::{CursorSnapshot, CursorTrail, TrailMesh, TRAIL_DURATION};
+    use crate::render::scene::{BlinkPhase, CursorOptions, SceneInputs};
+    use crate::testing::painter::Painter;
+    use crate::window::effective_font_options;
+    use std::time::Instant;
+    use yinz_types::input::native_terminal::TerminalConfig;
+
+    with_renderer(|renderer| {
+        let options = effective_font_options(
+            &TerminalConfig {
+                system_fonts: Some(false),
+                ..TerminalConfig::default()
+            },
+            1.0,
+            1.0,
+        );
+        let mut cache = fixture_cache(&options);
+        let metrics = cache.metrics();
+        let state = Painter::state(10, 40, |p| {
+            p.text(2, 20, "█");
+            p.cursor(2, 20, CursorShape::Block);
+        });
+        let cursor_rgb = [0, 200, 255];
+        let paints = Paints {
+            background: [0, 0, 0],
+            foreground: [220, 220, 220],
+            cursor: Some(cursor_rgb),
+            ..Paints::default()
+        };
+        let mut retained = RetainedScene::new();
+        retained.refresh(
+            SceneInputs {
+                state: &state,
+                phase: BlinkPhase::On,
+                paints: &paints,
+                cursor: CursorOptions::default(),
+                hovered_link: None,
+                preedit: None,
+            },
+            &mut cache,
+        );
+
+        let start = Instant::now();
+        let grid = TermSize { rows: 10, cols: 40 };
+        let mut trail = CursorTrail::default();
+        let mut mesh = TrailMesh::default();
+        trail.observe(
+            CursorSnapshot {
+                row: 2,
+                col: 1,
+                visible: true,
+                shape: CursorShape::Block,
+                color: cursor_rgb,
+            },
+            grid,
+            metrics,
+            true,
+            start,
+        );
+        trail.observe(
+            CursorSnapshot {
+                row: 2,
+                col: 20,
+                visible: true,
+                shape: CursorShape::Block,
+                color: cursor_rgb,
+            },
+            grid,
+            metrics,
+            true,
+            start,
+        );
+        assert!(trail.sample(start, &mut mesh));
+
+        renderer.draw_retained(
+            &retained,
+            cache.atlases(),
+            (768, 384),
+            Frame {
+                trail: Some(&mesh),
+                ..Default::default()
+            },
+        );
+        let with_trail = read_framebuffer(renderer);
+
+        let mid_y = 2 * metrics.height + metrics.height / 2;
+        let near_tail = baseline_offset_atlas_retry_pixel(&with_trail, 4 * metrics.width, mid_y);
+        let near_head = baseline_offset_atlas_retry_pixel(&with_trail, 18 * metrics.width, mid_y);
+        let cursor_glyph = baseline_offset_atlas_retry_pixel(
+            &with_trail,
+            20 * metrics.width + metrics.width / 2,
+            mid_y,
+        );
+        let outside =
+            baseline_offset_atlas_retry_pixel(&with_trail, 10 * metrics.width, 6 * metrics.height);
+
+        // Trail tints strictly in the cursor color (red == 0, blue > green > 0) and grows brighter toward head.
+        assert_eq!(near_tail[0], 0);
+        assert_eq!(near_head[0], 0);
+        assert!(
+            near_head[2] > near_tail[2] && near_tail[2] > 0,
+            "expected brightness gradient along trail: tail={near_tail:?} head={near_head:?}"
+        );
+        assert!(
+            near_head[1] > near_tail[1] && near_tail[1] > 0,
+            "expected green channel gradient: tail={near_tail:?} head={near_head:?}"
+        );
+        // The inverted glyph inside the destination Block cursor renders on top of the trail,
+        // staying pure background black rather than washed out by PEAK_ALPHA * cursor_rgb.
+        assert_eq!(
+            cursor_glyph,
+            [0, 0, 0, 255],
+            "destination block cursor glyph should remain crisp over the trail"
+        );
+        assert_eq!(
+            outside,
+            [0, 0, 0, 255],
+            "pixels outside trail stay untouched"
+        );
+
+        // Once settled, drawing without a trail restores the clean background.
+        assert!(!trail.sample(start + TRAIL_DURATION, &mut mesh));
+        renderer.draw_retained(&retained, cache.atlases(), (768, 384), Frame::default());
+        let settled = read_framebuffer(renderer);
+        assert_eq!(
+            baseline_offset_atlas_retry_pixel(&settled, 18 * metrics.width, mid_y),
+            [0, 0, 0, 255]
+        );
+    });
+}

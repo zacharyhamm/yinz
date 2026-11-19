@@ -11,9 +11,9 @@ mod configuration_editor;
 fn validate_unsaved_native_settings(
     current: &Config,
     requested: &Config,
-    saved_underline_changes: &[&str],
+    saved_terminal_changes: &[&str],
 ) -> Result<()> {
-    let mut changed = saved_underline_changes.to_vec();
+    let mut changed = saved_terminal_changes.to_vec();
     if current.terminal.font_ligatures.unwrap_or(true)
         != requested.terminal.font_ligatures.unwrap_or(true)
     {
@@ -45,10 +45,14 @@ fn validate_unsaved_native_settings(
     Ok(())
 }
 
-fn changed_underline_settings(
+fn changed_saved_terminal_settings(
     requested: &TerminalConfig,
     current: &TerminalConfig,
 ) -> impl Iterator<Item = &'static str> {
+    let cursor_trail = requested
+        .cursor_trail
+        .filter(|value| *value != current.cursor_trail.unwrap_or(true))
+        .map(|_| "cursor_trail");
     [
         (
             "underline_offset",
@@ -67,14 +71,15 @@ fn changed_underline_settings(
             .filter(|value| *value != current.unwrap_or(0))
             .map(|_| name)
     })
+    .chain(cursor_trail)
 }
 
-struct UnderlineReconfigure {
+struct SavedTerminalReconfigure {
     requested: TerminalConfig,
     saved_changes: Result<Vec<&'static str>>,
 }
 
-impl UnderlineReconfigure {
+impl SavedTerminalReconfigure {
     fn read(config: &str, session_data: &Arc<RwLock<Option<SessionMetaData>>>) -> Result<Self> {
         let requested = Config::terminal_settings_from_kdl(config)
             .map_err(|error| anyhow!(yinz_config::editor::validation_error(error)))?
@@ -82,6 +87,7 @@ impl UnderlineReconfigure {
         let names = [
             requested.underline_offset.map(|_| "underline_offset"),
             requested.underline_thickness.map(|_| "underline_thickness"),
+            requested.cursor_trail.map(|_| "cursor_trail"),
         ];
         let saved_changes = if names.iter().any(Option::is_some) {
             let (file, dir) = with_session(session_data, |session| {
@@ -89,7 +95,7 @@ impl UnderlineReconfigure {
             })?
             .context("session is unavailable")?;
             Config::load_saved(file.as_deref(), dir.as_deref())
-                .map(|saved| changed_underline_settings(&requested, &saved.terminal).collect())
+                .map(|saved| changed_saved_terminal_settings(&requested, &saved.terminal).collect())
                 .map_err(|error| anyhow!(error.diagnostic_message()))
                 .with_context(|| format!(
                     "cannot compare terminal {} with the saved configuration; the entire fragment was refused. \
@@ -108,7 +114,7 @@ impl UnderlineReconfigure {
 
     fn defer_save(&self, current: &TerminalConfig) -> bool {
         !self.saved_changes.as_ref().is_ok_and(Vec::is_empty)
-            || changed_underline_settings(&self.requested, current)
+            || changed_saved_terminal_settings(&self.requested, current)
                 .next()
                 .is_some()
     }
@@ -721,7 +727,7 @@ fn reconfigure_target(
     write_config_to_disk: bool,
     session_data: &Arc<RwLock<Option<SessionMetaData>>>,
 ) -> Result<Option<()>> {
-    let underline = UnderlineReconfigure::read(&config, session_data)?;
+    let saved_terminal = SavedTerminalReconfigure::read(&config, session_data)?;
     let Some(result) = with_session_mut(session_data, |session| {
         // Unsaved changes must be validated before any live state (including editor and
         // background-plugin state) changes. Save-only requests retain their existing policy.
@@ -735,12 +741,12 @@ fn reconfigure_target(
         let current = session
             .session_configuration
             .get_client_configuration(&target.client_id);
-        let defer = write_config_to_disk && underline.defer_save(&current.terminal);
+        let defer = write_config_to_disk && saved_terminal.defer_save(&current.terminal);
         if !write_config_to_disk {
             validate_unsaved_native_settings(
                 &current,
                 &staged.get_client_configuration(&target.client_id),
-                &underline.saved_changes?,
+                &saved_terminal.saved_changes?,
             )?;
             // With nobody attached the change is session-wide, so it is the session's
             // theme too. A saved change reaches the source once it is written.
@@ -813,7 +819,7 @@ pub(super) fn reconfigure_all_clients(
             )?
             .context("session is unavailable")?;
         } else {
-            let underline = UnderlineReconfigure::read(&config, session_data)?;
+            let saved_terminal = SavedTerminalReconfigure::read(&config, session_data)?;
             with_session_mut(session_data, |session| -> Result<()> {
                 let mut staged = session.session_configuration.clone();
                 // `yinz action reconfigure` is session-wide, so it is the session's theme too.
@@ -832,7 +838,7 @@ pub(super) fn reconfigure_all_clients(
                             .session_configuration
                             .get_client_configuration(&client_id),
                         &staged.get_client_configuration(&client_id),
-                        underline
+                        saved_terminal
                             .saved_changes
                             .as_deref()
                             .map_err(|error| anyhow!("{error:#}"))?,

@@ -1,5 +1,13 @@
 use crate::render::atlas::GlyphAtlas;
+use crate::render::cursor_trail::TrailMesh;
 use crate::render::scene::ImageQuad;
+
+pub(super) fn push_trail_vertices(vertices: &mut Vec<f32>, mesh: &TrailMesh) {
+    for vertex in &mesh.vertices {
+        let [red, green, blue] = normalized(vertex.color);
+        vertices.extend_from_slice(&[vertex.x, vertex.y, red, green, blue, vertex.alpha]);
+    }
+}
 
 pub(super) fn push_solid_vertices(vertices: &mut Vec<f32>, rects: &[crate::render::scene::Rect]) {
     for rect in rects {

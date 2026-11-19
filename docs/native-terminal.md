@@ -52,6 +52,7 @@ terminal {
     blur false
     cursor_style "block"
     cursor_blink true
+    cursor_trail true
     startup_mode "remember"
     macos_option_as_alt "none"
     open_links true
@@ -503,7 +504,7 @@ Set `YINZ_NATIVE_TEST_FLOATING=1` for that run. Windowed should settle at 100 by
 30 rows checked independently. A tiling grant or a mode the desktop declines
 is reported as limited desktop coverage.
 
-`cursor_style` accepts `block`, `bar`, and `underline`. `macos_option_as_alt` accepts `none`, `left`, `right`,
+`cursor_style` accepts `block`, `bar`, and `underline`. `cursor_trail` enables (`true`, the default) or disables (`false`) the swept comet trail drawn behind the cursor when it jumps at least two cells in the native terminal window. `macos_option_as_alt` accepts `none`, `left`, `right`,
 and `both`.
 
 Use Ctrl+Shift+C/V (Command+C/V on macOS) for copy/paste. Hold Shift while

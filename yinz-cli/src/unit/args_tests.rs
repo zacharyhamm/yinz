@@ -589,6 +589,7 @@ fn reconfigure_help_explains_saved_native_settings_and_atomic_refusal() {
         "baseline_offset",
         "underline_offset",
         "underline_thickness",
+        "cursor_trail",
         "ligatures/font_ligatures",
         "font_features",
         "requires --write",

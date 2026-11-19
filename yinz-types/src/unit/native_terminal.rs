@@ -256,3 +256,33 @@ fn underline_metrics_optional_integers_roundtrip_independently() {
         }
     }
 }
+
+#[test]
+fn cursor_trail_optional_boolean_roundtrips() {
+    assert_eq!(TerminalConfig::default().cursor_trail, None);
+    for text in ["{}", r#"{"cursor_trail":null}"#] {
+        assert_eq!(
+            serde_json::from_str::<TerminalConfig>(text)
+                .unwrap()
+                .cursor_trail,
+            None
+        );
+    }
+    for enabled in [false, true] {
+        let config: TerminalConfig =
+            serde_json::from_value(serde_json::json!({"cursor_trail": enabled})).unwrap();
+        assert_eq!(config.cursor_trail, Some(enabled));
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(value["cursor_trail"], enabled);
+        assert_eq!(
+            serde_json::from_value::<TerminalConfig>(value).unwrap(),
+            config
+        );
+    }
+    for bad in ["1", "0", "\"true\"", "[]", "{}"] {
+        assert!(
+            serde_json::from_str::<TerminalConfig>(&format!("{{\"cursor_trail\":{bad}}}")).is_err(),
+            "{bad}"
+        );
+    }
+}

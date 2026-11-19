@@ -17,15 +17,18 @@ mod vertices;
 use atlas_upload::{atlas_texture, upload_atlas, AtlasTexture};
 use images::{ImageBatch, ImageDepth, ImageTexture};
 use programs::{
-    attribute, draw_pass, link, premultiplied_blending, solid_pass, textured_pass, COLOR_FRAGMENT,
-    GLYPH_FRAGMENT, GLYPH_VERTEX, SOLID_FRAGMENT, SOLID_VERTEX,
+    attribute, draw_pass, link, premultiplied_blending, solid_pass, textured_pass, trail_pass,
+    COLOR_FRAGMENT, GLYPH_FRAGMENT, GLYPH_VERTEX, SOLID_FRAGMENT, SOLID_VERTEX, TRAIL_FRAGMENT,
+    TRAIL_VERTEX,
 };
 use rows::{draw_rows, sync_rows, RowChanges, RowVertices};
 use vertices::{
-    bytemuck_cast, push_glyph_vertices, push_image_vertices, push_solid_vertices, quad_corners,
+    bytemuck_cast, push_glyph_vertices, push_image_vertices, push_solid_vertices,
+    push_trail_vertices, quad_corners,
 };
 
 const SOLID_STRIDE: i32 = 5 * 4;
+const TRAIL_STRIDE: i32 = 6 * 4;
 const GLYPH_STRIDE: i32 = 7 * 4;
 const VERTICES_PER_QUAD: usize = 6;
 const SLOT_QUADS: usize = 4;
@@ -36,6 +39,7 @@ pub struct Frame<'a> {
     pub origin: (i32, i32),
     pub margins: &'a [crate::render::scene::Rect],
     pub layer: Option<&'a crate::render::scroll_animation::ScrollLayer>,
+    pub trail: Option<&'a crate::render::cursor_trail::TrailMesh>,
     pub notice: Option<&'a crate::render::scene::RowScene>,
 }
 
@@ -58,6 +62,7 @@ pub struct Renderer {
     layer_glyph: Pass,
     layer_color: Pass,
     layer_image: Pass,
+    trail: Pass,
     layer_vertices: Vec<f32>,
     mask_atlas: AtlasTexture,
     color_atlas: AtlasTexture,
@@ -82,6 +87,7 @@ impl Renderer {
             ShaderDialect::for_context(version.is_embedded, version.major, version.minor)?;
         unsafe {
             let solid_program = link(&gl, dialect, SOLID_VERTEX, SOLID_FRAGMENT)?;
+            let trail_program = link(&gl, dialect, TRAIL_VERTEX, TRAIL_FRAGMENT)?;
             let glyph_program = link(&gl, dialect, GLYPH_VERTEX, GLYPH_FRAGMENT)?;
             let color_program = link(&gl, dialect, GLYPH_VERTEX, COLOR_FRAGMENT)?;
 
@@ -152,6 +158,7 @@ impl Renderer {
             let layer_glyph = textured_pass(&gl, glyph_program)?;
             let layer_color = textured_pass(&gl, color_program)?;
             let layer_image = textured_pass(&gl, color_program)?;
+            let trail = trail_pass(&gl, trail_program)?;
 
             let mask_atlas = atlas_texture(&gl, glow::RED, glow::R8 as i32)?;
             let color_atlas = atlas_texture(&gl, glow::RGBA, glow::RGBA8 as i32)?;
@@ -173,6 +180,7 @@ impl Renderer {
                 layer_glyph,
                 layer_color,
                 layer_image,
+                trail,
                 layer_vertices: Vec::new(),
                 mask_atlas,
                 color_atlas,
@@ -296,6 +304,18 @@ impl Renderer {
             self.draw_images(viewport, origin, ImageDepth::BelowText);
             if let Some(layer) = layer {
                 self.draw_layer_images(&layer.images, viewport, origin, ImageDepth::BelowText);
+            }
+            if let Some(trail) = frame.trail.filter(|trail| !trail.is_empty()) {
+                self.layer_vertices.clear();
+                push_trail_vertices(&mut self.layer_vertices, trail);
+                draw_pass(
+                    &self.gl,
+                    &self.trail,
+                    &self.layer_vertices,
+                    TRAIL_STRIDE,
+                    viewport,
+                    origin,
+                );
             }
             self.gl
                 .bind_texture(glow::TEXTURE_2D, Some(self.mask_atlas.texture));
