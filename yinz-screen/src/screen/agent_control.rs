@@ -48,6 +48,8 @@ pub(super) enum Reply {
 pub(super) struct Lifecycle {
     kind: String,
     conversation: String,
+    prompt_id: Option<String>,
+    previous_prompt_id: Option<String>,
     claude: providers::ClaudeLifecycle,
     agy: providers::AgyLifecycle,
     input_revision: Option<u64>,
@@ -117,10 +119,10 @@ impl Lifecycle {
             input_revision: self.input_revision,
             ended_turn: self.ended_turn.clone(),
             closeout_turn: self.closeout_turn.clone(),
-            claude_prompt_id: self.claude.prompt_id.clone(),
+            claude_prompt_id: self.prompt_id.clone(),
             claude_confirmation: self.claude.confirmation,
-            claude_previous_prompt_id: self.claude.previous_prompt_id.clone(),
-            agy_confirmation: self.agy.confirmation,
+            claude_previous_prompt_id: self.previous_prompt_id.clone(),
+            agy_confirmation: self.agy.confirmation(),
             claude_background: self.claude.background.clone(),
             claude_notifications: self.claude.notifications.clone(),
             last_message: self.last_message.clone(),
@@ -137,18 +139,16 @@ impl From<LifecycleState> for Lifecycle {
             ended_turn: state.ended_turn,
             closeout_turn: state.closeout_turn,
             last_message: state.last_message,
+            prompt_id: state.claude_prompt_id,
+            previous_prompt_id: state.claude_previous_prompt_id,
             claude: providers::ClaudeLifecycle {
                 observed_at: Instant::now(),
                 activity: state.claude,
-                prompt_id: state.claude_prompt_id,
                 confirmation: state.claude_confirmation,
-                previous_prompt_id: state.claude_previous_prompt_id,
                 background: state.claude_background,
                 notifications: state.claude_notifications,
             },
-            agy: providers::AgyLifecycle {
-                confirmation: state.agy_confirmation,
-            },
+            agy: providers::AgyLifecycle::from_confirmation(state.agy_confirmation),
         }
     }
 }

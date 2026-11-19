@@ -392,7 +392,10 @@ fn transfer(source: &mut Screen, kind: &str) -> Screen {
     destination
 }
 
-fn transfer_into(source: &mut Screen, destination: &mut Screen) {
+fn transfer_into(
+    source: &mut Screen,
+    destination: &mut Screen,
+) -> yinz_types::agent::tracking::AgentTrackingHandoff {
     let handoff = source.capture_agent_tracking(PANE).unwrap();
     // Exercise the wire representation, including the deliberate absence of process clocks.
     let json = serde_json::to_string(&handoff).unwrap();
@@ -403,6 +406,7 @@ fn transfer_into(source: &mut Screen, destination: &mut Screen) {
         .agents
         .stage_transfer_identity(PANE, (Some(handoff.agent.clone()), Some(decoded)));
     assert!(destination.restore_staged_transfer_state(PANE));
+    handoff
 }
 
 #[test]
@@ -898,10 +902,9 @@ fn permission_wait_survives_transfers(notification: bool) {
                 permission_key(&mut source, KeyWithModifier::new(BareKey::Enter), cli);
                 assert_eq!(finish_paste(&writes), b"\r");
                 assert_eq!(source.agent_status_for_test().agent.state, AgentState::Busy);
-                assert!(source.agents.claude_permission_waits.is_empty());
-                assert!(source
-                    .capture_agent_tracking(PANE)
-                    .unwrap()
+                let handoff = source.capture_agent_tracking(PANE).unwrap();
+                assert!(handoff.permission_wait.is_none());
+                assert!(handoff
                     .lifecycle
                     .unwrap()
                     .claude_notifications
@@ -960,7 +963,15 @@ fn warp_tracking_failed_notification_observer_keeps_native_permission_ownership(
             report_kind(&mut destination, "claude", hook("SessionStart"));
             permission_key(&mut destination, KeyWithModifier::new(BareKey::Enter), true);
             finish_paste(&writes);
-            transfer_into(&mut source, &mut destination);
+            let outgoing = transfer_into(&mut source, &mut destination);
+            let transferred = outgoing.lifecycle.unwrap();
+            assert_eq!(transferred.last_message.as_deref(), Some("LAUNCH"));
+            let notice = &transferred.claude_notifications["notice"];
+            assert!(notice.permission_revision.is_some());
+            assert_eq!(
+                notice.observation_unavailable,
+                !loss_after_transfer || i != 0
+            );
             if loss_after_transfer && i == 0 {
                 lose_notification_observation(&mut destination, "budget");
             }
@@ -1028,7 +1039,10 @@ fn warp_tracking_completed_parent_background_permission_restores_idle_after_appr
                             );
                             assert_eq!(finish_paste(&destination_writes), b"\r");
                         }
-                        transfer_into(&mut source, &mut destination);
+                        let outgoing = transfer_into(&mut source, &mut destination);
+                        let lifecycle = outgoing.lifecycle.unwrap();
+                        assert_eq!(lifecycle.claude_confirmation, Some(true));
+                        assert!(lifecycle.claude_notifications.is_empty());
                         destination.refresh_agent_controls();
                         assert_eq!(destination.agent_status_for_test().agent, waiting);
                         assert!(destination.agent_status_for_test().background);

@@ -29,17 +29,8 @@ impl super::AgentController {
         let live = host.pane_info(pane).is_some_and(|info| {
             !info.is_held && !info.exited && tracking.agent.state != AgentState::Exited
         });
-        let source = tracking.input_revision;
         let destination = host.agent_input_revision(pane);
-        // A non-current revision is deliberately unequal even at revision zero. Unknown
-        // evidence stays None. No input timestamps from another process are restored.
-        let remap = |revision| {
-            if revision == source {
-                destination
-            } else {
-                destination.wrapping_sub(1)
-            }
-        };
+        yinz_agent_control::handoff::remap_input(&mut tracking, destination);
         if live && tracking.lifecycle.is_none() {
             self.warped_agent_inputs.insert(
                 pane,
@@ -51,26 +42,16 @@ impl super::AgentController {
                 },
             );
         }
-        if let Some(mut lifecycle) = tracking.lifecycle.filter(|_| live) {
-            lifecycle.input_revision = lifecycle.input_revision.map(remap);
-            // Permission revisions are ordered thresholds, not consumption evidence:
-            // input delivered after restoration must exceed them, while earlier
-            // destination input must not clear a transferred wait.
-            for notification in lifecycle.claude_notifications.values_mut() {
-                notification.permission_revision =
-                    notification.permission_revision.map(|_| destination);
-            }
+        if let Some(lifecycle) = tracking.lifecycle.filter(|_| live) {
             self.agent_lifecycle.insert(pane, lifecycle.into());
         }
-        if let Some(mut dialog) = tracking.dialog_input.filter(|_| live) {
-            dialog.input_revision = remap(dialog.input_revision);
+        if let Some(dialog) = tracking.dialog_input.filter(|_| live) {
             self.agent_dialog_inputs.insert(pane, dialog);
         }
         if let Some(workers) = tracking.worker_waits.filter(|_| live) {
             self.agent_worker_waits.insert(pane, workers);
         }
-        if let Some(mut permission) = tracking.permission_wait.filter(|_| live) {
-            permission.input_revision = destination;
+        if let Some(permission) = tracking.permission_wait.filter(|_| live) {
             self.claude_permission_waits.insert(pane, permission);
         }
         if let Some(mut launch) = tracking.launch.take() {

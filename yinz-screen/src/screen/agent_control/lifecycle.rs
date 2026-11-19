@@ -27,7 +27,7 @@ impl super::AgentController {
             && !claude_notification_stop
             && hook.is_some_and(|hook| hook.claude_turn_complete == Some(false))
             && let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane)
-            && hook.is_some_and(|hook| hook.prompt_id == lifecycle.claude.prompt_id)
+            && hook.is_some_and(|hook| hook.prompt_id == lifecycle.prompt_id)
         {
             lifecycle.claude.confirmation = Some(false);
         }
@@ -36,7 +36,7 @@ impl super::AgentController {
             && hook.is_some_and(|hook| hook.agy_turn_complete == Some(false))
             && let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane)
         {
-            lifecycle.agy.confirmation = Some(false);
+            lifecycle.agy = providers::AgyLifecycle::from_confirmation(Some(false));
         }
         let mut clear_revision = None;
         let clear_started = host.pane_info(pane).is_some_and(|info| {
@@ -193,17 +193,17 @@ impl super::AgentController {
                         ended_turn: previous.and_then(|previous| previous.ended_turn.clone()),
                         closeout_turn: None,
                         last_message: None,
+                        prompt_id: None,
+                        previous_prompt_id: None,
                         claude: providers::ClaudeLifecycle {
                             activity: ClaudeActivity::default(),
                             observed_at: previous
                                 .map_or_else(Instant::now, |l| l.claude.observed_at),
-                            prompt_id: None,
                             confirmation: None,
-                            previous_prompt_id: None,
                             background: None,
                             notifications: BTreeMap::new(),
                         },
-                        agy: providers::AgyLifecycle { confirmation: None },
+                        agy: providers::AgyLifecycle::default(),
                     },
                 );
             } else if let Some(conversation) = event.session_id.as_ref().filter(|id| {
@@ -283,8 +283,7 @@ impl super::AgentController {
                             && hook.is_some_and(|hook| {
                                 hook.prompt_id.is_some()
                                     && previous.is_some_and(|l| {
-                                        l.claude.prompt_id.is_some()
-                                            && hook.prompt_id != l.claude.prompt_id
+                                        l.prompt_id.is_some() && hook.prompt_id != l.prompt_id
                                     })
                             }) =>
                     {
@@ -297,8 +296,7 @@ impl super::AgentController {
                         if event.kind == "claude"
                             && hook.is_some_and(|hook| {
                                 hook.is_claude_interruption()
-                                    && previous
-                                        .is_some_and(|l| hook.prompt_id == l.claude.prompt_id)
+                                    && previous.is_some_and(|l| hook.prompt_id == l.prompt_id)
                             }) =>
                     {
                         hook.and_then(|hook| hook.turn_id.clone())
@@ -328,28 +326,28 @@ impl super::AgentController {
                             previous.and_then(|previous| previous.closeout_turn.clone())
                         },
                         last_message: previous.and_then(|previous| previous.last_message.clone()),
+                        prompt_id: if event.hook == "UserPromptSubmit" && !notification {
+                            hook.and_then(|hook| hook.prompt_id.clone())
+                        } else {
+                            previous.and_then(|previous| previous.prompt_id.clone())
+                        },
+                        previous_prompt_id: previous.and_then(|previous| {
+                            if event.hook == "UserPromptSubmit"
+                                && !notification
+                                && (previous.claude.confirmation.is_some()
+                                    || previous.agy.confirmation().is_some())
+                            {
+                                previous.prompt_id.clone()
+                            } else {
+                                previous.previous_prompt_id.clone()
+                            }
+                        }),
                         claude: providers::ClaudeLifecycle {
                             activity: previous
                                 .map(|previous| previous.claude.activity.clone())
                                 .unwrap_or_default(),
                             observed_at: previous
                                 .map_or_else(Instant::now, |l| l.claude.observed_at),
-                            prompt_id: if event.hook == "UserPromptSubmit" && !notification {
-                                hook.and_then(|hook| hook.prompt_id.clone())
-                            } else {
-                                previous.and_then(|previous| previous.claude.prompt_id.clone())
-                            },
-                            previous_prompt_id: previous.and_then(|previous| {
-                                if event.hook == "UserPromptSubmit"
-                                    && !notification
-                                    && (previous.claude.confirmation.is_some()
-                                        || previous.agy.confirmation.is_some())
-                                {
-                                    previous.claude.prompt_id.clone()
-                                } else {
-                                    previous.claude.previous_prompt_id.clone()
-                                }
-                            }),
                             confirmation: if notification
                                 || claude_notification_stop
                                 || (event.kind == "claude"
@@ -361,8 +359,8 @@ impl super::AgentController {
                                             ))
                                             && hook.prompt_id.is_some()
                                             && previous.is_some_and(|l| {
-                                                l.claude.prompt_id.is_some()
-                                                    && l.claude.prompt_id != hook.prompt_id
+                                                l.prompt_id.is_some()
+                                                    && l.prompt_id != hook.prompt_id
                                             })
                                     })) {
                                 previous.and_then(|previous| previous.claude.confirmation)
@@ -384,22 +382,11 @@ impl super::AgentController {
                                 .map(|previous| previous.claude.notifications.clone())
                                 .unwrap_or_default(),
                         },
-                        agy: providers::AgyLifecycle {
-                            confirmation: if matches!(
-                                event.hook.as_str(),
-                                "UserPromptSubmit" | "PreInvocation"
-                            ) {
-                                None
-                            } else if event.kind == "agy"
-                                && matches!(event.hook.as_str(), "StopFailure" | "Interrupt")
-                            {
-                                Some(true)
-                            } else {
-                                hook.and_then(|hook| hook.agy_turn_complete).or_else(|| {
-                                    previous.and_then(|previous| previous.agy.confirmation)
-                                })
-                            },
-                        },
+                        agy: previous.map(|l| l.agy).unwrap_or_default().after_hook(
+                            &event.kind,
+                            &event.hook,
+                            hook,
+                        ),
                     },
                 );
             }
@@ -555,8 +542,8 @@ impl super::AgentController {
             "StopFailure"
                 if event.kind == "claude"
                     && hook.prompt_id.is_some()
-                    && lifecycle.claude.prompt_id.is_some()
-                    && hook.prompt_id != lifecycle.claude.prompt_id => {},
+                    && lifecycle.prompt_id.is_some()
+                    && hook.prompt_id != lifecycle.prompt_id => {},
             "Stop" | "StopFailure" => lifecycle.last_message = event.last_message.clone(),
             _ => {},
         }

@@ -116,12 +116,16 @@ impl super::AgentController {
             };
             self.invalidate_agent_lifecycle(host, pane_id, reason);
         }
-        // A report that repeats itself costs nothing; a changed one is news to every reader of the
-        // manifest.
         if changed {
-            self.agent_worktrees.refresh_agent_worktrees(host);
-        }
-        if changed {
+            fn worktree_directory(agent: Option<&AgentInfo>) -> Option<&str> {
+                agent
+                    .filter(|agent| agent.state != AgentState::Exited)?
+                    .cwd
+                    .as_deref()
+            }
+            if worktree_directory(previous.as_ref()) != worktree_directory(agent.as_ref()) {
+                self.agent_worktrees.refresh_agent_worktrees(host);
+            }
             AgentUpdate::Changed {
                 previous,
                 current: agent,
@@ -263,8 +267,8 @@ impl super::AgentController {
                     && !hook.is_worker()
                     && self.agent_lifecycle.get(&pane).is_none_or(|l| {
                         hook.prompt_id.is_none()
-                            || l.claude.prompt_id.is_none()
-                            || hook.prompt_id == l.claude.prompt_id
+                            || l.prompt_id.is_none()
+                            || hook.prompt_id == l.prompt_id
                     })
             })
         {
@@ -521,8 +525,8 @@ impl super::AgentController {
                                         "StopFailure" | "Interrupt"
                                     ))
                                     && hook.prompt_id.is_some()
-                                    && lifecycle.claude.prompt_id.is_some()
-                                    && hook.prompt_id != lifecycle.claude.prompt_id
+                                    && lifecycle.prompt_id.is_some()
+                                    && hook.prompt_id != lifecycle.prompt_id
                             })
                         {
                             lifecycle

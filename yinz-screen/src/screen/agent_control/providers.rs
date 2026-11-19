@@ -1,5 +1,5 @@
 mod agy;
-pub(super) use agy::AgyLifecycle;
+pub(super) use yinz_agent_control::providers::agy::AgyLifecycle;
 mod claude;
 pub(super) use claude::ClaudeLifecycle;
 pub(in crate::screen) use yinz_agent_control::providers::codex;

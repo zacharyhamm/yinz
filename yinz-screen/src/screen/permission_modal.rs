@@ -23,7 +23,32 @@ pub(super) struct PermissionModal {
     scroll: usize,
     painted: Option<CellRect>,
     // The outer option retains ownership of the release after its hit is invalidated.
-    pressed: Option<Option<(usize, ContextMenuLayout)>>,
+    pressed: Option<Option<(usize, HitGeometry)>>,
+}
+
+#[derive(PartialEq, Eq)]
+struct HitGeometry {
+    x: usize,
+    y: usize,
+    width: usize,
+    window_start: usize,
+    rows: Vec<Option<usize>>,
+}
+
+impl From<&ContextMenuLayout> for HitGeometry {
+    fn from(layout: &ContextMenuLayout) -> Self {
+        Self {
+            x: layout.x,
+            y: layout.y,
+            width: layout.width,
+            window_start: layout.window_start,
+            rows: layout
+                .rows
+                .iter()
+                .map(|row| (!row.disabled && !row.separator).then_some(row.item_index))
+                .collect(),
+        }
+    }
 }
 
 impl PermissionModal {
@@ -88,14 +113,27 @@ impl PermissionModal {
         items
     }
     pub(super) fn layout(&self, viewport: Viewport) -> ContextMenuLayout {
+        self.layout_with_selection(viewport).0
+    }
+
+    fn layout_with_selection(&self, viewport: Viewport) -> (ContextMenuLayout, usize) {
         let items = self.items(viewport);
+        let selected = items.len() - if self.allow { 1 } else { 2 };
         // The layout helper follows a row at the bottom of the requested viewport.
         let bottom = self.scroll + viewport.rows.saturating_sub(3);
         let mut layout = context_menu_layout(&items, Position::new(0, 0), viewport, Some(bottom));
         layout.x = viewport.x + viewport.cols.saturating_sub(layout.width) / 2;
         layout.y = viewport.y + viewport.rows.saturating_sub(layout.height()) / 2;
-        layout
+        (layout, selected)
     }
+    fn revalidate_press(&mut self, surface: Viewport) {
+        if let Some(Some((_, previous))) = &self.pressed
+            && *previous != HitGeometry::from(&self.layout(surface))
+        {
+            self.pressed = Some(None);
+        }
+    }
+
     fn set_scroll(&mut self, scroll: usize, viewport: Viewport) {
         let previous = self.scroll;
         self.scroll = scroll;
@@ -121,23 +159,9 @@ impl PermissionModal {
 
 impl Screen {
     pub(super) fn open_permission_modal(&mut self, _plugin: PluginId, request: PluginPermission) {
-        if self
-            .permissions
-            .permission_modals
-            .iter()
-            .any(|modal| modal.request.request_id == request.request_id)
-        {
-            return;
+        if self.permissions.open(request) {
+            self.assign_permission_modals();
         }
-        self.permissions.permission_modals.push(PermissionModal {
-            request,
-            client: None,
-            allow: false,
-            scroll: 0,
-            painted: None,
-            pressed: None,
-        });
-        self.assign_permission_modals();
     }
     pub(super) fn assign_permission_modals(&mut self) {
         if self.permissions.permission_modals.is_empty() {
@@ -168,19 +192,7 @@ impl Screen {
         }
     }
     pub(super) fn cancel_permission_modal(&mut self, token: u64) {
-        let old_len = self.permissions.permission_modals.len();
-        for modal in &self.permissions.permission_modals {
-            if modal.request.request_id == token
-                && modal.pressed.is_some()
-                && let Some(client) = modal.client
-            {
-                self.permissions.permission_mouse_captures.insert(client);
-            }
-        }
-        self.permissions
-            .permission_modals
-            .retain(|modal| modal.request.request_id != token);
-        if old_len != self.permissions.permission_modals.len() {
+        if self.permissions.cancel(token) {
             self.force_render_under_context_menu();
         }
     }
@@ -215,120 +227,29 @@ impl Screen {
         key: &Option<KeyWithModifier>,
         client: ClientId,
     ) -> bool {
-        if !self.core.watcher_clients.contains_key(&client) {
-            self.permissions.permission_last_client = Some(client);
-        }
         let surface = self.command_palette_surface(client);
-        let Some(modal) = self
-            .permissions
-            .permission_modals
-            .iter_mut()
-            .find(|modal| modal.client == Some(client))
-        else {
-            return false;
-        };
-        // None is paste or an explicit write. Text never grants permissions.
-        if let Some(key) = key.as_ref().filter(|key| {
-            key.key_modifiers.is_empty()
-                || (key.bare_key == BareKey::Tab && key.has_only_modifiers(&[KeyModifier::Shift]))
-        }) {
-            let answer = match key.bare_key {
-                BareKey::Esc => Some(false),
-                BareKey::Enter => surface
-                    .filter(|surface| {
-                        modal
-                            .layout(*surface)
-                            .row_of_item(modal.selected(*surface))
-                            .is_some()
-                    })
-                    .map(|_| modal.allow),
-                BareKey::Tab | BareKey::Up | BareKey::Down => {
-                    modal.allow = match key.bare_key {
-                        BareKey::Up => false,
-                        BareKey::Down => true,
-                        _ => !modal.allow,
-                    };
-                    if let Some(surface) = surface {
-                        modal.show_selection(surface);
-                    }
-                    None
-                },
-                BareKey::PageUp | BareKey::PageDown | BareKey::Home | BareKey::End => {
-                    if let Some(surface) = surface {
-                        let page = surface.rows.saturating_sub(2).max(1);
-                        let scroll = match key.bare_key {
-                            BareKey::PageUp => modal.scroll.saturating_sub(page),
-                            BareKey::PageDown => modal.scroll + page,
-                            BareKey::Home => 0,
-                            _ => modal.items(surface).len(),
-                        };
-                        modal.set_scroll(scroll, surface);
-                    }
-                    None
-                },
-                _ => None,
-            };
-            if let Some(granted) = answer {
-                self.answer_permission_modal(client, granted);
-            }
-            self.render().non_fatal();
-        }
-        true
+        let interactive = !self.core.watcher_clients.contains_key(&client);
+        let action = self.permissions.key(client, key, interactive, surface);
+        self.apply_permission_input(client, action)
     }
     pub(super) fn permission_modal_mouse(&mut self, event: &MouseEvent, client: ClientId) -> bool {
-        if self.permissions.permission_mouse_captures.contains(&client) {
-            if event.event_type == MouseEventType::Release {
-                self.permissions.permission_mouse_captures.remove(&client);
-            }
-            return true;
-        }
-        if !self.core.watcher_clients.contains_key(&client) {
-            self.permissions.permission_last_client = Some(client);
-        }
         let surface = self.command_palette_surface(client);
-        let Some(modal) = self
-            .permissions
-            .permission_modals
-            .iter_mut()
-            .find(|modal| modal.client == Some(client))
-        else {
-            return false;
-        };
-        if event.wheel_up || event.wheel_down {
-            if let Some(surface) = surface {
-                let scroll = if event.wheel_up {
-                    modal.scroll.saturating_sub(1)
-                } else {
-                    modal.scroll + 1
-                };
-                modal.set_scroll(scroll, surface);
-            }
-            self.render().non_fatal();
-            return true;
-        }
-        let hit = surface
-            .and_then(|surface| context_menu_item_at(&modal.layout(surface), event.position));
-        if event.event_type == MouseEventType::Press {
-            // Retain capture even outside the controls if a keyboard answer closes the modal.
-            modal.pressed = Some(
-                hit.zip(surface)
-                    .filter(|_| event.left)
-                    .map(|(hit, surface)| (hit, modal.layout(surface))),
-            );
-        }
-        if event.event_type == MouseEventType::Release {
-            let pressed = modal.pressed.take();
-            if let (Some(hit), Some(surface)) = (hit, surface)
-                && event.left
-                && pressed.flatten().is_some_and(|(index, _)| index == hit)
-            {
-                let item_count = modal.items(surface).len();
-                let allow = hit == item_count - 1;
-                if allow || hit == item_count - 2 {
-                    self.answer_permission_modal(client, allow);
-                    self.render().non_fatal();
-                }
-            }
+        let interactive = !self.core.watcher_clients.contains_key(&client);
+        let action = self.permissions.mouse(client, event, interactive, surface);
+        self.apply_permission_input(client, action)
+    }
+
+    fn apply_permission_input(&mut self, client: ClientId, action: ModalInput) -> bool {
+        match action {
+            ModalInput::Ignored => return false,
+            ModalInput::Consumed => {},
+            ModalInput::Redraw => {
+                self.render().non_fatal();
+            },
+            ModalInput::Answer(granted) => {
+                self.answer_permission_modal(client, granted);
+                self.render().non_fatal();
+            },
         }
         true
     }
@@ -339,8 +260,12 @@ impl Screen {
             self.permissions.surface_changed(client, surface);
         }
     }
-    pub(super) fn prepare_permission_modal_render(&mut self) {
-        let clients: Vec<_> = self.permissions.permission_modal_clients().collect();
+    pub(super) fn prepare_permission_modal_render(
+        &mut self,
+    ) -> Vec<(ClientId, ContextMenuLayout, usize)> {
+        let clients: std::collections::BTreeSet<_> =
+            self.permissions.permission_modal_clients().collect();
+        let mut frames = Vec::with_capacity(clients.len());
         for client in clients {
             let Some(surface) = self.command_palette_surface(client) else {
                 continue;
@@ -353,7 +278,7 @@ impl Screen {
             else {
                 continue;
             };
-            let layout = modal.layout(surface);
+            let (layout, selected) = modal.layout_with_selection(surface);
             let rect = CellRect {
                 x: layout.x,
                 y: layout.y,
@@ -363,23 +288,21 @@ impl Screen {
             if modal.painted.replace(rect).is_some_and(|old| old != rect) {
                 self.force_render_under_context_menu();
             }
+            frames.push((client, layout, selected));
         }
+        frames
     }
-    pub(super) fn render_permission_modals(&self, output: &mut Output) -> Result<()> {
+    pub(super) fn render_permission_modals(
+        &self,
+        output: &mut Output,
+        frames: Vec<(ClientId, ContextMenuLayout, usize)>,
+    ) -> Result<()> {
         let previous_stack = output.set_floating_panes_stack(None);
         let result = (|| -> Result<()> {
-            let mut clients = std::collections::HashSet::new();
-            for modal in &self.permissions.permission_modals {
-                let Some(client) = modal.client.filter(|client| clients.insert(*client)) else {
-                    continue;
-                };
-                let Some(surface) = self.command_palette_surface(client) else {
-                    continue;
-                };
-                let layout = modal.layout(surface);
+            for (client, layout, selected) in frames {
                 output.add_character_chunks_to_client(
                     client,
-                    context_menu_chunks(&layout, Some(modal.selected(surface)), &self.core.style),
+                    context_menu_chunks(&layout, Some(selected), &self.core.style),
                     None,
                 )?;
                 output.add_post_vte_instruction_to_client(client, "\u{1b}[?25l");
@@ -464,14 +387,179 @@ impl super::PermissionModalController {
         {
             if let Some(surface) = surface {
                 modal.set_scroll(modal.scroll, surface);
-                if let Some(Some((_, prior))) = &modal.pressed
-                    && *prior != modal.layout(surface)
-                {
-                    modal.pressed = Some(None);
-                }
+                modal.revalidate_press(surface);
             } else if modal.pressed.is_some() {
                 modal.pressed = Some(None);
             }
         }
+    }
+}
+
+enum ModalInput {
+    Ignored,
+    Consumed,
+    Redraw,
+    Answer(bool),
+}
+
+impl super::PermissionModalController {
+    fn open(&mut self, request: PluginPermission) -> bool {
+        if self
+            .permission_modals
+            .iter()
+            .any(|modal| modal.request.request_id == request.request_id)
+        {
+            return false;
+        }
+        self.permission_modals.push(PermissionModal {
+            request,
+            client: None,
+            allow: false,
+            scroll: 0,
+            painted: None,
+            pressed: None,
+        });
+        true
+    }
+
+    fn cancel(&mut self, token: u64) -> bool {
+        let old_len = self.permission_modals.len();
+        for modal in &self.permission_modals {
+            if modal.request.request_id == token
+                && modal.pressed.is_some()
+                && let Some(client) = modal.client
+            {
+                self.permission_mouse_captures.insert(client);
+            }
+        }
+        self.permission_modals
+            .retain(|modal| modal.request.request_id != token);
+        old_len != self.permission_modals.len()
+    }
+
+    fn key(
+        &mut self,
+        client: ClientId,
+        key: &Option<KeyWithModifier>,
+        interactive: bool,
+        surface: Option<Viewport>,
+    ) -> ModalInput {
+        if interactive {
+            self.permission_last_client = Some(client);
+        }
+        let Some(modal) = self
+            .permission_modals
+            .iter_mut()
+            .find(|modal| modal.client == Some(client))
+        else {
+            return ModalInput::Ignored;
+        };
+        // None is paste or an explicit write. Text never grants permissions.
+        if let Some(key) = key.as_ref().filter(|key| {
+            key.key_modifiers.is_empty()
+                || (key.bare_key == BareKey::Tab && key.has_only_modifiers(&[KeyModifier::Shift]))
+        }) {
+            let answer = match key.bare_key {
+                BareKey::Esc => Some(false),
+                BareKey::Enter => surface
+                    .filter(|surface| {
+                        modal
+                            .layout(*surface)
+                            .row_of_item(modal.selected(*surface))
+                            .is_some()
+                    })
+                    .map(|_| modal.allow),
+                BareKey::Tab | BareKey::Up | BareKey::Down => {
+                    modal.allow = match key.bare_key {
+                        BareKey::Up => false,
+                        BareKey::Down => true,
+                        _ => !modal.allow,
+                    };
+                    if let Some(surface) = surface {
+                        modal.show_selection(surface);
+                        modal.revalidate_press(surface);
+                    }
+                    None
+                },
+                BareKey::PageUp | BareKey::PageDown | BareKey::Home | BareKey::End => {
+                    if let Some(surface) = surface {
+                        let page = surface.rows.saturating_sub(2).max(1);
+                        let scroll = match key.bare_key {
+                            BareKey::PageUp => modal.scroll.saturating_sub(page),
+                            BareKey::PageDown => modal.scroll + page,
+                            BareKey::Home => 0,
+                            _ => modal.items(surface).len(),
+                        };
+                        modal.set_scroll(scroll, surface);
+                    }
+                    None
+                },
+                _ => None,
+            };
+            return answer.map_or(ModalInput::Redraw, ModalInput::Answer);
+        }
+        ModalInput::Consumed
+    }
+
+    fn mouse(
+        &mut self,
+        client: ClientId,
+        event: &MouseEvent,
+        interactive: bool,
+        surface: Option<Viewport>,
+    ) -> ModalInput {
+        if self.permission_mouse_captures.contains(&client) {
+            if event.event_type == MouseEventType::Release {
+                self.permission_mouse_captures.remove(&client);
+            }
+            return ModalInput::Consumed;
+        }
+        if interactive {
+            self.permission_last_client = Some(client);
+        }
+        let Some(modal) = self
+            .permission_modals
+            .iter_mut()
+            .find(|modal| modal.client == Some(client))
+        else {
+            return ModalInput::Ignored;
+        };
+        if event.wheel_up || event.wheel_down {
+            if let Some(surface) = surface {
+                let scroll = if event.wheel_up {
+                    modal.scroll.saturating_sub(1)
+                } else {
+                    modal.scroll + 1
+                };
+                modal.set_scroll(scroll, surface);
+            }
+            return ModalInput::Redraw;
+        }
+        let layout = surface.map(|surface| modal.layout(surface));
+        let hit = layout
+            .as_ref()
+            .and_then(|layout| context_menu_item_at(layout, event.position));
+        if event.event_type == MouseEventType::Press {
+            // Retain capture even outside the controls if a keyboard answer closes the modal.
+            modal.pressed = Some(
+                hit.zip(layout.as_ref())
+                    .filter(|_| event.left)
+                    .map(|(hit, layout)| (hit, HitGeometry::from(layout))),
+            );
+        }
+        if event.event_type == MouseEventType::Release {
+            let pressed = modal.pressed.take();
+            if let (Some(hit), Some(surface)) = (hit, surface)
+                && event.left
+                && pressed.flatten().is_some_and(|(index, _)| index == hit)
+            {
+                let item_count = modal.items(surface).len();
+                let allow = hit == item_count - 1;
+                if allow || hit == item_count - 2 {
+                    return ModalInput::Answer(allow);
+                }
+            }
+        }
+        ModalInput::Consumed
     }
 }

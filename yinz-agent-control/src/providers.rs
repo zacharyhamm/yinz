@@ -1,3 +1,4 @@
+pub mod agy;
 pub mod claude_notifications;
 pub mod claude_observer;
 pub mod codex;

@@ -236,6 +236,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
         "yinz-agent-control",
         &[
             "yinz-bus",
+            "yinz-ipc",
             "yinz-types",
             "yinz-runtime",
             "yinz-test-support",

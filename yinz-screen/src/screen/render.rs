@@ -222,7 +222,6 @@ impl Screen {
     }
 
     pub(crate) fn render_to_clients_traced(&mut self, trace_attach: bool) -> Result<()> {
-        self.prepare_permission_modal_render();
         // this method does the actual rendering and is triggered by a debounced BackgroundJob (see
         // the render method for more details)
         let err_context = "failed to render screen";
@@ -247,6 +246,7 @@ impl Screen {
         // incomplete reflow retries on the next frame, so it must not abort this one: the screen
         // thread treats a failed frame as fatal, and a rejected client is still on its way out.
         self.reflow_all_tabs().context(err_context).non_fatal();
+        let permission_modals = self.prepare_permission_modal_render();
         let presentations: Vec<_> = self
             .core
             .active_tab_ids
@@ -521,7 +521,7 @@ impl Screen {
                     .context(err_context)?;
             }
 
-            self.render_permission_modals(&mut output)
+            self.render_permission_modals(&mut output, permission_modals)
                 .context("render permission modal")?;
 
             let pane_render_report = output.drain_pane_render_report();

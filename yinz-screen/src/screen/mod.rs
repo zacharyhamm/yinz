@@ -753,6 +753,8 @@ pub(crate) struct Screen {
 }
 
 struct ScreenCore {
+    #[cfg(test)]
+    worktree_scans: std::cell::Cell<usize>,
     restored_observer: Option<crate::RestoredAgentObserver>,
     instance_id: uuid::Uuid,
     managed_reservations: HashMap<TerminalId, yinz_bus::route::AgentTabPlacement>,
@@ -1570,6 +1572,8 @@ impl Screen {
             },
             agents: AgentController::default(),
             core: ScreenCore {
+                #[cfg(test)]
+                worktree_scans: Default::default(),
                 restored_observer: None,
                 instance_id: uuid::Uuid::new_v4(),
                 managed_reservations: HashMap::new(),

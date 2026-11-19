@@ -452,9 +452,9 @@ impl Screen {
                 // instead: `Screen::add_client` rebuilds the mapping from scratch on a reattach.
                 log::error!("no tab would take client {client_id} from the closed tab");
                 self.core.active_tab_ids.remove(&client_id);
-                self.active_tabs_changed();
             }
         }
+        self.active_tabs_changed();
         // The plugins in a tab a client just landed in last heard about that client's
         // mode when it left, if ever - `update_input_modes` only covers the connected
         // clients, and the ones that just arrived were not among them until now.
@@ -663,6 +663,18 @@ impl Screen {
         transition: &mut TabTransition,
         direction: Option<Direction>,
     ) -> Result<()> {
+        let result = self.attach_transition_clients(transition, direction);
+        // Assign modal ownership after every affected client's destination focus is known.
+        // A failed attachment can also leave the active mapping changed.
+        self.active_tabs_changed();
+        result
+    }
+
+    fn attach_transition_clients(
+        &mut self,
+        transition: &mut TabTransition,
+        direction: Option<Direction>,
+    ) -> Result<()> {
         if let Some(clients) = transition.clients.take() {
             let tab = self
                 .core
@@ -703,22 +715,15 @@ impl Screen {
         {
             group.preferred = Some(new_tab_index);
         }
-        match self.core.active_tab_ids.remove(&client_id) {
-            Some(old_active_index) => {
-                self.core.active_tab_ids.insert(client_id, new_tab_index);
-                if old_active_index != new_tab_index {
-                    self.close_command_palette(client_id);
-                    self.repaint_after_leaving_tab(client_id, old_active_index, new_tab_index);
-                }
-                let client_tab_history = self.core.tab_history.entry(client_id).or_default();
-                client_tab_history.retain(|&e| e != new_tab_index);
-                client_tab_history.push(old_active_index);
-            },
-            None => {
-                self.core.active_tab_ids.insert(client_id, new_tab_index);
-            },
+        if let Some(old_active_index) = self.core.active_tab_ids.insert(client_id, new_tab_index) {
+            if old_active_index != new_tab_index {
+                self.close_command_palette(client_id);
+                self.repaint_after_leaving_tab(client_id, old_active_index, new_tab_index);
+            }
+            let client_tab_history = self.core.tab_history.entry(client_id).or_default();
+            client_tab_history.retain(|&e| e != new_tab_index);
+            client_tab_history.push(old_active_index);
         }
-        self.active_tabs_changed();
         self.clear_bell_for_focused_pane(client_id);
     }
 

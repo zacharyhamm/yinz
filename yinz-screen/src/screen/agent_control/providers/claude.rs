@@ -4,9 +4,7 @@ use super::super::*;
 pub(in crate::screen::agent_control) struct ClaudeLifecycle {
     pub(in crate::screen::agent_control) activity: ClaudeActivity,
     pub(in crate::screen::agent_control) observed_at: Instant,
-    pub(in crate::screen::agent_control) prompt_id: Option<String>,
     pub(in crate::screen::agent_control) confirmation: Option<bool>,
-    pub(in crate::screen::agent_control) previous_prompt_id: Option<String>,
     /// Prompt whose confirmed turn left background work running.
     pub(in crate::screen::agent_control) background: Option<String>,
     /// Parallel notification turns keyed by prompt ID.
@@ -90,7 +88,7 @@ impl super::super::AgentController {
                     .is_some_and(|id| lifecycle.claude.activity.turns.contains_key(id))
                 {
                     "duplicate"
-                } else if lifecycle.claude.prompt_id.as_deref() != Some(predecessor) {
+                } else if lifecycle.prompt_id.as_deref() != Some(predecessor) {
                     "predecessor_mismatch"
                 } else {
                     "accepted"
@@ -123,11 +121,7 @@ impl super::super::AgentController {
                 .get(&pane)
                 .filter(|l| l.kind == "claude" && l.conversation == hook.session_id)
         {
-            hook.prompt_id = lifecycle
-                .claude
-                .prompt_id
-                .clone()
-                .filter(|id| !id.is_empty());
+            hook.prompt_id = lifecycle.prompt_id.clone().filter(|id| !id.is_empty());
         }
     }
 }
@@ -290,7 +284,7 @@ impl super::super::AgentController {
                 .agent_worker_waits
                 .get(&pane)
                 .map_or_else(|| visible.clone(), |w| w.parent.clone());
-            if lifecycle.claude.prompt_id.is_none() && !lifecycle.claude.notifications.is_empty() {
+            if lifecycle.prompt_id.is_none() && !lifecycle.claude.notifications.is_empty() {
                 parent.state = AgentState::Idle;
                 parent.detail = None;
             }
@@ -345,7 +339,7 @@ impl super::super::AgentController {
                 lifecycle.kind == kind
                     && lifecycle.conversation == hook.session_id
                     && hook.prompt_id.is_some()
-                    && lifecycle.claude.prompt_id == hook.prompt_id
+                    && lifecycle.prompt_id == hook.prompt_id
             })
     }
 }

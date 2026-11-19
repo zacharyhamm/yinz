@@ -170,6 +170,8 @@ impl AgentHost for ScreenCore {
     }
 
     fn local_agent_directories(&self) -> HashMap<PaneId, std::path::PathBuf> {
+        #[cfg(test)]
+        self.worktree_scans.set(self.worktree_scans.get() + 1);
         self.tabs.values().flat_map(|tab| {
             tab.get_all_pane_ids().into_iter().filter_map(|id| {
                 let pane = tab.get_pane_with_id(id)?;

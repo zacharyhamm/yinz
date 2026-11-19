@@ -180,12 +180,25 @@ fn same_worktree_titles_follow_each_viewers_focus_and_clear_after_agent_changes(
     assert!(scene.text(CLIENT).contains("👯 [1]"));
     assert!(!scene.text(CLIENT).contains("👯 [3]"));
 
+    let scans = scene.screen.core.worktree_scans.get();
+    scene.screen.render().unwrap();
+    scene.render();
+    assert_eq!(
+        scene.screen.core.worktree_scans.get(),
+        scans,
+        "idle repaint scanned agent directories"
+    );
     let waiting = AgentInfo {
         state: AgentState::Waiting,
         wait_needs_a_person: true,
         ..agent(Some(repo.path()))
     };
     scene.report(1, Some(waiting));
+    assert_eq!(
+        scene.screen.core.worktree_scans.get(),
+        scans,
+        "a state-only report scanned agent directories"
+    );
     scene.render();
     assert!(scene.text(CLIENT).contains("🔔 👯 [1]"));
     for replacement in [
@@ -209,6 +222,9 @@ fn same_worktree_titles_follow_each_viewers_focus_and_clear_after_agent_changes(
         .screen
         .set_pane_host(TerminalId::new(3), Some("remote".into()))
         .unwrap();
+    assert!(!scene.screen.core.tabs[&TAB]
+        .agent_worktrees
+        .contains_key(&pane(3)));
     scene.render();
     assert!(!scene.text(CLIENT).contains('👯'));
     assert!(!scene.text(OTHER).contains("👯 [3]"));

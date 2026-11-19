@@ -101,7 +101,7 @@ impl super::AgentController {
                 lifecycle.claude.confirmation = Some(true);
             }
             if lifecycle.kind == "agy" {
-                lifecycle.agy.confirmation = Some(true);
+                lifecycle.agy = providers::AgyLifecycle::from_confirmation(Some(true));
             }
         }
         if interrupted {

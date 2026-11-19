@@ -381,8 +381,8 @@ impl super::AgentController {
         lifecycle.claude.activity.obligations.source = Some(source.clone());
         lifecycle.claude.background = None;
         lifecycle.claude.notifications.clear();
-        lifecycle.claude.prompt_id = None;
-        lifecycle.claude.previous_prompt_id = None;
+        lifecycle.prompt_id = None;
+        lifecycle.previous_prompt_id = None;
         lifecycle.claude.confirmation = None;
         lifecycle.ended_turn = None;
         lifecycle.input_revision = input_revision;
@@ -401,7 +401,7 @@ impl super::AgentController {
                     sequence: 1,
                 },
             );
-            lifecycle.claude.prompt_id = Some(prompt);
+            lifecycle.prompt_id = Some(prompt);
         }
         true
     }

@@ -7017,6 +7017,7 @@ dependencies = [
  "unicode-width 0.2.2",
  "uuid",
  "yinz-bus",
+ "yinz-ipc",
  "yinz-runtime",
  "yinz-test-support",
  "yinz-types",

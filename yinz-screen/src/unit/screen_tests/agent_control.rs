@@ -255,7 +255,9 @@ fn readiness_reports_each_failed_gate_without_writing_input() {
         report_kind(&mut screen, kind, hook("SessionStart"));
         match case {
             "missing" | "multiple" => {
-                screen.agents.agent_lifecycle.clear();
+                screen
+                    .agents
+                    .remove_agent_lifecycle(&screen.core, PANE, "lost test lifecycle");
             },
             "mismatch" | "unreported" => {
                 // Deliberately bypass invalidation to exercise the diagnostic distinction.
@@ -335,7 +337,9 @@ fn missing_lifecycle_requires_a_parent_hook_and_preserves_unknown_input() {
     report(&mut screen, hook("SessionStart"));
     assert!(screen.agent_status_for_test().ready);
     // A server restart loses this map; the restored pane record is not authority.
-    screen.agents.agent_lifecycle.clear();
+    screen
+        .agents
+        .remove_agent_lifecycle(&screen.core, PANE, "lost test lifecycle");
     let status = screen.agent_status_for_test();
     assert_eq!(
         status.readiness.unwrap().failures(),
@@ -2214,7 +2218,9 @@ fn claude_compaction_preserves_reported_state_without_a_lifecycle() {
         initial_hook.tool_name = Some("AskUserQuestion".into());
         report_kind(&mut screen, "claude", initial_hook);
         // Reproduce an ordinary reported pane without managed lifecycle evidence.
-        screen.agents.agent_lifecycle.remove(&PANE);
+        screen
+            .agents
+            .remove_agent_lifecycle(&screen.core, PANE, "lost test lifecycle");
         let before = screen.get_pane_info(PANE).unwrap().agent.unwrap();
         assert_eq!(before.state, expected);
         for name in ["PreCompact", "PostCompact", "SessionStart"] {
@@ -10236,7 +10242,7 @@ fn hook_flash_restarts_for_identical_and_stateless_reports_and_expires_at_150_ms
             .agent_hook_is_flashing(&pane, now + Duration::from_millis(150)));
     }
     screen.reap_agent_hook_flashes(start + Duration::from_millis(350));
-    assert!(screen.agents.agent_hook_flashes.is_empty());
+    assert!(screen.agents.flash_panes().next().is_none());
 }
 
 #[test]
@@ -10302,7 +10308,7 @@ fn hook_flash_is_cleared_on_replacement_clear_and_pane_removal() {
         let (mut screen, _, _) = setup("codex");
         screen.core.pinned_now = Some(Instant::now());
         report(&mut screen, hook("UserPromptSubmit"));
-        assert!(!screen.agents.agent_hook_flashes.is_empty());
+        assert!(screen.agents.flash_panes().next().is_some());
         let mut agent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
         match change {
             "kind" => agent.kind = "claude".into(),
@@ -10319,7 +10325,7 @@ fn hook_flash_is_cleared_on_replacement_clear_and_pane_removal() {
             )
             .unwrap();
         }
-        assert!(screen.agents.agent_hook_flashes.is_empty(), "{change}");
+        assert!(screen.agents.flash_panes().next().is_none(), "{change}");
     }
 }
 
@@ -10352,7 +10358,7 @@ fn hook_flash_clearing_hook_flashes_only_remaining_title_and_expires() {
     screen.core.pinned_now = Some(expired);
     screen.on_animation_tick(expired).unwrap();
     screen.render_to_clients().unwrap();
-    assert!(screen.agents.agent_hook_flashes.is_empty());
+    assert!(screen.agents.flash_panes().next().is_none());
     assert!(
         !screen
             .tab_containing_pane(PANE)
