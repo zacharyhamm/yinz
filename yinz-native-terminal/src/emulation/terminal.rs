@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use yinz_runtime::native_media::MediaRoot;
+use yinz_types::render_negotiation as caps;
 use yinz_types::structured_render::{
     self, DecodeError, GeometryRecord, GraphicsMedium, GraphicsRecord, GRAPHICS_FORMAT_RGBA8,
 };
@@ -20,12 +23,14 @@ const DEFAULT_CELL: CellSize = CellSize {
 #[derive(Debug)]
 pub enum FrameError {
     Undecodable(DecodeError),
+    Protocol(u64, String),
     Unapplicable { seq: u64, error: ApplyError },
 }
 
 impl std::fmt::Display for FrameError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            FrameError::Protocol(seq, reason) => write!(f, "native frame {seq}: {reason}"),
             FrameError::Undecodable(e) => write!(f, "{}", e),
             FrameError::Unapplicable { error, .. } => write!(f, "{}", error),
         }
@@ -122,6 +127,8 @@ pub struct TerminalState {
     geometry: GeometryRecord,
     geometry_stamp: u64,
     shared_media: bool,
+    live: Option<(caps::Agreement, Option<Arc<MediaRoot>>)>,
+    applied_seq: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,7 +150,15 @@ impl TerminalState {
             geometry: GeometryRecord::default(),
             geometry_stamp: 0,
             shared_media: true,
+            live: None,
+            applied_seq: None,
         }
+    }
+
+    /// Install the validated attachment agreement before its first live frame.
+    pub fn negotiate(&mut self, agreement: caps::Agreement, root: Option<Arc<MediaRoot>>) {
+        self.live = Some((agreement, root));
+        self.applied_seq = None;
     }
 
     pub fn set_shared_media(&mut self, allowed: bool) {
@@ -188,6 +203,102 @@ impl TerminalState {
         before: impl FnOnce(&TerminalState, &structured_render::FrameView<'_>),
     ) -> Result<FrameApplied, FrameError> {
         let view = structured_render::decode(frame).map_err(FrameError::Undecodable)?;
+        let h = view.header();
+        let records = view.graphics();
+        let mut staged = None;
+        if let Some((agreement, root)) = &self.live {
+            let invalid = |reason: &str| FrameError::Protocol(h.seq, reason.to_owned());
+            if u32::from(h.version) != agreement.version {
+                return Err(invalid("unselected codec version"));
+            }
+            if let Some(last) = self.applied_seq {
+                if h.seq <= last {
+                    return Ok(FrameApplied {
+                        seq: last,
+                        damage: Damage::Rows(vec![]),
+                    });
+                }
+                if last.checked_add(1) != Some(h.seq) {
+                    return Err(invalid("missing predecessor"));
+                }
+            } else if !h.full_repaint() {
+                return Err(invalid("first frame requires a full repaint"));
+            }
+            let features = agreement.features;
+            let shifts = view.shifts();
+            if !shifts.is_empty()
+                && (features & caps::SHIFTS == 0
+                    || self.applied_seq.is_none()
+                    || h.full_repaint()
+                    || h.clear()
+                    || self.size().cols != h.cols as usize
+                    || self.size().rows != h.rows as usize
+                    || shifts.entries.iter().any(|s| {
+                        s.cols == 0 || s.rows == 0 || !s.fits(self.size().cols, self.size().rows)
+                    }))
+            {
+                return Err(invalid("invalid or unnegotiated row shift"));
+            }
+            let geometry = view.geometry();
+            if !view.scroll().is_empty()
+                || geometry.is_some() && features & caps::GEOMETRY == 0
+                || features & caps::LINKS == 0
+                    && (!view.links().entries.is_empty()
+                        || view
+                            .rows()
+                            .any(|(_, cells)| cells.iter().any(|cell| cell.link != 0)))
+            {
+                return Err(invalid("unnegotiated structured section"));
+            }
+            if !records.is_empty() {
+                let mut graphics = self.graphics.clone();
+                let mut sixels = self.sixels.clone();
+                if h.full_repaint() || h.clear() {
+                    graphics.clear();
+                    sixels.clear();
+                }
+                let empty_geometry = GeometryRecord::default();
+                let previous_geometry = if h.full_repaint() || h.clear() {
+                    &empty_geometry
+                } else {
+                    &self.geometry
+                };
+                Self::consume_graphics(
+                    &records,
+                    &mut graphics,
+                    &mut sixels,
+                    false,
+                    Some((
+                        agreement,
+                        root.as_deref(),
+                        geometry.as_ref().unwrap_or(previous_geometry),
+                    )),
+                )
+                .map_err(|reason| FrameError::Protocol(h.seq, reason))?;
+                staged = Some((graphics, sixels));
+            }
+            if let Some(geometry) = geometry.filter(|_| !h.full_repaint() && !h.clear()) {
+                let (graphics, sixels) = staged
+                    .as_ref()
+                    .map(|(g, s)| (g, s))
+                    .unwrap_or((&self.graphics, &self.sixels));
+                let mut anchors = graphics
+                    .placements()
+                    .map(|p| (p.cell_x, p.cell_y))
+                    .chain(sixels.chunks().map(|c| (c.cell_x, c.cell_y)));
+                if anchors.any(|(x, y)| {
+                    u16::try_from(x)
+                        .ok()
+                        .zip(u16::try_from(y).ok())
+                        .and_then(|(x, y)| geometry.content_pane_at(x, y))
+                        .is_none()
+                }) {
+                    return Err(invalid(
+                        "replacement geometry leaves an image without an owning pane",
+                    ));
+                }
+            }
+        }
         before(self, &view);
         let applied = self
             .screen
@@ -201,7 +312,10 @@ impl TerminalState {
             self.sixels.clear();
         }
         let mut everything = applied.cleared || applied.reshaped;
-        if let Some(geometry) = view.geometry() {
+        if let Some(geometry) = view
+            .geometry()
+            .or_else(|| (self.live.is_some() && applied.cleared).then(GeometryRecord::default))
+        {
             if geometry != self.geometry {
                 everything = true;
                 self.geometry_stamp += 1;
@@ -209,7 +323,21 @@ impl TerminalState {
             self.geometry = geometry;
         }
         self.consume_sideband(view.sideband());
-        self.consume_graphics(&view.graphics());
+        if let Some((graphics, sixels)) = staged {
+            self.graphics = graphics;
+            self.sixels = sixels;
+        } else if self.live.is_none() {
+            let _ = Self::consume_graphics(
+                &records,
+                &mut self.graphics,
+                &mut self.sixels,
+                self.shared_media,
+                None,
+            );
+        }
+        if self.live.is_some() {
+            self.applied_seq = Some(applied.seq);
+        }
         self.sixels.cut_spans(&applied.written);
         self.sixels.commit();
 
@@ -230,12 +358,38 @@ impl TerminalState {
         })
     }
 
-    fn consume_graphics(&mut self, records: &[GraphicsRecord]) {
+    fn consume_graphics(
+        records: &[GraphicsRecord],
+        graphics: &mut Graphics,
+        sixels: &mut Sixels,
+        shared_media: bool,
+        live: Option<(&caps::Agreement, Option<&MediaRoot>, &GeometryRecord)>,
+    ) -> Result<(), String> {
         for record in records {
+            if let Some((agreement, _, geometry)) = live {
+                let feature = match record {
+                    GraphicsRecord::SixelChunk { .. } => caps::SIXEL,
+                    GraphicsRecord::Clear => caps::KITTY | caps::SIXEL,
+                    _ => caps::KITTY,
+                };
+                if agreement.features & feature == 0 {
+                    return Err("unnegotiated graphics record".into());
+                }
+                if let GraphicsRecord::Placement { cell_x, cell_y, .. }
+                | GraphicsRecord::SixelChunk { cell_x, cell_y, .. } = record
+                    && u16::try_from(*cell_x)
+                        .ok()
+                        .zip(u16::try_from(*cell_y).ok())
+                        .and_then(|(x, y)| geometry.content_pane_at(x, y))
+                        .is_none()
+                {
+                    return Err("image anchor has no owning pane".into());
+                }
+            }
             match record {
                 GraphicsRecord::Clear => {
-                    self.graphics.clear();
-                    self.sixels.clear();
+                    graphics.clear();
+                    sixels.clear();
                 },
                 GraphicsRecord::Residency {
                     id,
@@ -247,15 +401,40 @@ impl TerminalState {
                     data,
                 } => {
                     if *format != GRAPHICS_FORMAT_RGBA8 {
+                        if live.is_some() {
+                            return Err("unknown image format".into());
+                        }
                         report!("image {} arrived in unknown format {}", id, format);
                         continue;
                     }
                     let expected = *byte_len as usize;
+                    let size = (*width as usize)
+                        .checked_mul(*height as usize)
+                        .and_then(|n| n.checked_mul(4));
+                    if live.is_some() && (size != Some(expected) || expected == 0) {
+                        return Err("invalid RGBA dimensions".into());
+                    }
                     let pixels = match medium {
                         GraphicsMedium::Inline => {
+                            if live.is_some() && data.len() != expected {
+                                return Err(
+                                    "inline image length differs from RGBA dimensions".into()
+                                );
+                            }
                             (data.len() >= expected).then(|| data[..expected].to_vec())
                         },
-                        GraphicsMedium::SharedFile if !self.shared_media => {
+                        GraphicsMedium::SharedFile if live.is_some() => {
+                            let root = live
+                                .and_then(|(agreement, root, _)| {
+                                    root.filter(|_| agreement.media & caps::SHARED != 0)
+                                })
+                                .ok_or("shared media was not agreed")?;
+                            Some(
+                                root.read_image(data, expected)
+                                    .map_err(|e| format!("read shared image: {e:#}"))?,
+                            )
+                        },
+                        GraphicsMedium::SharedFile if !shared_media => {
                             report!("refusing image {} carried in a local file", id);
                             None
                         },
@@ -265,9 +444,12 @@ impl TerminalState {
                         },
                     };
                     let Some(pixels) = pixels else {
+                        if live.is_some() {
+                            return Err("incomplete native image".into());
+                        }
                         continue;
                     };
-                    if pixels.len() < *width as usize * *height as usize * 4 {
+                    if size.is_none_or(|len| pixels.len() < len) {
                         report!(
                             "image {} carried {} bytes for {}x{}",
                             id,
@@ -277,8 +459,8 @@ impl TerminalState {
                         );
                         continue;
                     }
-                    self.graphics.insert_image(
-                        *id as u32,
+                    graphics.insert_image(
+                        *id,
                         Image {
                             width: *width,
                             height: *height,
@@ -298,36 +480,46 @@ impl TerminalState {
                     source_width,
                     source_height,
                     z,
-                } => self.graphics.insert_placement(Placement {
-                    image_id: *image_id as u32,
-                    placement_id: *placement_id as u32,
-                    cell_x: *cell_x as usize,
-                    cell_y: *cell_y as usize,
-                    offset_x: *offset_x,
-                    offset_y: *offset_y,
-                    source_x: *source_x,
-                    source_y: *source_y,
-                    source_width: *source_width,
-                    source_height: *source_height,
-                    z: *z,
-                }),
-                GraphicsRecord::DeleteImage { id } => self.graphics.remove_image(*id as u32),
+                } => {
+                    if live.is_some() && graphics.image(*image_id).is_none() {
+                        return Err(format!(
+                            "missing image {image_id} for placement {placement_id}"
+                        ));
+                    }
+                    graphics.insert_placement(Placement {
+                        image_id: *image_id,
+                        placement_id: *placement_id,
+                        cell_x: *cell_x as usize,
+                        cell_y: *cell_y as usize,
+                        offset_x: *offset_x,
+                        offset_y: *offset_y,
+                        source_x: *source_x,
+                        source_y: *source_y,
+                        source_width: *source_width,
+                        source_height: *source_height,
+                        z: *z,
+                    });
+                },
+                GraphicsRecord::DeleteImage { id } => graphics.remove_image(*id),
                 GraphicsRecord::DeletePlacement {
                     image_id,
                     placement_id,
-                } => self
-                    .graphics
-                    .remove_placement(*image_id as u32, *placement_id as u32),
+                } => graphics.remove_placement(*image_id, *placement_id),
                 GraphicsRecord::SixelChunk {
                     cell_x,
                     cell_y,
                     payload,
                     ..
-                } => self
-                    .sixels
-                    .execute(payload, (*cell_y as usize, *cell_x as usize)),
+                } => {
+                    if !sixels.execute(payload, (*cell_y as usize, *cell_x as usize))
+                        && live.is_some()
+                    {
+                        return Err("invalid Sixel raster".into());
+                    }
+                },
             }
         }
+        Ok(())
     }
 
     fn consume_sideband(&mut self, sideband: &[u8]) {

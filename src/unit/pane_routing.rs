@@ -124,6 +124,7 @@ impl Session {
             }
             let reply = match &message {
                 ClientToServerMsg::ConnStatus => ServerToClientMsg::Connected {
+                    native_render_revision: None,
                     warp_companions: true,
                     warp_held_terminals: true,
                     warp_agent_tracking: true,

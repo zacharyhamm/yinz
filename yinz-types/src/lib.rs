@@ -67,6 +67,7 @@ pub mod web;
 
 pub mod program_status;
 
+pub mod render_negotiation;
 pub mod structured_render;
 
 pub mod graphemes;

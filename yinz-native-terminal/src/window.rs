@@ -97,6 +97,8 @@ impl Surfaces {
 }
 
 struct App {
+    endpoint: session::Endpoint,
+    handshake: session::Handshake,
     surfaces: Option<Surfaces>,
     wake_reader: ReaderWake,
     args: TerminalArgs,
@@ -179,6 +181,7 @@ fn read_session(
 }
 
 struct PendingSwitch {
+    handshake: session::Handshake,
     id: u64,
     deadline: Instant,
     destination: String,
@@ -224,6 +227,7 @@ impl PendingSwitch {
             })
             .context("start native session switch")?;
         Ok(Self {
+            handshake: Default::default(),
             id,
             deadline,
             destination,
@@ -238,7 +242,9 @@ impl PendingSwitch {
     fn check_deadline(&self, now: Instant) -> Result<()> {
         anyhow::ensure!(
             now < self.deadline,
-            "timed out waiting for the destination to render"
+            "timed out waiting for destination: {}",
+            self.handshake
+                .timeout(&session::Endpoint::Local, &self.destination)
         );
         Ok(())
     }
@@ -265,7 +271,23 @@ impl PendingSwitch {
             }
             return Ok(None);
         }
-        match receive_message(Some(&self.messages))? {
+        let message = receive_message(Some(&self.messages))?;
+        if let Some(message) = &message
+            && self.handshake.control(
+                message,
+                &session::Endpoint::Local,
+                &self.destination,
+                &self
+                    .sender
+                    .as_ref()
+                    .context("missing destination sender")?
+                    .0,
+                self.deadline,
+            )?
+        {
+            return Ok(None);
+        }
+        match message {
             Some(ServerToClientMsg::RenderFrame { frame }) => {
                 let decoded = yinz_types::structured_render::decode(&frame)
                     .map_err(|error| anyhow!("{error:?}"))
@@ -276,6 +298,7 @@ impl PendingSwitch {
                 );
                 let mut state = TerminalState::new(size.rows, size.cols);
                 state.set_cell_size(cell.width, cell.height);
+                self.handshake.begin_frames(&mut state)?;
                 let applied = state
                     .apply_frame(&frame)
                     .context("apply the destination's first frame")?;
@@ -346,7 +369,11 @@ fn load_native_config(opts: &CliArgs) -> Result<(Config, Options)> {
     })
 }
 
-pub fn run(args: TerminalArgs, opts: CliArgs) -> Result<()> {
+pub fn run(
+    args: TerminalArgs,
+    opts: CliArgs,
+    connection: Option<session::Connection>,
+) -> Result<()> {
     let config = load_native_config(&opts).context("load native settings")?;
     let event_loop = EventLoop::<u64>::with_user_event()
         .build()
@@ -361,7 +388,7 @@ pub fn run(args: TerminalArgs, opts: CliArgs) -> Result<()> {
     )?;
     // A bounded queue holds at most two messages between IPC and the window thread.
     // The event proxy only wakes the loop; frames remain in this bounded queue.
-    app.open_connection()?;
+    app.open_connection(connection)?;
     event_loop
         .run_app(&mut app)
         .context("run native event loop")?;
@@ -1167,6 +1194,8 @@ impl App {
             paints,
             cache: GlyphCache::new(fonts),
             active_fonts,
+            handshake: Default::default(),
+            endpoint: Default::default(),
             connection_geometry: ConnectionGeometry::new(opening_size, now),
             last_measured_geometry: None,
             retained: RetainedScene::new(),
@@ -1203,8 +1232,12 @@ impl App {
         })
     }
 
-    fn open_connection(&mut self) -> Result<()> {
-        let connection = session::connect(&self.args, &self.opts, self.connection_geometry.seed)?;
+    fn open_connection(&mut self, connection: Option<session::Connection>) -> Result<()> {
+        let connection = match connection {
+            Some(connection) => connection,
+            None => session::connect(&self.args, &self.opts, self.connection_geometry.seed)?,
+        };
+        self.endpoint = connection.endpoint;
         let (tx, rx) = mpsc::sync_channel(2);
         let sender = AttachedSender(connection.sender);
         let wake_reader = self.wake_reader.clone();
@@ -1651,13 +1684,21 @@ impl App {
         }
         self.refresh_geometry()
     }
-    fn handle_message(
-        &mut self,
-        message: ServerToClientMsg,
-        event_loop: &ActiveEventLoop,
-    ) -> Result<()> {
+    fn handle_message(&mut self, message: ServerToClientMsg, exit: impl FnOnce()) -> Result<()> {
+        if self.handshake.control(
+            &message,
+            &self.endpoint,
+            self.args.session_name.as_deref().unwrap_or("session"),
+            &self.sender.as_ref().context("missing active sender")?.0,
+            self.connection_geometry.first_frame_deadline,
+        )? {
+            return Ok(());
+        }
         match message {
             ServerToClientMsg::RenderFrame { frame } => {
+                if !self.connection_geometry.received_frame {
+                    self.handshake.begin_frames(&mut self.state)?;
+                }
                 let applied = self
                     .selection
                     .apply_frame(&mut self.state, &frame)
@@ -1672,7 +1713,7 @@ impl App {
                 }
                 self.present_frame(applied);
             },
-            ServerToClientMsg::Exit { .. } => event_loop.exit(),
+            ServerToClientMsg::Exit { .. } => exit(),
             ServerToClientMsg::SwitchSession { connect_to_session } => {
                 self.begin_switch(connect_to_session, PendingSwitch::stage);
             },
@@ -1811,6 +1852,15 @@ impl App {
             .name
             .as_ref()
             .map_or_else(|| "a new session".to_owned(), |name| format!("{name}"));
+        if matches!(self.endpoint, session::Endpoint::Forwarded(_)) {
+            let error = anyhow!(
+                "open the destination on the same remote host; {}",
+                self.endpoint
+                    .guidance(target.name.as_ref().map_or("SESSION", |n| n.as_str()))
+            );
+            self.show_switch_notice(&destination, &error);
+            return;
+        }
         match stage(self, id, target, destination.clone()) {
             Ok(pending) => {
                 self.switch_notice = None;
@@ -1887,6 +1937,8 @@ impl App {
         self.connection_id = pending.id;
         self.messages = Some(pending.messages);
         self.sender = pending.sender;
+        self.handshake = pending.handshake;
+        self.endpoint = session::Endpoint::Local;
         self.args.session_name = Some(pending.destination);
         self.selection.clear();
         self.composition = Composition::new();
@@ -2373,7 +2425,7 @@ impl ApplicationHandler<u64> for App {
         // while an unbounded drain loop keeps the window from drawing.
         match receive_message(self.messages.as_ref()) {
             Ok(Some(message)) => {
-                if let Err(error) = self.handle_message(message, event_loop) {
+                if let Err(error) = self.handle_message(message, || event_loop.exit()) {
                     self.fail(error, event_loop);
                 }
             },
@@ -2395,7 +2447,13 @@ impl ApplicationHandler<u64> for App {
         if !self.connection_geometry.received_frame
             && now >= self.connection_geometry.first_frame_deadline
         {
-            self.fail(anyhow!("server did not send structured rendering; restart the session with this Yinz build"),event_loop);
+            self.fail(
+                self.handshake.timeout(
+                    &self.endpoint,
+                    self.args.session_name.as_deref().unwrap_or("session"),
+                ),
+                event_loop,
+            );
             return;
         }
         if let Some(pending) = &self.pending_switch

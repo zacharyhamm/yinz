@@ -346,6 +346,21 @@ fn native_sixel_origin_uses_presentation_offset() {
         None,
     );
     let size = Size { cols: 20, rows: 10 };
+    // The scene is composed under the followed client's identity. Each watcher
+    // has its own terminal and can give the opposite answer to the same probe.
+    let watcher = ClientId::new(9);
+    for supports in [true, false] {
+        output
+            .sixel_host_capabilities
+            .borrow_mut()
+            .extend([(client, !supports), (watcher, supports)]);
+        let watched = output
+            .clone()
+            .serialize_for_watcher(Some(size), Some(watcher))
+            .unwrap();
+        let ansi = watched.get(&client).map(String::as_str).unwrap_or("");
+        assert_eq!(ansi.contains("\x1bP"), supports);
+    }
     let frames = output.serialize_native(
         &mut HashMap::from([(client, NativeRenderState::default())]),
         &HashMap::from([(client, size)]),
@@ -668,4 +683,158 @@ fn native_hyperlink_reuse_pins_all_rows_emitted_in_the_frame() {
         decode(&frames[&client]).unwrap().rows().next().unwrap().1[0].link,
         0
     );
+}
+
+#[test]
+fn render_negotiation_text_profile_blanks_kitty_placeholders_and_omits_geometry() {
+    use yinz_types::{render_negotiation::Agreement, structured_render::GeometryRecord};
+    let mut output = Output::default();
+    let limited = ClientId::new(1);
+    let capable = ClientId::new(2);
+    let mut states = HashMap::from([
+        (capable, NativeRenderState::default()),
+        (
+            limited,
+            NativeRenderState::negotiated(
+                Agreement {
+                    version: 4,
+                    features: 0,
+                    media: 0,
+                    proof_response: vec![],
+                },
+                None,
+            ),
+        ),
+    ]);
+    for id in [limited, capable] {
+        output.set_native_geometry(id, GeometryRecord::default());
+        output.client_character_chunks.insert(
+            id,
+            vec![CharacterChunk::new(
+                vec![
+                    TerminalCharacter::new(PLACEHOLDER),
+                    TerminalCharacter::new('x'),
+                ],
+                0,
+                0,
+            )],
+        );
+    }
+    let frames = output.serialize_native(&mut states, &HashMap::new(), &HashMap::new());
+    for (id, first) in [(limited, ' '), (capable, PLACEHOLDER)] {
+        let view = decode(&frames[&id]).unwrap();
+        let (_, cells) = view.rows().next().unwrap();
+        assert_eq!(
+            (cells[0].character(), cells[0].width, cells[1].character()),
+            (first, 1, 'x')
+        );
+        assert_eq!(view.geometry().is_some(), id == capable);
+    }
+}
+
+#[test]
+fn render_negotiation_simultaneous_shared_portable_text_and_ansi_output() {
+    use super::output_tests::{kitty_chunk, store_test_kitty_image};
+    use yinz_runtime::native_media::MediaRoot;
+    use yinz_types::{
+        render_negotiation as caps,
+        structured_render::{GeometryRecord, GraphicsMedium, GraphicsRecord, PaneRect},
+    };
+    let [shared, portable, text, ansi] = [1, 2, 3, 4].map(ClientId::new);
+    let dir = tempfile::tempdir().unwrap();
+    let root = MediaRoot::open(dir.path()).unwrap();
+    let mut states = HashMap::from([
+        (
+            shared,
+            NativeRenderState::negotiated(
+                caps::Agreement {
+                    media: caps::INLINE | caps::SHARED,
+                    ..Default::default()
+                },
+                Some(root),
+            ),
+        ),
+        (
+            portable,
+            NativeRenderState::negotiated(Default::default(), None),
+        ),
+        (
+            text,
+            NativeRenderState::negotiated(
+                caps::Agreement {
+                    features: 0,
+                    media: 0,
+                    ..Default::default()
+                },
+                None,
+            ),
+        ),
+    ]);
+    let mut output = Output::default();
+    let image = store_test_kitty_image(&output.kitty_image_store, 256, 256);
+    output.add_clients(
+        &HashSet::from([shared, portable, text, ansi]),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        None,
+    );
+    for id in [shared, portable, text, ansi] {
+        output.client_character_chunks.insert(
+            id,
+            vec![CharacterChunk::new(vec![TerminalCharacter::new('Z')], 0, 0)],
+        );
+        output
+            .kitty_host_capabilities
+            .borrow_mut()
+            .insert(id, id != text);
+        output.set_native_geometry(
+            id,
+            GeometryRecord {
+                panes: vec![PaneRect {
+                    cols: 80,
+                    rows: 24,
+                    ..Default::default()
+                }],
+            },
+        );
+        output.add_kitty_image_chunks_to_client(
+            id,
+            PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(1)),
+            vec![kitty_chunk(image, 1, 2, 3)],
+            None,
+        );
+    }
+    let frames = output.serialize_native(&mut states, &HashMap::new(), &HashMap::new());
+    assert!(!frames.contains_key(&ansi));
+    assert!(output.serialize().unwrap()[&ansi].contains('Z'));
+    for (id, medium) in [
+        (shared, Some(GraphicsMedium::SharedFile)),
+        (portable, Some(GraphicsMedium::Inline)),
+        (text, None),
+    ] {
+        let view = decode(&frames[&id]).unwrap();
+        assert_eq!(view.rows().next().unwrap().1[0].character(), 'Z');
+        let records = view.graphics();
+        if let Some(expected) = medium {
+            let data = records
+                .iter()
+                .find_map(|r| match r {
+                    GraphicsRecord::Residency { medium, data, .. } if *medium == expected => {
+                        Some(data)
+                    },
+                    _ => None,
+                })
+                .unwrap();
+            if expected == GraphicsMedium::SharedFile {
+                assert!(std::path::Path::new(std::str::from_utf8(data).unwrap()).is_file());
+            } else {
+                assert_eq!(data.len(), 256 * 256 * 4);
+            }
+            assert!(records
+                .iter()
+                .any(|r| matches!(r, GraphicsRecord::Placement { .. })));
+        } else {
+            assert!(records.is_empty());
+            assert!(view.geometry().is_none());
+        }
+    }
 }

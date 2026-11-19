@@ -178,6 +178,12 @@ struct CoalescingSendQueue {
 #[derive(Default)]
 struct SendQueueState {
     control: VecDeque<ServerToClientMsg>,
+    last_native: u64,
+    writable_prefix: u64,
+    last_ack: u64,
+    drain: Option<(u64, Instant)>,
+    terminal_reason: Option<String>,
+    refusal_wake: Option<RenderReady>,
     render_bytes: usize,
     /// `Render`s in `control`.
     queued_renders: usize,
@@ -284,6 +290,7 @@ enum SendQueuePush {
     Queued,
     /// The message was a render and replaced an older pending one.
     CoalescedRender,
+    NativeSealed,
     /// The message was dropped: the ordered FIFO hit its count or render-byte limit.
     ControlQueueFull(QueueOverflow),
 }
@@ -318,6 +325,18 @@ impl CoalescingSendQueue {
     /// Returns readiness work for the caller to run after releasing the sender registry.
     fn push_deferred(&self, msg: ServerToClientMsg) -> (SendQueuePush, Option<RenderReady>) {
         let mut state = self.recover_state(self.state.lock());
+        if state.drain.is_some() {
+            return (SendQueuePush::NativeSealed, None);
+        }
+        if let ServerToClientMsg::RenderFrame { frame } = &msg
+            && frame.capacity() > SEND_QUEUE_RENDER_BYTE_CAPACITY
+        {
+            state.terminal_reason = Some(format!("native frame of {} bytes charged {} bytes exceeds the send queue limit of {} bytes", frame.len(), frame.capacity(), SEND_QUEUE_RENDER_BYTE_CAPACITY));
+            state.drain = Some((state.last_native, Instant::now()));
+            state.closed = true;
+            self.message_available.notify_one();
+            return (SendQueuePush::NativeSealed, state.take_render_ready());
+        }
         if state.closed {
             // the writer is gone; pretend-queue so late senders don't error
             let ready = state.take_render_ready();
@@ -365,6 +384,10 @@ impl CoalescingSendQueue {
                     // This response includes a newer viewport. A pending snapshot
                     // must not repaint older contents after it is delivered.
                     state.pending_pane_renders.remove(pane_id);
+                }
+                if let ServerToClientMsg::RenderFrame { frame } = &msg {
+                    state.last_native =
+                        yinz_types::structured_render::frame_sequence(frame).unwrap_or(0);
                 }
                 state.control.push_back(msg);
                 SendQueuePush::Queued
@@ -596,19 +619,50 @@ impl ClientSender {
         // A failure means the peer already went away, which is the outcome we
         // wanted anyway.
         use std::os::fd::AsRawFd;
-        let _ = unsafe { libc::shutdown(self.stream_fd.as_raw_fd(), libc::SHUT_RD) };
+        let abandoned = self
+            .queue
+            .recover_state(self.queue.state.lock())
+            .drain
+            .is_some();
+        let how = if abandoned {
+            libc::SHUT_RDWR
+        } else {
+            libc::SHUT_RD
+        };
+        let _ = unsafe { libc::shutdown(self.stream_fd.as_raw_fd(), how) };
     }
 }
 
 impl ClientSender {
     pub fn new(
         client_id: ClientId,
-        mut sender: IpcSenderWithContext<ServerToClientMsg>,
+        sender: IpcSenderWithContext<ServerToClientMsg>,
         live_writers: Arc<LiveWriters>,
         stream_fd: std::os::fd::OwnedFd,
     ) -> io::Result<Self> {
-        let queue = Arc::new(CoalescingSendQueue::new());
+        Self::with_queue(
+            client_id,
+            sender,
+            live_writers,
+            stream_fd,
+            Arc::new(CoalescingSendQueue::new()),
+            yinz_ipc::MAX_IPC_FRAME_LEN,
+        )
+    }
+
+    fn with_queue(
+        client_id: ClientId,
+        mut sender: IpcSenderWithContext<ServerToClientMsg>,
+        live_writers: Arc<LiveWriters>,
+        stream_fd: std::os::fd::OwnedFd,
+        queue: Arc<CoalescingSendQueue>,
+        wire_limit: usize,
+    ) -> io::Result<Self> {
         let writer_queue = queue.clone();
+        let writer_fd = stream_fd.try_clone()?;
+        // Return partial writes to the progress observer even when the peer cannot
+        // drain one complete IPC packet. Idle expiry is owned by the server loop.
+        sender.set_send_timeout(Some(Duration::from_secs(1)))?;
         live_writers.register();
         let finished_writers = live_writers.clone();
         let worker = std::thread::Builder::new().name(format!("client-writer-{client_id}")).spawn(move || {
@@ -616,6 +670,10 @@ impl ClientSender {
             let mut first_message = true;
             let mut first_render = true;
             let mut slow_warnings = SlowWarnings::default();
+            use std::os::fd::AsRawFd;
+            let shutdown = |how| { unsafe { libc::shutdown(writer_fd.as_raw_fd(), how) }; };
+            let mut written_prefix = 0;
+            let mut broken = false;
             while let Some(msg) = writer_queue.pop() {
                 let started_at = Instant::now();
                 let (message_kind, render_bytes) = message_size_and_kind(&msg);
@@ -635,7 +693,12 @@ impl ClientSender {
                         "attach trace: server client writer client_id={client_id} socket write begin message={kind}"
                     );
                 }
-                let result = sender.send_server_msg(msg).with_context(err_context);
+                let native_seq = match &msg { ServerToClientMsg::RenderFrame { frame } => yinz_types::structured_render::frame_sequence(frame), _ => None };
+                let result = sender.send_server_msg_observing(msg, wire_limit, || {
+                    if let Some(seq) = native_seq { writer_queue.recover_state(writer_queue.state.lock()).writable_prefix = seq; }
+                }, || {
+                    if let Some((_, progress)) = &mut writer_queue.recover_state(writer_queue.state.lock()).drain { *progress = Instant::now(); }
+                }).with_context(err_context);
                 let elapsed = started_at.elapsed();
                 writer_queue.finish_send();
                 if let Some((suppressed, max_suppressed)) = slow_warnings.record(Instant::now(), elapsed) {
@@ -656,12 +719,37 @@ impl ClientSender {
                 if is_render {
                     first_render = false;
                 }
-                result.non_fatal();
+                if let Err(error) = result {
+                    if let Some(oversize) = error.downcast_ref::<yinz_ipc::ipc::NativeEnvelopeTooLarge>() && native_seq.is_some() {
+                        let (wake, ready) = {
+                            let mut s = writer_queue.recover_state(writer_queue.state.lock());
+                            s.control.clear();
+                            s.pending_pane_renders.clear();
+                            s.render_bytes = 0;
+                            s.queued_renders = 0;
+                            s.closed = true;
+                            s.drain = Some((written_prefix, Instant::now()));
+                            s.terminal_reason = Some(oversize.to_string());
+                            (s.refusal_wake.clone(), s.take_render_ready())
+                        };
+                        notify(ready);
+                        notify(wake);
+                    } else {
+                        log::warn!("client {client_id} transport failed: {error:#}");
+                        broken = true;
+                        shutdown(libc::SHUT_RDWR);
+                    }
+                    break;
+                }
+                if let Some(seq) = native_seq { written_prefix = seq; }
             }
             let started_at = Instant::now();
-            let _ = sender.send_server_msg(ServerToClientMsg::Exit {
-                exit_reason: ExitReason::Disconnect,
-            });
+            if !broken {
+                let reason = writer_queue.recover_state(writer_queue.state.lock()).terminal_reason.take();
+                let draining = reason.is_some();
+                let result = sender.send_server_msg_observing(ServerToClientMsg::Exit { exit_reason: reason.map_or(ExitReason::Disconnect, ExitReason::Error) }, yinz_ipc::MAX_IPC_FRAME_LEN, || {}, || {});
+                if draining { shutdown(if result.is_ok() { libc::SHUT_WR } else { libc::SHUT_RDWR }); }
+            }
             let elapsed = started_at.elapsed();
             if let Some((suppressed, max_suppressed)) = slow_warnings.record(Instant::now(), elapsed) {
                 log::warn!("output pressure: server pid={} client_id={client_id} stage=ipc_serialization_plus_socket_delivery kind=Exit render_bytes=0 elapsed_ms={} suppressed={suppressed} max_suppressed_ms={}", std::process::id(), elapsed.as_millis(), max_suppressed.as_millis());
@@ -691,6 +779,7 @@ fn finish_enqueue(
 
     match outcome {
         SendQueuePush::Queued | SendQueuePush::CoalescedRender => Ok(()),
+        SendQueuePush::NativeSealed => Err(YinzError::NativeOutputSealed { client_id }.into()),
         SendQueuePush::ControlQueueFull(overflow) => {
             let in_flight = overflow
                 .in_flight
@@ -1566,6 +1655,49 @@ impl ClientTransport for ServerOsInputOutput {
             Some(pending) => finish_enqueue(client_id, pending).with_context(err_context),
             None => Ok(()),
         }
+    }
+    fn set_native_refusal_wake(&self, client: ClientId, wake: RenderReady) {
+        if let Some(queue) = self.client_queue(client) {
+            queue.recover_state(queue.state.lock()).refusal_wake = Some(wake);
+        }
+    }
+    fn native_drain(&self, client: ClientId) -> Option<(u64, Instant)> {
+        self.client_queue(client)
+            .and_then(|q| q.recover_state(q.state.lock()).drain)
+    }
+    fn accept_native_ack(&self, client: ClientId, seq: u64) -> bool {
+        let Some(queue) = self.client_queue(client) else {
+            return false;
+        };
+        let mut state = queue.recover_state(queue.state.lock());
+        if seq > state.writable_prefix || seq > state.drain.map_or(state.last_native, |(h, _)| h) {
+            return false;
+        }
+        if seq > state.last_ack {
+            state.last_ack = seq;
+            if let Some((_, at)) = &mut state.drain {
+                *at = Instant::now();
+            }
+        }
+        true
+    }
+    fn abort_native_drain(&self, client: ClientId, observed: Option<Instant>) -> bool {
+        use std::os::fd::AsRawFd;
+        let senders = self.lock_client_senders();
+        let Some(sender) = senders.get(&client) else {
+            return true;
+        };
+        let state = sender.queue.recover_state(sender.queue.state.lock());
+        if state
+            .drain
+            .is_some_and(|(_, at)| observed.is_none_or(|t| t == at))
+        {
+            unsafe {
+                libc::shutdown(sender.stream_fd.as_raw_fd(), libc::SHUT_RDWR);
+            }
+            return true;
+        }
+        false
     }
     fn new_client(
         &mut self,

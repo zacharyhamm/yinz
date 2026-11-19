@@ -9339,6 +9339,45 @@ fn expanded_palette_quota_clips_notifications_and_releases_rasters_with_the_view
     open(&mut screen);
     render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert_eq!(screen.core.kitty_image_store.borrow().image_count(), 1);
+    // A tab-level palette can straddle framed pane contents. Even with a proven
+    // graphics-capable viewer its text meter must survive that layout.
+    let tab = screen.get_active_tab_mut(CLIENT).unwrap();
+    for (parent, child) in [(1, 2), (1, 3), (2, 4), (1, 5), (2, 6), (3, 7), (4, 8)] {
+        tab.vertical_split_of_pane_id(
+            PaneId::Terminal(TerminalId::new(child)),
+            None,
+            None,
+            PaneId::Terminal(TerminalId::new(parent)),
+            None,
+            Some(false),
+        )
+        .unwrap();
+    }
+    use yinz_types::render_negotiation::{Offer, Request};
+    screen
+        .negotiate_render(CLIENT, Request::Offer(Offer::reader(None)))
+        .unwrap();
+    screen.render_to_clients().unwrap();
+    let mut fallback = false;
+    for (instruction, _) in receiver.try_iter() {
+        if let ServerInstruction::RenderFrames(frames) = instruction
+            && let Some(frame) = frames.get(&CLIENT)
+        {
+            let view = yinz_types::structured_render::decode(frame).unwrap();
+            assert!(view.graphics().iter().all(|r| !matches!(
+                r,
+                yinz_types::structured_render::GraphicsRecord::Placement { .. }
+            )));
+            fallback |= view.rows().any(|(_, cells)| {
+                cells
+                    .iter()
+                    .map(|c| c.character())
+                    .collect::<String>()
+                    .contains("25%")
+            });
+        }
+    }
+    assert!(fallback, "the native palette must retain its textual quota");
     screen.close_command_palette(CLIENT);
     assert_eq!(screen.core.kitty_image_store.borrow().image_count(), 0);
 }

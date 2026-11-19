@@ -1,5 +1,10 @@
 # Remote sessions over SSH
 
+The native library accepts an already-established SSH-forwarded IPC stream. It
+negotiates portable inline media and uses the remote server's session settings.
+See [native attachment and recovery](native-terminal.md#structured-rendering-protocol)
+for the wire contract and the current CLI boundary.
+
 Run the terminal client on your machine and keep the session server on an SSH host:
 
 ```sh

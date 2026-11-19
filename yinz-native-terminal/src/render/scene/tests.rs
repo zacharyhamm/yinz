@@ -1706,6 +1706,44 @@ fn an_image_at_a_pane_edge_is_clipped_on_the_way_into_the_scene() {
 }
 
 #[test]
+fn render_negotiation_clips_live_kitty_and_sixel_on_layout_change() {
+    use yinz_types::{render_negotiation as caps, structured_render::FrameBuilder};
+    let mut state = TerminalState::new(4, 8);
+    state.negotiate(caps::Agreement::default(), None);
+    for (seq, split) in [(1, 5), (2, 4)] {
+        let mut frame = FrameBuilder::new(8, 4, seq);
+        frame.set_full_repaint(seq == 1);
+        frame.push_geometry(&GeometryRecord {
+            panes: vec![
+                clipping_pane(0, 0, split, 4),
+                clipping_pane(split, 0, 8 - split, 4),
+            ],
+        });
+        if seq == 1 {
+            frame.extend_graphics(&[
+                image(1, 64, 20),
+                Place::of(1, 64, 20).at(0, 2).record(),
+                painter::sixel_chunk(1, 2, 64, 6, &sixel(64, 6)),
+            ]);
+        }
+        state.apply_frame(&frame.finish()).unwrap();
+        let quads = images_of(&state, metrics_of(8, 20));
+        assert_eq!(quads.len(), 2);
+        for quad in quads {
+            assert_eq!(
+                (quad.x, quad.width, quad.source_x),
+                (16, u32::from(split - 2) * 8, 0)
+            );
+            assert_eq!(quad.image.width, 64);
+        }
+    }
+    let mut invalid = FrameBuilder::new(8, 4, 3);
+    invalid.push_geometry(&GeometryRecord::default());
+    assert!(state.apply_frame(&invalid.finish()).is_err());
+    assert_eq!(images_of(&state, metrics_of(8, 20)).len(), 2);
+}
+
+#[test]
 fn quads_are_ordered_by_z_index() {
     let scene = scene_with_graphics(
         4,

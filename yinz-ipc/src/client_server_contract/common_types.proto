@@ -1673,3 +1673,5 @@ message MoveTabByTabIdAction { uint64 id = 1; Direction direction = 2; }
 message FocusPaneTabsAction {}
 message PreviousPaneTabAction {}
 message NextPaneTabAction {}
+
+message EmptyNativeMsg {}

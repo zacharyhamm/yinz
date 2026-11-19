@@ -36,3 +36,4 @@ pub mod remote_hosts;
 pub mod session_update;
 
 pub mod fs_beneath;
+pub mod native_media;

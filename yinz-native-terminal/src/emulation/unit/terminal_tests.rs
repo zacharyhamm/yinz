@@ -621,3 +621,124 @@ fn large_clipboard_updates_survive_fragmented_frame_sidebands() {
         }
     }
 }
+
+#[test]
+fn render_negotiation_commits_only_consumed_media_with_full_width_ids() {
+    let mut state = TerminalState::new(6, 12);
+    state.negotiate(caps::Agreement::default(), None);
+    let high = (1u64 << 40) + 7;
+    let mut baseline = FrameBuilder::new(12, 6, 5);
+    baseline.set_full_repaint(true);
+    baseline.push_geometry(&GeometryRecord {
+        panes: vec![structured_render::PaneRect {
+            cols: 12,
+            rows: 6,
+            ..Default::default()
+        }],
+    });
+    baseline.extend_graphics(&[
+        residency(7, GraphicsMedium::Inline, rgba([1, 2, 3, 255], 4)),
+        placement(7, 9),
+        residency(high, GraphicsMedium::Inline, rgba([9, 8, 7, 255], 4)),
+        placement(high, 9 + (1 << 40)),
+    ]);
+    let frame = baseline.finish();
+    assert_eq!(state.apply_frame(&frame).unwrap().seq, 5);
+    assert_eq!(state.graphics().resident_ids(), vec![7, high]);
+    use crate::render::scene::{resident_images, ImageKey};
+    assert_eq!(
+        resident_images(&state),
+        vec![ImageKey::Kitty(7), ImageKey::Kitty(high)]
+    );
+    assert_eq!(
+        state.graphics().image(high).unwrap().pixels,
+        rgba([9, 8, 7, 255], 4)
+    );
+    assert_eq!(state.graphics().placements().count(), 2);
+    let stamp = state.graphics_stamp();
+    assert_eq!(state.apply_frame(&frame).unwrap().seq, 5);
+    assert_eq!(stamp, state.graphics_stamp());
+
+    let mut remove = FrameBuilder::new(12, 6, 6);
+    remove.extend_graphics(&[
+        GraphicsRecord::DeletePlacement {
+            image_id: high,
+            placement_id: 9 + (1 << 40),
+        },
+        GraphicsRecord::DeleteImage { id: high },
+    ]);
+    state.apply_frame(&remove.finish()).unwrap();
+    for broken in [
+        placement(high, 9),
+        GraphicsRecord::SixelChunk {
+            cell_x: 0,
+            cell_y: 0,
+            pixel_x: 0,
+            pixel_y: 0,
+            pixel_width: 1,
+            pixel_height: 1,
+            payload: vec![],
+        },
+        residency(8, GraphicsMedium::SharedFile, b"/tmp/unproven".to_vec()),
+    ] {
+        let mut frame = FrameBuilder::new(12, 6, 7);
+        frame.push_row(0, 0, &run("bad"));
+        frame.sideband_mut().push(7);
+        frame.extend_graphics(&[GraphicsRecord::DeleteImage { id: 7 }, broken]);
+        assert!(state.apply_frame(&frame.finish()).is_err());
+        assert_eq!(state.applied_seq, Some(6));
+        assert_eq!(state.take_bells(), 0);
+        assert_eq!(state.graphics().resident_ids(), vec![7]);
+        assert_eq!(state.graphics().placements().count(), 1);
+        assert!(!row_text(&state, 0).contains("bad"));
+    }
+    assert!(state.apply_frame(&frame_of(12, 6, 8, b"")).is_err());
+}
+
+#[test]
+fn render_negotiation_row_shifts_require_an_incremental_fitting_rectangle() {
+    use structured_render::{ShiftEntry, ShiftRecord};
+    let mut state = TerminalState::new(3, 6);
+    let mut agreement = caps::Agreement::default();
+    agreement.features |= caps::SHIFTS;
+    state.negotiate(agreement, None);
+    let mut base = FrameBuilder::new(6, 3, 1);
+    base.set_full_repaint(true);
+    for (i, row) in ["abcdef", "ghijkl", "mnopqr"].into_iter().enumerate() {
+        base.push_row(i as u16, 0, &run(row));
+    }
+    state.apply_frame(&base.finish()).unwrap();
+    let shift = ShiftEntry {
+        x: 1,
+        y: 0,
+        cols: 3,
+        rows: 2,
+        lines: 1,
+    };
+    for (full, clear, width, entries) in [
+        (true, false, 6, vec![shift]),
+        (false, true, 6, vec![shift]),
+        (false, false, 7, vec![shift]),
+        (false, false, 6, vec![shift, ShiftEntry { x: 5, ..shift }]),
+    ] {
+        let mut frame = FrameBuilder::new(width, 3, 2);
+        frame.set_full_repaint(full);
+        frame.set_clear(clear);
+        frame.push_shifts(&ShiftRecord { entries });
+        assert!(state.apply_frame(&frame.finish()).is_err());
+        assert_eq!(row_text(&state, 0), "abcdef");
+    }
+    let mut valid = FrameBuilder::new(6, 3, 2);
+    valid.push_shifts(&ShiftRecord {
+        entries: vec![shift],
+    });
+    valid.push_row(1, 2, &run("X"));
+    let applied = state.apply_frame(&valid.finish()).unwrap();
+    assert_eq!(applied.seq, 2);
+    assert!(
+        matches!(applied.damage, Damage::Rows(ref rows) if rows.contains(&0) && rows.contains(&1))
+    );
+    assert_eq!(row_text(&state, 0), "ahijef");
+    assert_eq!(row_text(&state, 1), "g X kl");
+    assert_eq!(row_text(&state, 2), "mnopqr");
+}

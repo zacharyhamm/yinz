@@ -1,9 +1,11 @@
+use crate::client_server_contract::client_server_contract as wire;
 use std::str::FromStr;
 use yinz_types::internal_ids::ProcessId;
 use yinz_types::internal_ids::SupervisorId;
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TabNumber;
 use yinz_types::internal_ids::TabPosition;
+use yinz_types::render_negotiation as native;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -275,6 +277,17 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
                     supported,
                 })
             },
+            ClientToServerMsg::NativeRenderRequest(request) => {
+                use wire::native_render_request_msg::Request;
+                let request = match request {
+                    native::Request::Withdraw => Request::Withdraw(wire::EmptyNativeMsg {}),
+                    native::Request::Offer(o) => Request::Offer(wire::NativeRenderOfferMsg {
+                        versions: o.versions, features: o.features, media: o.media,
+                        proof: o.proof.map(|p| wire::NativeMediaProofMsg { root: p.root, basename: p.basename, challenge: p.challenge })
+                    })
+                };
+                client_to_server_msg::Message::NativeRenderRequest(wire::NativeRenderRequestMsg { request: Some(request) })
+            },
             ClientToServerMsg::StructuredRenderSupport { supported } => client_to_server_msg::Message::StructuredRenderSupport(crate::client_server_contract::client_server_contract::StructuredRenderSupportMsg { supported }),
             ClientToServerMsg::RenderFrameAck { seq } => client_to_server_msg::Message::RenderFrameAck(crate::client_server_contract::client_server_contract::RenderFrameAckMsg { seq }),
             ClientToServerMsg::SixelSupport { supported } => {
@@ -524,6 +537,27 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                     supported: msg.supported,
                 })
             },
+            Some(client_to_server_msg::Message::NativeRenderRequest(msg)) => {
+                use wire::native_render_request_msg::Request;
+                Ok(ClientToServerMsg::NativeRenderRequest(
+                    match msg
+                        .request
+                        .ok_or_else(|| anyhow!("missing native render request"))?
+                    {
+                        Request::Withdraw(_) => native::Request::Withdraw,
+                        Request::Offer(o) => native::Request::Offer(native::Offer {
+                            versions: o.versions,
+                            features: o.features,
+                            media: o.media,
+                            proof: o.proof.map(|p| native::MediaProof {
+                                root: p.root,
+                                basename: p.basename,
+                                challenge: p.challenge,
+                            }),
+                        }),
+                    },
+                ))
+            },
             Some(client_to_server_msg::Message::StructuredRenderSupport(msg)) => {
                 Ok(ClientToServerMsg::StructuredRenderSupport {
                     supported: msg.supported,
@@ -646,6 +680,24 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
                     report_id,
                 })
             },
+            ServerToClientMsg::NativeRenderResult(decision) => {
+                use wire::native_render_result_msg::Result as Reply;
+                let result = match decision {
+                    native::Decision::Rejected(reason) => Reply::Rejected(reason),
+                    native::Decision::Withdrawn(seq) => Reply::Withdrawn(seq),
+                    native::Decision::Selected(a) => {
+                        Reply::Selected(wire::NativeRenderSelectedMsg {
+                            version: a.version,
+                            features: a.features,
+                            media: a.media,
+                            proof_response: a.proof_response,
+                        })
+                    },
+                };
+                server_to_client_msg::Message::NativeRenderResult(wire::NativeRenderResultMsg {
+                    result: Some(result),
+                })
+            },
             ServerToClientMsg::RenderFrame { frame } => server_to_client_msg::Message::RenderFrame(
                 crate::client_server_contract::client_server_contract::RenderFrameMsg { frame },
             ),
@@ -669,6 +721,7 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
                 })
             },
             ServerToClientMsg::Connected {
+                native_render_revision,
                 warp_companions,
                 warp_held_terminals,
                 warp_agent_tracking,
@@ -678,6 +731,7 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
                 server_version,
                 server_host,
             } => server_to_client_msg::Message::Connected(ConnectedMsg {
+                native_render_revision,
                 warp_companions,
                 warp_held_terminals,
                 warp_agent_tracking,
@@ -781,6 +835,24 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
 
     fn try_from(msg: ProtoServerToClientMsg) -> Result<Self> {
         match msg.message {
+            Some(server_to_client_msg::Message::NativeRenderResult(msg)) => {
+                use wire::native_render_result_msg::Result as Reply;
+                Ok(ServerToClientMsg::NativeRenderResult(
+                    match msg
+                        .result
+                        .ok_or_else(|| anyhow!("missing native render result"))?
+                    {
+                        Reply::Rejected(reason) => native::Decision::Rejected(reason),
+                        Reply::Withdrawn(seq) => native::Decision::Withdrawn(seq),
+                        Reply::Selected(a) => native::Decision::Selected(native::Agreement {
+                            version: a.version,
+                            features: a.features,
+                            media: a.media,
+                            proof_response: a.proof_response,
+                        }),
+                    },
+                ))
+            },
             Some(server_to_client_msg::Message::RenderFrame(msg)) => {
                 Ok(ServerToClientMsg::RenderFrame { frame: msg.frame })
             },
@@ -877,6 +949,7 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
             },
             Some(server_to_client_msg::Message::Connected(msg)) => {
                 Ok(ServerToClientMsg::Connected {
+                    native_render_revision: msg.native_render_revision,
                     warp_companions: msg.warp_companions,
                     warp_held_terminals: msg.warp_held_terminals,
                     warp_agent_tracking: msg.warp_agent_tracking,

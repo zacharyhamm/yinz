@@ -28,6 +28,7 @@ type CapturedClientMessages = Watched<HashMap<ClientId, Vec<ServerToClientMsg>>>
 pub(crate) struct CapturingOs {
     pub(crate) server_to_client_messages: CapturedClientMessages,
     pub(crate) fail_client: Option<ClientId>,
+    pub(crate) refused: Watched<Option<(ClientId, u64, std::time::Instant)>>,
     pub(crate) removed_clients: Watched<Vec<ClientId>>,
 }
 
@@ -91,6 +92,21 @@ impl TerminalSupervision for CapturingOs {}
 impl RemotePanes for CapturingOs {}
 
 impl ClientTransport for CapturingOs {
+    fn native_drain(&self, client: ClientId) -> Option<(u64, std::time::Instant)> {
+        self.refused
+            .lock()
+            .filter(|(id, _, _)| *id == client)
+            .map(|(_, h, at)| (h, at))
+    }
+    fn abort_native_drain(&self, client: ClientId, observed: Option<std::time::Instant>) -> bool {
+        let mut drain = self.refused.lock();
+        if drain.is_some_and(|(id, _, at)| id == client && observed.is_none_or(|o| o == at)) {
+            *drain = None;
+            true
+        } else {
+            false
+        }
+    }
     fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()> {
         if self.fail_client == Some(client_id) {
             return Err(anyhow!("client disconnected"));

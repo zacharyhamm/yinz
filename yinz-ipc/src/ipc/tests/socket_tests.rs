@@ -163,6 +163,7 @@ fn send_apis_propagate_flush_failures() {
             .unwrap_err(),
         flush_failing_sender::<ServerToClientMsg>()
             .send_server_msg(ServerToClientMsg::Connected {
+                native_render_revision: None,
                 warp_companions: true,
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
@@ -178,6 +179,7 @@ fn send_apis_propagate_flush_failures() {
         send_protobuf_server_to_client(
             &mut flush_failing_sender(),
             ServerToClientMsg::Connected {
+                native_render_revision: None,
                 warp_companions: true,
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
@@ -201,7 +203,7 @@ fn send_apis_propagate_flush_failures() {
 
 #[test]
 fn a_partial_write_permanently_closes_the_sender_without_retrying_on_drop() {
-    struct PartialWriteStream(std::sync::Arc<AtomicU32>);
+    struct PartialWriteStream(std::sync::Arc<AtomicU32>, std::io::ErrorKind);
     impl std::io::Read for PartialWriteStream {
         fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
             Ok(0)
@@ -211,7 +213,7 @@ fn a_partial_write_permanently_closes_the_sender_without_retrying_on_drop() {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             match self.0.fetch_add(1, Ordering::SeqCst) {
                 0 => Ok(buf.len().min(2)),
-                1 => Err(std::io::ErrorKind::TimedOut.into()),
+                1 => Err(self.1.into()),
                 _ => Ok(buf.len()),
             }
         }
@@ -221,7 +223,7 @@ fn a_partial_write_permanently_closes_the_sender_without_retrying_on_drop() {
     }
     impl IpcStream for PartialWriteStream {
         fn try_clone_stream(&self) -> std::io::Result<Box<dyn IpcStream>> {
-            Ok(Box::new(Self(self.0.clone())))
+            Ok(Box::new(Self(self.0.clone(), self.1)))
         }
         fn set_read_timeout(&self, _: Option<std::time::Duration>) -> std::io::Result<()> {
             Ok(())
@@ -230,15 +232,33 @@ fn a_partial_write_permanently_closes_the_sender_without_retrying_on_drop() {
             Ok(())
         }
     }
-    for from_client in [true, false] {
+    for (from_client, observe) in [(true, false), (false, false), (false, true)] {
         let writes = std::sync::Arc::new(AtomicU32::new(0));
-        let mut sender = IpcSenderWithContext::<ClientToServerMsg>::from_boxed(Box::new(
-            PartialWriteStream(writes.clone()),
-        ));
+        let mut sender =
+            IpcSenderWithContext::<ClientToServerMsg>::from_boxed(Box::new(PartialWriteStream(
+                writes.clone(),
+                if observe {
+                    std::io::ErrorKind::BrokenPipe
+                } else {
+                    std::io::ErrorKind::TimedOut
+                },
+            )));
         let result = if from_client {
             sender.send_client_msg(ClientToServerMsg::BackgroundColor {
                 color: "x".repeat(16 * 1024),
             })
+        } else if observe {
+            let mut progress = 0;
+            let result = sender.send_server_msg_observing(
+                ServerToClientMsg::Render {
+                    content: "x".repeat(16 * 1024),
+                },
+                crate::MAX_IPC_FRAME_LEN,
+                || {},
+                || progress += 1,
+            );
+            assert_eq!(progress, 1);
+            result
         } else {
             sender.send_server_msg(ServerToClientMsg::Render {
                 content: "x".repeat(16 * 1024),
@@ -308,6 +328,7 @@ fn server_to_client_message_over_socket() {
         let mut sender: IpcSenderWithContext<ServerToClientMsg> = IpcSenderWithContext::new(stream);
         sender
             .send_server_msg(ServerToClientMsg::Connected {
+                native_render_revision: None,
                 warp_companions: true,
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
@@ -331,6 +352,7 @@ fn server_to_client_message_over_socket() {
         matches!(
             msg,
             ServerToClientMsg::Connected {
+                native_render_revision: None,
                 warp_companions: true,
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
@@ -360,6 +382,7 @@ fn bidirectional_communication_via_fd_duplication() {
             sender.get_receiver().unwrap();
         sender
             .send_server_msg(ServerToClientMsg::Connected {
+                native_render_revision: None,
                 warp_companions: true,
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
@@ -392,6 +415,7 @@ fn bidirectional_communication_via_fd_duplication() {
         matches!(
             msg,
             ServerToClientMsg::Connected {
+                native_render_revision: None,
                 warp_companions: true,
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
@@ -537,6 +561,7 @@ fn session_probe_accepts_responding_socket() {
 
         sender
             .send_server_msg(ServerToClientMsg::Connected {
+                native_render_revision: None,
                 warp_companions: true,
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
@@ -562,6 +587,7 @@ fn session_probe_accepts_responding_socket() {
             result,
             Some((
                 ServerToClientMsg::Connected {
+                    native_render_revision: None,
                     warp_companions: true,
                     warp_held_terminals: false,
                     warp_agent_tracking: false,
@@ -947,6 +973,7 @@ fn a_probe_timeout_is_an_unresponsive_server_not_an_absent_one() {
     assert_eq!(
         classify_probe_reply(IpcRecv::Msg(
             ServerToClientMsg::Connected {
+                native_render_revision: None,
                 warp_companions: true,
                 warp_held_terminals: false,
                 warp_agent_tracking: false,

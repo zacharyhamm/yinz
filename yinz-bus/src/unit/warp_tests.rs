@@ -203,6 +203,7 @@ fn the_capability_probe_reads_its_answer_after_an_older_servers_pushes() {
     }
     answer
         .send_server_msg(ServerToClientMsg::Connected {
+            native_render_revision: None,
             warp_companions: true,
             warp_held_terminals: false,
             warp_agent_tracking: false,
@@ -722,6 +723,7 @@ fn refuse_handoff(listener: interprocess::local_socket::Listener) {
     ));
     probe
         .send_server_msg(ServerToClientMsg::Connected {
+            native_render_revision: None,
             warp_companions: true,
             warp_held_terminals: true,
             warp_agent_tracking: true,
@@ -1017,6 +1019,7 @@ fn warp_ipc_failure_returns_exact_snapshot_and_consumed_bytes_to_source() {
         ));
         probe
             .send_server_msg(ServerToClientMsg::Connected {
+                native_render_revision: None,
                 warp_companions: true,
                 warp_held_terminals: true,
                 warp_agent_tracking: true,

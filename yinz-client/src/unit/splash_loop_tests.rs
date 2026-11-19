@@ -283,6 +283,7 @@ fn screensaver_drains_background_frames_and_restores_on_wake() {
     let (input_tx, _input_rx) = crate::input_handler::input_control_channel();
     tx.send(ClientInstruction::from(
         yinz_ipc::ipc::ServerToClientMsg::Connected {
+            native_render_revision: None,
             warp_companions: true,
             warp_held_terminals: true,
             warp_agent_tracking: true,

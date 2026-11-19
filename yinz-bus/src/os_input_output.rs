@@ -370,6 +370,18 @@ pub trait RemotePanes: Send + Sync {
 /// Server-side client connections and ordered output delivery.
 pub trait ClientTransport: Send + Sync {
     fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()>;
+    fn set_native_refusal_wake(&self, _client: ClientId, _wake: RenderReady) {}
+    fn native_drain(&self, _client: ClientId) -> Option<(u64, std::time::Instant)> {
+        None
+    }
+    fn accept_native_ack(&self, _client: ClientId, _seq: u64) -> bool {
+        true
+    }
+    /// Abort both socket directions only if no progress has superseded this observation.
+    /// A missing timestamp requests unconditional server shutdown.
+    fn abort_native_drain(&self, _client: ClientId, _observed: Option<std::time::Instant>) -> bool {
+        false
+    }
     fn new_client(
         &mut self,
         client_id: ClientId,

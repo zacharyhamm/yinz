@@ -117,20 +117,7 @@ pub(super) fn set_structured_render_support(
     client_id: ClientId,
     supported: bool,
 ) -> Result<()> {
-    if supported {
-        screen
-            .core
-            .native_render_clients
-            .entry(client_id)
-            .or_default();
-        screen.update_kitty_graphics_support(client_id, true);
-        screen.update_sixel_support(client_id, true);
-        for tab in screen.core.tabs.values_mut() {
-            tab.set_force_render();
-        }
-    } else {
-        screen.core.native_render_clients.remove(&client_id);
-    }
+    screen.legacy_render_support(client_id, supported);
     screen.render()?;
     Ok(())
 }

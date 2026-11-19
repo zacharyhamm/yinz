@@ -929,7 +929,7 @@ impl Screen {
 
             // Serialize this watcher's output cropped to its viewport
             let mut serialized_output = watcher_specific_output
-                .serialize_with_size(Some(watcher_state.size()))
+                .serialize_for_watcher(Some(watcher_state.size()), Some(*watcher_id))
                 .context(err_context)?;
 
             // Get the output for the followed client and map it to this watcher

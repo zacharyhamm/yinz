@@ -422,6 +422,13 @@ fn remove_client_and_flush_forwards(
         .to_anyhow()
         .context("access client state")?
         .remove_client(client_id);
+    finish_retired_forwards(session_data, stuck_tokens)
+}
+
+fn finish_retired_forwards(
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+    stuck_tokens: Vec<u32>,
+) -> Result<()> {
     if stuck_tokens.is_empty() {
         return Ok(());
     }
@@ -440,6 +447,55 @@ fn remove_client_and_flush_forwards(
                 });
         }
     }
+    Ok(())
+}
+
+fn native_drain_deadline(
+    draining: &mut HashMap<ClientId, u64>,
+    os: &dyn ServerOsApi,
+    now: std::time::Instant,
+) -> Option<std::time::Instant> {
+    let mut nearest = None;
+    draining.retain(|client, _| {
+        let Some((_, progress)) = os.native_drain(*client) else {
+            return false;
+        };
+        let expires = progress + Duration::from_secs(30);
+        if expires <= now && os.abort_native_drain(*client, Some(progress)) {
+            return false;
+        }
+        nearest = Some(nearest.map_or(expires, |d: std::time::Instant| d.min(expires)));
+        true
+    });
+    nearest
+}
+
+fn observe_native_refusal(
+    client: ClientId,
+    os_input: &dyn ServerOsApi,
+    session_state: &Arc<RwLock<SessionState>>,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+    drains: &mut HashMap<ClientId, u64>,
+) -> Result<()> {
+    let Some((high, _)) = os_input.native_drain(client) else {
+        return Ok(());
+    };
+    if drains.insert(client, high) == Some(high) {
+        return Ok(());
+    }
+    let mut state = session_state
+        .write()
+        .to_anyhow()
+        .context("retire refused native viewer")?;
+    let stuck_tokens = state.retire_interactive(client);
+    drop(state);
+    finish_retired_forwards(session_data, stuck_tokens)?;
+    with_session(session_data, |session| {
+        session
+            .senders
+            .send_to_screen(ScreenInstruction::SealNativePrefix(client, high))
+    })?
+    .transpose()?;
     Ok(())
 }
 
@@ -669,7 +725,12 @@ const SESSION_REQUEST_RETENTION: Duration = Duration::from_secs(5);
 macro_rules! send_to_client {
     ($client_id:expr_2021, $os_input:expr_2021, $msg:expr_2021, $session_state:expr_2021, $session_data:expr_2021) => {
         let send_to_client_res = $os_input.send_to_client($client_id, $msg);
-        if let Err(e) = send_to_client_res {
+        if let Err(e) = send_to_client_res
+            && !matches!(
+                e.downcast_ref::<YinzError>(),
+                Some(YinzError::NativeOutputSealed { .. })
+            )
+        {
             // Try to recover the message
             let context = match e.downcast_ref::<YinzError>() {
                 Some(YinzError::ClientTooSlow { .. }) => {
@@ -902,11 +963,15 @@ impl SessionState {
     /// can proceed.
     pub fn remove_client(&mut self, client_id: ClientId) -> Vec<u32> {
         self.clients.remove(&client_id);
-        self.interactive_clients.remove(&client_id);
-        self.session_request_clients.remove(&client_id);
         self.update_client_assets.remove(&client_id);
         self.resumed_updates.remove(&client_id);
         self.pipes.retain(|_p_id, c_id| c_id != &client_id);
+        self.retire_interactive(client_id)
+    }
+
+    fn retire_interactive(&mut self, client_id: ClientId) -> Vec<u32> {
+        self.interactive_clients.remove(&client_id);
+        self.session_request_clients.remove(&client_id);
         self.clear_last_active_client(client_id);
         let stuck: Vec<u32> = self
             .forwards_in_flight
@@ -1211,6 +1276,10 @@ pub fn start_server_impl(
                                 accepted_at.elapsed()
                             );
 
+                            let wake_server = to_server.clone();
+                            os_input.set_native_refusal_wake(client_id, Arc::new(move || {
+                                wake_server.send(ServerInstruction::NativeWriterSealed(client_id)).context("report native writer refusal").non_fatal();
+                            }));
                             let router_session_data = session_data.clone();
                             let router_session_state = session_state.clone();
                             let router_os_input = os_input.clone();
@@ -1288,6 +1357,7 @@ pub fn start_server_impl(
     // are answered without a session — cannot keep an orphan alive by turning
     // up every so often. Once there is a session the loop waits without a
     // deadline as before: a detached session is meant to outlive its clients.
+    let mut draining = HashMap::<ClientId, u64>::new();
     let first_client_deadline = std::time::Instant::now() + FIRST_CLIENT_TIMEOUT;
     log::info!("startup trace: server listening socket={socket_path:?}; waiting for first client");
     let outcome = (|| -> Result<()> {
@@ -1297,6 +1367,8 @@ pub fn start_server_impl(
             let mut pending = channels::Select::new_biased();
             let panic_index = pending.recv(&panic_receiver);
             pending.recv(&server_receiver);
+            let drain_deadline =
+                native_drain_deadline(&mut draining, &*os_input, std::time::Instant::now());
             let selected = if session_data
                 .read()
                 .to_anyhow()
@@ -1309,6 +1381,11 @@ pub fn start_server_impl(
                         exit_reason = "no client attached within the startup timeout";
                         break;
                     },
+                }
+            } else if let Some(deadline) = drain_deadline {
+                match pending.select_deadline(deadline) {
+                    Ok(selected) => selected,
+                    Err(_) => continue,
                 }
             } else {
                 pending.select()
@@ -1369,6 +1446,11 @@ pub fn start_server_impl(
                     .send_to_client(
                         *client_id,
                         ServerToClientMsg::Connected {
+                            native_render_revision: (!matches!(
+                                instruction,
+                                ServerInstruction::AttachWatcherClient(..)
+                            ))
+                            .then_some(yinz_types::render_negotiation::REVISION),
                             warp_companions: true,
                             warp_held_terminals: true,
                             warp_agent_tracking: true,
@@ -2146,10 +2228,57 @@ pub fn start_server_impl(
                         session_data
                     );
                 },
+                ServerInstruction::NativeRenderRequest(client_id, request) => {
+                    if session_state.read().to_anyhow()?.is_interactive(&client_id) {
+                        with_session(&session_data, |session| {
+                            session
+                                .senders
+                                .send_to_screen(ScreenInstruction::NativeRenderRequest(
+                                    client_id, request,
+                                ))
+                        })?
+                        .transpose()?;
+                    } else {
+                        send_to_client!(
+                            client_id,
+                            os_input,
+                            ServerToClientMsg::NativeRenderResult(
+                                yinz_types::render_negotiation::Decision::Rejected(
+                                    "native rendering requires an interactive attachment".into()
+                                )
+                            ),
+                            session_state,
+                            session_data
+                        );
+                    }
+                },
+                ServerInstruction::NativeRenderResult(client_id, decision) => {
+                    send_to_client!(
+                        client_id,
+                        os_input,
+                        ServerToClientMsg::NativeRenderResult(decision),
+                        session_state,
+                        session_data
+                    );
+                },
+                ServerInstruction::NativeFrameAck(client_id, seq) => {
+                    if !os_input.accept_native_ack(client_id, seq) {
+                        continue;
+                    }
+                    with_session(&session_data, |session| {
+                        session
+                            .senders
+                            .send_to_screen(ScreenInstruction::RenderFrameAck { client_id, seq })
+                    })?
+                    .transpose()?;
+                },
                 ServerInstruction::StructuredRenderSupport {
                     client_id,
                     supported,
                 } => {
+                    if !session_state.read().to_anyhow()?.is_interactive(&client_id) {
+                        continue;
+                    }
                     with_session(&session_data, |session| {
                         session
                             .senders
@@ -2161,15 +2290,38 @@ pub fn start_server_impl(
                             .non_fatal();
                     })?;
                 },
+                ServerInstruction::NativeWriterSealed(client) => {
+                    observe_native_refusal(
+                        client,
+                        &*os_input,
+                        &session_state,
+                        &session_data,
+                        &mut draining,
+                    )?;
+                },
                 ServerInstruction::RenderFrames(frames) => {
-                    for (client_id, frame) in frames {
-                        send_to_client!(
-                            client_id,
-                            os_input,
-                            ServerToClientMsg::RenderFrame { frame },
-                            session_state,
-                            session_data
-                        );
+                    for (client, frame) in frames {
+                        if let Err(error) = os_input
+                            .send_to_client(client, ServerToClientMsg::RenderFrame { frame })
+                        {
+                            if matches!(
+                                error.downcast_ref::<YinzError>(),
+                                Some(YinzError::NativeOutputSealed { .. })
+                            ) {
+                                observe_native_refusal(
+                                    client,
+                                    &*os_input,
+                                    &session_state,
+                                    &session_data,
+                                    &mut draining,
+                                )?;
+                            } else {
+                                log::warn!(
+                                    "native frame delivery to client {client} failed: {error:#}"
+                                );
+                                remove_client!(client, os_input, session_state, session_data);
+                            }
+                        }
                     }
                 },
                 ServerInstruction::Render(_) | ServerInstruction::OpeningLayoutFailed { .. } => {
@@ -2287,6 +2439,7 @@ pub fn start_server_impl(
                     let result = os_input.send_to_client(
                         client_id,
                         ServerToClientMsg::Connected {
+                            native_render_revision: None,
                             warp_companions: true,
                             warp_held_terminals: true,
                             warp_agent_tracking: true,
@@ -2876,6 +3029,9 @@ pub fn start_server_impl(
     shutdown.begin();
     // No one drains this bounded channel now. Disconnect it before joining workers that
     // may still send to the server, so a full queue cannot hold up their shutdown.
+    for client in draining.keys() {
+        os_input.abort_native_drain(*client, None);
+    }
     drop(server_receiver);
     drop(panic_receiver);
 

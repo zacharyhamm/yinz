@@ -6,10 +6,12 @@ use crate::ClientId;
 use yinz_bus::plugins::PluginInstruction;
 use yinz_ipc::ipc::PixelDimensions;
 use yinz_runtime::errors::prelude::*;
+use yinz_terminal::output::NativeRenderState;
 use yinz_types::colors::PaletteColor;
 use yinz_types::data::Event;
 use yinz_types::internal_ids::PluginId;
 use yinz_types::pane_size::SizeInPixels;
+use yinz_types::render_negotiation as caps;
 
 impl Screen {
     /// Returns whether the character cell size changed, so the caller can re-apply
@@ -30,11 +32,7 @@ impl Screen {
         pixel_dimensions.text_area_size = pixel_dimensions.text_area_size.filter(nonzero);
         self.core.pixel_dimensions.merge(pixel_dimensions);
         let previous_client_cell_size = self.cell_pixel_size(client_id);
-        let dimensions = self
-            .core
-            .client_pixel_dimensions
-            .entry(client_id)
-            .or_default();
+        let dimensions = self.core.client_pixel_dimensions.entry(client_id).or_default();
         dimensions.merge(pixel_dimensions);
         let cell_size = dimensions
             .character_cell_size
@@ -59,9 +57,7 @@ impl Screen {
         if let Some(cell_size) = cell_size {
             *self.core.character_cell_size.borrow_mut() = Some(cell_size);
         }
-        self.core
-            .client_cell_pixel_sizes
-            .insert(client_id, cell_size);
+        self.core.client_cell_pixel_sizes.insert(client_id, cell_size);
         if previous_client_cell_size != cell_size && self.connected_clients_contains(&client_id) {
             self.report_cell_pixel_size(None, client_id);
         }
@@ -69,16 +65,14 @@ impl Screen {
     }
 
     pub(super) fn cell_pixel_size(&self, client_id: ClientId) -> Option<SizeInPixels> {
-        self.core
-            .client_cell_pixel_sizes
+        self.core.client_cell_pixel_sizes
             .get(&client_id)
             .copied()
             .flatten()
     }
 
     pub(super) fn report_cell_pixel_size(&self, plugin_id: Option<PluginId>, client_id: ClientId) {
-        self.core
-            .bus
+        self.core.bus
             .senders
             .send_to_plugin(PluginInstruction::Update(vec![(
                 plugin_id,
@@ -113,13 +107,30 @@ impl Screen {
             self.core.support_kitty_graphics_protocol
         );
         self.core.kitty_probe_answers.insert(client_id, supported);
-        let supported = supported && self.core.support_kitty_graphics_protocol;
-        let previous = self
-            .core
+        self.apply_kitty_answer(client_id);
+    }
+
+    fn apply_kitty_answer(&mut self, client_id: ClientId) {
+        let supported = self.core
+            .native_render_clients
+            .get(&client_id)
+            .map(|s| s.agreement.features & caps::KITTY != 0)
+            .unwrap_or_else(|| {
+                self.core.kitty_probe_answers
+                    .get(&client_id)
+                    .copied()
+                    .unwrap_or(false)
+            })
+            && self.core.support_kitty_graphics_protocol;
+        let previous = self.core
             .kitty_host_capabilities
             .borrow_mut()
             .insert(client_id, supported);
-        if supported && previous != Some(true) {
+        if previous != Some(supported) {
+            if let Some(state) = self.core.native_render_clients.get_mut(&client_id) {
+                state.force_repaint();
+                self.core.client_kitty_host_state.borrow_mut().remove(&client_id);
+            }
             // A per-client gate may have consumed the only plugin frame, even when another
             // client already supported graphics. Repaint retained pane content.
             for tab in self.core.tabs.values_mut() {
@@ -133,19 +144,14 @@ impl Screen {
     /// Re-derive every client's kitty graphics capability from its probe answer, after a reload
     /// changed `support_kitty_graphics_protocol`.
     pub(super) fn reapply_kitty_graphics_support(&mut self) {
-        let answers: Vec<(ClientId, bool)> = self
-            .core
+        let clients: std::collections::HashSet<_> = self.core
             .kitty_probe_answers
-            .iter()
-            .map(|(client_id, answered)| (*client_id, *answered))
+            .keys()
+            .chain(self.core.native_render_clients.keys())
+            .copied()
             .collect();
-        for (client_id, answered) in answers {
-            let supported = answered && self.core.support_kitty_graphics_protocol;
-            self.core
-                .kitty_host_capabilities
-                .borrow_mut()
-                .insert(client_id, supported);
-            self.push_kitty_capability_to_plugins(client_id, supported);
+        for client in clients {
+            self.apply_kitty_answer(client);
         }
         self.push_kitty_host_support_to_tabs();
     }
@@ -179,11 +185,7 @@ impl Screen {
     /// Same shape as the host-theme swap in `Screen::apply_host_terminal_theme_mode`.
     fn push_kitty_capability_to_plugins(&mut self, client_id: ClientId, supported: bool) {
         let default_for_new = self.core.default_mode_info.clone();
-        let mode_info = self
-            .core
-            .mode_info
-            .entry(client_id)
-            .or_insert(default_for_new);
+        let mode_info = self.core.mode_info.entry(client_id).or_insert(default_for_new);
         mode_info.capabilities.kitty_graphics = supported;
         let mode_info = mode_info.clone();
         // `update_input_modes` fans out `ModeUpdate` from the tabs' per-client map, not from
@@ -199,11 +201,117 @@ impl Screen {
     }
 
     pub fn update_sixel_support(&mut self, client_id: ClientId, supported: bool) {
-        self.core
-            .sixel_host_capabilities
+        self.core.sixel_probe_answers.insert(client_id, supported);
+        self.apply_sixel_answer(client_id);
+    }
+
+    fn apply_sixel_answer(&mut self, client_id: ClientId) {
+        let supported = self.core
+            .native_render_clients
+            .get(&client_id)
+            .map(|s| s.agreement.features & caps::SIXEL != 0)
+            .unwrap_or_else(|| {
+                self.core.sixel_probe_answers
+                    .get(&client_id)
+                    .copied()
+                    .unwrap_or(false)
+            });
+        self.core.sixel_host_capabilities
             .borrow_mut()
             .insert(client_id, supported);
         self.push_sixel_host_support_to_tabs();
+    }
+
+    fn repaint_render_profile(&mut self, client_id: ClientId) {
+        self.core.client_kitty_host_state.borrow_mut().remove(&client_id);
+        self.apply_kitty_answer(client_id);
+        self.apply_sixel_answer(client_id);
+        self.force_client_repaint(client_id);
+    }
+
+    pub(super) fn legacy_render_support(&mut self, client: ClientId, enabled: bool) {
+        if !(self.core.client_sizes.contains_key(&client) || self.connected_clients_contains(&client))
+            || self.core.retired_native_clients.contains_key(&client)
+            || self.core
+                .native_render_clients
+                .get(&client)
+                .is_some_and(|state| state.negotiated)
+        {
+            return;
+        }
+        if self.core.native_render_clients.contains_key(&client) == enabled {
+            return;
+        }
+        if enabled {
+            self.core.native_render_clients.entry(client).or_default();
+        } else {
+            self.core.native_render_clients.remove(&client);
+        }
+        self.repaint_render_profile(client);
+    }
+
+    pub(super) fn negotiate_render(
+        &mut self,
+        client: ClientId,
+        request: caps::Request,
+    ) -> Result<()> {
+        use caps::{Decision, Request};
+        use yinz_runtime::native_media::{self, MediaRoot};
+        if !self.core.client_sizes.contains_key(&client) && !self.connected_clients_contains(&client) {
+            return Ok(());
+        }
+        let decision = match request {
+            Request::Offer(_)
+                if self.core.native_render_clients.contains_key(&client)
+                    || self.core.retired_native_clients.contains_key(&client) =>
+            {
+                Decision::Rejected(
+                    "native profile already used; reattach to negotiate again".into(),
+                )
+            },
+            Request::Offer(offer) => {
+                let proven = offer.proof.as_ref().and_then(|proof| {
+                    let root = MediaRoot::open(&native_media::directory()).ok()?;
+                    let response = root.answer(proof).ok()?;
+                    Some((root, response))
+                });
+                let (root, response) = proven.unzip();
+                match offer.select(response) {
+                    Ok(agreement) => {
+                        let root = root.filter(|_| agreement.media & caps::SHARED != 0);
+                        self.core.native_render_clients.insert(
+                            client,
+                            NativeRenderState::negotiated(agreement.clone(), root),
+                        );
+                        Decision::Selected(agreement)
+                    },
+                    Err(reason) => {
+                        self.core.retired_native_clients.entry(client).or_default();
+                        Decision::Rejected(reason)
+                    },
+                }
+            },
+            Request::Withdraw => {
+                if let Some(state) = self.core.native_render_clients.remove(&client) {
+                    self.core.retired_native_clients.insert(client, state);
+                }
+                Decision::Withdrawn(self.core.retired_native_clients.entry(client).or_default().seq)
+            },
+        };
+        let repaint = !matches!(decision, Decision::Rejected(_));
+        self.core.bus
+            .senders
+            .send_to_server(
+                yinz_bus::server_instruction::ServerInstruction::NativeRenderResult(
+                    client, decision,
+                ),
+            )
+            .context("return native render decision")?;
+        if repaint {
+            self.repaint_render_profile(client);
+            self.render()?;
+        }
+        Ok(())
     }
 
     /// Remember whether this client's host presents each frame atomically (DECSET 2026).
@@ -216,8 +324,7 @@ impl Screen {
         client_id: ClientId,
         supported: bool,
     ) -> Result<()> {
-        self.core
-            .synchronized_output_capabilities
+        self.core.synchronized_output_capabilities
             .borrow_mut()
             .insert(client_id, supported);
         // The watchers share one byte stream, hidden according to what every one of their hosts
@@ -271,8 +378,7 @@ impl Screen {
     }
 
     pub fn update_terminal_color_registers(&mut self, color_registers: Vec<(usize, String)>) {
-        let mut terminal_emulator_color_codes =
-            self.core.terminal_emulator_color_codes.borrow_mut();
+        let mut terminal_emulator_color_codes = self.core.terminal_emulator_color_codes.borrow_mut();
         for (color_register, color_sequence) in color_registers {
             terminal_emulator_color_codes.insert(color_register, color_sequence);
         }

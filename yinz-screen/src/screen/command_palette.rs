@@ -567,6 +567,16 @@ impl Screen {
             let Some(surface) = self.command_palette_surface(client) else {
                 continue;
             };
+            let native_geometry = self.core
+                .native_render_clients
+                .get(&client)
+                .filter(|s| s.negotiated)
+                .and_then(|_| {
+                    self.core.active_tab_ids
+                        .get(&client)
+                        .and_then(|id| self.core.tabs.get(id))
+                })
+                .map(|tab| tab.native_geometry(client));
             let Some(state) = self.palette.command_palettes.get_mut(&client) else {
                 continue;
             };
@@ -594,6 +604,27 @@ impl Screen {
                 state.quota_image = None;
                 state.quota_view = state.widget.view;
             }
+            // The codec places rasters within one pane. Use the palette's text meter
+            // when its tab-level placement crosses a pane frame.
+            let cell = cell.filter(|_| {
+                native_geometry.as_ref().is_none_or(|geometry| {
+                    layout.quota_image().is_some_and(|quota| {
+                        let rect = quota.rect;
+                        u16::try_from(rect.x)
+                            .ok()
+                            .zip(u16::try_from(rect.y).ok())
+                            .and_then(|(x, y)| geometry.content_pane_at(x, y))
+                            .is_some_and(|pane| {
+                                rect.x + rect.cols
+                                    <= usize::from(pane.content_x())
+                                        + usize::from(pane.content_cols())
+                                    && rect.y + rect.rows
+                                        <= usize::from(pane.content_y())
+                                            + usize::from(pane.content_rows())
+                            })
+                    })
+                })
+            });
             let quota = if watcher {
                 None
             } else {
@@ -2088,7 +2119,7 @@ impl crate::screen::CommandPaletteController {
         client: ClientId,
         damage: &[CellRect],
     ) {
-        if let Some(state) = self.command_palettes.get_mut(&client) {
+        if let Some(state) = self.palette.command_palettes.get_mut(&client) {
             state.backing.invalidate(damage);
         }
     }

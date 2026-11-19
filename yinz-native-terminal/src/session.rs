@@ -1,4 +1,6 @@
 use crate::emulation::terminal::TerminalState;
+use anyhow::ensure;
+use interprocess::local_socket::Stream;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -13,17 +15,20 @@ use yinz_ipc::ipc::{
     ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg,
 };
 use yinz_runtime::errors::prelude::*;
+use yinz_runtime::native_media::{self, MediaRoot, Probe};
 use yinz_types::data::LayoutInfo;
 use yinz_types::envs::EnvironmentVariables;
 use yinz_types::input::actions::Action;
 use yinz_types::internal_ids::SessionName;
 use yinz_types::pane_size::Size;
+use yinz_types::render_negotiation as caps;
 
 pub type Sender = Arc<Mutex<IpcSenderWithContext<ClientToServerMsg>>>;
 pub struct Connection {
     pub sender: Sender,
     pub receiver: IpcReceiverWithContext<ServerToClientMsg>,
     pub name: String,
+    pub endpoint: Endpoint,
 }
 pub fn send(sender: &Sender, message: ClientToServerMsg) -> Result<()> {
     sender
@@ -89,32 +94,172 @@ pub fn connect_to(
     } else {
         yinz_ipc::consts::ipc_connect(&path).context("connect native client to session")?
     };
+    open(stream, name, Endpoint::Local, opening, deadline)
+}
+
+#[derive(Default, Clone, Debug)]
+pub enum Endpoint {
+    #[default]
+    Local,
+    Forwarded(Option<String>),
+}
+
+impl Endpoint {
+    pub fn guidance(&self, name: &str) -> String {
+        match self {
+            Self::Local => format!("update the server or use `yinz attach {name}`"),
+            Self::Forwarded(Some(host)) => format!("update the remote server or use `yinz attach --remote {host} {name}`"),
+            Self::Forwarded(None) => format!("update the remote server or use `yinz attach --remote HOST {name}`, replacing HOST with the host used to establish the forward"),
+        }
+    }
+}
+
+pub(crate) fn forwarded(
+    stream: Stream,
+    host: Option<String>,
+    name: String,
+    args: &TerminalArgs,
+    focus: &yinz_types::data::SessionConnection,
+) -> Result<Connection> {
+    let opening = ClientToServerMsg::AttachClient {
+        cli_assets: yinz_types::input::cli_assets::CliAssets {
+            terminal_window_size: args.opening_size(),
+            host_terminal_env: yinz_runtime::host_terminal_env::host_terminal_env_with_overrides(
+                &Default::default(),
+            ),
+            timezone: yinz_runtime::client_time::capture_timezone(),
+            retains_source_on_switch: !args.headless,
+            ..Default::default()
+        },
+        pane_to_focus: focus.pane_id,
+        tab_number_to_focus: focus.tab_position,
+    };
+    open(stream, name, Endpoint::Forwarded(host), opening, None)
+}
+
+fn open(
+    stream: Stream,
+    name: String,
+    endpoint: Endpoint,
+    opening: ClientToServerMsg,
+    deadline: Option<Instant>,
+) -> Result<Connection> {
     let mut sender = IpcSenderWithContext::new(stream);
     let receiver = sender
         .get_receiver()
         .context("clone native session receiver")?;
-    let support = ClientToServerMsg::StructuredRenderSupport { supported: true };
-    if let Some(deadline) = deadline {
-        sender
-            .send_client_msg_until(opening, deadline)
-            .context("send native session handshake")?;
-        sender
-            .send_client_msg_until(support, deadline)
-            .context("negotiate structured rendering")?;
-    } else {
-        sender
-            .send_client_msg(opening)
-            .context("send native session handshake")?;
-        sender
-            .send_client_msg(support)
-            .context("negotiate structured rendering")?;
-    }
-    let sender = Arc::new(Mutex::new(sender));
+    sender
+        .send_client_msg_until(
+            opening,
+            deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(10)),
+        )
+        .context("open native attachment")?;
+    sender
+        .set_send_timeout(None)
+        .context("restore native IPC timeout")?;
     Ok(Connection {
-        sender,
+        sender: Arc::new(Mutex::new(sender)),
         receiver,
         name,
+        endpoint,
     })
+}
+
+#[derive(Default)]
+pub(crate) enum Handshake {
+    #[default]
+    Opening,
+    Offered(caps::Offer, Option<Probe>),
+    Selected(caps::Agreement, Option<Arc<MediaRoot>>),
+}
+
+impl Handshake {
+    pub fn timeout(&self, endpoint: &Endpoint, name: &str) -> anyhow::Error {
+        match self {
+            Self::Opening => anyhow!(
+                "session {name:?} did not advertise native negotiation for safe image transport; {}",
+                endpoint.guidance(name)
+            ),
+            Self::Offered(..) => anyhow!("session {name:?} did not answer its native render offer"),
+            Self::Selected(..) => anyhow!("session {name:?} did not send its first native repaint"),
+        }
+    }
+
+    pub fn control(
+        &mut self,
+        message: &ServerToClientMsg,
+        endpoint: &Endpoint,
+        name: &str,
+        sender: &Sender,
+        deadline: Instant,
+    ) -> Result<bool> {
+        match message {
+            ServerToClientMsg::Connected {
+                native_render_revision,
+                ..
+            } => {
+                ensure!(
+                    matches!(self, Self::Opening),
+                    "duplicate Connected from {name:?}"
+                );
+                let Some(revision) = native_render_revision else {
+                    return Err(self.timeout(endpoint, name));
+                };
+                ensure!(*revision == caps::REVISION, "session {name:?} advertised native negotiation revision {revision}, supported {}; {}", caps::REVISION, endpoint.guidance(name));
+                let probe = matches!(endpoint, Endpoint::Local)
+                    .then(|| Probe::create(&native_media::directory()).ok())
+                    .flatten();
+                let offer = caps::Offer::reader(probe.as_ref().map(|p| p.offer.clone()));
+                let mut tx = sender
+                    .lock()
+                    .map_err(|_| anyhow!("native IPC sender lock poisoned"))?;
+                tx.send_client_msg_until(
+                    ClientToServerMsg::NativeRenderRequest(caps::Request::Offer(offer.clone())),
+                    deadline,
+                )
+                .context("offer native rendering")?;
+                tx.set_send_timeout(None)
+                    .context("restore native IPC timeout")?;
+                *self = Self::Offered(offer, probe);
+            },
+            ServerToClientMsg::NativeRenderResult(caps::Decision::Withdrawn(high))
+                if matches!(self, Self::Selected(..)) =>
+            {
+                bail!("session {name:?} withdrew native rendering after frame {high}; reattach for a new native repaint")
+            },
+            ServerToClientMsg::NativeRenderResult(decision) => {
+                let Self::Offered(offer, probe) = self else {
+                    bail!("unexpected native render result from {name:?}");
+                };
+                match decision {
+                    caps::Decision::Selected(agreement) => {
+                        ensure!(offer.accepts(agreement, probe.as_ref().map(|p| p.expected.as_slice())), "session {name:?} selected unoffered native capabilities or an invalid media proof");
+                        let root = probe
+                            .take()
+                            .filter(|_| agreement.media & caps::SHARED != 0)
+                            .map(|p| Arc::new(p.root));
+                        *self = Self::Selected(agreement.clone(), root);
+                    },
+                    caps::Decision::Rejected(reason) => {
+                        bail!("session {name:?} rejected native rendering: {reason}")
+                    },
+                    caps::Decision::Withdrawn(_) => {
+                        bail!("session {name:?} withdrew native rendering")
+                    },
+                }
+            },
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    pub fn begin_frames(&self, state: &mut TerminalState) -> Result<()> {
+        let Self::Selected(agreement, root) = self else {
+            bail!("native frame arrived before selection");
+        };
+        state.negotiate(agreement.clone(), root.clone());
+        Ok(())
+    }
 }
 
 pub(crate) struct PreparedConnection {
@@ -292,6 +437,7 @@ pub fn headless(mut connection: Connection, args: &TerminalArgs) -> Result<()> {
         .duration_secs
         .map(|seconds| started + Duration::from_secs(seconds));
     let mut seen_frame = false;
+    let mut handshake = Handshake::default();
     loop {
         let deadline = if seen_frame {
             finish.unwrap_or_else(|| Instant::now() + Duration::from_secs(3600))
@@ -300,15 +446,39 @@ pub fn headless(mut connection: Connection, args: &TerminalArgs) -> Result<()> {
                 .min(finish.unwrap_or(started + Duration::from_secs(10)))
         };
         if Instant::now() >= deadline {
-            if !seen_frame && !finish.is_some_and(|finish| Instant::now() >= finish) {
-                anyhow::bail!("server did not send structured rendering; restart the session with this Yinz build");
+            if !seen_frame {
+                return Err(handshake.timeout(&connection.endpoint, &connection.name));
             }
             break;
         }
-        let received = connection.receiver.recv_server_msg_until(deadline);
-        if let Some((message, _)) = received.msg() {
+        use yinz_ipc::ipc::IpcRecv;
+        let message = match connection.receiver.recv_server_msg_until(deadline) {
+            IpcRecv::Msg(message, _) => message,
+            IpcRecv::Idle => continue,
+            IpcRecv::Malformed => bail!(
+                "invalid IPC message from native session {:?}",
+                connection.name
+            ),
+            IpcRecv::Eof => bail!(
+                "native session {:?} closed the IPC stream before Exit",
+                connection.name
+            ),
+        };
+        {
+            if handshake.control(
+                &message,
+                &connection.endpoint,
+                &connection.name,
+                &connection.sender,
+                deadline,
+            )? {
+                continue;
+            }
             match message {
                 ServerToClientMsg::RenderFrame { frame } => {
+                    if !seen_frame {
+                        handshake.begin_frames(&mut state)?;
+                    }
                     let applied = state
                         .apply_frame(&frame)
                         .context("apply headless native frame")?;
@@ -322,6 +492,9 @@ pub fn headless(mut connection: Connection, args: &TerminalArgs) -> Result<()> {
                 ServerToClientMsg::Exit {
                     exit_reason: yinz_ipc::ipc::ExitReason::Error(message),
                 } => return Err(exit_error(message)),
+                ServerToClientMsg::Exit { .. } if !seen_frame => {
+                    bail!("session exited before native negotiation and repaint")
+                },
                 ServerToClientMsg::Exit { .. } => break,
                 ServerToClientMsg::ConfigFileUpdated if args.record.is_some() => {
                     log::info!("native recording received ConfigFileUpdated");
@@ -333,10 +506,6 @@ pub fn headless(mut connection: Connection, args: &TerminalArgs) -> Result<()> {
                 },
                 _ => {},
             }
-        } else if finish.is_some_and(|finish| Instant::now() >= finish) {
-            break;
-        } else {
-            anyhow::bail!("native session stopped responding before a structured frame arrived");
         }
     }
     send(&connection.sender, ClientToServerMsg::ClientExited).non_fatal();

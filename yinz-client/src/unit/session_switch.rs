@@ -1430,6 +1430,7 @@ fn local_switch_options_exclude_the_source_layout_and_reload_without_losing_cli_
             ));
             sender
                 .send_server_msg(ServerToClientMsg::Connected {
+                    native_render_revision: None,
                     warp_companions: false,
                     warp_held_terminals: false,
                     warp_agent_tracking: false,

@@ -1662,6 +1662,211 @@ mod client_writer_flush {
     }
 
     #[test]
+    fn native_refusal_prefix_writer() {
+        use super::super::{
+            CoalescingSendQueue, SendQueuePush, SEND_QUEUE_RENDER_BYTE_CAPACITY as LIMIT,
+        };
+        use std::os::fd::AsFd;
+        use yinz_types::structured_render::FrameBuilder;
+        for (prefix, excess_capacity, envelope) in [
+            (false, false, false),
+            (true, false, false),
+            (true, true, false),
+            (true, false, true),
+        ] {
+            let (_dir, server, peer) = socket_pair();
+            let interprocess::local_socket::Stream::UdSocket(uds) = &server;
+            let fd = uds.as_fd().try_clone_to_owned().unwrap();
+            let mut rx = IpcReceiverWithContext::<ServerToClientMsg>::new(peer);
+            rx.set_recv_timeout(Some(super::AMPLE_TIMEOUT)).unwrap();
+            let mut reverse = rx.get_sender::<ClientToServerMsg>().unwrap();
+            let tx = IpcSenderWithContext::new(server);
+            let mut incoming = tx.get_receiver::<ClientToServerMsg>().unwrap();
+            incoming
+                .set_recv_timeout(Some(super::AMPLE_TIMEOUT))
+                .unwrap();
+            let q = Arc::new(CoalescingSendQueue::new());
+            let live = Arc::new(LiveWriters::default());
+            let first = FrameBuilder::new(2, 1, 7).finish();
+            let wire_limit = if envelope {
+                first.len() + 5
+            } else {
+                yinz_ipc::MAX_IPC_FRAME_LEN
+            };
+            if prefix {
+                // The payload's capacity can hit the queue limit while its encoded length is small.
+                let mut at_limit = Vec::with_capacity(if envelope { first.len() } else { LIMIT });
+                at_limit.extend_from_slice(&first);
+                assert!(matches!(
+                    q.push(ServerToClientMsg::RenderFrame { frame: at_limit }),
+                    SendQueuePush::Queued
+                ));
+                // The envelope case queues its successor before the writer starts.
+            }
+            if envelope {
+                let mut next = FrameBuilder::new(2, 1, 8).finish();
+                next.push(0);
+                assert!(matches!(
+                    q.push(ServerToClientMsg::RenderFrame { frame: next }),
+                    SendQueuePush::Queued
+                ));
+
+                assert!(matches!(
+                    q.push(ServerToClientMsg::RenderFrame {
+                        frame: FrameBuilder::new(2, 1, 9).finish()
+                    }),
+                    SendQueuePush::Queued
+                ));
+                assert!(matches!(
+                    q.push(ServerToClientMsg::RenderFrame {
+                        frame: Vec::with_capacity(LIMIT + 1)
+                    }),
+                    SendQueuePush::NativeSealed
+                ));
+                assert_eq!(q.state.lock().unwrap().drain.unwrap().0, 9);
+            }
+            let _writer = ClientSender::with_queue(
+                crate::ClientId::new(1),
+                tx,
+                live.clone(),
+                fd,
+                q.clone(),
+                wire_limit,
+            )
+            .unwrap();
+            if prefix {
+                assert!(
+                    matches!(rx.recv_server_msg().msg(),Some((ServerToClientMsg::RenderFrame {frame},_)) if frame == first)
+                );
+            }
+            if !envelope {
+                let mut oversized = Vec::with_capacity(LIMIT + 1);
+                oversized.resize(if excess_capacity { 1 } else { LIMIT + 1 }, 0);
+                assert!(matches!(
+                    q.push(ServerToClientMsg::RenderFrame { frame: oversized }),
+                    SendQueuePush::NativeSealed
+                ));
+            }
+            let Some((
+                ServerToClientMsg::Exit {
+                    exit_reason: ExitReason::Error(reason),
+                },
+                _,
+            )) = rx.recv_server_msg().msg()
+            else {
+                panic!("expected size refusal")
+            };
+            assert!(
+                reason.contains(if envelope {
+                    "protobuf envelope"
+                } else {
+                    "send queue limit"
+                }),
+                "{reason}"
+            );
+            assert!(matches!(rx.recv_server_msg(), IpcRecv::Eof));
+            assert!(live.wait_until_drained(super::AMPLE_TIMEOUT));
+            assert!(matches!(
+                q.push(ServerToClientMsg::Render {
+                    content: "late".into()
+                }),
+                SendQueuePush::NativeSealed
+            ));
+            assert_eq!(
+                q.state.lock().unwrap().drain.unwrap().0,
+                if prefix { 7 } else { 0 }
+            );
+            for message in [
+                ClientToServerMsg::RenderFrameAck { seq: 7 },
+                ClientToServerMsg::HostTerminalFocusChanged { focused: true },
+                ClientToServerMsg::ClientExited,
+            ] {
+                reverse.send_client_msg(message.clone()).unwrap();
+                assert_eq!(incoming.recv_client_msg().msg().unwrap().0, message);
+            }
+        }
+    }
+
+    #[test]
+    fn render_negotiation_refusal_while_the_prefix_is_in_flight() {
+        use super::super::{CoalescingSendQueue, RenderReady, SEND_QUEUE_RENDER_BYTE_CAPACITY};
+        use std::os::fd::AsFd;
+        use yinz_bus::os_input_output::ClientTransport;
+        let (_dir, server, peer) = socket_pair();
+        let interprocess::local_socket::Stream::UdSocket(uds) = &server;
+        let fd = uds.as_fd().try_clone_to_owned().unwrap();
+        let mut rx = IpcReceiverWithContext::<ServerToClientMsg>::new(peer);
+        rx.set_recv_timeout(Some(super::AMPLE_TIMEOUT)).unwrap();
+        let queue = Arc::new(CoalescingSendQueue::new());
+        let mut os = super::make_server();
+        let id = crate::ClientId::new(1);
+        let first = yinz_types::structured_render::FrameBuilder::new(2, 1, 4).finish();
+        queue.push(ServerToClientMsg::RenderFrame {
+            frame: first.clone(),
+        });
+        let (popped, wait_pop) = std::sync::mpsc::channel();
+        let (unblock, resume) = std::sync::mpsc::channel();
+        let resume = std::sync::Mutex::new(resume);
+        let gate: RenderReady = Arc::new(move || {
+            popped.send(()).unwrap();
+            resume
+                .lock()
+                .unwrap()
+                .recv_timeout(super::AMPLE_TIMEOUT)
+                .unwrap();
+        });
+        // pop() runs readiness work after publishing in_flight and before writing any bytes.
+        queue.render_backlog_and_notify(1, Some(&gate));
+        let writer = ClientSender::with_queue(
+            id,
+            IpcSenderWithContext::new(server),
+            os.live_writers.clone(),
+            fd,
+            queue,
+            yinz_ipc::MAX_IPC_FRAME_LEN,
+        )
+        .unwrap();
+        os.lock_client_senders().insert(id, writer);
+        wait_pop.recv_timeout(super::AMPLE_TIMEOUT).unwrap();
+        assert!(os
+            .send_to_client(
+                id,
+                ServerToClientMsg::RenderFrame {
+                    frame: Vec::with_capacity(SEND_QUEUE_RENDER_BYTE_CAPACITY + 1)
+                }
+            )
+            .is_err());
+        let (h, start) = os.native_drain(id).unwrap();
+        assert_eq!(h, 4);
+        assert!(!os.accept_native_ack(id, 4));
+        unblock.send(()).unwrap();
+        assert!(
+            matches!(rx.recv_server_msg().msg(),Some((ServerToClientMsg::RenderFrame {frame},_)) if frame==first)
+        );
+        assert!(matches!(
+            rx.recv_server_msg().msg(),
+            Some((
+                ServerToClientMsg::Exit {
+                    exit_reason: ExitReason::Error(_)
+                },
+                _
+            ))
+        ));
+        assert!(matches!(rx.recv_server_msg(), IpcRecv::Eof));
+        assert!(os.live_writers.wait_until_drained(super::AMPLE_TIMEOUT));
+        assert!(!os.accept_native_ack(id, 5));
+        assert!(os.accept_native_ack(id, h));
+        let progress = os.native_drain(id).unwrap().1;
+        assert!(progress > start);
+        assert!(!os.abort_native_drain(id, Some(start)));
+        assert!(os.accept_native_ack(id, 3));
+        assert_eq!(os.native_drain(id).unwrap().1, progress);
+        assert!(os.abort_native_drain(id, Some(progress)));
+        os.remove_client(id).unwrap();
+        assert!(os.native_drain(id).is_none());
+    }
+
+    #[test]
     fn a_queued_exit_reaches_the_socket_before_the_wait_returns() {
         let (_guard, server_end, client_end) = socket_pair();
         let live_writers = Arc::new(LiveWriters::default());
@@ -2480,7 +2685,7 @@ fn native_frames_are_counted_and_bounded_as_ordered_render_allocations() {
     oversized.push(1);
     assert!(matches!(
         queue.push(ServerToClientMsg::RenderFrame { frame: oversized }),
-        SendQueuePush::ControlQueueFull(_)
+        SendQueuePush::NativeSealed
     ));
 }
 

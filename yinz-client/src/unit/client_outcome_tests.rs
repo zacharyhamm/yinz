@@ -690,6 +690,7 @@ fn check_query_cleanup(error: ErrorKind, reconnect: bool, quit: bool) {
             // No Connected at all models older servers' attachment behavior.
             if supported {
                 os.queue_from_server(ServerToClientMsg::Connected {
+                    native_render_revision: None,
                     warp_companions: false,
                     warp_held_terminals: false,
                     warp_agent_tracking: false,
@@ -789,4 +790,45 @@ fn a_stopped_remote_supervisor_cannot_suppress_the_next_attachment() {
             .count(),
         2
     );
+}
+
+#[test]
+fn render_negotiation_advertisements_preserve_ordinary_ansi() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    for advert in [Some(Some(1)), Some(None), None] {
+        let os = FakeClientOsApi::new().capturing_stdout();
+        if let Some(native_render_revision) = advert {
+            os.queue_from_server(ServerToClientMsg::Connected {
+                native_render_revision,
+                warp_companions: false,
+                warp_held_terminals: false,
+                warp_agent_tracking: false,
+                warp_terminal_state: 0,
+                signal_quit: true,
+                update_protocol: 0,
+                server_version: String::new(),
+                server_host: String::new(),
+            });
+        }
+        os.queue_from_server(ServerToClientMsg::Render {
+            content: "ordinary negotiation control".into(),
+        });
+        os.queue_from_server(ServerToClientMsg::Exit {
+            exit_reason: ExitReason::Normal,
+        });
+        let result = run_client(os.clone(), Default::default());
+        assert_eq!(result.exit_status, 0);
+        assert!(os
+            .stdout_attempts
+            .lock()
+            .iter()
+            .any(|s| s == b"ordinary negotiation control"));
+        assert!(!os.sent_to_server.lock().iter().any(|msg| matches!(
+            msg,
+            ClientToServerMsg::NativeRenderRequest(_)
+                | ClientToServerMsg::StructuredRenderSupport { .. }
+        )));
+    }
 }

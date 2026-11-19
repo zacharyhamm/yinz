@@ -17,6 +17,10 @@ use yinz_types::pane_size::Size;
 /// Instructions related to server-side application
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum ServerInstruction {
+    NativeRenderRequest(ClientId, yinz_types::render_negotiation::Request),
+    NativeRenderResult(ClientId, yinz_types::render_negotiation::Decision),
+    NativeFrameAck(ClientId, u64),
+    NativeWriterSealed(ClientId),
     StructuredRenderSupport {
         client_id: ClientId,
         supported: bool,
@@ -168,7 +172,11 @@ impl From<&ServerInstruction> for ServerContext {
             | ServerInstruction::StartPrereleaseSessionUpdate(..)
             | ServerInstruction::StartSourceSessionUpdate(..)
             | ServerInstruction::SessionUpdateStatus(..) => ServerContext::ConnStatus,
-            ServerInstruction::StructuredRenderSupport { .. }
+            ServerInstruction::NativeRenderRequest(..)
+            | ServerInstruction::NativeRenderResult(..)
+            | ServerInstruction::NativeWriterSealed(..)
+            | ServerInstruction::NativeFrameAck(..)
+            | ServerInstruction::StructuredRenderSupport { .. }
             | ServerInstruction::RenderFrames(..)
             | ServerInstruction::OpeningLayoutFailed { .. } => ServerContext::Render,
             ServerInstruction::ClipboardUpdate(..) => ServerContext::Render,

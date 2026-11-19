@@ -1229,3 +1229,54 @@ fn ordinary_switch_retires_source_on_handoff() {
     assert!(!state.read().unwrap().is_interactive(&client));
     assert_eq!(&*capture.removed_clients.lock(), &[client]);
 }
+
+#[test]
+fn native_refusal_prefix_route() {
+    let (screen_tx, screen_rx) = channels::unbounded();
+    let (plugin_tx, _plugin_rx) = channels::unbounded();
+    let data = Arc::new(RwLock::new(Some(session_with(
+        SenderWithContext::new(screen_tx),
+        SenderWithContext::new(plugin_tx),
+    ))));
+    let state = Arc::new(RwLock::new(SessionState::new()));
+    let os = crate::capturing_os::CapturingOs::default();
+    let now = std::time::Instant::now();
+    let mut drains = HashMap::new();
+    let (client, other) = {
+        let mut s = state.write().unwrap();
+        let c = s.new_client().unwrap();
+        let o = s.new_client().unwrap();
+        s.attach_interactive(c, true);
+        s.attach_interactive(o, true);
+        s.set_last_active_client(c);
+        (c, o)
+    };
+    *os.refused.lock() = Some((client, 9, now));
+    observe_native_refusal(client, &os, &state, &data, &mut drains).unwrap();
+    observe_native_refusal(client, &os, &state, &data, &mut drains).unwrap();
+    assert!(
+        matches!(screen_rx.try_recv().unwrap().0,ScreenInstruction::SealNativePrefix(id,9) if id == client)
+    );
+    assert!(screen_rx.try_recv().is_err());
+    assert!(state.read().unwrap().clients.contains(&client));
+    assert_eq!(state.read().unwrap().pick_forward_target(), Some(other));
+    state.write().unwrap().remove_client(other);
+    assert!(!state.read().unwrap().has_interactive_clients());
+    let later = now + Duration::from_secs(29);
+    *os.refused.lock() = Some((client, 8, later));
+    observe_native_refusal(client, &os, &state, &data, &mut drains).unwrap();
+    assert!(matches!(
+        screen_rx.try_recv().unwrap().0,
+        ScreenInstruction::SealNativePrefix(_, 8)
+    ));
+    assert_eq!(
+        native_drain_deadline(&mut drains, &os, now + Duration::from_secs(31)),
+        Some(later + Duration::from_secs(30))
+    );
+    assert_eq!(
+        native_drain_deadline(&mut drains, &os, later + Duration::from_secs(30)),
+        None
+    );
+    assert!(drains.is_empty());
+    assert!(os.refused.lock().is_none());
+}

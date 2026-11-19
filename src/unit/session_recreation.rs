@@ -515,6 +515,7 @@ fn force_delete_waits_for_completion_and_preserves_checkpoint_on_failure() {
                 IpcRecv::Msg(ClientToServerMsg::ConnStatus, _) => {
                     sender
                         .send_server_msg(ServerToClientMsg::Connected {
+                            native_render_revision: None,
                             warp_companions: false,
                             warp_held_terminals: false,
                             warp_agent_tracking: false,

@@ -116,7 +116,9 @@ impl From<ServerToClientMsg> for ClientInstruction {
     fn from(instruction: ServerToClientMsg) -> Self {
         match instruction {
             ServerToClientMsg::Exit { exit_reason } => ClientInstruction::Exit(exit_reason),
-            ServerToClientMsg::RenderFrame { .. } => ClientInstruction::UnblockInputThread,
+            ServerToClientMsg::NativeRenderResult(_) | ServerToClientMsg::RenderFrame { .. } => {
+                ClientInstruction::UnblockInputThread
+            },
             ServerToClientMsg::Render { content } => ClientInstruction::Render(content),
             ServerToClientMsg::UnblockInputThread => ClientInstruction::UnblockInputThread,
             ServerToClientMsg::Connected {

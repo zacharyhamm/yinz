@@ -59,7 +59,7 @@ pub struct GlyphQuad {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ImageKey {
     Sixel(u64),
-    Kitty(u32),
+    Kitty(u64),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

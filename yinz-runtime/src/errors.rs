@@ -209,6 +209,11 @@ pub enum YinzError {
         client_id: yinz_types::internal_ids::ClientId,
     },
 
+    #[error("Native output for client {client_id} is sealed")]
+    NativeOutputSealed {
+        client_id: yinz_types::internal_ids::ClientId,
+    },
+
     #[error("The plugin does not exist")]
     PluginDoesNotExist,
 

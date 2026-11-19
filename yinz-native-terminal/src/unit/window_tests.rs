@@ -141,6 +141,7 @@ fn stage_test_switch(
     opening_tx.send(opened).unwrap();
     let (tx, messages) = mpsc::channel();
     app.pending_switch = Some(PendingSwitch {
+        handshake: session::Handshake::Selected(Default::default(), None),
         id,
         deadline: now + FIRST_FRAME_TIMEOUT,
         destination: "destination".into(),
@@ -159,6 +160,13 @@ fn destination_frame() -> ServerToClientMsg {
     use yinz_types::structured_render::{FrameBuilder, WireCell};
     let mut frame = FrameBuilder::new(18, 2, 9);
     frame.set_full_repaint(true);
+    frame.push_geometry(&yinz_types::structured_render::GeometryRecord {
+        panes: vec![yinz_types::structured_render::PaneRect {
+            cols: 18,
+            rows: 2,
+            ..Default::default()
+        }],
+    });
     frame.push_row(
         0,
         0,
@@ -197,6 +205,7 @@ fn begin_test_switch(
         },
         |_, id, _, destination| {
             Ok(PendingSwitch {
+                handshake: session::Handshake::Selected(Default::default(), None),
                 id,
                 deadline: now + FIRST_FRAME_TIMEOUT,
                 destination,
@@ -3849,4 +3858,241 @@ fn cursor_trail_cleared_frame_resets_without_cross_screen_streak() {
     );
     assert!(!trail.is_active());
     assert!(!trail.sample(start + Duration::from_millis(20), &mut mesh));
+}
+
+fn advertisement(revision: Option<u32>) -> ServerToClientMsg {
+    ServerToClientMsg::Connected {
+        native_render_revision: revision,
+        warp_companions: false,
+        warp_held_terminals: false,
+        warp_agent_tracking: false,
+        warp_terminal_state: 0,
+        signal_quit: true,
+        update_protocol: 0,
+        server_version: String::new(),
+        server_host: String::new(),
+    }
+}
+
+#[test]
+fn render_negotiation_opening_guidance_and_forwarded_switch_stay_on_source() {
+    use yinz_types::render_negotiation as caps;
+    for (endpoint, guidance) in [
+        (session::Endpoint::Local, "yinz attach source"),
+        (
+            session::Endpoint::Forwarded(Some("box".into())),
+            "yinz attach --remote box source",
+        ),
+        (
+            session::Endpoint::Forwarded(None),
+            "yinz attach --remote HOST source",
+        ),
+    ] {
+        for rev in [None, Some(0), Some(2)] {
+            let mut app = switch_app(Default::default());
+            let (sender, mut peer) = switch_peer();
+            app.sender = Some(sender);
+            app.endpoint = endpoint.clone();
+            let reason = app
+                .handle_message(advertisement(rev), || panic!())
+                .unwrap_err()
+                .to_string();
+            assert!(reason.contains(guidance), "{reason}");
+            if let Some(revision) = rev {
+                assert!(reason.contains(&format!("revision {revision}, supported 1")));
+            }
+            peer.set_recv_timeout(Some(Duration::from_millis(10)))
+                .unwrap();
+            assert!(matches!(
+                peer.recv_client_msg(),
+                yinz_ipc::ipc::IpcRecv::Idle
+            ));
+        }
+        if matches!(endpoint, session::Endpoint::Local) {
+            continue;
+        }
+        let mut app = switch_app(Default::default());
+        app.connection_geometry.received_frame = false;
+        let (sender, mut peer) = switch_peer();
+        app.sender = Some(sender);
+        app.endpoint = endpoint;
+        app.handle_message(advertisement(Some(1)), || panic!())
+            .unwrap();
+        let Some((ClientToServerMsg::NativeRenderRequest(caps::Request::Offer(offer)), _)) =
+            peer.recv_client_msg().msg()
+        else {
+            panic!("missing offer")
+        };
+        assert_eq!(offer, caps::Offer::reader(None));
+        for enabled in [true, false] {
+            app.handle_message(ServerToClientMsg::SetMouseMode { enabled }, || panic!())
+                .unwrap();
+        }
+        app.handle_message(
+            ServerToClientMsg::NativeRenderResult(caps::Decision::Selected(
+                offer.select(None).unwrap(),
+            )),
+            || panic!(),
+        )
+        .unwrap();
+        app.handle_message(destination_frame(), || panic!())
+            .unwrap();
+        assert!(!app.mouse_mode);
+        assert!(matches!(
+            peer.recv_client_msg().msg(),
+            Some((ClientToServerMsg::RenderFrameAck { seq: 9 }, _))
+        ));
+        for name in [Some("collision".into()), None] {
+            let target = SessionConnection {
+                name,
+                ..Default::default()
+            };
+            app.handle_message(
+                ServerToClientMsg::SwitchSession {
+                    connect_to_session: target,
+                },
+                || panic!(),
+            )
+            .unwrap();
+            assert!(app.pending_switch.is_none());
+            assert!(app.switch_notice.as_ref().unwrap().contains("--remote"));
+        }
+        let mut next = yinz_types::structured_render::FrameBuilder::new(18, 2, 10);
+        next.sideband_mut().push(7);
+        app.handle_message(
+            ServerToClientMsg::RenderFrame {
+                frame: next.finish(),
+            },
+            || panic!(),
+        )
+        .unwrap();
+        assert!(matches!(
+            peer.recv_client_msg().msg(),
+            Some((ClientToServerMsg::RenderFrameAck { seq: 10 }, _))
+        ));
+        app.send(ClientToServerMsg::Text("source input".into()))
+            .unwrap();
+        assert!(
+            matches!(peer.recv_client_msg().msg(),Some((ClientToServerMsg::Text(s),_)) if s=="source input")
+        );
+    }
+}
+
+#[test]
+fn render_negotiation_staged_refusal_preserves_source_mouse_input() {
+    use yinz_types::render_negotiation as caps;
+    for revision in [0, 2, 1] {
+        let mut app = switch_app(Default::default());
+        let (source, mut source_peer) = switch_peer();
+        app.sender = Some(source);
+        let (target, mut target_peer) = switch_peer();
+        let now = Instant::now();
+        let events = stage_test_switch(&mut app, 1, now, Ok(("destination".into(), target)));
+        app.pending_switch.as_mut().unwrap().handshake = Default::default();
+        app.receive_switch(1, now).unwrap();
+        events.send(advertisement(Some(revision))).unwrap();
+        app.receive_switch(1, now).unwrap();
+        if revision == 1 {
+            assert!(matches!(
+                target_peer.recv_client_msg().msg(),
+                Some((
+                    ClientToServerMsg::NativeRenderRequest(caps::Request::Offer(_)),
+                    _
+                ))
+            ));
+            events
+                .send(ServerToClientMsg::SetMouseMode { enabled: false })
+                .unwrap();
+            app.receive_switch(1, now).unwrap();
+            events
+                .send(ServerToClientMsg::NativeRenderResult(
+                    caps::Decision::Rejected("no common frame version".into()),
+                ))
+                .unwrap();
+            app.receive_switch(1, now).unwrap();
+        }
+        assert!(app.pending_switch.is_none());
+        assert!(app
+            .switch_notice
+            .as_ref()
+            .unwrap()
+            .contains(if revision == 1 {
+                "no common frame version"
+            } else {
+                "supported 1"
+            }));
+        assert!(app.mouse_mode);
+        assert_eq!(app.state.screen().cell(0, 0).character(), 's');
+        app.send(ClientToServerMsg::Text("still attached".into()))
+            .unwrap();
+        assert!(
+            matches!(source_peer.recv_client_msg().msg(),Some((ClientToServerMsg::Text(s),_)) if s=="still attached")
+        );
+        assert!(matches!(
+            target_peer.recv_client_msg().msg(),
+            Some((ClientToServerMsg::ClientExited, _))
+        ));
+    }
+}
+
+#[test]
+fn native_refusal_prefix_window() {
+    use yinz_types::render_negotiation as caps;
+    let now = Instant::now();
+    let mut app = switch_app(Default::default());
+    let (source, _source_peer) = switch_peer();
+    app.sender = Some(source);
+    let (sender, mut peer) = switch_peer();
+    let messages = stage_test_switch(&mut app, 7, now, Ok(("destination".into(), sender)));
+    app.pending_switch.as_mut().unwrap().handshake = Default::default();
+    let reason = "native frame of 67125248 bytes charged 67125248 bytes exceeds the send queue limit of 67108864 bytes";
+    app.receive_switch(7, now).unwrap();
+    messages.send(advertisement(Some(1))).unwrap();
+    app.receive_switch(7, now).unwrap();
+    let Some((ClientToServerMsg::NativeRenderRequest(caps::Request::Offer(offer)), _)) =
+        peer.recv_client_msg().msg()
+    else {
+        panic!("missing staged offer")
+    };
+    for enabled in [true, false] {
+        messages
+            .send(ServerToClientMsg::SetMouseMode { enabled })
+            .unwrap();
+        app.receive_switch(7, now).unwrap();
+        assert!(app.mouse_mode);
+    }
+    messages
+        .send(ServerToClientMsg::NativeRenderResult(
+            caps::Decision::Selected(offer.select(None).unwrap()),
+        ))
+        .unwrap();
+    messages.send(destination_frame()).unwrap();
+    messages
+        .send(ServerToClientMsg::Exit {
+            exit_reason: ExitReason::Error(reason.into()),
+        })
+        .unwrap();
+    app.receive_switch(7, now).unwrap();
+    app.receive_switch(7, now).unwrap();
+    assert_eq!(app.connection_id, 7);
+    assert!(!app.mouse_mode);
+    assert!(app
+        .state
+        .sixels()
+        .chunks()
+        .any(|c| c.image.pixels.starts_with(&[255, 0, 0, 255])));
+    assert!(matches!(
+        peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::HostTerminalFocusChanged { .. }, _))
+    ));
+    assert!(matches!(
+        peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::RenderFrameAck { seq: 9 }, _))
+    ));
+    assert_eq!(
+        receive_message(app.messages.as_ref())
+            .unwrap_err()
+            .to_string(),
+        reason
+    );
 }

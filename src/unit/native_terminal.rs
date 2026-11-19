@@ -1076,3 +1076,11 @@ fn native_headless_uses_builtin_despite_extensionless_collision() {
     assert_eq!(recording.grid_and_marker(CONTENT), Some((120, 40)));
     assert!(recording.grid_and_marker("wrong-layout-marker").is_none());
 }
+
+#[path = "native_terminal/negotiation.rs"]
+mod negotiation;
+
+#[test]
+fn native_refusal_prefix_headless() {
+    negotiation::refusal();
+}

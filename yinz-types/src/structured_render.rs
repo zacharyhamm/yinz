@@ -1,6 +1,6 @@
 use std::fmt::{self, Display, Formatter};
 
-const WIRE_VERSION: u8 = 4;
+pub const WIRE_VERSION: u8 = 4;
 const OLDEST_WIRE_VERSION: u8 = 2;
 const FIRST_VERSION_WITH_SCROLL: u8 = 3;
 const FIRST_VERSION_WITH_CLUSTERS: u8 = 4;
@@ -1466,6 +1466,11 @@ impl FrameBuilder {
 pub struct FrameView<'a> {
     header: FrameHeader,
     buffer: &'a [u8],
+}
+
+/// Sequence of an already serialized frame, without decoding its variable-sized sections.
+pub fn frame_sequence(buffer: &[u8]) -> Option<u64> {
+    Some(u64::from_le_bytes(buffer.get(6..14)?.try_into().ok()?))
 }
 
 pub fn decode(buffer: &[u8]) -> Result<FrameView<'_>, DecodeError> {

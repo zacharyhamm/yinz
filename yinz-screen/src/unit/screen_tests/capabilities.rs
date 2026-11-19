@@ -1327,3 +1327,72 @@ fn cell_pixel_geometry_adjusted_metrics_update_without_grid_changes_for_each_cli
         );
     }
 }
+
+#[test]
+fn render_negotiation_profiles_survive_reload_withdraw_and_detach() {
+    use yinz_types::render_negotiation::{Decision, Offer, Request};
+    let size = Size { cols: 80, rows: 24 };
+    let (mut screen, _, receiver) = create_new_screen_with_capture(size, true, true, true, false);
+    new_tab(&mut screen, 1, TabId::new(0));
+    let graphics = CLIENT_1;
+    let text = ClientId::new(2);
+    let ansi = ClientId::new(3);
+    for id in [text, ansi] {
+        screen.add_client(id).unwrap();
+        screen.set_client_size(id, size).unwrap();
+    }
+    screen.update_kitty_graphics_support(ansi, true);
+    screen.update_kitty_graphics_support(graphics, false);
+    let mut limited = Offer::reader(None);
+    limited.features = 0;
+    screen
+        .negotiate_render(text, Request::Offer(limited.clone()))
+        .unwrap();
+    screen
+        .negotiate_render(graphics, Request::Offer(Offer::reader(None)))
+        .unwrap();
+    screen.render_to_clients().unwrap();
+    let mut selected = std::collections::HashSet::new();
+    for (event, _) in receiver.try_iter() {
+        match event {
+            ServerInstruction::NativeRenderResult(id, Decision::Selected(_)) => {
+                selected.insert(id);
+            },
+            ServerInstruction::RenderFrames(frames) => {
+                for (id, bytes) in frames {
+                    assert!(selected.contains(&id));
+                    let frame = yinz_types::structured_render::decode(&bytes).unwrap();
+                    assert_eq!(frame.geometry().is_some(), id == graphics);
+                }
+            },
+            _ => {},
+        }
+    }
+    assert_eq!(selected.len(), 2);
+    for enabled in [false, true] {
+        let mut config = test_screen_config();
+        config.support_kitty_graphics_protocol = enabled;
+        screen
+            .reconfigure(config, Default::default(), graphics)
+            .unwrap();
+        let caps = screen.core.kitty_host_capabilities.borrow();
+        assert_eq!(
+            (caps[&graphics], caps[&text], caps[&ansi]),
+            (enabled, false, enabled)
+        );
+    }
+    let high = screen.core.native_render_clients[&graphics].seq;
+    screen
+        .negotiate_render(graphics, Request::Withdraw)
+        .unwrap();
+    assert!(receiver.try_iter().any(|(event,_)| matches!(event,ServerInstruction::NativeRenderResult(id,Decision::Withdrawn(h)) if id == graphics && h == high)));
+    screen.legacy_render_support(graphics, true);
+    screen
+        .negotiate_render(graphics, Request::Offer(limited))
+        .unwrap();
+    assert!(!screen.core.native_render_clients.contains_key(&graphics));
+    assert!(screen.core.native_render_clients.contains_key(&text));
+    assert!(!screen.core.kitty_host_capabilities.borrow()[&graphics]);
+    screen.remove_client(graphics).unwrap();
+    assert!(!screen.core.retired_native_clients.contains_key(&graphics));
+}

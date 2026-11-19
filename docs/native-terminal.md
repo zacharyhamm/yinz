@@ -11,8 +11,8 @@ yinz terminal --working-directory ~/project --startup-mode maximized
 ```
 
 Bare `yinz` continues to run inside the current terminal. Native and terminal
-clients can attach to the same session. A native window needs a server from a
-build with structured-render support; restart an older session before attaching.
+clients can attach to the same session. A native window needs a server that advertises native render negotiation on
+its attachment. Update and restart an older server or use an ANSI attachment.
 Closing a window detaches its client and leaves the session running.
 
 Native support is enabled by the default `native-terminal` Cargo feature.
@@ -514,6 +514,111 @@ button pastes clipboard text when enabled. Ctrl+Shift+plus/minus/0 or
 Command+plus/minus/0 changes or resets font zoom. Clipboard writes work; host
 queries do not receive clipboard contents.
 
+## Structured rendering protocol
+
+An interactive attachment starts in ANSI mode. The server advertises negotiation
+revision 1 in optional field 9 of the attachment's own `Connected` message.
+A probe on a separate socket gives no authority to send an offer. On revision 1
+the native client offers its frame versions, feature mask and image media. The
+server sends its decision before the first full native repaint. Ordinary controls
+can precede either message. Graphical startup and switching process controls in
+order while waiting. A staged window promotes the destination after applying its
+first repaint. A failed opening leaves the source window available.
+
+| Client and server | Attachment behavior |
+|---|---|
+| ANSI client with either server | Ordinary ANSI render messages (server tag 1), including when other clients use native frames. |
+| Older boolean native client with revision-1 server | Legacy support (client tag 42) selects the v4 legacy profile with inline images. No negotiation result is sent. False returns to ANSI. |
+| Revision-1 native client with an older or silent server | Missing advertisement on Connected or an opening timeout ends native startup with endpoint-specific recovery guidance. |
+| Revision-1 native client with an unfamiliar advertised revision, including zero | Reports the received and supported revisions and stops before sending an offer. |
+| Revision-1 endpoints with no common frame version | An explicit rejection reports both offered and writable versions, even for an empty offer. Other attachments keep their profiles. |
+| Revision-1 endpoints with a common version | Client request tag 45 and server result tag 36 establish a profile. The receiver checks the selection against its offer and proof. Frames use server tag 35 and cumulative ACKs use client tag 43. |
+
+Use `yinz attach NAME` locally or `yinz attach --remote HOST NAME` for SSH.
+If the forward has no host label, substitute the host used to establish it.
+The native library can consume an already-established forward. The native CLI
+opens local sessions. Opening another remote destination requires a fresh forward,
+including when a local session happens to have the requested name. The source
+remains available for input and subsequent frames.
+
+| Forwarded AttachClient fields | Values |
+|---|---|
+| Terminal assets | Reported size, host-terminal environment, timezone and requested tab/pane focus. |
+| Source retention | True for graphical switching, false for headless capture. |
+| Session requests, in-place update, source update, checked native layout | False. Update and bootstrap fields are empty. |
+| Config, config directory, clean, layout, data directory, maximum panes, cwd, debug and other local options | Wire defaults. The destination server supplies its session settings. |
+
+### Frame features and image media
+
+The server selects the highest version it can write that the client can read.
+Today's server writes v4. Native clients read v2, v3 and v4. Only selected
+features and media can appear in a live stream. Unknown offer bits are ignored.
+
+| Feature bit | Meaning and current production behavior |
+|---|---|
+| Geometry (1) | Pane bounds locate graphics and constrain clipping to the owning pane. |
+| Links (2) | Hyperlink table and cell references. Disabled clients receive plain cells. |
+| Kitty (4), Sixel (8) | Independently selectable. Both require geometry and inline media. Kitty also follows the server's graphics setting. Text-only clients get cells without graphics placeholders. |
+| Row shifts (16) | Move existing cells within the current grid. The reader can apply shifts. The writer currently sends ordinary cell deltas. |
+| Scroll metadata (32) | Signed lines for a pane indexed in the preceding applicable geometry. Requires v3 or later and geometry. A producer must establish geometry first and omit hints on geometry replacement or reset. A consumer must resolve the index before applying the hint. Current live peers omit this feature. |
+
+Inline (media bit 1) carries image bytes on the connection and works across a
+forward. Shared (bit 2) is an optional addition for Kitty RGBA on a proven local
+attachment. A local viewer creates a private file in its canonical temporary
+directory with two independent random tokens. It offers the directory, generated
+basename and first token. The server checks the file under its own pinned
+directory and returns the second token. Both peers validate the proof. A failed
+probe selects portable output. A forwarded client always offers portable media.
+
+For an agreed shared transfer the server can stage a Kitty upload of at least
+256 KiB while fewer than 32 files are retained for the viewer. Otherwise it
+sends inline bytes. The reader requires a generated image basename directly
+beneath its pinned directory. It opens without following symlinks and verifies
+ownership, private mode, regular-file type and exact RGBA length before copying.
+A failing live read fails the frame. A placement needs an owned image and a
+resolvable pane anchor. A palette image crossing pane boundaries uses a text
+meter. Image and placement identifiers are unsigned 64-bit values throughout the live
+scene. Row shifts apply to fully contained rectangles on incremental frames of
+the same grid size. A clear, full repaint or resize starts a new baseline.
+Media failure requires a new attachment and full repaint.
+
+### Sequence, withdrawal and oversized frames
+
+Frames belong to one attachment and arrive in order, beginning with a full
+repaint. The viewer ACKs a sequence only after successfully applying every
+covered frame and copying all data needed later. For a residency copied in
+frame R, ACK(R) or a later contiguous ACK releases the staging file, even if the
+GPU draws later. For a future transfer staged in T and first consumed in C,
+ACK(C) permits release once all earlier dependencies have been applied and no
+future read from staging is necessary. ACK(T), receipt, socket write, queueing,
+recording and header decoding alone are insufficient.
+
+Duplicate frames have no repeated side effects. Duplicate and stale ACKs are
+idempotent. Future ACKs cannot release files. A missing predecessor or failed
+consuming frame ends the stream at the last successfully applied sequence.
+Reattach for a fresh full repaint. ACKs never cross attachments. Implementations
+adding attachment generations, credit accounting or chunked transfers must
+preserve these ownership and consumption rules.
+
+A revision-1 withdrawal stops production at the screen transition. The ordered
+Withdrawn result names the last emitted sequence H. The client can apply and ACK
+the in-flight prefix through H or close and abandon it. The server retains that
+prefix's media until application is acknowledged or the connection closes.
+A different native profile requires a fresh attachment. A duplicate offer
+cannot reset the stream.
+
+An individual frame allocation above the writer's 64 MiB limit, or an encoded
+protobuf envelope above the 64 MiB IPC limit, ends native output to that viewer.
+The writer delivers the preceding writable FIFO prefix, then an ordered error
+and write-side EOF. The read half remains available for cumulative ACKs and
+client exit. A pre-write envelope refusal can shorten an already sealed prefix.
+An actual partial-write or socket failure abandons the broken stream. A drain
+with no socket-write or advancing ACK progress for 30 seconds is abandoned.
+Local socket progress can include bytes buffered by a forward. Only the
+receiver's application ACK releases media during an orderly drain. Other
+viewers continue receiving output. Large portable images are subject to these
+limits until a chunked transport exists.
+
 ## Diagnostics
 
 The hidden `--headless` option exercises the same session and structured frame
@@ -525,7 +630,10 @@ yinz terminal demo --create --headless --duration-secs 5 --record demo.frames
 ```
 
 A recording contains repeated little-endian u32 frame lengths followed by frame
-bytes. Decode each frame with `yinz_types::structured_render::decode`.
+bytes. Decode each frame with `yinz_types::structured_render::decode`. Inline
+images are replayable from the recording. A raw capture of shared media records
+its temporary pathname. The referenced file can disappear after its consuming
+frame is acknowledged or its attachment closes.
 
 Windows, remote web attachment, tray/background services, desktop session/inbox
 panels, and application registration are outside this first port.

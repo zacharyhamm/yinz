@@ -229,7 +229,7 @@ pin_context_to_instruction! {
         "CommandPalette",
         "RenderWriterReady",
         "AgentWorktreeResolved",
-        "SetStructuredRenderSupport",
+        "NativeRenderRequest", "SealNativePrefix", "SetStructuredRenderSupport",
         "RenderFrameAck",
         "OpenInitialTabs",
     ];
@@ -248,6 +248,8 @@ pin_context_to_instruction! {
     ];
     targets: [
         ("OpenInitialTabs", ScreenInstruction::OpenInitialTabs { cwd: None, default_shell: None, tabs: vec![], swap_tiled: vec![], swap_floating: vec![], focused: yinz_types::internal_ids::TabPosition::new(0), client_id: ClientId::new(1) }, "NewTab"),
+        ("NativeRenderRequest", ScreenInstruction::NativeRenderRequest(ClientId::new(1), yinz_types::render_negotiation::Request::Withdraw), "Render"),
+        ("SealNativePrefix", ScreenInstruction::SealNativePrefix(ClientId::new(1), 0), "Render"),
         ("SetStructuredRenderSupport", ScreenInstruction::SetStructuredRenderSupport { client_id: ClientId::new(1), supported: true }, "Render"),
         ("RenderFrameAck", ScreenInstruction::RenderFrameAck { client_id: ClientId::new(1), seq: 1 }, "Render"),
         ("SessionMigration", ScreenInstruction::SessionMigration(crate::migration::ScreenRequest::Abort { operation: uuid::Uuid::nil().to_string(), reply: crossbeam::channel::bounded(1).0 }), "WarpTab"),
@@ -498,9 +500,13 @@ pin_context_to_instruction! {
     mod server;
     instruction: ServerInstruction;
     context: ServerContext;
-    special: ["StructuredRenderSupport", "RenderFrames", "OpeningLayoutFailed", "UpdateClientReady", "StartSessionUpdate", "StartPrereleaseSessionUpdate", "StartSourceSessionUpdate", "SessionUpdateStatus", "UpdateRequest", "UpdateReply", "ClipboardUpdate", "DesktopNotification", "RepaintComplete", "ConfigurationEditor", "SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError", "SignalQuit", "ClientAttachFailed"];
+    special: ["NativeRenderRequest", "NativeRenderResult", "NativeWriterSealed", "NativeFrameAck", "StructuredRenderSupport", "RenderFrames", "OpeningLayoutFailed", "UpdateClientReady", "StartSessionUpdate", "StartPrereleaseSessionUpdate", "StartSourceSessionUpdate", "SessionUpdateStatus", "UpdateRequest", "UpdateReply", "ClipboardUpdate", "DesktopNotification", "RepaintComplete", "ConfigurationEditor", "SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError", "SignalQuit", "ClientAttachFailed"];
     only_special: ["NewClient", "AttachClient"];
     targets: [
+        ("NativeRenderRequest", ServerInstruction::NativeRenderRequest(ClientId::new(1), yinz_types::render_negotiation::Request::Withdraw), "Render"),
+        ("NativeRenderResult", ServerInstruction::NativeRenderResult(ClientId::new(1), yinz_types::render_negotiation::Decision::Withdrawn(0)), "Render"),
+        ("NativeWriterSealed", ServerInstruction::NativeWriterSealed(ClientId::new(1)), "Render"),
+        ("NativeFrameAck", ServerInstruction::NativeFrameAck(ClientId::new(1), 0), "Render"),
         ("StructuredRenderSupport", ServerInstruction::StructuredRenderSupport { client_id: ClientId::new(1), supported: true }, "Render"),
         ("RenderFrames", ServerInstruction::RenderFrames(Default::default()), "Render"),
         ("OpeningLayoutFailed", ServerInstruction::OpeningLayoutFailed { client_id: ClientId::new(1), cause: "layout rejected".into() }, "Render"),

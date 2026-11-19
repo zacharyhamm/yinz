@@ -2078,6 +2078,7 @@ fn warp_disconnected_destination_restores_the_only_held_pane() {
             IpcRecv::Msg(ClientToServerMsg::ConnStatus, _) => {
                 reply
                     .send_server_msg(ServerToClientMsg::Connected {
+                        native_render_revision: None,
                         warp_companions: true,
                         warp_held_terminals: true,
                         warp_agent_tracking: true,

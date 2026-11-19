@@ -6,6 +6,7 @@ import "common_types.proto";
 message ClientToServerMsg {
   reserved 14, 15, 21, 26;
   oneof message {
+    NativeRenderRequestMsg native_render_request = 45;
     StructuredRenderSupportMsg structured_render_support = 42;
     RenderFrameAckMsg render_frame_ack = 43;
     string update_reply_json = 40;
@@ -200,3 +201,21 @@ message DataRequestMsg {
 
 message StructuredRenderSupportMsg { bool supported = 1; }
 message RenderFrameAckMsg { uint64 seq = 1; }
+
+message NativeRenderRequestMsg {
+  oneof request {
+    NativeRenderOfferMsg offer = 1;
+    EmptyNativeMsg withdraw = 2;
+  }
+}
+message NativeRenderOfferMsg {
+  repeated uint32 versions = 1;
+  uint32 features = 2;
+  uint32 media = 3;
+  NativeMediaProofMsg proof = 4;
+}
+message NativeMediaProofMsg {
+  string root = 1;
+  string basename = 2;
+  bytes challenge = 3;
+}

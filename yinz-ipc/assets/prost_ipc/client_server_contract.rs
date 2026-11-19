@@ -2799,6 +2799,10 @@ pub struct PreviousPaneTabAction {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NextPaneTabAction {
 }
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EmptyNativeMsg {
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum BareKey {
@@ -3794,7 +3798,7 @@ impl ThemeHue {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientToServerMsg {
-    #[prost(oneof="client_to_server_msg::Message", tags="42, 43, 40, 41, 38, 37, 33, 34, 36, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 35, 44, 11, 39, 12, 32, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29, 30, 31")]
+    #[prost(oneof="client_to_server_msg::Message", tags="45, 42, 43, 40, 41, 38, 37, 33, 34, 36, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 35, 44, 11, 39, 12, 32, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29, 30, 31")]
     pub message: ::core::option::Option<client_to_server_msg::Message>,
 }
 /// Nested message and enum types in `ClientToServerMsg`.
@@ -3802,6 +3806,8 @@ pub mod client_to_server_msg {
     #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Message {
+        #[prost(message, tag="45")]
+        NativeRenderRequest(super::NativeRenderRequestMsg),
         #[prost(message, tag="42")]
         StructuredRenderSupport(super::StructuredRenderSupportMsg),
         #[prost(message, tag="43")]
@@ -4116,6 +4122,45 @@ pub struct RenderFrameAckMsg {
     #[prost(uint64, tag="1")]
     pub seq: u64,
 }
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NativeRenderRequestMsg {
+    #[prost(oneof="native_render_request_msg::Request", tags="1, 2")]
+    pub request: ::core::option::Option<native_render_request_msg::Request>,
+}
+/// Nested message and enum types in `NativeRenderRequestMsg`.
+pub mod native_render_request_msg {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Request {
+        #[prost(message, tag="1")]
+        Offer(super::NativeRenderOfferMsg),
+        #[prost(message, tag="2")]
+        Withdraw(super::EmptyNativeMsg),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NativeRenderOfferMsg {
+    #[prost(uint32, repeated, tag="1")]
+    pub versions: ::prost::alloc::vec::Vec<u32>,
+    #[prost(uint32, tag="2")]
+    pub features: u32,
+    #[prost(uint32, tag="3")]
+    pub media: u32,
+    #[prost(message, optional, tag="4")]
+    pub proof: ::core::option::Option<NativeMediaProofMsg>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NativeMediaProofMsg {
+    #[prost(string, tag="1")]
+    pub root: ::prost::alloc::string::String,
+    #[prost(string, tag="2")]
+    pub basename: ::prost::alloc::string::String,
+    #[prost(bytes="vec", tag="3")]
+    pub challenge: ::prost::alloc::vec::Vec<u8>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum HostTerminalThemeIndication {
@@ -4145,7 +4190,7 @@ impl HostTerminalThemeIndication {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerToClientMsg {
-    #[prost(oneof="server_to_client_msg::Message", tags="35, 34, 32, 33, 31, 30, 29, 28, 23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 26, 14, 15, 16, 18, 20, 21, 22, 27")]
+    #[prost(oneof="server_to_client_msg::Message", tags="36, 35, 34, 32, 33, 31, 30, 29, 28, 23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 26, 14, 15, 16, 18, 20, 21, 22, 27")]
     pub message: ::core::option::Option<server_to_client_msg::Message>,
 }
 /// Nested message and enum types in `ServerToClientMsg`.
@@ -4153,6 +4198,8 @@ pub mod server_to_client_msg {
     #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Message {
+        #[prost(message, tag="36")]
+        NativeRenderResult(super::NativeRenderResultMsg),
         #[prost(message, tag="35")]
         RenderFrame(super::RenderFrameMsg),
         #[prost(message, tag="34")]
@@ -4257,6 +4304,8 @@ pub struct ConnectedMsg {
     pub server_version: ::prost::alloc::string::String,
     #[prost(string, tag="8")]
     pub server_host: ::prost::alloc::string::String,
+    #[prost(uint32, optional, tag="9")]
+    pub native_render_revision: ::core::option::Option<u32>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -4397,4 +4446,35 @@ pub struct WarpReplay {
 pub struct RenderFrameMsg {
     #[prost(bytes="vec", tag="1")]
     pub frame: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NativeRenderResultMsg {
+    #[prost(oneof="native_render_result_msg::Result", tags="1, 2, 3")]
+    pub result: ::core::option::Option<native_render_result_msg::Result>,
+}
+/// Nested message and enum types in `NativeRenderResultMsg`.
+pub mod native_render_result_msg {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag="1")]
+        Selected(super::NativeRenderSelectedMsg),
+        #[prost(string, tag="2")]
+        Rejected(::prost::alloc::string::String),
+        #[prost(uint64, tag="3")]
+        Withdrawn(u64),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NativeRenderSelectedMsg {
+    #[prost(uint32, tag="1")]
+    pub version: u32,
+    #[prost(uint32, tag="2")]
+    pub features: u32,
+    #[prost(uint32, tag="3")]
+    pub media: u32,
+    #[prost(bytes="vec", tag="4")]
+    pub proof_response: ::prost::alloc::vec::Vec<u8>,
 }

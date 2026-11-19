@@ -138,6 +138,7 @@ impl Chunk {
     }
 }
 
+#[derive(Clone)]
 pub struct Sixels {
     chunks: BTreeMap<u64, Chunk>,
     pending: Vec<(usize, usize, Image)>,
@@ -190,11 +191,12 @@ impl Sixels {
         self.pending.clear();
     }
 
-    pub fn execute(&mut self, payload: &[u8], cursor: (usize, usize)) {
+    pub fn execute(&mut self, payload: &[u8], cursor: (usize, usize)) -> bool {
         let Some(image) = decode(payload) else {
-            return;
+            return false;
         };
         self.pending.push((cursor.1, cursor.0, image));
+        true
     }
 
     pub fn cut_spans(&mut self, spans: &[Span]) {

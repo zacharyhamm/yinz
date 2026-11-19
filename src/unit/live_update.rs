@@ -37,6 +37,7 @@ fn session_preflight_ignores_pty_broker_and_checks_session_capabilities() {
                     .get_sender::<ServerToClientMsg>()
                     .unwrap()
                     .send_server_msg(ServerToClientMsg::Connected {
+                        native_render_revision: None,
                         warp_companions: false,
                         warp_held_terminals: false,
                         warp_agent_tracking: false,

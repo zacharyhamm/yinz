@@ -70,6 +70,8 @@ pub struct InitialTab {
 /// that mapping is total.
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum ScreenInstruction {
+    NativeRenderRequest(ClientId, yinz_types::render_negotiation::Request),
+    SealNativePrefix(ClientId, u64),
     SetStructuredRenderSupport {
         client_id: ClientId,
         supported: bool,
@@ -1199,7 +1201,9 @@ impl From<&ScreenInstruction> for ScreenContext {
             | ScreenInstruction::UpdateDetectedAgentTheme(..)
             | ScreenInstruction::PtyBytes(..)
             | ScreenInstruction::RemotePaneReady(..) => ScreenContext::HandlePtyBytes,
-            ScreenInstruction::SetStructuredRenderSupport { .. }
+            ScreenInstruction::NativeRenderRequest(..)
+            | ScreenInstruction::SealNativePrefix(..)
+            | ScreenInstruction::SetStructuredRenderSupport { .. }
             | ScreenInstruction::RenderFrameAck { .. } => ScreenContext::Render,
             ScreenInstruction::RenderWriterReady => ScreenContext::RenderToClients,
             ScreenInstruction::AgentWorktreeResolved { .. } => ScreenContext::RenderToClients,

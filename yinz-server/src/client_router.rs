@@ -337,6 +337,18 @@ pub(crate) fn route_thread_main(
                     &mut VecDeque<ClientToServerMsg>,
                 >|
                  -> Result<bool> {
+                    if os_input.native_drain(client_id).is_some() {
+                        match instruction {
+                            ClientToServerMsg::RenderFrameAck { seq } => to_server
+                                .send(ServerInstruction::NativeFrameAck(client_id, seq))
+                                .with_context(err_context)?,
+                            ClientToServerMsg::ClientExited | ClientToServerMsg::SignalQuit => {
+                                return Ok(true)
+                            },
+                            _ => {},
+                        }
+                        return Ok(false);
+                    }
                     let mut should_break = false;
                     let senders = session_data
                         .read()
@@ -362,6 +374,12 @@ pub(crate) fn route_thread_main(
                         .context("access routed session state")?
                         .is_watcher(&client_id);
                     if is_watcher {
+                        if let ClientToServerMsg::NativeRenderRequest(request) = instruction {
+                            to_server
+                                .send(ServerInstruction::NativeRenderRequest(client_id, request))
+                                .with_context(err_context)?;
+                            return Ok(false);
+                        }
                         let should_exit = match &instruction {
                             ClientToServerMsg::SignalQuit => true,
                             ClientToServerMsg::Key { key, .. } => {
@@ -852,11 +870,14 @@ pub(crate) fn route_thread_main(
                                 })
                                 .with_context(err_context)?;
                         },
+                        ClientToServerMsg::NativeRenderRequest(ref request) => {
+                            to_server.send(ServerInstruction::NativeRenderRequest(client_id, request.clone())).with_context(err_context)?;
+                        },
                         ClientToServerMsg::StructuredRenderSupport { supported } => {
                             to_server.send(ServerInstruction::StructuredRenderSupport { client_id, supported }).with_context(err_context)?;
                         },
                         ClientToServerMsg::RenderFrameAck { seq } => {
-                            send_to_screen_or_retry_queue!(senders, ScreenInstruction::RenderFrameAck { client_id, seq }, instruction, retry_queue).with_context(err_context)?;
+                            to_server.send(ServerInstruction::NativeFrameAck(client_id, seq)).with_context(err_context)?;
                         },
                         ClientToServerMsg::SixelSupport { supported } => {
                             send_to_screen_or_retry_queue!(

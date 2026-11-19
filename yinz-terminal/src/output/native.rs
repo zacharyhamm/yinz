@@ -1,10 +1,15 @@
 //! Structured counterpart of the ANSI serializer. Both consume the same composed chunks.
 use super::*;
 use crate::panes::terminal_character::{AnsiStyledUnderline, NamedColor};
+use yinz_runtime::native_media::MediaRoot;
+use yinz_types::render_negotiation as caps;
 use yinz_types::{data::PaletteColor, structured_render::*};
 
 #[derive(Default)]
 pub struct NativeRenderState {
+    pub agreement: caps::Agreement,
+    pub negotiated: bool,
+    root: Option<MediaRoot>,
     pub seq: u64,
     pub acknowledged: u64,
     media: Vec<(u64, tempfile::NamedTempFile)>,
@@ -16,6 +21,24 @@ pub struct NativeRenderState {
 }
 
 impl NativeRenderState {
+    pub fn negotiated(agreement: caps::Agreement, root: Option<MediaRoot>) -> Self {
+        Self {
+            agreement,
+            root,
+            negotiated: true,
+            ..Default::default()
+        }
+    }
+
+    pub fn force_repaint(&mut self) {
+        self.size = None;
+    }
+
+    pub fn retain_prefix(&mut self, high: u64) {
+        self.seq = self.seq.min(high);
+        self.media.retain(|(seq, _)| *seq <= high);
+    }
+
     pub fn acknowledge(&mut self, seq: u64) {
         if seq <= self.seq {
             self.acknowledged = self.acknowledged.max(seq);
@@ -45,6 +68,13 @@ impl Output {
                 cols: 120,
                 rows: 40,
             });
+            let kitty = state.agreement.features & caps::KITTY != 0
+                && self
+                    .kitty_host_capabilities
+                    .borrow()
+                    .get(client)
+                    .copied()
+                    .unwrap_or(true);
             let presentation = presentations.get(client).copied();
             let (dx, dy) = presentation.map_or((0, 0), Presentation::offset);
             state.seq += 1;
@@ -117,6 +147,7 @@ impl Output {
             let handler = self
                 .client_link_handlers
                 .get(client)
+                .filter(|_| state.agreement.features & caps::LINKS != 0)
                 .map(|handler| handler.borrow());
             for chunk in chunks {
                 if chunk.x + dx >= size.cols || chunk.y + dy >= size.rows {
@@ -144,6 +175,9 @@ impl Output {
                     );
                     let mut cell =
                         wire_cell(character, styles, chunk.changed_colors.as_ref(), true);
+                    if !kitty && character.character == PLACEHOLDER {
+                        cell.ch = ' ' as u32;
+                    }
                     if let Some(uri) = handler
                         .as_ref()
                         .and_then(|handler| handler.uri(character.styles.link_anchor))
@@ -188,7 +222,11 @@ impl Output {
                     })
                     .collect(),
             });
-            if let Some(mut geometry) = self.native_geometry.remove(client) {
+            if let Some(mut geometry) = self
+                .native_geometry
+                .remove(client)
+                .filter(|_| state.agreement.features & caps::GEOMETRY != 0)
+            {
                 for pane in &mut geometry.panes {
                     pane.x = pane.x.saturating_add(dx.min(u16::MAX as usize) as u16);
                     pane.y = pane.y.saturating_add(dy.min(u16::MAX as usize) as u16);
@@ -201,7 +239,11 @@ impl Output {
             builder.set_cursor(cursor);
             self.post_vte_instructions.remove(client);
             // Sixel already has cropped, occluded slices at this stage.
-            if let Some(chunks) = self.sixel_chunks.remove(client) {
+            if let Some(chunks) = self
+                .sixel_chunks
+                .remove(client)
+                .filter(|_| state.agreement.features & caps::SIXEL != 0)
+            {
                 for chunk in chunks {
                     if let Some(payload) = self.sixel_image_store.borrow_mut().serialize_image(
                         chunk.sixel_image_id,
@@ -233,26 +275,29 @@ impl Output {
                 .unwrap_or_default();
             let visible = self.client_kitty_visible_panes.remove(client);
             let mut records = Vec::new();
-            flatten_kitty_frame(
-                KittyFrameInput {
-                    chunks_by_pane,
-                    rendered_panes,
-                    updated_placements,
-                    visible_panes: visible.as_ref(),
-                    kitty_image_store: &mut self.kitty_image_store.borrow_mut(),
-                    host_state: self
-                        .kitty_host_state
-                        .borrow_mut()
-                        .entry(*client)
-                        .or_default(),
-                    host_display_cleared: cleared,
-                },
-                &mut records,
-                state.seq,
-                &mut state.media,
-            )
-            .context("flatten native graphics")
-            .non_fatal();
+            if kitty {
+                flatten_kitty_frame(
+                    KittyFrameInput {
+                        chunks_by_pane,
+                        rendered_panes,
+                        updated_placements,
+                        visible_panes: visible.as_ref(),
+                        kitty_image_store: &mut self.kitty_image_store.borrow_mut(),
+                        host_state: self
+                            .kitty_host_state
+                            .borrow_mut()
+                            .entry(*client)
+                            .or_default(),
+                        host_display_cleared: cleared,
+                    },
+                    &mut records,
+                    state.seq,
+                    &mut state.media,
+                    state.root.as_ref(),
+                )
+                .context("flatten native graphics")
+                .non_fatal();
+            }
             for record in &mut records {
                 if let GraphicsRecord::Placement { cell_x, cell_y, .. } = record {
                     *cell_x = cell_x.saturating_add(dx as u32);
@@ -449,6 +494,7 @@ fn flatten_kitty_frame(
     out: &mut Vec<GraphicsRecord>,
     seq: u64,
     media: &mut Vec<(u64, tempfile::NamedTempFile)>,
+    root: Option<&MediaRoot>,
 ) -> Result<()> {
     let KittyFrameInput {
         mut chunks_by_pane,
@@ -584,11 +630,12 @@ fn flatten_kitty_frame(
                     // Keep large uploads out of the bounded IPC frame. The file stays alive
                     // until this client acknowledges applying the frame that references it.
                     let shared = if rgba.len() >= 256 * 1024 && media.len() < 32 {
-                        write_shared_media(rgba).map(|file| {
-                            let path = file.path().to_string_lossy().as_bytes().to_vec();
-                            media.push((seq, file));
-                            path
-                        })
+                        root.and_then(|root| root.write_image(rgba).ok())
+                            .map(|file| {
+                                let path = file.path().to_string_lossy().as_bytes().to_vec();
+                                media.push((seq, file));
+                                path
+                            })
                     } else {
                         None
                     };
@@ -670,30 +717,6 @@ fn flatten_kitty_frame(
         }
     }
     Ok(())
-}
-
-fn write_shared_media(bytes: &[u8]) -> Option<tempfile::NamedTempFile> {
-    use std::io::Write;
-    let directory = if cfg!(target_os = "linux") && std::path::Path::new("/dev/shm").is_dir() {
-        std::path::PathBuf::from("/dev/shm")
-    } else {
-        std::env::temp_dir()
-    };
-    let result = (|| -> Result<tempfile::NamedTempFile> {
-        let mut file = tempfile::Builder::new()
-            .prefix("yinz-native-image-")
-            .tempfile_in(directory)
-            .context("create native shared image")?;
-        file.write_all(bytes).context("write native shared image")?;
-        Ok(file)
-    })();
-    match result {
-        Ok(file) => Some(file),
-        Err(error) => {
-            log::warn!("{error:#}; sending native image inline");
-            None
-        },
-    }
 }
 
 #[cfg(test)]

@@ -50,8 +50,25 @@ pub fn run(
         let connection = session::connect(&args, &opts, args.opening_size())?;
         session::headless(connection, &args)
     } else {
-        window::run(args, opts)
+        window::run(args, opts, None)
     }
 }
 
 pub mod host_reply;
+
+/// Attach over an established Yinz forward. The transport owner supplies the stream and its origin.
+pub fn run_forwarded(
+    args: yinz_cli::args::TerminalArgs,
+    opts: yinz_cli::args::CliArgs,
+    stream: interprocess::local_socket::Stream,
+    host: Option<String>,
+    name: String,
+    focus: &yinz_types::data::SessionConnection,
+) -> anyhow::Result<()> {
+    let connection = session::forwarded(stream, host, name, &args, focus)?;
+    if args.headless {
+        session::headless(connection, &args)
+    } else {
+        window::run(args, opts, Some(connection))
+    }
+}

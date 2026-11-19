@@ -338,8 +338,8 @@ pub struct Image {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Placement {
-    pub image_id: u32,
-    pub placement_id: u32,
+    pub image_id: u64,
+    pub placement_id: u64,
     pub cell_x: usize,
     pub cell_y: usize,
     pub offset_x: u32,
@@ -351,14 +351,16 @@ pub struct Placement {
     pub z: i32,
 }
 
+#[derive(Clone)]
 struct Resident {
     image: Rc<Image>,
     revision: u64,
 }
 
+#[derive(Clone)]
 pub struct Graphics {
-    images: BTreeMap<u32, Resident>,
-    placements: BTreeMap<(u32, u32), Placement>,
+    images: BTreeMap<u64, Resident>,
+    placements: BTreeMap<(u64, u64), Placement>,
     revisions: u64,
     stamp: u64,
 }
@@ -377,15 +379,15 @@ impl Graphics {
         self.stamp
     }
 
-    pub fn image(&self, id: u32) -> Option<&Rc<Image>> {
+    pub fn image(&self, id: u64) -> Option<&Rc<Image>> {
         self.images.get(&id).map(|resident| &resident.image)
     }
 
-    pub fn revision(&self, id: u32) -> Option<u64> {
+    pub fn revision(&self, id: u64) -> Option<u64> {
         self.images.get(&id).map(|resident| resident.revision)
     }
 
-    pub fn resident_ids(&self) -> Vec<u32> {
+    pub fn resident_ids(&self) -> Vec<u64> {
         self.images.keys().copied().collect()
     }
 
@@ -399,7 +401,7 @@ impl Graphics {
         self.placements.clear();
     }
 
-    pub fn insert_image(&mut self, id: u32, image: Image) {
+    pub fn insert_image(&mut self, id: u64, image: Image) {
         self.revisions += 1;
         self.stamp += 1;
         self.images.insert(
@@ -420,13 +422,13 @@ impl Graphics {
             .insert((placement.image_id, placement.placement_id), placement);
     }
 
-    pub fn remove_image(&mut self, id: u32) {
+    pub fn remove_image(&mut self, id: u64) {
         self.stamp += 1;
         self.images.remove(&id);
         self.placements.retain(|key, _| key.0 != id);
     }
 
-    pub fn remove_placement(&mut self, image_id: u32, placement_id: u32) {
+    pub fn remove_placement(&mut self, image_id: u64, placement_id: u64) {
         self.stamp += 1;
         self.placements.remove(&(image_id, placement_id));
     }

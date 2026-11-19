@@ -4179,6 +4179,9 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Text("café東京🦀".into()));
     test_client_roundtrip!(ClientToServerMsg::Text(String::new()));
     test_client_roundtrip!(ClientToServerMsg::StructuredRenderSupport { supported: true });
+    test_client_roundtrip!(ClientToServerMsg::NativeRenderRequest(
+        yinz_types::render_negotiation::Request::Withdraw
+    ));
     test_client_roundtrip!(ClientToServerMsg::RenderFrameAck { seq: u64::MAX });
     test_client_roundtrip!(ClientToServerMsg::Key {
         key: KeyWithModifier {
@@ -4966,6 +4969,9 @@ fn test_server_messages() {
     }
 
     use yinz_types::session_destination::*;
+    test_server_roundtrip!(ServerToClientMsg::NativeRenderResult(
+        yinz_types::render_negotiation::Decision::Withdrawn(1)
+    ));
     test_server_roundtrip!(ServerToClientMsg::RenderFrame {
         frame: vec![0, 1, 255]
     });
@@ -5115,6 +5121,7 @@ fn test_server_messages() {
     });
     test_server_roundtrip!(ServerToClientMsg::UnblockInputThread);
     test_server_roundtrip!(ServerToClientMsg::Connected {
+        native_render_revision: None,
         warp_companions: true,
         warp_held_terminals: false,
         warp_agent_tracking: false,
@@ -5125,6 +5132,7 @@ fn test_server_messages() {
         server_host: String::new(),
     });
     test_server_roundtrip!(ServerToClientMsg::Connected {
+        native_render_revision: None,
         warp_companions: true,
         warp_held_terminals: true,
         warp_agent_tracking: true,
@@ -6674,4 +6682,76 @@ fn structured_render_messages_roundtrip() {
     test_server_roundtrip!(ServerToClientMsg::RenderFrame {
         frame: vec![0, 1, 2, 255]
     });
+}
+
+#[test]
+fn render_negotiation_presence_and_legacy_wire_tags() {
+    use crate::ipc::{ProtoClientToServerMsg as Client, ProtoServerToClientMsg as Server};
+    use yinz_types::render_negotiation::{Agreement, Decision, Offer, Request};
+    for revision in [None, Some(0), Some(1), Some(2)] {
+        let wire = revision.map_or_else(|| vec![0x22, 0], |r| vec![0x22, 2, 0x48, r]);
+        let typed = ServerToClientMsg::try_from(Server::decode(wire.as_slice()).unwrap()).unwrap();
+        assert!(
+            matches!(&typed, ServerToClientMsg::Connected { native_render_revision, .. } if *native_render_revision == revision.map(u32::from))
+        );
+        assert_eq!(Server::from(typed).encode_to_vec(), wire);
+    }
+    for (typed, wire) in [
+        (
+            ClientToServerMsg::StructuredRenderSupport { supported: true },
+            vec![0xd2, 2, 2, 8, 1],
+        ),
+        (
+            ClientToServerMsg::RenderFrameAck { seq: 1 },
+            vec![0xda, 2, 2, 8, 1],
+        ),
+        (
+            ClientToServerMsg::NativeRenderRequest(Request::Offer(Offer {
+                versions: vec![],
+                features: 0,
+                media: 0,
+                proof: None,
+            })),
+            vec![0xea, 2, 2, 0x0a, 0],
+        ),
+        (
+            ClientToServerMsg::NativeRenderRequest(Request::Withdraw),
+            vec![0xea, 2, 2, 0x12, 0],
+        ),
+    ] {
+        assert_eq!(
+            Client::try_from(typed.clone()).unwrap().encode_to_vec(),
+            wire
+        );
+        assert_eq!(
+            ClientToServerMsg::try_from(Client::decode(wire.as_slice()).unwrap()).unwrap(),
+            typed
+        );
+    }
+    for (typed, wire) in [
+        (
+            ServerToClientMsg::Render {
+                content: "A".into(),
+            },
+            vec![10, 3, 10, 1, 65],
+        ),
+        (
+            ServerToClientMsg::RenderFrame { frame: vec![1] },
+            vec![0x9a, 2, 3, 10, 1, 1],
+        ),
+    ] {
+        assert_eq!(Server::from(typed).encode_to_vec(), wire);
+    }
+    for decision in [
+        Decision::Selected(Agreement::default()),
+        Decision::Withdrawn(17),
+        Decision::Rejected("no common version".into()),
+    ] {
+        let typed = ServerToClientMsg::NativeRenderResult(decision);
+        let bytes = Server::from(typed.clone()).encode_to_vec();
+        assert_eq!(
+            ServerToClientMsg::try_from(Server::decode(bytes.as_slice()).unwrap()).unwrap(),
+            typed
+        );
+    }
 }

@@ -161,6 +161,7 @@ pub struct EventSubscription {
     strum_macros::VariantNames,
 )]
 pub enum ClientToServerMsg {
+    NativeRenderRequest(yinz_types::render_negotiation::Request),
     StructuredRenderSupport {
         supported: bool,
     },
@@ -294,6 +295,7 @@ pub enum ClientToServerMsg {
     strum_macros::VariantNames,
 )]
 pub enum ServerToClientMsg {
+    NativeRenderResult(yinz_types::render_negotiation::Decision),
     RenderFrame {
         frame: Vec<u8>,
     },
@@ -324,6 +326,8 @@ pub enum ServerToClientMsg {
         exit_reason: ExitReason,
     },
     Connected {
+        #[serde(default)]
+        native_render_revision: Option<u32>,
         warp_companions: bool,
         #[serde(default)]
         warp_held_terminals: bool,
@@ -524,6 +528,36 @@ impl<T: Serialize> IpcSenderWithContext<T> {
         self.send_message(&proto_msg)
     }
 
+    pub fn send_server_msg_observing(
+        &mut self,
+        msg: ServerToClientMsg,
+        limit: usize,
+        prepared: impl FnOnce(),
+        mut progress: impl FnMut(),
+    ) -> Result<()> {
+        if self.closed {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "IPC sender is closed").into());
+        }
+        let limit = limit.min(MAX_IPC_FRAME_LEN);
+        let proto: ProtoServerToClientMsg = msg.into();
+        let length = proto.encoded_len();
+        if length > limit {
+            return Err(NativeEnvelopeTooLarge { length, limit }.into());
+        }
+        prepared();
+        let mut writer = DeadlineWriter {
+            stream: &mut *self.sender,
+            deadline: None,
+            progress: Some(&mut progress),
+        };
+        let result = write_protobuf_message(&mut writer, &proto)
+            .and_then(|()| writer.flush().context("flush server IPC message"));
+        if result.as_ref().is_err_and(|error| error.is::<io::Error>()) {
+            self.closed = true;
+        }
+        result
+    }
+
     fn send_message(&mut self, msg: &impl Message) -> Result<()> {
         self.send_message_with_deadline(msg, None)
     }
@@ -539,6 +573,7 @@ impl<T: Serialize> IpcSenderWithContext<T> {
         let mut writer = DeadlineWriter {
             stream: &mut *self.sender,
             deadline,
+            progress: None,
         };
         let result = write_protobuf_message(&mut writer, msg)
             .and_then(|()| writer.flush().map_err(Into::into));
@@ -561,7 +596,15 @@ impl<T: Serialize> IpcSenderWithContext<T> {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("native protobuf envelope of {length} bytes exceeds the IPC limit of {limit} bytes")]
+pub struct NativeEnvelopeTooLarge {
+    pub length: usize,
+    pub limit: usize,
+}
+
 struct DeadlineWriter<'a> {
+    progress: Option<&'a mut dyn FnMut()>,
     stream: &'a mut dyn IpcStream,
     deadline: Option<Instant>,
 }
@@ -582,7 +625,27 @@ impl DeadlineWriter<'_> {
 impl Write for DeadlineWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.bound()?;
-        self.stream.write(bytes)
+        if let Some(progress) = &mut self.progress {
+            let written = loop {
+                match self.stream.write(&bytes[..bytes.len().min(16 * 1024)]) {
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        continue
+                    },
+                    other => break other?,
+                }
+            };
+            if written != 0 {
+                progress();
+            }
+            Ok(written)
+        } else {
+            self.stream.write(bytes)
+        }
     }
     fn flush(&mut self) -> io::Result<()> {
         self.bound()?;

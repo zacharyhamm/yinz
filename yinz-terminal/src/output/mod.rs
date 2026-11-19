@@ -1380,6 +1380,14 @@ impl Output {
         &mut self,
         max_size: Option<Size>,
     ) -> Result<HashMap<ClientId, String>> {
+        self.serialize_for_watcher(max_size, None)
+    }
+
+    pub fn serialize_for_watcher(
+        &mut self,
+        max_size: Option<Size>,
+        recipient: Option<ClientId>,
+    ) -> Result<HashMap<ClientId, String>> {
         let err_context =
             || "failed to serialize output to clients with size constraints".to_string();
 
@@ -1401,7 +1409,7 @@ impl Output {
             let client_host_is_sixel_capable = self
                 .sixel_host_capabilities
                 .borrow()
-                .get(&client_id)
+                .get(&recipient.unwrap_or(client_id))
                 .copied()
                 .unwrap_or(false);
             let sixel_chunks_for_client = if client_host_is_sixel_capable {
