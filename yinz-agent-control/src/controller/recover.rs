@@ -130,7 +130,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub fn clearing_panes(&self) -> Vec<PaneId> {
+    pub(super) fn clearing_panes(&self) -> Vec<PaneId> {
         self.agent_draft_clears.keys().copied().collect()
     }
     pub(in crate::controller) fn advance_draft_clear(

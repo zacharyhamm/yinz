@@ -1408,14 +1408,9 @@ fn lifecycle_identified_notification_gap_never_publishes_idle() {
     assert!(events(&mut screen, &messages)
         .iter()
         .any(|event| event["state"] == "idle"));
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
     assert_eq!(
-        screen
-            .agents
-            .inspect_pane(PANE)
-            .lifecycle()
-            .unwrap()
-            .last_message
-            .as_deref(),
+        replies(&messages, CLIENT)[0].message.as_deref(),
         Some("FINAL")
     );
 }

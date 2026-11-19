@@ -1,7 +1,7 @@
 use super::*;
 
 impl super::AgentController {
-    pub fn observe_control_hook(
+    pub(super) fn observe_control_hook(
         &mut self,
         host: &impl AgentHost,
         event: &AgentEvent,
@@ -219,9 +219,12 @@ impl super::AgentController {
                         last_report: Instant::now(),
                         ended_turn,
                         closeout_turn: if event.hook == "UserPromptSubmit" && !notification {
-                            hook.and_then(|hook| Provider::for_kind(&event.kind).closeout_id(hook))
-                                .map(str::to_owned)
-                                .filter(|id| !id.is_empty())
+                            hook.and_then(|hook| {
+                                Provider::for_kind(&event.kind)
+                                    .closeout_id(hook.turn_id.as_deref(), hook.prompt_id.as_deref())
+                            })
+                            .map(str::to_owned)
+                            .filter(|id| !id.is_empty())
                         } else {
                             previous.and_then(|previous| previous.closeout_turn.clone())
                         },
@@ -231,17 +234,11 @@ impl super::AgentController {
                         } else {
                             previous.and_then(|previous| previous.prompt_id.clone())
                         },
-                        previous_prompt_id: previous.and_then(|previous| {
-                            if event.hook == "UserPromptSubmit"
-                                && !notification
-                                && (previous.claude.confirmation.is_some()
-                                    || previous.agy.confirmation().is_some())
-                            {
-                                previous.prompt_id.clone()
-                            } else {
-                                previous.previous_prompt_id.clone()
-                            }
-                        }),
+                        previous_prompt_id: providers::agy::previous_prompt_id(
+                            previous,
+                            event,
+                            notification,
+                        ),
                         claude: providers::ClaudeLifecycle::after_hook(
                             previous,
                             event,
@@ -433,7 +430,7 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
-    pub fn has_agent_lifecycle(&self, pane: PaneId, kind: &str, conversation: &str) -> bool {
+    pub(super) fn has_agent_lifecycle(&self, pane: PaneId, kind: &str, conversation: &str) -> bool {
         self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
             lifecycle.kind == kind && lifecycle.conversation == conversation
         })

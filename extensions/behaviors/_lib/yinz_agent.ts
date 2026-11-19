@@ -1779,7 +1779,7 @@ export async function confirmStoppedAgent(
 }
 
 /**
- * Fragments of Rust `CloseCompleted` refusals (yinz-screen agent_control/close_completed.rs)
+ * Fragments of Rust `CloseCompleted` refusals (yinz-agent-control/src/close_completed.rs)
  * that concern identity, correlation or pane topology. Retrying cannot change
  * them, so they always need a human. unit/yinz_agent_test.ts pins them against
  * the Rust source.

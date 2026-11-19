@@ -596,11 +596,9 @@ impl AgentController {
                     || p.conversation.as_ref() != Some(&lifecycle.conversation)
                     || p.prompt.as_ref().is_none_or(|prompt| {
                         !prompt.acknowledged()
-                            || (if status.agent.kind == "claude" {
-                                prompt.prompt_id()
-                            } else {
-                                prompt.turn_id()
-                            }) != Some(turn.as_str())
+                            || Provider::for_kind(&status.agent.kind)
+                                .closeout_id(prompt.turn_id(), prompt.prompt_id())
+                                != Some(turn.as_str())
                     })
             })
         {
@@ -622,10 +620,6 @@ impl AgentController {
         })
     }
 }
-
-#[cfg(feature = "test-support")]
-#[path = "unit/screen_fixture.rs"]
-pub mod screen_fixture;
 
 #[cfg(test)]
 #[path = "unit/controller_tests.rs"]

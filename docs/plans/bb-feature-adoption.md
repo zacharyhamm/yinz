@@ -124,7 +124,7 @@ service used by the UI and CLI. Database claims coordinate dispatch.
 **Why this improves Yinz.** A user should be able to assign “review the changes
 after this task” and disconnect. Today,
 [`AgentRequest::Prompt`](../../yinz-types/src/agent/control.rs) submits to a live
-agent, while the [screen controller](../../yinz-screen/src/screen/agent_control.rs)
+agent, while the [agent controller](../../yinz-agent-control/src/controller.rs)
 rejects busy agents and retains only 32 recent submissions per conversation in
 memory. Archives preserve history, but they do not provide a durable list of
 future prompts. Controllers must currently own that list and its recovery.
@@ -305,7 +305,7 @@ release independent of the other three features.
 | Feature | Main Yinz integration points |
 | --- | --- |
 | Preparation | [`agent_launch.rs`](../../yinz-plugin-host/src/yinz_exports/agent_launch.rs), [`AgentSpawnSpec`](../../yinz-types/src/agent.rs), [`new-agent.scm`](../../yinz-steel-builtins/assets/plugins/new-agent.scm), process supervision and launch results |
-| Queue | [`src/agent.rs`](../../src/agent.rs), [`CLI arguments`](../../yinz-cli/src/args.rs), [`agent control types`](../../yinz-types/src/agent/control.rs), [`screen controller`](../../yinz-screen/src/screen/agent_control.rs), [`event stream`](../../yinz-screen/src/screen/agent_events.rs), [`plugin storage`](../../yinz-storage/src/plugin_data_store/mod.rs), Agents panel |
+| Queue | [`src/agent.rs`](../../src/agent.rs), [`CLI arguments`](../../yinz-cli/src/args.rs), [`agent control types`](../../yinz-types/src/agent/control.rs), [`agent controller`](../../yinz-agent-control/src/controller.rs), [`event stream`](../../yinz-screen/src/screen/agent_events.rs), [`plugin storage`](../../yinz-storage/src/plugin_data_store/mod.rs), Agents panel |
 | Review | Existing project/Git probes, optional Steel plugin, [`asynchronous commands and UI`](../PLUGIN_SDK.md), plugin data for Viewed records |
 | Usage | Provider-specific collectors, optional Steel plugin, existing command palette and New Agent UI, a normalized read interface |
 

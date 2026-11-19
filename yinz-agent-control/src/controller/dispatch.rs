@@ -130,7 +130,7 @@ fn retain_evidence(session: &mut impl AgentSession, pane: PaneId, hook: &HookEve
     }
 }
 
-pub fn observe_hook(
+fn observe_hook(
     session: &mut impl AgentSession,
     event: &AgentEvent,
     hook: Option<&HookEvent>,

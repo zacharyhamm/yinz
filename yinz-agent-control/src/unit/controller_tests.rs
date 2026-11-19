@@ -15,6 +15,9 @@ use yinz_types::{
 struct RecordingHost {
     pane: PaneId,
     current: AgentInfo,
+    live_input: bool,
+    enter_revision: u64,
+    input_revision: u64,
     reject_preparation: bool,
     reject_application: bool,
     trace: RefCell<Vec<&'static str>>,
@@ -37,6 +40,9 @@ impl RecordingHost {
                 session_id: Some("old".into()),
                 run_id: None,
             },
+            live_input: false,
+            enter_revision: 0,
+            input_revision: 4,
             reject_preparation: false,
             reject_application: false,
             trace: Default::default(),
@@ -53,7 +59,7 @@ impl AgentHost for RecordingHost {
         None
     }
     fn agent_enter_revision(&self, _pane: PaneId) -> u64 {
-        0
+        self.enter_revision
     }
     fn pane_info(&self, pane: PaneId) -> Option<PaneInfo> {
         (pane == self.pane).then(|| PaneInfo {
@@ -65,8 +71,8 @@ impl AgentHost for RecordingHost {
     fn session_name(&self) -> &str {
         "test"
     }
-    fn tab_for_pane(&self, _pane: PaneId) -> Option<TabId> {
-        None
+    fn tab_for_pane(&self, pane: PaneId) -> Option<TabId> {
+        (self.live_input && pane == self.pane).then_some(TabId::new(0))
     }
     fn terminal_cwd(&self, _pane: PaneId) -> Option<String> {
         None
@@ -75,19 +81,26 @@ impl AgentHost for RecordingHost {
         unreachable!("unexpected host operation")
     }
     fn last_output(&self, _pane: PaneId) -> Option<Instant> {
-        unreachable!("unexpected host operation")
-    }
-    fn pane_input(&self, _pane: PaneId) -> Option<PaneInput> {
         None
     }
+    fn pane_input(&self, pane: PaneId) -> Option<PaneInput> {
+        (self.live_input && pane == self.pane).then(|| PaneInput {
+            suspended: false,
+            sync_active: false,
+            excluded_from_sync: false,
+            command_present: true,
+            command_kind: Some(self.current.kind.clone()),
+            bracketed_paste: true,
+        })
+    }
     fn viewport(&self, _pane: PaneId, _ansi: bool) -> Option<(usize, PaneContents)> {
-        unreachable!("unexpected host operation")
+        None
     }
     fn agent_input_revision(&self, _pane: PaneId) -> u64 {
-        4
+        self.input_revision
     }
     fn agent_input_at(&self, _pane: PaneId) -> Option<Instant> {
-        unreachable!("unexpected host operation")
+        None
     }
     fn prepare_restart(
         &self,
@@ -214,8 +227,12 @@ impl AgentHost for RecordingHost {
     {
         unreachable!("unexpected host operation")
     }
-    fn set_agent(&mut self, _pane: PaneId, _agent: Option<AgentInfo>) -> bool {
-        unreachable!("unexpected host operation")
+    fn set_agent(&mut self, pane: PaneId, agent: Option<AgentInfo>) -> bool {
+        assert_eq!(pane, self.pane);
+        let agent = agent.expect("live pane");
+        let changed = self.current != agent;
+        self.current = agent;
+        changed
     }
     fn write_key(
         &mut self,
@@ -223,7 +240,10 @@ impl AgentHost for RecordingHost {
         _key: yinz_types::keys::KeyWithModifier,
         _completion: Option<yinz_bus::route::NotificationEnd>,
     ) -> yinz_runtime::errors::prelude::Result<()> {
-        unreachable!("unexpected host operation")
+        assert!(self.live_input);
+        self.trace.borrow_mut().push("write_key");
+        self.input_revision += 1;
+        Ok(())
     }
     fn write_bytes(
         &mut self,
@@ -231,7 +251,10 @@ impl AgentHost for RecordingHost {
         _bytes: Vec<u8>,
         _completion: Option<yinz_bus::route::NotificationEnd>,
     ) -> yinz_runtime::errors::prelude::Result<()> {
-        unreachable!("unexpected host operation")
+        assert!(self.live_input);
+        self.trace.borrow_mut().push("write_bytes");
+        self.input_revision += 1;
+        Ok(())
     }
     fn paste(
         &mut self,
@@ -239,7 +262,10 @@ impl AgentHost for RecordingHost {
         _bytes: Vec<u8>,
         _completion: Option<yinz_bus::route::NotificationEnd>,
     ) -> yinz_runtime::errors::prelude::Result<()> {
-        unreachable!("unexpected host operation")
+        assert!(self.live_input);
+        self.trace.borrow_mut().push("paste");
+        self.input_revision += 1;
+        Ok(())
     }
     fn write_command(
         &mut self,
@@ -501,4 +527,622 @@ fn claude_permission_wait_requires_the_waiting_conversation_and_keeps_its_input_
     assert!(agents.claude.permission_waits.is_empty());
     agents.claude.restore_permission_wait(pane, notice);
     assert_eq!(agents.claude.permission_waits.get(&pane), Some(&expected));
+}
+
+fn observe(agents: &mut AgentController, host: &RecordingHost, hook: &super::HookEvent) {
+    let event = super::AgentEvent::from_hook(
+        &host.current.kind,
+        TerminalId::new(7),
+        hook,
+        serde_json::to_string(hook).unwrap(),
+    );
+    agents.observe_control_hook(host, &event, Some(hook));
+}
+
+fn hook(name: &str) -> super::HookEvent {
+    super::HookEvent {
+        source: (name == "SessionStart").then(|| "startup".into()),
+        hook_event_name: name.into(),
+        session_id: "old".into(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn expiry_preserves_wait_ownership_and_run_identity_through_handoff() {
+    use std::time::Duration;
+    use yinz_types::agent::{
+        claude_notifications::{Evidence, Launch, Notice, Obligation, Source, TaskKind},
+        tracking::{ClaudeNotification, PermissionWait, WorkerWaits},
+    };
+    for waiting in [false, true] {
+        let mut agents = AgentController::default();
+        let mut host = RecordingHost::new();
+        host.live_input = true;
+        let pane = host.pane;
+        observe(&mut agents, &host, &hook("SessionStart"));
+        let parent = host.current.clone();
+        let waiting_agent = AgentInfo {
+            state: AgentState::Waiting,
+            waiting_on: Some("permission".into()),
+            wait_needs_a_person: true,
+            ..parent.clone()
+        };
+        let lifecycle = agents.agent_lifecycle.get_mut(&pane).unwrap();
+        lifecycle.last_message = Some("LAUNCH".into());
+        lifecycle.claude.activity.parent = Some(parent.clone());
+        let now = lifecycle.claude.observed_at;
+        let obligations = &mut lifecycle.claude.activity.obligations;
+        let source = Source { pid: 1, started: 2 };
+        let notice = Notice {
+            task: "first".into(),
+            tool: "tool-first".into(),
+            prompt: "first".into(),
+            run: "run".into(),
+            row: "row".into(),
+            queued: false,
+        };
+        obligations.source = Some(source.clone());
+        obligations.notices.push(notice.clone());
+        for (task, remaining_ms) in [("first", 10), ("second", 20)] {
+            obligations.launches.push(Obligation {
+                launch: Launch {
+                    prompt: "prompt".into(),
+                    tool: format!("tool-{task}"),
+                    task: task.into(),
+                    kind: TaskKind::Bash,
+                },
+                answer_prompt: Some(task.into()),
+                remaining_ms,
+                unavailable: false,
+                settled: false,
+                drained: None,
+            });
+        }
+        lifecycle.claude.notifications.insert(
+            "first".into(),
+            ClaudeNotification {
+                observation_unavailable: false,
+                waiting: waiting.then(|| waiting_agent.clone()),
+                permission_revision: waiting.then(|| host.agent_input_revision(pane)),
+            },
+        );
+        let permission = PermissionWait {
+            conversation: "old".into(),
+            input_revision: 4,
+        };
+        agents
+            .claude
+            .permission_waits
+            .insert(pane, permission.clone());
+        let workers = WorkerWaits {
+            parent: parent.clone(),
+            waits: [("worker".into(), Some("question".into()))].into(),
+        };
+        agents.agent_worker_waits.insert(pane, workers.clone());
+
+        agents.expire_claude_observations(now + Duration::from_millis(9));
+        assert!(
+            !agents.agent_lifecycle[&pane].claude.notifications["first"].observation_unavailable
+        );
+        agents.expire_claude_observations(now + Duration::from_millis(10));
+        let state = &agents.agent_lifecycle[&pane];
+        let launches = &state.claude.activity.obligations.launches;
+        assert!(launches[0].unavailable && !launches[0].settled);
+        assert_eq!(launches[0].answer_prompt.as_deref(), Some("first"));
+        assert!(!launches[1].unavailable && !launches[1].settled);
+        assert_eq!(launches[1].remaining_ms, 10);
+        let notification = state.claude.notifications.get("first");
+        assert_eq!(notification.is_some(), waiting);
+        if let Some(notice) = notification {
+            assert!(notice.observation_unavailable);
+            assert_eq!(notice.waiting.as_ref(), Some(&waiting_agent));
+            assert_eq!(notice.permission_revision, Some(4));
+        }
+
+        let expected_notifications = state.claude.notifications.clone();
+        let transfer = agents.capture_agent_tracking(&host, pane).unwrap();
+        let expected_launches = &transfer
+            .lifecycle
+            .as_ref()
+            .unwrap()
+            .claude
+            .obligations
+            .launches;
+        let wire = serde_json::to_vec(&transfer).unwrap();
+        let mut destination = AgentController::default();
+        destination.stage_transfer_identity(
+            pane,
+            (
+                Some(parent.clone()),
+                Some(serde_json::from_slice(&wire).unwrap()),
+            ),
+        );
+        assert!(destination.restore_transfer_state(&mut host, pane));
+        let restored = &destination.agent_lifecycle[&pane];
+        assert_eq!(restored.last_message.as_deref(), Some("LAUNCH"));
+        assert_eq!(restored.claude.activity.parent.as_ref(), Some(&parent));
+        assert_eq!(restored.claude.notifications, expected_notifications);
+        assert_eq!(
+            &restored.claude.activity.obligations.launches,
+            expected_launches
+        );
+        let replay = super::HookEvent {
+            claude_notifications: Some(Evidence {
+                source: Some(source),
+                notice: Some(Notice {
+                    prompt: "duplicate".into(),
+                    ..notice.clone()
+                }),
+                ..Default::default()
+            }),
+            ..hook("Stop")
+        };
+        destination.retain_claude_evidence(pane, &replay);
+        let restored = &destination.agent_lifecycle[&pane];
+        assert_eq!(restored.claude.activity.obligations.notices, [notice]);
+        assert_eq!(restored.claude.notifications, expected_notifications);
+        assert_eq!(destination.agent_worker_waits[&pane], workers);
+        assert_eq!(destination.claude.permission_waits[&pane], permission);
+    }
+}
+
+#[test]
+fn previous_prompt_blocks_agy_replay_only_after_confirmation_in_that_conversation() {
+    let mut agents = AgentController::default();
+    let mut host = RecordingHost::new();
+    host.current.kind = "agy".into();
+    let submit = |id: &str| super::HookEvent {
+        prompt_id: Some(id.into()),
+        ..hook("UserPromptSubmit")
+    };
+    observe(&mut agents, &host, &submit("first"));
+    observe(&mut agents, &host, &submit("unconfirmed"));
+    assert_eq!(agents.agent_lifecycle[&host.pane].previous_prompt_id, None);
+    observe(
+        &mut agents,
+        &host,
+        &super::HookEvent {
+            prompt_id: Some("unconfirmed".into()),
+            agy_turn_complete: Some(true),
+            ..hook("Stop")
+        },
+    );
+    observe(&mut agents, &host, &submit("new"));
+    assert_eq!(
+        agents.agent_lifecycle[&host.pane]
+            .previous_prompt_id
+            .as_deref(),
+        Some("unconfirmed")
+    );
+    assert!(agents.ignore_agy_confirmation(host.pane, &submit("unconfirmed")));
+    assert!(!agents.ignore_agy_confirmation(host.pane, &submit("next")));
+    assert!(!agents.ignore_agy_confirmation(
+        host.pane,
+        &super::HookEvent {
+            session_id: "other".into(),
+            ..submit("unconfirmed")
+        }
+    ));
+}
+
+#[test]
+fn held_completion_freezes_one_proof_and_its_original_expiry() {
+    use std::time::Duration;
+    use yinz_types::agent::{
+        control::PromptDelivery,
+        tracking::{Submission, SubmissionResult},
+    };
+    let mut host = RecordingHost::new();
+    host.live_input = true;
+    host.current.cwd = Some("/work".into());
+    let pane = host.pane;
+    let mut agents = AgentController::default();
+    observe(&mut agents, &host, &hook("SessionStart"));
+    agents
+        .agent_lifecycle
+        .get_mut(&pane)
+        .unwrap()
+        .input_revision = Some(4);
+    agents
+        .agent_terminal_claims
+        .insert(pane, (4, "work".into(), "prompt".into()));
+    agents
+        .agent_submissions
+        .entry(pane)
+        .or_default()
+        .push_back(Submission {
+            id: "work".into(),
+            kind: "claude".into(),
+            conversation: Some("old".into()),
+            acknowledged: true,
+            prompt_delivery: Some(PromptDelivery::Started),
+            turn_id: Some("turn".into()),
+            result: Some(SubmissionResult {
+                outcome: AgentOutcome::Completed,
+                message: Some("DONE".into()),
+                background: false,
+            }),
+        });
+    let now = Instant::now();
+    agents.retain_closed_agent(&host, pane, now);
+    let frozen = agents.closed_agent_submissions.clone();
+    assert_eq!(frozen.len(), 1);
+    assert_eq!(frozen[0].0, now);
+    assert_eq!(frozen[0].1.message.as_deref(), Some("DONE"));
+    agents.retain_closed_agent(&host, pane, now + Duration::from_secs(1));
+    agents.invalidate_agent_lifecycle(&host, pane, "held");
+    host.current.state = AgentState::Exited;
+    agents.invalidate_agent_lifecycle(&host, pane, "pane_closed");
+    assert_eq!(agents.closed_agent_submissions, frozen);
+    assert!(!agents.agent_lifecycle.contains_key(&pane));
+    assert!(!agents.agent_submissions.contains_key(&pane));
+    agents.prune_closed_agents(now + Duration::from_secs(86400));
+    assert!(agents.closed_agent_submissions.is_empty());
+}
+
+#[test]
+fn recent_history_keeps_old_pending_submissions_and_live_waiters() {
+    use super::{Submission, SubmissionResult, SUBMISSION_HISTORY_LIMIT};
+    let mut agents = AgentController::default();
+    let mut host = RecordingHost::new();
+    host.live_input = true;
+    let pane = host.pane;
+    let now = Instant::now();
+    let submission = |id: &str| Submission {
+        id: id.into(),
+        kind: host.current.kind.clone(),
+        conversation: host.current.session_id.clone(),
+        acknowledged: true,
+        prompt_delivery: None,
+        turn_id: Some("turn".into()),
+        result: None,
+    };
+    let history = agents.agent_submissions.entry(pane).or_default();
+    history.push_back(submission("waited"));
+    history.push_back(submission("unresolved"));
+    for i in 0..SUBMISSION_HISTORY_LIMIT {
+        history.push_back(submission(&format!("recent-{i}")));
+    }
+    for client in [1, 2] {
+        agents.wait_for_turn(
+            &host,
+            pane,
+            Reply::Client(ClientId::new(client)),
+            now,
+            "waited".into(),
+            100,
+            Some("old".into()),
+        );
+    }
+    agents.submission_mut(pane, "waited").unwrap().result = Some(SubmissionResult {
+        outcome: AgentOutcome::Completed,
+        message: Some("done".into()),
+        background: false,
+    });
+    for client in [1, 2] {
+        assert_eq!(agents.agent_controls.len(), 3 - client as usize);
+        agents.prune_agent_submissions(&agents.protected_submissions());
+        assert_eq!(
+            agents.agent_submissions[&pane].len(),
+            SUBMISSION_HISTORY_LIMIT + 2
+        );
+        assert!(agents.submission(pane, "waited").unwrap().result.is_some());
+        agents.detach_agent_controls(&host, ClientId::new(client));
+    }
+    assert!(agents.agent_controls.is_empty());
+    assert!(agents.submission(pane, "waited").is_none());
+    assert!(agents.submission(pane, "unresolved").is_some());
+    agents.submission_mut(pane, "unresolved").unwrap().result = Some(SubmissionResult {
+        outcome: AgentOutcome::Interrupted,
+        message: None,
+        background: false,
+    });
+    agents.prune_agent_submissions(&agents.protected_submissions());
+    assert_eq!(
+        agents.agent_submissions[&pane].len(),
+        SUBMISSION_HISTORY_LIMIT
+    );
+    assert_eq!(
+        agents.agent_submissions[&pane].front().unwrap().id,
+        "recent-0"
+    );
+}
+
+#[test]
+fn passive_permission_samples_preserve_the_report_fence_and_turn() {
+    use std::time::Duration;
+    use yinz_types::agent::{
+        claude_notifications::Source,
+        claude_permissions::{Sample, Status, EVENT},
+    };
+    for status in [Status::Inactive, Status::Unavailable, Status::Active] {
+        let mut agents = AgentController::default();
+        let host = RecordingHost::new();
+        let pane = host.pane;
+        observe(&mut agents, &host, &hook("SessionStart"));
+        let baseline = Instant::now() - Duration::from_secs(1);
+        let state = agents.agent_lifecycle.get_mut(&pane).unwrap();
+        state.last_report = baseline;
+        state.input_revision = Some(3);
+        state.claude.activity.parent = Some(host.current.clone());
+        state.claude.confirmation = Some(true);
+        observe(
+            &mut agents,
+            &host,
+            &super::HookEvent {
+                claude_permission: Some(Sample {
+                    source: Source {
+                        pid: 123,
+                        started: 456,
+                    },
+                    updated_ms: 500_001,
+                    observed_ms: 500_001,
+                    status,
+                }),
+                ..hook(EVENT)
+            },
+        );
+        let state = &agents.agent_lifecycle[&pane];
+        assert_eq!(state.last_report > baseline, status == Status::Active);
+        assert_eq!(state.input_revision, Some(3));
+        assert_eq!(state.claude.activity.parent.as_ref(), Some(&host.current));
+        assert_eq!(state.claude.confirmation, Some(true));
+    }
+}
+
+#[test]
+fn permission_enter_restores_the_raw_parent_and_preserves_worker_waits() {
+    use super::{PermissionWait, WorkerWaits};
+    for confirmed in [None, Some(false), Some(true)] {
+        let mut agents = AgentController::default();
+        let mut host = RecordingHost::new();
+        let pane = host.pane;
+        host.current.state = AgentState::Waiting;
+        host.current.waiting_on = Some("permission".into());
+        host.current.detail = Some("Allow Bash?".into());
+        host.current.wait_needs_a_person = true;
+        observe(&mut agents, &host, &hook("SessionStart"));
+        let state = agents.agent_lifecycle.get_mut(&pane).unwrap();
+        state.claude.confirmation = confirmed;
+        state.claude.activity.parent = Some(host.current.clone());
+        let waits = [("worker".to_owned(), Some("question".to_owned()))].into();
+        agents.agent_worker_waits.insert(
+            pane,
+            WorkerWaits {
+                parent: host.current.clone(),
+                waits,
+            },
+        );
+        let wait = PermissionWait {
+            conversation: "old".into(),
+            input_revision: 4,
+        };
+        assert!(agents
+            .advance_permission_wait(&host, pane, wait.clone())
+            .is_none());
+        assert_eq!(agents.claude.permission_waits.get(&pane), Some(&wait));
+        host.enter_revision = 5;
+        for (pane, wait) in agents.take_permission_waits() {
+            let parent = agents.advance_permission_wait(&host, pane, wait).unwrap();
+            assert_eq!(
+                parent.state,
+                if confirmed == Some(true) {
+                    AgentState::Idle
+                } else {
+                    AgentState::Busy
+                }
+            );
+            assert!(
+                parent.detail.is_none()
+                    && parent.waiting_on.is_none()
+                    && !parent.wait_needs_a_person
+            );
+            assert_eq!(
+                agents.agent_lifecycle[&pane]
+                    .claude
+                    .activity
+                    .parent
+                    .as_ref(),
+                Some(&parent)
+            );
+            assert_eq!(agents.agent_worker_waits[&pane].parent, parent);
+        }
+        assert!(agents.claude.permission_waits.is_empty());
+        assert_eq!(
+            agents.agent_worker_waits[&pane].waits["worker"].as_deref(),
+            Some("question")
+        );
+    }
+}
+
+#[test]
+fn prompt_claim_and_event_identity_follow_delivery_acceptance_and_completion() {
+    use super::{AgentEvent, HookEvent};
+    use std::time::Duration;
+    let mut agents = AgentController::default();
+    let mut host = RecordingHost::new();
+    host.live_input = true;
+    host.input_revision = 0;
+    let pane = host.pane;
+    observe(&mut agents, &host, &hook("SessionStart"));
+    let now = Instant::now();
+    agents.handle(
+        &mut host,
+        AgentRequest::Prompt {
+            pane_id: pane,
+            expected_session_id: Some("old".into()),
+            prompt: "review".into(),
+            preserve_draft: false,
+            submission_id: Some("work".into()),
+            wait: true,
+            timeout_ms: 30000,
+        },
+        Reply::Client(ClientId::new(1)),
+        now,
+    );
+    assert!(agents.agent_draft_clears.contains_key(&pane));
+    assert!(!agents.submission(pane, "work").unwrap().acknowledged);
+    for offset in [0, 1, 251] {
+        agents.advance_draft_clear(&mut host, pane, now + Duration::from_millis(offset));
+    }
+    assert!(!agents.agent_draft_clears.contains_key(&pane));
+    assert_eq!(agents.agent_controls.len(), 1);
+    let submit = HookEvent {
+        prompt_id: Some("p".into()),
+        turn_id: Some("t".into()),
+        prompt: Some("review".into()),
+        ..hook("UserPromptSubmit")
+    };
+    let event = |hook: &HookEvent| {
+        AgentEvent::from_hook(
+            "claude",
+            TerminalId::new(7),
+            hook,
+            serde_json::to_string(hook).unwrap(),
+        )
+    };
+    assert_eq!(agents.event_submission(pane, &submit), None);
+    agents.advance_pending_controls(&mut host, now + Duration::from_secs(1));
+    agents.advance_pending_controls(&mut host, now + Duration::from_secs(2));
+    agents.correlate_agent_submissions(&host, &event(&submit), Some(&submit));
+    assert_eq!(
+        agents.event_submission(pane, &submit).as_deref(),
+        Some("work")
+    );
+    assert!(agents.submission(pane, "work").unwrap().acknowledged);
+    assert_eq!(agents.agent_controls.len(), 1);
+    let stop = HookEvent {
+        hook_event_name: "Stop".into(),
+        claude_turn_complete: Some(true),
+        last_assistant_message: Some("DONE".into()),
+        ..submit.clone()
+    };
+    agents.correlate_agent_submissions(&host, &event(&stop), Some(&stop));
+    assert_eq!(agents.event_submission(pane, &submit), None);
+    assert!(agents.agent_controls.is_empty());
+    let result = agents
+        .submission(pane, "work")
+        .unwrap()
+        .result
+        .as_ref()
+        .unwrap();
+    assert_eq!(result.outcome, AgentOutcome::Completed);
+    assert_eq!(result.message.as_deref(), Some("DONE"));
+}
+
+#[test]
+fn replacing_the_provider_retires_its_native_waits_and_blocks_old_replays() {
+    use super::{ClaudeNotification, ClearInput, DialogInput, PermissionWait, WorkerWaits};
+    use yinz_types::agent::claude_notifications::{Evidence, Source};
+    let mut agents = AgentController::default();
+    let mut host = RecordingHost::new();
+    host.live_input = true;
+    let pane = host.pane;
+    observe(&mut agents, &host, &hook("SessionStart"));
+    let old = Source { pid: 4, started: 5 };
+    let new = Source { pid: 6, started: 7 };
+    let state = agents.agent_lifecycle.get_mut(&pane).unwrap();
+    state.claude.activity.obligations.source = Some(old.clone());
+    state.last_message = Some("OLD".into());
+    state.claude.notifications.insert(
+        "notice".into(),
+        ClaudeNotification {
+            observation_unavailable: false,
+            waiting: Some(host.current.clone()),
+            permission_revision: Some(4),
+        },
+    );
+    state
+        .claude
+        .activity
+        .worker_wait_tools
+        .entry("worker".into())
+        .or_default()
+        .insert("question".into());
+    let waits = WorkerWaits {
+        parent: host.current.clone(),
+        waits: [("worker".into(), Some("question".into()))].into(),
+    };
+    agents.agent_worker_waits.insert(pane, waits.clone());
+    agents.claude.permission_waits.insert(
+        pane,
+        PermissionWait {
+            conversation: "old".into(),
+            input_revision: 4,
+        },
+    );
+    agents.agent_dialog_inputs.insert(
+        pane,
+        DialogInput {
+            kind: "claude".into(),
+            conversation: Some("old".into()),
+            input_revision: 4,
+            startup: false,
+            fresh_waiting: false,
+        },
+    );
+    agents.agent_clear_inputs.insert(
+        pane,
+        ClearInput {
+            kind: "claude".into(),
+            conversation: "old".into(),
+            input_revision: 4,
+            deadline: Instant::now(),
+            session_ended: false,
+        },
+    );
+    let resume = |source: Source| super::HookEvent {
+        claude_notifications: Some(Evidence {
+            source: Some(source),
+            ..Default::default()
+        }),
+        source: Some("resume".into()),
+        ..hook("SessionStart")
+    };
+    for (report, accepted) in [
+        (resume(old.clone()), true),
+        (
+            super::HookEvent {
+                archive_only: true,
+                ..resume(new.clone())
+            },
+            false,
+        ),
+        (
+            super::HookEvent {
+                agent_id: Some("worker".into()),
+                ..resume(new.clone())
+            },
+            false,
+        ),
+    ] {
+        assert_eq!(agents.accept_claude_source(&host, pane, &report), accepted);
+        let state = &agents.agent_lifecycle[&pane];
+        assert_eq!(
+            state.claude.activity.obligations.source.as_ref(),
+            Some(&old)
+        );
+        assert!(state.claude.notifications.contains_key("notice"));
+        assert!(state.claude.activity.worker_wait_tools["worker"].contains("question"));
+        assert_eq!(state.last_message.as_deref(), Some("OLD"));
+        assert_eq!(agents.agent_worker_waits.get(&pane), Some(&waits));
+        assert!(agents.agent_dialog_inputs.contains_key(&pane));
+        assert!(agents.agent_clear_inputs.contains_key(&pane));
+        assert!(agents.claude.permission_waits.contains_key(&pane));
+    }
+    assert!(agents.accept_claude_source(&host, pane, &resume(new.clone())));
+    assert!(!agents.accept_claude_source(&host, pane, &resume(old)));
+    let state = &agents.agent_lifecycle[&pane];
+    assert_eq!(
+        state.claude.activity.obligations.source.as_ref(),
+        Some(&new)
+    );
+    assert!(state.last_message.is_none());
+    assert!(state.claude.notifications.is_empty());
+    assert!(state.claude.activity.worker_wait_tools.is_empty());
+    assert!(!agents.agent_worker_waits.contains_key(&pane));
+    assert!(!agents.agent_dialog_inputs.contains_key(&pane));
+    assert!(!agents.agent_clear_inputs.contains_key(&pane));
+    assert!(!agents.claude.permission_waits.contains_key(&pane));
 }

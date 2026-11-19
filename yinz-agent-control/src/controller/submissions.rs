@@ -1,7 +1,7 @@
 use super::*;
 
 impl super::AgentController {
-    pub fn event_submission(&self, pane: PaneId, hook: &HookEvent) -> Option<String> {
+    pub(super) fn event_submission(&self, pane: PaneId, hook: &HookEvent) -> Option<String> {
         self.agent_controls
             .iter()
             .find(|pending| {

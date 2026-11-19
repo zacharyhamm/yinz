@@ -89,15 +89,6 @@ impl Screen {
         yinz_agent_control::controller::dispatch::tick(self, now);
     }
 
-    #[cfg(test)]
-    pub(super) fn agent_control_event(
-        &mut self,
-        event: &AgentEvent,
-        hook: Option<&yinz_types::agent::HookEvent>,
-    ) -> bool {
-        yinz_agent_control::controller::dispatch::observe_hook(self, event, hook)
-    }
-
     pub(super) fn detach_agent_controls(&mut self, client: ClientId) {
         self.agents.detach_agent_controls(&self.core, client)
     }

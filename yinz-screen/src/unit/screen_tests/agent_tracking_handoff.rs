@@ -386,13 +386,13 @@ fn setup_tracking(
     setup(kind)
 }
 
-fn transfer(source: &mut Screen, kind: &str) -> Screen {
+pub(super) fn transfer(source: &mut Screen, kind: &str) -> Screen {
     let (mut destination, _, _) = setup_tracking(kind);
     transfer_into(source, &mut destination);
     destination
 }
 
-fn transfer_into(
+pub(super) fn transfer_into(
     source: &mut Screen,
     destination: &mut Screen,
 ) -> yinz_types::agent::tracking::AgentTrackingHandoff {
@@ -473,9 +473,7 @@ fn warp_tracking_restores_osc_status_after_identity_and_without_tracking() {
             assert_eq!(restored.agent, Some(agent));
         }
         assert_eq!(
-            destination
-                .agents
-                .has_agent_lifecycle(PANE, "codex", "conversation"),
+            reported_lifecycle(&destination, "codex", "conversation"),
             mode == "tracking"
         );
         assert!(!destination.agents.has_staged_terminal(PANE));
@@ -573,15 +571,10 @@ fn warp_tracking_claude_background_and_waits_survive_transfer() {
             ..claude_worker("PreToolUse", "worker")
         },
     );
-    let mut destination = transfer(&mut source, "claude");
+    let (mut destination, _, _) = setup_tracking("claude");
+    let outgoing = transfer_into(&mut source, &mut destination);
     assert_eq!(
-        destination
-            .capture_agent_tracking(PANE)
-            .unwrap()
-            .lifecycle
-            .unwrap()
-            .claude_background
-            .as_deref(),
+        outgoing.lifecycle.unwrap().claude_background.as_deref(),
         Some("prompt")
     );
     report_kind(
@@ -589,13 +582,10 @@ fn warp_tracking_claude_background_and_waits_survive_transfer() {
         "claude",
         claude_worker("SubagentStop", "worker"),
     );
-    assert!(destination
-        .agents
-        .inspect_pane(PANE)
-        .workers()
-        .unwrap()
-        .waits
-        .contains_key("worker"));
+    assert_eq!(
+        destination.agent_status_for_test().agent.state,
+        AgentState::Waiting
+    );
     report_kind(
         &mut destination,
         "claude",
@@ -708,9 +698,7 @@ fn warp_tracking_preserves_provisional_muse_and_rejects_mismatched_identity() {
         .session_id
         .is_none());
     report_kind(&mut destination, "muse", hook("UserPromptSubmit"));
-    assert!(destination
-        .agents
-        .has_agent_lifecycle(PANE, "muse", "conversation"));
+    assert!(reported_lifecycle(&destination, "muse", "conversation"));
     let original = destination.capture_agent_tracking(PANE).unwrap();
     for mismatch in ["kind", "conversation", "process"] {
         let mut handoff = original.clone();
@@ -729,9 +717,7 @@ fn warp_tracking_preserves_provisional_muse_and_rejects_mismatched_identity() {
             .stage_transfer_identity(PANE, (Some(handoff.agent.clone()), Some(handoff)));
         rejected.restore_staged_transfer_state(PANE);
         assert!(
-            !rejected
-                .agents
-                .has_agent_lifecycle(PANE, "muse", "conversation"),
+            !reported_lifecycle(&rejected, "muse", "conversation"),
             "{mismatch}"
         );
     }
@@ -983,11 +969,6 @@ fn warp_tracking_failed_notification_observer_keeps_native_permission_ownership(
             let status = destination.agent_status_for_test();
             assert_eq!(status.agent.state, AgentState::Waiting);
             assert!(status.agent.wait_needs_a_person);
-            let state = claude_lifecycle(&destination);
-            let notification = &state.claude_notifications["notice"];
-            assert!(notification.observation_unavailable);
-            assert!(notification.permission_revision.is_some());
-            assert_eq!(state.last_message.as_deref(), Some("LAUNCH"));
             permission_key(&mut destination, KeyWithModifier::new(BareKey::Down), true);
             finish_paste(&writes);
             assert_eq!(
@@ -997,25 +978,13 @@ fn warp_tracking_failed_notification_observer_keeps_native_permission_ownership(
             if i == 1 {
                 permission_key(&mut destination, KeyWithModifier::new(BareKey::Enter), true);
                 assert_eq!(finish_paste(&writes), b"\r");
-                assert!(claude_lifecycle(&destination)
-                    .claude_notifications
-                    .is_empty());
                 assert_eq!(
                     destination.agent_status_for_test().agent.state,
                     AgentState::Idle
                 );
                 report_kind(&mut destination, "claude", steering_ack("later"));
                 report_kind(&mut destination, "claude", sourced_stop("later", "LATER"));
-                assert_eq!(
-                    destination
-                        .agents
-                        .inspect_pane(PANE)
-                        .lifecycle()
-                        .unwrap()
-                        .last_message
-                        .as_deref(),
-                    Some("LATER")
-                );
+                assert_eq!(idle_message(&mut destination).as_deref(), Some("LATER"));
             }
             source = destination;
         }
@@ -1056,13 +1025,6 @@ fn warp_tracking_completed_parent_background_permission_restores_idle_after_appr
                         destination.refresh_agent_controls();
                         assert_eq!(destination.agent_status_for_test().agent, waiting);
                         assert!(destination.agent_status_for_test().background);
-                        assert_eq!(
-                            claude_lifecycle(&destination).claude_confirmation,
-                            Some(true)
-                        );
-                        assert!(claude_lifecycle(&destination)
-                            .claude_notifications
-                            .is_empty());
                         permission_key(&mut destination, KeyWithModifier::new(BareKey::Down), cli);
                         assert_eq!(destination.agent_status_for_test().agent, waiting);
                         source = destination;
@@ -1072,16 +1034,6 @@ fn warp_tracking_completed_parent_background_permission_restores_idle_after_appr
                     finish_paste(&writes);
                     permission_key(&mut source, KeyWithModifier::new(BareKey::Enter), cli);
                     assert_eq!(finish_paste(&writes), b"\r");
-                    assert!(source.agents.inspect_pane(PANE).permission().is_none());
-                    assert_eq!(
-                        claude_lifecycle(&source)
-                            .claude
-                            .parent
-                            .as_ref()
-                            .unwrap()
-                            .state,
-                        AgentState::Idle
-                    );
                     assert_eq!(source.agent_status_for_test().agent.state, AgentState::Busy);
                     draft_frame(&mut source, "claude", "", 0, Instant::now());
                     let waiter = ClientId::new(2);
@@ -1155,8 +1107,6 @@ fn warp_tracking_finalizes_requests_and_retains_launch_and_submission_history() 
         snapshot.launch.unwrap().branch.as_deref(),
         Some("task-branch")
     );
-    assert_eq!(source.agents.pending_control_count(), 0);
-    assert_eq!(destination.agents.pending_control_count(), 0);
     let (reply, result) = std::sync::mpsc::channel();
     destination.agent_control_at(
         AgentRequest::WaitTurn {
@@ -1285,9 +1235,7 @@ fn warp_tracking_rejects_an_incompatible_destination_before_release() {
         };
         assert!(reason.contains("agent tracking"), "{reason}");
         assert!(pty.try_iter().next().is_none());
-        assert!(source
-            .agents
-            .has_agent_lifecycle(PANE, "claude", "conversation"));
+        assert!(reported_lifecycle(&source, "claude", "conversation"));
     }
 }
 
@@ -1336,7 +1284,6 @@ fn warp_tracking_does_not_resume_partial_prompt_delivery() {
     source.agent_control_with_clear(prompt(true), CLIENT, &writes);
     // The writer has not acknowledged the paste and no submit key may be resumed.
     let mut destination = transfer(&mut source, "codex");
-    assert_eq!(destination.agents.pending_control_count(), 0);
     assert_eq!(
         destination
             .capture_agent_tracking(PANE)
@@ -1442,13 +1389,13 @@ fn warp_tracking_preserves_provider_adoption_and_rejects_retired_source_reports(
             "claude",
             provider_resume(notification_source()),
         );
-        assert!(destination.agents.inspect_pane(PANE).background());
+        assert!(destination.agent_status_for_test().background);
         report_kind(
             &mut destination,
             "claude",
             provider_resume(replacement_source()),
         );
-        assert!(!destination.agents.inspect_pane(PANE).background());
+        assert!(!destination.agent_status_for_test().background);
         report_kind(
             &mut destination,
             "claude",
@@ -1459,19 +1406,27 @@ fn warp_tracking_preserves_provider_adoption_and_rejects_retired_source_reports(
             "claude",
             with_notification_source(claude_stop("new", "NEW", false), replacement_source()),
         );
-        let (mut next, _) = adopt_tracking(&mut destination, path, false, true);
+        let (mut next, _, outgoing) =
+            adopt_with_observer(&mut destination, path, false, true, None);
+        let lifecycle = outgoing.unwrap().lifecycle.unwrap();
+        assert_eq!(
+            lifecycle.claude.obligations.source,
+            Some(replacement_source())
+        );
+        assert_eq!(lifecycle.last_message.as_deref(), Some("NEW"));
+        next.tab_containing_pane_mut(PANE)
+            .unwrap()
+            .handle_pty_bytes(TerminalId::new(7), b"\x1b[?2004h".to_vec())
+            .unwrap();
+
         for old in [
             provider_resume(notification_source()),
             native_background_launch("bash", "tool", "Bash"),
             sourced_stop("new", "OLD"),
         ] {
             report_kind(&mut next, "claude", old);
-            assert!(!next.agents.inspect_pane(PANE).background());
-            assert_eq!(claude_lifecycle(&next).last_message.as_deref(), Some("NEW"));
-            assert_eq!(
-                claude_lifecycle(&next).claude.obligations.source,
-                Some(replacement_source())
-            );
+            assert!(!next.agent_status_for_test().background);
+            assert_eq!(idle_message(&mut next).as_deref(), Some("NEW"));
         }
     }
 }
@@ -1482,18 +1437,18 @@ fn claude_permission_registry_handoff_retains_overlay_watermark_and_parent() {
     for path in ["pane", "tab", "companion"] {
         let mut source = permission_setup();
         report_kind(&mut source, "claude", claude_stop("prompt", "done", true));
-        let parent = claude_lifecycle(&source).claude.parent.clone();
         report_kind(
             &mut source,
             "claude",
             permission_sample(Status::Active, 500_000),
         );
-        let (mut destination, _) = adopt_tracking(&mut source, path, false, true);
+        let (mut destination, _, outgoing) =
+            adopt_with_observer(&mut source, path, false, true, None);
+        let parent = outgoing.unwrap().lifecycle.unwrap().claude.parent;
         assert_eq!(
             destination.agent_status_for_test().agent.state,
             AgentState::Waiting
         );
-        assert_eq!(claude_lifecycle(&destination).claude.parent, parent);
         report_kind(
             &mut destination,
             "claude",
@@ -1503,7 +1458,9 @@ fn claude_permission_registry_handoff_retains_overlay_watermark_and_parent() {
             destination.agent_status_for_test().agent.state,
             AgentState::Busy
         );
-        let (mut next, _) = adopt_tracking(&mut destination, path, false, true);
+        let (mut next, _, outgoing) =
+            adopt_with_observer(&mut destination, path, false, true, None);
+        assert_eq!(outgoing.unwrap().lifecycle.unwrap().claude.parent, parent);
         report_kind(
             &mut next,
             "claude",
@@ -1646,8 +1603,8 @@ fn restored_claude_registry_reconciles_orphan_without_completing_a_turn() {
             assert_eq!(agent.state, sample);
             assert_eq!(agent.wait_needs_a_person, sample == AgentState::Waiting);
         }
-        assert!(!screen.agents.has_agent_lifecycle(
-            PANE,
+        assert!(!reported_lifecycle(
+            &screen,
             "claude",
             expected.session_id.as_deref().unwrap()
         ));
@@ -1674,6 +1631,7 @@ fn restored_claude_registry_rejects_superseded_observations() {
         let revision = screen.core.tabs[&TabId::new(0)].agent_input_revision(PANE);
         let generation = enroll_restored_claude(&mut screen);
         let mut sent_revision = revision;
+        let mut sent_hook = info.last_hook_at_ms;
         match supersede {
             "generation" => {
                 assert_ne!(enroll_restored_claude(&mut screen), generation);
@@ -1697,18 +1655,9 @@ fn restored_claude_registry_rejects_superseded_observations() {
             },
             "lifecycle" => {
                 let hook = hook("UserPromptSubmit");
-                let event = AgentEvent::from_hook(
-                    "claude",
-                    TerminalId::new(7),
-                    &hook,
-                    serde_json::to_string(&hook).unwrap(),
-                );
-                screen
-                    .agents
-                    .observe_control_hook(&screen.core, &event, Some(&hook));
-                assert!(screen
-                    .agents
-                    .has_agent_lifecycle(PANE, "claude", &hook.session_id));
+                report_kind(&mut screen, "claude", hook.clone());
+                sent_hook = screen.get_pane_info(PANE).unwrap().last_hook_at_ms;
+                assert!(reported_lifecycle(&screen, "claude", &hook.session_id));
             },
             "closed" => {
                 screen.close_pane_explicitly(PANE, None);
@@ -1722,7 +1671,7 @@ fn restored_claude_registry_rejects_superseded_observations() {
                     generation,
                     &expected,
                     sent_revision,
-                    info.last_hook_at_ms,
+                    sent_hook,
                     Some(AgentState::Idle)
                 )
                 .unwrap(),

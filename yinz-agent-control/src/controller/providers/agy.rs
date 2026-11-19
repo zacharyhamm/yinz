@@ -1,6 +1,24 @@
 use super::super::*;
 use crate::providers::agy::{ignore_confirmation, ConfirmationContext};
 
+/// Agy rejects a delayed submit for the preceding confirmed prompt. The shared
+/// handoff field also carries Claude's confirmed prompt across older transfers.
+pub(in crate::controller) fn previous_prompt_id(
+    previous: Option<&Lifecycle>,
+    event: &AgentEvent,
+    notification: bool,
+) -> Option<String> {
+    let previous = previous?;
+    if event.hook == "UserPromptSubmit"
+        && !notification
+        && (previous.claude.confirmation.is_some() || previous.agy.confirmation().is_some())
+    {
+        previous.prompt_id.clone()
+    } else {
+        previous.previous_prompt_id.clone()
+    }
+}
+
 impl super::super::AgentController {
     pub(in crate::controller) fn ignore_agy_confirmation(
         &self,
