@@ -109,11 +109,11 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* Header */
 .app-header {
-  position: sticky; top: 0; z-index: 5;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   padding: calc(6px + var(--safe-top)) calc(8px + var(--safe-right)) 6px calc(8px + var(--safe-left));
 }
+#list-header { position: sticky; top: 0; z-index: 5; }
 .header-row { display: flex; align-items: center; gap: 4px; min-height: var(--tap); }
 .header-title { font-size: 20px; font-weight: 700; flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .header-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
@@ -252,7 +252,7 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
   }
 }
 .detail-header {
-  position: relative; flex: 0 1 auto; min-height: calc(111px + var(--safe-top));
+  flex: 0 1 auto; min-height: calc(111px + var(--safe-top));
   display: flex; flex-direction: column;
 }
 .detail-summary { flex: none; }

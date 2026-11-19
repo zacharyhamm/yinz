@@ -807,7 +807,7 @@ async function assertScreenPinned(page, where) {
 // different ancestor must not turn a covered control into a passing assertion.
 // Playwright treats aria-disabled="true" as disabled, so a focusable stepper at
 // its bound opts out of the enabled wait; its caller checks that state itself.
-async function reachableTarget(page, selector, scroller, { requireEnabled = true } = {}) {
+async function reachableTarget(page, selector, scroller, { requireEnabled = true, allowPageScroll = false } = {}) {
   if (requireEnabled) await until(`${selector} enabled`, () => page.locator(selector).isEnabled());
   await page.evaluate(({ selector, scroller }) => {
     const el = document.querySelector(selector), region = document.querySelector(scroller);
@@ -833,7 +833,8 @@ async function reachableTarget(page, selector, scroller, { requireEnabled = true
         contained: r.top >= top - 1 && r.bottom <= bottom + 1 && r.left >= left - 1 && r.right <= right + 1,
         hit: el === hit || el.contains(hit), pageTop: scrollY, documentHeight: document.documentElement.scrollHeight, viewport: innerHeight };
     });
-    check(g.width >= 44 && g.height >= 44 && g.contained && g.hit && g.pageTop === 0 && g.documentHeight <= g.viewport + 1,
+    check(g.width >= 44 && g.height >= 44 && g.contained && g.hit
+      && (allowPageScroll || (g.pageTop === 0 && g.documentHeight <= g.viewport + 1)),
       `${selector}: target clipped or covered: ${JSON.stringify(g)}`);
     return true;
   });
@@ -1450,6 +1451,16 @@ async function reducedScreen(page, fx, width, fullHeight, scheme) {
   await reachableTarget(page, '#custom-information', '#detail-information');
   for (const selector of ['#submission-retry', '#submission-discard', '#composer-input', '#composer-prompts']) {
     await reachableTarget(page, selector, '.composer-dock');
+  }
+  if (width === 390) {
+    await page.setViewportSize({ width, height: 320 });
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await until('detail header scrolls with the document', () => page.locator('#detail-header').evaluate((header) => (
+      scrollY > 0 && Math.abs(header.getBoundingClientRect().top + scrollY) <= 1
+    )));
+    await reachableTarget(page, '#banner-offline .link-button', '.detail-page > .banners', { allowPageScroll: true });
+    await reachableTarget(page, '#screen-refresh', '.screen-feedback', { allowPageScroll: true });
+    await page.setViewportSize({ width, height: 480 });
   }
   await reachableTarget(page, '#banner-offline .link-button', '.detail-page > .banners');
   await detailContrast(page, 'reduced Screen recovery');
