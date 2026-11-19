@@ -3783,6 +3783,9 @@ impl Screen {
         {
             self.drop_quit_notice(plugin_id);
         }
+        if tab_of_existing_pane != tab_of_pane_to_replace || !suppress_replaced_pane {
+            self.refresh_agent_worktrees();
+        }
         Ok(())
     }
 
@@ -3841,9 +3844,12 @@ impl Screen {
             .unwrap_or(false);
         if !target_tab_has_room_for_stack {
             log::error!("No room for stack with root pane id: {:?}", root_pane_id);
+            // Embedding a floating root can clear fullscreen even when the stack won't fit.
+            self.sync_nested_guest_fullscreen_state();
             return None;
         }
 
+        let mut moved_between_tabs = false;
         for (tab_id, tab) in self.core.tabs.iter_mut() {
             if tab_id == &root_tab_id {
                 // we do this before we extract panes so that the extraction won't trigger a
@@ -3855,6 +3861,7 @@ impl Screen {
                     let carried_respawn = tab.take_pending_respawn(*pane_id);
                     match tab.extract_pane_leaving_tab(*pane_id, false) {
                         Some(pane) => {
+                            moved_between_tabs |= *tab_id != root_tab_id;
                             panes_to_stack.push(pane);
                             if let Some(entry) = carried_respawn {
                                 pending_respawns_to_restore.push((*pane_id, entry));
@@ -3879,6 +3886,10 @@ impl Screen {
                 dest.restore_pending_respawn(pane_id, entry);
             }
         }
+        if moved_between_tabs {
+            self.refresh_agent_worktrees();
+        }
+        self.sync_nested_guest_fullscreen_state();
         last_pane_id.copied()
     }
     /// Move or resize overlays where they already are, in the overlay collection.

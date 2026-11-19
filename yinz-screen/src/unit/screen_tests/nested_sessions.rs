@@ -165,3 +165,42 @@ pub fn nested_guest_bye_stops_liveness_pings() {
         BackgroundJob::StopNestedGuestPing(PaneId::Terminal(TERMINAL_0))
     )));
 }
+
+#[test]
+fn stacking_a_zoomed_guest_sends_the_exit_frame_before_the_next_instruction() {
+    use yinz_ipc::nested_session::NestedSessionMessage;
+
+    let (mut screen, capture) = create_new_screen_with_forward_capture(Size {
+        cols: 120,
+        rows: 40,
+    });
+    let tab_id = TabId::new(0);
+    let guest = PaneId::Terminal(TERMINAL_0);
+    let sibling = PaneId::Terminal(TerminalId::new(1));
+    new_tab(&mut screen, 0, tab_id);
+    add_pane_to_tab(&mut screen, tab_id, sibling, false);
+    screen.handle_nested_session_message_from_pane(guest, guest_announce_message());
+    capture.drain_pty_writes();
+    let guest_fullscreen_frames = || {
+        capture
+            .drain_pty_writes()
+            .into_iter()
+            .filter_map(
+                |(bytes, terminal_id)| match (terminal_id, decode_nested_frame(&bytes)) {
+                    (TERMINAL_0, Some(NestedSessionMessage::FullscreenState { fullscreen })) => {
+                        Some(fullscreen)
+                    },
+                    _ => None,
+                },
+            )
+            .collect::<Vec<_>>()
+    };
+    screen.handle_nested_session_message_from_pane(
+        guest,
+        NestedSessionMessage::ToggleHostFullscreen { fullscreen: true },
+    );
+    assert_eq!(guest_fullscreen_frames(), [true]);
+
+    assert_eq!(screen.stack_panes(vec![sibling, guest]), Some(guest));
+    assert_eq!(guest_fullscreen_frames(), [false]);
+}

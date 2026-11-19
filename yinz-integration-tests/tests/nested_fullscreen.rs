@@ -700,7 +700,7 @@ fn ascend_via_focus_host_binding(nested: &NestedHarness) {
     nested.wait_for_host_to_ascend_from_guest_after(ascended);
 }
 
-fn split_host_sibling(nested: &NestedHarness) {
+fn split_host_sibling(nested: &NestedHarness) -> yinz_integration_tests::FakePtyHandle {
     nested.host.send_stdin(&keys::ctrl('p'));
     nested.host.wait_until(
         "host entered pane mode before the split key",
@@ -713,6 +713,7 @@ fn split_host_sibling(nested: &NestedHarness) {
         "host returned to normal mode after the split key",
         |host_grid| host_grid.contains("HOST-SIBLING"),
     );
+    sibling
 }
 
 fn descend_into_guest_on_the_left(nested: &NestedHarness) {
@@ -1041,6 +1042,66 @@ fn host_manually_breaking_fullscreen_drifts_the_guest_to_not_fullscreen() {
         |host_grid| {
             host_grid.status_bar_appears() && host_own_name_present(host_grid, &host_session_name)
         },
+    );
+}
+
+#[test]
+fn stacking_a_zoomed_guest_clears_its_breadcrumb_and_allows_the_next_zoom() {
+    let nested = NestedHarness::start(TERMINAL_SIZE);
+    boot_and_descend_on_first_load(&nested);
+    ascend_via_focus_host_binding(&nested);
+    let sibling = split_host_sibling(&nested);
+    descend_into_guest_on_the_left(&nested);
+    nested
+        .guest
+        .wait_until("guest settled after descend", guest_ui_settled);
+    enter_fullscreen_from_descended_guest(&nested);
+    nested.guest.wait_until(
+        "guest shows its fullscreen breadcrumb",
+        guest_fullscreen_breadcrumb_line,
+    );
+
+    let stacked = nested.mark_host_to_guest();
+    assert_eq!(
+        nested.host.run_cli_action(CliAction::StackPanes {
+            pane_ids: vec![
+                sibling.terminal_id().to_string(),
+                nested.host_pane.terminal_id().to_string()
+            ],
+        }),
+        0
+    );
+    nested
+        .host_to_guest()
+        .wait_for_after(stacked, "stacking exits guest fullscreen", |message| {
+            matches!(
+                message,
+                NestedSessionMessage::FullscreenState { fullscreen: false }
+            )
+        });
+    nested
+        .guest
+        .wait_until("stacked guest clears its breadcrumb", |grid| {
+            grid.project_bar_line()
+                .is_some_and(|line| !line.contains('▸'))
+                && guest_ui_settled(grid)
+        });
+
+    let next_zoom = nested.mark_guest_to_host();
+    enter_fullscreen_from_descended_guest(&nested);
+    nested.guest_to_host().wait_for_after(
+        next_zoom,
+        "next guest shortcut requests fullscreen",
+        |message| {
+            matches!(
+                message,
+                NestedSessionMessage::ToggleHostFullscreen { fullscreen: true }
+            )
+        },
+    );
+    nested.guest.wait_until(
+        "guest shows its breadcrumb after zooming again",
+        guest_fullscreen_breadcrumb_line,
     );
 }
 

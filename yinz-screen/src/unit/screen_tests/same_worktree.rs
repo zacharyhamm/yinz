@@ -364,6 +364,57 @@ fn same_worktree_overlay_titles_follow_each_viewers_focus_and_clear_after_agent_
 }
 
 #[test]
+fn same_worktree_markers_follow_resolved_agents_across_tab_moves() {
+    let repo = repository();
+    for stack in [true, false] {
+        let mut scene = Scene::new();
+        scene.add(3, NewPanePlacement::default());
+        scene.report(1, Some(agent(Some(repo.path()))));
+        scene.report(3, Some(agent(Some(repo.path()))));
+        scene.wait_for_title("👯 [1]");
+
+        let source = TabId::new(1);
+        new_tab(&mut scene.screen, 2, source);
+        add_pane_to_tab(&mut scene.screen, source, pane(4), false);
+        scene.report(2, Some(agent(Some(repo.path()))));
+        assert!(scene.screen.core.tabs[&source]
+            .agent_worktrees
+            .contains_key(&pane(2)));
+
+        let scans = scene.screen.core.worktree_scans.get();
+        if stack {
+            assert_eq!(
+                scene.screen.stack_panes(vec![pane(1), pane(2)]),
+                Some(pane(2))
+            );
+        } else {
+            scene
+                .screen
+                .replace_pane_with_existing_pane(pane(3), pane(2), true, None)
+                .unwrap();
+        }
+        assert_eq!(scene.screen.core.worktree_scans.get(), scans + 1);
+        assert!(!scene.screen.core.tabs[&source]
+            .agent_worktrees
+            .contains_key(&pane(2)));
+        assert!(scene.screen.core.tabs[&source].has_pane_with_pid(&pane(4)));
+
+        for (focused, peer) in [(2, 1), (1, 2)] {
+            scene
+                .screen
+                .focus_pane_with_id(pane(focused), false, false, CLIENT)
+                .unwrap();
+            scene.render();
+            assert!(
+                scene.text(CLIENT).contains(&format!("👯 [{peer}]")),
+                "stack={stack}, focused={focused}"
+            );
+            assert!(!scene.text(CLIENT).contains(&format!("👯 [{focused}]")));
+        }
+    }
+}
+
+#[test]
 fn same_worktree_surviving_overlay_is_published_in_its_destination() {
     let repo = repository();
     let nested = repo.path().join("overlay");
