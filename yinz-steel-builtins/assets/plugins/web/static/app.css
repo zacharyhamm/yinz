@@ -28,6 +28,23 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
+  /* Top edge of the app's own chrome. See the installed-iOS override below. */
+  --edge-clear: 0px;
+  --top-chrome: calc(var(--safe-top) + var(--edge-clear));
+}
+
+/* Since iOS 26, installed web apps get a system scroll-edge blur, drawn above
+   the web view, that reaches about 40pt below the status bar. No CSS or meta
+   tag disables it, and reports say an opaque fixed strip no longer suppresses
+   it on iOS 27.
+   Headers extend their solid background through that band so their controls
+   sit below it. The min() keeps the band at 0 when iOS hides the status bar
+   (landscape phones report a 0 top inset). Safari tabs, Android and desktop
+   do not match this block. */
+@supports (-webkit-touch-callout: none) {
+  @media (display-mode: standalone) {
+    :root { --edge-clear: min(40px, calc(var(--safe-top) * 100)); }
+  }
 }
 
 @media (prefers-color-scheme: dark) {
@@ -111,7 +128,7 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 .app-header {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
-  padding: calc(2px + var(--safe-top)) calc(8px + var(--safe-right)) 2px calc(8px + var(--safe-left));
+  padding: calc(2px + var(--top-chrome)) calc(8px + var(--safe-right)) 2px calc(8px + var(--safe-left));
 }
 #list-header { position: sticky; top: 0; z-index: 5; }
 #switch-group { font-size: 14px; padding-inline: 4px; }
@@ -214,10 +231,15 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 .menu-sub { font-size: 13px; color: var(--muted); }
 
 /* Sheets */
-.sheet-layer { position: fixed; inset: 0; z-index: 20; display: flex; align-items: flex-end; justify-content: center; }
+.sheet-layer {
+  position: fixed; inset: 0; z-index: 20; display: flex; align-items: flex-end; justify-content: center;
+  padding-top: var(--top-chrome);
+}
 .sheet-backdrop { position: absolute; inset: 0; background: rgb(0 0 0 / 0.45); }
 .sheet {
-  position: relative; width: 100%; max-width: 560px; max-height: 88dvh;
+  position: relative; width: 100%; max-width: 560px;
+  /* The 5vh covers the centered wide-screen sheet's bottom margin. */
+  max-height: min(88dvh, calc(100dvh - var(--top-chrome) - 5vh));
   display: flex; flex-direction: column;
   background: var(--surface); border-radius: 16px 16px 0 0;
   padding-bottom: var(--safe-bottom);
@@ -259,7 +281,7 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .detail-header {
   /* Two touch rows, header and tab padding, and the bottom border. */
-  --header-min: calc(2 * var(--tap) + 7px + var(--safe-top));
+  --header-min: calc(2 * var(--tap) + 7px + var(--top-chrome));
   flex: 0 1 auto; min-height: var(--header-min);
   display: flex; flex-direction: column;
 }
