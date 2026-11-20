@@ -215,6 +215,7 @@ impl TerminalState {
                 if h.seq <= last {
                     return Ok(FrameApplied {
                         seq: last,
+                        cleared: false,
                         damage: Damage::Rows(vec![]),
                     });
                 }

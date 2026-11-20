@@ -643,7 +643,9 @@ fn render_negotiation_commits_only_consumed_media_with_full_width_ids() {
         placement(high, 9 + (1 << 40)),
     ]);
     let frame = baseline.finish();
-    assert_eq!(state.apply_frame(&frame).unwrap().seq, 5);
+    let first = state.apply_frame(&frame).unwrap();
+    assert_eq!(first.seq, 5);
+    assert!(first.cleared);
     assert_eq!(state.graphics().resident_ids(), vec![7, high]);
     use crate::render::scene::{resident_images, ImageKey};
     assert_eq!(
@@ -656,7 +658,10 @@ fn render_negotiation_commits_only_consumed_media_with_full_width_ids() {
     );
     assert_eq!(state.graphics().placements().count(), 2);
     let stamp = state.graphics_stamp();
-    assert_eq!(state.apply_frame(&frame).unwrap().seq, 5);
+    let duplicate = state.apply_frame(&frame).unwrap();
+    assert_eq!(duplicate.seq, 5);
+    assert!(!duplicate.cleared);
+    assert_eq!(duplicate.damage, Damage::Rows(vec![]));
     assert_eq!(stamp, state.graphics_stamp());
 
     let mut remove = FrameBuilder::new(12, 6, 6);

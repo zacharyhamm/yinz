@@ -292,7 +292,10 @@ fn native_startup_layout_error_and_explicit_size_retry() {
     ] {
         assert!(stderr.contains(expected), "{stderr}");
     }
-    assert!(fs::metadata(&path).unwrap().len() == 0);
+    assert!(
+        !path.try_exists().unwrap(),
+        "a layout failure before the first repaint must leave the capture path untouched"
+    );
 
     assert_success(
         fixture
