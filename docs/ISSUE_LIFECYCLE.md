@@ -265,9 +265,13 @@ does not replace pane workers with headless agents or inline agent work.
 `drive` runs to a concrete handoff or blocker. The launcher prints readable
 evidence to stderr and one handoff JSON object to stdout; the behavior also logs
 the readable result and publishes `handoff`. Its fields include identity/status,
-issue snapshot, plan version or commit, assignment and recovery identity,
+the lifecycle state's canonical digest (`stateDigest`) and a small `lifecycle`
+summary (issue identity, phase, plan version, rollback, merge authorization and
+attempt), plan version or commit, fingerprints, the worker (`assignmentRef`) and
+delivered implementation (`implementationRef`) by identity, recovery identity,
 decision, an optional `requirementsChange` and presentation, which ends with a
-`Next:` line naming the exact launcher command. Decisions are
+`Next:` line naming the exact launcher command. A handoff never embeds the
+lifecycle state or tasks; see [Persisted record size](#persisted-record-size). Decisions are
 `authorize_plan_revision`, `approve_plan`, `address_review_findings`,
 `authorize_merge`, `integrate`, `summarize`, `authorize_closeout`,
 `resume_closeout`, `complete` and `blocked`. A saved `approve_review_fixes`
@@ -399,7 +403,7 @@ that evidence use explicit rollback or restart.
 ### Discard bases
 
 `discard-agent` takes the operator's actual `request` and refuses unless lifecycle
-state still equals the task's dispatch snapshot. The behavior verifies one of
+state still equals the task's dispatch snapshot (compared by canonical digest). The behavior verifies one of
 three bases itself and records it with its stop evidence (`basis`, `stopEvidence`)
 on the task; a refusal names every failed condition for each basis.
 
@@ -812,7 +816,8 @@ Swamp behavior in the canonical control checkout before launching its worker.
 The immutable assignment binds the task, role, worker configuration and prompt,
 issue requirements generation, lifecycle snapshot and rollback identity, plan
 version, and dispatched technical/UX review commit. `status` includes the task's current
-submission resource as well as the lifecycle and provider records.
+submission resource, with its embedded lifecycle states replaced by `beforeDigest`
+and `nextDigest`, as well as the lifecycle and provider records.
 
 New tasks use assignment contract 3. Before the prompt is sent, the controller
 publishes the assignment's files in a private directory outside every worktree,
@@ -822,11 +827,11 @@ publishes the assignment's files in a private directory outside every worktree,
 | File | Contents |
 | --- | --- |
 | `target.json` | Submission target: protocol, task ID, role, evidence behavior, control directory, assignment digest. |
-| `snapshot.json` | The lifecycle snapshot the task was dispatched from; packet `sourceRef` paths resolve against it. |
+| `snapshot.json` | The lifecycle snapshot the task was dispatched from (the `snapshot-<beforeDigest>` resource); packet `sourceRef` paths resolve against it. |
 | `packet.json` | The deterministic review/repair packet; its SHA-256 equals `continuity.packetDigest`. |
 | `evidence-template.json` | Role evidence with every required identity pre-filled (plan steps, prior-finding obligations, selected findings, blocking findings). A delta code review's steps carry its base review's conformance. An unedited template fails validation. |
 | `evidence-schema.json` | The role's JSON Schema. |
-| `baseline.json`, `feature.diff`, `delta.diff` | Captured continuity endpoints and the decoded diffs, when present. |
+| `baseline.json`, `feature.diff`, `delta.diff` | Captured continuity endpoints and the decoded diffs, when present. Referenced diffs are read from the issue's `review-diff-<sha256>` files and must match the recorded digest and length. |
 | `manifest.json` | Path, size and SHA-256 of every file. |
 
 Publication is idempotent and refuses files that differ from the manifest; a
@@ -1121,7 +1126,7 @@ development. Root Python test modules are selected separately with
 | `test_workspace.py` | Workspace configuration and identity, launcher start origin and verification settings. |
 | `test_decisions.py` | Launcher decision flags and the drive/merge chaining rules, without Swamp. |
 | `test_submit_evidence.py` | The worker submission helper's refusals, outcomes and exit codes. |
-| `test_observations.py` | Status diagnostics and `taskRecovery`, including the shared discard fixture. |
+| `test_observations.py` | Status diagnostics and `taskRecovery`, including the shared discard fixture and the canonical state digest shared with the controller. |
 | `test_continuity_report.py` | The read-only continuity report. |
 | `test_skill_links.py` | Every relative link and anchor in the skill, its references and this guide; single-copy and wording guards. |
 | `test_swamp_smoke.py` | Installed-command dispatch, Agenda and local merges in disposable repository/data fixtures; requires installed Swamp and Agenda. |
@@ -1153,11 +1158,49 @@ real full gate runs at authorized local merge. `test_skill_links.py` checks link
 anchors and a few wording guards in the skill text; no test checks that the
 instructions are semantically complete.
 
+## Persisted record size
+
+Swamp loads each record whole and stringifies query results together, so no
+record may grow with the number of review rounds. The behavior keeps each
+large value once and refers to it by digest:
+
+| Record | Holds | Instead of |
+| --- | --- | --- |
+| `review-diff-<sha256>` file | One decoded diff body, named by its SHA-256. | Inline `featureDiff`/`delta` in every review, history entry, decision and task continuity. |
+| `snapshot-<sha256>` resource | The lifecycle state a task was dispatched against, named by its canonical digest. | `before`/`next` states inside tasks, the driver and recovery replacements. |
+| `agent-task` | `beforeDigest`, `nextDigest` once importing, and the accepted receipt with `nextDigest`. | Full `before`, `next` and receipt `next` states. The evidence submission keeps the assignment's `before` once. |
+| `driver` | Compact implementation and reserved revision tasks. | Embedded tasks with their states. |
+| `handoff` | `stateDigest`, the `lifecycle` summary, `assignmentRef` and `implementationRef`. | The whole state and both tasks. |
+
+Fencing compares canonical digests (sorted keys, SHA-256) where it compared whole
+states. Review fingerprints hash review JSON, which once embedded diff bodies,
+and identify findings (`FindingIdentity.reviewFingerprint`), decisions and
+handoffs. Compaction therefore records, in `state.fingerprintAliases`, the
+fingerprint each review and decision scope had with its bodies inline, keyed by
+the digest of the same input with references; fingerprint readers use the
+recorded value. Reviews recorded with references hash that compact form and need
+no alias. The plan review fingerprint and packet digests never covered diff
+bodies.
+
+`compact` (`scripts/issue-lifecycle --item N compact`) brings an issue saved
+before this layout to it. It refuses while a rollback is pending, the current
+task is unresolved or a reserved assignment is pending. It reads the state, the
+current task and the driver one at a time; stores each distinct diff once;
+records fingerprint aliases from the full form and refuses if any review or
+decision fingerprint, finding identity, follow-up, ignore or active repair would
+change; replaces the old `handoff`, unread, with a small invalidated record;
+then saves the compacted state and strips the task's and driver's states into
+snapshots. Reviews, decisions, follow-ups, verification and history keep their
+content and meaning. A compact issue is left untouched, so rerunning is safe.
+The next `drive` presents the current handoff from the recorded evidence without
+rerunning reviews.
+
 ## Legacy states
 
 Six open issues predate current contracts. Their records parse unchanged and
-finish under their saved contracts; nothing migrates them or regenerates saved
-prompts. When a handoff, status or blocker names one of these states:
+finish under their saved contracts; nothing migrates them automatically or
+regenerates saved prompts (`compact` is the one explicit, content-preserving
+rewrite). When a handoff, status or blocker names one of these states:
 
 | State | What to do |
 | --- | --- |
@@ -1175,6 +1218,7 @@ prompts. When a handoff, status or blocker names one of these states:
 | Legacy implementing work with technical review only | Proceeds to UX review; this is not synthetic approval. |
 | Legacy unmerged ready state without UX | Blocks: with the user's request, `rollback` to `review_ux`, then `drive`, checks and a new merge authorization. Legacy ready findings with both reviews return to `address_review_findings`. |
 | Legacy unlanded active attempt | Needs `repair` and fresh reviews. First consult its durable receipt: a landed merge is a fact, and merge/close-out replay reuses it without inventing UX evidence. |
+| Inline diffs and embedded states | Records saved before [compact records](#persisted-record-size) parse and work unchanged, but can exceed Swamp's memory limits (`status` failing with `Invalid string length`, or `drive` running out of heap). With no pending rollback or unresolved task, run `compact` once, then `drive`. |
 
 Legacy explicit decision inputs (`approve {planVersion, request}`,
 `adjudicate-plan {planVersion, reviewFingerprint, dispositions}`,
@@ -1302,6 +1346,10 @@ the technical review's endpoints even if local main moves. Rebased or divergent
 history is explicitly labelled; missing prior objects disable delta/reuse
 assistance, while missing required current objects block dispatch. Captured diffs
 are untruncated, with explicit base64 encoding for non-UTF-8 diff bytes; the saved assignment is authoritative even if named refs move.
+Each body is stored once by the SHA-256 of its decoded bytes; the baseline keeps
+`featureDiffRef`/`deltaRef` (`sha256`, `bytes`, source `encoding`), and the Git
+helper receives only prior commit identities. Baselines saved earlier keep inline
+`featureDiff`/`delta` and are read as before.
 
 `reviewHistory` archives superseded role reviews before ordinary implementation,
 plan change, review replacement, requirements refresh and rollback clear them.

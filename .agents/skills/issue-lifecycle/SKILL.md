@@ -47,6 +47,9 @@ it. Pending tasks keep their configuration.
 
 Six open issues predate current contracts. When a handoff or status names a
 legacy state, read [Legacy states](../../../docs/ISSUE_LIFECYCLE.md#legacy-states).
+If `status` fails with `Invalid string length` or `drive` runs out of heap, the
+issue predates [compact records](../../../docs/ISSUE_LIFECYCLE.md#persisted-record-size):
+with no pending rollback or unresolved task, run `compact` once, then `drive`.
 
 ## Drive and resume
 
