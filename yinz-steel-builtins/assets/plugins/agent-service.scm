@@ -91,7 +91,6 @@
           (cond ((as-present? (hash-ref request "pane_id")) (as-call "summarize-pane" (hash-ref request "pane_id")))
             ((as-present? (hash-ref request "run_id")) (as-call "summarize-run" (hash-ref request "run_id"))))))
       (as-call "persist"))
-    ((equal? name "arrange_projects_refresh") (when (and (hash? source) (hash-contains? source "Plugin")) (as-call "arrangement-request" (hash-ref source "Plugin"))))
     ((equal? name "agent_refresh") (as-call "refresh-repositories"))
     ((equal? name "agent_counts_subscribe")
       (when (and (hash? source) (hash-contains? source "Plugin"))

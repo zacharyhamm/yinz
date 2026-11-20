@@ -524,242 +524,6 @@ fn hidden_panes_keep_naming_the_tab_and_follow_cwd_changes() {
 }
 
 #[test]
-fn arrangement_cli_and_tab_binding_keep_both_running_terminals() {
-    let repository = write_git_repository("arrangement-project", "main");
-    let layout = format!(
-        r#"layout {{
-        tab {{
-            pane size=1 borderless=true {{ plugin location="yinz:tab-bar"; }}
-            pane cwd="{}"
-        }}
-        tab focus=true {{
-            pane size=1 borderless=true {{ plugin location="yinz:tab-bar"; }}
-            pane cwd="{}"
-        }}
-    }}"#,
-        repository.display(),
-        repository.display()
-    );
-    let yinz = TestRunner::new(TERMINAL_SIZE)
-        .with_config(AGENT_PROJECT_CONFIG)
-        .with_layout(LayoutInfo::Stringified(layout))
-        .start();
-    let first = yinz.expect_pty_spawn_for(TerminalId::new(0));
-    let second = yinz.expect_pty_spawn_for(TerminalId::new(1));
-    first.output(b"ARRANGE_FIRST");
-    second.output(b"ARRANGE_SECOND");
-    yinz.wait_until("the store identifies the project", |screen| {
-        screen.contains("arrangement-project")
-    });
-    assert_eq!(
-        yinz.run_cli_action(yinz_cli::args::CliAction::ArrangePanesByProject),
-        0
-    );
-    yinz.wait_until("the project terminals share one tab", |screen| {
-        screen.contains("ARRANGE_FIRST") && screen.contains("ARRANGE_SECOND")
-    });
-    yinz.send_stdin(&[keys::ctrl('t'), keys::key('a')].concat());
-    first.output(b"_STILL_RUNNING");
-    second.output(b"_STILL_RUNNING");
-    yinz.wait_until("both processes still render after the binding", |screen| {
-        screen.contains("ARRANGE_FIRST_STILL_RUNNING")
-            && screen.contains("ARRANGE_SECOND_STILL_RUNNING")
-    });
-    let (status, listed) = yinz.run_cli_action_reporting(yinz_cli::args::CliAction::ListPanes {
-        tab: false,
-        command: false,
-        state: false,
-        geometry: false,
-        all: true,
-        json: true,
-    });
-    assert_eq!(status, 0);
-    let panes: serde_json::Value = serde_json::from_str(&listed).expect("pane list JSON");
-    let mut ids: Vec<_> = panes
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|pane| pane["is_plugin"] == false)
-        .map(|pane| pane["id"].as_u64().unwrap())
-        .collect();
-    ids.sort();
-    let mut expected = vec![
-        u64::from(first.terminal_id().get()),
-        u64::from(second.terminal_id().get()),
-    ];
-    expected.sort();
-    assert_eq!(ids, expected);
-}
-
-#[test]
-fn arrangement_reports_disabled_builtin_services() {
-    let yinz = TestRunner::new(TERMINAL_SIZE)
-        .with_config("load_plugins clear-defaults=true {}")
-        .start();
-    let terminal = yinz.expect_pty_spawn();
-    terminal.output(b"$ ");
-    assert_eq!(
-        yinz.run_cli_action(yinz_cli::args::CliAction::ArrangePanesByProject),
-        0
-    );
-    yinz.wait_until("disabled services are explained", |screen| {
-        screen.contains("project-store") && screen.contains("agent-service")
-    });
-}
-
-#[test]
-fn arrangement_loads_chrome_for_a_new_project_tab() {
-    let first_repo = write_git_repository("chrome-a", "main");
-    let second_repo = write_git_repository("chrome-b", "main");
-    let layout = format!(
-        r#"layout {{
-            default_tab_template {{
-                pane size=1 borderless=true {{ plugin location="yinz:tab-bar"; }}
-                children
-                pane size=2 borderless=true {{ plugin location="yinz:status-bar"; }}
-            }}
-            new_tab_template {{
-                pane size=1 borderless=true {{ plugin location="yinz:tab-bar"; }}
-                pane
-                pane size=2 borderless=true {{ plugin location="yinz:status-bar"; }}
-                floating_panes {{
-                    pane x=0 y=1 width=40 height=10 command="default-floating-command"
-                    pane x=45 y=1 width=40 height=10 {{ plugin location="yinz:strider"; }}
-                }}
-            }}
-            tab {{
-                pane cwd="{}"
-                pane cwd="{}" focus=true
-            }}
-        }}"#,
-        first_repo.display(),
-        second_repo.display()
-    );
-    let yinz = TestRunner::new(TERMINAL_SIZE)
-        .with_config(AGENT_PROJECT_CONFIG)
-        .with_layout(LayoutInfo::Stringified(layout))
-        .start();
-    let first = yinz.expect_pty_spawn_for(TerminalId::new(0));
-    let second = yinz.expect_pty_spawn_for(TerminalId::new(1));
-    // Normal startup inherits these defaults. Close them before arranging so any
-    // floating pane in a destination must have been created by arrangement.
-    let floating = yinz.expect_pty_spawn_for(TerminalId::new(2));
-    floating.output(b"DEFAULT_FLOATING_COMMAND");
-    yinz.wait_until("the initial floating panes are loaded", |screen| {
-        screen.contains("DEFAULT_FLOATING_COMMAND")
-    });
-    let (status, listed) = yinz.run_cli_action_reporting(yinz_cli::args::CliAction::ListPanes {
-        tab: false,
-        command: false,
-        state: false,
-        geometry: true,
-        all: true,
-        json: true,
-    });
-    assert_eq!(status, 0);
-    let panes: serde_json::Value = serde_json::from_str(&listed).unwrap();
-    let floating_panes: Vec<_> = panes
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|pane| pane["is_floating"] == true)
-        .collect();
-    assert_eq!(floating_panes.len(), 2, "{listed}");
-    for pane in floating_panes {
-        let kind = if pane["is_plugin"] == true {
-            "plugin"
-        } else {
-            "terminal"
-        };
-        assert_eq!(
-            yinz.run_cli_action(yinz_cli::args::CliAction::ClosePane {
-                pane_id: Some(format!("{kind}_{}", pane["id"].as_u64().unwrap())),
-            }),
-            0
-        );
-    }
-    first.output(b"CHROME_FIRST");
-    second.output(b"CHROME_SECOND");
-    yinz.wait_until("both projects are identified", |screen| {
-        screen.contains("chrome-a") && screen.contains("chrome-b")
-    });
-    for _ in 0..2 {
-        assert_eq!(
-            yinz.run_cli_action(yinz_cli::args::CliAction::ArrangePanesByProject),
-            0
-        );
-        yinz.wait_until(
-            "the focused project has its own tab and both bars",
-            |screen| {
-                screen.contains("CHROME_SECOND")
-                    && !screen.contains("CHROME_FIRST")
-                    && screen
-                        .tab_bar_line()
-                        .is_some_and(|bar| bar.contains("chrome-b"))
-                    && screen
-                        .lines()
-                        .iter()
-                        .rev()
-                        .take(2)
-                        .any(|line| line.contains("<t> TAB"))
-            },
-        );
-        let (status, listed) =
-            yinz.run_cli_action_reporting(yinz_cli::args::CliAction::ListPanes {
-                tab: false,
-                command: false,
-                state: false,
-                geometry: true,
-                all: true,
-                json: true,
-            });
-        assert_eq!(status, 0);
-        let panes: serde_json::Value = serde_json::from_str(&listed).unwrap();
-        let panes = panes.as_array().unwrap();
-        assert!(
-            panes.iter().all(|pane| pane["is_floating"] == false),
-            "{listed}"
-        );
-        let terminals: Vec<_> = panes
-            .iter()
-            .filter(|pane| pane["is_plugin"] == false)
-            .collect();
-        let mut ids: Vec<_> = terminals
-            .iter()
-            .map(|pane| pane["id"].as_u64().unwrap())
-            .collect();
-        ids.sort();
-        let mut expected = vec![
-            u64::from(first.terminal_id().get()),
-            u64::from(second.terminal_id().get()),
-        ];
-        expected.sort();
-        assert_eq!(ids, expected);
-        assert_ne!(terminals[0]["tab_id"], terminals[1]["tab_id"]);
-        for terminal in terminals {
-            assert_eq!(terminal["pane_y"], 1);
-            assert_eq!(terminal["pane_rows"], TERMINAL_SIZE.rows - 3);
-            let bars: Vec<_> = panes
-                .iter()
-                .filter(|pane| {
-                    pane["tab_id"] == terminal["tab_id"]
-                        && pane["is_plugin"] == true
-                        && matches!(
-                            pane["plugin_url"].as_str(),
-                            Some("yinz:tab-bar" | "yinz:status-bar")
-                        )
-                })
-                .collect();
-            assert_eq!(
-                bars.len(),
-                2,
-                "each project tab keeps exactly one pair of bars: {listed}"
-            );
-        }
-    }
-}
-
-#[test]
 fn registry_updates_palette_and_switching_project_preserves_focus() {
     let folder = tempfile::tempdir().unwrap();
     let other = tempfile::tempdir().unwrap();
@@ -836,7 +600,7 @@ fn registry_updates_palette_and_switching_project_preserves_focus() {
 }
 
 #[test]
-fn non_git_provider_labels_discovers_groups_and_filters_agents() {
+fn non_git_provider_labels_discovers_and_filters_agents() {
     use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
     use yinz_types::agent::control::{AgentOutcome, AgentRequest};
     let directory = tempfile::tempdir().unwrap();
@@ -899,17 +663,27 @@ fn non_git_provider_labels_discovers_groups_and_filters_agents() {
         screen.contains("Plugin permissions")
     });
     yinz.send_stdin(b"\t\r");
-    wait_for_tab(&yinz, "MarkerWork", &[]);
-    assert_eq!(yinz.run_cli_action(CliAction::ArrangePanesByProject), 0);
-    yinz.wait_until("non-Git roots grouped together", |screen| {
-        screen.contains("MARKER_FIRST") && screen.contains("MARKER_SECOND")
+    yinz.wait_until("both ordinary tabs receive the provider label", |screen| {
+        screen.contains("MARKER_SECOND")
+            && screen
+                .tab_bar_line()
+                .is_some_and(|bar| bar.matches("MarkerWork").count() == 2)
     });
     first.run_foreground(&["codex"]);
     second.run_foreground(&["codex"]);
     yinz.send_stdin(b"\x05a");
-    yinz.wait_until("non-Git agents discovered in the picker", |screen| {
-        screen.contains("MarkerWork") && screen.contains("codex")
-    });
+    yinz.wait_until(
+        "both non-Git agents are discovered in the picker",
+        |screen| {
+            screen.contains("MarkerWork")
+                && screen
+                    .lines()
+                    .iter()
+                    .filter(|line| line.contains("codex"))
+                    .count()
+                    >= 2
+        },
+    );
     let socket = yinz_ipc::consts::ipc_connect(
         &yinz_runtime::consts::YINZ_SOCK_DIR.join(yinz.session_name()),
     )
@@ -932,6 +706,21 @@ fn non_git_provider_labels_discovers_groups_and_filters_agents() {
         }
     };
     assert_eq!(response.outcome, AgentOutcome::Ok, "{response:?}");
-    assert_eq!(response.agents.len(), 2, "{response:?}");
+    use yinz_types::data::PaneId;
+    let mut agents = response
+        .agents
+        .iter()
+        .map(|agent| agent.pane_id)
+        .collect::<Vec<_>>();
+    agents.sort();
+    assert_eq!(
+        agents,
+        [
+            PaneId::Terminal(first.terminal_id()),
+            PaneId::Terminal(second.terminal_id()),
+        ],
+        "{response:?}"
+    );
+    assert_ne!(response.agents[0].tab_id, response.agents[1].tab_id);
     yinz.quit();
 }

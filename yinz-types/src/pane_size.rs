@@ -9,7 +9,7 @@ use crate::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use crate::position::Position;
 
 /// The fewest rows a flexible pane may have, frame included, when a pane is split or resized, a
-/// project layout is fitted or a floating or overlay pane is clamped. A stacked layout is placed
+/// layout is fitted or a floating or overlay pane is clamped. A stacked layout is placed
 /// only where its expanded pane gets at least this many rows
 /// (`TiledPaneLayout::position_panes_in_space`). Fixed-size panes such as bars and collapsed stack
 /// members can be smaller, and resizing a stack only keeps one row per member

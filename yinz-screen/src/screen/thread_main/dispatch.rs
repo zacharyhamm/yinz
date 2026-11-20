@@ -1213,10 +1213,6 @@ pub(super) fn dispatch(
         ScreenInstruction::RenameTabWithId(tab_id, new_name, _completion_tx) => {
             tabs::rename_tab_with_id(screen, tab_id, new_name)?
         },
-        ScreenInstruction::ArrangeProjectPanes(groups, client_id) => {
-            screen.arrange_project_panes(groups, client_id).non_fatal();
-            screen.render()?;
-        },
         ScreenInstruction::SetProjectContext(projects, panes, sources) => {
             panes::set_project_context(screen, projects, panes, sources)?
         },

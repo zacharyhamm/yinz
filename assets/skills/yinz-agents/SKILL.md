@@ -120,7 +120,7 @@ A matching running server is required. The CLI checks support before sending exp
 `--project` selects checkout settings independently of the destination tab. Spawn does not assign or change the tab's project.
 For `agent list --project`, an assigned tab project still takes precedence over checkout discovery.
 Thus, a pane launched from one project's checkout can appear under another project's assigned tab.
-Placement is temporary. A later pane move or `arrange-panes-by-project` can relocate the pane.
+Placement is temporary. A later pane move can relocate the pane.
 
 ```sh
 yinz agent spawn --kind claude --project work --branch review --tab 7 --json

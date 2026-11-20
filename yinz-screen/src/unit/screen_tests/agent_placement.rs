@@ -1662,21 +1662,20 @@ fn only_tabs_opened_for_an_agent_hold_a_layout_slot() {
     land_asked_layout(&mut screen, asked, &mut PendingEvents::default());
     assert!(!screen.core.tabs[&tab_id].has_reserved_layout_slot());
 
-    // As project arrangement lands a new tab and moves panes into it: an agent placed in that
-    // tab afterwards is admitted beside them, as in any tab with content.
+    // A populated ordinary tab admits an agent beside its existing pane.
     let mut screen = screen_with_default_layout(false);
-    let plugins = plugin_capture(&mut screen);
+    let _plugins = plugin_capture(&mut screen);
     let tab_id = screen.get_new_tab_id();
     screen
         .new_tab(tab_id, (vec![], vec![]), None, None)
         .unwrap();
-    let (mut layout, floating) = screen.core.default_layout.new_tab();
-    layout.ignore_run_instruction(None);
+    let (layout, floating) = screen.core.default_layout.new_tab();
+    let existing = crate::TerminalId::new(2);
     screen
         .land_layout(
             layout,
             floating,
-            vec![],
+            vec![(existing, None)],
             vec![],
             vec![],
             ui_plugin_ids(),
@@ -1688,25 +1687,9 @@ fn only_tabs_opened_for_an_agent_hold_a_layout_slot() {
             &mut PendingEvents::default(),
         )
         .unwrap();
-    drop(plugins);
     load_ui_plugins(&mut screen, tab_id);
     assert!(!screen.core.tabs[&tab_id].has_reserved_layout_slot());
-    let arranged_id = PaneId::Terminal(crate::TerminalId::new(1));
-    let pane = screen
-        .core
-        .tabs
-        .get_mut(&TabId::new(0))
-        .unwrap()
-        .extract_pane(arranged_id, true)
-        .unwrap();
-    {
-        let tab = screen.core.tabs.get_mut(&tab_id).unwrap();
-        let _ = tab.accept_arranged_pane(pane, crate::screen::ExtractedPanePlacement::Tiled);
-        tab.arrange_existing_panes(&TiledPaneLayout::default(), &[arranged_id])
-            .unwrap();
-        assert!(!tab.has_reserved_layout_slot());
-        assert_eq!(tab.tiled_content_pane_count(), 1);
-    }
+    assert_eq!(screen.core.tabs[&tab_id].tiled_content_pane_count(), 1);
     let destination = screen
         .resolve_agent_tab(AgentPlacement::Tab(tab_id), None, CLIENT)
         .unwrap();
@@ -1722,21 +1705,21 @@ fn only_tabs_opened_for_an_agent_hold_a_layout_slot() {
     assert!(gate.snapshot().slot.is_some());
     let tab = &screen.core.tabs[&tab_id];
     assert_eq!(tab.tiled_content_pane_count(), 2);
-    // Worker admission splits the arranged pane and leaves the swap layout to the user.
+    // Worker admission splits the existing pane and leaves the swap layout to the user.
     assert!(tab.swap_layout_info().1);
     let viewport = tab.get_viewport();
     let agent = tab
         .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(20)))
         .unwrap()
         .position_and_size();
-    let arranged = tab
-        .get_pane_with_id(arranged_id)
+    let existing = tab
+        .get_pane_with_id(PaneId::Terminal(existing))
         .unwrap()
         .position_and_size();
     assert_eq!(agent.y, viewport.y);
-    assert_eq!(arranged.y, viewport.y);
+    assert_eq!(existing.y, viewport.y);
     assert_eq!(
-        agent.cols.as_usize() + arranged.cols.as_usize(),
+        agent.cols.as_usize() + existing.cols.as_usize(),
         viewport.cols
     );
 }

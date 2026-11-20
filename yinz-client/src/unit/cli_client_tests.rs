@@ -170,8 +170,29 @@ fn action_and_pipe_logs_accept_closed_stdout_but_report_other_write_errors() {
     }
 }
 
-/// The server answers a plugin reply too large for one frame with an error, and the plugin's
-/// unblock still follows it. The error decides the exit, not the unblock.
+#[test]
+fn an_action_error_before_its_unblock_exits_non_zero() {
+    let Some(_socket_dir) = isolated_socket_dir() else {
+        return;
+    };
+    let os = FakeClientOsApi::default().capturing_stdout();
+    os.queue_from_server(ServerToClientMsg::LogError {
+        lines: vec!["Arrange panes by project was removed.".into()],
+    });
+    os.queue_from_server(ServerToClientMsg::UnblockInputThread);
+    assert_eq!(
+        start_cli_client(
+            Box::new(os.clone()),
+            &"test".into(),
+            vec![Action::NoOp],
+            None
+        ),
+        2,
+    );
+    assert!(os.stdout_bytes().is_empty());
+}
+
+/// A reply too large for one frame yields an error before the plugin's unblock.
 #[test]
 fn a_pipe_error_before_its_unblock_exits_non_zero() {
     let Some(_socket_dir) = isolated_socket_dir() else {

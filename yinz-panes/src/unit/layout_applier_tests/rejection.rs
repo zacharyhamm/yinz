@@ -177,3 +177,109 @@ fn rejected_layouts_leave_existing_panes_and_processes_untouched() {
         }
     }
 }
+
+#[test]
+fn existing_pane_layout_preflight_refusal_preserves_panes_and_geometry() {
+    let (
+        viewport,
+        senders,
+        sixel_image_store,
+        link_handler,
+        terminal_emulator_colors,
+        terminal_emulator_color_codes,
+        character_cell_size,
+        connected_clients,
+        style,
+        display_area,
+        mut tiled_panes,
+        mut floating_panes,
+        pane_frame_style,
+        mut focus_pane_id,
+        os_api,
+        debug,
+        arrow_fonts,
+        styled_underlines,
+        osc8_hyperlinks,
+        explicitly_disable_kitty_keyboard_protocol,
+        pty_receiver,
+        plugin_receiver,
+    ) = create_layout_applier_fixtures_with_receivers(Size { cols: 7, rows: 7 });
+    let kitty_image_store = Rc::new(RefCell::new(KittyImageStore::default()));
+    macro_rules! applier {
+        () => {
+            LayoutApplier::new(
+                &viewport,
+                &senders,
+                &sixel_image_store,
+                &kitty_image_store,
+                &link_handler,
+                &terminal_emulator_colors,
+                &terminal_emulator_color_codes,
+                &character_cell_size,
+                &connected_clients,
+                &style,
+                &display_area,
+                &mut tiled_panes,
+                &mut floating_panes,
+                pane_frame_style,
+                &mut focus_pane_id,
+                os_api.as_ref(),
+                debug,
+                arrow_fonts,
+                styled_underlines,
+                osc8_hyperlinks,
+                explicitly_disable_kitty_keyboard_protocol,
+                None,
+            )
+        };
+    }
+    let (initial, floating) = parse_kdl_layout(r#"layout { pane stacked=true { pane; pane; }; }"#);
+    applier!()
+        .apply_layout(
+            initial,
+            floating,
+            vec![(TerminalId::new(1), None), (TerminalId::new(2), None)],
+            vec![],
+            HashMap::new(),
+            ClientId::new(1),
+        )
+        .unwrap();
+    assert_eq!(tiled_panes.get_panes().count(), 2);
+    let before = take_pane_state_snapshot(
+        &tiled_panes,
+        &floating_panes,
+        &focus_pane_id,
+        &viewport,
+        &display_area,
+    );
+    collect_close_pane_messages(&pty_receiver);
+    collect_unload_plugin_messages(&plugin_receiver);
+
+    let (replacement, _) = parse_kdl_layout(r#"layout { pane; }"#);
+    let geometry = yinz_types::pane_size::PaneGeom::from(&*display_area.borrow());
+    let positions = replacement
+        .position_panes_in_space(&geometry, Some(2), false, false)
+        .unwrap();
+    assert_eq!(positions.len(), 1);
+    let error = applier!()
+        .apply_tiled_panes_layout_to_existing_panes(&replacement)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("not enough room for retained pane"),
+        "{error:#}"
+    );
+    assert_eq!(
+        before,
+        take_pane_state_snapshot(
+            &tiled_panes,
+            &floating_panes,
+            &focus_pane_id,
+            &viewport,
+            &display_area,
+        )
+    );
+    assert!(collect_close_pane_messages(&pty_receiver).is_empty());
+    assert!(collect_unload_plugin_messages(&plugin_receiver).is_empty());
+}

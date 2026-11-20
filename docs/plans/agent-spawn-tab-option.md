@@ -1,5 +1,7 @@
 # Agent spawn tab selection
 
+The Arrange by project feature described in this historical plan was retired in issue #154.
+
 Status: proposal only. No implementation is included. Source inspection: 2026-10-04.
 
 ## Recommended contract

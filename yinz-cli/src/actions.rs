@@ -795,7 +795,6 @@ pub fn actions_from_cli(
         CliAction::CurrentTabInfo { json } => {
             Ok(vec![Action::CurrentTabInfo { output_json: json }])
         },
-        CliAction::ArrangePanesByProject => Ok(vec![Action::ArrangePanesByProject]),
         CliAction::TogglePanePinned { pane_id } => match pane_id {
             Some(pane_id_str) => {
                 let pane_id = parse_pane_id(&pane_id_str)?;

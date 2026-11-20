@@ -1537,7 +1537,6 @@ pub const ACTION_NAMES: &[&str] = &[
     "LaunchPlugin",
     "PreviousSwapLayout",
     "NextSwapLayout",
-    "ArrangePanesByProject",
     "BreakPane",
     "BreakPaneRight",
     "BreakPaneLeft",

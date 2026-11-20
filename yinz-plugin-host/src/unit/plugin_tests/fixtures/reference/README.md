@@ -94,3 +94,10 @@ Do not replace reference fixtures with observations from the Scheme implementati
 
 Inspect a fixture with `gzip -dc path/to/fixture.json.gz | python3 -m json.tool`.
 Compression changes storage only. It preserves the full JSON trace and its provenance.
+
+
+The retirement of Arrange by project removes its requests and effects from the
+project-store and agent-service captures. Ordinary timers and host replies keep
+their recorded inputs and effects. Replay ignores the former default Tab-mode
+`a` binding in captured keymap inputs. The source fingerprints remain those of
+the original captures.

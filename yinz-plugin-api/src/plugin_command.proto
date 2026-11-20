@@ -261,7 +261,8 @@ enum CommandName {
   SpawnAgent = 281;
   ProjectConfigRead = 282;
   ProjectConfigWrite = 283;
-  ArrangeProjectPanes = 285;
+  reserved 285;
+  reserved "ArrangeProjectPanes";
   SubscribePaneOutput = 286;
   reserved 284, 287;
   reserved "SetRelatedPanes", "SwampRequest";
@@ -303,6 +304,8 @@ enum CommandName {
 }
 
 message PluginCommand {
+  reserved 226;
+  reserved "arrange_project_panes_payload";
   reserved 198 to 202;
   reserved 225, 228;
   reserved "set_related_panes_payload", "swamp_request_payload";
@@ -522,7 +525,6 @@ message PluginCommand {
     string resolve_project_payload = 254;
     string project_config_read_payload = 223;
     ProjectConfigWritePayload project_config_write_payload = 224;
-    ArrangeProjectPanesPayload arrange_project_panes_payload = 226;
     PaneOutputSubscription pane_output_subscription = 227;
     SetPaneSubtitlePayload set_pane_subtitle_payload = 229;
     SetProjectContextPayload set_project_context_payload = 239;
@@ -2054,17 +2056,10 @@ message ProjectConfigWritePayload {
   optional string expected = 3;
 }
 
-message ProjectPaneGroup {
-  string identity = 1;
-  string name = 2;
-  optional string configuration_root = 3;
-  repeated uint32 pane_ids = 4;
-}
 message PaneOutputSubscription {
   bool enabled = 1;
   repeated ContextItem context = 2;
 }
-message ArrangeProjectPanesPayload { repeated ProjectPaneGroup groups = 1; }
 
 // The report uses the shared serde wire types, as project configuration does.
 message CheckPluginPayload {

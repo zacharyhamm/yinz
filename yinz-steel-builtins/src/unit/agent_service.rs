@@ -17,7 +17,7 @@ fn host_hook_receipt_times_are_published_without_retimestamping() {
           (as-reset!) (as-set! "subscribers" '(42))
           (for-each (lambda (name) (as-register! name (lambda args (void))))
             '("record-event" "drain" "persist" "resolve-repositories" "adopt-arrived-runs"
-              "finish-run" "publish-arrangement")))
+              "finish-run")))
         (define (rebuild manifest) (as-set! "manifest" manifest) (as-rebuild!))
         (define (hook id name now archive)
           (vector-set! test-clock 0 now)
@@ -1780,7 +1780,7 @@ fn osc_status_preserves_provider_feeds_and_restores_display_when_cleared() {
                   (as-reset!)
                   (for-each (lambda (name) (as-register! name (lambda args (void))))
                     '("record-event" "drain" "persist" "resolve-repositories" "adopt-arrived-runs"
-                      "finish-run" "publish-arrangement")))
+                      "finish-run")))
                 (define (rebuild manifest) (as-set! "manifest" manifest) (as-rebuild!))
                 (define (view) (hash "panes" (as-panes) "hooks" (as-get "hooks")
                     "waiting" (as-get "waiting-transitions")))
@@ -1881,7 +1881,7 @@ fn waiting_manifest_preserves_one_permission_or_question_toast() {
               (as-reset!)
               (for-each (lambda (name) (as-register! name (lambda args (void))))
                 '("record-event" "drain" "persist" "resolve-repositories" "adopt-arrived-runs"
-                  "finish-run" "publish-arrangement")))
+                  "finish-run")))
             (define (rebuild manifest) (as-set! "manifest" manifest) (as-rebuild!))
             (define (hook event)
               (as-call "hook" 7 "claude" (hash-ref (as-model "HookEvent" (yinz-json-string event)) "Ok")))

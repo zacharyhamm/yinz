@@ -121,7 +121,6 @@ use {
 mod agent_placement;
 mod agent_worktrees;
 mod application_baseline;
-mod arrange_projects;
 mod break_panes;
 mod capabilities;
 mod clients;
@@ -787,8 +786,6 @@ struct ScreenCore {
     /// worked out. Held raw — without the `#1`/`#2` a collision earns — because
     /// the suffixes depend on tab order, which changes without anyone sending us
     /// anything.
-    arrangement_projects: HashMap<TabId, String>,
-    pending_arrangement: Option<arrange_projects::PendingArrangement>,
     tab_projects: HashMap<TabId, String>,
     projects: std::collections::BTreeSet<String>,
     project_sources: BTreeMap<String, String>,
@@ -1617,8 +1614,6 @@ impl Screen {
                 terminal_foreground_cmds: HashMap::new(),
                 terminal_hosts: HashMap::new(),
                 last_plugin_tab_names: HashMap::new(),
-                arrangement_projects: HashMap::new(),
-                pending_arrangement: None,
                 tab_projects: HashMap::new(),
                 projects: Default::default(),
                 project_sources: BTreeMap::new(),
@@ -2384,8 +2379,6 @@ impl Screen {
                 }
             }
 
-            // Populate chrome-only destinations before rendering can reap empty tabs.
-            self.resume_pending_arrangement().non_fatal();
             self.log_and_report_session_state()
                 .and_then(|_| self.render())
                 .with_context(err_context)
@@ -2941,7 +2934,7 @@ impl Screen {
                 let pane_id = extracted.2.pid();
                 let moved = match placement {
                     Some(placement) => self
-                        .accept_transferred_panes(vec![(extracted, placement)], destination, false)
+                        .accept_transferred_panes(vec![(extracted, placement)], destination)
                         .moved
                         .contains(&pane_id),
                     None => match self.core.tabs.get_mut(&destination) {

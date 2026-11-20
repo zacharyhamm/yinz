@@ -131,7 +131,7 @@ invalid directories and host failures reject the deferred.
           (yinz-log (hash-ref project "identity")))))))
 ```
 
-This uses the same resolver as project pane arrangement, including remembered and
+This uses the shared project registry and published locations for remembered and
 discovered projects, subdirectories, linked worktrees and repositories inside a
 remembered parent project. Use `"identity"` as your persisted project key, and
 `"name"` for display. Registered identities are `project:<registered-root>` and

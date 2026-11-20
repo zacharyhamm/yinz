@@ -14,6 +14,4 @@ pub mod theme;
 #[cfg(test)]
 mod keybinds;
 
-pub mod project_layout;
-
 pub mod editor;

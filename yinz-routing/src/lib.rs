@@ -1644,12 +1644,6 @@ pub fn route_action(
                 ))
                 .with_context(err_context)?;
         },
-        Action::ArrangePanesByProject => {
-            senders
-                .send_to_plugin(PluginInstruction::ArrangePanesByProject)
-                .with_context(err_context)?;
-            drop(completion_tx);
-        },
         Action::BreakPane => {
             senders
                 .send_to_screen(ScreenInstruction::BreakPane(

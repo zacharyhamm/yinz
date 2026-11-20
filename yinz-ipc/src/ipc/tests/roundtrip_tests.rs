@@ -124,6 +124,14 @@ fn server_client_contract() {
             // sees every invocation regardless of the order the test harness picks. The
             // invocations below are hand-written values; without this, adding a variant to
             // either enum and forgetting to test it is silent.
+            let retired = ClientToServerMsg::RetiredArrangePanesByProject;
+            let variant = <&'static str as From<&ClientToServerMsg>>::from(&retired);
+            let wire =
+                crate::client_server_contract::client_server_contract::ClientToServerMsg::try_from(
+                    retired,
+                );
+            assert!(wire.is_err(), "the retired marker is receive-only");
+            record_covered(Which::Client, variant);
             let uncovered = uncovered_variants(Which::Client, ClientToServerMsg::VARIANTS);
             assert!(
                 uncovered.is_empty(),

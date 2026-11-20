@@ -899,6 +899,79 @@ fn a_garbage_frame_reports_malformed_not_eof() {
     client.join().expect("client thread panicked");
 }
 
+fn write_raw_client_frame(stream: &mut impl std::io::Write, bytes: &[u8]) {
+    stream
+        .write_all(&(bytes.len() as u32).to_le_bytes())
+        .unwrap();
+    stream.write_all(bytes).unwrap();
+    stream.flush().unwrap();
+}
+
+#[test]
+fn retired_arrange_ipc_action_is_rejected_without_losing_framing() {
+    let (_guard, name) = new_ipc();
+    let listener = bind_listener(&name);
+    let mut client = connect_stream(&name);
+    let mut receiver = IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
+
+    let bare: &[u8] = &[0x4a, 5, 0x0a, 3, 0xa2, 0x0a, 0];
+    let cli: &[u8] = &[0x4a, 11, 0x10, 7, 0x18, 9, 0x20, 1, 0x0a, 3, 0xa2, 0x0a, 0];
+    for bytes in [bare, cli] {
+        write_raw_client_frame(&mut client, bytes);
+        assert!(matches!(
+            receiver.recv_client_msg(),
+            IpcRecv::Msg(ClientToServerMsg::RetiredArrangePanesByProject, _)
+        ));
+    }
+
+    let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(client);
+    sender
+        .send_client_msg(ClientToServerMsg::ConnStatus)
+        .unwrap();
+    assert!(matches!(
+        receiver.recv_client_msg(),
+        IpcRecv::Msg(ClientToServerMsg::ConnStatus, _)
+    ));
+}
+
+#[test]
+fn empty_and_unknown_ipc_actions_remain_malformed() {
+    let (_guard, name) = new_ipc();
+    let listener = bind_listener(&name);
+    let mut client = connect_stream(&name);
+    let mut receiver = IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
+
+    for bytes in [
+        &[0x4a, 0][..],                                    // Missing Action.
+        &[0x4a, 2, 0x0a, 0],                               // Empty Action.
+        &[0x4a, 5, 0x0a, 3, 0xe2, 0x0a, 0],                // Unrelated Action tag.
+        &[0x4a, 7, 0x0a, 0, 0x2a, 3, 0xa2, 0x0a, 0],       // Retired bytes outside Action.
+        &[0x4a, 7, 0x0a, 3, 0xa2, 0x0a, 0, 0x0a, 0],       // Repeated Action.
+        &[0x4a, 8, 0x0a, 6, 0xa2, 0x0a, 0, 0xe2, 0x0a, 0], // Mixed unknown Action tags.
+        &[0x4a, 0, 0x4a, 5, 0x0a, 3, 0xa2, 0x0a, 0],       // Repeated envelope.
+        &[0x6a, 0, 0x4a, 5, 0x0a, 3, 0xa2, 0x0a, 0],       // ConnStatus before Action.
+    ] {
+        write_raw_client_frame(&mut client, bytes);
+        assert!(
+            matches!(receiver.recv_client_msg(), IpcRecv::Malformed),
+            "{bytes:02x?}"
+        );
+    }
+
+    // Supported oneof members still take the normal decoder path when an unknown tag is present.
+    write_raw_client_frame(&mut client, &[0x4a, 8, 0x0a, 6, 0xa2, 0x0a, 0, 0xda, 2, 0]);
+    assert!(matches!(
+        receiver.recv_client_msg(),
+        IpcRecv::Msg(
+            ClientToServerMsg::Action {
+                action: yinz_types::input::actions::Action::NoOp,
+                ..
+            },
+            _
+        )
+    ));
+}
+
 /// The third case, and the one that used to hang: a peer that is *there* and
 /// simply does not answer.
 ///

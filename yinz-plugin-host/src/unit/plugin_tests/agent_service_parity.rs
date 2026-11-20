@@ -796,11 +796,6 @@ fn agent_service_actual_runtimes_match_git_probes_cwd_and_heartbeat_activity() {
         clock.fetch_add(5_000, Ordering::SeqCst);
         pair.event(Event::Timer(FractionalSeconds::new(5.0)));
     }
-    pair.pipe(message(
-        "arrange_projects_refresh",
-        PipeSource::Plugin(PluginId::new(7)),
-        None,
-    ));
     clock.fetch_add(15_000, Ordering::SeqCst);
     pair.event(Event::Timer(FractionalSeconds::new(15.0)));
 }
@@ -1407,19 +1402,13 @@ fn agent_service_actual_runtimes_match_remote_repository_refresh() {
     );
     let mut session = session(true);
     session.panes.panes.get_mut(&TabPosition::new(0)).unwrap()[0].host = Some("builder".into());
-    let (mut pair, clock, _, _) = pair_with_session(session);
+    let (mut pair, _, _, _) = pair_with_session(session);
     pair.pipe(message(
         "agent_subscribe",
         PipeSource::Plugin(PluginId::new(7)),
         None,
     ));
     pair.event(Event::Timer(FractionalSeconds::new(5.0)));
-    clock.fetch_add(1_234, Ordering::SeqCst);
-    pair.pipe(message(
-        "arrange_projects_refresh",
-        PipeSource::Plugin(PluginId::new(7)),
-        None,
-    ));
 }
 
 #[test]
@@ -1539,4 +1528,159 @@ fn agent_service_claude_activity_uses_the_host_manifest_after_parent_and_worker_
     service.update(&Event::PaneUpdate(panes));
     service.update(&hook("SubagentStop", json!({"agent_id":"worker"})));
     assert_eq!(snapshot(&mut service)["hooks"]["10"]["phase"], "Idle");
+}
+
+#[test]
+fn agent_service_ignores_retired_arrangement_refresh_pipe() {
+    use super::runtime_parity::SteelReference;
+
+    let root = tempfile::tempdir().unwrap();
+    let clock = Arc::new(AtomicU64::new(1_700_000_000_000));
+    let (_data, responder) = host(clock.clone(), session(true), false);
+    let mut service = SteelReference::with_clock(
+        "agent-service",
+        BTreeMap::new(),
+        root.path(),
+        responder,
+        Some(clock),
+    );
+    service.pipe(&message(
+        "agent_subscribe",
+        PipeSource::Plugin(PluginId::new(7)),
+        None,
+    ));
+    service.take_commands();
+    service.pipe(&message(
+        "arrange_projects_refresh",
+        PipeSource::Plugin(PluginId::new(7)),
+        None,
+    ));
+    let effects = service.take_commands();
+    assert!(effects.is_empty(), "{effects:?}");
+
+    service.update(&Event::Timer(FractionalSeconds::new(5.0)));
+    let effects = service.take_commands();
+    assert!(effects.iter().any(|command| command["SetTimeout"] == 5.0));
+    assert!(!effects
+        .iter()
+        .any(|command| command["MessageToPlugin"]["message_name"] == "arrange_projects_snapshot"));
+}
+
+#[test]
+fn ordinary_remote_probe_batches_retry_and_publish_locations() {
+    use super::runtime_parity::SteelReference;
+    use std::sync::Mutex;
+
+    let root = tempfile::tempdir().unwrap();
+    let clock = Arc::new(AtomicU64::new(1_700_000_000_000));
+    let (_data, host) = host(clock.clone(), session(false), false);
+    let attempts = Mutex::new(BTreeMap::<u32, usize>::new());
+    let pane_cwd = |id| format!("/checkout/{id}/src");
+    let responder = Arc::new(move |command: &PluginCommand| match command {
+        PluginCommand::GetPaneCwd {
+            pane_id: PaneId::Terminal(id),
+        } => Some(
+            ProtobufGetPaneCwdResponse::from(GetPaneCwdResponse::Ok(pane_cwd(id.get()).into()))
+                .encode_to_vec(),
+        ),
+        PluginCommand::GetPaneGitProbe {
+            pane_id: PaneId::Terminal(id),
+            cwd,
+            refresh_token,
+        } => {
+            assert!(refresh_token.is_none());
+            let id = id.get();
+            assert_eq!(cwd, &pane_cwd(id));
+            let mut attempts = attempts.lock().unwrap();
+            let attempt = attempts.entry(id).or_default();
+            *attempt += 1;
+            use get_pane_git_probe_response::Result::{Error, Pending, Probe};
+            let result = match (id, *attempt) {
+                (10, 1) => Pending(true),
+                (11, 1) => Error("fixture remote probe failure".into()),
+                _ => {
+                    let repository = format!("/checkout/{id}");
+                    Probe(ProtobufPaneGitProbe {
+                        host: format!("builder-{id}"),
+                        cwd: cwd.clone(),
+                        exit_code: Some(0),
+                        metadata: format!(
+                            "{repository}\n{repository}/.git\n{repository}/.git\nmain\n"
+                        )
+                        .into_bytes(),
+                        config: vec![],
+                    })
+                },
+            };
+            Some(
+                ProtobufGetPaneGitProbeResponse {
+                    result: Some(result),
+                }
+                .encode_to_vec(),
+            )
+        },
+        _ => host(command),
+    });
+    let mut service = SteelReference::with_clock(
+        "agent-service",
+        BTreeMap::new(),
+        root.path(),
+        responder,
+        Some(clock.clone()),
+    );
+    service.take_commands();
+    let tick = |service: &mut SteelReference| {
+        clock.fetch_add(5_000, Ordering::SeqCst);
+        service.update(&Event::Timer(FractionalSeconds::new(5.0)));
+        service.take_commands()
+    };
+    let empty = tick(&mut service);
+    assert!(!empty
+        .iter()
+        .any(|command| command.get("GetPaneGitProbe").is_some()));
+
+    let panes = (10..17)
+        .map(|id| PaneInfo {
+            id: PaneId::Terminal(TerminalId::new(id)),
+            host: Some(format!("builder-{id}")),
+            cwd: Some(pane_cwd(id).into()),
+            terminal_command: Some("claude".into()),
+            ..Default::default()
+        })
+        .collect();
+    service.update(&Event::PaneUpdate(PaneManifest {
+        panes: [(TabPosition::new(0), panes)].into_iter().collect(),
+    }));
+    service.take_commands();
+    for (expected_batch, expected_locations) in [
+        ([10, 11, 12, 13], &[12, 13][..]),
+        ([14, 15, 16, 10], &[10, 12, 13, 14, 15, 16]),
+        ([11, 12, 13, 14], &[10, 11, 12, 13, 14, 15, 16]),
+        ([15, 16, 10, 11], &[]),
+    ] {
+        let effects = tick(&mut service);
+        let probes = effects
+            .iter()
+            .filter_map(|effect| effect.get("GetPaneGitProbe"))
+            .map(|probe| probe["pane_id"]["Terminal"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(probes, expected_batch);
+        let publications = effects
+            .iter()
+            .filter_map(|effect| effect.get("PublishProjectLocations"))
+            .collect::<Vec<_>>();
+        if expected_locations.is_empty() {
+            assert!(publications.is_empty(), "{publications:?}");
+            continue;
+        }
+        assert_eq!(publications.len(), 1, "{publications:?}");
+        let locations = publications[0]["locations"].as_object().unwrap();
+        assert_eq!(locations.len(), expected_locations.len(), "{locations:?}");
+        for id in expected_locations {
+            let host = format!("builder-{id}");
+            let location = &locations[&format!("@{host}:{}", pane_cwd(*id as u32))];
+            assert_eq!(location["host"], host);
+            assert_eq!(location["root"], format!("/checkout/{id}"));
+        }
+    }
 }

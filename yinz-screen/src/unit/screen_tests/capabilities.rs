@@ -1183,8 +1183,15 @@ fn collapsed_stack_placement_has_usable_startup_geometry_without_changing_conten
         .unwrap();
     screen
         .apply_layout(
-            yinz_config::project_layout::parse("layout { pane stacked=true { pane; pane; }; }")
-                .unwrap(),
+            yinz_config::kdl::layout::from_kdl(
+                "layout { pane stacked=true { pane; pane; }; }",
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+            .new_tab()
+            .0,
             vec![],
             vec![(TerminalId::new(1), None), (TerminalId::new(2), None)],
             vec![],

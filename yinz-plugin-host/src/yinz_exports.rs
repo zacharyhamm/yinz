@@ -1102,14 +1102,6 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::RenameTabWithId(tab_id, new_name) => {
                 rename_tab_with_id(env, tab_id, &new_name)
             },
-            PluginCommand::ArrangeProjectPanes(groups) => {
-                env.senders
-                    .send_to_screen(ScreenInstruction::ArrangeProjectPanes(
-                        groups,
-                        env.client_id,
-                    ))
-                    .non_fatal();
-            },
             PluginCommand::SetProjectContext(projects, panes, sources) => {
                 env.senders
                     .send_to_screen(ScreenInstruction::SetProjectContext(

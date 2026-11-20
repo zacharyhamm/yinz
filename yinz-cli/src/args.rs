@@ -837,7 +837,7 @@ pub enum Agent {
         /// Does not assign a project or change focus. Requires a matching running server.
         #[clap(long, conflicts_with = "new_tab", value_name = "ID")]
         tab: Option<usize>,
-        /// Create an unfocused tab, optionally named. Later moves or arrangement may relocate the pane.
+        /// Create an unfocused tab, optionally named. Later moves may relocate the pane.
         /// --project selects the checkout; tab assignments still take precedence in project listings.
         #[clap(long, num_args = 0..=1, value_name = "NAME")]
         new_tab: Option<Option<String>>,
@@ -2576,8 +2576,6 @@ tail -f /tmp/my-live-logfile | yinz action pipe --name logs --plugin file:/path/
         #[clap(short, long, value_parser)]
         json: bool,
     },
-    /// Group terminal panes into project tabs, with branches and worktrees together.
-    ArrangePanesByProject,
     TogglePanePinned {
         /// Target a specific pane by ID (eg. terminal_1, plugin_2, or 3)
         #[clap(short, long, value_parser)]

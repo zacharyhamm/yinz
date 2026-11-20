@@ -107,7 +107,7 @@ macro_rules! parse_kdl_action_arguments {
                 "ToggleCommandPalette" => Ok(Action::ToggleCommandPalette),
                 "OpenAgents" => Ok(Action::OpenAgents),
                 // Keep saved Mother bindings compatible after Mother's removal.
-                "ToggleMother" => Ok(Action::NoOp),
+                "ToggleMother" | "ArrangePanesByProject" => Ok(Action::NoOp),
                 "ToggleActiveSyncTab" => Ok(Action::ToggleActiveSyncTab),
                 "TogglePaneEmbedOrFloating" => Ok(Action::TogglePaneEmbedOrFloating),
                 "ToggleFloatingPanes" => Ok(Action::ToggleFloatingPanes),

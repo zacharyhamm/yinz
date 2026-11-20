@@ -127,7 +127,7 @@ fn resolve_project_primary_subdirectory_linked_worktree_and_unregistered_folder(
             None
         );
     }
-    // Even before discovery persists the checkout, arrangement groups its worktrees together.
+    // Even before discovery persists the checkout, its worktrees share an identity.
     let primary = resolve_directory(&root, &Registry::new(), Default::default())
         .unwrap()
         .unwrap();

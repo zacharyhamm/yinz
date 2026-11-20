@@ -1183,12 +1183,6 @@ impl TryFrom<ProtobufAction> for Action {
                 },
                 _ => Err("Wrong payload for Action::RenameTab"),
             },
-            Some(ProtobufActionName::ArrangePanesByProject) => {
-                match protobuf_action.optional_payload {
-                    Some(_) => Err("ArrangePanesByProject should not have a payload"),
-                    None => Ok(Action::ArrangePanesByProject),
-                }
-            },
             Some(ProtobufActionName::BreakPane) => match protobuf_action.optional_payload {
                 Some(_) => Err("BreakPane should not have a payload"),
                 None => Ok(Action::BreakPane),
@@ -2270,10 +2264,6 @@ impl TryFrom<Action> for ProtobufAction {
                     name: new_name,
                     id: tab_index.get(),
                 })),
-            }),
-            Action::ArrangePanesByProject => Ok(ProtobufAction {
-                name: ProtobufActionName::ArrangePanesByProject as i32,
-                optional_payload: None,
             }),
             Action::BreakPane => Ok(ProtobufAction {
                 name: ProtobufActionName::BreakPane as i32,

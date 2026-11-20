@@ -47,7 +47,6 @@ keybinds clear-defaults=true {
         bind "9" { GoToTabInGroup 9; SwitchToMode "normal"; }
         bind "[" { BreakPaneLeft; SwitchToMode "normal"; }
         bind "]" { BreakPaneRight; SwitchToMode "normal"; }
-        bind "a" { ArrangePanesByProject; SwitchToMode "normal"; }
         bind "b" { BreakPane; SwitchToMode "normal"; }
         bind "g" { NewTabGroup; SwitchToMode "normal"; }
         bind "h" { GoToPreviousTab; }

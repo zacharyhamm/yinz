@@ -3076,7 +3076,6 @@ pub enum PluginCommand {
     /// Advisory rather than a rename: the server shows these to fill in tabs the
     /// user has not named, and never writes them to the tab. Sent as the whole
     /// map, so a tab left out of it has no project.
-    ArrangeProjectPanes(Vec<ProjectPaneGroup>),
     SetTabProjects(BTreeMap<TabId, String>),
     SetProjectContext(
         Vec<String>,
@@ -3623,15 +3622,6 @@ pub struct ResolvedProject {
     pub name: String,
     /// Local configuration root; absent only for unregistered remote checkouts.
     pub root: Option<String>,
-}
-
-/// A project identity and its terminal panes, in checkout traversal order.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProjectPaneGroup {
-    pub identity: String,
-    pub name: String,
-    pub configuration_root: Option<String>,
-    pub pane_ids: Vec<u32>,
 }
 
 /// Launch provenance, independent of the pane's current visibility.

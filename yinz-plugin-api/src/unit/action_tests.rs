@@ -2,6 +2,13 @@ use super::*;
 use yinz_types::input::options::PaneFrameStyle;
 
 #[test]
+fn retired_arrange_plugin_action_is_rejected() {
+    use prost::Message;
+    let old_action = ProtobufAction::decode(&[0x08, 118][..]).unwrap();
+    assert!(Action::try_from(old_action).is_err());
+}
+
+#[test]
 fn overlay_opacity_is_optional_and_validated_at_the_plugin_boundary() {
     for opacity in [None, Some(0), Some(75), Some(100)] {
         let wire = ProtobufOverlayPlacement {
@@ -421,7 +428,6 @@ pub(crate) mod props {
             | Action::GoToTabById { .. }
             | Action::CloseTabById { .. }
             | Action::RenameTabById { .. }
-            | Action::ArrangePanesByProject
             | Action::BreakPane
             | Action::BreakPaneRight
             | Action::BreakPaneLeft

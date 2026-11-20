@@ -438,8 +438,8 @@ impl Screen {
             // Only the panes here: the cursor is placed further down, once the toasts have painted
             // too. Whether a tab lives is not decided here - `Screen::settle_tabs` closes an
             // emptied tab after the instruction that emptied it - so an unusable tab reaching
-            // this loop is one being kept on purpose: still loading, an arrangement's
-            // destination, or the last tab waiting for its replacement. Drawing it is harmless:
+            // this loop is one being kept on purpose: still loading,
+            // or the last tab waiting for its replacement. Drawing it is harmless:
             // `render_panes` copes with no active tiled pane, and its overlays are what there
             // is to see.
             let mut tabs_that_rendered: Vec<TabId> = vec![];

@@ -25,7 +25,7 @@ pub(crate) fn resolve_directory(
         return Err("project directory must be a directory".into());
     }
     let location = Location::local(directory.to_string_lossy());
-    // Remembered folders resolve without Git, just as they do in pane arrangement.
+    // Remembered folders resolve without Git.
     if let Some((project, _)) = registry
         .values()
         .filter(|project| !project.discovered)

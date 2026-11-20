@@ -1,6 +1,74 @@
 use super::*;
+use prost::Message as _;
 use yinz_types::command::{CommandToRun, GitCheckout};
+use yinz_types::data::InputMode;
 use yinz_types::data::PluginCommand;
+
+#[test]
+fn retired_arrange_plugin_command_is_rejected() {
+    // The historical command name (285) carried its payload in field 226.
+    let old_command = ProtobufPluginCommand::decode(&[0x08, 0x9d, 2, 0x92, 0x0e, 0][..]).unwrap();
+    assert!(PluginCommand::try_from(old_command).is_err());
+
+    // RunAction (164), payload field 114, nested Action with historical name 118.
+    let run_action =
+        ProtobufPluginCommand::decode(&[0x08, 0xa4, 1, 0x92, 7, 4, 0x0a, 2, 8, 118][..]).unwrap();
+    assert!(PluginCommand::try_from(run_action).is_err());
+}
+
+#[test]
+fn retired_arrange_action_keeps_supported_plugin_rebind_siblings() {
+    use yinz_types::keys::BareKey;
+
+    let tab = ProtobufInputMode::Tab as i32;
+    let normal = ProtobufInputMode::Normal as i32;
+    let a = KeyWithModifier::new(BareKey::Char('a'));
+    let b = KeyWithModifier::new(BareKey::Char('b'));
+    let old_action = ProtobufAction::decode(&[8, 118][..]).unwrap();
+    let actions = vec![
+        Action::NoOp.try_into().unwrap(),
+        old_action,
+        Action::SwitchToMode {
+            input_mode: InputMode::Normal,
+        }
+        .try_into()
+        .unwrap(),
+    ];
+    let old_command = ProtobufPluginCommand {
+        name: CommandName::RebindKeys as i32,
+        payload: Some(Payload::RebindKeysPayload(RebindKeysPayload {
+            keys_to_rebind: vec![generated::KeyToRebind {
+                input_mode: tab,
+                key: Some(a.clone().try_into().unwrap()),
+                actions,
+            }],
+            keys_to_unbind: vec![generated::KeyToUnbind {
+                input_mode: normal,
+                key: Some(b.clone().try_into().unwrap()),
+            }],
+            write_config_to_disk: true,
+        })),
+    };
+    let wire = old_command.encode_to_vec();
+    let command = ProtobufPluginCommand::decode(wire.as_slice()).unwrap();
+    assert_eq!(
+        PluginCommand::try_from(command).unwrap(),
+        PluginCommand::RebindKeys {
+            keys_to_rebind: vec![(
+                InputMode::Tab,
+                a,
+                vec![
+                    Action::NoOp,
+                    Action::SwitchToMode {
+                        input_mode: InputMode::Normal
+                    }
+                ]
+            )],
+            keys_to_unbind: vec![(InputMode::Normal, b)],
+            write_config_to_disk: true,
+        }
+    );
+}
 
 #[test]
 fn tab_commands_preserve_their_zero_and_one_based_values() {
@@ -795,7 +863,6 @@ mod props {
             | PluginCommand::GoToTabWithId(_)
             | PluginCommand::CloseTabWithId(_)
             | PluginCommand::RenameTabWithId(..)
-            | PluginCommand::ArrangeProjectPanes(_)
             | PluginCommand::SetProjectContext(..)
             | PluginCommand::SetTabProjects(_)
             | PluginCommand::BreakPanesToTabWithId(..)

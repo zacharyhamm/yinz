@@ -264,116 +264,15 @@ impl Tab {
             .context("keep pane resizes batched until the screen event ends")?;
         Ok(())
     }
-    /// Boundary UI panes occupy the area outside the terminal viewport.
-    pub fn arrangement_pane_ids(&self) -> Vec<PaneId> {
-        let viewport = self.get_viewport();
-        self.get_tiled_pane_ids()
-            .into_iter()
-            .chain(self.suppressed_stack_list_members().map(|(id, _)| *id))
-            .filter(|id| {
-                self.get_pane_with_id(*id).is_some_and(|pane| {
-                    let geom = pane.position_and_size();
-                    geom.x < viewport.x + viewport.cols
-                        && geom.x + geom.cols.as_usize() > viewport.x
-                        && geom.y < viewport.y + viewport.rows
-                        && geom.y + geom.rows.as_usize() > viewport.y
-                })
-            })
-            .collect()
-    }
-
-    pub fn arrangement_stacks(&self) -> Vec<StackList> {
+    pub fn stack_list_snapshot(&self) -> Vec<StackList> {
         self.stack_lists.values().cloned().collect()
     }
 
     /// Intermediate extraction must not trigger automatic layouts that dissolve lists.
-    pub fn prepare_arrangement(&mut self) {
+    pub fn prepare_pane_extraction(&mut self) {
         self.tiled_panes.unset_fullscreen();
         self.swap_layouts.set_is_tiled_damaged();
         self.swap_layouts.set_is_floating_damaged();
-    }
-
-    /// Reassemble the preflighted partitions using ordinary member removal and sizing.
-    pub fn restore_arrangement_stacks(&mut self, stacks: &[StackList]) {
-        for stack in stacks {
-            let mut panes = vec![];
-            for id in &stack.members {
-                if let Some(pane) = self.extract_pane(*id, true) {
-                    panes.push(pane);
-                }
-            }
-            for pane in panes {
-                if pane.pid() == stack.visible {
-                    self.tiled_panes
-                        .add_pane_with_existing_geom(pane.pid(), pane);
-                } else {
-                    self.park_pane(pane);
-                }
-            }
-            if stack.members.len() == 1 {
-                continue;
-            }
-            let id = self.next_stack_list_id;
-            self.next_stack_list_id += 1;
-            for member in &stack.members {
-                self.stack_list_of_member.insert(*member, id);
-            }
-            self.stack_lists.insert(id, stack.clone());
-            self.refresh_or_dissolve_stack_list(id);
-        }
-    }
-
-    pub fn restore_arrangement_stack_visibility(&mut self, originals: &[StackList]) {
-        let remaining: Vec<_> = self
-            .stack_lists
-            .iter()
-            .map(|(id, stack)| (*id, stack.clone()))
-            .collect();
-        for (id, stack) in remaining {
-            if let Some(original) = originals
-                .iter()
-                .find(|original| original.members.contains(&stack.visible))
-            {
-                let visible = if stack.members.contains(&original.visible) {
-                    Some(original.visible)
-                } else {
-                    original
-                        .members
-                        .iter()
-                        .find(|member| stack.members.contains(member))
-                        .copied()
-                };
-                if let Some(visible) = visible {
-                    self.select_stack_list_member(id, visible, None);
-                }
-            }
-        }
-    }
-
-    /// Applies geometry to existing panes only. No terminal or plugin is created.
-    pub fn arrange_existing_panes(
-        &mut self,
-        layout: &TiledPaneLayout,
-        order: &[PaneId],
-    ) -> Result<()> {
-        self.agent_tab_cleanup_allowed = false;
-        // The arranged panes take the layout's slots.
-        self.reserved_layout_slot = false;
-        self.tiled_panes.unset_fullscreen();
-        self.layout_applier(None)
-            .apply_tiled_panes_layout_in_order(layout, Some(order))?;
-        self.is_pending = false;
-        self.apply_buffered_instructions()?;
-        self.complete_pending_agent_placements();
-        self.tiled_panes.reapply_pane_frames();
-        self.resize_all_stack_list_hidden_members();
-        self.swap_layouts.set_is_tiled_damaged();
-        self.set_should_clear_display_before_rendering();
-        self.set_force_render();
-        self.senders
-            .send_to_pty_writer(PtyWriteInstruction::StartCachingResizes)
-            .context("keep pane resizes batched until the screen event ends")?;
-        Ok(())
     }
 
     /// Places the first content pane to arrive in the slot the initial layout held for it.

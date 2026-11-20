@@ -662,7 +662,6 @@ pub enum Action {
         id: TabId,
         name: String,
     },
-    ArrangePanesByProject,
     BreakPane,
     BreakPaneRight,
     BreakPaneLeft,

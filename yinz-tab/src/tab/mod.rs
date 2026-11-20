@@ -20,7 +20,6 @@ mod terminal_io;
 
 // The pane-layer items that `crate::tab` users name, under the paths they had when they lived in
 // this module.
-pub use yinz_panes::layout_applier::arrangement_layout;
 pub use yinz_panes::pane::{
     AdjustedInput, GuestChoiceIndicator, Pane, PaneEdge, MIN_TERMINAL_HEIGHT,
 };
@@ -2385,7 +2384,7 @@ impl Tab {
 
     /// Remove a transfer as a unit: neither covers nor list members promote a replacement.
     pub fn extract_warp_panes(&mut self, ids: &[PaneId]) -> Vec<Box<dyn Pane>> {
-        self.prepare_arrangement();
+        self.prepare_pane_extraction();
         let lists: Vec<_> = self
             .stack_lists
             .iter()
@@ -2413,7 +2412,7 @@ impl Tab {
                 "a transferred pane is missing during relationship restoration"
             ));
         }
-        self.prepare_arrangement();
+        self.prepare_pane_extraction();
         for hidden in &relationships.hidden {
             let id = slots[hidden.pane as usize];
             let pane = self
@@ -3658,8 +3657,7 @@ impl Tab {
         let mut pane_info = vec![];
         let current_pane_group = { self.current_pane_group.borrow().clone_inner() };
         let mut tiled_pane_info = self.tiled_panes.pane_info(&current_pane_group);
-        // Preserve traversal order in the manifest. Coordinate sorting interleaves
-        // nested columns and would make repeated project arrangement swap panes.
+        // Preserve layout traversal order in the manifest, including nested columns.
         tiled_pane_info.sort_by_key(|info| {
             (
                 self.tiled_panes

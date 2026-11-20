@@ -1189,7 +1189,6 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             id: TabId::try_from(tc.draw(generators::integers::<u64>())).unwrap(),
             name: strings(tc),
         },
-        ActionKind::ArrangePanesByProject => Action::ArrangePanesByProject,
         ActionKind::BreakPane => Action::BreakPane,
         ActionKind::BreakPaneRight => Action::BreakPaneRight,
         ActionKind::BreakPaneLeft => Action::BreakPaneLeft,
@@ -2088,14 +2087,6 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         },
         CommandType::RenameTabWithId => {
             PluginCommand::RenameTabWithId(TabId::try_from(u64s(tc)).unwrap(), strings(tc))
-        },
-        CommandType::ArrangeProjectPanes => {
-            PluginCommand::ArrangeProjectPanes(vec![yinz_types::data::ProjectPaneGroup {
-                identity: strings(tc),
-                name: strings(tc),
-                configuration_root: Some(strings(tc)),
-                pane_ids: vec![u32s(tc)],
-            }])
         },
         CommandType::SetProjectContext => PluginCommand::SetProjectContext(
             vec![strings(tc)],

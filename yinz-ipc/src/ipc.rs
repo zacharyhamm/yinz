@@ -212,6 +212,9 @@ pub enum ClientToServerMsg {
     AttachWatcherClient {
         terminal_size: Size,
     },
+    /// A retired action recognized only on incoming IPC bytes.
+    #[serde(skip)]
+    RetiredArrangePanesByProject,
     Action {
         action: Action,
         terminal_id: Option<yinz_types::internal_ids::TerminalId>,
@@ -755,15 +758,9 @@ where
         }
         match self
             .frame
-            .read_message::<ProtoClientToServerMsg>(|bytes| self.receiver.read(bytes))
+            .read_message(|bytes| self.receiver.read(bytes), decode_client_message)
         {
-            Ok(proto_msg) => match proto_msg.try_into() {
-                Ok(rust_msg) => IpcRecv::Msg(rust_msg, ErrorContext::default()),
-                Err(e) => {
-                    warn!("Error converting protobuf to ClientToServerMsg: {:?}", e);
-                    IpcRecv::Malformed
-                },
-            },
+            Ok(message) => IpcRecv::Msg(message, ErrorContext::default()),
             Err(e) => {
                 let received = classify_read_error(e, "ClientToServerMsg");
                 self.closed = received.is_eof();
@@ -789,16 +786,19 @@ where
         if self.closed {
             return IpcRecv::Eof;
         }
-        match self.frame.read_message::<ProtoServerToClientMsg>(|bytes| {
-            if let Some(deadline) = deadline {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    return Err(io::ErrorKind::TimedOut.into());
+        match self.frame.read_message(
+            |bytes| {
+                if let Some(deadline) = deadline {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(io::ErrorKind::TimedOut.into());
+                    }
+                    self.receiver.get_ref().set_read_timeout(Some(remaining))?;
                 }
-                self.receiver.get_ref().set_read_timeout(Some(remaining))?;
-            }
-            self.receiver.read(bytes)
-        }) {
+                self.receiver.read(bytes)
+            },
+            decode_protobuf::<ProtoServerToClientMsg>,
+        ) {
             Ok(proto_msg) => match proto_msg.try_into() {
                 Ok(rust_msg) => IpcRecv::Msg(rust_msg, ErrorContext::default()),
                 Err(e) => {
@@ -838,7 +838,43 @@ pub use crate::MAX_IPC_FRAME_LEN;
 pub(crate) fn read_protobuf_message_for_test(
     reader: &mut impl Read,
 ) -> Result<ProtoClientToServerMsg> {
-    IncomingFrame::default().read_message(|bytes| reader.read(bytes))
+    IncomingFrame::default().read_message(|bytes| reader.read(bytes), decode_protobuf)
+}
+
+fn decode_protobuf<T: Message + Default>(bytes: &[u8]) -> Result<T> {
+    T::decode(bytes).context("decode IPC frame")
+}
+
+fn decode_client_message(bytes: &[u8]) -> Result<ClientToServerMsg> {
+    use crate::client_server_contract::client_server_contract::client_to_server_msg::Message::Action;
+
+    let message: ProtoClientToServerMsg = decode_protobuf(bytes)?;
+    if matches!(&message.message, Some(Action(envelope))
+        if envelope.action.as_ref().is_some_and(|action| action.action_type.is_none()))
+        && is_retired_arrange_request(bytes)
+    {
+        return Ok(ClientToServerMsg::RetiredArrangePanesByProject);
+    }
+    message.try_into().context("convert IPC client message")
+}
+
+/// Match one historical field-9 envelope and one exact field-164 Action. The stock frame fits
+/// in 21 bytes even with both optional uint32 IDs and the CLI flag. Checking the outer length
+/// against the whole frame rules out other envelope members that Prost's oneof would discard.
+fn is_retired_arrange_request(bytes: &[u8]) -> bool {
+    #[derive(Message)]
+    struct LegacyActionEnvelope {
+        #[prost(bytes = "vec", repeated, tag = "1")]
+        actions: Vec<Vec<u8>>,
+    }
+
+    let [0x4a, len, envelope @ ..] = bytes else {
+        return false;
+    };
+    bytes.len() <= 21
+        && usize::from(*len) == envelope.len()
+        && LegacyActionEnvelope::decode(envelope)
+            .is_ok_and(|envelope| matches!(envelope.actions.as_slice(), [action] if action == &[0xa2, 0x0a, 0x00]))
 }
 
 #[derive(Default)]
@@ -850,9 +886,10 @@ struct IncomingFrame {
 }
 
 impl IncomingFrame {
-    fn read_message<T: Message + Default>(
+    fn read_message<T>(
         &mut self,
         mut read: impl FnMut(&mut [u8]) -> io::Result<usize>,
+        decode: impl FnOnce(&[u8]) -> Result<T>,
     ) -> Result<T> {
         read_partial(&mut read, &mut self.length, &mut self.length_read)
             .context("read IPC frame length")?;
@@ -867,7 +904,7 @@ impl IncomingFrame {
         self.payload.resize(len, 0);
         read_partial(&mut read, &mut self.payload, &mut self.payload_read)
             .context("read IPC frame payload")?;
-        let message = T::decode(&self.payload[..]).context("decode IPC frame");
+        let message = decode(&self.payload);
         *self = Self::default();
         message
     }

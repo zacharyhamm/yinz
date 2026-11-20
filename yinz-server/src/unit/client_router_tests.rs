@@ -964,3 +964,217 @@ fn watcher_signal_quit_exits_normally_without_terminating_the_session() {
         .interactive_client_ids()
         .contains(&interactive));
 }
+
+const EMPTY_ACTION: &[u8] = &[0x4a, 2, 0x0a, 0];
+const RETIRED_ARRANGE: &[u8] = &[0x4a, 5, 0x0a, 3, 0xa2, 0x0a, 0];
+const ROUTER_TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn retired_action_router(
+    watch: bool,
+    first_message_timeout: Duration,
+) -> (
+    interprocess::local_socket::Stream,
+    CapturingOs,
+    PausedThreads,
+    ClientId,
+    ClientId,
+    thread::JoinHandle<Result<()>>,
+) {
+    use interprocess::local_socket::traits::Listener;
+
+    let (session, threads) = paused_session();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("retired.sock");
+    let listener = yinz_ipc::consts::ipc_bind(&path).unwrap();
+    let client = yinz_ipc::consts::ipc_connect(&path).unwrap();
+    let server = listener.accept().unwrap();
+    let mut state = SessionState::new();
+    let origin = state.new_client().unwrap();
+    if watch {
+        state.convert_client_to_watcher(origin);
+    } else {
+        state.interactive_clients.insert(origin);
+    }
+    let target = state.new_client().unwrap();
+    state.interactive_clients.insert(target);
+    let os = CapturingOs::default();
+    let router_os = os.clone();
+    let to_server = threads.to_server.clone();
+    let router = thread::spawn(move || {
+        route_thread_main(
+            Arc::new(RwLock::new(Some(session))),
+            Arc::new(RwLock::new(state)),
+            Box::new(router_os),
+            to_server,
+            IpcReceiverWithContext::new(server),
+            origin,
+            first_message_timeout,
+        )
+    });
+    (client, os, threads, origin, target, router)
+}
+
+fn send_raw_action(stream: &mut impl std::io::Write, bytes: &[u8]) {
+    stream
+        .write_all(&(bytes.len() as u32).to_le_bytes())
+        .unwrap();
+    stream.write_all(bytes).unwrap();
+    stream.flush().unwrap();
+}
+
+fn wait_for_router_remove(threads: &PausedThreads, origin: ClientId) {
+    assert!(matches!(
+        threads.server_receiver.recv_timeout(ROUTER_TEST_TIMEOUT).unwrap().0,
+        ServerInstruction::RemoveClient(id) if id == origin
+    ));
+}
+
+#[test]
+fn retired_arrange_ipc_action_gets_explicit_error() {
+    use interprocess::TryClone;
+    use yinz_ipc::ipc::IpcSenderWithContext;
+
+    let (mut client, os, threads, origin, target, router) =
+        retired_action_router(false, ROUTER_TEST_TIMEOUT);
+    // Original ActionMsg includes a different live client ID in its metadata.
+    let mut retired_with_target = vec![0x4a, 0, 0x0a, 3, 0xa2, 0x0a, 0, 0x18];
+    retired_with_target.push(u8::try_from(target.get()).unwrap());
+    assert!(target.get() < 128);
+    retired_with_target[1] = (retired_with_target.len() - 2) as u8;
+
+    let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(client.try_clone().unwrap());
+    for (iteration, bytes) in [&retired_with_target[..], RETIRED_ARRANGE]
+        .into_iter()
+        .enumerate()
+    {
+        send_raw_action(&mut client, bytes);
+        let expected_offset = iteration * 3;
+        os.server_to_client_messages.wait_until(
+            "retired action rejection",
+            ROUTER_TEST_TIMEOUT,
+            |messages| {
+                let output = messages.get(&origin)?;
+                let [ServerToClientMsg::LogError { lines }, ServerToClientMsg::UnblockInputThread] =
+                    output.get(expected_offset..expected_offset + 2)?
+                else {
+                    return None;
+                };
+                assert!(
+                    lines[0].contains("Arrange panes by project") && lines[0].contains("version")
+                );
+                assert!(!messages.contains_key(&target));
+                Some(())
+            },
+        );
+        assert!(threads.screen_receiver.is_empty());
+        assert!(threads.plugin_receiver.is_empty());
+        assert!(threads.server_receiver.is_empty());
+
+        sender
+            .send_client_msg(ClientToServerMsg::SixelSupport { supported: true })
+            .unwrap();
+        assert!(matches!(
+            threads.screen_receiver.recv_timeout(ROUTER_TEST_TIMEOUT).unwrap().0,
+            ScreenInstruction::SetSixelSupport { client_id, supported: true } if client_id == origin
+        ));
+        os.server_to_client_messages.wait_until(
+            "supported request unblock",
+            ROUTER_TEST_TIMEOUT,
+            |messages| {
+                (messages.get(&origin)?.get(expected_offset + 2)
+                    == Some(&ServerToClientMsg::UnblockInputThread))
+                .then_some(())
+            },
+        );
+    }
+    drop(sender);
+    drop(client);
+    wait_for_router_remove(&threads, origin);
+    router.join().unwrap().unwrap();
+    assert!(threads.server_receiver.is_empty());
+
+    let (mut client, os, threads, watcher, target, router) =
+        retired_action_router(true, ROUTER_TEST_TIMEOUT);
+    send_raw_action(&mut client, RETIRED_ARRANGE);
+    os.server_to_client_messages.wait_until(
+        "watcher input unblock",
+        ROUTER_TEST_TIMEOUT,
+        |messages| {
+            let output = messages.get(&watcher)?;
+            assert_eq!(output, &[ServerToClientMsg::UnblockInputThread]);
+            assert!(!messages.contains_key(&target));
+            Some(())
+        },
+    );
+    assert!(threads.screen_receiver.is_empty());
+    assert!(threads.plugin_receiver.is_empty());
+    drop(client);
+    wait_for_router_remove(&threads, watcher);
+    router.join().unwrap().unwrap();
+}
+
+#[test]
+fn empty_and_retired_ipc_actions_preserve_first_read_timeout() {
+    for bytes in [EMPTY_ACTION, RETIRED_ARRANGE] {
+        let first_read_timeout = Duration::from_millis(250);
+        let started = std::time::Instant::now();
+        let (mut client, os, threads, origin, _, router) =
+            retired_action_router(false, first_read_timeout);
+        send_raw_action(&mut client, bytes);
+        wait_for_router_remove(&threads, origin);
+        assert!(started.elapsed() >= first_read_timeout);
+        router.join().unwrap().unwrap();
+
+        let messages = os.server_to_client_messages.get();
+        if bytes == EMPTY_ACTION {
+            assert!(!messages.contains_key(&origin));
+        } else {
+            assert!(matches!(
+                messages[&origin].as_slice(),
+                [
+                    ServerToClientMsg::LogError { .. },
+                    ServerToClientMsg::UnblockInputThread
+                ]
+            ));
+        }
+        // Keep the peer open through cleanup so EOF cannot satisfy the timeout test.
+        drop(client);
+    }
+}
+
+#[test]
+fn empty_and_retired_ipc_actions_count_toward_malformed_budget() {
+    use interprocess::TryClone;
+    use yinz_ipc::ipc::IpcSenderWithContext;
+
+    let (mut client, os, threads, origin, _, router) =
+        retired_action_router(false, ROUTER_TEST_TIMEOUT);
+    let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(client.try_clone().unwrap());
+    sender
+        .send_client_msg(ClientToServerMsg::SixelSupport { supported: true })
+        .unwrap();
+    assert!(matches!(
+        threads
+            .screen_receiver
+            .recv_timeout(ROUTER_TEST_TIMEOUT)
+            .unwrap()
+            .0,
+        ScreenInstruction::SetSixelSupport { .. }
+    ));
+    for _ in 0..MAX_CONSECUTIVE_MALFORMED_MESSAGES - 2 {
+        send_raw_action(&mut client, EMPTY_ACTION);
+    }
+    send_raw_action(&mut client, RETIRED_ARRANGE);
+    send_raw_action(&mut client, EMPTY_ACTION);
+    wait_for_router_remove(&threads, origin);
+    router.join().unwrap().unwrap();
+    assert!(threads.server_receiver.is_empty());
+    assert!(
+        matches!(os.server_to_client_messages.get()[&origin].as_slice(), [
+        ServerToClientMsg::UnblockInputThread,
+        ServerToClientMsg::LogError { .. },
+        ServerToClientMsg::UnblockInputThread,
+        ServerToClientMsg::Exit { exit_reason: ExitReason::Error(error) },
+    ] if error.contains("desynchronised"))
+    );
+}

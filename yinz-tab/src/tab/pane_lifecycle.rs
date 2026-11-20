@@ -1029,23 +1029,6 @@ impl Tab {
         }
         Ok(())
     }
-    /// The complete destination geometry has already been checked by arrangement.
-    /// Intermediate splits must not reject a batch that fits its final layout.
-    pub fn accept_arranged_pane(
-        &mut self,
-        pane: Box<dyn Pane>,
-        placement: ExtractedPanePlacement,
-    ) -> AcceptedPane {
-        self.agent_tab_cleanup_allowed = false;
-        let id = pane.pid();
-        match placement {
-            ExtractedPanePlacement::Tiled => self.tiled_panes.add_pane_with_existing_geom(id, pane),
-            ExtractedPanePlacement::Floating => self.floating_panes.add_pane(id, pane),
-            placement => return self.accept_extracted_pane(pane, placement),
-        }
-        AcceptedPane::Accepted
-    }
-
     /// Whether [`Self::accept_extracted_pane`] would take a pane arriving with `placement`.
     ///
     /// Asked by callers *before* they take a pane out of its tab, so a refusal leaves the pane

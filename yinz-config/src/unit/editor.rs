@@ -174,6 +174,10 @@ fn action_catalog_covers_parser_spellings() {
     let mut catalog = ACTION_NAMES.to_vec();
     catalog.sort_unstable();
     catalog.dedup();
+    let retired = "ArrangePanesByProject";
+    assert!(names.contains(&retired));
+    assert!(!catalog.contains(&retired));
+    names.retain(|name| *name != retired);
     assert_eq!(names, catalog);
 }
 

@@ -570,7 +570,8 @@ enum ActionName {
     CopyLastCommandOutput = 115;
     MoveTextSelection = 116;
     SwapTextSelectionEnds = 117;
-    ArrangePanesByProject = 118;
+    reserved 118;
+    reserved "ArrangePanesByProject";
     MoveNotificationSelection = 119;
     ActivateNotification = 120;
     ToggleNotificationDetail = 121;

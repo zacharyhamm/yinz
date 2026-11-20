@@ -1450,38 +1450,6 @@ pub fn plugin_thread_main(
                 }
                 plugin_bridge.pipe_messages(pipe_messages, shutdown_send.clone(), None)?;
             },
-            PluginInstruction::ArrangePanesByProject => {
-                let store = plugin_bridge.builtin_service_instance("project-store");
-                if store.is_err()
-                    || plugin_bridge
-                        .builtin_service_instance("agent-service")
-                        .is_err()
-                {
-                    bus.senders.send_to_screen(ScreenInstruction::Notify(
-                        "Arrange panes requires the project-store and agent-service builtins"
-                            .to_owned(),
-                        None,
-                        None,
-                        None,
-                    ))?;
-                } else if let Ok((id, client)) = store {
-                    plugin_bridge.pipe_messages(
-                        vec![(
-                            Some(id),
-                            Some(client),
-                            PipeMessage::new(
-                                PipeSource::Keybind,
-                                "arrange_panes_by_project".to_owned(),
-                                &None,
-                                &None,
-                                true,
-                            ),
-                        )],
-                        shutdown_send.clone(),
-                        None,
-                    )?;
-                }
-            },
             PluginInstruction::KeybindPipe {
                 name,
                 payload,

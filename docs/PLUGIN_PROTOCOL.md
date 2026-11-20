@@ -181,7 +181,7 @@ interface CommandArgs {
   PageScrollUpInPaneId: PaneId; PageScrollDownInPaneId: PaneId; TogglePaneIdFullscreen: PaneId; TogglePaneEmbedOrEjectForPaneId: PaneId;
   CloseTabWithIndex: number; BreakPanesToNewTab: [PaneId[], string | null, boolean]; BreakPanesToTabWithIndex: [PaneId[], number, boolean];
   SwitchTabToId: number; GoToTabWithId: number; CloseTabWithId: number; RenameTabWithId: [number, string];
-  ArrangeProjectPanes: ProjectPaneGroup[]; SetTabProjects: Record<string, string>; SetProjectContext: [string[], [PaneId, string][], Record<string, string>?]; BreakPanesToTabWithId: [PaneId[], number, boolean];
+  SetTabProjects: Record<string, string>; SetProjectContext: [string[], [PaneId, string][], Record<string, string>?]; BreakPanesToTabWithId: [PaneId[], number, boolean];
   ReloadPlugin: number; LoadNewPlugin: {url: string; config: StringMap; load_in_background: boolean; skip_plugin_cache: boolean; cwd?: string | null};
   RebindKeys: {keys_to_rebind: [InputMode, KeyWithModifier, Action[]][]; keys_to_unbind: [InputMode, KeyWithModifier][]; write_config_to_disk: boolean};
   RegisterAgentProvider: AgentProvider; GetAgentProviders: undefined;
@@ -319,7 +319,6 @@ interface ConnectToSession {name: string | null; tab_position: number | null; pa
 type GitCheckout = 'Current' | {NewBranch: {branch: string; base: string}} | {NewWorktree: {branch: string; base: string; path: string}};
 
 interface ResolvedProject {identity: string; name: string; root: string;}
-interface ProjectPaneGroup {identity: string; name: string; configuration_root: string | null; pane_ids: number[];}
 
 type LayoutInfo = {BuiltIn: string} | {File: [string, LayoutMetadata]} | {Stringified: string};
 
@@ -668,7 +667,7 @@ type UnitAction = 'NewTabGroup' | 'GoToNextTabGroup' | 'GoToPreviousTabGroup' | 
   | 'ToggleFocusFullscreen' | 'ToggleFocusNoUiFullscreen' | 'TogglePaneFrames' | 'ToggleCommandPalette' | 'ToggleActiveSyncTab' | 'TogglePaneEmbedOrFloating' | 'ToggleFloatingPanes'
   | 'CloseFocus' | 'UndoRenamePane' | 'NoOp' | 'GoToNextTab' | 'GoToPreviousTab' | 'CloseTab' | 'ToggleTab' | 'UndoRenameTab' | 'Detach'
   | 'SetDarkTheme' | 'SetLightTheme' | 'ToggleTheme' | 'Copy' | 'Confirm' | 'Deny' | 'ToggleMouseMode' | 'PreviousSwapLayout' | 'NextSwapLayout' | 'QueryTabNames'
-  | 'ArrangePanesByProject' | 'BreakPane' | 'BreakPaneRight' | 'BreakPaneLeft' | 'FocusHostSession' | 'FocusGuestSession' | 'ToggleHostFullscreen'
+  | 'BreakPane' | 'BreakPaneRight' | 'BreakPaneLeft' | 'FocusHostSession' | 'FocusGuestSession' | 'ToggleHostFullscreen'
   | 'ListClients' | 'TogglePanePinned' | 'TogglePaneInGroup' | 'ToggleGroupMarking';
 
 type Action = UnitAction | Tagged<ActionPayloads>;
@@ -1110,14 +1109,14 @@ search/resume and phone/Tailscale verification remain separate work.
 
 `ResolveProject {directory}` requires `ReadApplicationState`. It resolves a local
 host directory (relative to the plugin working directory when not absolute) with
-the same project model as `ArrangeProjectPanes`. The reply is
+the shared project registry and published repository locations. The reply is
 `{identity, name, root}`, or `null` for a folder with no project. Invalid or missing
 directories and failed probes return errors. The host reads the shared registry;
 the plugin does not need `PluginData`, `ReadFiles`, or `RunCommands`.
 
 Remembered roots can contain several repositories. Registered discovered projects,
-subdirectories and linked Git worktrees use the same membership rules as pane
-arrangement. For an unregistered checkout, the arrangement resolver supplies its
+subdirectories and linked Git worktrees use the project membership rules. For an
+unregistered checkout, the resolver supplies its
 repository identity without registering a project. Published custom-provider
 matches take precedence over Git; this command does not invoke provider plugins
 for directories outside their published snapshot.

@@ -31,6 +31,57 @@ fn legacy_toggle_mother_binding_round_trips_as_noop() {
 }
 
 #[test]
+fn legacy_arrange_panes_by_project_binding_round_trips_as_noop() {
+    let config = Config::from_kdl(
+        r#"
+        keybinds clear-defaults=true {
+            tab {
+                bind "a" { ArrangePanesByProject; SwitchToMode "Normal"; }
+            }
+        }
+        "#,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        config.keybinds.0[&InputMode::Tab][&KeyWithModifier::new(BareKey::Char('a'))],
+        vec![
+            Action::NoOp,
+            Action::SwitchToMode {
+                input_mode: InputMode::Normal,
+            },
+        ]
+    );
+
+    let serialized = config.to_string(false).unwrap();
+    assert!(serialized.contains("NoOp"));
+    assert!(!serialized.contains("ArrangePanesByProject"));
+    let reparsed = Config::from_kdl(&serialized, None).unwrap();
+    assert_eq!(config.keybinds, reparsed.keybinds);
+}
+
+#[test]
+fn default_tab_mode_has_no_arrange_by_project_binding() {
+    let config = Config::from_kdl(
+        std::str::from_utf8(crate::assets::DEFAULT_CONFIG).unwrap(),
+        None,
+    )
+    .unwrap();
+    assert!(
+        !config.keybinds.0[&InputMode::Tab].contains_key(&KeyWithModifier::new(BareKey::Char('a')))
+    );
+    assert!(crate::editor::action_templates(&config)
+        .unwrap()
+        .iter()
+        .all(|node| node.name != "ArrangePanesByProject"));
+    for suffix in [" 1", " {}", " { NoOp; }"] {
+        let source =
+            format!(r#"keybinds {{ tab {{ bind "a" {{ ArrangePanesByProject{suffix}; }}; }}; }}"#);
+        assert!(Config::from_kdl(&source, None).is_err(), "{source}");
+    }
+}
+
+#[test]
 fn legacy_toggle_mother_rejects_positional_arguments() {
     for argument in [r#""unexpected""#, "1", "true"] {
         assert!(Config::from_kdl(

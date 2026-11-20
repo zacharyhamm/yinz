@@ -2398,23 +2398,6 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for RenameTabWithId"),
             },
-            Some(CommandName::ArrangeProjectPanes) => match protobuf_plugin_command.payload {
-                Some(Payload::ArrangeProjectPanesPayload(payload)) => {
-                    Ok(PluginCommand::ArrangeProjectPanes(
-                        payload
-                            .groups
-                            .into_iter()
-                            .map(|g| yinz_types::data::ProjectPaneGroup {
-                                identity: g.identity,
-                                name: g.name,
-                                configuration_root: g.configuration_root,
-                                pane_ids: g.pane_ids,
-                            })
-                            .collect(),
-                    ))
-                },
-                _ => Err("Mismatched payload for ArrangeProjectPanes"),
-            },
             Some(CommandName::SetProjectContext) => match protobuf_plugin_command.payload {
                 Some(Payload::SetProjectContextPayload(payload)) => {
                     Ok(PluginCommand::SetProjectContext(
@@ -5039,22 +5022,6 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     tab_id: tab_id.get() as u64,
                     new_name,
                 })),
-            }),
-            PluginCommand::ArrangeProjectPanes(groups) => Ok(ProtobufPluginCommand {
-                name: CommandName::ArrangeProjectPanes as i32,
-                payload: Some(Payload::ArrangeProjectPanesPayload(
-                    generated::ArrangeProjectPanesPayload {
-                        groups: groups
-                            .into_iter()
-                            .map(|g| generated::ProjectPaneGroup {
-                                identity: g.identity,
-                                name: g.name,
-                                configuration_root: g.configuration_root,
-                                pane_ids: g.pane_ids,
-                            })
-                            .collect(),
-                    },
-                )),
             }),
             PluginCommand::SetProjectContext(projects, panes, sources) => {
                 Ok(ProtobufPluginCommand {

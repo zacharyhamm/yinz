@@ -2813,7 +2813,7 @@ fn warp_group_restores_a_hidden_editor_chain_and_selected_stack_member() {
             .is_err());
     }
     let relationships = source.warp_relationships(&slots);
-    let original = source.arrangement_stacks();
+    let original = source.stack_list_snapshot();
     source.extract_warp_panes(&slots);
     assert!(slots
         .iter()
@@ -2859,7 +2859,7 @@ fn warp_group_restores_a_hidden_editor_chain_and_selected_stack_member() {
         .get_mut(&destination_id)
         .unwrap();
     assert_eq!(destination.warp_relationships(&slots), relationships);
-    let restored = destination.arrangement_stacks();
+    let restored = destination.stack_list_snapshot();
     assert_eq!(restored[0].members, original[0].members);
     assert_eq!(restored[0].visible, selected);
     let editor = PaneId::Terminal(TerminalId::new(8));

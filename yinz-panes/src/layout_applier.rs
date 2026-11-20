@@ -529,34 +529,8 @@ impl<'a> LayoutApplier<'a> {
         &mut self,
         layout: &TiledPaneLayout,
     ) -> Result<()> {
-        self.apply_tiled_panes_layout_in_order(layout, None)
-    }
-    pub fn apply_tiled_panes_layout_in_order(
-        &mut self,
-        layout: &TiledPaneLayout,
-        order: Option<&[PaneId]>,
-    ) -> Result<()> {
-        let positions_in_layout = if let Some(order) = order {
-            let viewport = *self.viewport.borrow();
-            let size = Size {
-                rows: viewport.rows,
-                cols: viewport.cols,
-            };
-            let layout = arrangement_layout(layout.clone(), &size, order.len(), None)?;
-            let mut positions = layout
-                .position_panes_in_space(&PaneGeom::from(&size), Some(order.len()), false, false)
-                .context("failed to position panes in layout")?;
-            for (index, (_, geom)) in positions.iter_mut().enumerate() {
-                geom.x += viewport.x;
-                geom.y += viewport.y;
-                geom.logical_position = Some(index);
-            }
-            positions
-        } else {
-            self.flatten_layout(layout, true)?
-        };
-
-        let mut panes: BTreeMap<_, _> = self
+        let positions_in_layout = self.flatten_layout(layout, true)?;
+        let panes = self
             .tiled_panes
             .get_panes()
             .map(|(id, pane)| {
@@ -566,21 +540,7 @@ impl<'a> LayoutApplier<'a> {
                 )
             })
             .collect();
-        let mut preserved = BTreeMap::new();
-        if let Some(order) = order {
-            let ids: Vec<_> = panes
-                .keys()
-                .copied()
-                .filter(|id| !order.contains(id))
-                .collect();
-            for id in ids {
-                if let Some(pane) = panes.remove(&id) {
-                    preserved.insert(id, pane);
-                }
-            }
-        }
         let mut existing_tab_state = ExistingTabState::new(panes);
-        existing_tab_state.order = order.map(|ids| ids.to_vec());
         let mut placements = vec![];
         let mut positions_left_without_exact_matches = vec![];
 
@@ -625,6 +585,7 @@ impl<'a> LayoutApplier<'a> {
 
         let remaining_pane_ids = existing_tab_state.pane_ids();
         let mut prepared = vec![];
+        let mut positioned = BTreeMap::new();
         for (mut pane, geom, layout) in placements {
             pane.set_configured_rows(geom.rows);
             pane.set_geom(geom);
@@ -632,29 +593,21 @@ impl<'a> LayoutApplier<'a> {
                 pane.set_borderless(borderless);
             }
             prepared.push((pane.pid(), geom, layout));
-            preserved.insert(pane.pid(), pane);
+            positioned.insert(pane.pid(), pane);
         }
         let remaining = remaining_pane_ids
             .iter()
             .filter_map(|id| existing_tab_state.remove_pane(id))
             .collect();
-        self.tiled_panes
-            .prepare_insertions(preserved, remaining, None, self.os_api.box_clone())?;
+        self.tiled_panes.prepare_insertions(
+            positioned,
+            remaining,
+            None,
+            self.os_api.box_clone(),
+        )?;
 
-        let mut panes = self.tiled_panes.drain();
-        if let Some(order) = order {
-            let ids: Vec<_> = panes
-                .keys()
-                .copied()
-                .filter(|id| !order.contains(id))
-                .collect();
-            for id in ids {
-                if let Some(pane) = panes.remove(&id) {
-                    self.tiled_panes.add_pane_with_existing_geom(id, pane);
-                }
-            }
-        }
-        let mut existing_tab_state = ExistingTabState::new(panes);
+        let mut existing_tab_state = ExistingTabState::new(self.tiled_panes.drain());
+
         let mut pane_applier = PaneApplier::new(
             self.tiled_panes,
             self.floating_panes,
@@ -1726,16 +1679,12 @@ fn shrink_by_edge_strip(
 }
 
 struct ExistingTabState {
-    order: Option<Vec<PaneId>>,
     existing_panes: BTreeMap<PaneId, Box<dyn Pane>>,
 }
 
 impl ExistingTabState {
     pub fn new(existing_panes: BTreeMap<PaneId, Box<dyn Pane>>) -> Self {
-        ExistingTabState {
-            existing_panes,
-            order: None,
-        }
+        ExistingTabState { existing_panes }
     }
     pub fn find_and_extract_exact_match_pane(
         &mut self,
@@ -1743,10 +1692,6 @@ impl ExistingTabState {
         logical_position: Option<usize>,
     ) -> Option<Box<dyn Pane>> {
         let candidates = self.pane_candidates();
-        if self.order.is_some() {
-            let id = candidates.first().map(|(id, _)| **id)?;
-            return self.existing_panes.remove(&id);
-        }
         if let Some(current_pane_id_with_same_contents) =
             self.find_pane_id_with_same_contents(&candidates, run, logical_position)
         {
@@ -1817,18 +1762,6 @@ impl ExistingTabState {
             .map(|(id, pane)| (id, pane.as_ref()))
             .collect();
         candidates.sort_by(|(a_id, a), (b_id, b)| {
-            if let Some(order) = &self.order {
-                let rank = |id: &PaneId| {
-                    order
-                        .iter()
-                        .position(|candidate| candidate == id)
-                        .unwrap_or(usize::MAX)
-                };
-                let ordering = rank(a_id).cmp(&rank(b_id));
-                if !ordering.is_eq() {
-                    return ordering;
-                }
-            }
             let a_logical_position = a.position_and_size().logical_position;
             let b_logical_position = b.position_and_size().logical_position;
             if a_logical_position != b_logical_position {
@@ -2015,96 +1948,6 @@ impl<'a> PaneApplier<'a> {
             pane.set_title(pane_title.into());
         }
     }
-}
-
-/// Expand overflow with the same largest-pane selection used by ordinary insertion.
-/// Every slot is resolved before draining any live pane collection.
-pub fn arrangement_layout(
-    mut layout: TiledPaneLayout,
-    size: &Size,
-    count: usize,
-    ratio: Option<usize>,
-) -> Result<TiledPaneLayout> {
-    fn split_leaf(
-        layout: &mut TiledPaneLayout,
-        wanted: usize,
-        cursor: &mut usize,
-        direction: yinz_types::geometry::SplitDirection,
-    ) -> bool {
-        if layout.children.is_empty() {
-            let index = *cursor;
-            *cursor += 1;
-            if index != wanted {
-                return false;
-            }
-            layout.children_split_direction = direction;
-            layout.children = vec![TiledPaneLayout::default(); 2];
-            true
-        } else {
-            layout
-                .children
-                .iter_mut()
-                .any(|child| split_leaf(child, wanted, cursor, direction))
-        }
-    }
-    fn grow_stack(layout: &mut TiledPaneLayout, wanted: usize, cursor: &mut usize) -> bool {
-        let start = *cursor;
-        if layout.children_are_stacked && (start..start + layout.pane_count()).contains(&wanted) {
-            layout.children.push(TiledPaneLayout::default());
-            return true;
-        }
-        if layout.children.is_empty() {
-            *cursor += 1;
-            return false;
-        }
-        layout
-            .children
-            .iter_mut()
-            .any(|child| grow_stack(child, wanted, cursor))
-    }
-    while layout.pane_count() < count {
-        let positions = layout
-            .position_panes_in_space(&PaneGeom::from(size), None, false, false)
-            .context("failed to position panes in layout")?;
-        let split = crate::panes::room_in_geometries(
-            positions.iter().enumerate().map(|(index, (_, geom))| {
-                (
-                    index,
-                    *geom,
-                    crate::pane::MIN_TERMINAL_WIDTH,
-                    crate::pane::MIN_TERMINAL_HEIGHT,
-                )
-            }),
-            ratio,
-        );
-        if let Some((index, direction)) = split {
-            if !split_leaf(&mut layout, index, &mut 0, direction) {
-                return Err(anyhow!("could not expand project layout"));
-            }
-        } else {
-            let index = positions
-                .iter()
-                .position(|(_, geom)| {
-                    geom.is_expanded_in_stack()
-                        && geom.rows.as_usize() > crate::pane::MIN_TERMINAL_HEIGHT
-                })
-                .context("no room for excess panes in project layout")?;
-            if !grow_stack(&mut layout, index, &mut 0) {
-                return Err(anyhow!("could not expand project stack"));
-            }
-        }
-    }
-    let positions = layout
-        .position_panes_in_space(&PaneGeom::from(size), Some(count), false, false)
-        .context("failed to position panes in layout")?;
-    if positions.iter().any(|(_, geom)| {
-        geom.cols.as_usize() < crate::pane::MIN_TERMINAL_WIDTH
-            || (!geom.is_collapsed_in_stack()
-                && geom.rows.as_usize() < crate::pane::MIN_TERMINAL_HEIGHT)
-    }) {
-        return Err(anyhow!("project layout does not fit this tab"));
-    }
-    Ok(layout)
 }
 
 #[cfg(test)]

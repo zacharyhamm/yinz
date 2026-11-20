@@ -964,7 +964,6 @@ fn spell(value: &Action) -> Result<KdlNode, NotWritable> {
             value,
             "the action keeps no reference to the layout it loaded, so only a bare `OverrideLayout` can be written",
         )),
-        Action::ArrangePanesByProject => Ok(KdlNode::new("ArrangePanesByProject")),
         Action::BreakPane => Ok(KdlNode::new("BreakPane")),
         Action::BreakPaneRight => Ok(KdlNode::new("BreakPaneRight")),
         Action::BreakPaneLeft => Ok(KdlNode::new("BreakPaneLeft")),
@@ -1258,6 +1257,9 @@ pub(crate) fn from_kdl_with(
         | "Clear"
         | "Confirm"
         | "Deny" => {
+            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
+        },
+        "ArrangePanesByProject" if kdl_action.children().is_none() => {
             parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
         },
         "EditScrollback" => {
@@ -1931,7 +1933,6 @@ pub(crate) fn from_kdl_with(
         },
         "PreviousSwapLayout" => Ok(Action::PreviousSwapLayout),
         "NextSwapLayout" => Ok(Action::NextSwapLayout),
-        "ArrangePanesByProject" => Ok(Action::ArrangePanesByProject),
         "BreakPane" => Ok(Action::BreakPane),
         "BreakPaneRight" => Ok(Action::BreakPaneRight),
         "BreakPaneLeft" => Ok(Action::BreakPaneLeft),

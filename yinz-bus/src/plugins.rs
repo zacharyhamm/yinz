@@ -347,7 +347,6 @@ pub enum PluginInstruction {
         /// The pane the pipe was run in, if the CLI client knew it.
         source_pane_id: Option<PaneId>,
     },
-    ArrangePanesByProject,
     KeybindPipe {
         name: String,
         payload: Option<String>,

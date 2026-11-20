@@ -86,11 +86,6 @@ pub(super) fn run(op: &str, input: Value) -> Result<Value> {
             let (project,): (projects::Project,) = args(input)?;
             value(projects::forgotten(&project))
         },
-        "Resolve" => {
-            let (probed, registry, cwd): (projects::Probed, projects::Registry, Location) =
-                args(input)?;
-            value(projects::resolve(&probed, &registry, &cwd))
-        },
         "ForCwd" => {
             let (registry, cwd): (projects::Registry, Location) = args(input)?;
             value(projects::for_cwd(&registry, &cwd))

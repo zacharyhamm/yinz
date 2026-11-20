@@ -3,7 +3,6 @@
 
 use super::*;
 use crate::tab::swap_layouts::SwapLayouts;
-use crate::tab::ExtractedPanePlacement;
 use yinz_types::input::layout::{Layout, Run, RunPluginOrAlias};
 use yinz_types::internal_ids::PluginId;
 
@@ -255,8 +254,7 @@ fn agent_arriving_with_two_tab_groups_keeps_the_taller_tab_bar() {
 fn only_tabs_opened_for_an_agent_reserve_a_layout_slot() {
     let layout = shipped_default_layout();
 
-    // As project arrangement lands a new tab: the content run is ignored with no pane present,
-    // and no agent is expected.
+    // The content run is ignored with no pane present and no agent expected.
     let mut tab = pending_tab(&layout);
     land_layout(&mut tab, &layout, &None);
     assert!(!tab.has_reserved_layout_slot());
@@ -273,47 +271,6 @@ fn only_tabs_opened_for_an_agent_reserve_a_layout_slot() {
     assert!(!tab.has_reserved_layout_slot());
     load_plugins(&mut tab);
     assert_agent_fills_content(&mut tab, ROWS, 1);
-}
-
-#[test]
-fn arranged_panes_take_the_layout_and_leave_swap_layouts_working() {
-    let layout = shipped_default_layout();
-    for agent_expected in [false, true] {
-        let mut tab = pending_tab(&layout);
-        tab.agent_layout_slot_expected = agent_expected;
-        land_layout(&mut tab, &layout, &None);
-        assert_eq!(tab.has_reserved_layout_slot(), agent_expected);
-        load_plugins(&mut tab);
-
-        let moved = [
-            PaneId::Terminal(TerminalId::new(11)),
-            PaneId::Terminal(TerminalId::new(12)),
-        ];
-        for id in moved {
-            let pane = tab.build_pane(id, None, None, None).unwrap();
-            assert!(matches!(
-                tab.accept_arranged_pane(pane, ExtractedPanePlacement::Tiled),
-                crate::tab::AcceptedPane::Accepted
-            ));
-        }
-        tab.arrange_existing_panes(&TiledPaneLayout::default(), &moved)
-            .unwrap();
-        assert!(!tab.has_reserved_layout_slot(), "{agent_expected}");
-
-        // An ordinary new pane finds room beside the arranged ones.
-        let third = PaneId::Terminal(TerminalId::new(13));
-        let pane = tab.build_pane(third, None, None, None).unwrap();
-        tab.add_tiled_pane(pane, third, false, None).unwrap();
-        assert_eq!(tab.tiled_content_pane_count(), 3, "{agent_expected}");
-        assert_eq!(tab.get_suppressed_panes().count(), 0, "{agent_expected}");
-        for id in moved {
-            assert_ne!(geom(&tab, id), geom(&tab, third), "{agent_expected}");
-        }
-
-        let before = tab.swap_layout_info();
-        tab.next_swap_layout().unwrap();
-        assert_ne!(tab.swap_layout_info(), before, "{agent_expected}");
-    }
 }
 
 #[test]

@@ -387,7 +387,6 @@ pub(super) fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::GoToTabWithId
         | CommandType::CloseTabWithId
         | CommandType::RenameTabWithId
-        | CommandType::ArrangeProjectPanes
         | CommandType::SetProjectContext
         | CommandType::SetTabProjects
         | CommandType::BreakPanesToTabWithId

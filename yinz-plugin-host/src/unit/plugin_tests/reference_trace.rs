@@ -216,12 +216,14 @@ impl Trace {
         let mut input = replace(input, &self.root, "<fixture-root>");
         legacy_project_fields(&mut input);
         legacy_duplicate_binding(&mut input);
+        let mut expected_input = step.input.clone();
+        remove_retired_tab_binding(&mut expected_input);
         assert!(
-            input == step.input,
+            input == expected_input,
             "reference input at {} step {}: {}",
             self.path.display(),
             self.cursor,
-            first_difference(&input, &step.input, "input")
+            first_difference(&input, &expected_input, "input")
         );
         let mut commands = vec![];
         for call in &step.calls {
@@ -571,6 +573,66 @@ fn reference_trace_compression_preserves_full_transcript_and_root_placeholder() 
             "/temporary/test-root"
         ),
         json!("/temporary/test-root/file 日本語")
+    );
+}
+
+fn remove_retired_tab_binding(input: &mut Value) {
+    fn remove_from_event(event: &mut Value, retired: &Value) {
+        let keybinds = match event.get_mut("ModeUpdate") {
+            Some(mode) => mode.get_mut("keybinds"),
+            None => event.get_mut("InitialKeybinds"),
+        };
+        if let Some(modes) = keybinds.and_then(Value::as_array_mut) {
+            for mode in modes.iter_mut().filter(|mode| mode[0] == "Tab") {
+                if let Some(bindings) = mode[1].as_array_mut() {
+                    bindings.retain(|binding| binding != retired);
+                }
+            }
+        }
+    }
+
+    let retired = json!([
+        {"bare_key":{"Char":"a"},"key_modifiers":[]},
+        ["ArrangePanesByProject", {"SwitchToMode":{"input_mode":"Normal"}}]
+    ]);
+    if input[0] == "update" {
+        remove_from_event(&mut input[1], &retired);
+    } else if let Some(batch) = input.as_array_mut() {
+        for update in batch.iter_mut().filter(|item| item[0] == "update") {
+            remove_from_event(&mut update[1], &retired);
+        }
+    }
+}
+
+#[test]
+fn reference_trace_removes_only_retired_default_tab_binding() {
+    let binding = |key, actions| json!([{"bare_key":{"Char":key},"key_modifiers":[]}, actions]);
+    let actions = json!(["ArrangePanesByProject", {"SwitchToMode":{"input_mode":"Normal"}}]);
+    let retired = binding("a", actions.clone());
+    let different_key = binding("b", actions);
+    let different_actions = binding("a", json!(["ArrangePanesByProject"]));
+    let ordinary = binding("n", json!(["NoOp"]));
+    let keymap = json!([
+        ["Normal", [retired]],
+        ["Tab", [retired, different_key, different_actions, ordinary]]
+    ]);
+    let expected = json!([
+        ["Normal", [retired]],
+        ["Tab", [different_key, different_actions, ordinary]]
+    ]);
+
+    let mut mode = json!(["update", {"ModeUpdate":{"keybinds":keymap}}]);
+    remove_retired_tab_binding(&mut mode);
+    assert_eq!(
+        mode,
+        json!(["update", {"ModeUpdate":{"keybinds":expected}}])
+    );
+
+    let mut initial = json!([["update", {"InitialKeybinds":keymap}], ["render", 2, 80]]);
+    remove_retired_tab_binding(&mut initial);
+    assert_eq!(
+        initial,
+        json!([["update", {"InitialKeybinds":expected}], ["render", 2, 80]])
     );
 }
 

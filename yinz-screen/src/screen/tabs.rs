@@ -1055,13 +1055,6 @@ impl Screen {
             .values()
             .filter(|tab| {
                 !tab.is_pending()
-                    && !self
-                        .core
-                        .pending_arrangement
-                        .as_ref()
-                        .is_some_and(|pending| {
-                            pending.destinations.values().any(|id| *id == tab.id)
-                        })
                     && (self.core.deferred_tab_closes.contains(&tab.id)
                         || (!tab.agent_tab_waiting_for_pane
                             && !tab.has_selectable_panes()
@@ -1255,17 +1248,6 @@ impl Screen {
     ) -> Result<()> {
         let err_context = || format!("failed to close tab at index {tab_id:?}");
 
-        if self
-            .core
-            .pending_arrangement
-            .as_ref()
-            .is_some_and(|pending| pending.destinations.values().any(|id| *id == tab_id))
-        {
-            self.core.pending_arrangement = None;
-            self.arrangement_notice(
-                "Arrange panes: destination closed; arrangement cancelled".into(),
-            );
-        }
         let closing_panes = self
             .core
             .tabs
@@ -1372,12 +1354,10 @@ impl Screen {
         for p_id in &pane_ids {
             self.cleanup_closed_pane_state(*p_id);
         }
-        // Nothing should be able to aim at this tab again: `toggle_tab` reads the history, and
-        // an arrangement's memory of the project here would otherwise outlive the tab.
+        // Remove the closed tab from the history used by `toggle_tab`.
         for history in self.core.tab_history.values_mut() {
             history.retain(|id| *id != tab_id);
         }
-        self.core.arrangement_projects.remove(&tab_id);
         if self.core.replacement_tab == Some(tab_id) {
             self.core.replacement_tab = None;
         }

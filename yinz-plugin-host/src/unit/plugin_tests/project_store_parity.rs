@@ -651,7 +651,7 @@ fn project_store_actual_runtimes_match_real_legacy_import_files() {
 }
 
 #[test]
-fn project_store_actual_runtimes_match_discovery_context_arrangement_and_rpc_authority() {
+fn project_store_actual_runtimes_match_discovery_context() {
     let _reference_trace = super::reference_trace::Scenario::new(
         "project_store_actual_runtimes_match_discovery_context_arrangement_and_rpc_authority",
     );
@@ -669,12 +669,6 @@ fn project_store_actual_runtimes_match_discovery_context_arrangement_and_rpc_aut
     pair.watches();
     pair.query("project_list", json!({}));
     pair.snapshot("agent_snapshot", Some(snapshot.to_string()));
-    pair.snapshot("arrange_projects_snapshot", Some(snapshot.to_string()));
-    pair.request("arrange_panes_by_project", None);
-    assert!(pair.request("arrange_panes_by_project", None).is_empty());
-    pair.snapshot("arrange_projects_snapshot", Some(snapshot.to_string()));
-    pair.request("arrange_panes_by_project", None);
-    pair.snapshot("arrange_projects_snapshot", Some("bad".into()));
     snapshot["panes"] = json!([]);
     pair.snapshot("agent_snapshot", Some(snapshot.to_string()));
     let payload = json!({"op":"project_list","structured_reply":true,"request_id":"correlated-1"})
@@ -764,21 +758,16 @@ fn project_store_accepts_snapshots_only_from_the_agent_service_in_order() {
                 "branch":"main","worktree_status":"primary"}}})
         .to_string()
     };
-    // Effects a forged snapshot could cause: shared data writes, tab labels, context, and pane moves.
+    // Effects a forged snapshot could cause: shared data writes, tab labels and context.
     let mut send = |source: PipeSource, name: &str, payload: Option<String>, seq: Option<u64>| {
         steel.pipe(&message(source, name, payload, seq));
         steel
             .take_commands()
             .into_iter()
             .filter(|command| {
-                [
-                    "DataApply",
-                    "SetTabProjects",
-                    "SetProjectContext",
-                    "ArrangeProjectPanes",
-                ]
-                .iter()
-                .any(|name| command.get(name).is_some())
+                ["DataApply", "SetTabProjects", "SetProjectContext"]
+                    .iter()
+                    .any(|name| command.get(name).is_some())
             })
             .collect::<Vec<_>>()
     };
@@ -847,29 +836,42 @@ fn project_store_accepts_snapshots_only_from_the_agent_service_in_order() {
         "the service's hello restarts its sequence"
     );
     assert_eq!(projects(), 2);
+}
 
-    send(cli(), "arrange_panes_by_project", None, None);
-    for source in [foreign(), cli()] {
-        let effects = send(
-            source,
+#[test]
+fn project_store_ignores_retired_arrangement_pipes() {
+    let root = tempfile::tempdir().unwrap();
+    let data = DataHost::new("project-store");
+    let mut steel = SteelReference::new(
+        "project-store",
+        BTreeMap::new(),
+        root.path(),
+        with_agent_service(host(&data, root.path())),
+    );
+    let cli = PipeSource::Cli("old-client".into());
+    steel.pipe(&message(cli.clone(), "agent_hello", None, None));
+    steel.take_commands();
+    let projects = || data.fetch(&FetchRequest::entity("project").in_namespace(store::SHARED));
+    let before = projects();
+    let snapshot = json!({"panes":[{"pane_id":2,"title":"agent","command":"claude","cwd":"/work","status":"Running","tab":[1,"old"]}],
+        "activity":{},"yinz_session_name":"main","repositories":{"/work":{"root":"/work",
+            "common_dir":"/work/.git","remote":"https://example.com/work.git",
+            "branch":"main","worktree_status":"primary"}}})
+    .to_string();
+    for (source, name, payload) in [
+        (cli.clone(), "arrange_panes_by_project", None),
+        (cli, "arrange_projects_snapshot", Some(snapshot.clone())),
+        (
+            PipeSource::Plugin(PluginId::new(AGENT_SERVICE)),
             "arrange_projects_snapshot",
-            Some(snapshot("/work")),
-            None,
-        );
-        assert!(effects.is_empty(), "{effects:?}");
+            Some(snapshot),
+        ),
+    ] {
+        steel.pipe(&message(source, name, payload, Some(1)));
+        let effects = steel.take_commands();
+        assert!(effects.is_empty(), "{name}: {effects:?}");
+        assert_eq!(projects(), before);
     }
-    let arranged = send(
-        service(),
-        "arrange_projects_snapshot",
-        Some(snapshot("/work")),
-        None,
-    );
-    assert!(
-        arranged
-            .iter()
-            .any(|command| command.get("ArrangeProjectPanes").is_some()),
-        "rejected snapshots must not cancel the pending arrangement: {arranged:?}"
-    );
 }
 
 #[test]

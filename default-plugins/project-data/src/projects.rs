@@ -872,7 +872,7 @@ pub fn repository_identity(repository: &Repository) -> Option<String> {
         })
 }
 
-/// Resolve the identity, label and configuration root used to arrange project panes.
+/// Resolve the project identity, label and configuration root for a repository location.
 pub fn resolve(
     probed: &Probed,
     projects: &Registry,

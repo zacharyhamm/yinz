@@ -13,7 +13,6 @@ fn actions_without_completion_owners_do_not_wait_for_timeout() {
             action: Box::new(Action::Quit),
         },
         Action::ToggleMouseMode,
-        Action::ArrangePanesByProject,
         Action::NoOp,
     ] {
         let (plugin_tx, plugin_rx) = yinz_runtime::channels::unbounded();
@@ -55,14 +54,7 @@ fn actions_without_completion_owners_do_not_wait_for_timeout() {
                 ServerInstruction::ClientExit(_, None)
             ));
         }
-        let arrange = action == Action::ArrangePanesByProject;
-        assert_eq!(plugin_rx.len(), usize::from(arrange));
-        if arrange {
-            assert!(matches!(
-                plugin_rx.try_recv().unwrap().0,
-                PluginInstruction::ArrangePanesByProject
-            ));
-        }
+        assert!(plugin_rx.is_empty());
     }
 }
 

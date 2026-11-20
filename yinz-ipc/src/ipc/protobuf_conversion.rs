@@ -189,6 +189,9 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
                     terminal_size: Some(terminal_size.into()),
                 })
             },
+            ClientToServerMsg::RetiredArrangePanesByProject => {
+                return Err(anyhow!("retired arrange action is receive-only"));
+            },
             ClientToServerMsg::Action {
                 action,
                 terminal_id,
@@ -1916,7 +1919,6 @@ impl TryFrom<yinz_types::input::actions::Action>
             ActivateNotificationAction,
             AdoptPaneAction,
             AreFloatingPanesVisibleAction,
-            ArrangePanesByProjectAction,
             BreakPaneAction,
             BreakPaneLeftAction,
             BreakPaneRightAction,
@@ -2880,9 +2882,6 @@ impl TryFrom<yinz_types::input::actions::Action>
                     id: id.get() as u64,
                     name,
                 })
-            },
-            yinz_types::input::actions::Action::ArrangePanesByProject => {
-                ActionType::ArrangePanesByProject(ArrangePanesByProjectAction {})
             },
             yinz_types::input::actions::Action::BreakPane => {
                 ActionType::BreakPane(BreakPaneAction {})
@@ -4035,9 +4034,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                         .context("tab_id is outside usize range")?,
                     name: rename_tab_by_id_action.name,
                 })
-            },
-            ActionType::ArrangePanesByProject(_) => {
-                Ok(yinz_types::input::actions::Action::ArrangePanesByProject)
             },
             ActionType::BreakPane(_) => Ok(yinz_types::input::actions::Action::BreakPane),
             ActionType::BreakPaneRight(_) => Ok(yinz_types::input::actions::Action::BreakPaneRight),

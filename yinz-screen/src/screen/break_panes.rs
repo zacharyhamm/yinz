@@ -59,7 +59,6 @@ impl Screen {
         &mut self,
         extracted: Vec<(ExtractedPaneWithSource, ExtractedPanePlacement)>,
         tab_id: TabId,
-        arrangement: bool,
     ) -> BreakPanesToTabOutcome {
         let mut outcome = BreakPanesToTabOutcome::default();
         let mut refused: Vec<ExtractedPaneWithSource> = vec![];
@@ -67,12 +66,7 @@ impl Screen {
             Some(destination) => {
                 for ((source_tab_id, original, pane, carried_respawn), placement) in extracted {
                     let pane_id = pane.pid();
-                    let accepted = if arrangement {
-                        destination.accept_arranged_pane(pane, placement)
-                    } else {
-                        destination.accept_extracted_pane(pane, placement)
-                    };
-                    match accepted {
+                    match destination.accept_extracted_pane(pane, placement) {
                         AcceptedPane::Accepted => {
                             outcome.moved.push(pane_id);
                             if let Some(entry) = carried_respawn {
@@ -462,7 +456,6 @@ impl Screen {
             let outcome = self.accept_transferred_panes(
                 vec![(extracted, destination_placement)],
                 destination_tab_id,
-                false,
             );
             if outcome.moved.contains(&pane_id) {
                 // Moving an existing pane supplies content itself; do not recover parked work.
@@ -500,7 +493,7 @@ impl Screen {
     /// even that tab refuses it. Never drops it.
     pub(super) fn return_extracted_pane(&mut self, extracted: ExtractedPaneWithSource) {
         let (source, placement) = (extracted.0, extracted.1.clone());
-        self.accept_transferred_panes(vec![(extracted, placement)], source, false);
+        self.accept_transferred_panes(vec![(extracted, placement)], source);
     }
     /// Tell the user a pane they asked to move stayed where it was. Cosmetic, so a failure to
     /// send it is logged rather than failing the move that has already been settled.
@@ -591,23 +584,6 @@ impl Screen {
         should_change_focus_to_target_tab: bool,
         client_id: ClientId,
     ) -> Result<BreakPanesToTabOutcome> {
-        self.move_project_or_existing_panes(
-            pane_ids,
-            tab_id,
-            should_change_focus_to_target_tab,
-            client_id,
-            false,
-        )
-    }
-
-    pub(super) fn move_project_or_existing_panes(
-        &mut self,
-        pane_ids: Vec<PaneId>,
-        tab_id: TabId,
-        should_change_focus_to_target_tab: bool,
-        client_id: ClientId,
-        arrangement: bool,
-    ) -> Result<BreakPanesToTabOutcome> {
         let err_context = || format!("failed to move panes to tab with id {tab_id}");
         let mut outcome = BreakPanesToTabOutcome::default();
 
@@ -653,12 +629,7 @@ impl Screen {
                 outcome.not_found.push(pane_id);
                 continue;
             };
-            let destination_placement = if arrangement && source.pane_is_stack_list_member(&pane_id)
-            {
-                ExtractedPanePlacement::Tiled
-            } else {
-                source.placement_for_extraction(pane_id)
-            };
+            let destination_placement = source.placement_for_extraction(pane_id);
             let source = source.id;
             match self.extract_pane_for_transfer(source, pane_id, true) {
                 Some(pane) => {
@@ -670,7 +641,7 @@ impl Screen {
             }
         }
 
-        let transferred = self.accept_transferred_panes(extracted, tab_id, arrangement);
+        let transferred = self.accept_transferred_panes(extracted, tab_id);
         outcome.moved.extend(transferred.moved);
         outcome.returned_to_source = transferred.returned_to_source;
         outcome.closed = transferred.closed;

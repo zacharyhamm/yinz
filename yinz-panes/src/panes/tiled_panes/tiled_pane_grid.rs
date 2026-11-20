@@ -2287,8 +2287,8 @@ pub fn split(direction: SplitDirection, rect: &PaneGeom) -> Option<(PaneGeom, Pa
     }
 }
 
-/// Shared by live insertion and arrangement preflight; ties keep the existing ID rule.
-pub fn room_in_geometries<K: Copy + Ord>(
+/// Selects the largest splittable pane with deterministic ID tie-breaking.
+fn room_in_geometries<K: Copy + Ord>(
     panes: impl Iterator<Item = (K, PaneGeom, usize, usize)>,
     ratio: Option<usize>,
 ) -> Option<(K, SplitDirection)> {

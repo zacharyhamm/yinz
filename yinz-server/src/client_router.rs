@@ -319,6 +319,42 @@ pub(crate) fn route_thread_main(
         .non_fatal();
     'route_loop: loop {
         match receiver.recv_client_msg() {
+            received @ (IpcRecv::Malformed
+            | IpcRecv::Msg(ClientToServerMsg::RetiredArrangePanesByProject, _)) => {
+                consecutive_malformed_messages_received += 1;
+                if consecutive_malformed_messages_received == 1 {
+                    log::error!("Received an unreadable message from client {client_id}.");
+                }
+                if consecutive_malformed_messages_received >= MAX_CONSECUTIVE_MALFORMED_MESSAGES {
+                    log::error!("Client sent over {MAX_CONSECUTIVE_MALFORMED_MESSAGES} consecutive unreadable messages, the connection has desynchronised - logging client out");
+                    os_input
+                        .send_to_client(
+                            client_id,
+                            ServerToClientMsg::Exit {
+                                exit_reason: ExitReason::Error(
+                                    "The connection to this client desynchronised.".to_string(),
+                                ),
+                            },
+                        )
+                        .with_context(err_context)
+                        .non_fatal();
+                    break 'route_loop;
+                }
+                thread::sleep(MALFORMED_MESSAGE_BACKOFF);
+                if matches!(received, IpcRecv::Malformed) {
+                    continue 'route_loop;
+                }
+                let is_watcher = session_state
+                    .read()
+                    .to_anyhow()
+                    .context("access routed session state")?
+                    .is_watcher(&client_id);
+                if !is_watcher {
+                    os_input.send_to_client(client_id, ServerToClientMsg::LogError {
+                        lines: vec!["Arrange panes by project was removed. Use a yinz client that matches the server version.".into()],
+                    }).with_context(err_context).non_fatal();
+                }
+            },
             IpcRecv::Msg(instruction, err_ctx) => {
                 consecutive_malformed_messages_received = 0;
                 yinz_runtime::errors::update_thread_ctx(&err_ctx);
@@ -979,6 +1015,9 @@ pub(crate) fn route_thread_main(
                         ClientToServerMsg::SignalQuit => {
                             to_server.send(ServerInstruction::SignalQuit(client_id)).with_context(err_context)?;
                         },
+                        ClientToServerMsg::RetiredArrangePanesByProject => {
+                            unreachable!("retired requests bypass action dispatch");
+                        },
                         ClientToServerMsg::ClientExited => return Ok(true),
                         ClientToServerMsg::KillSessionWithCompletion { report_progress } => {
                             to_server.send(ServerInstruction::KillSessionWithCompletion { client_id, report_progress })
@@ -1240,33 +1279,6 @@ pub(crate) fn route_thread_main(
                 // client out of the session.
                 log::info!("client {client_id} closed its connection");
                 break 'route_loop;
-            },
-            IpcRecv::Malformed => {
-                consecutive_malformed_messages_received += 1;
-                if consecutive_malformed_messages_received == 1 {
-                    log::error!("Received an unreadable message from client {client_id}.");
-                }
-                if consecutive_malformed_messages_received >= MAX_CONSECUTIVE_MALFORMED_MESSAGES {
-                    log::error!("Client sent over {MAX_CONSECUTIVE_MALFORMED_MESSAGES} consecutive unreadable messages, the connection has desynchronised - logging client out");
-                    os_input
-                        .send_to_client(
-                            client_id,
-                            ServerToClientMsg::Exit {
-                                exit_reason: ExitReason::Error(
-                                    "The connection to this client desynchronised.".to_string(),
-                                ),
-                            },
-                        )
-                        .with_context(err_context)
-                        .non_fatal();
-                    break 'route_loop;
-                }
-                // Don't fall through to the unblock below: nothing was
-                // processed, and a stream that produces malformed frames
-                // without blocking would otherwise have us write to it as fast
-                // as the CPU allows.
-                thread::sleep(MALFORMED_MESSAGE_BACKOFF);
-                continue 'route_loop;
             },
             IpcRecv::Idle => {
                 if !received_first_message {

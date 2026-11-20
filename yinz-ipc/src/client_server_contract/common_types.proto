@@ -159,6 +159,8 @@ enum AnsiCode {
 }
 
 message Action {
+  reserved 164;
+  reserved "arrange_panes_by_project";
   reserved 140, 148, 172;
   reserved "toggle_mother";
   oneof action_type {
@@ -329,7 +331,6 @@ message Action {
     MoveTextSelectionAction move_text_selection = 161;
     SwapTextSelectionEndsAction swap_text_selection_ends = 162;
     AgentEventAction agent_event = 163;
-    ArrangePanesByProjectAction arrange_panes_by_project = 164;
     MoveNotificationSelectionAction move_notification_selection = 165;
     ActivateNotificationAction activate_notification = 166;
     ToggleNotificationDetailAction toggle_notification_detail = 167;
@@ -450,7 +451,6 @@ message OverrideLayoutAction {
   bool apply_only_to_active_tab = 4;
 }
 message QueryTabNamesAction {}
-message ArrangePanesByProjectAction {}
 message BreakPaneAction {}
 message BreakPaneRightAction {}
 message BreakPaneLeftAction {}

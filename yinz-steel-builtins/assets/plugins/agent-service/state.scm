@@ -68,8 +68,7 @@
       "summaries" (hash) "summary-requests" (hash) "run-summary-requests" (hash) "summary-seq" 0
       "completions" (hash) "completion-seq" 0 "project-providers" '() "published-locations" #f "repositories" (hash) "git-probes" (hash) "probe-backoff" (hash)
       "git-seq" 0 "git-elapsed" 0 "remote-cursor" 0 "command-cursor" 0 "poll-window" 7500
-      "prefixes" (hash) "arrangement-subscribers" '() "arrangement-pending" '()
-      "arrangement-failed" '() "arrangement-token" json-null "arrangement-start" json-null)))
+      "prefixes" (hash))))
 (as-reset!)
 (define (as-record-cwd! id cwd)
   (define normalized (as-model "NormalizePath" cwd))
@@ -348,7 +347,6 @@
             (filter (lambda (run) (as-present? (hash-ref run "ended_at_ms"))) (as-map-values "dirty-runs"))))))
     (as-set! "run-headers" headers)
     (define payload (as-model "PollReplyString" reply))
-    (as-call "publish-arrangement" reply)
     (unless (and (not force) (equal? payload (as-get "published")))
       (as-set! "seq" (+ 1 (as-get "seq")))
       (for-each (lambda (id)

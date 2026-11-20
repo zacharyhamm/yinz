@@ -2046,17 +2046,6 @@ Config {
                 bare_key: Char(
                     'a',
                 ),
-                key_modifiers: {},
-            }: [
-                ArrangePanesByProject,
-                SwitchToMode {
-                    input_mode: Normal,
-                },
-            ],
-            KeyWithModifier {
-                bare_key: Char(
-                    'a',
-                ),
                 key_modifiers: {
                     Alt,
                 },

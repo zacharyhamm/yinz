@@ -103,6 +103,7 @@ fn warp_tab_uses_tab_id() {
 #[test]
 fn removed_automation_spellings_have_no_aliases() {
     for args in [
+        vec!["yinz", "action", "arrange-panes-by-project"],
         vec!["yinz", "action", "agent-list"],
         vec!["yinz", "action", "agent-wait", "terminal_7", "idle"],
         vec!["yinz", "action", "agent-runs"],

@@ -102,7 +102,7 @@ impl Screen {
         if self.warp.has_in_flight_work() {
             pending.push(PreparationWork::PaneTransfer);
         }
-        if self.has_pending_tabs() || self.core.pending_arrangement.is_some() {
+        if self.has_pending_tabs() {
             pending.push(PreparationWork::Layout);
         }
         if !self.core.resolving_plugins.is_empty()
@@ -218,7 +218,7 @@ impl Screen {
             "a pane transfer is already active"
         );
         anyhow::ensure!(
-            !self.has_pending_tabs() && self.core.pending_arrangement.is_none(),
+            !self.has_pending_tabs(),
             "a layout is still being applied; retry after it finishes"
         );
         anyhow::ensure!(
