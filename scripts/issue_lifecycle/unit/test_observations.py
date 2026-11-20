@@ -111,6 +111,9 @@ class TaskRecoveryTests(unittest.TestCase):
                            "note": "line\nbreak\ttab\u0001 </tag> \U0001F600", "digest": "d" * 64},
                  "phase": "triaging", "planVersion": 0}
         self.assertEqual(state_digest(state), "f24aaafd048940447e6cce8af2d7934b809f533c87ca1513540436515c03dc23")
+        # JSON.stringify escapes lone surrogates, including in keys.
+        lone = {"b": "x\ud800y\udfffz", "a": "\U0001F600 é\u0001", "\ud83dk": 1}
+        self.assertEqual(state_digest(lone), "42c1f660d0ffd966500992d320ec9d455b8ebb99431c4038dfd627bbb1435470")
 
     def test_status_reports_submission_states_by_digest(self):
         submission = {"status": "accepted",

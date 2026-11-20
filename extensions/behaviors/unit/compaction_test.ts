@@ -11,7 +11,18 @@ import {
 } from "../_lib/assignment_files.ts";
 import { canonical, evidenceDigest } from "../_lib/canonical.ts";
 import { handoffStateFields } from "../_lib/handoff_next.ts";
-import { reviewPacket } from "../_lib/issue_evidence.ts";
+import {
+  assignmentCore,
+  AssignmentSchema,
+  reviewPacket,
+} from "../_lib/issue_evidence.ts";
+import { AgentTaskSchema } from "../_lib/issue_agents.ts";
+import { compactTask } from "../_lib/issue_compaction.ts";
+import {
+  createEvidenceMethods,
+  type EvidenceContext,
+} from "../issue_evidence.ts";
+import { AgentConfigSchema, promptDigest } from "../_lib/yinz_agent.ts";
 import {
   activeFollowUps,
   carriedIgnores,
@@ -23,6 +34,7 @@ import {
   planningGeneration,
   priorImplementationFindings,
   requireReviewAcceptance,
+  stateDigest,
   StateSchema,
   transition,
 } from "../_lib/lifecycle.ts";
@@ -45,6 +57,15 @@ function equal(actual: unknown, expected: unknown, message?: string) {
 function throws(f: () => unknown, text: string) {
   try {
     f();
+  } catch (error) {
+    assert(String(error).includes(text), String(error));
+    return;
+  }
+  throw new Error(`Expected ${text}`);
+}
+async function rejects(f: () => Promise<unknown>, text: string) {
+  try {
+    await f();
   } catch (error) {
     assert(String(error).includes(text), String(error));
     return;
@@ -530,4 +551,151 @@ Deno.test("records stay small as review rounds accumulate", async () => {
   assert(size < 128 * 1024, `state is ${size} bytes`);
   const handoff = JSON.stringify(handoffStateFields(state));
   assert(handoff.length < 1024, `handoff state fields are ${handoff.length}`);
+});
+
+Deno.test("a compacted task keeps its evidence identity, so a rollback can supersede it", async () => {
+  const before = legacyIssue();
+  const id = "a6da10b0-c980-4b82-b920-000000000010";
+  const recoveryId = "a6da10b0-c980-4b82-b920-000000000011";
+  const controlDir = "/repo/control";
+  const parent = { modelId: "issue-model", definition: { name: "issue-144" } };
+  const prompt = "Legacy review prompt";
+  // A contract-3 review dispatched before diffs moved out of line: its snapshot
+  // and its continuity baseline both embed diff bodies.
+  const identity = {
+    id,
+    behaviorName: `issue-agent-${id}`,
+    role: "review_code" as const,
+    config: AgentConfigSchema.parse({
+      session: "test",
+      kind: "codex",
+      cwd: "/repo/issue",
+    }),
+    before,
+    reviewCommit: repaired,
+    contractVersion: 3 as const,
+    round: {
+      assignmentId: id,
+      role: "review_code" as const,
+      at: "2026-11-20T00:00:00.000Z",
+      issueDigest: before.issue.digest,
+      generation: planningGeneration(before),
+      launchCauses: [{
+        kind: "unknown" as const,
+        explanation: "Fixture",
+        evidence: ["assignment fixture"],
+        source: "controller" as const,
+      }],
+      corrections: [],
+    },
+    continuity: {
+      version: 1 as const,
+      assignmentId: id,
+      issueDigest: before.issue.digest,
+      generation: planningGeneration(before),
+      rollbackId: before.rollbackId,
+      planVersion: before.planVersion,
+      packetDigest: evidenceDigest(reviewPacket(before)),
+      reviewFingerprints: (["review_code", "review_ux"] as const).map((role) =>
+        implementationReviewFingerprint(before, role)
+      ),
+      baseline: inlineBaseline(repaired, {
+        previousHead: first,
+        delta,
+        deltaPaths: ["lib.rs"],
+        ancestry: "descendant",
+      }),
+    },
+  };
+  const core = assignmentCore(parent, identity, controlDir);
+  const assignment = AssignmentSchema.parse({
+    ...core,
+    digest: evidenceDigest(core),
+    promptDigest: await promptDigest(prompt),
+  });
+  const task = AgentTaskSchema.parse({
+    ...identity,
+    prompt,
+    promptDigest: assignment.promptDigest,
+    createdAt: "2026-11-20T00:00:00.000Z",
+    status: "completed",
+    cleanup: "done",
+    submission: {
+      protocol: 1,
+      behaviorName: `issue-evidence-${id}`,
+      controlDir,
+      assignmentDigest: assignment.digest,
+    },
+  });
+  const resources = new Map<string, unknown>();
+  const store = memoryDiffStore();
+  const { task: compacted, changed } = await compactTask(
+    {
+      readResource: (name) =>
+        Promise.resolve(structuredClone(resources.get(name) ?? null)),
+      writeResource: (_spec, name, value) => {
+        resources.set(name, structuredClone(value));
+        return Promise.resolve({ name });
+      },
+    },
+    store,
+    task,
+  );
+  assert(changed);
+  assert(compacted.beforeDigest !== stateDigest(before));
+  assert(!JSON.stringify(compacted).includes("first line"));
+  resources.set("agent-task", compacted);
+  resources.set("recovery", {
+    id: recoveryId,
+    status: "pending",
+    task: { id },
+  });
+  const slot = new Map<string, unknown>();
+  const context: EvidenceContext = {
+    repoDir: controlDir,
+    definition: { name: `issue-evidence-${id}` },
+    signal: new AbortController().signal,
+    createFileWriter: () => {
+      throw new Error("Unexpected file write");
+    },
+    readResource: (name) =>
+      Promise.resolve(structuredClone(slot.get(name) ?? null) as never),
+    writeResource: (_spec, name, value) => {
+      slot.set(name, structuredClone(value));
+      return Promise.resolve({ name } as never);
+    },
+    dataRepository: {
+      getContent: (type, name, resource) => {
+        equal([type, name], ["@yinz/issue-lifecycle", parent.modelId]);
+        const value = resources.get(resource);
+        return Promise.resolve(
+          value == null
+            ? null
+            : new TextEncoder().encode(JSON.stringify(value)),
+        );
+      },
+    },
+  };
+  const methods = createEvidenceMethods({
+    readAgenda: () => Promise.reject(new Error("Unexpected Agenda read")),
+    inspect: () => Promise.reject(new Error("Unexpected Git inspection")),
+    realPath: (path: string) => Promise.resolve(path),
+    now: () => "2026-11-20T00:00:00.000Z",
+  });
+  const supersede = () =>
+    methods.supersede.execute({
+      taskId: id,
+      assignmentDigest: assignment.digest,
+      operationId: recoveryId,
+    }, context);
+  slot.set("submission", { status: "open", assignment });
+  await supersede();
+  equal((slot.get("submission") as { status: string }).status, "superseded");
+  // A task that names any other dispatch is still refused.
+  slot.set("submission", { status: "open", assignment });
+  resources.set("agent-task", { ...compacted, beforeDigest: "0".repeat(64) });
+  await rejects(supersede, "stale or different assignment");
+  const { continuity: _continuity, ...uncontinued } = compacted;
+  resources.set("agent-task", uncontinued);
+  await rejects(supersede, "stale or different assignment");
 });

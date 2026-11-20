@@ -672,7 +672,7 @@ export function taskPrompt(
         implementation: state.implementation,
         sourceRef: "assignment.before",
         note: files
-          ? `Complete requirements and review obligations are in the packet. The full original snapshot, including referenced historical diffs, is in ${files.files.snapshot.path} and remains in this task's authorized submission record.`
+          ? `Complete requirements and review obligations are in the packet. The full original snapshot is in ${files.files.snapshot.path} and remains in this task's authorized submission record; its historical diffs are inline or named by featureDiffRef/deltaRef.`
           : "Complete requirements and review obligations are in the packet. The full original snapshot, including referenced historical diffs, remains in this task's authorized submission record.",
       })
       : JSON.stringify(state),
@@ -2210,6 +2210,7 @@ export function createAgentMethods(
               (hydrated) => hydrated.before as Record<string, unknown>,
               () => undefined,
             );
+            // Digests are canonical, so a mismatch always names a changed field.
             const changed = before
               ? [
                 ...new Set([...Object.keys(now), ...Object.keys(before)]),
@@ -2217,7 +2218,7 @@ export function createAgentMethods(
               : ["(dispatch snapshot unavailable)"];
             throw new Error(
               `Pane evidence may already be applied: lifecycle fields changed since ${who} was dispatched (${
-                changed.length ? changed.join(", ") : "field order only"
+                changed.join(", ")
               }); resume the task before discarding it`,
             );
           }

@@ -1185,15 +1185,22 @@ bodies.
 `compact` (`scripts/issue-lifecycle --item N compact`) brings an issue saved
 before this layout to it. It refuses while a rollback is pending, the current
 task is unresolved or a reserved assignment is pending. It reads the state, the
-current task and the driver one at a time; stores each distinct diff once;
-records fingerprint aliases from the full form and refuses if any review or
-decision fingerprint, finding identity, follow-up, ignore or active repair would
-change; replaces the old `handoff`, unread, with a small invalidated record;
-then saves the compacted state and strips the task's and driver's states into
-snapshots. Reviews, decisions, follow-ups, verification and history keep their
-content and meaning. A compact issue is left untouched, so rerunning is safe.
-The next `drive` presents the current handoff from the recorded evidence without
-rerunning reviews.
+current task, the driver and the finished `recovery` record once each; stores
+each distinct diff once; records fingerprint aliases from the full form and
+refuses if any review or decision fingerprint, finding identity, follow-up,
+ignore or active repair would change; replaces the old `handoff`, unread, with a
+small invalidated record; then saves the compacted state and strips the states
+of the task, the driver's tasks and the recovery's tasks into snapshots. The
+recovery keeps its own `before`, `next` and `reconciled` states, with diffs by
+reference. A task that already names its
+snapshot by digest is renamed to the digest of the compacted snapshot, so every
+digest fence still matches the compacted state. The task's evidence submission
+is not rewritten: the evidence behavior recomputes the compacted form of the
+assignment it bound, so a later rollback can still supersede the task. Reviews,
+decisions, follow-ups, verification and history keep their content and meaning.
+A compact issue is left untouched, so rerunning is safe. The next `drive`
+presents the current handoff from the recorded evidence without rerunning
+reviews.
 
 ## Legacy states
 
@@ -1219,6 +1226,7 @@ rewrite). When a handoff, status or blocker names one of these states:
 | Legacy unmerged ready state without UX | Blocks: with the user's request, `rollback` to `review_ux`, then `drive`, checks and a new merge authorization. Legacy ready findings with both reviews return to `address_review_findings`. |
 | Legacy unlanded active attempt | Needs `repair` and fresh reviews. First consult its durable receipt: a landed merge is a fact, and merge/close-out replay reuses it without inventing UX evidence. |
 | Inline diffs and embedded states | Records saved before [compact records](#persisted-record-size) parse and work unchanged, but can exceed Swamp's memory limits (`status` failing with `Invalid string length`, or `drive` running out of heap). With no pending rollback or unresolved task, run `compact` once, then `drive`. |
+| Review task saved before compact records but never published | Compact records changed the review roles' evidence schema, so a `review_code` or `review_ux` task saved before the upgrade can no longer regenerate a missing `evidence-schema.json` byte-for-byte. If its assignment was interrupted before publication, resume refuses with `Assignment file evidence-schema.json is missing and cannot be reproduced byte-for-byte`. Inspect the task, then, with the user's request, run `restart-agent` with control identity; the replacement worker gets the current schema. Published assignments are unaffected. |
 
 Legacy explicit decision inputs (`approve {planVersion, request}`,
 `adjudicate-plan {planVersion, reviewFingerprint, dispositions}`,

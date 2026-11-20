@@ -18,6 +18,7 @@ import {
   type IssueAgentContext,
   type IssueAgentDependencies,
   RecoverySchema,
+  saveSnapshot,
   snapshotName,
   taskPrompt,
   taskReceipt,
@@ -40,6 +41,7 @@ import {
   priorImplementationFindings,
   recordMergeFailure,
   refreshIssue,
+  rollbackState,
   selectedRepairFindings,
   stateDigest,
   StateSchema,
@@ -892,7 +894,6 @@ Deno.test("truncated or arbitrary final chat cannot invalidate accepted evidence
     h.controls.resultPatch = { message };
     h.controls.childPatch = { message: "Different presentation" };
     await h.drive.execute({ agent: options }, h.context);
-    console.log("DBG", result(h).reason);
     equal(result(h).decision, "approve_plan");
     const receipt =
       AgentTaskSchema.parse(h.resources.get("agent-task")).evidence;
@@ -8722,6 +8723,95 @@ Deno.test("compaction of a legacy issue keeps its decisions so drive authorizes 
   equal(h.calls.length, 0);
   assert(!h.controls.gitActions.includes("review-context"));
   assert(JSON.stringify(h.resources.get("handoff")).length < 64 * 1024);
+});
+
+Deno.test("compaction renames digest-only snapshots and compacts a finished rollback", async () => {
+  const body = `diff --git a/lib.rs b/lib.rs\n${
+    "+renamed body line\n".repeat(5_000)
+  }`;
+  const reviewed = transition(implementing(), "review_code", {
+    planVersion: 1,
+    commit: head,
+    steps: [{ id: "fix", status: "implemented" }],
+    findings: [],
+    baseline: {
+      main: "b".repeat(40),
+      mergeBase: "b".repeat(40),
+      head,
+      featureDiff: body,
+      ancestry: "initial",
+      baselineChanged: false,
+      limitations: [],
+    },
+  });
+  const recoveryId = "a6da10b0-c980-4b82-b920-640238095030";
+  // The rollback archives the inline review; the state still embeds its body.
+  const legacy = rollbackState(reviewed, "implement", recoveryId);
+  assert(legacy.reviewHistory?.length && !legacy.codeReview);
+  const h = harness(legacy);
+  // Dispatched after snapshots moved out of tasks, against the legacy state.
+  const dispatched = legacyCompletedTask(
+    "a6da10b0-c980-4b82-b920-640238095031",
+    "implement",
+    legacy,
+    legacy,
+    { summary: "Re-implemented after rollback", commit: head },
+  );
+  const { before: _before, next: _next, ...rest } = dispatched;
+  const digestOnly = AgentTaskSchema.parse({
+    ...rest,
+    beforeDigest: await saveSnapshot(h.context, legacy),
+    nextDigest: stateDigest(legacy),
+    evidence: taskReceipt(dispatched.evidence!),
+  });
+  h.resources.set("agent-task", digestOnly);
+  h.resources.set("driver", { assignmentId: digestOnly.id });
+  h.resources.set(
+    "recovery",
+    RecoverySchema.parse({
+      id: recoveryId,
+      step: "implement",
+      request: "Implement again",
+      createdAt: timestamp,
+      status: "completed",
+      before: reviewed,
+      next: legacy,
+      task: legacyCompletedTask(
+        "a6da10b0-c980-4b82-b920-640238095032",
+        "implement",
+        implementing(),
+        implementing(),
+        { summary: "First implementation", commit: head },
+      ),
+    }),
+  );
+  await compactIssue(h.context, {
+    id: () => crypto.randomUUID(),
+    now: () => timestamp,
+  });
+  const saved = await loadState(h.context);
+  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  // Every digest fence names the compacted state the task imported.
+  equal(
+    [task.beforeDigest, task.nextDigest, task.evidence?.nextDigest],
+    Array(3).fill(stateDigest(saved)),
+  );
+  equal(
+    stateDigest(
+      StateSchema.parse(h.resources.get(snapshotName(task.beforeDigest!))),
+    ),
+    task.beforeDigest,
+  );
+  const recovery = RecoverySchema.parse(h.resources.get("recovery"));
+  equal(stateDigest(recovery.next), stateDigest(saved));
+  for (const name of ["state", "agent-task", "recovery"]) {
+    const json = JSON.stringify(h.resources.get(name));
+    assert(!json.includes("renamed body line"), `${name} embeds the diff`);
+  }
+  // The imported implementation still advances to review, not a new worker.
+  h.controls.evidenceForRole = driverEvidence;
+  await h.drive.execute({ agent: options }, h.context);
+  equal(dispatchedRoles(h)[0], "review_code");
 });
 
 Deno.test("dispatch stores each diff once and keeps state, tasks, driver and handoff small", async () => {

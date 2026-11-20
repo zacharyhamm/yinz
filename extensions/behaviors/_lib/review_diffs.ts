@@ -122,6 +122,20 @@ export function memoryDiffStore(
   };
 }
 
+/**
+ * Names bodies by digest without storing them, to recompute the compact form of
+ * a record (such as an assignment bound before compaction) without writing.
+ */
+export function digestDiffStore(): DiffStore {
+  return {
+    put: (bytes) => Promise.resolve(sha256Hex(bytes)),
+    get: (ref) =>
+      Promise.reject(
+        new Error(`Review diff ${ref.sha256} is not readable here`),
+      ),
+  };
+}
+
 async function reference(
   store: DiffStore,
   text: string,

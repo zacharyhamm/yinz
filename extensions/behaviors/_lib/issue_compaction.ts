@@ -1,13 +1,14 @@
 /**
  * One-time compaction of an issue saved before review diffs and lifecycle
- * snapshots moved out of its records. It reads each large record alone, never
- * reads the handoff, and writes only once every precondition holds.
+ * snapshots moved out of its records. It reads each large record once, never
+ * reads the handoff, and writes records only once every precondition holds.
  */
 import { z } from "npm:zod@4.6.7";
 import { handoffStateFields } from "./handoff_next.ts";
 import {
   AgentTaskSchema,
   type IssueAgentContext,
+  loadSnapshot,
   RecoverySchema,
   saveSnapshot,
   taskBeforeDigest,
@@ -32,27 +33,76 @@ export interface CompactionDependencies {
 }
 
 /**
+ * Lifecycle states renamed by one compaction: each old digest maps to the
+ * digest of its compacted form, and `saved` lists compacted digests whose
+ * snapshot exists.
+ */
+export type StateRenames = {
+  digests: Map<string, string>;
+  saved: Set<string>;
+};
+export function stateRenames(): StateRenames {
+  return { digests: new Map(), saved: new Set() };
+}
+
+/**
  * A resolved task without inline lifecycle states or diff bodies: each state
  * becomes a digest of its compacted form, saved as a snapshot, so fencing
- * against the compacted lifecycle state keeps its meaning.
+ * against the compacted lifecycle state keeps its meaning. A task that already
+ * names its states by digest (dispatched after snapshots moved out, against a
+ * state that still embedded diffs) is renamed the same way: its dispatch
+ * snapshot is compacted and re-saved, and other digests take their name from
+ * `renames`, which one compaction shares across its records.
  */
 export async function compactTask(
-  context: Pick<IssueAgentContext, "writeResource">,
+  context: Pick<IssueAgentContext, "readResource" | "writeResource">,
   store: DiffStore,
   task: Task,
+  renames: StateRenames = stateRenames(),
 ): Promise<{ task: Task; changed: boolean }> {
   const { before, next, ...rest } = task;
   let changed = false;
   const out: Task = { ...rest } as Task;
-  const snapshot = async (state: LifecycleState) =>
-    saveSnapshot(context, (await compactState(state, store)).state);
+  const snapshot = async (state: LifecycleState) => {
+    const digest = await saveSnapshot(
+      context,
+      (await compactState(state, store)).state,
+    );
+    renames.digests.set(stateDigest(state), digest);
+    renames.saved.add(digest);
+    return digest;
+  };
+  /** The compacted name of a digest-only state; `load` ensures its snapshot. */
+  const rename = async (digest: string, load: boolean) => {
+    const known = renames.digests.get(digest);
+    if (!load || (known !== undefined && renames.saved.has(known))) {
+      return known ?? digest;
+    }
+    // A missing or damaged snapshot cannot be compacted; fences still follow
+    // a known rename.
+    const saved = await loadSnapshot(context, digest).catch(() => undefined);
+    if (!saved) return known ?? digest;
+    const compacted = await compactState(saved, store);
+    const result = compacted.changed
+      ? await saveSnapshot(context, compacted.state)
+      : digest;
+    renames.digests.set(digest, result);
+    renames.saved.add(result);
+    return result;
+  };
   if (before) {
     out.beforeDigest = await snapshot(before);
     changed = true;
-  } else out.beforeDigest = task.beforeDigest;
+  } else {
+    out.beforeDigest = await rename(task.beforeDigest!, true);
+    changed ||= out.beforeDigest !== task.beforeDigest;
+  }
   if (next) {
     out.nextDigest = await snapshot(next);
     changed = true;
+  } else if (task.nextDigest) {
+    out.nextDigest = await rename(task.nextDigest, false);
+    changed ||= out.nextDigest !== task.nextDigest;
   }
   if (task.evidence) {
     const { next: receiptNext, ...receipt } = task.evidence;
@@ -62,6 +112,10 @@ export async function compactTask(
         (await compactState(receiptNext, store)).state,
       );
       changed = true;
+    } else if (evidence.nextDigest) {
+      const digest = await rename(evidence.nextDigest, false);
+      changed ||= digest !== evidence.nextDigest;
+      evidence.nextDigest = digest;
     }
     const payload = evidence.payload;
     if (
@@ -91,8 +145,9 @@ const unresolved = (task: Task) =>
   task.cleanup === "pending" || !!task.discard && task.status !== "discarded";
 
 /**
- * Brings an issue's state, current task and driver to the compact record shape.
- * Idempotent: a compact issue is left untouched. The caller owns the issue lock.
+ * Brings an issue's state, current task, driver and completed rollback record to
+ * the compact record shape. Idempotent: a compact issue is left untouched. The
+ * caller owns the issue lock.
  */
 export async function compactIssue(
   context: IssueAgentContext,
@@ -100,22 +155,19 @@ export async function compactIssue(
 ): Promise<{ dataHandles: Handle[] }> {
   const store = (dependencies.diffStore ?? swampDiffStore)(context);
   const rawRecovery = await context.readResource("recovery");
-  if (
-    rawRecovery != null &&
-    RecoverySchema.parse(rawRecovery).status === "pending"
-  ) {
+  const recovery = rawRecovery == null
+    ? undefined
+    : RecoverySchema.parse(rawRecovery);
+  if (recovery?.status === "pending") {
     throw new Error(
       "Rollback is incomplete; finish it with resume-rollback before compacting",
     );
   }
-  // Each large record is read, compacted and released before the next.
-  let compactedTask: Task | undefined;
-  let taskChanged = false;
-  let taskId: string | undefined;
+  let task: Task | undefined;
   {
     const raw = await context.readResource("agent-task");
     if (raw != null) {
-      const task = AgentTaskSchema.parse(raw);
+      task = AgentTaskSchema.parse(raw);
       if (unresolved(task)) {
         throw new Error(
           `Pane task ${task.id} (${task.role}) is ${task.status}${
@@ -123,14 +175,11 @@ export async function compactIssue(
           }; resolve it with drive or resume-agent before compacting`,
         );
       }
-      taskId = task.id;
-      ({ task: compactedTask, changed: taskChanged } = await compactTask(
-        context,
-        store,
-        task,
-      ));
     }
   }
+  const taskId = task?.id;
+  // Records that name a state by digest keep naming the same, compacted state.
+  const renamed = stateRenames();
   let legacyDigest: string;
   let state: LifecycleState;
   let stateChanged: boolean;
@@ -138,61 +187,97 @@ export async function compactIssue(
     const legacy = await loadState(context);
     legacyDigest = stateDigest(legacy);
     ({ state, changed: stateChanged } = await compactState(legacy, store));
+    renamed.digests.set(legacyDigest, stateDigest(state));
+  }
+  const rawDriver = await context.readResource("driver");
+  const driver = rawDriver == null ? undefined : DriverSchema.parse(rawDriver);
+  for (
+    const reserved of [driver?.automaticRevision, driver?.revisionAuthorization]
+  ) {
+    if (
+      reserved && reserved.assignment.id !== taskId &&
+      reserved.previousAssignmentId === taskId &&
+      taskBeforeDigest(reserved.assignment) === legacyDigest
+    ) {
+      throw new Error(
+        "A reserved pane assignment is unresolved; resume drive before compacting",
+      );
+    }
+  }
+  let compactedTask: Task | undefined;
+  let taskChanged = false;
+  if (task) {
+    ({ task: compactedTask, changed: taskChanged } = await compactTask(
+      context,
+      store,
+      task,
+      renamed,
+    ));
   }
   let compactedDriver: z.infer<typeof DriverSchema> | undefined;
   let driverChanged = false;
-  {
-    const raw = await context.readResource("driver");
-    if (raw != null) {
-      const driver = DriverSchema.parse(raw);
-      for (
-        const reserved of [
-          driver.automaticRevision,
-          driver.revisionAuthorization,
-        ]
-      ) {
-        if (
-          reserved && reserved.assignment.id !== taskId &&
-          reserved.previousAssignmentId === taskId &&
-          taskBeforeDigest(reserved.assignment) === legacyDigest
-        ) {
-          throw new Error(
-            "A reserved pane assignment is unresolved; resume drive before compacting",
-          );
+  if (driver) {
+    const compact = async (value: Task) => {
+      const result = await compactTask(context, store, value, renamed);
+      driverChanged ||= result.changed;
+      return result.task;
+    };
+    compactedDriver = DriverSchema.parse({
+      ...driver,
+      ...(driver.implementation
+        ? { implementation: await compact(driver.implementation) }
+        : {}),
+      ...(driver.automaticRevision
+        ? {
+          automaticRevision: {
+            ...driver.automaticRevision,
+            assignment: await compact(driver.automaticRevision.assignment),
+          },
         }
-      }
-      const compact = async (task: Task) => {
-        const result = await compactTask(context, store, task);
-        driverChanged ||= result.changed;
-        return result.task;
-      };
-      compactedDriver = DriverSchema.parse({
-        ...driver,
-        ...(driver.implementation
-          ? { implementation: await compact(driver.implementation) }
-          : {}),
-        ...(driver.automaticRevision
-          ? {
-            automaticRevision: {
-              ...driver.automaticRevision,
-              assignment: await compact(driver.automaticRevision.assignment),
-            },
-          }
-          : {}),
-        ...(driver.revisionAuthorization
-          ? {
-            revisionAuthorization: {
-              ...driver.revisionAuthorization,
-              assignment: await compact(
-                driver.revisionAuthorization.assignment,
-              ),
-            },
-          }
-          : {}),
-      });
-    }
+        : {}),
+      ...(driver.revisionAuthorization
+        ? {
+          revisionAuthorization: {
+            ...driver.revisionAuthorization,
+            assignment: await compact(
+              driver.revisionAuthorization.assignment,
+            ),
+          },
+        }
+        : {}),
+    });
   }
-  if (!stateChanged && !taskChanged && !driverChanged) {
+  // A finished rollback is history that status still reads with the other
+  // records: its states and tasks keep their content with diffs by reference.
+  let compactedRecovery: z.infer<typeof RecoverySchema> | undefined;
+  let recoveryChanged = false;
+  if (recovery) {
+    const compactRecoveryState = async (value: LifecycleState) => {
+      const result = await compactState(value, store);
+      recoveryChanged ||= result.changed;
+      return result.state;
+    };
+    const compactRecoveryTask = async (value: Task) => {
+      const result = await compactTask(context, store, value, renamed);
+      recoveryChanged ||= result.changed;
+      return result.task;
+    };
+    compactedRecovery = RecoverySchema.parse({
+      ...recovery,
+      before: await compactRecoveryState(recovery.before),
+      next: await compactRecoveryState(recovery.next),
+      ...(recovery.reconciled
+        ? { reconciled: await compactRecoveryState(recovery.reconciled) }
+        : {}),
+      ...(recovery.task
+        ? { task: await compactRecoveryTask(recovery.task) }
+        : {}),
+      ...(recovery.replacement
+        ? { replacement: await compactRecoveryTask(recovery.replacement) }
+        : {}),
+    });
+  }
+  if (!stateChanged && !taskChanged && !driverChanged && !recoveryChanged) {
     context.logger.info("Issue {issue} records are already compact", {
       issue: context.definition.name,
     });
@@ -227,13 +312,19 @@ export async function compactIssue(
       await context.writeResource("driver", "driver", compactedDriver),
     );
   }
+  if (recoveryChanged && compactedRecovery) {
+    handles.push(
+      await context.writeResource("recovery", "recovery", compactedRecovery),
+    );
+  }
   context.logger.info(
-    "Compacted issue {issue}: state {state}, task {task}, driver {driver}",
+    "Compacted issue {issue}: state {state}, task {task}, driver {driver}, recovery {recovery}",
     {
       issue: context.definition.name,
       state: stateChanged ? "compacted" : "unchanged",
       task: taskChanged ? "compacted" : "unchanged",
       driver: driverChanged ? "compacted" : "unchanged",
+      recovery: recoveryChanged ? "compacted" : "unchanged",
     },
   );
   return { dataHandles: handles };

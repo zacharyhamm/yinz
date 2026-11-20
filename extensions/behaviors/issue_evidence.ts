@@ -18,6 +18,12 @@ import {
 } from "./_lib/issue_evidence.ts";
 import { AgentConfigSchema, promptDigest } from "./_lib/yinz_agent.ts";
 import { assertCheckPolicy } from "./_lib/check_policy.ts";
+import {
+  ContinuityContext,
+  isInlineBaseline,
+} from "./_lib/review_continuity.ts";
+import { compactBaseline, digestDiffStore } from "./_lib/review_diffs.ts";
+import { compactState } from "./_lib/state_compaction.ts";
 
 export interface EvidenceContext
   extends Pick<Context, "signal" | "createFileWriter"> {
@@ -313,6 +319,45 @@ export function createEvidenceMethods(dependencies = evidenceDependencies) {
   };
 }
 
+/**
+ * The dispatch snapshot and continuity the parent task bound into this
+ * assignment, or undefined when the task names another dispatch. A task names
+ * its snapshot by digest; `compact` renames it to the digest of its compacted
+ * form and stores its baseline's diff bodies by reference. Both forms are
+ * recomputed here from the assignment, without writing, so a compacted task
+ * keeps its identity (for example when a rollback supersedes it).
+ */
+async function dispatchedIdentity(
+  task: z.infer<typeof ParentTaskSchema>,
+  assignment: Assignment,
+) {
+  const store = digestDiffStore();
+  let before = task.before;
+  if (!before) {
+    if (!task.beforeDigest) return undefined;
+    if (stateDigest(assignment.before) !== task.beforeDigest) {
+      const compacted = await compactState(assignment.before, store).then(
+        ({ state }) => stateDigest(state),
+        () => undefined,
+      );
+      if (compacted !== task.beforeDigest) return undefined;
+    }
+    before = assignment.before;
+  }
+  let continuity = task.continuity;
+  const baseline = assignment.continuity?.baseline;
+  if (
+    baseline && isInlineBaseline(baseline) &&
+    canonical(continuity) !== canonical(assignment.continuity) &&
+    canonical(continuity) ===
+      canonical(ContinuityContext.parse({
+        ...assignment.continuity,
+        baseline: await compactBaseline(store, baseline),
+      }))
+  ) continuity = assignment.continuity;
+  return { before, continuity };
+}
+
 async function parentTaskWithIdentity(
   context: EvidenceContext,
   assignment: Assignment,
@@ -322,11 +367,8 @@ async function parentTaskWithIdentity(
   const task = ParentTaskSchema.parse(
     await parentResource(context, assignment, "agent-task"),
   );
-  // A task that names its dispatch snapshot by digest binds the assignment's.
-  if (
-    !task.before &&
-    (!task.beforeDigest || stateDigest(assignment.before) !== task.beforeDigest)
-  ) {
+  const identity = await dispatchedIdentity(task, assignment);
+  if (!identity) {
     throw new Error("Submission belongs to a stale or different assignment");
   }
   const core = assignmentCore(
@@ -334,7 +376,7 @@ async function parentTaskWithIdentity(
       modelId: assignment.parentId,
       definition: { name: assignment.parentName },
     },
-    { ...task, before: task.before ?? assignment.before },
+    { ...task, ...identity },
     assignment.controlDir,
   );
   if (

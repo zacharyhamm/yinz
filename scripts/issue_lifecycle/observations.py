@@ -1,12 +1,20 @@
 """Read-only consistency diagnostics. These observations never authorize import."""
 import hashlib
 import json
+import re
+
+# Python joins escaped surrogate pairs, so any surrogate left in a str is lone.
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 def state_digest(state):
-    """The controller's canonical state digest: sorted keys, compact JSON, SHA-256."""
+    """The controller's canonical state digest: sorted keys, compact JSON, SHA-256.
+
+    JSON.stringify escapes a lone surrogate as lowercase \\uXXXX; match it.
+    """
     text = json.dumps(state, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+    text = _LONE_SURROGATE.sub(lambda match: f"\\u{ord(match.group()):04x}", text)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def compact_submission(submission):
