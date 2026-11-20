@@ -241,7 +241,7 @@ impl TerminalState {
                 return Err(invalid("invalid or unnegotiated row shift"));
             }
             let geometry = view.geometry();
-            if !view.scroll().is_empty()
+            if view.has_scroll_record()
                 || geometry.is_some() && features & caps::GEOMETRY == 0
                 || features & caps::LINKS == 0
                     && (!view.links().entries.is_empty()

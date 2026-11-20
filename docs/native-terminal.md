@@ -524,12 +524,13 @@ server sends its decision before the first full native repaint. Ordinary control
 can precede either message. Graphical startup and switching process controls in
 order while waiting. A new window displays a waiting notice and accepts pane
 input after applying its first repaint. A staged window promotes the destination
-after applying its first repaint. A failed opening leaves the source window available.
+after applying its first repaint. While waiting, the window answers host queries
+on the destination connection. A failed opening leaves the source window available.
 
 | Client and server | Attachment behavior |
 |---|---|
 | ANSI client with either server | Ordinary ANSI render messages (server tag 1), including when other clients use native frames. |
-| Older boolean native client with revision-1 server | Legacy support (client tag 42) selects the v4 legacy profile with inline images. No negotiation result is sent. False returns to ANSI. |
+| Older boolean native client with revision-1 server | Legacy support (client tag 42) selects the v4 legacy profile with inline images. No negotiation result is sent. False returns to ANSI. True can resume the same profile with a full repaint and the next sequence. A revision-1 offer requires a fresh attachment once the legacy profile has been used. |
 | Revision-1 native client with an older or silent server | Missing advertisement on Connected or an opening timeout ends native startup with endpoint-specific recovery guidance. |
 | Revision-1 native client with an unfamiliar advertised revision, including zero | Reports the received and supported revisions and stops before sending an offer. |
 | Revision-1 endpoints with no common frame version | An explicit rejection lists the first eight offered versions, the count of any remaining entries, and the writable versions. An empty offer appears as `[]`. If the server cannot deliver a negotiation result, it closes that attachment. Other attachments keep their profiles. |
@@ -627,8 +628,9 @@ path without opening a window. `--rows`, `--cols`, and `--duration-secs` bound a
 capture. `--record PATH` also works with graphical windows. Both modes open the
 recording for replacement after applying the first repaint. A local graphical
 window checks the recording destination before opening the session. A duration
-limit or normal session exit that ends a graphical capture before its first
-repaint produces a nonzero exit and names the untouched recording path.
+limit, normal detach or host-initiated disconnect before the first repaint
+produces a nonzero exit and names the untouched recording path. The message
+identifies a host-initiated disconnect.
 A headless session switch ends the capture with a nonzero exit and reports the
 source, requested destination and last applied frame, or that the switch
 preceded the first repaint.

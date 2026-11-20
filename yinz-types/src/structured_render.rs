@@ -1466,6 +1466,7 @@ impl FrameBuilder {
 pub struct FrameView<'a> {
     header: FrameHeader,
     buffer: &'a [u8],
+    has_scroll_record: bool,
 }
 
 /// Sequence of an already serialized frame, without decoding its variable-sized sections.
@@ -1550,6 +1551,7 @@ pub fn decode(buffer: &[u8]) -> Result<FrameView<'_>, DecodeError> {
     }
 
     let mut at = graphics_offset;
+    let mut has_scroll_record = false;
     while at < graphics_end {
         let header_end = at
             .checked_add(GRAPHICS_RECORD_HEADER_LEN)
@@ -1577,6 +1579,7 @@ pub fn decode(buffer: &[u8]) -> Result<FrameView<'_>, DecodeError> {
         ) {
             return Err(DecodeError::BadGraphicsRecord);
         }
+        has_scroll_record |= buffer[at] == RECORD_KIND_SCROLL;
         at = align_up(payload_end, 4);
     }
 
@@ -1602,7 +1605,11 @@ pub fn decode(buffer: &[u8]) -> Result<FrameView<'_>, DecodeError> {
         return Err(DecodeError::CellCountMismatch);
     }
 
-    let view = FrameView { header, buffer };
+    let view = FrameView {
+        header,
+        buffer,
+        has_scroll_record,
+    };
     let mut clusters: Option<ClusterRecord> = None;
     let mut at = cells_offset;
     while at < cells_end {
@@ -1760,6 +1767,11 @@ impl<'a> FrameView<'a> {
             at = align_up(payload_end, 4);
         }
         shifts
+    }
+
+    /// Includes records whose entries cancel when combined by `scroll`.
+    pub fn has_scroll_record(&self) -> bool {
+        self.has_scroll_record
     }
 
     pub fn scroll(&self) -> ScrollRecord {

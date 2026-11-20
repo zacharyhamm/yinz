@@ -3939,7 +3939,17 @@ fn graphical_capture_automatic_completion_requires_a_recorded_frame() {
             (
                 app.handle_message(normal_exit(), || panic!("premature success"))
                     .unwrap_err(),
-                "Session exited",
+                "Attachment ended before the first repaint",
+            ),
+            (
+                app.handle_message(
+                    ServerToClientMsg::Exit {
+                        exit_reason: ExitReason::KickedByHost,
+                    },
+                    || panic!("premature success"),
+                )
+                .unwrap_err(),
+                "Attachment ended (Disconnected by host)",
             ),
         ] {
             let message = result.to_string();
@@ -4184,6 +4194,57 @@ fn render_negotiation_opening_guidance_and_forwarded_switch_stay_on_source() {
             matches!(peer.recv_client_msg().msg(),Some((ClientToServerMsg::Text(s),_)) if s=="source input")
         );
     }
+}
+
+#[test]
+fn render_negotiation_staged_host_query_replies_on_destination_before_promotion() {
+    use yinz_types::render_negotiation as caps;
+    let mut app = switch_app(Default::default());
+    let (source, mut source_peer) = switch_peer();
+    app.sender = Some(source);
+    let (target, mut target_peer) = switch_peer();
+    let now = Instant::now();
+    let events = stage_test_switch(&mut app, 1, now, Ok(("destination".into(), target)));
+    app.pending_switch.as_mut().unwrap().handshake = Default::default();
+    app.receive_switch(1, now).unwrap();
+    events.send(advertisement(Some(1))).unwrap();
+    app.receive_switch(1, now).unwrap();
+    let Some((ClientToServerMsg::NativeRenderRequest(caps::Request::Offer(offer)), _)) =
+        target_peer.recv_client_msg().msg()
+    else {
+        panic!("expected destination offer")
+    };
+    let cell = app.cache.metrics();
+    let expected = format!("\x1b[6;{};{}t", cell.height, cell.width).into_bytes();
+    for token in [17, 18] {
+        events
+            .send(ServerToClientMsg::ForwardQueryToHost {
+                token,
+                query_bytes: b"\x1b[16t".to_vec(),
+                resolve_async: false,
+            })
+            .unwrap();
+        app.receive_switch(1, now).unwrap();
+        assert!(matches!(target_peer.recv_client_msg().msg(), Some((
+            ClientToServerMsg::ForwardedReplyFromHost { token: received, reply_bytes }, _
+        )) if received == token && reply_bytes == expected));
+        if token == 17 {
+            events
+                .send(ServerToClientMsg::NativeRenderResult(
+                    caps::Decision::Selected(offer.select(None).unwrap()),
+                ))
+                .unwrap();
+            app.receive_switch(1, now).unwrap();
+        }
+    }
+    app.send(ClientToServerMsg::Text("source input".into()))
+        .unwrap();
+    assert!(
+        matches!(source_peer.recv_client_msg().msg(), Some((ClientToServerMsg::Text(text), _)) if text == "source input")
+    );
+    events.send(destination_frame()).unwrap();
+    app.receive_switch(1, now).unwrap();
+    assert_eq!(app.connection_id, 1);
 }
 
 #[test]

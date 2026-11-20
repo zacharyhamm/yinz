@@ -256,6 +256,7 @@ impl PendingSwitch {
         now: Instant,
         size: Size,
         cell: crate::text::font::CellMetrics,
+        paints: &Paints,
     ) -> Result<Option<SwitchFrame>> {
         self.check_deadline(now)?;
         if let Some(opening) = &self.opening {
@@ -273,24 +274,25 @@ impl PendingSwitch {
             }
             return Ok(None);
         }
-        let message = receive_message(Some(&self.messages))?;
-        if let Some(message) = &message
-            && self.handshake.control(
-                message,
-                &session::Endpoint::Local,
-                &self.destination,
-                &self
-                    .sender
-                    .as_ref()
-                    .context("missing destination sender")?
-                    .0,
-                self.deadline,
-            )?
-        {
+        let Some(message) = receive_message(Some(&self.messages))? else {
+            return Ok(None);
+        };
+        let sender = &self
+            .sender
+            .as_ref()
+            .context("missing destination sender")?
+            .0;
+        if self.handshake.control(
+            &message,
+            &session::Endpoint::Local,
+            &self.destination,
+            sender,
+            self.deadline,
+        )? {
             return Ok(None);
         }
         match message {
-            Some(ServerToClientMsg::RenderFrame { frame }) => {
+            ServerToClientMsg::RenderFrame { frame } => {
                 let decoded = yinz_types::structured_render::decode(&frame)
                     .map_err(|error| anyhow!("{error:?}"))
                     .context("decode the destination's first frame")?;
@@ -310,15 +312,31 @@ impl PendingSwitch {
                     applied,
                 }))
             },
-            Some(ServerToClientMsg::Exit { exit_reason }) => {
+            ServerToClientMsg::Exit { exit_reason } => {
                 anyhow::bail!("the destination exited before rendering: {exit_reason}")
             },
-            Some(ServerToClientMsg::SetMouseMode { enabled }) => {
+            ServerToClientMsg::SetMouseMode { enabled } => {
                 self.mouse_mode = enabled;
                 Ok(None)
             },
-            Some(ServerToClientMsg::ConfigFileUpdated) => {
+            ServerToClientMsg::ConfigFileUpdated => {
                 self.reload = true;
+                Ok(None)
+            },
+            ServerToClientMsg::ForwardQueryToHost {
+                token, query_bytes, ..
+            } => {
+                let reply = window_host_reply(
+                    token,
+                    &query_bytes,
+                    host_query_geometry(None, size, cell),
+                    paints,
+                );
+                sender
+                    .lock()
+                    .map_err(|_| anyhow!("destination IPC sender lock poisoned"))?
+                    .send_client_msg_until(reply, self.deadline)
+                    .context("answer destination host query")?;
                 Ok(None)
             },
             _ => Ok(None),
@@ -1136,6 +1154,19 @@ fn host_query_geometry(
     }
 }
 
+fn window_host_reply(
+    token: u32,
+    query: &[u8],
+    geometry: session::Geometry,
+    paints: &Paints,
+) -> ClientToServerMsg {
+    // Host queries use the window's metrics and colors without reading its clipboard.
+    ClientToServerMsg::ForwardedReplyFromHost {
+        token,
+        reply_bytes: crate::host_reply::answer(query, geometry, paints, None),
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn native_option_as_alt(
     setting: yinz_types::input::native_terminal::OptionAsAlt,
@@ -1720,8 +1751,13 @@ impl App {
                 }
                 self.present_frame(applied);
             },
-            ServerToClientMsg::Exit { .. } => {
-                self.recorder.finish("Session exited")?;
+            ServerToClientMsg::Exit { exit_reason } => {
+                if exit_reason == ExitReason::Normal {
+                    self.recorder.finish("Attachment ended")?;
+                } else {
+                    self.recorder
+                        .finish(&format!("Attachment ended ({exit_reason})"))?;
+                }
                 exit();
             },
             ServerToClientMsg::SwitchSession { connect_to_session } => {
@@ -1738,7 +1774,8 @@ impl App {
                 token, query_bytes, ..
             } => {
                 let metrics = self.cache.metrics();
-                let reply = crate::host_reply::answer(
+                let reply = window_host_reply(
+                    token,
                     &query_bytes,
                     host_query_geometry(
                         self.connection_geometry.reported,
@@ -1749,13 +1786,8 @@ impl App {
                         metrics,
                     ),
                     &self.paints,
-                    None,
                 );
-                // Clipboard reads remain opt-in; do not pass the clipboard to host queries.
-                self.send(ClientToServerMsg::ForwardedReplyFromHost {
-                    token,
-                    reply_bytes: reply,
-                })?;
+                self.send(reply)?;
             },
             ServerToClientMsg::QueryTerminalSize => {
                 self.connection_geometry.reported = None;
@@ -1926,7 +1958,7 @@ impl App {
             .as_mut()
             .context("poll pending native switch")?;
         let was_opening = pending.opening.is_some();
-        let first = match pending.poll(now, size, cell) {
+        let first = match pending.poll(now, size, cell, &self.paints) {
             Ok(Some(first)) => first,
             Ok(None) => {
                 if was_opening && pending.opening.is_none() {

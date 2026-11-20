@@ -701,6 +701,29 @@ fn render_negotiation_commits_only_consumed_media_with_full_width_ids() {
 }
 
 #[test]
+fn render_negotiation_rejects_cancelling_scroll_records_before_apply() {
+    let mut state = TerminalState::new(2, 8);
+    state.negotiate(caps::Agreement::default(), None);
+    let mut frame = FrameBuilder::new(8, 2, 1);
+    frame.set_full_repaint(true);
+    frame.push_row(0, 0, &run("changed"));
+    for lines in [1, -1] {
+        let mut scroll = structured_render::ScrollRecord::default();
+        scroll.add(0, lines);
+        frame.push_scroll(&scroll);
+    }
+    let frame = frame.finish();
+    let view = structured_render::decode(&frame).unwrap();
+    assert!(view.scroll().is_empty());
+    assert!(view.has_scroll_record());
+    assert!(
+        matches!(state.apply_frame(&frame), Err(FrameError::Protocol(1, reason)) if reason.contains("unnegotiated structured section"))
+    );
+    assert_eq!(state.applied_seq, None);
+    assert!(!row_text(&state, 0).contains("changed"));
+}
+
+#[test]
 fn render_negotiation_row_shifts_require_an_incremental_fitting_rectangle() {
     use structured_render::{ShiftEntry, ShiftRecord};
     let mut state = TerminalState::new(3, 6);

@@ -1337,6 +1337,37 @@ fn cell_pixel_geometry_adjusted_metrics_update_without_grid_changes_for_each_cli
 }
 
 #[test]
+fn render_negotiation_legacy_toggle_preserves_sequence_until_detach() {
+    use yinz_types::render_negotiation::{Decision, Offer, Request};
+    let size = Size { cols: 80, rows: 24 };
+    let (mut screen, _, receiver) = create_new_screen_with_capture(size, true, true, true, false);
+    new_tab(&mut screen, 1, TabId::new(0));
+    let client = CLIENT_1;
+    screen.legacy_render_support(client, true);
+    screen.render_to_clients().unwrap();
+    let high = screen.core.native_render_clients[&client].seq;
+    assert!(high > 0);
+    screen.legacy_render_support(client, false);
+    screen.legacy_render_support(client, true);
+    screen.render_to_clients().unwrap();
+    assert!(receiver.try_iter().any(|(event, _)| {
+        matches!(event, ServerInstruction::RenderFrames(frames) if frames.get(&client).is_some_and(|bytes| {
+            let view = yinz_types::structured_render::decode(bytes).unwrap();
+            view.header().seq == high + 1 && view.header().full_repaint()
+        }))
+    }));
+    screen.legacy_render_support(client, false);
+    screen.remove_client(client).unwrap();
+    screen.add_client(client).unwrap();
+    screen.set_client_size(client, size).unwrap();
+    screen.legacy_render_support(client, false);
+    screen
+        .negotiate_render(client, Request::Offer(Offer::reader(None)))
+        .unwrap();
+    assert!(receiver.try_iter().any(|(event, _)| matches!(event, ServerInstruction::NativeRenderResult(id, Decision::Selected(_)) if id == client)));
+}
+
+#[test]
 fn render_negotiation_profiles_survive_reload_withdraw_and_detach() {
     use yinz_types::render_negotiation::{Decision, Offer, Request};
     let size = Size { cols: 80, rows: 24 };

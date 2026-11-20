@@ -820,6 +820,8 @@ struct ScreenCore {
     /// The indices of this [`Screen`]'s active [`Tab`]s.
     active_tab_ids: BTreeMap<ClientId, TabId>,
     client_sizes: HashMap<ClientId, Size>,
+    /// Last sequence on a legacy attachment that toggled back to ANSI.
+    paused_legacy_sequences: HashMap<ClientId, u64>,
     retired_native_clients: HashMap<ClientId, yinz_terminal::output::NativeRenderState>,
     sixel_probe_answers: HashMap<ClientId, bool>,
     native_render_clients: HashMap<ClientId, yinz_terminal::output::NativeRenderState>,
@@ -1596,6 +1598,7 @@ impl Screen {
                 connected_clients: Rc::new(RefCell::new(AttachedClients::default())),
                 active_tab_ids: BTreeMap::new(),
                 client_sizes: HashMap::new(),
+                paused_legacy_sequences: HashMap::new(),
                 retired_native_clients: HashMap::new(),
                 sixel_probe_answers: HashMap::new(),
                 native_render_clients: HashMap::new(),

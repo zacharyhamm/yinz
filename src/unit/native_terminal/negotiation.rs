@@ -751,6 +751,49 @@ fn render_negotiation_withdrawal_keeps_the_last_shared_residency_until_consumed(
         }
     };
     assert_eq!(last, high);
+    // While the shared file is outstanding, a legacy viewer gets the retained
+    // image inline. Hold its ACK across the attempted upgrade on that socket.
+    let mut legacy = attach(&fixture);
+    send(
+        &mut legacy,
+        Client::StructuredRenderSupport { supported: true },
+    );
+    let mut legacy_state = TerminalState::new(40, 120);
+    let legacy_seq = loop {
+        if let Server::RenderFrame { frame } = server_message(&read_packet(&mut legacy)) {
+            let seq = legacy_state.apply_frame(&frame).unwrap().seq;
+            if let Some(image) = legacy_state.graphics().image(id) {
+                assert_eq!(image.pixels, [1, 72, 13, 255].repeat(256 * 256));
+                break seq;
+            }
+        }
+    };
+    send(
+        &mut legacy,
+        Client::StructuredRenderSupport { supported: false },
+    );
+    for delayed_ack in [false, true] {
+        if delayed_ack {
+            send(&mut legacy, Client::RenderFrameAck { seq: legacy_seq });
+        }
+        send(
+            &mut legacy,
+            Client::NativeRenderRequest(caps::Request::Offer(offer.clone())),
+        );
+        loop {
+            if let Server::NativeRenderResult(decision) = server_message(&read_packet(&mut legacy))
+            {
+                assert!(
+                    matches!(decision, caps::Decision::Rejected(reason) if reason.contains("reattach"))
+                );
+                break;
+            }
+        }
+        assert!(
+            path.exists(),
+            "legacy attachment released another viewer's media"
+        );
+    }
     // The following rejected offer is an ordered screen roundtrip after each ACK.
     for (seq, retained) in [
         (r - 1, true),

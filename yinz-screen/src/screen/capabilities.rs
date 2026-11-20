@@ -251,9 +251,12 @@ impl Screen {
             return;
         }
         if enabled {
-            self.core.native_render_clients.entry(client).or_default();
-        } else {
-            self.core.native_render_clients.remove(&client);
+            self.core.native_render_clients.entry(client).or_default().seq = self.core
+                .paused_legacy_sequences
+                .remove(&client)
+                .unwrap_or_default();
+        } else if let Some(state) = self.core.native_render_clients.remove(&client) {
+            self.core.paused_legacy_sequences.insert(client, state.seq);
         }
         self.repaint_render_profile(client);
     }
@@ -271,6 +274,7 @@ impl Screen {
         let decision = match request {
             Request::Offer(_)
                 if self.core.native_render_clients.contains_key(&client)
+                    || self.core.paused_legacy_sequences.contains_key(&client)
                     || self.core.retired_native_clients.contains_key(&client) =>
             {
                 Decision::Rejected(
@@ -302,6 +306,8 @@ impl Screen {
             Request::Withdraw => {
                 if let Some(state) = self.core.native_render_clients.remove(&client) {
                     self.core.retired_native_clients.insert(client, state);
+                } else if let Some(seq) = self.core.paused_legacy_sequences.remove(&client) {
+                    self.core.retired_native_clients.entry(client).or_default().seq = seq;
                 }
                 Decision::Withdrawn(self.core.retired_native_clients.entry(client).or_default().seq)
             },

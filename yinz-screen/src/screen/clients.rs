@@ -92,6 +92,7 @@ impl Screen {
         self.core.tab_history.remove(&client_id);
         self.core.client_sizes.remove(&client_id);
         self.core.native_render_clients.remove(&client_id);
+        self.core.paused_legacy_sequences.remove(&client_id);
         self.core.retired_native_clients.remove(&client_id);
         self.core.sixel_probe_answers.remove(&client_id);
         self.core.client_presentations.remove(&client_id);
@@ -351,6 +352,7 @@ impl Screen {
         }
         self.core.client_sizes.remove(&client_id);
         self.core.native_render_clients.remove(&client_id);
+        self.core.paused_legacy_sequences.remove(&client_id);
         self.core.retired_native_clients.remove(&client_id);
         self.core.sixel_probe_answers.remove(&client_id);
         self.core.client_presentations.remove(&client_id);
