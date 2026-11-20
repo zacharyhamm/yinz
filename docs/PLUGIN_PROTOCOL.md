@@ -946,13 +946,24 @@ handler that survives terminal detach. Operations reject unknown fields. No nati
 | `prompts` | none | `{prompts:[{text,description}]}` (at most 500) |
 | `prompt` | `agent:AgentRef`, `submission_id`, `text` | `{response:AgentResponse}` |
 | `screen` | `agent:AgentRef`, `lines` (1–200, default 80) | `{response:AgentResponse}` |
+| `terminal` | `agent:AgentRef`, optional opaque `after` | `{response:AgentResponse}` |
+| `terminal_input` | `agent:AgentRef`, `data` as base64 (1–32768 encoded bytes) or a native `KeyWithModifier` object | `{response:AgentResponse}` |
 | `keys` | `agent:AgentRef`, `keys` (1–8) | `{response:AgentResponse}` |
 | `focus` | `agent:AgentRef` | `true` |
 
 `AgentRef` is `{id, kind, session_id}`. All identity strings must be nonblank
 and contain no control characters. Actions take a fresh snapshot and require a
 unique match for the complete identity.
-Prompt, screen and keys also recheck kind and conversation on the owning screen.
+Terminal reads return `response.terminal` with native `cols`, `rows`, an opaque
+`cursor` of at most 64 bytes, `snapshot`, `snapshot_continues`,
+`supports_kitty_keyboard_protocol` and base64 VT `data`. Reset and resize the
+emulator when `snapshot` is true. Snapshots larger than 256 KiB arrive in parts.
+After writing each part with `snapshot_continues: true`, immediately request the
+next part with its cursor. Enable input after writing the final part. Its cursor
+resumes live output at the snapshot boundary. A missing `snapshot_continues`
+defaults to false. A read awaiting a complete parser boundary has no frame and
+can be polled again.
+Prompt, terminal input, terminal reads, screen and keys also recheck kind and conversation on the owning screen.
 Local requests use `WebGuarded`. Peer requests use `WebPeerGuarded`, which
 also checks the running Screen instance before dispatch. The host uses the
 snapshot's scanned socket owner for one dispatch attempt. An older peer

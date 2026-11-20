@@ -10,7 +10,6 @@ const { cardDetail, controlTarget, detailHash, detailListRow, groupHash, parseHa
 const {
   KEYS, createApi, createPoller, createTokenStore, safeStorage, requestUrl, parseRetryAfter,
   describeError, normalizeConfig, saveReturn, takeReturn, logoutNotice, freshnessText,
-  SCREEN_TEXT_SIZES, normalizeScreenView, readScreenView, writeScreenView,
 } = api;
 
 test('group routes round trip session-scoped IDs and fallback buckets', () => {
@@ -41,7 +40,7 @@ test('peer cards use a scoped selection and a stripped selector allows only stor
     current_session: false, state: 'waiting', ref: { id: detailId, kind: 'codex', session_id: 'shared' } };
   const other = { ...peer, detail_id: otherId, run: 'other-run' };
   const route = parseHash(detailHash(cardDetail(peer, 'local')));
-  assert.deepEqual(route, { view: 'detail', id: detailId, run: '', tab: 'screen', bind: true });
+  assert.deepEqual(route, { view: 'detail', id: detailId, run: '', tab: 'term', bind: true });
   assert.equal(detailListRow([other, peer], route.id), peer);
   assert.equal(detailListRow([peer, other], otherId), other);
   assert.equal(detailListRow([other], route.id), null);
@@ -153,64 +152,6 @@ test('401 clears the bearer, saves the route and fires once per auth generation'
   // Unsafe hashes are not stored.
   saveReturn(safeStorage(() => session), 'javascript:alert(1)');
   assert.equal(takeReturn(safeStorage(() => session)), '');
-});
-
-test('Screen view preference: per-device key, defaults and round trip', () => {
-  assert.equal(KEYS.screenView, 'yinz.web.v1.screen_view');
-  assert.ok(KEYS.screenView.startsWith('yinz.web.v1.'));
-  assert.deepEqual([...SCREEN_TEXT_SIZES], [12, 14, 16, 18]);
-  const log = [];
-  const raw = new LogStorage(log);
-  const local = safeStorage(() => raw);
-  assert.deepEqual(readScreenView(local), { wrap: false, size: 12 });
-  assert.deepEqual(writeScreenView(local, { wrap: true, size: 16 }), { ok: true });
-  assert.deepEqual(JSON.parse(raw.map.get(KEYS.screenView)), { wrap: true, size: 16 });
-  assert.deepEqual(readScreenView(local), { wrap: true, size: 16 });
-  // Writes are normalized, so an out-of-range view never reaches storage.
-  writeScreenView(local, { wrap: 'yes', size: 200, extra: 1 });
-  assert.deepEqual(JSON.parse(raw.map.get(KEYS.screenView)), { wrap: false, size: 12 });
-  assert.deepEqual(log.map(([op, key]) => [op, key]), [['set', KEYS.screenView], ['set', KEYS.screenView]]);
-});
-
-test('Screen view preference: malformed values fall back field by field', () => {
-  assert.deepEqual(normalizeScreenView({ wrap: true, size: 13 }), { wrap: true, size: 12 });
-  assert.deepEqual(normalizeScreenView({ wrap: true, size: '14' }), { wrap: true, size: 12 });
-  assert.deepEqual(normalizeScreenView({ wrap: 1, size: 18 }), { wrap: false, size: 18 });
-  assert.deepEqual(normalizeScreenView({ wrap: 'true', size: 200 }), { wrap: false, size: 12 });
-  for (const value of [null, undefined, 'wrap', 14, true, [true, 16]]) {
-    assert.deepEqual(normalizeScreenView(value), { wrap: false, size: 12 }, String(value));
-  }
-  const raw = new LogStorage();
-  const local = safeStorage(() => raw);
-  for (const [stored, expected] of [
-    ['{not json', { wrap: false, size: 12 }],
-    ['null', { wrap: false, size: 12 }],
-    ['[true,16]', { wrap: false, size: 12 }],
-    ['"16"', { wrap: false, size: 12 }],
-    ['{"wrap":true,"size":13}', { wrap: true, size: 12 }],
-    ['{"wrap":"no","size":14}', { wrap: false, size: 14 }],
-  ]) {
-    raw.map.set(KEYS.screenView, stored);
-    assert.deepEqual(readScreenView(local), expected, stored);
-  }
-});
-
-test('Screen view preference: storage failures never throw or claim persistence', () => {
-  const view = { wrap: true, size: 14 };
-  const denied = safeStorage(() => { throw Object.assign(new Error('denied'), { name: 'SecurityError' }); });
-  assert.deepEqual(readScreenView(denied), { wrap: false, size: 12 });
-  assert.equal(writeScreenView(denied, view).ok, false);
-  const unavailable = safeStorage(() => null);
-  assert.deepEqual(readScreenView(unavailable), { wrap: false, size: 12 });
-  assert.deepEqual(writeScreenView(unavailable, view), { ok: false, error: 'unavailable' });
-  const throwing = safeStorage(() => new LogStorage([], { fail: 'denied' }));
-  assert.deepEqual(readScreenView(throwing), { wrap: false, size: 12 });
-  assert.deepEqual(writeScreenView(throwing, view), { ok: false, error: 'denied' });
-  const full = safeStorage(() => new LogStorage([], { fail: 'quota' }));
-  assert.deepEqual(writeScreenView(full, view), { ok: false, error: 'quota' });
-  const lost = new LogStorage([], { readback: false });
-  assert.deepEqual(writeScreenView(safeStorage(() => lost), view), { ok: false, error: 'readback' });
-  assert.deepEqual(readScreenView(safeStorage(() => lost)), { wrap: false, size: 12 });
 });
 
 test('logout: empty 204 without JSON parsing; failure still clears local credentials', async () => {
@@ -534,9 +475,10 @@ test('view modules import without a DOM; DOM entry points parse as ES modules', 
 
 test('hash routes round-trip and never accept malformed ids', async () => {
   const { parseHash, detailHash } = await import(staticUrl('app-route.js'));
-  const hash = detailHash({ id: 'live:dev:7', run: 'run 1', tab: 'screen' });
-  assert.equal(hash, '#/a/live%3Adev%3A7?run=run+1&tab=screen');
-  assert.deepEqual(parseHash(hash), { view: 'detail', id: 'live:dev:7', run: 'run 1', tab: 'screen', bind: true });
+  const hash = detailHash({ id: 'live:dev:7', run: 'run 1', tab: 'term' });
+  assert.equal(hash, '#/a/live%3Adev%3A7?run=run+1&tab=term');
+  assert.deepEqual(parseHash(hash.replace('tab=term', 'tab=screen')), parseHash(hash));
+  assert.deepEqual(parseHash(hash), { view: 'detail', id: 'live:dev:7', run: 'run 1', tab: 'term', bind: true });
   assert.equal(parseHash(detailHash({ id: 'x', run: 'r', bind: false })).bind, false);
   assert.deepEqual(parseHash('#/'), { view: 'list' });
   assert.deepEqual(parseHash('#/a/%E0%A4%A'), { view: 'list' });

@@ -9,6 +9,7 @@ description = "The yinz server's panes, pane managers, frames and layout applica
 workspace = true
 
 [dependencies]
+base64 = { version = "0.22", default-features = false, features = ["std"] }
 agent-proto = { path = "../default-plugins/agent-proto" }
 yinz-tile-markdown = { path = "../yinz-tile-markdown" }
 yinz-bus = { path = "../yinz-bus", version = "0.1.2-alpha.23" }
@@ -28,7 +29,6 @@ vte = { workspace = true }
 
 [dev-dependencies]
 yinz-config = { workspace = true }
-base64 = { version = "0.22", default-features = false, features = ["std"] }
 interprocess = { workspace = true }
 kdl = { workspace = true }
 hegeltest = "0.29.3"

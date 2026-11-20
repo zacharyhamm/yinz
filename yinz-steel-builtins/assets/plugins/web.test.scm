@@ -95,7 +95,7 @@
             "name=\"theme-color\"" "content=\"light dark\"" "href=\"/static/manifest.webmanifest\"" "href=\"/static/icon.svg\""
             "href=\"/static/app.css\" rel=\"stylesheet\"" "<title>&lt;/title&gt;&lt;script&gt;x&lt;/script&gt;</title>"
             "<noscript>" "id=\"yinz-config\"" "\\u003c/title\\u003e\\u003cscript\\u003ex\\u003c/script\\u003e"
-            "\"list_ms\":3000" "\"tail_ms\":2000" "\"usage_ms\":60000" "\"screen_ms\":2000"
+            "\"list_ms\":3000" "\"tail_ms\":2000" "\"usage_ms\":60000" "\"screen_ms\":250"
             "\"quick_keys\":[\"1\",\"2\",\"3\",\"enter\",\"esc\",\"up\",\"down\"]" "\"get_ms\":10000" "\"post_ms\":45000"))
         (assert (not (w-contains? body "<script>x")))
         (assert (not (w-contains? body "do-not-publish")))) '("/" "/login"))

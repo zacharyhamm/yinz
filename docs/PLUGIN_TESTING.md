@@ -356,6 +356,12 @@ clocks and timers. They need no installed packages:
 node --test yinz-steel-builtins/src/unit/web/{api,timeline,submission}.test.mjs
 ```
 
+To inspect reconstructed terminal cells and the next PTY update with the vendored xterm, run the Node-backed pane test:
+
+```sh
+cargo x test -p yinz-panes --run-ignored only -E 'test(replays_cells_and_cursor_in_xterm)'
+```
+
 `web_builtin_production_http` runs the real listener, password and bearer
 authentication, plugin host, worker and default builtin installed from the
 checkout, with TestRunner's fake pane OS. `web_builtin_browser_phone_flows`
@@ -387,14 +393,14 @@ default markup, with additional
 missing, wrapped and custom hook variants. At exact 320×640 and 390×844 CSS
 viewports in both themes, the collapsed header (including tabs) must be ≤96px,
 the idle empty-draft composer ≤64px, and the healthy timeline ≥450px/650px.
-At 393×852, both the default and eight-key Screen layouts fit in one row with
+At 393×852, both the default and eight-key Term layouts fit in one row with
 fully visible labels and 44px touch targets.
 These budgets exclude actual safe-area insets and warning/submission panels.
 The runner verifies media emulation again after native login/navigation.
 
 Disclosure checks use click, Enter and Space, verify labels/ARIA, collapsed tab
 order, scroll access, focus across confirmed polls and open state across tabs,
-reload, retarget and fallback views. Timeline/Screen checks cover pinned and
+reload, retarget and fallback views. Timeline checks cover pinned and
 scrolled reading positions across expansion, draft reflow and resizing; readers,
 prepends and unchanged-poll scroll writes remain covered. Resolved/composited
 text colors must reach 4.5:1 and focus outlines 3:1, including readers, sheets and
@@ -404,19 +410,9 @@ and same-submission retry scenarios also run.
 
 320×480 and 390×480 checks approximate reduced keyboard space: the timeline
 retains positive height and composer controls and safety feedback remain
-reachable in their scrolling regions. In both themes, Screen also combines
-expanded long/custom information, the 80-line terminal, all seven default quick
-keys and a four-line draft. Newest-line text ranges must fit inside the visible
-output scrollport; Screen regions must stay above the composer. Every quick key,
-Refresh and recovery control must fit inside its visible ancestor bounds and
-pass a center hit test after scrolling only its intended region. Pointer and
-keyboard key delivery, Screen warnings, offline/unknown-submission recovery,
-same-id retry, reading positions and draft preservation are checked. Warning and
-offline fixtures persist through polling until explicit recovery; native Home/End
-scrolling must reach its boundary before another control is positioned. Target
-checks wait for full containment and hit testing, rather than a frame count. Masked
-reduced-height Screen screenshots and geometry/hit-test JSON are saved with the
-other browser results. These are Firefox emulation checks, not
+reachable in their scrolling regions. Term checks open a legacy link, rotate the viewport,
+measure both edges of the native-width grid, and verify keyboard and bracketed
+paste bytes alongside quick keys and peer target guards. These are Firefox emulation checks, not
 physical touch, virtual-keyboard opening, Tailscale, iOS Safari or safe-area
 hardware coverage. Masked detail screenshots and geometry comparisons are saved
 under `target/web-browser-results/`. For pre-change characterization only, set

@@ -14,6 +14,7 @@ use crate::panes::{
 use crate::pty::VteBytes;
 use crate::route::NotificationEnd;
 use crate::ClientId;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -23,6 +24,7 @@ use std::time::{self, Instant};
 use vte;
 use yinz_runtime::errors::prelude::*;
 use yinz_runtime::shared::make_terminal_title;
+use yinz_types::agent::control::TerminalFrame;
 use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
 use yinz_types::animation::Easing;
 use yinz_types::data::PaneContents;
@@ -101,7 +103,99 @@ pub use yinz_terminal::PaneId;
 
 type IsFirstRun = bool;
 
+const WEB_SNAPSHOT_PART_BYTES: usize = 256 * 1024;
+
+struct WebTerminalSnapshot {
+    id: String,
+    bytes: Vec<u8>,
+    live_offset: u64,
+    cols: usize,
+    rows: usize,
+    supports_kitty_keyboard_protocol: bool,
+}
+
+impl WebTerminalSnapshot {
+    fn continuation_offset(&self, cursor: &str) -> Option<usize> {
+        let (id, offset) = cursor.split_once(':')?;
+        let offset: usize = offset.parse().ok()?;
+        (id == self.id
+            && offset > 0
+            && offset < self.bytes.len()
+            && offset.is_multiple_of(WEB_SNAPSHOT_PART_BYTES))
+        .then_some(offset)
+    }
+
+    fn part(&self, offset: usize, generation: &str) -> TerminalFrame {
+        let end = (offset + WEB_SNAPSHOT_PART_BYTES).min(self.bytes.len());
+        let continues = end < self.bytes.len();
+        TerminalFrame {
+            cols: self.cols,
+            rows: self.rows,
+            cursor: if continues {
+                format!("{}:{end}", self.id)
+            } else {
+                format!("{generation}:{}", self.live_offset)
+            },
+            snapshot: offset == 0,
+            snapshot_continues: continues,
+            supports_kitty_keyboard_protocol: self.supports_kitty_keyboard_protocol,
+            data: STANDARD.encode(&self.bytes[offset..end]),
+        }
+    }
+}
+
+/// Shared by all browser readers of this pane. Allocate on first attach and
+/// stop retaining output once no reader has polled for a minute.
+struct WebTerminalLog {
+    generation: String,
+    end: u64,
+    bytes: VecDeque<u8>,
+    read_at: Instant,
+    snapshot: Option<WebTerminalSnapshot>,
+}
+
+impl WebTerminalLog {
+    fn new() -> Self {
+        Self {
+            generation: yinz_bus::agent_launch::new_incarnation(),
+            end: 0,
+            bytes: VecDeque::new(),
+            read_at: Instant::now(),
+            snapshot: None,
+        }
+    }
+
+    fn append(log: &mut Option<Self>, bytes: &[u8]) {
+        let Some(current) = log else { return };
+        if current.read_at.elapsed().as_secs() >= 60 {
+            *log = None;
+            return;
+        }
+        const LIMIT: usize = 64 * 1024;
+        current.end += bytes.len() as u64;
+        let tail = &bytes[bytes.len().saturating_sub(LIMIT)..];
+        let drop = (current.bytes.len() + tail.len()).saturating_sub(LIMIT);
+        current.bytes.drain(..drop);
+        current.bytes.extend(tail);
+    }
+
+    fn suffix(&self, after: &str) -> Option<Vec<u8>> {
+        let (generation, offset) = after.rsplit_once(':')?;
+        let remaining = self.end.checked_sub(offset.parse().ok()?)?;
+        if generation != self.generation || remaining > self.bytes.len() as u64 {
+            return None;
+        }
+        Some(
+            self.bytes
+                .range(self.bytes.len() - remaining as usize..)
+                .copied()
+                .collect(),
+        )
+    }
+}
+
 pub struct TerminalPane {
+    web_terminal: Option<WebTerminalLog>,
     pub grid: Grid,
     pub pid: TerminalId,
     pub selectable: bool,
@@ -317,6 +411,7 @@ impl Pane for TerminalPane {
                         let consumed = self
                             .vte_parser
                             .advance_until_terminated(&mut self.grid, &forwarded);
+                        WebTerminalLog::append(&mut self.web_terminal, &forwarded[..consumed]);
                         self.parser_boundary.advance(&forwarded[..consumed]);
                         if !self.grid.pending_forwarded_queries.is_empty() {
                             self.pending_pty_input.extend(&forwarded[consumed..]);
@@ -349,6 +444,7 @@ impl Pane for TerminalPane {
             let consumed = self
                 .vte_parser
                 .advance_until_terminated(&mut self.grid, &forwarded);
+            WebTerminalLog::append(&mut self.web_terminal, &forwarded[..consumed]);
             self.parser_boundary.advance(&forwarded[..consumed]);
             if !self.grid.pending_forwarded_queries.is_empty() {
                 self.pending_pty_input.extend(&forwarded[consumed..]);
@@ -888,6 +984,62 @@ impl Pane for TerminalPane {
         self.geom.y -= count;
         self.reflow_lines();
     }
+    fn web_terminal_frame(&mut self, after: Option<&str>) -> Option<TerminalFrame> {
+        let log = self.web_terminal.get_or_insert_with(WebTerminalLog::new);
+        log.read_at = Instant::now();
+        if let Some(snapshot) = &log.snapshot
+            && let Some(offset) = after.and_then(|cursor| snapshot.continuation_offset(cursor))
+        {
+            return Some(snapshot.part(offset, &log.generation));
+        }
+        let delta = after.and_then(|after| log.suffix(after));
+        let snapshot = delta.is_none();
+        let data = match delta {
+            Some(bytes) => STANDARD.encode(bytes),
+            None => {
+                if !self.parser_boundary.is_ground() || self.grid.is_mid_frame() {
+                    return None;
+                }
+                // Readers restarting together must share the replacement snapshot. Its
+                // captured offset still needs to be reachable in the live log.
+                if let Some(snapshot) = &log.snapshot
+                    && log.end - snapshot.live_offset <= log.bytes.len() as u64
+                {
+                    return Some(snapshot.part(0, &log.generation));
+                }
+                log.snapshot = None;
+                let bytes = self.grid.web_terminal_snapshot()?.into_bytes();
+                if bytes.len() > WEB_SNAPSHOT_PART_BYTES {
+                    let snapshot = log.snapshot.insert(WebTerminalSnapshot {
+                        id: yinz_bus::agent_launch::new_incarnation(),
+                        bytes,
+                        live_offset: log.end,
+                        cols: self.grid.width,
+                        rows: self.grid.height,
+                        supports_kitty_keyboard_protocol: self
+                            .grid
+                            .supports_kitty_keyboard_protocol,
+                    });
+                    return Some(snapshot.part(0, &log.generation));
+                }
+                STANDARD.encode(bytes)
+            },
+        };
+        Some(TerminalFrame {
+            cols: self.grid.width,
+            rows: self.grid.height,
+            cursor: format!("{}:{}", log.generation, log.end),
+            snapshot,
+            snapshot_continues: false,
+            supports_kitty_keyboard_protocol: self.grid.supports_kitty_keyboard_protocol,
+            data,
+        })
+    }
+    fn clear_web_terminal_snapshot(&mut self) {
+        if let Some(log) = &mut self.web_terminal {
+            log.snapshot = None;
+        }
+    }
     fn dump_screen(&self, full: bool, _client_id: Option<ClientId>) -> String {
         self.grid.dump_screen(full)
     }
@@ -895,6 +1047,7 @@ impl Pane for TerminalPane {
         self.grid.dump_screen_with_ansi(full)
     }
     fn clear_screen(&mut self) {
+        self.web_terminal = None;
         self.grid.clear_screen()
     }
     fn scroll_up(&mut self, count: usize, _client_id: Option<ClientId>) {
@@ -1366,6 +1519,7 @@ impl Pane for TerminalPane {
         self.grid.is_alternate_mode_active()
     }
     fn hold(&mut self, exit_status: Option<i32>, is_first_run: bool, mut run_command: RunCommand) {
+        self.web_terminal = None;
         // Exit notifications travel separately from PTY bytes and can precede the
         // final provider output. Let the ordered end event reset the grid palette;
         // respawn also resets it before accepting a new process's output.
@@ -1652,6 +1806,7 @@ impl Pane for TerminalPane {
             || self.agent.as_ref().map(|a| (&a.kind, &a.session_id))
                 != agent.as_ref().map(|a| (&a.kind, &a.session_id))
         {
+            self.web_terminal = None;
             self.last_hook_at_ms = None;
             if self.agent.is_some() || agent.is_none() {
                 self.grid.applicable_program_status.clear_all();
@@ -1808,6 +1963,7 @@ impl Pane for TerminalPane {
     }
 
     fn restore_terminal_state(&mut self, state: &str) -> Result<(), String> {
+        self.web_terminal = None;
         let state =
             serde_json::from_str(state).map_err(|e| format!("decode terminal state: {e}"))?;
         self.grid
@@ -2328,6 +2484,7 @@ impl TerminalPane {
             notification_end.set_affected_pane_id(PaneId::Terminal(pid));
         }
         TerminalPane {
+            web_terminal: None,
             pending_agent_escape_clients: HashSet::new(),
             frame: HashMap::new(),
             content_offset: Offset::default(),
@@ -2400,6 +2557,7 @@ impl TerminalPane {
     fn reflow_lines(&mut self) {
         let rows = self.get_content_rows();
         let cols = self.get_content_columns();
+        self.web_terminal = None;
         self.grid.force_change_size(rows, cols);
         if self.banner.is_some() {
             self.grid.reset_terminal_state();

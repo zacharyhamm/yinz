@@ -7011,6 +7011,7 @@ dependencies = [
 name = "yinz-agent-control"
 version = "0.1.2-alpha.23"
 dependencies = [
+ "base64 0.22.1",
  "log",
  "serde_json",
  "tempfile",

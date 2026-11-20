@@ -6,6 +6,7 @@ mod osc;
 mod row;
 mod selection;
 mod vt;
+mod web_terminal;
 
 pub use highlights::CompiledHighlight;
 #[cfg(test)]

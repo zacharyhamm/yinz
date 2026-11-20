@@ -9,6 +9,7 @@ description = "Agent control, provider input and worktree tracking for Yinz"
 workspace = true
 
 [dependencies]
+base64 = { version = "0.22", default-features = false, features = ["std"] }
 log = { workspace = true }
 yinz-bus = { path = "../yinz-bus", version = "0.1.2-alpha.23" }
 yinz-runtime = { workspace = true }

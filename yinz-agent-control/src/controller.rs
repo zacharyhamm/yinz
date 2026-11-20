@@ -301,6 +301,11 @@ impl AgentController {
                     .values()
                     .map(|_| Duration::from_millis(10)),
             )
+            .chain(
+                self.web_snapshot_deadlines
+                    .values()
+                    .map(|deadline| deadline.saturating_duration_since(now)),
+            )
             .chain(self.agent_events.deadline())
             .chain(
                 self.claude_drain_at()
@@ -635,6 +640,7 @@ pub struct AgentController {
     agent_events: events::AgentEvents,
     agent_worktrees: worktrees::Worktrees,
     agent_controls: Vec<Pending>,
+    web_snapshot_deadlines: HashMap<PaneId, Instant>,
     agent_draft_clears: HashMap<PaneId, DraftClear>,
     agent_terminal_claims: HashMap<PaneId, (u64, String, String)>,
     closed_agent_submissions: std::collections::VecDeque<(

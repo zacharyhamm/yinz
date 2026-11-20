@@ -1204,6 +1204,113 @@ fn web_builtin_production_http() {
     );
     assert!(screen_html.contains("WEB BUILTIN SCREEN CONTENT"));
 
+    let frame = call_ok(
+        addr,
+        "POST",
+        "/api/agent/term",
+        &token,
+        &json!({"agent": reference}).to_string(),
+    );
+    let frame = &frame["response"]["terminal"];
+    assert_eq!(frame["snapshot"], true, "{frame}");
+    let bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        frame["data"].as_str().unwrap(),
+    )
+    .unwrap();
+    assert!(String::from_utf8(bytes)
+        .unwrap()
+        .contains("WEB BUILTIN SCREEN CONTENT"));
+    let update = b"\x1b[32mLIVE TERM UPDATE\x1b[0m\r\n";
+    terminal.output(update);
+    session.wait_until("live terminal update", |s| s.contains("LIVE TERM UPDATE"));
+    let next = call_ok(
+        addr,
+        "POST",
+        "/api/agent/term",
+        &token,
+        &json!({"agent": reference, "after": frame["cursor"]}).to_string(),
+    );
+    assert_eq!(next["response"]["terminal"]["snapshot"], false, "{next}");
+
+    let bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        next["response"]["terminal"]["data"].as_str().unwrap(),
+    )
+    .unwrap();
+    assert!(bytes.windows(update.len()).any(|window| window == update));
+
+    // Exercise the full native → Steel → HTTP response path at the maximum part size.
+    let pair = "\x1b[38;2;123;145;167mA\x1b[38;2;201;211;221mB";
+    let row = format!("{}\r\n", pair.repeat(40));
+    let marker = "WEB MULTIPART COMPLETE";
+    terminal.output(format!("{}{marker}", row.repeat(200)).as_bytes());
+    session.wait_until("styled terminal output consumed", |s| s.contains(marker));
+    let mut body = json!({"agent": reference});
+    let mut snapshot = Vec::new();
+    loop {
+        let reply = call(
+            addr,
+            "POST",
+            "/api/agent/term",
+            Some(&token),
+            &body.to_string(),
+        );
+        assert_eq!(reply.status, 200, "{reply}");
+        assert!(reply.body.len() <= yinz_types::web::MAX_RESPONSE_BODY);
+        let frame = &reply.json()["response"]["terminal"];
+        assert_eq!(frame["snapshot"], snapshot.is_empty());
+        let part = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            frame["data"].as_str().unwrap(),
+        )
+        .unwrap();
+        if snapshot.is_empty() {
+            assert_eq!(frame["snapshot_continues"], true);
+        }
+        snapshot.extend(part);
+        if frame["snapshot_continues"] == false {
+            break;
+        }
+        assert_ne!(body["after"], frame["cursor"]);
+        body["after"] = frame["cursor"].clone();
+    }
+    assert!(String::from_utf8(snapshot).unwrap().contains(marker));
+
+    let input = call_ok(
+        addr,
+        "POST",
+        "/api/agent/term/input",
+        &token,
+        &json!({"agent": reference, "data": "eA=="}).to_string(),
+    );
+    assert_eq!(
+        input["response"]["outcome"], "status_unavailable",
+        "{input}"
+    );
+
+    let modified_enter = json!({"bare_key": "Enter", "key_modifiers": ["Shift"]});
+    let input = call_ok(
+        addr,
+        "POST",
+        "/api/agent/term/input",
+        &token,
+        &json!({"agent": reference, "data": modified_enter}).to_string(),
+    );
+    assert_eq!(
+        input["response"]["outcome"], "status_unavailable",
+        "{input}"
+    );
+    let invalid_key = json!({"bare_key": {"F": 0}, "key_modifiers": []});
+    let invalid = call(
+        addr,
+        "POST",
+        "/api/agent/term/input",
+        Some(&token),
+        &json!({"agent": reference, "data": invalid_key}).to_string(),
+    );
+    assert_eq!(invalid.error_code(400), "invalid");
+
     // Guarded keys need a verifiable live agent process. The fake PTY's process is unmanaged
     // and has no bracketed paste, so native preserves a non-success outcome inside HTTP 200
     // and sends nothing; the client reads response.outcome, never the status alone.
@@ -1348,7 +1455,7 @@ fn web_builtin_browser_phone_flows() {
     // run.mjs bounds every wait itself; this deadline only reaps a wedged browser. SIGTERM lets
     // it close Firefox before exiting.
     let output = finished
-        .recv_timeout(Duration::from_secs(300))
+        .recv_timeout(Duration::from_secs(600))
         .unwrap_or_else(|_| {
             let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
             finished

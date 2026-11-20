@@ -1,16 +1,17 @@
-// Agent detail (#/a/<id>?run=…&tab=…): Timeline | Screen | Details, composer and sheets.
+// Agent detail (#/a/<id>?run=…&tab=…): Timeline | Term | Details, composer and sheets.
 import {
-  clientTimezone, describeError, freshnessText, SCREEN_TEXT_SIZES, normalizeScreenView, readScreenView, writeScreenView,
+  clientTimezone, describeError, freshnessText,
 } from '../api.js';
 import { ToolsReader } from '../timeline.js';
 import { sameTarget, targetOf, validTarget } from '../submission.js';
 import { controlTarget, detailHash, detailListRow, isPeerDetail, isScopedPeer } from '../app-route.js';
 import {
   html, useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, usePoller, useNow,
-  ServerHtml, StateBadge, RowBadges, QuickKeys, QuotaBar, Banner, responseText, keyName, cx,
+  ServerHtml, StateBadge, RowBadges, QuotaBar, Banner, responseText, cx,
 } from './ui.js';
 import { Sheet, ConfirmSheet } from './sheets.js';
 import { Composer, StaleSubmissions } from './composer.js';
+import { TermPanel } from './term.js';
 import { KeysSheet } from './keys.js';
 
 const KIND_LABELS = { prompt: 'You', message: 'Agent', result: 'Result', plan: 'Plan', question: 'Question', step: 'Step', summary: 'Summary', tool_call: 'Tool call', tool_result: 'Tool result', tools: 'Tools' };
@@ -193,93 +194,6 @@ function ToolsReaderSheet({ env, item, tz, onClose }) {
   <//>`;
 }
 
-function ScreenPanel({ env, target: ref, enabled, onTargetGone, layoutKey, beforeResize, view, onView }) {
-  const now = useNow(1000);
-  const [busy, setBusy] = useState(false);
-  const scroller = useRef(null);
-  const position = useRef({ pinned: true, top: 0 });
-  const [state, refresh] = usePoller({
-    key: ref ? `screen:${ref.id}|${ref.kind}|${ref.session_id}` : 'screen:none',
-    enabled: !!ref && enabled,
-    intervalMs: env.config.poll.screen_ms,
-    env,
-    run: async ({ signal }) => {
-      const r = await env.api.post('/api/agent/screen', { agent: ref, lines: 80 }, { signal });
-      if (r.status === 409 || r.data?.response?.outcome === 'target_changed') onTargetGone();
-      return r;
-    },
-  });
-  async function key(k) {
-    if (!ref || !enabled) return;
-    setBusy(true);
-    const r = await env.api.post('/api/agent/keys', { agent: ref, keys: [k] });
-    setBusy(false);
-    if (r.status === 409 || r.data?.response?.outcome === 'target_changed') {
-      env.toast('The agent changed or disappeared. The key was not sent.');
-      onTargetGone();
-    } else if (r.ok) env.toast(`${keyName(k)}: ${responseText(r.data && r.data.response)}`);
-    else if (r.status !== 401) env.toast(`Key not confirmed: ${describeError(r)} Check the screen before trying again.`);
-    refresh();
-  }
-  const data = state && state.data;
-  const markup = data ? data.html : null;
-  // The question a waiting agent asks is at the bottom of its screen, so the output
-  // starts pinned to its newest line and stays there unless the user scrolls up.
-  const capture = useCallback((el) => {
-    position.current.pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
-    position.current.top = el.scrollTop;
-  }, []);
-  const restore = useCallback((el) => {
-    const target = position.current.pinned ? el.scrollHeight - el.clientHeight
-      : Math.max(0, Math.min(el.scrollHeight - el.clientHeight, position.current.top));
-    if (Math.abs(el.scrollTop - target) > 1) el.scrollTop = target;
-  }, []);
-  const onScroll = useScrollLayout(scroller, capture, restore, markup, `${layoutKey}|${view.wrap}|${view.size}`, beforeResize, !!ref);
-  if (!ref) return html`<p class="empty">No live agent to read.</p>`;
-  // Capture the reading position before the reflow; the composite layout key
-  // restores it (pinned, or a clamped offset) once the new classes apply.
-  const changeView = (next) => {
-    onScroll();
-    onView(next);
-  };
-  const sizeIndex = SCREEN_TEXT_SIZES.indexOf(view.size);
-  const smallest = sizeIndex <= 0;
-  const largest = sizeIndex >= SCREEN_TEXT_SIZES.length - 1;
-  // aria-disabled, never native disabled: a focused stepper keeps keyboard focus at its bound.
-  const step = (delta) => {
-    const next = SCREEN_TEXT_SIZES[sizeIndex + delta];
-    if (next === undefined) return;
-    changeView({ ...view, size: next });
-  };
-  const response = data && data.response;
-  const failed = response && response.outcome && response.outcome !== 'ok' && response.outcome !== 'completed';
-  return html`<div class="screen-panel">
-    <div class="screen-feedback" role="region" aria-label="Screen status and feedback" tabindex="0">
-      <div class="screen-status">
-        ${state ? html`<span class=${cx('freshness', state.status !== 'ok' && 'freshness-stale')}>${freshnessText(state, now)}</span>` : null}
-        <button type="button" class="link-button" id="screen-refresh" onClick=${() => refresh()}>Refresh</button>
-        <span class="screen-view" role="group" aria-label="Screen view">
-          <button type="button" class="screen-view-button" id="screen-wrap" aria-pressed=${String(view.wrap)}
-            onClick=${() => changeView({ ...view, wrap: !view.wrap })}>Wrap</button>
-          <button type="button" class="screen-view-button" id="screen-text-smaller" aria-label="Smaller screen text"
-            aria-disabled=${smallest ? 'true' : undefined} onClick=${() => step(-1)}>A−</button>
-          <button type="button" class="screen-view-button" id="screen-text-larger" aria-label="Larger screen text"
-            aria-disabled=${largest ? 'true' : undefined} onClick=${() => step(1)}>A+</button>
-          <span class="visually-hidden" id="screen-text-size" role="status" aria-live="polite">${`Text ${view.size} px`}</span>
-        </span>
-      </div>
-      ${failed ? html`<${Banner} id="banner-screen" tone="warn">${responseText(response)}<//>` : null}
-      ${!data && state && state.error ? html`<${Banner} id="banner-screen" tone="warn">${describeError(state.error)}<//>` : null}
-    </div>
-    <div class="screen-scroll" id="screen-scroll" ref=${scroller} onScroll=${onScroll}>
-      ${data ? html`<${ServerHtml} html=${markup} class="screen-html" id="screen" />` : html`<p class="empty">Reading the screen…</p>`}
-    </div>
-    <div class="screen-keys" role="region" aria-label="Screen quick keys" tabindex="0">
-      <${QuickKeys} keys=${env.config.quick_keys} disabled=${busy || !enabled} onKey=${key} />
-    </div>
-  </div>`;
-}
-
 function OverflowSheet({ env, live, target, onClose, onInterrupt, onKeys, onTargetGone }) {
   const peer = live.current_session === false;
   async function focus() {
@@ -310,7 +224,7 @@ function OverflowSheet({ env, live, target, onClose, onInterrupt, onKeys, onTarg
 
 function chooseTab(route, live) {
   if (route.tab) return route.tab;
-  return live && live.state === 'waiting' ? 'screen' : 'timeline';
+  return live && live.state === 'waiting' ? 'term' : 'timeline';
 }
 
 export function DetailView({ env, route }) {
@@ -331,14 +245,6 @@ export function DetailView({ env, route }) {
   const [peerRejected, setPeerRejected] = useState(false);
   const [informationOpen, setInformationOpen] = useState(false);
   const beforeResize = useRef(null);
-  // Per device: kept across polls, tab switches and reloads. When storage fails,
-  // the in-memory choice still applies to this view.
-  const [screenView, setScreenView] = useState(() => readScreenView(env.local));
-  const changeScreenView = useCallback((next) => {
-    const view = normalizeScreenView(next);
-    setScreenView(view);
-    writeScreenView(env.local, view);
-  }, []);
   const [retargetNotice, setRetargetNotice] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const earlierController = useRef(null);
@@ -604,9 +510,7 @@ export function DetailView({ env, route }) {
     else env.replaceHash('#/');
   };
 
-  const screenTab = activeTab === 'screen';
-  return html`<div class=${cx('page', 'detail-page', screenTab && 'detail-screen', screenTab && screenView.wrap && 'screen-wrap',
-    screenTab && `screen-text-${screenView.size}`)}>
+  return html`<div class=${cx('page', 'detail-page', activeTab === 'term' && 'detail-term')}>
     <header class="app-header detail-header" id="detail-header">
       <div class="header-row detail-summary">
         <button type="button" class="icon-button" id="detail-back" aria-label="Back" onClick=${back}>‹</button>
@@ -630,9 +534,9 @@ export function DetailView({ env, route }) {
         ${live ? html`<${QuotaBar} usage=${usage && usage.data && usage.data.usage} error=${usage && !usage.data && usage.error ? describeError(usage.error) : null} />` : null}
       </section>
       <div class="segmented" role="tablist" aria-label="Agent views">
-        ${['timeline', 'screen', 'details'].map((t) => html`<button type="button" role="tab" id=${`tab-${t}`} aria-controls=${`panel-${t}`}
+        ${['timeline', 'term', 'details'].map((t) => html`<button type="button" role="tab" id=${`tab-${t}`} aria-controls=${`panel-${t}`}
           aria-selected=${activeTab === t ? 'true' : 'false'} class=${cx('segment', activeTab === t && 'segment-active')}
-          disabled=${t === 'screen' && !actions} onClick=${() => setTab(t)}>${t[0].toUpperCase()}${t.slice(1)}</button>`)}
+          disabled=${t === 'term' && !actions} onClick=${() => setTab(t)}>${t[0].toUpperCase()}${t.slice(1)}</button>`)}
       </div>
     </header>
     <div class="banners">
@@ -654,8 +558,8 @@ export function DetailView({ env, route }) {
         ${activeTab === 'timeline' ? html`<${Timeline} items=${items} memory=${memory} loaded=${!store || store.loaded || store.confirmed} waitingForAgent=${waitingForAgent} layoutKey=${informationOpen} beforeResize=${beforeResize}
           earlier=${store && !!store.earlierRequest()} loadingEarlier=${loadingEarlier} onEarlier=${loadEarlier}
           onTools=${(item) => setSheet({ type: 'tools', item })} onEvent=${(item) => setSheet({ type: 'event', item })} />` : null}
-        ${activeTab === 'screen' ? html`<${ScreenPanel} env=${env} target=${actions ? currentRef : null} enabled=${actions} layoutKey=${informationOpen} beforeResize=${beforeResize}
-          view=${screenView} onView=${changeScreenView} onTargetGone=${onTargetGone} />` : null}
+        ${activeTab === 'term' ? (actions ? html`<${TermPanel} key=${JSON.stringify(currentRef)} env=${env}
+          target=${currentRef} onTargetGone=${onTargetGone} />` : html`<p class="empty">No live agent to read.</p>`) : null}
         ${activeTab === 'details' ? html`<div class="details-panel">
           ${store && store.meta.details_html ? html`<${ServerHtml} html=${store.meta.details_html} class="details-html" id="details" />` : html`<p class="empty">No details yet.</p>`}
           <div class="details-nav">

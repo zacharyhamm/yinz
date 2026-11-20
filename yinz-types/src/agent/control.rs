@@ -127,6 +127,32 @@ pub struct CloseoutFence {
 
 pub const CLOSEOUT_CAPABILITY: &str = "agent-controller-closeout-v1";
 
+/// Terminal bytes from xterm, or a physical key whose encoding depends on the pane.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum WebTerminalInput {
+    Bytes(String),
+    Key(KeyWithModifier),
+}
+
+impl WebTerminalInput {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        use crate::keys::BareKey;
+        match self {
+            Self::Bytes(data) if data.is_empty() || data.len() > 32768 => {
+                Err("terminal input exceeds batch limit")
+            },
+            Self::Key(key)
+                if matches!(key.bare_key, BareKey::Char(c) if c.is_control())
+                    || matches!(key.bare_key, BareKey::F(0 | 25..)) =>
+            {
+                Err("invalid terminal key")
+            },
+            _ => Ok(()),
+        }
+    }
+}
+
 /// Closed web control surface. A distinct wire variant fails closed on older peers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum WebAgentAction {
@@ -139,6 +165,12 @@ pub enum WebAgentAction {
     },
     SendKeys {
         keys: Vec<String>,
+    },
+    Terminal {
+        after: Option<String>,
+    },
+    TerminalInput {
+        data: WebTerminalInput,
     },
     /// Read-only check of the owning Screen, accepted only under WebPeerGuarded.
     VerifyFocus,
@@ -233,6 +265,10 @@ impl WebAgentAction {
                 }
                 Ok(())
             },
+            Self::Terminal {
+                after: Some(cursor),
+            } if cursor.len() > 64 => Err("invalid terminal cursor"),
+            Self::TerminalInput { data } => data.validate(),
             Self::Read { lines } if !(1..=200).contains(lines) => Err("lines must be 1 to 200"),
             Self::SendKeys { keys }
                 if keys.is_empty()
@@ -255,6 +291,9 @@ impl WebAgentAction {
     pub fn lower(self, pane_id: PaneId, session_id: String) -> Result<AgentRequest, String> {
         self.validate().map_err(str::to_owned)?;
         Ok(match self {
+            Self::Terminal { .. } | Self::TerminalInput { .. } => {
+                return Err("Terminal access requires an owning screen guard".into())
+            },
             Self::VerifyFocus => {
                 return Err("Focus verification requires a peer instance guard".into())
             },
@@ -518,6 +557,8 @@ pub struct AgentResponse {
     pub closeout_target: Option<CloseoutFence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<ProviderUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<TerminalFrame>,
     pub output: Option<String>,
     pub message: Option<String>,
     pub acknowledged: bool,
@@ -537,6 +578,22 @@ pub struct AgentResponse {
     /// Set only with `background`; empty when the work is known only from the registry.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub background_tasks: Vec<String>,
+}
+
+/// Part or all of a pane checkpoint, or a contiguous range of subsequent PTY bytes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TerminalFrame {
+    pub cols: usize,
+    pub rows: usize,
+    pub cursor: String,
+    pub snapshot: bool,
+    /// Fetch the next snapshot part with this cursor before enabling input.
+    #[serde(default)]
+    pub snapshot_continues: bool,
+    #[serde(default)]
+    pub supports_kitty_keyboard_protocol: bool,
+    /// Base64 preserves split UTF-8 characters across reads.
+    pub data: String,
 }
 
 impl AgentResponse {

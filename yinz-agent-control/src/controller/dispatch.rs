@@ -152,6 +152,8 @@ fn observe_hook(
 }
 
 pub fn tick(session: &mut impl AgentSession, now: Instant) {
+    let (agents, host) = session.agents_and_host();
+    agents.expire_web_snapshots(host, now);
     for pane in session.agents_and_host().0.expire_claude_observations(now) {
         publish_observation(session, pane);
     }

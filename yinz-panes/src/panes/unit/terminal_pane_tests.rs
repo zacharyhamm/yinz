@@ -3908,3 +3908,203 @@ fn osc7501_frame_status_matches_manifest_with_retained_history() {
         assert_eq!(pane.agent_title().state, Some(fallback));
     }
 }
+
+#[test]
+#[ignore = "runs the vendored browser terminal with Node.js"]
+fn web_terminal_snapshot_replays_cells_and_cursor_in_xterm() {
+    let replay = |cols, prefix: &str, delta: &str| {
+        let mut pane = make_pane_for_ingest();
+        let mut geom = pane.geom;
+        geom.cols.set_inner(cols);
+        geom.rows.set_inner(4);
+        pane.set_geom(geom);
+        pane.handle_pty_bytes(prefix.as_bytes().to_vec());
+        let snapshot = pane.web_terminal_frame(None).unwrap();
+        pane.handle_pty_bytes(delta.as_bytes().to_vec());
+        let update = pane.web_terminal_frame(Some(&snapshot.cursor)).unwrap();
+        assert!(!update.snapshot);
+        (
+            cols,
+            snapshot.data,
+            update.data,
+            pane.grid.dump_screen(false),
+        )
+    };
+    let cases = serde_json::json!({
+        "alternate": replay(8, "normal\x1b[?1049habcdefghij", "\x1b[?1049l"),
+        "narrow": replay(8, "12345678", "x"),
+        "wide": replay(8, "123456\x1b[31m界\x1b[32m", "x"),
+        "emoji": replay(8, "🙂A", "\x1b[1;3H\u{301}B"),
+        "charsets": replay(8, "\x1b)0\x1b(A\x0eq", "q\x0f#"),
+        "saved": replay(8, "\x1b)0\x1b7\x1b)Babc", "\x1b8\x0eq"),
+        "alternate_charset": replay(8, "\x1b(0q\x1b[?1049habc", "\x1b[?1049lq"),
+        "tabs": replay(16, "\x1b[3g\x1b[4G\x1bH\r", "\tX\tY"),
+        "margin_charset": replay(8, "1234567q\x1b(0", "q"),
+        "positioned": replay(8, "12345678\x1b[1;8H", "x"),
+    });
+    run_xterm_replay(cases);
+}
+
+fn run_xterm_replay(cases: serde_json::Value) {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("node")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/panes/unit/web_terminal_replay.mjs"
+        ))
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    serde_json::to_writer(child.stdin.take().unwrap(), &cases).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[ignore = "runs the vendored browser terminal with Node.js"]
+fn web_terminal_multipart_snapshot_replays_cells_and_cursor_in_xterm() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use serde_json::json;
+    use yinz_types::agent::control::{AgentOutcome, AgentResponse, TerminalFrame};
+    use yinz_types::web::MAX_RESPONSE_BODY;
+    let mut pane = make_pane_for_ingest();
+    let mut geom = pane.geom;
+    geom.cols.set_inner(512);
+    geom.rows.set_inner(8);
+    pane.set_geom(geom);
+
+    // Change both RGB attributes at each cell, including in the retained scrollback.
+    let pair = "\x1b[38;2;123;145;167;48;2;222;211;200mA\x1b[38;2;201;211;221;48;2;135;146;157mB";
+    let row = pair.repeat(250);
+    for y in 0..200 {
+        pane.handle_pty_bytes(format!("{y:03}{row}\r\n").into_bytes());
+    }
+    pane.handle_pty_bytes(b"normal\x1b[?1049h\x1b[31malt buffer".to_vec());
+    let native = |pane: &TerminalPane| {
+        let (x, y, _) = pane.grid.cursor_coordinates().unwrap();
+        json!({ "text": pane.grid.dump_screen(true), "cursor": [x, y] })
+    };
+    let alternate = native(&pane);
+    let first = pane.web_terminal_frame(None).unwrap();
+    assert!(first.snapshot && first.snapshot_continues);
+    let tail = b"\x1b[?1049l\x1b[3;5H!";
+    pane.handle_pty_bytes(tail.to_vec());
+    assert_eq!(
+        pane.web_terminal_frame(None).unwrap(),
+        first,
+        "second reader"
+    );
+
+    let envelope = |frame: &TerminalFrame| {
+        let response = AgentResponse {
+            terminal: Some(frame.clone()),
+            ..AgentResponse::new(AgentOutcome::Ok)
+        };
+        let wrapped = json!({ "response": response });
+        assert!(serde_json::to_vec(&wrapped).unwrap().len() <= MAX_RESPONSE_BODY);
+        assert!(frame.cursor.len() <= 64);
+        wrapped
+    };
+    let mut parts = Vec::new();
+    let mut raw_len = 0usize;
+    let mut part = first;
+    let mut after = String::new();
+    loop {
+        parts.push(envelope(&part));
+        let count = STANDARD.decode(&part.data).unwrap().len();
+        assert!(count <= 256 * 1024);
+        raw_len += count;
+        if !part.snapshot_continues {
+            break;
+        }
+        after = part.cursor;
+        part = pane.web_terminal_frame(Some(&after)).unwrap();
+        assert!(!part.snapshot);
+        assert_eq!(pane.web_terminal_frame(Some(&after)).unwrap(), part);
+    }
+    assert!(raw_len.div_ceil(3) * 4 > MAX_RESPONSE_BODY);
+    let delta = pane.web_terminal_frame(Some(&part.cursor)).unwrap();
+    assert!(!delta.snapshot && !delta.snapshot_continues);
+    assert_eq!(STANDARD.decode(&delta.data).unwrap(), tail);
+    let colors: Vec<_> = pane
+        .grid
+        .as_character_lines()
+        .iter()
+        .map(|line| {
+            line.iter()
+                .map(|cell| {
+                    use crate::panes::terminal_character::AnsiCode::RgbCode;
+                    match (cell.styles.foreground, cell.styles.background) {
+                        (Some(RgbCode((r, g, b))), Some(RgbCode((br, bg, bb)))) => Some([
+                            u32::from_be_bytes([0, r, g, b]),
+                            u32::from_be_bytes([0, br, bg, bb]),
+                        ]),
+                        _ => None,
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    run_xterm_replay(json!({ "multipart": {
+        "parts": parts, "delta": envelope(&delta), "alternate": alternate,
+        "normal": native(&pane), "colors": colors,
+    }}));
+
+    // A slower reader can finish the same snapshot even after its delta cursor ages out.
+    pane.handle_pty_bytes(vec![0; 65537]);
+    assert_eq!(pane.web_terminal_frame(Some(&after)).unwrap(), part);
+    let fresh = pane.web_terminal_frame(Some(&part.cursor)).unwrap();
+    assert!(fresh.snapshot && fresh.snapshot_continues);
+    geom.cols.set_inner(510);
+    pane.set_geom(geom);
+    pane.handle_pty_bytes(b"\x1b[38;".to_vec());
+    assert!(pane.web_terminal_frame(Some(&fresh.cursor)).is_none());
+    pane.handle_pty_bytes(b"5;7m".to_vec());
+    let resized = pane.web_terminal_frame(Some(&fresh.cursor)).unwrap();
+    assert!(resized.snapshot);
+    assert_ne!(resized.cursor, fresh.cursor);
+    assert_eq!(resized.cols, 510);
+}
+
+#[test]
+fn web_terminal_snapshot_and_incremental_reads_follow_the_native_pane() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let mut pane = make_pane_for_ingest();
+    pane.handle_pty_bytes(b"normal buffer\x1b[?1049h\x1b[?2004h\x1b[31m".to_vec());
+    pane.handle_pty_bytes("wide 界".as_bytes().to_vec());
+    let first = pane.web_terminal_frame(None).unwrap();
+    let snapshot = String::from_utf8(STANDARD.decode(&first.data).unwrap()).unwrap();
+    assert!(first.snapshot);
+    assert!(!first.snapshot_continues);
+    for text in ["normal buffer", "\x1b[?1049h", "wide 界", "\x1b[?2004h"] {
+        assert!(snapshot.contains(text), "{snapshot:?}");
+    }
+    assert_eq!((first.cols, first.rows), (121, 20));
+    let tail = b"\x1b[?1049l\x1b[3;4H";
+    pane.handle_pty_bytes(tail.to_vec());
+    let delta = pane.web_terminal_frame(Some(&first.cursor)).unwrap();
+    assert!(!delta.snapshot);
+    assert_eq!(STANDARD.decode(delta.data).unwrap(), tail);
+    assert!(pane
+        .web_terminal_frame(Some(&delta.cursor))
+        .unwrap()
+        .data
+        .is_empty());
+    pane.handle_pty_bytes(vec![b'x'; 65537]);
+    assert!(
+        pane.web_terminal_frame(Some(&delta.cursor))
+            .unwrap()
+            .snapshot
+    );
+    let mut geom = pane.geom;
+    geom.cols.set_inner(80);
+    pane.set_geom(geom);
+    let resized = pane.web_terminal_frame(Some(&delta.cursor)).unwrap();
+    assert!(resized.snapshot);
+    assert_eq!(resized.cols, 80);
+}

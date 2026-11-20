@@ -363,6 +363,13 @@ pub trait Pane {
     fn pull_left(&mut self, count: usize);
     fn pull_up(&mut self, count: usize);
     fn clear_screen(&mut self);
+    fn web_terminal_frame(
+        &mut self,
+        _after: Option<&str>,
+    ) -> Option<yinz_types::agent::control::TerminalFrame> {
+        None
+    }
+    fn clear_web_terminal_snapshot(&mut self) {}
     fn dump_screen(&self, _full: bool, _client_id: Option<ClientId>) -> String {
         "".to_owned()
     }

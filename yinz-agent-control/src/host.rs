@@ -42,6 +42,18 @@ pub trait AgentHost {
     fn last_output(&self, pane: PaneId) -> Option<Instant>;
     fn pane_input(&self, pane: PaneId) -> Option<PaneInput>;
     fn viewport(&self, pane: PaneId, ansi: bool) -> Option<(usize, PaneContents)>;
+    fn terminal_output_paused(&self, pane: PaneId) -> bool;
+    fn web_terminal_frame(
+        &mut self,
+        pane: PaneId,
+        after: Option<&str>,
+    ) -> Option<yinz_types::agent::control::TerminalFrame>;
+    fn clear_web_terminal_snapshot(&mut self, pane: PaneId);
+    fn write_web_terminal_bytes(
+        &mut self,
+        pane: PaneId,
+        bytes: Vec<u8>,
+    ) -> yinz_runtime::errors::prelude::Result<()>;
     fn agent_input_revision(&self, pane: PaneId) -> u64;
     fn agent_input_at(&self, pane: PaneId) -> Option<Instant>;
     fn prepare_restart(

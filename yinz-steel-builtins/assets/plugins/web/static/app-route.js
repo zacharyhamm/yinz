@@ -1,7 +1,7 @@
 // Hash routes (DOM-free):
 //   #/                                         default agents page
 //   #/g/<encoded JSON [session, group id]>       tab-group agents page
-//   #/a/<encodeURIComponent(id)>?run=<run>&tab=timeline|screen|details[&bind=0]
+//   #/a/<encodeURIComponent(id)>?run=<run>&tab=timeline|term|details[&bind=0]
 // `bind=0` marks stored-run browsing (previous/original run links), which reads
 // the run without the live agent binding. Routes never carry credentials.
 
@@ -9,7 +9,7 @@ import { isScopedPeer, targetOf, validTarget } from './submission.js';
 
 export { isScopedPeer };
 
-export const TABS = ['timeline', 'screen', 'details'];
+export const TABS = ['timeline', 'term', 'details'];
 
 const PEER_DETAIL_PREFIX = 'peer-detail:';
 
@@ -41,7 +41,7 @@ export function cardDetail(row, servingSession) {
   return {
     id: scoped ? row.detail_id : row.id,
     run: row.run,
-    tab: !bind || (row.run && row.state !== 'waiting') ? 'timeline' : 'screen',
+    tab: !bind || (row.run && row.state !== 'waiting') ? 'timeline' : 'term',
     bind,
   };
 }
@@ -91,7 +91,8 @@ export function parseHash(hash) {
   }
   if (!id.trim()) return { view: 'list' };
   const params = new URLSearchParams(m[2] || '');
-  const tab = TABS.includes(params.get('tab')) ? params.get('tab') : null;
+  const requested = params.get('tab');
+  const tab = requested === 'screen' ? 'term' : TABS.includes(requested) ? requested : null;
   return { view: 'detail', id, run: params.get('run') || '', tab, bind: params.get('bind') !== '0' };
 }
 

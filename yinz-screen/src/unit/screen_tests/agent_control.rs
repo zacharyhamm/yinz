@@ -1,7 +1,9 @@
 use super::*;
 use crate::screen::thread_main::apply_queued_agent_report;
 use std::time::{Duration, Instant};
-use yinz_types::agent::control::{AgentOutcome, AgentRequest, AgentResponse, NotReadyReason};
+use yinz_types::agent::control::{
+    AgentOutcome, AgentRequest, AgentResponse, NotReadyReason, WebTerminalInput,
+};
 use yinz_types::agent::report::{AgentReport, AgentReportState};
 use yinz_types::agent::{hook_outcome, AgentEvent, AgentState, HookEvent, HookOutcome};
 use yinz_types::command::PaneTarget;
@@ -17030,6 +17032,10 @@ fn web_agents_owning_screen_rejects_replacements_and_invalid_actions_without_inp
             text: "continue".into(),
             submission_id: "retry".into(),
         },
+        WebAgentAction::Terminal { after: None },
+        WebAgentAction::TerminalInput {
+            data: WebTerminalInput::Bytes("YQ==".into()),
+        },
         WebAgentAction::Read { lines: 80 },
         WebAgentAction::SendKeys {
             keys: vec!["enter".into()],
@@ -17099,6 +17105,10 @@ fn web_agents_peer_instance_guard_refuses_a_restarted_screen_before_read_or_inpu
         action,
     };
     for action in [
+        WebAgentAction::Terminal { after: None },
+        WebAgentAction::TerminalInput {
+            data: WebTerminalInput::Bytes("YQ==".into()),
+        },
         WebAgentAction::Read { lines: 80 },
         WebAgentAction::SendKeys {
             keys: vec!["y".into()],
@@ -17266,6 +17276,272 @@ fn web_agents_focus_refuses_expired_peer_dispatch() {
     ));
 }
 
+fn guarded_codex_terminal(action: yinz_types::agent::control::WebAgentAction) -> AgentRequest {
+    AgentRequest::WebGuarded {
+        pane_id: PANE,
+        expected_kind: "codex".into(),
+        expected_session_id: "conversation".into(),
+        action,
+    }
+}
+
+#[test]
+fn web_terminal_guarded_cursor_limit_precedes_snapshot_and_follows_identity_checks() {
+    use yinz_types::agent::control::WebAgentAction;
+    let (mut screen, messages, _) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    let instance = screen.core.instance_id.to_string();
+    for peer in [false, true] {
+        for (length, session, expected) in [
+            (64, "conversation", AgentOutcome::Ok),
+            (65, "conversation", AgentOutcome::Rejected),
+            (65, "stale", AgentOutcome::TargetChanged),
+        ] {
+            let action = WebAgentAction::Terminal {
+                after: Some("x".repeat(length)),
+            };
+            let request = if peer {
+                AgentRequest::WebPeerGuarded {
+                    expected_instance: instance.clone(),
+                    pane_id: PANE,
+                    expected_kind: "codex".into(),
+                    expected_session_id: session.into(),
+                    action,
+                }
+            } else {
+                AgentRequest::WebGuarded {
+                    pane_id: PANE,
+                    expected_kind: "codex".into(),
+                    expected_session_id: session.into(),
+                    action,
+                }
+            };
+            screen.agent_control(request, CLIENT);
+            let response = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(response.outcome, expected);
+            if expected == AgentOutcome::Ok {
+                assert!(response.terminal.unwrap().snapshot);
+            } else {
+                assert!(response.terminal.is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn web_terminal_expires_idle_snapshot_even_if_the_pane_produces_no_output() {
+    use crate::screen::agent_control::Reply;
+    use yinz_types::agent::control::WebAgentAction;
+    let (mut screen, messages, _) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    let row = format!(
+        "{}\r\n",
+        "\x1b[38;2;201;202;203mA\x1b[38;2;204;205;206mB".repeat(36)
+    );
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(7), row.repeat(200).into_bytes())
+        .unwrap();
+    let now = Instant::now();
+    let read = |screen: &mut Screen, after, at| {
+        screen.agent_control_at(
+            guarded_codex_terminal(WebAgentAction::Terminal { after }),
+            Reply::Client(CLIENT),
+            at,
+        );
+        replies(&messages, CLIENT).pop().unwrap().terminal.unwrap()
+    };
+    let first = read(&mut screen, None, now);
+    assert!(first.snapshot_continues);
+    let deadline = now + Duration::from_secs(60);
+    assert_eq!(
+        screen.agents.agent_control_deadline_at(now),
+        Some(Duration::from_secs(60))
+    );
+    screen.refresh_agent_controls_at(deadline);
+    let restarted = screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .get_pane_with_id_mut(PANE)
+        .unwrap()
+        .web_terminal_frame(Some(&first.cursor))
+        .unwrap();
+    assert!(restarted.snapshot && restarted.snapshot_continues);
+    assert_ne!(restarted.cursor, first.cursor);
+    assert_eq!(read(&mut screen, Some(first.cursor), deadline), restarted);
+}
+
+#[test]
+fn web_terminal_input_encodes_negotiated_keys_and_tracks_plain_enter() {
+    use yinz_types::agent::control::WebAgentAction;
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    let pid = TerminalId::new(7);
+    let mut cursor = None;
+    for enabled in [true, false, true] {
+        let mode = if enabled {
+            b"\x1b[>1u".as_slice()
+        } else {
+            b"\x1b[<u"
+        };
+        screen
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .handle_pty_bytes(pid, mode.to_vec())
+            .unwrap();
+        screen.agent_control(
+            guarded_codex_terminal(WebAgentAction::Terminal {
+                after: cursor.clone(),
+            }),
+            CLIENT,
+        );
+        let frame = replies(&messages, CLIENT).pop().unwrap().terminal.unwrap();
+        assert_eq!(frame.supports_kitty_keyboard_protocol, enabled);
+        assert_eq!(frame.snapshot, cursor.is_none());
+        cursor = Some(frame.cursor);
+    }
+    for (name, expected) in [
+        ("Shift Enter", b"\x1b[13;2u".as_slice()),
+        ("Ctrl Tab", b"\x1b[9;5u"),
+        ("Enter", b"\r"),
+    ] {
+        screen.agent_control(
+            guarded_codex_terminal(WebAgentAction::TerminalInput {
+                data: WebTerminalInput::Key(name.parse().unwrap()),
+            }),
+            CLIENT,
+        );
+        assert_eq!(
+            replies(&messages, CLIENT).pop().unwrap().outcome,
+            AgentOutcome::Ok
+        );
+        assert_eq!(finish_paste(&writes), expected);
+        let pane = screen
+            .tab_containing_pane(PANE)
+            .unwrap()
+            .get_pane_with_id(PANE)
+            .unwrap();
+        assert_eq!(
+            pane.agent_enter_revision() == pane.agent_input_revision(),
+            name == "Enter"
+        );
+    }
+}
+
+#[test]
+fn web_terminal_input_requires_live_agent_or_spawned_startup() {
+    use yinz_types::agent::{control::WebAgentAction, AgentSource};
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    screen.invalidate_agent_lifecycle(PANE, "lost test lifecycle");
+    for source in [AgentSource::Reported, AgentSource::Spawned] {
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        let mut agent = tab.pane_agent_info(PANE).unwrap();
+        agent.source = source;
+        tab.set_pane_agent(PANE, Some(agent));
+        for action in [
+            WebAgentAction::SendKeys {
+                keys: vec!["y".into()],
+            },
+            WebAgentAction::TerminalInput {
+                data: WebTerminalInput::Bytes("eQ==".into()),
+            },
+        ] {
+            let revision = screen
+                .tab_containing_pane(PANE)
+                .unwrap()
+                .agent_input_revision(PANE);
+            screen.agent_control(guarded_codex_terminal(action), CLIENT);
+            let outcome = replies(&messages, CLIENT).pop().unwrap().outcome;
+            if source == AgentSource::Reported {
+                assert_eq!(outcome, AgentOutcome::StatusUnavailable);
+                assert!(finish_paste(&writes).is_empty());
+                assert_eq!(
+                    screen
+                        .tab_containing_pane(PANE)
+                        .unwrap()
+                        .agent_input_revision(PANE),
+                    revision
+                );
+            } else {
+                assert_eq!(outcome, AgentOutcome::Ok);
+                assert_eq!(finish_paste(&writes), b"y");
+            }
+        }
+    }
+}
+
+#[test]
+fn web_terminal_pauses_until_desktop_scrollback_is_drained() {
+    use yinz_types::agent::control::WebAgentAction;
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    let pid = TerminalId::new(7);
+    let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+    tab.handle_pty_bytes(pid, b"history\r\n".repeat(60))
+        .unwrap();
+    let revision = tab.agent_input_revision(PANE);
+    let request = |screen: &mut Screen, action| {
+        screen.agent_control(guarded_codex_terminal(action), CLIENT);
+        replies(&messages, CLIENT).pop().unwrap()
+    };
+    let frame = request(&mut screen, WebAgentAction::Terminal { after: None })
+        .terminal
+        .unwrap();
+    let read = WebAgentAction::Terminal {
+        after: Some(frame.cursor),
+    };
+    let raw = WebAgentAction::TerminalInput {
+        data: WebTerminalInput::Bytes("eQ==".into()),
+    };
+    let keys = WebAgentAction::SendKeys {
+        keys: vec!["y".into()],
+    };
+    let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+    tab.page_scroll_up_by_pane_id(PANE);
+    for queued in [false, true] {
+        if queued {
+            let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+            tab.handle_pty_bytes(pid, b"new".to_vec()).unwrap();
+            // Even after clearing the viewport, queued output must keep input paused.
+            tab.get_pane_with_id_mut(PANE).unwrap().clear_scroll();
+        }
+        for action in [read.clone(), raw.clone(), keys.clone()] {
+            let response = request(&mut screen, action);
+            assert_eq!(response.outcome, AgentOutcome::Rejected);
+            assert!(response.message.unwrap().contains("scrollback"));
+            assert!(response.terminal.is_none());
+        }
+        let invalid = WebAgentAction::Terminal {
+            after: Some("x".repeat(65)),
+        };
+        let response = request(&mut screen, invalid);
+        assert_eq!(response.outcome, AgentOutcome::Rejected);
+        assert_eq!(response.message.as_deref(), Some("invalid terminal cursor"));
+        assert!(finish_paste(&writes).is_empty());
+        assert_eq!(
+            screen
+                .tab_containing_pane(PANE)
+                .unwrap()
+                .agent_input_revision(PANE),
+            revision
+        );
+    }
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .scroll_to_bottom_by_pane_id(PANE)
+        .unwrap();
+    let frame = request(&mut screen, read).terminal.unwrap();
+    assert!(!frame.snapshot);
+    assert_eq!(frame.data, "bmV3"); // "new"
+    for action in [raw, keys] {
+        assert_eq!(request(&mut screen, action).outcome, AgentOutcome::Ok);
+        assert_eq!(finish_paste(&writes), b"y");
+    }
+}
+
 #[test]
 fn web_agents_guarded_read_keys_and_prompt_retry_use_existing_control_state_machine() {
     use yinz_types::agent::control::WebAgentAction;
@@ -17277,6 +17553,17 @@ fn web_agents_guarded_read_keys_and_prompt_retry_use_existing_control_state_mach
         expected_session_id: "conversation".into(),
         action,
     };
+    screen.agent_control(
+        guarded(WebAgentAction::TerminalInput {
+            data: WebTerminalInput::Bytes("YQMbW0E=".into()),
+        }),
+        CLIENT,
+    );
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Ok
+    );
+    assert_eq!(finish_paste(&writes), b"a\x03\x1b[A");
     screen.agent_control(guarded(WebAgentAction::Read { lines: 80 }), CLIENT);
     assert_eq!(
         replies(&messages, CLIENT).pop().unwrap().outcome,

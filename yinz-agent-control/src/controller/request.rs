@@ -1,5 +1,5 @@
 use super::*;
-use yinz_types::agent::control::valid_web_identity;
+use yinz_types::agent::control::{valid_web_identity, WebAgentAction, WebTerminalInput};
 pub(in crate::controller) enum Completion {
     Close(close_completed::AgentClose),
     Refresh,
@@ -19,6 +19,46 @@ pub(in crate::controller) enum Completion {
     },
 }
 impl super::AgentController {
+    pub(super) fn expire_web_snapshots(&mut self, host: &mut impl AgentHost, now: Instant) {
+        for (pane, _) in self
+            .web_snapshot_deadlines
+            .extract_if(|_, deadline| *deadline <= now)
+        {
+            host.clear_web_terminal_snapshot(pane);
+        }
+    }
+
+    fn web_terminal_input(
+        &self,
+        host: &mut impl AgentHost,
+        pane: PaneId,
+        status: &AgentStatus,
+        data: WebTerminalInput,
+    ) -> AgentResponse {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+
+        if let Err((outcome, message)) = self.verify_agent_input(host, pane, status) {
+            return self.agent_result(host, pane, outcome, Some(message.into()));
+        }
+        let result = match data {
+            WebTerminalInput::Key(key) => host.write_key(pane, key, None),
+            WebTerminalInput::Bytes(encoded) => {
+                let Ok(bytes) = STANDARD.decode(encoded) else {
+                    return AgentResponse::new(AgentOutcome::Rejected);
+                };
+                host.write_web_terminal_bytes(pane, bytes)
+            },
+        };
+        match result {
+            Ok(()) => AgentResponse::new(AgentOutcome::Ok),
+            Err(error) => {
+                let mut response = AgentResponse::new(AgentOutcome::Failed);
+                response.message = Some(error.to_string());
+                response
+            },
+        }
+    }
+
     pub(in crate::controller) fn handle(
         &mut self,
         host: &mut impl AgentHost,
@@ -72,27 +112,68 @@ impl super::AgentController {
                 expected_session_id,
                 action,
             } => {
-                web_command = matches!(&action, yinz_types::agent::control::WebAgentAction::Prompt { text, .. } if Provider::for_kind(&expected_kind).web_command(text));
                 let submission_id = action.submission_id().map(str::to_owned);
-                let valid = yinz_types::agent::control::valid_web_identity(&expected_kind)
-                    && yinz_types::agent::control::valid_web_identity(&expected_session_id);
-                let matches = instance_matches
-                    && valid
-                    && self
-                        .agent_status(host, pane_id, None)
-                        .is_some_and(|status| {
-                            status.agent.kind == expected_kind
-                                && status.agent.session_id.as_deref()
-                                    == Some(expected_session_id.as_str())
-                        });
-                let lowered = if matches {
-                    action.lower(pane_id, expected_session_id)
+                let valid =
+                    valid_web_identity(&expected_kind) && valid_web_identity(&expected_session_id);
+                let status = if instance_matches && valid {
+                    self.agent_status(host, pane_id, None).filter(|status| {
+                        status.agent.kind == expected_kind
+                            && status.agent.session_id.as_deref()
+                                == Some(expected_session_id.as_str())
+                    })
                 } else {
+                    None
+                };
+                let Some(status) = status else {
                     let mut response = AgentResponse::new(AgentOutcome::TargetChanged);
                     response.message = Some("Agent disappeared or changed identity".into());
                     response.submission_id = submission_id;
                     self.agent_reply(host, &client, response);
                     return None;
+                };
+                if let Err(message) = action.validate() {
+                    let mut response = AgentResponse::new(AgentOutcome::Rejected);
+                    response.message = Some(message.into());
+                    response.submission_id = submission_id;
+                    self.agent_reply(host, &client, response);
+                    return None;
+                }
+                web_command = matches!(&action, WebAgentAction::Prompt { text, .. } if Provider::for_kind(&expected_kind).web_command(text));
+                if matches!(
+                    action,
+                    WebAgentAction::Terminal { .. }
+                        | WebAgentAction::TerminalInput { .. }
+                        | WebAgentAction::SendKeys { .. }
+                ) && host.terminal_output_paused(pane_id)
+                {
+                    let mut response = AgentResponse::new(AgentOutcome::Rejected);
+                    response.message =
+                        Some("Terminal paused while the desktop pane is in scrollback".into());
+                    self.agent_reply(host, &client, response);
+                    return None;
+                }
+                let lowered = match action {
+                    WebAgentAction::Terminal { after } => {
+                        self.expire_web_snapshots(host, now);
+                        let mut response = AgentResponse::new(AgentOutcome::Ok);
+                        response.terminal = host.web_terminal_frame(pane_id, after.as_deref());
+                        if response
+                            .terminal
+                            .as_ref()
+                            .is_some_and(|frame| frame.snapshot_continues)
+                        {
+                            self.web_snapshot_deadlines
+                                .insert(pane_id, now + Duration::from_secs(60));
+                        }
+                        self.agent_reply(host, &client, response);
+                        return None;
+                    },
+                    WebAgentAction::TerminalInput { data } => {
+                        let response = self.web_terminal_input(host, pane_id, &status, data);
+                        self.agent_reply(host, &client, response);
+                        return None;
+                    },
+                    action => action.lower(pane_id, expected_session_id),
                 };
                 match lowered {
                     Ok(request) => request,

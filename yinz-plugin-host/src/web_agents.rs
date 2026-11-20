@@ -20,7 +20,7 @@ use yinz_types::{
     agent::{
         control::{
             valid_web_identity, AgentOutcome, AgentRequest, AgentResponse, ProviderUsage,
-            ProviderUsageStatus, WebAgentAction, PEER_DETAIL_PREFIX,
+            ProviderUsageStatus, WebAgentAction, WebTerminalInput, PEER_DETAIL_PREFIX,
         },
         history::{Cursor, Range},
         LiveAgentOrder,
@@ -71,6 +71,14 @@ enum Operation {
     },
     Focus {
         agent: WebAgentRef,
+    },
+    Terminal {
+        agent: WebAgentRef,
+        after: Option<String>,
+    },
+    TerminalInput {
+        agent: WebAgentRef,
+        data: WebTerminalInput,
     },
     Screen {
         agent: WebAgentRef,
@@ -247,6 +255,20 @@ impl Operation {
                 }
                 .validate()
                 .map_err(invalid)?;
+            },
+            Self::Terminal { agent, after } => {
+                agent_ref(agent)?;
+                WebAgentAction::Terminal {
+                    after: after.clone(),
+                }
+                .validate()
+                .map_err(invalid)?;
+            },
+            Self::TerminalInput { agent, data } => {
+                agent_ref(agent)?;
+                WebAgentAction::TerminalInput { data: data.clone() }
+                    .validate()
+                    .map_err(invalid)?;
             },
             Self::Screen { agent, lines } => {
                 agent_ref(agent)?;
@@ -729,6 +751,20 @@ fn execute(
                 text,
                 submission_id,
             },
+            client,
+            senders,
+            data,
+        ),
+        Operation::Terminal { agent, after } => control(
+            agent,
+            WebAgentAction::Terminal { after },
+            client,
+            senders,
+            data,
+        ),
+        Operation::TerminalInput { agent, data: input } => control(
+            agent,
+            WebAgentAction::TerminalInput { data: input },
             client,
             senders,
             data,

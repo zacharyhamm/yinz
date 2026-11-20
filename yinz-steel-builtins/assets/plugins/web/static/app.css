@@ -388,18 +388,18 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
    The output reserve stays at the default 12 px line: the 480 px worst case
    (information, a banner and submission recovery) has no room for more, and
    the newest line of larger text still fits inside it. */
-.detail-screen {
+.detail-term {
   --screen-font: 12px;
   --screen-line: 1.2;
   --screen-output-min: calc(16px + 20px + 12px * var(--screen-line));
   --screen-feedback-min: calc(var(--tap) + 8px);
   --screen-keys-min: calc(var(--tap) + 8px + 1px);
 }
-.detail-screen .detail-information { min-height: calc(var(--tap) + 12px + 1px); }
-.detail-screen .detail-header:has(.detail-information:not([hidden])) {
+.detail-term .detail-information { min-height: calc(var(--tap) + 12px + 1px); }
+.detail-term .detail-header:has(.detail-information:not([hidden])) {
   min-height: calc(var(--header-min) + 4px + var(--tap) + 12px + 1px);
 }
-.detail-screen .detail-body, .detail-screen #panel-screen {
+.detail-term .detail-body, .detail-term #panel-term {
   min-height: calc(var(--screen-output-min) + var(--screen-feedback-min) + var(--screen-keys-min));
 }
 .screen-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -410,22 +410,6 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
   flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; color: var(--muted);
   padding: 8px calc(12px + var(--safe-right)) 0 calc(12px + var(--safe-left));
 }
-/* Screen view controls: wrap toggle and text-size stepper, local to this device.
-   At 320 px the group wraps beneath the freshness text. */
-.screen-view { display: flex; align-items: center; gap: 6px; margin-left: auto; }
-.screen-view-button {
-  display: inline-flex; align-items: center; justify-content: center;
-  min-width: var(--tap); min-height: var(--tap); padding: 0 10px;
-  font: inherit; font-weight: 600; color: var(--text); background: var(--surface);
-  border: 1px solid var(--border); border-radius: 10px; cursor: pointer; touch-action: manipulation;
-}
-.screen-view-button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
-/* A stepper at its bound stays focusable (aria-disabled). It is marked by a dashed
-   border and muted text that keeps 4.5:1 contrast, not by fading. */
-.screen-view-button[aria-disabled="true"] { color: var(--muted); border-style: dashed; cursor: not-allowed; }
-.detail-screen.screen-text-14 { --screen-font: 14px; }
-.detail-screen.screen-text-16 { --screen-font: 16px; }
-.detail-screen.screen-text-18 { --screen-font: 18px; }
 .screen-scroll {
   flex: 1; min-height: var(--screen-output-min); overflow-y: auto; overscroll-behavior: contain;
   padding: 8px calc(12px + var(--safe-right)) 8px calc(12px + var(--safe-left));
@@ -444,8 +428,8 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
   margin: 0; padding: 10px; border-radius: 10px; background: #0b0f17; color: #e5e7eb;
   font-size: var(--screen-font, 12px); line-height: var(--screen-line, 1.2); white-space: pre; overflow-x: auto;
 }
-/* Wrap reflows wide terminal lines to the phone width instead of panning each line. */
-.detail-screen.screen-wrap pre.screen { white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; }
+.term-stage { width: 100%; position: relative; overflow: hidden; background: #000; }
+.term-host { position: absolute; top: 0; left: 0; transform-origin: top left; }
 .details-html pre.details, pre.details { margin: 0; padding: 10px; border-radius: 10px; background: var(--surface-2); }
 .details-nav { display: flex; flex-wrap: wrap; gap: 8px; }
 .reader { display: grid; gap: 8px; min-width: 0; }
@@ -467,7 +451,7 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 /* In reduced Screen space the complete draft scrolls inside a one-line input;
    the dock remains scrollable for submission feedback and recovery actions. */
 @media (max-height: 600px) {
-  .detail-screen .composer-input { max-height: var(--tap); }
+  .detail-term .composer-input { max-height: var(--tap); }
 }
 .composer { display: grid; gap: 8px; min-width: 0; }
 .composer-row { display: flex; align-items: flex-end; gap: 6px; min-width: 0; }

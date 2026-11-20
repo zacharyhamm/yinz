@@ -5074,6 +5074,7 @@ fn test_server_messages() {
                 session_id: Some("conversation-7".into()),
                 command: vec!["claude".into(), "--resume".into(), "conversation-7".into()],
             }),
+            terminal: None,
             output: Some("Ready\n>".into()),
             launch_resources: None,
             usage: None,

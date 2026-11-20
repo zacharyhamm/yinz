@@ -24,6 +24,13 @@ use yinz_types::internal_ids::TerminalId;
 use yinz_types::keys::KeyWithModifier;
 
 impl Tab {
+    pub fn terminal_output_paused(&self, pane_id: PaneId) -> bool {
+        matches!(pane_id, PaneId::Terminal(pid) if self.pending_vte_events.contains_key(&pid))
+            || self
+                .get_pane_with_id(pane_id)
+                .is_some_and(|pane| pane.is_scrolled())
+    }
+
     pub fn handle_pty_bytes(&mut self, pid: TerminalId, bytes: VteBytes) -> Result<()> {
         if self.is_pending {
             self.pending_instructions

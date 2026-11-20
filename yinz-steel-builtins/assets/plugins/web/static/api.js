@@ -10,7 +10,6 @@ export const KEYS = Object.freeze({
   returnHash: 'yinz.web.v1.return',
   notice: 'yinz.web.v1.notice',
   submissionPrefix: 'yinz.web.v1.submission:',
-  screenView: 'yinz.web.v1.screen_view',
 });
 
 export const QUICK_KEYS = Object.freeze([
@@ -20,7 +19,7 @@ export const QUICK_KEYS = Object.freeze([
 
 export const DEFAULT_CONFIG = Object.freeze({
   title: 'yinz',
-  poll: Object.freeze({ list_ms: 3000, tail_ms: 2000, usage_ms: 60000, screen_ms: 2000 }),
+  poll: Object.freeze({ list_ms: 3000, tail_ms: 2000, usage_ms: 60000, screen_ms: 250 }),
   quick_keys: Object.freeze(['1', '2', '3', 'enter', 'esc', 'up', 'down']),
   timeouts: Object.freeze({ get_ms: 10000, post_ms: 45000 }),
 });
@@ -48,7 +47,7 @@ export function normalizeConfig(raw) {
       list_ms: boundedInt(poll.list_ms, d.poll.list_ms, 500, 600000),
       tail_ms: boundedInt(poll.tail_ms, d.poll.tail_ms, 500, 600000),
       usage_ms: boundedInt(poll.usage_ms, d.poll.usage_ms, 1000, 3600000),
-      screen_ms: boundedInt(poll.screen_ms, d.poll.screen_ms, 500, 600000),
+      screen_ms: boundedInt(poll.screen_ms, d.poll.screen_ms, 250, 600000),
     },
     quick_keys: keys.length ? keys : [...d.quick_keys],
     timeouts: {
@@ -512,35 +511,6 @@ export function takeReturn(session) {
 }
 
 /** Screen tab text sizes in px, smallest first; the first is the default. */
-export const SCREEN_TEXT_SIZES = Object.freeze([12, 14, 16, 18]);
-
-/**
- * Per-device Screen view preference. Each field falls back to its default on
- * its own, so a stored unknown size keeps a valid wrap choice and vice versa.
- */
-export function normalizeScreenView(value) {
-  const v = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-  return {
-    wrap: typeof v.wrap === 'boolean' ? v.wrap : false,
-    size: SCREEN_TEXT_SIZES.includes(v.size) ? v.size : SCREEN_TEXT_SIZES[0],
-  };
-}
-
-export function readScreenView(local) {
-  const r = local.get(KEYS.screenView);
-  if (!r.ok || typeof r.value !== 'string') return normalizeScreenView(null);
-  try {
-    return normalizeScreenView(JSON.parse(r.value));
-  } catch {
-    return normalizeScreenView(null);
-  }
-}
-
-/** A convenience: callers keep the in-memory view when this reports failure. */
-export function writeScreenView(local, view) {
-  return local.set(KEYS.screenView, JSON.stringify(normalizeScreenView(view)));
-}
-
 export function setNotice(session, text) {
   return session.set(KEYS.notice, String(text).slice(0, 300)).ok;
 }

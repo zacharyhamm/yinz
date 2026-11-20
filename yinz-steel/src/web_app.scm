@@ -5,7 +5,7 @@
 (define %web-app-config #f)
 (define %web-app-default-config
   (hash "title" "yinz"
-    "poll" (hash "list_ms" 3000 "tail_ms" 2000 "usage_ms" 60000 "screen_ms" 2000)
+    "poll" (hash "list_ms" 3000 "tail_ms" 2000 "usage_ms" 60000 "screen_ms" 250)
     "quick_keys" (list "1" "2" "3" "enter" "esc" "up" "down")
     "timeouts" (hash "get_ms" 10000 "post_ms" 45000)))
 (define %web-app-keys
@@ -303,6 +303,12 @@
     (%web-app-require "agent" "submission_id" "text") %web-app-same)
   (%web-app-post "/api/agent/focus" "focus" (hash "agent" %web-app-agent-ref) (%web-app-require "agent")
     (lambda (payload) (hash "ok" payload)))
+  (%web-app-post "/api/agent/term" "terminal" (hash "agent" %web-app-agent-ref "after" %web-app-identity)
+    (%web-app-require "agent") %web-app-same)
+  (%web-app-post "/api/agent/term/input" "terminal_input"
+    (hash "agent" %web-app-agent-ref "data" (%web-app-keep (lambda (value) (or (%web-app-text? value 32768 '())
+      (%web-app-exact-keys? value '("bare_key" "key_modifiers"))))))
+    (%web-app-require "agent" "data") %web-app-same)
   (%web-app-post "/api/agent/screen" "screen" (hash "agent" %web-app-agent-ref "lines" %web-app-lines)
     %web-app-screen %web-app-screen-html)
   (%web-app-post "/api/agent/keys" "keys" (hash "agent" %web-app-agent-ref "keys" %web-app-key-list)
@@ -461,7 +467,7 @@
     %web-app-default-config))
 (define (%web-app-context page)
   (hash "title" (hash-ref %web-app-config "title") "page" page "config" %web-app-config
-    "styles" (list "/static/app.css")
+    "styles" (if (equal? page "login") (list "/static/app.css") (list "/static/vendor/xterm.css" "/static/app.css"))
     "scripts" (list (if (equal? page "login") "/static/login.js" "/static/app.js"))))
 ;; Each step replaces its own registration, so a failed attempt raises and a
 ;; retry reinstalls deterministically. Success makes later calls no-ops.

@@ -32,7 +32,7 @@ threads-required = 4
 [[profile.default.overrides]]
 filter = 'binary(app) & test(=web::web_builtin_browser_phone_flows)'
 threads-required = 4
-slow-timeout = { period = "60s", terminate-after = 5 }
+slow-timeout = { period = "60s", terminate-after = 11 }
 
 # `cargo x test` - the unit and plugin suites, not the whole-app integration tests.
 #

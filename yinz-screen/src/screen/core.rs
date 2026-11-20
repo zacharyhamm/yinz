@@ -122,6 +122,42 @@ impl AgentHost for ScreenCore {
         Ok(())
     }
 
+    fn terminal_output_paused(&self, pane: PaneId) -> bool {
+        self.tab_containing_pane(pane)
+            .is_some_and(|tab| tab.terminal_output_paused(pane))
+    }
+
+    fn web_terminal_frame(
+        &mut self,
+        pane: PaneId,
+        after: Option<&str>,
+    ) -> Option<yinz_types::agent::control::TerminalFrame> {
+        self.tab_containing_pane_mut(pane)?
+            .get_pane_with_id_mut(pane)?
+            .web_terminal_frame(after)
+    }
+
+    fn clear_web_terminal_snapshot(&mut self, pane: PaneId) {
+        if let Some(target) = self
+            .tab_containing_pane_mut(pane)
+            .and_then(|tab| tab.get_pane_with_id_mut(pane))
+        {
+            target.clear_web_terminal_snapshot();
+        }
+    }
+
+    fn write_web_terminal_bytes(&mut self, pane: PaneId, bytes: Vec<u8>) -> Result<()> {
+        let enter = bytes == b"\r";
+        let tab = self
+            .tab_containing_pane_mut(pane)
+            .context("agent pane no longer exists")?;
+        tab.write_to_pane_id_without_preprocessing(bytes, pane)?;
+        if let Some(target) = tab.get_pane_with_id_mut(pane) {
+            target.record_agent_input(enter);
+        }
+        Ok(())
+    }
+
     fn write_key(
         &mut self,
         pane: PaneId,

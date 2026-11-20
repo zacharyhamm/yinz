@@ -52,6 +52,28 @@ impl RecordingHost {
     }
 }
 impl AgentHost for RecordingHost {
+    fn terminal_output_paused(&self, _pane: PaneId) -> bool {
+        false
+    }
+
+    fn web_terminal_frame(
+        &mut self,
+        _pane: PaneId,
+        _after: Option<&str>,
+    ) -> Option<yinz_types::agent::control::TerminalFrame> {
+        None
+    }
+
+    fn clear_web_terminal_snapshot(&mut self, _pane: PaneId) {}
+
+    fn write_web_terminal_bytes(
+        &mut self,
+        _pane: PaneId,
+        _bytes: Vec<u8>,
+    ) -> yinz_runtime::errors::prelude::Result<()> {
+        unreachable!("web terminal writes require a terminal")
+    }
+
     fn restore_terminal_state(&mut self, _pane: PaneId, _state: &str) {
         unreachable!("unexpected terminal restoration")
     }

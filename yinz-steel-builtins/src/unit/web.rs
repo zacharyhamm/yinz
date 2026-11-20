@@ -478,6 +478,11 @@ fn vendored_libraries_match_their_recorded_provenance() {
         packages,
         [
             (
+                "@xterm/xterm",
+                "6.0.0",
+                "https://registry.npmjs.org/@xterm/xterm/-/xterm-6.0.0.tgz"
+            ),
+            (
                 "htm",
                 "3.1.1",
                 "https://registry.npmjs.org/htm/-/htm-3.1.1.tgz"
@@ -495,9 +500,12 @@ fn vendored_libraries_match_their_recorded_provenance() {
         [
             "LICENSE-htm.txt",
             "LICENSE-preact.txt",
+            "LICENSE-xterm.txt",
             "hooks.module.js",
             "htm.module.js",
-            "preact.module.js"
+            "preact.module.js",
+            "xterm.css",
+            "xterm.mjs"
         ]
     );
     assert!(read_static("vendor/LICENSE-preact.txt").contains("The MIT License"));
@@ -562,6 +570,7 @@ const SINK_TOKENS: &[&str] = &[
 /// the VENDOR.md digest check, so changing any vendor file requires re-auditing
 /// it and updating both records.
 const VENDOR_SINKS: &[(&str, &[(&str, usize)])] = &[
+    ("vendor/xterm.mjs", &[("setAttribute", 22), (".style", 120)]),
     ("vendor/hooks.module.js", &[]),
     ("vendor/htm.module.js", &[]),
     (

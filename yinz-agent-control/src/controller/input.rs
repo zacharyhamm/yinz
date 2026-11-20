@@ -261,6 +261,41 @@ impl super::AgentController {
 }
 
 impl super::AgentController {
+    pub(super) fn verify_agent_input(
+        &self,
+        host: &impl AgentHost,
+        pane: PaneId,
+        status: &AgentStatus,
+    ) -> Result<(bool, bool), (AgentOutcome, &'static str)> {
+        // An unpinned Muse pane may still show a startup dialog, but its
+        // bootstrap cannot prove that subsequent keys were consumed.
+        let provisional = supports_prompt(&status.agent.kind)
+            && status.agent.kind == "muse"
+            && status.agent.session_id.is_none()
+            && self.has_provisional_muse_lifecycle(pane);
+        let startup = provisional
+            || (supports_prompt(&status.agent.kind) && status.agent.source == AgentSource::Spawned);
+        if !(status.status_available || startup)
+            || !host.agent_process_matches(pane, &status.agent.kind)
+        {
+            return Err((
+                AgentOutcome::StatusUnavailable,
+                "cannot verify a live agent process",
+            ));
+        }
+        if !host.agent_input_enabled(pane) {
+            return Err((AgentOutcome::Rejected, "agent terminal input is disabled"));
+        }
+        if status.agent.state == AgentState::Exited
+            || host
+                .pane_info(pane)
+                .is_none_or(|info| info.is_held || info.exited)
+        {
+            return Err((AgentOutcome::TargetChanged, "agent process has exited"));
+        }
+        Ok((startup, provisional))
+    }
+
     pub(in crate::controller) fn send_agent_keys(
         &mut self,
         host: &mut impl AgentHost,
@@ -269,52 +304,13 @@ impl super::AgentController {
         status: AgentStatus,
         keys: Vec<KeyWithModifier>,
     ) {
-        // An unpinned Muse pane may still show a startup dialog, but its
-        // bootstrap cannot prove that subsequent keys were consumed.
-        let provisional = status.agent.kind == "muse"
-            && status.agent.session_id.is_none()
-            && self.has_provisional_muse_lifecycle(pane);
-        let startup = supports_prompt(&status.agent.kind)
-            && (status.agent.source == AgentSource::Spawned || provisional);
-        if !(status.status_available || startup)
-            || !host.agent_process_matches(pane, &status.agent.kind)
-        {
-            self.reject_control(
-                host,
-                &client,
-                pane,
-                None,
-                AgentOutcome::StatusUnavailable,
-                "cannot verify a live agent process",
-            );
-            return;
-        }
-        if !host.agent_input_enabled(pane) {
-            self.reject_control(
-                host,
-                &client,
-                pane,
-                None,
-                AgentOutcome::Rejected,
-                "agent terminal input is disabled",
-            );
-            return;
-        }
-        if status.agent.state == AgentState::Exited
-            || host
-                .pane_info(pane)
-                .is_none_or(|info| info.is_held || info.exited)
-        {
-            self.reject_control(
-                host,
-                &client,
-                pane,
-                None,
-                AgentOutcome::TargetChanged,
-                "agent process has exited",
-            );
-            return;
-        }
+        let (startup, provisional) = match self.verify_agent_input(host, pane, &status) {
+            Ok(state) => state,
+            Err((outcome, message)) => {
+                self.reject_control(host, &client, pane, None, outcome, message);
+                return;
+            },
+        };
         if keys.is_empty() || keys.len() > 1024 {
             self.reject_control(
                 host,

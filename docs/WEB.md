@@ -287,7 +287,7 @@ plugins {
 ```
 
 Each page embeds a public bootstrap object with the title, poll intervals
-(list 3 s, timeline 2 s, screen 2 s, usage 60 s), the list's quick keys and
+(list 3 s, timeline 2 s, terminal 250 ms, usage 60 s), the list's quick keys and
 request timeouts (10 s for reads, 45 s for actions). It never contains other
 plugin configuration or secrets.
 
@@ -324,7 +324,7 @@ plugin configuration or secrets.
   **Open** button. The header shows how long ago the list was updated and the
   serving session. The menu has **Log out** and **Log out everywhere**, which
   asks for confirmation.
-- **Agent detail** (`#/a/<id>?run=<run>&tab=timeline|screen|details`): a compact
+- **Agent detail** (`#/a/<id>?run=<run>&tab=timeline|term|details`): a compact
   title and labelled live state, Back, **Agent information** (ⓘ), available
   actions and three tabs. Agent information starts collapsed on phones and
   desktop. Open it for the full title, complete server header (including custom
@@ -338,27 +338,22 @@ plugin configuration or secrets.
   This labelled region scrolls when its content is long. Its open/closed choice
   survives polling, tab changes and a live agent moving to a new run; leaving
   or reloading the detail view resets it. Expanding it preserves the draft and
-  reading position. A live waiting agent opens on **Screen**. A stored run opens
+  reading position. A live waiting agent opens on **Term**. A stored run opens
   on **Timeline**.
   - **Timeline** keeps the newest message at the bottom unless you scroll up,
     in which case a **New messages** button appears. **Load earlier** follows
     the native `earlier` navigation. Tapping a message opens its reader; tool
     groups open the tools reader, which pages through older records.
-  - **Screen** polls the pane's last 80 lines while the tab is visible. It keeps
-    the newest line in view unless you scroll up, with the quick keys below it.
-    In reduced space, scroll the labelled status/feedback and quick-key regions
-    to reach every message and action. Agent information and the draft can also
-    scroll, keeping terminal output and a complete control row available.
-    The **Screen view** controls beside **Refresh** change only how this device
-    shows the output. **Wrap** reflows wide terminal lines to the screen width
-    instead of panning each line sideways; box art and column alignment can
-    break while it is on. **A−** and **A+** step the text through 12, 14, 16
-    and 18 px. At the smallest or largest size the button stays focusable and is
-    announced as unavailable. The default is no wrap at 12 px. The choice is
-    stored per device in `localStorage` under `yinz.web.v1.screen_view` and is
-    kept across polling, tab switches and reloads; logging out does not clear
-    it. If the browser refuses site storage, the choice still applies until the
-    detail view is left. Pinch-zoom keeps working.
+  - **Term** opens an interactive xterm.js view of the live pane. Tap the
+    terminal to type or paste, or use the quick keys below it. The grid scales
+    to the available width and keeps the pane's original columns and rows.
+    Opening an older `tab=screen` bookmark also selects Term. Scrolling up in
+    the desktop pane pauses Term and its input until the pane returns to the
+    bottom and processes its buffered output. Large snapshots load in parts.
+    Typing and quick keys become available after the final part has rendered.
+    A failed poll pauses queued input until the terminal has caught up.
+    If a write fails, check the terminal for
+    partial input and use **Reconnect** to resume typing.
   - **Details** shows run details with **Previous run**, **Original run** and
     **Latest**. Previous and original runs open as stored runs, marked by
     `&bind=0` in the hash: they are read without the live agent, show a
@@ -378,7 +373,7 @@ plugin configuration or secrets.
   for up to eight of the native keys. Native code exposes no restart, close or
   spawn action.
 
-Peer Screen, keys, prompts and **Focus on desktop** use the scanned session
+Peer Term, keys, prompts and **Focus on desktop** use the scanned session
 socket and check the running Screen instance, pane, provider and conversation.
 Focus also checks that the pane is selectable. It verifies the peer before
 asking the desktop to reconnect by session name. The peer can still change
@@ -411,9 +406,7 @@ token, open tabs of the app also return to `/login`.
 
 **Log out** and **Log out everywhere** call the native endpoints and clear the
 local token even when the request fails. If revocation was not confirmed by an
-empty `204`, the notice says so. The per-device Screen view choice
-(`yinz.web.v1.screen_view` in `localStorage`, holding only the wrap and text
-size) is not a credential and survives logout. All keys use the
+empty `204`, the notice says so. All keys use the
 `yinz.web.v1.` prefix.
 
 ### Slash commands
@@ -427,7 +420,7 @@ Other providers currently reject web slash input with an unsupported message.
 Ordinary messages continue to use prompt submission.
 
 Commands require an idle agent with no outstanding submissions. The composer
-returns to idle once Yinz delivers the input and submit key. Check **Screen**
+returns to idle once Yinz delivers the input and submit key. Check **Term**
 for unknown-command errors, argument validation,
 mode changes or dialogs; use the key controls to answer dialogs. Commands such
 as `/new`, `/clear` or conversation selectors may replace the conversation; the
@@ -491,7 +484,7 @@ native CSP (`script-src 'self'`, `form-action 'none'`). It uses no inline
 script, inline style, `eval` or import map. The bootstrap is an inert JSON
 script. Server-rendered `*html` fields are inserted through a single component;
 every other value is rendered as text. Preact 10.29.8 with its hooks and htm
-3.1.1 are vendored as separate modules in `web/static/vendor/`, with licenses
+3.1.1 and xterm.js 6.0.0 are vendored as separate modules in `web/static/vendor/`, with licenses
 and provenance in `VENDOR.md`.
 
 `/static/manifest.webmanifest` declares a stable identity, standalone display,
