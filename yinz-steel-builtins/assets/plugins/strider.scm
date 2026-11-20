@@ -167,14 +167,19 @@
     ((member bare '("Right" "Tab" "Enter")) (traverse) #t)
     ((equal? bare "Left") (back) #t)
     (else #f)))
-(define (list-rows) (max 0 (- current-rows 7)))
+;; A structured picker needs FIND, PATH and its action footer. Drop the spacer
+;; and navigation hint when keeping them would leave no room for a list entry.
+(define (list-start-row) (if (and structured-pick (< current-rows 6)) 2 4))
+(define (list-rows)
+  (max 0 (- current-rows (if structured-pick (+ (list-start-row) 1) 7))))
 (define (window)
   (yinz-ui-list-window (length (visible-entries)) (list-rows) (selection)))
 (define (mouse-select line click?)
-  (define bounds (yinz-ui-list-window (length (visible-entries)) (max 0 (- current-rows 5)) (selection)))
-  (define index (+ (- line 4) (car bounds)))
-  (if (and (>= line 4) (< line (+ 4 (list-rows))) (< index (caddr bounds)))
-    (let ((previous (selection)))
+  (define bounds (if structured-pick rendered-window
+      (yinz-ui-list-window (length (visible-entries)) (max 0 (- current-rows 5)) (selection))))
+  (define offset (- line (list-start-row)))
+  (if (and bounds (>= offset 0) (< offset (list-rows)) (< (+ (car bounds) offset) (caddr bounds)))
+    (let ((index (+ (car bounds) offset)) (previous (selection)))
       (select! index)
       (when (and click? (equal? previous index)) (traverse)) #t)
     #f))
@@ -266,8 +271,8 @@
   (define path (display-name (if full? current-path (short-path (max 0 (- cols 20))))))
   (define path-end (+ 6 (string-length path)))
   (define text (string-append "PATH: " path (if full? (string-append " (<ENTER> - " tip ")") " <ENTER>")))
-  (string-append (yinz-ui-text (hash "text" text "levels" (list (range 6 path-end) '() (range 0 6)
-          (range (+ path-end (if full? 2 1)) (+ path-end (if full? 9 8)))))) "\n\n"))
+  (yinz-ui-text (hash "text" text "levels" (list (range 6 path-end) '() (range 0 6)
+        (range (+ path-end (if full? 2 1)) (+ path-end (if full? 9 8)))))))
 (define (render-help rows cols)
   (cond (structured-pick
       (text-at (if (equal? navigation-error "")
@@ -291,7 +296,9 @@
       (string-append
         (yinz-ui-text (hash "text" find "levels" (list '() '() (range 0 6) (range 6 (string-length find))))) "\n"
         (render-path rows cols)
-        (text-at "(<↓↑> - Navigate, <TAB> - Select)" (list '() '() '() (append (range 1 5) (range 18 23))) 3 cols rows)
+        (if (= (list-start-row) 4)
+          (string-append "\n\n" (text-at "(<↓↑> - Navigate, <TAB> - Select)"
+              (list '() '() '() (append (range 1 5) (range 18 23))) 3 cols rows)) "")
         (string-join
           (map (lambda (index)
               (define entry (vector-ref entries index))
@@ -304,6 +311,6 @@
               (define highlights (if (searching?) (filter (lambda (i) (< i (string-length text)))
                     (hash-ref (vector-ref searches index) "indices")) '()))
               (yinz-ui-text (style text (equal? index (selection)) directory? highlights)
-                (yinz-ui-coordinates 0 (+ 4 (- index (car bounds))) cols json-null)))
+                (yinz-ui-coordinates 0 (+ (list-start-row) (- index (car bounds))) cols json-null)))
             (range (car bounds) (caddr bounds))) "")
         (render-help rows cols)))))

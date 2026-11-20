@@ -335,6 +335,37 @@ fn folder_ready(runtime: &mut Runtime, path: &str) {
 }
 
 #[test]
+fn short_directory_picker_keeps_the_visible_entry_clickable_after_resize() {
+    let (mut runtime, host) = structured(json!({"kind":"directory"}));
+    event(&mut runtime, json!({"HostFolderChanged":"/work"}));
+    event(
+        &mut runtime,
+        json!({"FileSystemUpdate":[entry("/host/first",true,0),entry("/host/second",true,0)]}),
+    );
+    assert!(rendered_text(&runtime.render(18, 80).unwrap()).contains("first/"));
+
+    // A framed picker in a 40x12 terminal has four content rows.
+    let compact = rendered_text(&runtime.render(4, 30).unwrap());
+    for label in ["FIND:", "PATH:", "first/", "Ctrl+Enter"] {
+        assert!(compact.contains(label), "missing {label:?} in {compact:?}");
+    }
+    assert!(!compact.contains("second/"));
+    key(&mut runtime, json!("Down"), &[]);
+    key(&mut runtime, json!("Down"), &[]);
+    let scrolled = rendered_text(&runtime.render(4, 30).unwrap());
+    assert!(scrolled.contains("second/"));
+    assert!(!scrolled.contains("first/"));
+    for row in [0, 1, 3] {
+        assert!(!event(&mut runtime, json!({"Mouse":{"LeftClick":[row,0]}})));
+    }
+    assert!(event(&mut runtime, json!({"Mouse":{"LeftClick":[2,0]}})));
+    assert_eq!(
+        commands(&host).last(),
+        Some(&json!({"ChangeHostFolder":"/work/second"}))
+    );
+}
+
+#[test]
 fn shared_directory_picker_browses_then_selects_current_folder() {
     let (mut runtime, host) = structured(json!({"kind":"directory","roots":["docs"]}));
     assert_eq!(

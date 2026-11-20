@@ -351,7 +351,13 @@ fn first_run_wizard_browses_selects_cancels_and_reopens_strider() {
         let size = yinz_types::pane_size::Size { cols, rows };
         yinz.resize(size);
         yinz.wait_until("browser remains active across resize", |grid| {
-            grid.row_count() == rows && grid.contains("chosen-project/")
+            let Some(entry_row) = grid.row_of_line("chosen-project/") else {
+                return false;
+            };
+            // The client can replay the previous frame at the new grid size.
+            // Wait for the four-row picker itself to fit the project above its footer.
+            grid.row_count() == rows
+                && (rows != 12 || grid.row_of_line("Ctrl+Enter") == Some(entry_row + 1))
         });
         assert_centered_wizard(&yinz, size);
     }
