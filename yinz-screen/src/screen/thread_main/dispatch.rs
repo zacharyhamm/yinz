@@ -1708,6 +1708,9 @@ pub(super) fn dispatch(
             if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
                 tab.toggle_pane_fullscreen(pane_id);
             }
+            // Rendering no longer reconciles nested guests, so a zoomed guest
+            // must learn here that its host left fullscreen.
+            screen.sync_nested_guest_fullscreen_state();
             screen.render()?;
         },
         ScreenInstruction::TogglePaneEmbedOrEjectForPaneId(pane_id) => {
@@ -1715,6 +1718,7 @@ pub(super) fn dispatch(
                 tab.toggle_pane_embed_or_floating_for_pane_id(pane_id, None)
                     .non_fatal();
             }
+            screen.sync_nested_guest_fullscreen_state();
             screen.render()?;
         },
         ScreenInstruction::CloseTabWithIndex(tab_index) => {

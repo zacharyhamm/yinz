@@ -148,10 +148,26 @@ fn supervisor_theme_retained_after_readoption() {
         AgentThemeEvent, AgentThemeLaunch, AgentThemeSnapshot, Availability, EVENT_VERSION,
         SNAPSHOT_VERSION,
     };
-    let spawned = spawn(SpawnParams {
-        host_bin: Path::new(env!("CARGO_BIN_EXE_yinz")),
+    // The fixture guard owns cleanup even if this process is killed: it sweeps detached
+    // supervisors of a named session in its own short socket namespace. The supervisor reads
+    // its socket directory from its environment, so launch it through a wrapper that points
+    // there rather than at a possibly long inherited YINZ_TEST_TMPDIR.
+    let fixture = real_fixture::RealFixture::new("yrt-");
+    let host_bin = fixture.path().join("pty-host");
+    yinz_test_support::write_warm_script(
+        &host_bin,
+        &format!(
+            "YINZ_SOCKET_DIR='{}' exec '{}' \"$@\"",
+            fixture.socket_dir().display(),
+            env!("CARGO_BIN_EXE_yinz")
+        ),
+    );
+    let mut spawned = spawn(SpawnParams {
+        host_bin: &host_bin,
         terminal_id: TerminalId::new(1),
-        session_name: None,
+        session_name: Some(yinz_types::internal_ids::SessionName::new(
+            "readoption-theme",
+        )),
         cmd: yinz_types::input::command::RunCommand {
             command: "/bin/sleep".into(),
             args: vec!["90".into()],
@@ -166,7 +182,22 @@ fn supervisor_theme_retained_after_readoption() {
     })
     .unwrap()
     .finish(Box::new(|_, _, _| {}), None);
-    let socket = spawned.handle.release().control_socket.unwrap();
+    // Check the socket while the handle still owns the supervisor: releasing first would
+    // leave a detached supervisor nothing can address if the bind failed.
+    let socket = spawned
+        .handle
+        .control_socket
+        .clone()
+        .filter(|socket| socket.starts_with(fixture.socket_dir()));
+    let Some(socket) = socket else {
+        let found = spawned.handle.control_socket.clone();
+        spawned.handle.terminate();
+        panic!(
+            "the supervisor bound no control socket in the fixture's namespace {}: {found:?}",
+            fixture.socket_dir().display()
+        );
+    };
+    spawned.handle.release();
     struct Cleanup(PathBuf);
     impl Drop for Cleanup {
         fn drop(&mut self) {

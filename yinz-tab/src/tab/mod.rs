@@ -2733,11 +2733,14 @@ impl Tab {
         // that recompute because the viewport is only final now: the fullscreen restores above
         // are the last thing that can move it.
         let expanded_ptys = self.overlay_expansion().with_context(err_context);
-        self.resize_all_stack_list_hidden_members();
+        let hidden_ptys = self
+            .resend_all_stack_list_hidden_members()
+            .with_context(err_context);
         floating_ptys
             .and(tiled_ptys)
             .and(overlay_ptys)
             .and(expanded_ptys)
+            .and(hidden_ptys)
             .and(caching_resizes)
     }
     /// Re-derive an overlay expansion against `self.viewport` as it is now.
@@ -3928,6 +3931,12 @@ impl Tab {
         if panes_to_stack.is_empty() {
             // nothing to do
             return;
+        }
+        // A pane-tab group moved from another tab carries its hidden children inside the
+        // displayed pane. Unpack them now rather than at the next render, so membership scans
+        // that follow this placement (worktree markers) see every member.
+        for pane in panes_to_stack.iter_mut() {
+            self.retain_pane_tabs_transfer(pane);
         }
         self.dissolve_stack_lists_for_classic_mutation();
         self.swap_layouts.set_is_tiled_damaged();

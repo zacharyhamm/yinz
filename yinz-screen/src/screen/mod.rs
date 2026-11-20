@@ -2954,6 +2954,10 @@ impl Screen {
                     },
                 };
                 if moved {
+                    // `find_plugin` can match a pane-tab group whose displayed pane is a
+                    // terminal, so this may have moved a live agent; rendering no longer
+                    // reconciles worktree membership.
+                    self.refresh_agent_worktrees();
                     // focusing also raises or lowers the floating layer to match the pane
                     self.core
                         .tabs

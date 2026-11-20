@@ -1572,6 +1572,80 @@ fn overlay_resize_send_failure_retries_inside_a_screen_transaction() {
     }
 }
 
+#[test]
+fn hidden_stack_member_resize_send_failure_retries_inside_a_screen_transaction() {
+    use yinz_bus::os_input_output::ResizeCache;
+    let original = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let requested = Size { cols: 80, rows: 24 };
+    let tab = TabId::new(0);
+    let plugin_pane = PaneId::Plugin(crate::PluginId::new(4));
+    let hidden = PaneId::Terminal(TerminalId::new(2));
+    let mut screen = create_non_mirrored_screen(original);
+    let (writer, receiver) = channels::unbounded();
+    screen.core.bus.senders.to_pty_writer = Some(SenderWithContext::new(writer));
+    let (plugin, _plugin_rx) = channels::unbounded();
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin));
+    let (pty, _pty_rx) = channels::unbounded();
+    let (server, _server_rx) = channels::unbounded();
+    let (jobs, _jobs_rx) = channels::unbounded();
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(pty));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(server));
+    screen.core.bus.senders.to_background_jobs = Some(SenderWithContext::new(jobs));
+    screen.core.bus.senders.should_silently_fail = false;
+    new_tab(&mut screen, 1, tab);
+    *screen.core.stacked_pane_list.borrow_mut() = true;
+    {
+        let tab = screen.core.tabs.get_mut(&tab).unwrap();
+        tab.new_pane(
+            hidden,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::default(),
+            Some(ClientId::new(1)),
+            None,
+        )
+        .unwrap();
+        tab.close_pane(PaneId::Terminal(TerminalId::new(1)), false, None);
+        tab.new_pane(
+            plugin_pane,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Stacked {
+                pane_id_to_stack_under: Some(hidden),
+                borderless: None,
+            },
+            Some(ClientId::new(1)),
+            None,
+        )
+        .unwrap();
+        assert!(tab.has_stack_lists(), "the fixture formed a stack list");
+        assert!(tab.pane_is_hidden_stack_list_member(&hidden));
+        assert!(!tab.pane_is_hidden_stack_list_member(&plugin_pane));
+        // The hidden member is the tab's only terminal: every visible pane is a plugin.
+        assert!(tab
+            .get_tiled_panes()
+            .all(|(id, _)| matches!(id, PaneId::Plugin(_))));
+        assert_eq!(tab.get_floating_panes().count(), 0);
+    }
+    drop(receiver);
+    screen.set_client_size(ClientId::new(1), requested).unwrap();
+    // The second turn finds the hidden member's stored geometry already updated; it must still
+    // resend the size rather than report success.
+    for _ in 0..2 {
+        let _batch = ResizeCache::new(screen.core.bus.senders.clone());
+        assert!(screen.reflow_tab(tab).is_err());
+        assert!(screen.core.tabs_needing_reflow.contains(&tab));
+        assert_eq!(screen.core.tabs[&tab].get_display_area(), requested);
+    }
+}
+
 /// Keeps a tab's PTY resizes failing while everything else it sends still gets through.
 fn fail_pty_resizes(screen: &mut Screen, tab_id: TabId) -> impl Sized + use<> {
     let (pty, pty_receiver) = channels::unbounded();

@@ -559,3 +559,132 @@ fn same_worktree_marker_is_published_when_an_agent_opens_in_place() {
     let text = scene.text(CLIENT);
     assert!(text.contains("👯 [2]") && text.contains("👯 [4]"), "{text}");
 }
+
+impl Scene {
+    /// Mount `terminal` as slot 0 of a pane-tab group whose slot 1 holds `plugin`, and display
+    /// the plugin or the terminal. Returns the plugin's run so `find_plugin` can match it.
+    fn group_with_plugin(
+        &mut self,
+        tab: TabId,
+        terminal: PaneId,
+        plugin: crate::PluginId,
+        show_plugin: bool,
+    ) -> (
+        RunPluginOrAlias,
+        Receiver<(PluginInstruction, ErrorContext)>,
+    ) {
+        use yinz_types::pane_tabs::{PaneTabDescriptor, PaneTabsLayout};
+        // Building the plugin pane needs a plugin sender; keep its receiver alive for the test.
+        let (to_plugin, plugins) = channels::unbounded();
+        let to_plugin = SenderWithContext::new(to_plugin);
+        self.screen.core.bus.senders.to_plugin = Some(to_plugin.clone());
+        for tab in self.screen.core.tabs.values_mut() {
+            tab.senders.to_plugin = Some(to_plugin.clone());
+        }
+        let location = "yinz:fixture-plugin-for-tests";
+        let layout = PaneTabsLayout {
+            active: 0,
+            tabs: ["Agent", "Plugin"]
+                .map(|label| PaneTabDescriptor {
+                    label: label.into(),
+                    location: location.into(),
+                    initial_cwd: None,
+                    configuration: BTreeMap::new(),
+                })
+                .to_vec(),
+        };
+        let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+            location, &None, None, None,
+        )
+        .unwrap();
+        let tab = self.screen.core.tabs.get_mut(&tab).unwrap();
+        let info = tab.mount_pane_tabs(terminal, layout, 0, CLIENT).unwrap();
+        tab.select_pane_tab(info.id, 1, CLIENT).unwrap();
+        let generation = plugins
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PluginInstruction::LoadPaneTab { generation, .. } => Some(generation),
+                _ => None,
+            })
+            .expect("selecting the unloaded slot asks the plugin thread to load it");
+        tab.pane_tab_loaded(info.id, 1, generation, Ok((plugin, run.clone())))
+            .unwrap();
+        assert_eq!(
+            tab.pane_tabs_info(info.id).unwrap().pane_id,
+            PaneId::Plugin(plugin),
+            "the plugin slot loaded and is displayed"
+        );
+        if !show_plugin {
+            tab.select_pane_tab(info.id, 0, CLIENT).unwrap();
+            assert_eq!(tab.pane_tabs_info(info.id).unwrap().pane_id, terminal);
+        }
+        (run, plugins)
+    }
+}
+
+#[test]
+fn same_worktree_marker_follows_a_group_terminal_moved_by_plugin_focus() {
+    let repo = repository();
+    let mut scene = Scene::new();
+    scene.add(3, NewPanePlacement::default());
+    scene.report(1, Some(agent(Some(repo.path()))));
+    scene.report(3, Some(agent(Some(repo.path()))));
+    scene.wait_for_title("👯 [1]");
+    let plugin = crate::PluginId::new(40);
+    // The plugin sits in the group's inactive slot, so `find_plugin` answers with the
+    // displayed agent terminal and the move carries that terminal.
+    let (run, _plugins) = scene.group_with_plugin(TAB, pane(1), plugin, false);
+
+    let destination = TabId::new(1);
+    new_tab(&mut scene.screen, 2, destination);
+    scene.report(2, Some(agent(Some(repo.path()))));
+    assert_eq!(scene.screen.core.active_tab_ids[&CLIENT], destination);
+
+    assert!(scene
+        .screen
+        .focus_plugin_pane(&run, false, true, false, CLIENT, &mut None)
+        .unwrap());
+    assert!(scene.screen.core.tabs[&destination].has_pane_with_pid(&pane(1)));
+    let roots = &scene.screen.core.tabs[&destination].agent_worktrees;
+    assert!(
+        roots.contains_key(&pane(1)) && roots.contains_key(&pane(2)),
+        "the moved agent is published in its destination: {roots:?}"
+    );
+    assert!(!scene.screen.core.tabs[&TAB]
+        .agent_worktrees
+        .contains_key(&pane(1)));
+}
+
+#[test]
+fn same_worktree_marker_includes_a_hidden_group_terminal_stacked_across_tabs() {
+    let repo = repository();
+    let mut scene = Scene::new();
+    scene.add(3, NewPanePlacement::default());
+    scene.report(1, Some(agent(Some(repo.path()))));
+    scene.report(3, Some(agent(Some(repo.path()))));
+    scene.wait_for_title("👯 [1]");
+
+    let source = TabId::new(1);
+    new_tab(&mut scene.screen, 2, source);
+    add_pane_to_tab(&mut scene.screen, source, pane(4), false);
+    scene.report(2, Some(agent(Some(repo.path()))));
+    let plugin = crate::PluginId::new(40);
+    // The plugin is displayed; the agent terminal travels hidden inside it.
+    let _plugins = scene.group_with_plugin(source, pane(2), plugin, true);
+
+    assert_eq!(
+        scene
+            .screen
+            .stack_panes(vec![pane(1), PaneId::Plugin(plugin)]),
+        Some(PaneId::Plugin(plugin))
+    );
+    assert!(scene.screen.core.tabs[&TAB].has_pane_with_pid(&pane(2)));
+    let roots = &scene.screen.core.tabs[&TAB].agent_worktrees;
+    assert!(
+        roots.contains_key(&pane(2)),
+        "the hidden agent is published in its destination before any render: {roots:?}"
+    );
+    assert!(!scene.screen.core.tabs[&source]
+        .agent_worktrees
+        .contains_key(&pane(2)));
+}

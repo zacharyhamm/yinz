@@ -649,12 +649,35 @@ impl Tab {
         }
     }
     pub(super) fn resize_all_stack_list_hidden_members(&mut self) {
+        self.resize_stack_lists_hidden_members(false).non_fatal();
+    }
+    /// Send every hidden member its size again, even where the stored geometry already
+    /// matches, and report a failed send.
+    ///
+    /// For a whole-tab resize the caller retries: geometry is updated before the send, so a
+    /// retry that only compared geometry would find nothing to do and leave the terminal at
+    /// its old size.
+    pub(super) fn resend_all_stack_list_hidden_members(&mut self) -> Result<()> {
+        self.resize_stack_lists_hidden_members(true)
+    }
+    fn resize_stack_lists_hidden_members(&mut self, force: bool) -> Result<()> {
         let ids: Vec<StackListId> = self.stack_lists.keys().copied().collect();
+        let mut result = Ok(());
         for id in ids {
-            self.resize_stack_list_hidden_members(id);
+            let resized = self.resize_stack_list_hidden_members_inner(id, force);
+            result = result.and(resized);
         }
+        result
     }
     pub(super) fn resize_stack_list_hidden_members(&mut self, stack_list_id: StackListId) {
+        self.resize_stack_list_hidden_members_inner(stack_list_id, false)
+            .non_fatal();
+    }
+    fn resize_stack_list_hidden_members_inner(
+        &mut self,
+        stack_list_id: StackListId,
+        force: bool,
+    ) -> Result<()> {
         if let Some(list) = self.stack_lists.get(&stack_list_id) {
             let headers_visible = self.floating_stack_headers_visible(list);
             if self.floating_panes.fullscreen_pane_id() != Some(list.visible)
@@ -679,7 +702,7 @@ impl Tab {
         let (visible_geom, visible_offset, hidden_members) = {
             let list = match self.stack_lists.get(&stack_list_id) {
                 Some(l) => l,
-                None => return,
+                None => return Ok(()),
             };
             let (geom, offset) = match self
                 .tiled_panes
@@ -687,7 +710,7 @@ impl Tab {
                 .or_else(|| self.floating_panes.get_pane(list.visible))
             {
                 Some(p) => (p.render_geom(), p.get_content_offset()),
-                None => return,
+                None => return Ok(()),
             };
             let hidden: Vec<PaneId> = list
                 .members
@@ -697,19 +720,26 @@ impl Tab {
                 .collect();
             (geom, offset, hidden)
         };
+        let mut result = Ok(());
         for member in hidden_members {
             if let Some(suppressed) = self.suppressed_panes.get_mut(&member) {
                 let pane = &mut suppressed.pane;
-                if pane.position_and_size() != visible_geom
+                if force
+                    || pane.position_and_size() != visible_geom
                     || pane.get_content_offset() != visible_offset
                 {
                     pane.set_geom(visible_geom);
                     pane.set_content_offset(visible_offset);
-                    resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
-                        .non_fatal();
+                    // Visit every member before reporting, so one failed send does not
+                    // leave later members unsized.
+                    let resized =
+                        resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
+                            .with_context(|| format!("resize hidden stack list member {member:?}"));
+                    result = result.and(resized);
                 }
             }
         }
+        result
     }
     pub(super) fn stack_list_header_geom(
         mut rect: PaneGeom,

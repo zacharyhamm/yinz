@@ -389,8 +389,17 @@ fn cleanup(root: &Path, sockets: &Path) -> Result<()> {
             if yinz_process::pty_host::client::socket_is_dead(&entry.path()) {
                 continue;
             }
-            let status = yinz_process::pty_host::client::query(&entry.path())
-                .with_context(|| format!("query fixture supervisor {}", entry.path().display()))?;
+            let status = match yinz_process::pty_host::client::query(&entry.path()) {
+                Ok(status) => status,
+                // A supervisor still attached to a killed test process exits with it, and
+                // can do so between the liveness probe above and this query.
+                Err(_) if yinz_process::pty_host::client::socket_is_dead(&entry.path()) => continue,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("query fixture supervisor {}", entry.path().display())
+                    })
+                },
+            };
             anyhow::ensure!(
                 !status.attached,
                 "fixture supervisor still attached: {status:?}"

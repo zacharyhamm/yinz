@@ -204,3 +204,80 @@ fn stacking_a_zoomed_guest_sends_the_exit_frame_before_the_next_instruction() {
     assert_eq!(screen.stack_panes(vec![sibling, guest]), Some(guest));
     assert_eq!(guest_fullscreen_frames(), [false]);
 }
+
+/// Plugin pane-ID mutations that leave tiled fullscreen must tell a zoomed guest, because
+/// rendering no longer reconciles nested fullscreen state.
+fn pane_id_mutation_exits_guest_fullscreen(
+    mutation: impl FnOnce(PaneId, PaneId) -> ScreenInstruction,
+) {
+    use crate::screen::thread_main::{process_instruction, EventLoopState};
+    use yinz_ipc::nested_session::NestedSessionMessage;
+
+    let (mut screen, capture) = create_new_screen_with_forward_capture(Size {
+        cols: 120,
+        rows: 40,
+    });
+    let tab_id = TabId::new(0);
+    let guest = PaneId::Terminal(TERMINAL_0);
+    let sibling = PaneId::Terminal(TerminalId::new(1));
+    new_tab(&mut screen, 0, tab_id);
+    add_pane_to_tab(&mut screen, tab_id, sibling, false);
+    screen.handle_nested_session_message_from_pane(guest, guest_announce_message());
+    capture.drain_pty_writes();
+    let guest_fullscreen_frames = || {
+        capture
+            .drain_pty_writes()
+            .into_iter()
+            .filter_map(
+                |(bytes, terminal_id)| match (terminal_id, decode_nested_frame(&bytes)) {
+                    (TERMINAL_0, Some(NestedSessionMessage::FullscreenState { fullscreen })) => {
+                        Some(fullscreen)
+                    },
+                    _ => None,
+                },
+            )
+            .collect::<Vec<_>>()
+    };
+    screen.handle_nested_session_message_from_pane(
+        guest,
+        NestedSessionMessage::ToggleHostFullscreen { fullscreen: true },
+    );
+    assert_eq!(guest_fullscreen_frames(), [true]);
+
+    assert!(process_instruction(
+        &mut screen,
+        &mut EventLoopState::default(),
+        mutation(guest, sibling)
+    )
+    .unwrap()
+    .is_continue());
+    // A guest's fullscreen is no-UI fullscreen on its own pane; toggling the guest itself
+    // leaves it fullscreen with the chrome showing, which the guest must still hear about.
+    assert_ne!(
+        screen.core.tabs[&tab_id].tiled_or_floating_fullscreen(),
+        Some((guest, true)),
+        "the mutation took the guest out of no-UI fullscreen"
+    );
+    assert_eq!(guest_fullscreen_frames(), [false]);
+}
+
+#[test]
+fn plugin_fullscreen_toggle_on_zoomed_guest_sends_exit_frame() {
+    pane_id_mutation_exits_guest_fullscreen(|guest, _| {
+        ScreenInstruction::TogglePaneIdFullscreen(guest)
+    });
+}
+
+#[test]
+fn plugin_fullscreen_toggle_on_zoomed_guest_sibling_sends_exit_frame() {
+    pane_id_mutation_exits_guest_fullscreen(|_, sibling| {
+        ScreenInstruction::TogglePaneIdFullscreen(sibling)
+    });
+}
+
+#[test]
+fn plugin_eject_of_zoomed_guest_sends_exit_frame() {
+    pane_id_mutation_exits_guest_fullscreen(|guest, _| {
+        ScreenInstruction::TogglePaneEmbedOrEjectForPaneId(guest)
+    });
+}
