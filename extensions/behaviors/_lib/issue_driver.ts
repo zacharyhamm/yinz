@@ -1,6 +1,10 @@
 import { closeoutPresentation } from "./issue_closeout.ts";
 import { notifyHandoff } from "./issue_notifications.ts";
-import { nextStep } from "./handoff_next.ts";
+import {
+  handoffMatchesState,
+  handoffStateFields,
+  nextStep,
+} from "./handoff_next.ts";
 /** Foreground orchestration up to a human decision, with durable pane recovery. */
 import { z } from "npm:zod@4.6.7";
 import {
@@ -14,10 +18,14 @@ import {
   implementationEvidence,
   type IssueAgentContext,
   type IssueAgentDependencies,
+  persistedTask,
   prepareTask,
   RecoverySchema,
   resumeTask,
   runTask,
+  taskBeforeDigest,
+  taskNextDigest,
+  withBefore,
 } from "./issue_agents.ts";
 import {
   ActionSchemas,
@@ -31,6 +39,7 @@ import {
   implementationMergeGate,
   initialPlanning,
   type LifecycleState,
+  LifecycleSummarySchema,
   pendingReviewFindings,
   planningGeneration,
   refreshImpact,
@@ -40,6 +49,7 @@ import {
   requireReviewAcceptance,
   reviewFingerprint,
   selectableFollowUp,
+  stateDigest,
   StateSchema,
   transition,
   UserRequestSchema,
@@ -150,6 +160,24 @@ export const DriverSchema = z.object({
   backgroundStall: BackgroundStallSchema.optional(),
   autoRepair: AutoRepairSchema.optional(),
 }).strict();
+/** The worker a handoff reports, without the task's prompt or evidence. */
+const AssignmentRefSchema = z.object({
+  id: z.uuid(),
+  role: AgentTaskSchema.shape.role,
+  behaviorName: z.string(),
+}).strict();
+/** The completed implementation a handoff reports. */
+const ImplementationRefSchema = z.object({
+  id: z.uuid(),
+  commit: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/),
+  summary: z.string().min(1),
+}).strict();
+/**
+ * A human decision or blocker. It names the exact lifecycle state by canonical
+ * digest and carries only what its readers use; the presentation holds the
+ * rendered evidence. Handoffs saved before compaction embed `state`,
+ * `assignment` and `implementation` instead and still parse.
+ */
 export const HandoffSchema = z.object({
   id: z.uuid(),
   status: z.enum(["current", "invalidated"]),
@@ -170,7 +198,12 @@ export const HandoffSchema = z.object({
   ]),
   reason: z.string().min(1),
   createdAt: z.iso.datetime(),
-  state: StateSchema,
+  stateDigest: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  lifecycle: LifecycleSummarySchema.optional(),
+  assignmentRef: AssignmentRefSchema.optional(),
+  implementationRef: ImplementationRefSchema.optional(),
+  // Legacy embedded records.
+  state: StateSchema.optional(),
   assignment: AgentTaskSchema.optional(),
   implementation: AgentTaskSchema.optional(),
   recoveryId: z.uuid().optional(),
@@ -190,6 +223,11 @@ export const HandoffSchema = z.object({
 }).strict();
 export type Handoff = z.infer<typeof HandoffSchema>;
 type Task = z.infer<typeof AgentTaskSchema>;
+
+/** The worker task a handoff names, in either record shape. */
+export function handoffAssignmentId(handoff: Handoff): string | undefined {
+  return handoff.assignmentRef?.id ?? handoff.assignment?.id;
+}
 
 /** Whether the current reviews can scope a findings decision. */
 function reviewDecisionReady(state: LifecycleState) {
@@ -255,9 +293,9 @@ function mergeAttemptLines(state: LifecycleState, issueName: string) {
 
 function present(
   handoff: Omit<Handoff, "presentation">,
+  state: LifecycleState,
   issueName: string,
 ) {
-  const state = handoff.state;
   const lines = [
     `Issue ${state.issue.workspace}/${state.issue.itemId}: ${state.issue.text}`,
     `Handoff ${handoff.id}: ${handoff.decision}`,
@@ -521,13 +559,8 @@ function present(
         : ["- No findings."]),
     );
   }
-  if (handoff.implementation?.evidence) {
-    lines.push(
-      `Delivered change: ${
-        implementationEvidence(handoff.implementation)
-          .summary
-      }`,
-    );
+  if (handoff.implementationRef) {
+    lines.push(`Delivered change: ${handoff.implementationRef.summary}`);
   }
   if (state.uxReview) {
     const assessment = state.uxReview.assessment;
@@ -592,14 +625,14 @@ function present(
       `Merge authorization for ${authorization.commit} (plan version ${authorization.planVersion}): ${authorization.request}`,
     );
   }
-  if (handoff.assignment) {
+  if (handoff.assignmentRef) {
     lines.push(
-      `Worker: ${handoff.assignment.role}, task ${handoff.assignment.id}, behavior ${handoff.assignment.behaviorName}`,
+      `Worker: ${handoff.assignmentRef.role}, task ${handoff.assignmentRef.id}, behavior ${handoff.assignmentRef.behaviorName}`,
     );
   }
   lines.push(
     "The controlling agent must collect and present this result before ending its turn.",
-    nextStep(handoff),
+    nextStep(handoff, state),
   );
   return lines.join("\n");
 }
@@ -863,6 +896,38 @@ function requirementsChangedReason(
   }. Present the changes and the invalidated approvals; with the user's direction run refresh then drive, or restore the previous Agenda text.`;
 }
 
+/**
+ * The completed implementation report that still describes the current plan,
+ * rollback, requirements and worktree, if any. An implementation report imports
+ * the state it was dispatched against, so its dispatch snapshot is that state.
+ */
+async function currentImplementation(
+  context: IssueAgentContext,
+  candidate: Task,
+  state: LifecycleState,
+): Promise<Task | undefined> {
+  if (
+    candidate.status !== "completed" ||
+    candidate.evidence?.payload.role !== "implement"
+  ) return undefined;
+  const next = candidate.next ??
+    (taskNextDigest(candidate) === taskBeforeDigest(candidate)
+      ? await withBefore(context, candidate).then(
+        (task) => task.before,
+        () => undefined,
+      )
+      : undefined);
+  if (
+    !next || next.plan?.version !== state.plan?.version ||
+    next.rollbackId !== state.rollbackId ||
+    next.issue.digest !== state.issue.digest ||
+    next.implementation?.worktree !== state.implementation?.worktree ||
+    (state.codeReview &&
+      implementationEvidence(candidate).commit !== state.codeReview.commit)
+  ) return undefined;
+  return candidate;
+}
+
 /** The caller owns the issue lock. Helpers here deliberately do not acquire it again. */
 async function drive(
   input: z.infer<typeof DriveInputSchema>,
@@ -941,27 +1006,25 @@ async function drive(
       : RecoverySchema.parse(rawRecovery);
     const raw = await context.readResource("handoff");
     const cached = raw == null ? undefined : HandoffSchema.parse(raw);
-    const candidate = driver.implementation;
-    const implementation = candidate?.status === "completed" &&
-        candidate.evidence?.payload.role === "implement" &&
-        candidate.next?.plan?.version === state.plan?.version &&
-        candidate.next?.rollbackId === state.rollbackId &&
-        candidate.next?.issue.digest === state.issue.digest &&
-        candidate.next?.implementation?.worktree ===
-          state.implementation?.worktree &&
-        (!state.codeReview ||
-          implementationEvidence(candidate).commit ===
-            state.codeReview.commit)
-      ? candidate
+    const implementation = driver.implementation &&
+      await currentImplementation(context, driver.implementation, state);
+    const delivered = implementation && implementationEvidence(implementation);
+    const implementationRef = implementation && delivered
+      ? {
+        id: implementation.id,
+        commit: delivered.commit,
+        summary: delivered.summary,
+      }
       : undefined;
     let result: Handoff;
     if (
       reusable && cached?.status === "current" &&
       cached.decision === decision && cached.reason === reason &&
-      JSON.stringify(cached.state) === JSON.stringify(state) &&
-      cached.assignment?.id === assignment?.id &&
+      handoffMatchesState(cached, state) && !cached.state &&
+      handoffAssignmentId(cached) === assignment?.id &&
       cached.recoveryId === recovery?.id &&
-      JSON.stringify(cached.implementation) === JSON.stringify(implementation)
+      JSON.stringify(cached.implementationRef) ===
+        JSON.stringify(implementationRef)
     ) {
       result = cached;
     } else {
@@ -974,7 +1037,7 @@ async function drive(
         decision,
         reason,
         createdAt: dependencies.now(),
-        state,
+        ...handoffStateFields(state),
         ...(decision !== "blocked" && state.codeReview &&
             reviewDecisionReady(state)
           ? { codeReviewFingerprint: codeReviewFingerprint(state) }
@@ -982,8 +1045,16 @@ async function drive(
         ...(state.planReview
           ? { reviewFingerprint: reviewFingerprint(state) }
           : {}),
-        ...(assignment ? { assignment } : {}),
-        ...(implementation ? { implementation } : {}),
+        ...(assignment
+          ? {
+            assignmentRef: {
+              id: assignment.id,
+              role: assignment.role,
+              behaviorName: assignment.behaviorName,
+            },
+          }
+          : {}),
+        ...(implementationRef ? { implementationRef } : {}),
         ...(recovery ? { recoveryId: recovery.id } : {}),
         ...(decision === "authorize_plan_revision"
           ? { proposedPlanVersion: state.planVersion + 1 }
@@ -994,7 +1065,7 @@ async function drive(
       };
       result = HandoffSchema.parse({
         ...value,
-        presentation: present(value, context.definition.name),
+        presentation: present(value, state, context.definition.name),
       });
     }
     // Publish the handle even when cached so this invocation returns a concrete result.
@@ -1188,16 +1259,16 @@ async function drive(
         );
       }
       const authorization = driver.revisionAuthorization;
-      const sameState = (value: unknown) =>
-        JSON.stringify(value) === JSON.stringify(state);
+      const current = stateDigest(state);
       const retry = authorization?.handoffId === approval.handoffId &&
         authorization.request === approval.request &&
         authorization.recoveryId === recovery?.id &&
         ((currentTask?.id === authorization.previousAssignmentId &&
-          sameState(authorization.assignment.before)) ||
+          taskBeforeDigest(authorization.assignment) === current) ||
           (currentTask?.id === authorization.assignment.id &&
             ["running", "applying", "completed"].includes(currentTask.status) &&
-            (sameState(currentTask.before) || sameState(currentTask.next))));
+            (taskBeforeDigest(currentTask) === current ||
+              taskNextDigest(currentTask) === current)));
       if (!retry) {
         const raw = await context.readResource("handoff");
         const proposal = raw == null ? undefined : HandoffSchema.parse(raw);
@@ -1205,8 +1276,8 @@ async function drive(
           proposal?.id !== approval.handoffId ||
           proposal.status !== "current" ||
           proposal.decision !== "authorize_plan_revision" ||
-          !sameState(proposal.state) ||
-          proposal.assignment?.id !== currentTask?.id ||
+          !handoffMatchesState(proposal, state) ||
+          handoffAssignmentId(proposal) !== currentTask?.id ||
           proposal.recoveryId !== recovery?.id ||
           proposal.proposedPlanVersion !== state.planVersion + 1
         ) {
@@ -1228,7 +1299,7 @@ async function drive(
         driver.revisionAuthorization = {
           ...approval,
           createdAt: dependencies.now(),
-          assignment,
+          assignment: persistedTask(assignment),
           ...(currentTask ? { previousAssignmentId: currentTask.id } : {}),
           ...(recovery ? { recoveryId: recovery.id } : {}),
         };
@@ -1320,8 +1391,7 @@ async function drive(
         // inapplicable because their `before` no longer matches.
         const authorization = driver.revisionAuthorization;
         const unspent = !!authorization &&
-          JSON.stringify(authorization.assignment.before) ===
-            JSON.stringify(state);
+          taskBeforeDigest(authorization.assignment) === stateDigest(state);
         if (impact.automatic && !unspent) {
           const refreshed = refreshIssue(state, fresh);
           context.logger.info(
@@ -1541,7 +1611,7 @@ async function drive(
             role = "review_code";
           } else if (
             implementation?.status === "completed" &&
-            JSON.stringify(implementation.next) === JSON.stringify(state)
+            taskNextDigest(implementation) === stateDigest(state)
           ) {
             const evidence = implementationEvidence(implementation);
             if (!repo.clean || repo.head !== evidence.commit) {
@@ -1549,7 +1619,10 @@ async function drive(
                 "Implementation evidence is stale for the current worktree commit",
               );
             }
-            driver = { ...driver, implementation };
+            driver = {
+              ...driver,
+              implementation: persistedTask(implementation),
+            };
             handles.push(
               await context.writeResource("driver", "driver", driver),
             );
@@ -1657,8 +1730,7 @@ async function drive(
         ) =>
           reservation && reservation.previousAssignmentId === assignment?.id &&
           reservation.recoveryId === recovery?.id &&
-          JSON.stringify(reservation.assignment.before) ===
-            JSON.stringify(state);
+          taskBeforeDigest(reservation.assignment) === stateDigest(state);
         if (applicable(authorization)) next = authorization!.assignment;
         else if (applicable(automatic)) next = automatic!.assignment;
         else if (
@@ -1680,7 +1752,7 @@ async function drive(
           // This survives failures before agent-task persistence and is never cleared by rollback.
           driver.automaticRevision = {
             generation: planningGeneration(state),
-            assignment: next,
+            assignment: persistedTask(next),
             ...(assignment ? { previousAssignmentId: assignment.id } : {}),
             ...(recovery ? { recoveryId: recovery.id } : {}),
           };

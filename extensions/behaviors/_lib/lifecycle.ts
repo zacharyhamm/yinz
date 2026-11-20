@@ -11,6 +11,7 @@ import {
   ReviewScope,
 } from "./review_continuity.ts";
 import { WorkerSelectionSchema } from "./worker_selection.ts";
+import { evidenceDigest } from "./canonical.ts";
 
 const Text = z.string().trim().min(1);
 const Commit = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
@@ -681,20 +682,95 @@ export const StateSchema = z.object({
   mergeFailures: z.array(MergeFailureSchema).optional(),
   outcome: z.object({ outcomeMet: z.literal(true), summary: Text }).optional(),
   lastFailure: Text.optional(),
+  /**
+   * Review fingerprints that compaction preserved: the digest of a review
+   * fingerprint's input after its diff bodies moved out of line, mapped to the
+   * fingerprint the same input had with the bodies inline. Findings, decisions
+   * and handoffs recorded before compaction keep their identities.
+   */
+  fingerprintAliases: z.record(
+    z.string().regex(/^[0-9a-f]{64}$/),
+    z.string().regex(/^[0-9a-f]{64}$/),
+  ).optional(),
 });
 export type LifecycleState = z.infer<typeof StateSchema>;
 
+function sha256Json(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+/** A fingerprint input's digest, or the fingerprint compaction recorded for it. */
+export function aliasedFingerprint(
+  state: LifecycleState,
+  digest: string,
+): string {
+  const aliases = state.fingerprintAliases;
+  return aliases && Object.hasOwn(aliases, digest) ? aliases[digest] : digest;
+}
+
+/** The digest of an implementation review fingerprint's input, never aliased. */
+export function implementationReviewDigest(
+  state: LifecycleState,
+  role: "review_code" | "review_ux",
+  review = role === "review_code" ? state.codeReview : state.uxReview,
+) {
+  return sha256Json({ issue: state.issue.digest, role, review });
+}
 /** Role fingerprints disambiguate findings without conflating the two reviews. */
 export function implementationReviewFingerprint(
   state: LifecycleState,
   role: "review_code" | "review_ux",
   review = role === "review_code" ? state.codeReview : state.uxReview,
 ) {
-  return createHash("sha256").update(JSON.stringify({
-    issue: state.issue.digest,
-    role,
-    review,
-  })).digest("hex");
+  return aliasedFingerprint(
+    state,
+    implementationReviewDigest(state, role, review),
+  );
+}
+
+/** Canonical digest of a whole lifecycle state; fences tasks and handoffs. */
+export function stateDigest(state: LifecycleState): string {
+  return evidenceDigest(state);
+}
+/** The few lifecycle fields readers of a handoff need without its state. */
+export const LifecycleSummarySchema = z.object({
+  issue: z.object({
+    workspace: Workspace,
+    itemId: z.number().int().positive().safe(),
+    text: z.string().min(1),
+    digest: z.string().regex(/^[0-9a-f]{64}$/),
+  }).strict(),
+  phase: StateSchema.shape.phase,
+  planVersion: z.number().int().nonnegative(),
+  rollbackId: z.uuid().optional(),
+  mergeAuthorization: z.object({
+    commit: Commit,
+    planVersion: z.number().int().positive(),
+  }).strict().optional(),
+  attemptId: z.uuid().optional(),
+}).strict();
+export function lifecycleSummary(
+  state: LifecycleState,
+): z.infer<typeof LifecycleSummarySchema> {
+  return LifecycleSummarySchema.parse({
+    issue: {
+      workspace: state.issue.workspace,
+      itemId: state.issue.itemId,
+      text: state.issue.text,
+      digest: state.issue.digest,
+    },
+    phase: state.phase,
+    planVersion: state.planVersion,
+    ...(state.rollbackId ? { rollbackId: state.rollbackId } : {}),
+    ...(state.mergeAuthorization
+      ? {
+        mergeAuthorization: {
+          commit: state.mergeAuthorization.commit,
+          planVersion: state.mergeAuthorization.planVersion,
+        },
+      }
+      : {}),
+    ...(state.attempt ? { attemptId: state.attempt.id } : {}),
+  });
 }
 export function archiveReviews(
   state: LifecycleState,
@@ -1450,13 +1526,17 @@ export function requireCurrentReviews(
  */
 export function codeReviewFingerprint(state: LifecycleState): string {
   requireCurrentCodeReview(state);
-  return createHash("sha256").update(JSON.stringify({
+  return aliasedFingerprint(state, codeReviewDigest(state));
+}
+/** The digest of the code review fingerprint's input, never aliased or checked. */
+export function codeReviewDigest(state: LifecycleState): string {
+  return sha256Json({
     digest: state.issue.digest,
     rollbackId: state.rollbackId,
     plan: state.plan,
     technical: state.codeReview,
     ux: state.uxReview,
-  })).digest("hex");
+  });
 }
 export function outstandingReviewFindings(state: LifecycleState) {
   return (["review_code", "review_ux"] as const).flatMap((role) =>

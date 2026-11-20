@@ -157,6 +157,16 @@ class ChainingTests(unittest.TestCase):
             with self.subTest(handoff=handoff):
                 self.assertFalse(should_auto_merge(handoff))
 
+    def test_should_auto_merge_reads_compact_lifecycle_summary(self):
+        """Compact handoffs carry a lifecycle summary instead of the whole state."""
+        summary = {"phase": "ready", "planVersion": 1,
+                   "mergeAuthorization": {"commit": "a" * 40, "planVersion": 1}}
+        compact = {"status": "current", "decision": "integrate", "stateDigest": "d" * 64, "lifecycle": summary}
+        self.assertTrue(should_auto_merge(compact))
+        for changes in ({"attemptId": "existing"}, {"mergeAuthorization": None}, {"phase": "implementing"}):
+            with self.subTest(changes=changes):
+                self.assertFalse(should_auto_merge({**compact, "lifecycle": {**summary, **changes}}))
+
     def fakes(self, handoffs, merge_codes):
         calls = []
 

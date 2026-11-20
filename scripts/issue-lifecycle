@@ -16,13 +16,14 @@ from issue_lifecycle.agent import resolve_agent
 from issue_lifecycle.decisions import (
     CHAINED, InputError, auto_merge_allowed, build_inputs, check_chain_flags, continue_to_gate,
 )
-from issue_lifecycle.observations import diagnose, task_recovery
+from issue_lifecycle.observations import compact_submission, diagnose, task_recovery
 
 
 METHODS = (
     "start", "status", "triage", "plan", "review-plan", "adjudicate-plan", "approve", "implement",
     "decide-review", "plan-review-fixes", "approve-review-fixes", "review-code", "review-ux", "ready", "merge", "repair", "refresh", "summarize", "agent", "resume-agent", "discard-agent",
     "accept-submission", "closeout", "resume-closeout", "rollback", "resume-rollback", "restart-agent", "continue-agent", "drive", "verify",
+    "compact",
 )
 
 EPILOG = """\
@@ -231,6 +232,8 @@ def main():
         parser.error("status takes no method inputs")
     if args.command == "verify" and inputs:
         parser.error("verify takes no method inputs")
+    if args.command == "compact" and inputs:
+        parser.error("compact takes no method inputs")
     if args.command == "merge" and set(inputs) - {"skipCiRequest"}:
         parser.error("merge accepts only skipCiRequest")
     if args.command == "drive" and set(inputs) - {"agent", "control", "revisionApproval", "autoRepair"}:
@@ -252,12 +255,14 @@ def main():
             return result.returncode
         sys.stderr.write(result.stderr)
         document = json.loads(result.stdout)
-        task = next((record for record in document["results"] if "before" in record and "behaviorName" in record), None)
+        task = next((record for record in document["results"]
+                     if "behaviorName" in record and "promptDigest" in record), None)
         rollback = next((record for record in document["results"]
                          if "step" in record and "next" in record and "status" in record), None)
         submission = None
         if task and task.get("submission"):
-            submission = query_resource(task["submission"]["behaviorName"], "submission", tail, control, env)
+            submission = compact_submission(
+                query_resource(task["submission"]["behaviorName"], "submission", tail, control, env))
             if submission is not None:
                 document["results"].append(submission)
         state = next((record for record in document["results"] if "issue" in record and "phase" in record), None)

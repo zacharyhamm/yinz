@@ -21,6 +21,7 @@ import unittest
 SOURCE = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(SOURCE / "scripts"))
 from issue_lifecycle.decisions import CHAINED
+from issue_lifecycle.observations import state_digest
 
 # Fixture verifications run no default (cargo) baseline check.
 OPT_OUT_CONFIG = {"verification": {"baselineChecks": []}}
@@ -343,6 +344,16 @@ print(json.dumps(response))
         self.assertEqual(len(states), 1, document)
         return states[0]
 
+    def handoff_state(self, handoff):
+        """The lifecycle state a compact handoff names by digest; it must be current."""
+        cache = self.__dict__.setdefault("_handoff_states", {})
+        if handoff["stateDigest"] not in cache:
+            state = self.state()
+            self.assertEqual(state_digest(state), handoff["stateDigest"], "handoff is not for the current state")
+            self.assertNotIn("state", handoff)
+            cache[handoff["stateDigest"]] = state
+        return cache[handoff["stateDigest"]]
+
     def test_installed_foreground_planning_handoff_and_resume(self):
         self.command(["swamp", "workflow", "validate", "yinz-issue-drive", "--json"])
         worktree = self.root / "origin"
@@ -356,7 +367,7 @@ print(json.dumps(response))
         handoff = json.loads(self.lifecycle("drive", {"agent": {"session": "smoke", "kind": "claude"}}))
         self.assertEqual(handoff["decision"], "approve_plan", handoff)
         self.assertEqual(handoff["planVersion"], 1)
-        self.assertEqual(handoff["state"]["planReview"], {"planVersion": 1, "findings": []})
+        self.assertEqual(self.handoff_state(handoff)["planReview"], {"planVersion": 1, "findings": []})
         for label in ("Proposed behavior", "Implementation steps", "Tests:", "Assumptions:", "Plan review findings", "controlling agent must collect and present"):
             self.assertIn(label, handoff["presentation"])
         self.assertNotIn("approval", self.state())
@@ -418,7 +429,7 @@ print(json.dumps(response))
         self.assertEqual(self.state()["workerAgent"], expected)
         handoff = json.loads(self.lifecycle("drive", {"agent": {"timeoutSeconds": 42}}))
         self.assertEqual(handoff["decision"], "approve_plan", handoff)
-        self.assertEqual(handoff["state"]["workerAgent"], expected)
+        self.assertEqual(self.handoff_state(handoff)["workerAgent"], expected)
         self.assertIn("Saved worker choice: claude; model: fixture-model; effort: provider default", handoff["presentation"])
         calls = self.yinz_log.read_text()
         spawns = [json.loads(line)["args"] for line in calls.splitlines()
@@ -480,7 +491,7 @@ print(json.dumps(response))
         self.env["YINZ_SMOKE_NO_SUBMISSION"] = "1"
         handoff = json.loads(self.lifecycle("drive", {"agent": {"session": "smoke", "kind": "claude"}}))
         self.assertEqual(handoff["decision"], "blocked")
-        task_id = handoff["assignment"]["id"]
+        task_id = handoff["assignmentRef"]["id"]
         del self.env["YINZ_SMOKE_NO_SUBMISSION"]
         self.lifecycle("continue-agent", {"taskId": task_id, "request": "Submit the findings already established, without repeating the investigation"})
         self.assertEqual(self.state()["phase"], "classified")
@@ -554,7 +565,7 @@ print(json.dumps(response))
         self.assertIn(approval["request"], prompts[5]["stdin"])
         self.assertIn("Kept marker scope", reviewed["presentation"])
         self.assertIn("Inspected fixture source", reviewed["presentation"])
-        self.assertEqual(reviewed["state"]["planReview"]["findings"][0]["severity"], "high")
+        self.assertEqual(self.handoff_state(reviewed)["planReview"]["findings"][0]["severity"], "high")
         calls = self.yinz_log.read_text()
         self.assertEqual(json.loads(self.lifecycle("drive"))["id"], reviewed["id"])
         self.assertEqual(self.yinz_log.read_text(), calls)
@@ -897,7 +908,7 @@ raise SystemExit(result.returncode)
         self.lifecycle("decide-review", selection)
         accepted = json.loads(self.lifecycle("drive"))
         self.assertEqual(accepted["decision"], "authorize_merge")
-        self.assertNotIn("resolution", accepted["state"]["uxReview"]["findings"][0])
+        self.assertNotIn("resolution", self.handoff_state(accepted)["uxReview"]["findings"][0])
         # A new review invalidates acceptance and can be selected for repair.
         self.lifecycle("rollback", {"step": "review_ux", "request": "Repeat fixture UX and repair it"})
         findings = json.loads(self.lifecycle("drive"))
@@ -908,17 +919,17 @@ raise SystemExit(result.returncode)
         del self.env["YINZ_SMOKE_BLOCK_UX"]
         clean = json.loads(self.lifecycle("drive"))
         self.assertNotEqual(clean["commit"], commit)
-        self.assertEqual(len(clean["state"]["verification"]["checks"]), 2)
-        self.assertEqual(clean["state"]["reviewDecisions"][-1]["result"]["commit"], clean["commit"])
-        self.assertNotIn("plan", clean["state"]["reviewDecisions"][-1])
+        self.assertEqual(len(self.handoff_state(clean)["verification"]["checks"]), 2)
+        self.assertEqual(self.handoff_state(clean)["reviewDecisions"][-1]["result"]["commit"], clean["commit"])
+        self.assertNotIn("plan", self.handoff_state(clean)["reviewDecisions"][-1])
         # Both re-reviews cover only the repair diff from the reviewed commit.
         for review in ("codeReview", "uxReview"):
-            self.assertEqual(clean["state"][review]["scope"]["kind"], "delta", review)
-            self.assertEqual(clean["state"][review]["scope"]["base"], commit, review)
-            self.assertEqual(clean["state"][review]["scope"]["paths"], ["marker.txt"], review)
+            self.assertEqual(self.handoff_state(clean)[review]["scope"]["kind"], "delta", review)
+            self.assertEqual(self.handoff_state(clean)[review]["scope"]["base"], commit, review)
+            self.assertEqual(self.handoff_state(clean)[review]["scope"]["paths"], ["marker.txt"], review)
         self.assertEqual(clean["decision"], "authorize_merge")
-        self.assertEqual(clean["state"]["uxReview"]["assessment"]["impact"], "no_material_impact")
-        self.assertEqual(clean["state"]["verification"]["status"], "passed")
+        self.assertEqual(self.handoff_state(clean)["uxReview"]["assessment"]["impact"], "no_material_impact")
+        self.assertEqual(self.handoff_state(clean)["verification"]["status"], "passed")
         for label in ("Code review findings", "UX review findings", "UX assessment", "UX limitations"):
             self.assertIn(label, clean["presentation"])
         def roles():
@@ -935,7 +946,7 @@ raise SystemExit(result.returncode)
         self.assertEqual(again["decision"], "authorize_merge")
         self.assertEqual(roles()[-2:], ["review_code", "review_ux"])
         # A rollback asks for a full re-audit, not a delta.
-        self.assertEqual(again["state"]["codeReview"]["scope"], {"kind": "full"})
+        self.assertEqual(self.handoff_state(again)["codeReview"]["scope"], {"kind": "full"})
         # The standing auto-repair instruction passes the workflow's input schema.
         def driver():
             document = json.loads(self.lifecycle("status"))
@@ -997,7 +1008,7 @@ raise SystemExit(result.returncode)
         authorize = json.loads(self.lifecycle("drive"))
         self.assertEqual(authorize["decision"], "authorize_merge", authorize)
         self.assertEqual(authorize["commit"], commit)
-        self.assertEqual(authorize["state"]["verification"]["status"], "passed")
+        self.assertEqual(self.handoff_state(authorize)["verification"]["status"], "passed")
         self.assertFalse(self.cargo_log.exists())
         summary = json.loads(self.lifecycle("ready", flags=("--handoff", authorize["id"], "--request",
                                                             "Merge the disposable smoke fixture locally."), chain=True))
@@ -1051,7 +1062,7 @@ raise SystemExit(result.returncode)
         self.assertIn("Merge attempts:", blocked["presentation"])
         state = self.state()
         [failure] = state["mergeFailures"]
-        self.assertEqual(blocked["state"]["attempt"]["id"], failure["attemptId"])
+        self.assertEqual(self.handoff_state(blocked)["attempt"]["id"], failure["attemptId"])
         self.assertIn(f"Merge attempt {failure['attemptId']} failed", failed.stderr)
         self.assertEqual(len(self.cargo_log.read_text().splitlines()), 1)
 

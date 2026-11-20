@@ -5,18 +5,44 @@
 import {
   activeFollowUps,
   type LifecycleState,
+  lifecycleSummary,
   pendingReviewFindings,
   selectableFollowUp,
+  stateDigest,
 } from "./lifecycle.ts";
+
+/**
+ * What a handoff persists of its lifecycle state: the state's canonical digest,
+ * which fences decisions, and the few fields its readers display.
+ */
+export function handoffStateFields(state: LifecycleState) {
+  return {
+    stateDigest: stateDigest(state),
+    lifecycle: lifecycleSummary(state),
+  };
+}
+
+/**
+ * Whether a handoff was written for exactly this lifecycle state. Handoffs saved
+ * before compaction embed the whole state instead of its digest.
+ */
+export function handoffMatchesState(
+  handoff: { state?: unknown; stateDigest?: string },
+  state: LifecycleState,
+): boolean {
+  if (handoff.stateDigest !== undefined) {
+    return handoff.stateDigest === stateDigest(state);
+  }
+  return handoff.state !== undefined &&
+    JSON.stringify(handoff.state) === JSON.stringify(state);
+}
 
 export function nextStep(h: {
   id: string;
   decision: string;
-  state: LifecycleState;
   planVersion?: number;
   commit?: string;
-}): string {
-  const state = h.state;
+}, state: LifecycleState): string {
   const run = `scripts/issue-lifecycle --item ${state.issue.itemId}`;
   const worktreeInput = `--input-file <{"worktree": "...", "branch": "..."}>`;
   switch (h.decision) {

@@ -11,6 +11,7 @@ import {
   UserRequestSchema,
 } from "./lifecycle.ts";
 import type { Handoff } from "./issue_driver.ts";
+import { handoffMatchesState } from "./handoff_next.ts";
 
 const HandoffId = z.uuid();
 const Fingerprint = z.string().regex(/^[0-9a-f]{64}$/);
@@ -70,7 +71,7 @@ export function assertCurrentHandoff(
   if (
     !handoff || handoff.id !== handoffId || handoff.status !== "current" ||
     !decisions.includes(handoff.decision) ||
-    JSON.stringify(handoff.state) !== JSON.stringify(state)
+    !handoffMatchesState(handoff, state)
   ) {
     throw new Error(
       `Decision handoff is stale: ${handoffId} is not the current ${

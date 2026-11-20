@@ -130,10 +130,15 @@ def should_auto_merge(handoff):
     lastFailure is deliberately not checked: repair leaves it set until the next
     merge begins, and drive yields integrate only without an active merge failure.
     """
-    state = handoff.get("state") or {}
+    # Compact handoffs carry a lifecycle summary; older ones embed the whole state.
+    summary = handoff.get("lifecycle")
+    if summary is None:
+        state = handoff.get("state") or {}
+        summary = {"phase": state.get("phase"), "mergeAuthorization": state.get("mergeAuthorization"),
+                   "attemptId": (state.get("attempt") or {}).get("id")}
     return (handoff.get("status") == "current" and handoff.get("decision") == "integrate"
-            and state.get("phase") == "ready" and bool(state.get("mergeAuthorization"))
-            and not state.get("attempt"))
+            and summary.get("phase") == "ready" and bool(summary.get("mergeAuthorization"))
+            and not summary.get("attemptId"))
 
 
 def continue_to_gate(drive, merge, first, later, *, allow_merge=True, merge_ran=False):

@@ -18,7 +18,9 @@ import {
   type IssueAgentContext,
   type IssueAgentDependencies,
   RecoverySchema,
+  snapshotName,
   taskPrompt,
+  taskReceipt,
 } from "../_lib/issue_agents.ts";
 import {
   adoptWorkerWorktree,
@@ -39,9 +41,12 @@ import {
   recordMergeFailure,
   refreshIssue,
   selectedRepairFindings,
+  stateDigest,
+  StateSchema,
   transition,
 } from "../_lib/lifecycle.ts";
 import { GitOperationError, loadState, saveState } from "../_lib/runtime.ts";
+import { compactIssue } from "../_lib/issue_compaction.ts";
 import {
   NO_VERIFICATION_EXTRAS,
   type VerificationSettings,
@@ -60,23 +65,53 @@ import {
 } from "../_lib/yinz_agent.ts";
 
 type SavedTask = ReturnType<typeof AgentTaskSchema.parse>;
+/** A saved task with the dispatch snapshot it names, as tests inspect it. */
+type TaskView = SavedTask & { before: LifecycleState };
+function taskView(
+  resources: Map<string, unknown>,
+  raw: unknown = resources.get("agent-task"),
+): TaskView {
+  const task = AgentTaskSchema.parse(raw);
+  if (task.before) return task as TaskView;
+  const snapshot = resources.get(snapshotName(task.beforeDigest!));
+  assert(snapshot, `no saved snapshot for task ${task.id}`);
+  return { ...task, before: StateSchema.parse(snapshot) };
+}
+type Store = {
+  resources: Map<string, unknown>;
+  files: Map<string, Uint8Array>;
+};
 /** One contract-3 assignment file, exactly as publication would write it. */
 function assignmentText(
+  h: Store,
   task: SavedTask,
   key: Parameters<ReturnType<typeof assignmentFileContents>["get"]>[0],
 ) {
+  const view = taskView(h.resources, task);
+  const baseline = view.continuity?.baseline;
+  const read = (sha256: string) => {
+    const bytes = h.files.get(`review-diff-${sha256}`);
+    assert(bytes, `no stored diff ${sha256}`);
+    return bytes;
+  };
+  const diffs = baseline?.featureDiffRef
+    ? {
+      featureDiff: read(baseline.featureDiffRef.sha256),
+      ...(baseline.deltaRef ? { delta: read(baseline.deltaRef.sha256) } : {}),
+    }
+    : undefined;
   const bytes = assignmentFileContents({
-    ...task,
-    submission: task.submission!,
-  })
+    ...view,
+    submission: view.submission!,
+  }, diffs)
     .get(key);
   assert(bytes, `assignment has no ${key} file`);
   return new TextDecoder().decode(bytes);
 }
 /** What a contract-3 worker reads: its prompt plus the bound packet file. */
-function workerMaterial(task: SavedTask) {
+function workerMaterial(h: Store, task: SavedTask) {
   return task.assignmentFiles
-    ? `${task.prompt}\n\n${assignmentText(task, "packet")}`
+    ? `${task.prompt}\n\n${assignmentText(h, task, "packet")}`
     : task.prompt;
 }
 /** The saved task a runModel call delivered, from the agent-task write log. */
@@ -208,6 +243,8 @@ function harness(
   offerCloseout?: IssueAgentDependencies["offerCloseout"],
 ) {
   const resources = new Map<string, unknown>([["state", initial]]);
+  // The issue behavior's files, such as content-addressed review diffs.
+  const files = new Map<string, Uint8Array>();
   const child = new Map<string, Record<string, unknown>>();
   const submissions = new Map<string, Map<string, unknown>>();
   const writes: {
@@ -227,7 +264,7 @@ function harness(
     cleanupError: false,
     evidence,
     evidenceForRole: undefined as
-      | ((task: ReturnType<typeof AgentTaskSchema.parse>) => unknown)
+      | ((task: TaskView) => unknown)
       | undefined,
     agenda: issue,
     failEventOnce: false,
@@ -286,6 +323,8 @@ function harness(
     // When set, review-context reports a descendant endpoint delta that
     // changes these paths, as the real helper does after a repair commit.
     deltaPaths: undefined as string[] | undefined,
+    // The feature diff body review-context captures.
+    featureDiff: "fixture full feature diff",
     agentRunner: undefined as YinzRunner | undefined,
     agentId: () => "submission-1",
     agendaReads: 0,
@@ -338,8 +377,17 @@ function harness(
       resources.set(name, structuredClone(value));
       return Promise.resolve({ name });
     },
-    createFileWriter: () => {
-      throw new Error("Unexpected command log");
+    createFileWriter: (spec, name) => {
+      if (spec !== "review-diff") throw new Error("Unexpected command log");
+      return {
+        writeStream: async (stream) => {
+          files.set(
+            name,
+            new Uint8Array(await new Response(stream).arrayBuffer()),
+          );
+          return { name };
+        },
+      };
     },
     dataRepository: {
       getContent: (type, name, resource) => {
@@ -348,6 +396,8 @@ function harness(
           value = submissions.get(name)?.get(resource);
         } else if (type === "@yinz/issue-lifecycle") {
           equal(name, context.modelId);
+          const file = files.get(resource);
+          if (file) return Promise.resolve(file.slice());
           value = resources.get(resource);
         } else {
           equal(type, "@yinz/agent");
@@ -534,7 +584,8 @@ function harness(
         assert(typeof prompt === "string");
         const config = AgentConfigSchema.parse(rawConfig);
         const digest = await promptDigest(prompt);
-        const evidence = controls.evidenceForRole?.(task) ?? controls.evidence;
+        const evidence = controls.evidenceForRole?.(taskView(resources)) ??
+          controls.evidence;
         const message = typeof evidence === "string"
           ? evidence
           : JSON.stringify(evidence);
@@ -619,7 +670,7 @@ function harness(
           main: controls.repo.main,
           mergeBase: controls.repo.main,
           head: controls.repo.head,
-          featureDiff: "fixture full feature diff",
+          featureDiff: controls.featureDiff,
           ...(delta
             ? {
               previousHead: previous,
@@ -703,7 +754,8 @@ function harness(
       taskId: task.id,
       assignmentDigest: task.submission.assignmentDigest,
       role: task.role,
-      evidence: controls.evidenceForRole?.(task) ?? controls.evidence,
+      evidence: controls.evidenceForRole?.(taskView(resources)) ??
+        controls.evidence,
     });
     await evidenceMethods().submit.execute(
       input,
@@ -714,6 +766,7 @@ function harness(
     context,
     controls,
     resources,
+    files,
     writes,
     calls,
     child,
@@ -839,6 +892,7 @@ Deno.test("truncated or arbitrary final chat cannot invalidate accepted evidence
     h.controls.resultPatch = { message };
     h.controls.childPatch = { message: "Different presentation" };
     await h.drive.execute({ agent: options }, h.context);
+    console.log("DBG", result(h).reason);
     equal(result(h).decision, "approve_plan");
     const receipt =
       AgentTaskSchema.parse(h.resources.get("agent-task")).evidence;
@@ -893,7 +947,7 @@ for (const recovery of ["resume", "drive"] as const) {
         h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
       "submission_required",
     );
-    const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    const original = taskView(h.resources);
     const args = {
       taskId: original.id,
       request: "Submit the existing findings",
@@ -1162,7 +1216,7 @@ Deno.test("a rejected launch can be discarded explicitly then dispatched with co
       }, h.context),
     "discard-agent",
   );
-  const rejectedTask = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const rejectedTask = taskView(h.resources);
   equal(AgentStateSchema.parse(h.child.get("state")).phase, "launch_rejected");
   equal(rejectedTask.status, "running");
   equal(rejectedTask.config.effort, "ultra");
@@ -1217,7 +1271,7 @@ Deno.test("a rejected launch can be discarded explicitly then dispatched with co
     role: "triage",
     effort: "high",
   }, h.context);
-  const replacement = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const replacement = taskView(h.resources);
   assert(replacement.behaviorName !== rejectedTask.behaviorName);
   equal(replacement.config.effort, "high");
   equal(replacement.status, "completed");
@@ -1541,7 +1595,7 @@ Deno.test("recorded dispatch without child state recovers the original task", as
       h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
     "Interrupted",
   );
-  const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const original = taskView(h.resources);
   const calls: string[][] = [];
   h.controls.agentRunner = recoveryRunner(false, calls);
   h.controls.submitEvidence = true;
@@ -1566,7 +1620,7 @@ Deno.test("terminal provider failure can be explicitly discarded and unblocks li
       h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
     "has not completed",
   );
-  const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const original = taskView(h.resources);
   await rejects(() => assertNoPendingAgent(h.context), "unresolved");
   await rejects(
     () =>
@@ -1618,7 +1672,7 @@ async function completedUnapplied() {
       h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
     "Lost provider response",
   );
-  const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const original = taskView(h.resources);
   equal(original.status, "running");
   return { h, original };
 }
@@ -1649,7 +1703,7 @@ Deno.test("discard of a completed worker without attestation freshly observes it
       "confirm_stopped",
     ]);
     equal(h.calls.at(-1)?.definition, original.behaviorName);
-    equal(h.resources.get("agent-task"), original);
+    equal(taskView(h.resources), original);
     equal(await loadState(h.context), original.before);
     equal(h.child.get("state"), childBefore);
     equal(submission(), submissionBefore);
@@ -1663,7 +1717,7 @@ Deno.test("discard of a completed worker without attestation freshly observes it
       () => h.methods.discard_agent.execute(discard, h.context),
       "the stop observation is not a fresh idle status of terminal_7",
     );
-    equal(h.resources.get("agent-task"), original);
+    equal(taskView(h.resources), original);
 
     h.controls.stopOutcome = undefined;
     await h.methods.discard_agent.execute(discard, h.context);
@@ -1700,7 +1754,7 @@ Deno.test("confirmedStopped stands in only when the behavior cannot observe the 
   equal(running.h.calls.slice(before).map((call) => call.method), [
     "confirm_stopped",
   ]);
-  equal(running.h.resources.get("agent-task"), running.original);
+  equal(taskView(running.h.resources), running.original);
 
   // An observable worker is observed; the attestation is not the evidence.
   const observable = await completedUnapplied();
@@ -1752,7 +1806,7 @@ async function realCompletedChild() {
       h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
     "",
   );
-  const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const original = taskView(h.resources);
   equal(original.status, "running");
   const childBefore = structuredClone(h.child.get("state"));
   equal(childBefore?.phase, "completed");
@@ -1780,7 +1834,7 @@ Deno.test("discard of a real completed child whose pane is absent requires the o
   assert(message.includes("Confirm the stop yourself"), message);
   assert(message.includes("confirmedStopped: true"), message);
   equal(h.controls.placementCalls.length, listings + 2);
-  equal(h.resources.get("agent-task"), original);
+  equal(taskView(h.resources), original);
   equal(h.child.get("state"), childBefore);
   // The refusals write no observation.
   equal(h.child.get("observation"), observationBefore);
@@ -1854,7 +1908,7 @@ Deno.test("discard rejection names every failed condition", async () => {
       h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
     "Provider timed out",
   );
-  const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const original = taskView(h.resources);
   for (const confirmedStopped of [undefined, true as const]) {
     let message = "";
     try {
@@ -1887,7 +1941,7 @@ Deno.test("discard rejection names every failed condition", async () => {
   }
   // Neither confirm_failure nor confirm_stopped was attempted.
   equal(h.calls.length, 1);
-  equal(h.resources.get("agent-task"), original);
+  equal(taskView(h.resources), original);
   await rejects(() => assertNoPendingAgent(h.context), "unresolved");
 });
 
@@ -1913,7 +1967,7 @@ Deno.test("discard state mismatch names changed lifecycle fields", async () => {
   assert(!fields.includes("issue") && !fields.includes("planVersion"), message);
   // Only the read-only stop observation ran before the state check.
   equal(h.calls.slice(calls).map((call) => call.method), ["confirm_stopped"]);
-  equal(h.resources.get("agent-task"), original);
+  equal(taskView(h.resources), original);
 });
 
 Deno.test("legacy discard records and caller-supplied basis", async () => {
@@ -2003,7 +2057,7 @@ Deno.test("explicit unsent discard waits for drained writes, preserves evidence 
       h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
     "has not completed",
   );
-  const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const original = taskView(h.resources);
   const discard = {
     request: "Discard the task proven unsent; inspect the marker before reuse",
     confirmedStopped: true as const,
@@ -2071,7 +2125,7 @@ Deno.test("legacy stopped preparation failures remain blocked without server non
         h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
       "has not completed",
     );
-    const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    const original = taskView(h.resources);
     const count = calls.length;
     await rejects(
       () =>
@@ -2083,7 +2137,7 @@ Deno.test("legacy stopped preparation failures remain blocked without server non
     );
     equal(calls.length, count);
     equal(h.resources.get("state"), original.before);
-    equal(h.resources.get("agent-task"), original);
+    equal(taskView(h.resources), original);
     await rejects(() => assertNoPendingAgent(h.context), "unresolved");
   }
 });
@@ -2120,7 +2174,7 @@ Deno.test("explicit restart supersedes every worker outcome without querying or 
         h.methods.run_agent.execute({ ...options, role: "plan" }, h.context),
       "Old attempt failed",
     );
-    const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    const old = taskView(h.resources);
     if (failure === "missing") h.child.clear();
     h.controls.childPhase = "completed";
     h.controls.childOutcome = "completed";
@@ -2149,7 +2203,7 @@ Deno.test("explicit restart supersedes every worker outcome without querying or 
       task: unknown;
       before: unknown;
     };
-    equal(recovery.task, old);
+    equal(taskView(h.resources, recovery.task), old);
     equal(recovery.before, initial);
     // Retrying a request after a lost response observes the replacement, never spawns a third worker.
     await h.methods.restart_agent.execute(args, h.context);
@@ -2174,7 +2228,7 @@ Deno.test("rollback fences old results even when returning to the same lifecycle
       h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
     "lost response",
   );
-  const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const old = taskView(h.resources);
   await h.methods.rollback.execute({
     step: "triage",
     request: "Restart triage",
@@ -2222,7 +2276,7 @@ Deno.test("interrupted rollback blocks other mutations and resumes without requi
       h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
     "session disappeared",
   );
-  const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const old = taskView(h.resources);
   equal(old.config.cwd, "/repo/origin");
   h.context.repoDir = "/repo/later-invocation";
   const args = {
@@ -2273,7 +2327,7 @@ Deno.test("replacement failure remains resumable and a stale restart request can
       h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
     "provider unavailable",
   );
-  const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const old = taskView(h.resources);
   const args = {
     ...options,
     role: "triage" as const,
@@ -2284,7 +2338,7 @@ Deno.test("replacement failure remains resumable and a stale restart request can
     () => h.methods.restart_agent.execute(args, h.context),
     "provider unavailable",
   );
-  const replacement = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const replacement = taskView(h.resources);
   assert(replacement.id !== old.id);
   equal(replacement.lastError, "provider unavailable");
   h.controls.runError = undefined;
@@ -2354,7 +2408,7 @@ Deno.test("every rollback persistence boundary can be resumed without duplicate 
         h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
       "lost old worker",
     );
-    const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    const old = taskView(h.resources);
     h.controls.runError = undefined;
     h.controls.failWrite = (spec, name, value) => {
       switch (boundary) {
@@ -2489,7 +2543,7 @@ Deno.test("a new restart can change options while an earlier restart has not sav
       h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
     "missing session",
   );
-  const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const old = taskView(h.resources);
   const args = {
     ...options,
     role: "triage" as const,
@@ -2552,9 +2606,7 @@ function driverImplementing(): LifecycleState {
     branch: "issue-85",
   });
 }
-function driverEvidence(
-  task: ReturnType<typeof AgentTaskSchema.parse>,
-): unknown {
+function driverEvidence(task: TaskView): unknown {
   switch (task.role) {
     case "triage":
       return triage;
@@ -2746,7 +2798,7 @@ for (
       assert(task.prompt.includes(`The commit being reviewed is ${head}.`));
     }
 
-    const contract = JSON.parse(assignmentText(task, "schema"));
+    const contract = JSON.parse(assignmentText(h, task, "schema"));
     const finding = contract.properties.findings.items;
     equal(Object.keys(finding.properties).sort(), [
       "affectedPaths",
@@ -2947,7 +2999,12 @@ Deno.test("driver takes planning through fresh review to a reusable approval han
   const handoff = result(h);
   equal(handoff.decision, "approve_plan");
   equal(handoff.planVersion, 1);
-  equal(handoff.state.plan?.assumptions, driverPlan.assumptions);
+  equal(
+    (await loadState(h.context)).plan?.assumptions,
+    driverPlan.assumptions,
+  );
+  equal(handoff.state, undefined);
+  equal(handoff.stateDigest, stateDigest(await loadState(h.context)));
   for (
     const text of [
       "Proposed behavior",
@@ -2980,7 +3037,7 @@ Deno.test("driver takes planning through fresh review to a reusable approval han
   equal((await loadState(h.context)).approval, undefined);
 });
 
-function blockedPlanEvidence(task: ReturnType<typeof AgentTaskSchema.parse>) {
+function blockedPlanEvidence(task: TaskView) {
   return task.role === "review_plan"
     ? {
       planVersion: task.before.plan!.version,
@@ -3007,7 +3064,8 @@ Deno.test("a reserved revision retains the issue worker choice when future drive
   h.controls.evidenceForRole = blockedPlanEvidence;
   h.controls.failWrite = (spec, _name, value) =>
     spec === "agent-task" && value.status === "running" &&
-    value.role === "plan" && (value.before as LifecycleState).planVersion === 1;
+    value.role === "plan" &&
+    taskView(h.resources, value).before.planVersion === 1;
   await h.drive.execute({ control: options.control }, h.context);
   equal(result(h).decision, "blocked");
   const reserved =
@@ -3062,14 +3120,14 @@ Deno.test("driver automatically revises once then stops at a stable revision pro
   equal(result(h).proposedPlanVersion, 4);
   assert(result(h).id !== proposal.id);
   assert(
-    workerMaterial(taskOfCall(h, h.calls[3])).includes("Cover the caller"),
+    workerMaterial(h, taskOfCall(h, h.calls[3])).includes("Cover the caller"),
   );
   const authorization = DriverSchema.parse(h.resources.get("driver"))
     .revisionAuthorization!;
   equal(authorization.request, approval.request);
   assert(authorization.assignment.prompt.includes(approval.request));
   assert(
-    workerMaterial(authorization.assignment).includes(
+    workerMaterial(h, authorization.assignment).includes(
       "Targeted caller coverage changes",
     ),
   );
@@ -3757,7 +3815,7 @@ Deno.test("repair of a failed verification hands its logs to the implementation 
   const task = implementPrompts().find((t) => t.id !== first.id)!;
   assert(task, "drive dispatched a new implementation worker");
   assert(
-    workerMaterial(task).includes(repaired.lastFailure!),
+    workerMaterial(h, task).includes(repaired.lastFailure!),
     "lastFailure in the bound packet",
   );
   assert(
@@ -4052,7 +4110,7 @@ Deno.test("restart invalidates an old approval handoff and driver follows the re
     session: "replacement",
     control: { session: "replacement", paneId: "terminal_1" },
     role: "plan",
-    taskId: previous.assignment!.id,
+    taskId: previous.assignmentRef!.id,
     request: "Restart planning in the replacement session",
   }, h.context);
   equal(result(h).status, "invalidated");
@@ -4060,7 +4118,14 @@ Deno.test("restart invalidates an old approval handoff and driver follows the re
   equal(result(h).decision, "approve_plan");
   assert(result(h).id !== previous.id);
   equal(result(h).planVersion, 2);
-  equal(result(h).assignment?.config.session, "replacement");
+  equal(
+    result(h).assignmentRef?.id,
+    AgentTaskSchema.parse(h.resources.get("agent-task")).id,
+  );
+  equal(
+    AgentTaskSchema.parse(h.resources.get("agent-task")).config.session,
+    "replacement",
+  );
   equal(h.calls.length, 5);
   await h.drive.execute({}, h.context);
   equal(h.calls.length, 5);
@@ -4088,7 +4153,7 @@ Deno.test("driver waits on the original acknowledged submission across timeouts 
     let waits = 0;
     h.controls.agentRunner = (args) => {
       cli.push(args);
-      const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+      const task = taskView(h.resources);
       const agent = {
         pane_id: "terminal_7",
         session: options.session,
@@ -4194,7 +4259,7 @@ Deno.test("driver waits on the original acknowledged submission across timeouts 
       );
       equal(cli.filter((args) => args[3] === "spawn").length, 1);
       equal(cli.filter((args) => args[3] === "prompt").length, 1);
-      const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+      const original = taskView(h.resources);
       await h.drive.execute({}, h.context);
       equal(result(h).decision, "blocked");
       equal(
@@ -4825,7 +4890,7 @@ Deno.test("driver resumes a pending restart replacement exactly once without nes
   equal(result(h).decision, "blocked");
   h.controls.submitEvidence = true;
   const staleHandoff = result(h).id;
-  const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const old = taskView(h.resources);
   h.controls.reopenError = "Agenda unavailable";
   await rejects(
     () =>
@@ -5133,7 +5198,7 @@ Deno.test("driver omits obsolete implementation summaries for replacement review
   h.controls.evidenceForRole = driverEvidence;
   await h.drive.execute({ agent: options }, h.context);
   const original = result(h);
-  assert(original.implementation);
+  assert(original.implementationRef);
   const replacement = "c".repeat(40);
   h.controls.repo.head = replacement;
   h.controls.evidenceForRole = (task) => ({
@@ -5155,7 +5220,7 @@ Deno.test("driver omits obsolete implementation summaries for replacement review
   const fresh = result(h);
   equal(fresh.decision, "authorize_merge");
   equal(fresh.commit, replacement);
-  equal(fresh.implementation, undefined);
+  equal(fresh.implementationRef, undefined);
   assert(!fresh.presentation.includes("Repaired the affected caller"));
   await h.drive.execute({}, h.context);
   equal(result(h).id, fresh.id);
@@ -5163,12 +5228,12 @@ Deno.test("driver omits obsolete implementation summaries for replacement review
   // Simulate a handoff cached by the old driver for the same reviewed state.
   h.resources.set("handoff", {
     ...fresh,
-    implementation: original.implementation,
+    implementationRef: original.implementationRef,
     presentation: original.presentation,
   });
   await h.drive.execute({}, h.context);
   assert(result(h).id !== fresh.id);
-  equal(result(h).implementation, undefined);
+  equal(result(h).implementationRef, undefined);
   assert(!result(h).presentation.includes("Repaired the affected caller"));
 });
 
@@ -5180,7 +5245,7 @@ Deno.test("every lifecycle role, plan revision, repair and restart resolves the 
   const launched: { role: string; tab: string }[] = [];
   let firstReview = true;
   h.controls.agentRunner = (args) => {
-    const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    const task = taskView(h.resources);
     let value: Record<string, unknown>;
     if (args[3] === "spawn") {
       equal(task.config.control, options.control);
@@ -5667,9 +5732,11 @@ Deno.test("adjudication advances the driver without another submission or implem
   await h.drive.execute({}, h.context);
   equal(result(h).decision, "approve_plan");
   equal(h.calls.length, 5);
-  equal(result(h).state.planReview, original.planReview);
-  assert(effectivePlanFindings(result(h).state)[0].resolution);
-  equal(result(h).state.approval, undefined);
+  const presented = await loadState(h.context);
+  equal(result(h).stateDigest, stateDigest(presented));
+  equal(presented.planReview, original.planReview);
+  assert(effectivePlanFindings(presented)[0].resolution);
+  equal(presented.approval, undefined);
   assert(result(h).presentation.includes("Inspected caller"));
 });
 
@@ -5694,7 +5761,7 @@ Deno.test("revision and restart deliver exact feedback and cumulative context", 
     taskId: current.id,
     request: restartRequest,
   }, h.context);
-  const replacement = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const replacement = taskView(h.resources);
   assert(replacement.prompt.includes(restartRequest));
   const state = await loadState(h.context);
   assert(
@@ -5810,8 +5877,8 @@ Deno.test("restart preserves feedback from a reserved revision that never dispat
     taskId: task.id,
     request: "Restart this targeted revision in the new session",
   }, h.context);
-  const replacement = AgentTaskSchema.parse(h.resources.get("agent-task"));
-  assert(workerMaterial(replacement).includes(approval.request));
+  const replacement = taskView(h.resources);
+  assert(workerMaterial(h, replacement).includes(approval.request));
   assert(replacement.prompt.includes("Restart this targeted revision"));
   equal(
     replacement.before.planningContext!.userFeedback.filter((f) =>
@@ -5851,7 +5918,7 @@ Deno.test("origin persists across all worker roles, later drive and explicit res
     "review_code",
     "review_ux",
   ]);
-  const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const old = taskView(h.resources);
   const restart = {
     ...options,
     role: "plan" as const,
@@ -5880,7 +5947,7 @@ Deno.test("legacy workers retain implementation/control selection and pending ta
       () => h.methods.run_agent.execute({ ...options, role }, h.context),
       "Interrupted submission",
     );
-    const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    const original = taskView(h.resources);
     equal(original.config.cwd, expected);
     h.context.repoDir = "/repo/later-invocation";
     h.controls.runError = undefined;
@@ -6029,7 +6096,7 @@ Deno.test("pending discard fences accepted evidence before any recovery can impo
       // A later dispatched worker fails without accepted evidence and stays
       // blocked, so the lifecycle state below shows only the discard's effect.
       h.controls.submitEvidence = false;
-      const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+      const original = taskView(h.resources);
       const submission = () =>
         SubmissionSchema.parse(
           h.submissions.get(original.submission!.behaviorName)?.get(
@@ -6197,10 +6264,24 @@ async function pendingLegacyProjection(
     () => h.methods.run_agent.execute({ ...options, role }, h.context),
     "event write failed",
   );
-  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
-  delete task.submission;
-  delete task.evidence;
-  task.message = "This legacy final chat is not JSON";
+  // A projection saved before snapshots moved out of tasks embeds both states.
+  const saved = taskView(h.resources);
+  const submission = SubmissionSchema.parse(
+    h.submissions.get(saved.submission!.behaviorName)!.get("submission"),
+  );
+  assert(submission.status === "accepted");
+  const {
+    beforeDigest: _before,
+    nextDigest: _next,
+    submission: _submission,
+    evidence: _evidence,
+    ...legacy
+  } = saved;
+  const task = AgentTaskSchema.parse({
+    ...legacy,
+    next: submission.receipt.next,
+    message: "This legacy final chat is not JSON",
+  }) as TaskView;
   h.resources.set("agent-task", task);
   // The saved projection is authoritative; neither freshness checks nor
   // reconciliation should need the original provider chat or state again.
@@ -6317,7 +6398,7 @@ Deno.test("legacy implementation reports block pending review while accepted tec
       { ...options, role: "implement" },
       h.context,
     );
-    const legacy = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    const legacy = taskView(h.resources);
     delete legacy.evidence;
     delete legacy.submission;
     legacy.message = "Truncated legacy implementation presentation {";
@@ -6353,9 +6434,7 @@ Deno.test("UX blockers and stale evidence stop all checks and are presented sepa
         implementing(),
         "review_code",
         driverEvidence(
-          { role: "review_code", before: implementing() } as ReturnType<
-            typeof AgentTaskSchema.parse
-          >,
+          { role: "review_code", before: implementing() } as TaskView,
         ),
       ),
     );
@@ -6647,7 +6726,7 @@ Deno.test("UX review runs once after code is clean; every re-review covers only 
   const scopes = new Map<string, { role: string; scope: unknown }>();
   // First review of a role: nothing of that role reviewed before.
   const first = (
-    task: ReturnType<typeof AgentTaskSchema.parse>,
+    task: TaskView,
     role: "review_code" | "review_ux",
   ) =>
     !priorImplementationFindings(task.before).some((p) =>
@@ -6655,7 +6734,7 @@ Deno.test("UX review runs once after code is clean; every re-review covers only 
     ) &&
     !task.before.reviewHistory?.some((h) => h.role === role);
   const outcomes = (
-    task: ReturnType<typeof AgentTaskSchema.parse>,
+    task: TaskView,
     role: "review_code" | "review_ux",
   ) =>
     priorFindingObligations(task.before, role).map((p) => ({
@@ -6895,9 +6974,10 @@ Deno.test("in-flight repair plans drain: a plan awaiting approval goes straight 
     state: planned,
   });
   equal(
-    nextStep({ ...result(h), decision: "approve_review_fixes" }).startsWith(
-      "Next: scripts/issue-lifecycle --item 85 drive (dispatches the repair worker",
-    ),
+    nextStep({ ...result(h), decision: "approve_review_fixes" }, planned)
+      .startsWith(
+        "Next: scripts/issue-lifecycle --item 85 drive (dispatches the repair worker",
+      ),
     true,
   );
   await h.drive.execute({}, h.context);
@@ -6940,7 +7020,7 @@ Deno.test("explicit restart preserves selected repair scope", async () => {
   h.controls.submitEvidence = false;
   await h.drive.execute({}, h.context);
   equal(result(h).decision, "blocked");
-  const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const old = taskView(h.resources);
   equal(old.role, "implement_review_fixes");
   h.controls.runError = undefined;
   h.controls.submitEvidence = true;
@@ -6976,7 +7056,7 @@ Deno.test("explicit repair restart recovers imported scope after cleanup failure
   h.controls.cleanupError = true;
   await h.drive.execute({}, h.context);
   equal(result(h).decision, "blocked");
-  const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const old = taskView(h.resources);
   equal(old.role, role);
   equal(old.status, "completed");
   equal(old.cleanup, "pending");
@@ -7010,7 +7090,7 @@ Deno.test("explicit repair restart recovers imported scope after cleanup failure
   const cleanupCount = h.controls.cleanupCalls;
   h.controls.cleanupError = false;
   await h.methods.restart_agent.execute(args, h.context);
-  const replacement = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const replacement = taskView(h.resources);
   assert(replacement.id !== old.id);
   equal(replacement.role, role);
   equal(replacement.status, "completed");
@@ -7170,14 +7250,13 @@ Deno.test("handoff Next lines cover worktree, merge recovery and terminal decisi
   const approved = { ...implementing(), phase: "approved" as const };
   delete approved.implementation;
   equal(
-    nextStep({ id, decision: "prepare_worktree", state: approved }),
+    nextStep({ id, decision: "prepare_worktree" }, approved),
     `Next: ${run} implement --input-file <{"worktree": "...", "branch": "..."}> (legacy issue without a recorded worker worktree), then ${run} drive`,
   );
   assert(
-    nextStep({
-      id,
-      decision: "prepare_worktree",
-      state: { ...approved, workerWorktree: "/repo/issue" },
+    nextStep({ id, decision: "prepare_worktree" }, {
+      ...approved,
+      workerWorktree: "/repo/issue",
     }).includes(`"worktree": "/repo/issue"`),
   );
   const ready = transition(
@@ -7198,25 +7277,25 @@ Deno.test("handoff Next lines cover worktree, merge recovery and terminal decisi
     startedAt: timestamp,
   };
   equal(
-    nextStep({ id, decision: "integrate", state: { ...ready, attempt } }),
+    nextStep({ id, decision: "integrate" }, { ...ready, attempt }),
     `Next: inspect merge attempt ${attempt.id} (an existing attempt is never re-run automatically), then ${run} merge`,
   );
   assert(
-    nextStep({ id, decision: "summarize", state: ready }).includes(
+    nextStep({ id, decision: "summarize" }, ready).includes(
       `${run} summarize --input-file`,
     ),
   );
   equal(
-    nextStep({ id, decision: "resume_closeout", state: ready }),
+    nextStep({ id, decision: "resume_closeout" }, ready),
     `Next: from a surviving pane, ${run} resume-closeout`,
   );
   equal(
-    nextStep({ id, decision: "complete", state: ready }),
+    nextStep({ id, decision: "complete" }, ready),
     "Next: None; present the completed result",
   );
   // A blocked handoff points at status's advisory taskRecovery block first.
   equal(
-    nextStep({ id, decision: "blocked", state: ready }),
+    nextStep({ id, decision: "blocked" }, ready),
     `Next: run ${run} status and follow taskRecovery, then the matching recovery section`,
   );
 });
@@ -7514,7 +7593,7 @@ for (const continuing of [false, true]) {
         equal(imported.id, task.id);
         equal(imported.promptDigest, task.promptDigest);
         equal(imported.status, "completed");
-        equal(imported.evidence, receipt.receipt);
+        equal(imported.evidence, taskReceipt(receipt.receipt));
         equal(h.controls.repo.head, head);
         equal(await loadState(h.context), initial);
         equal(h.cli.filter((c) => c.args[3] === "spawn").length, 1);
@@ -7590,7 +7669,7 @@ Deno.test("late durable completion reconciles after a lost controller response w
       h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
     "Controller lost",
   );
-  const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const original = taskView(h.resources);
   const runModel = h.context.runModel;
   h.context.runModel = (request) => {
     if (request.modelType === "@yinz/agent" && request.method !== "cleanup") {
@@ -7745,10 +7824,11 @@ async function savedContractTwo(h: ReturnType<typeof harness>) {
   h.controls.failPublish = undefined;
   h.controls.publishCalls.length = 0;
   h.submissions.clear();
-  const current = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const current = taskView(h.resources);
   const {
     assignmentFiles: _files,
     lastError: _error,
+    beforeDigest: _digest,
     ...rest
   } = current;
   const base = { ...rest, contractVersion: 2 as const };
@@ -7820,7 +7900,11 @@ Deno.test("legacy continuation text is unchanged; contract-3 continuation uses t
   );
   equal(
     continued.continuation?.prompt,
-    [finish, request, submissionInstructions(legacy, legacy.submission!)]
+    [
+      finish,
+      request,
+      submissionInstructions(legacy as TaskView, legacy.submission!),
+    ]
       .join("\n\n"),
   );
   assert(
@@ -7838,7 +7922,7 @@ Deno.test("legacy continuation text is unchanged; contract-3 continuation uses t
       h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
     "submission_required",
   );
-  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const task = taskView(h.resources);
   equal(h.controls.publishCalls.length, 1);
   h.controls.submitEvidence = true;
   let publishedBeforeContinue = false;
@@ -8177,7 +8261,7 @@ Deno.test("accept-submission imports stalled accepted implementation evidence th
   await h.drive.execute({ agent: options }, h.context);
   equal(result(h).decision, "blocked");
   const before = await loadState(h.context);
-  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const task = taskView(h.resources);
   const cli = h.cli.length;
   const request = "Accept the submitted implementation; the pane is stuck";
   await h.methods.accept_submission.execute(
@@ -8404,4 +8488,268 @@ Deno.test("an interrupted accept-submission import resumes through drive without
   ).at(-1)?.value;
   equal(archived?.status, "completed");
   equal(archived?.cleanup, undefined);
+});
+
+/** A completed task as saved before snapshots and diffs moved out of tasks. */
+function legacyCompletedTask(
+  id: string,
+  role: "implement" | "review_ux",
+  before: LifecycleState,
+  next: LifecycleState,
+  evidence: unknown,
+) {
+  const payload = { role, evidence };
+  const assignmentDigest = "1".repeat(64);
+  return AgentTaskSchema.parse({
+    id,
+    behaviorName: `issue-agent-${id}`,
+    role,
+    config: AgentConfigSchema.parse({
+      ...options,
+      cwd: "/repo/issue",
+      stackWorkers: true,
+    }),
+    prompt: `Legacy ${role} prompt`,
+    promptDigest: "0".repeat(64),
+    contractVersion: 3,
+    before,
+    next,
+    createdAt: timestamp,
+    status: "completed",
+    cleanup: "done",
+    submission: {
+      protocol: 1,
+      behaviorName: `issue-evidence-${id}`,
+      controlDir: "/repo/control",
+      assignmentDigest,
+    },
+    evidence: {
+      taskId: id,
+      assignmentDigest,
+      payloadDigest: evidenceDigest(payload),
+      acceptedAt: timestamp,
+      payload,
+      next,
+    },
+  });
+}
+
+/** Verifies the current reviews as they are (verify() replaces the UX review). */
+function verifiedAsReviewed(state: LifecycleState): LifecycleState {
+  const id = "c6da10b0-c980-4b82-b920-640238095f1b";
+  return transition(state, "verify", {
+    verification: {
+      id,
+      planVersion: 1,
+      commit: state.codeReview!.commit,
+      branch: state.implementation!.branch,
+      startedAt: timestamp,
+      finishedAt: timestamp,
+      status: "passed",
+      checks: state.plan!.checks!.map((check) => ({
+        ...check,
+        exitCode: 0,
+        durationMs: 10,
+        log: `check-log-${id}-${check.id}`,
+        worktreeUnchanged: true,
+        status: "passed",
+      })),
+    },
+  });
+}
+
+Deno.test("compaction of a legacy issue keeps its decisions so drive authorizes the reviewed merge without new reviews", async () => {
+  const body = `diff --git a/lib.rs b/lib.rs\n${
+    "+legacy body line\n".repeat(20_000)
+  }`;
+  const baseline = {
+    main: "b".repeat(40),
+    mergeBase: "b".repeat(40),
+    head,
+    featureDiff: body,
+    ancestry: "initial",
+    baselineChanged: false,
+    limitations: [],
+  };
+  const finding = (id: string) => ({
+    id,
+    severity: "high",
+    description: `Finding ${id}`,
+    affectedPaths: ["lib.rs"],
+    evidence: ["lib.rs:1"],
+  });
+  let state = transition(implementing(), "review_code", {
+    planVersion: 1,
+    commit: head,
+    steps: [{ id: "fix", status: "implemented" }],
+    findings: [finding("race")],
+    baseline,
+  });
+  state = transition(state, "decide_review", {
+    id: "a6da10b0-c980-4b82-b920-640238095001",
+    reviewFingerprint: codeReviewFingerprint(state),
+    request: "Accept the race",
+    repair: [],
+    ignore: [{ role: "review_code", findingId: "race" }],
+  });
+  const beforeUx = state;
+  state = transition(state, "review_ux", {
+    planVersion: 1,
+    commit: head,
+    findings: [finding("ux")],
+    baseline,
+    assessment: {
+      impact: "material",
+      summary: "Visible",
+      assessedPaths: ["lib.rs"],
+      limitations: [],
+    },
+  });
+  const afterUx = state;
+  state = transition(state, "decide_review", {
+    id: "a6da10b0-c980-4b82-b920-640238095002",
+    reviewFingerprint: codeReviewFingerprint(state),
+    request: "Accept the UX finding",
+    repair: [],
+    ignore: [{ role: "review_ux", findingId: "ux" }],
+  });
+  const legacy = verifiedAsReviewed(state);
+  const reviewTask = legacyCompletedTask(
+    "a6da10b0-c980-4b82-b920-640238095010",
+    "review_ux",
+    beforeUx,
+    afterUx,
+    afterUx.uxReview,
+  );
+  const implementation = legacyCompletedTask(
+    "a6da10b0-c980-4b82-b920-640238095011",
+    "implement",
+    implementing(),
+    implementing(),
+    { summary: "Legacy delivered change", commit: head },
+  );
+  const h = harness(legacy);
+  h.resources.set("agent-task", reviewTask);
+  h.resources.set("driver", {
+    assignmentId: reviewTask.id,
+    implementation,
+  });
+  h.resources.set("handoff", {
+    id: "a6da10b0-c980-4b82-b920-640238095020",
+    status: "current",
+    decision: "address_review_findings",
+    reason: "Legacy handoff embedding every record",
+    createdAt: timestamp,
+    state: legacy,
+    assignment: reviewTask,
+    implementation,
+    presentation: "Legacy",
+  });
+  const sizeBefore = JSON.stringify(h.resources.get("handoff")).length +
+    JSON.stringify(reviewTask).length + JSON.stringify(legacy).length;
+  // The stale handoff is replaced without ever being read.
+  const order: string[] = [];
+  const read = h.context.readResource;
+  h.context.readResource = (name) => {
+    order.push(`read ${name}`);
+    return read(name);
+  };
+  const write = h.context.writeResource;
+  h.context.writeResource = (spec, name, value) => {
+    order.push(`write ${name}`);
+    return write(spec, name, value);
+  };
+  const dependencies = { id: () => crypto.randomUUID(), now: () => timestamp };
+  const compacted = await compactIssue(h.context, dependencies);
+  assert(compacted.dataHandles.length > 0);
+  const firstHandoffRead = order.indexOf("read handoff");
+  assert(
+    firstHandoffRead === -1 ||
+      firstHandoffRead > order.indexOf("write handoff"),
+    order.join(", "),
+  );
+
+  const saved = await loadState(h.context);
+  equal(codeReviewFingerprint(saved), codeReviewFingerprint(legacy));
+  equal(
+    saved.reviewDecisions!.map((d) => [d.id, d.reviewFingerprint, d.ignore]),
+    legacy.reviewDecisions!.map((d) => [d.id, d.reviewFingerprint, d.ignore]),
+  );
+  equal(saved.verification, legacy.verification);
+  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  equal([task.before, task.next, task.evidence?.next], [
+    undefined,
+    undefined,
+    undefined,
+  ]);
+  assert(h.resources.has(snapshotName(task.beforeDigest!)));
+  assert(h.resources.has(snapshotName(task.nextDigest!)));
+  const driver = DriverSchema.parse(h.resources.get("driver"));
+  equal(driver.implementation?.before, undefined);
+  const stub = HandoffSchema.parse(h.resources.get("handoff"));
+  equal([stub.status, stub.state], ["invalidated", undefined]);
+  // The body is stored once; no record embeds it.
+  equal(
+    [...h.files.keys()].filter((n) => n.startsWith("review-diff-")).length,
+    1,
+  );
+  for (const name of ["state", "agent-task", "driver", "handoff"]) {
+    const json = JSON.stringify(h.resources.get(name));
+    assert(!json.includes("legacy body line"), `${name} embeds the diff`);
+  }
+  const sizeAfter = JSON.stringify(h.resources.get("handoff")).length +
+    JSON.stringify(h.resources.get("agent-task")).length +
+    JSON.stringify(saved).length;
+  assert(sizeAfter * 50 < sizeBefore, `${sizeAfter} vs ${sizeBefore}`);
+
+  // Idempotent: a second run writes nothing.
+  const writes = h.writes.length;
+  equal((await compactIssue(h.context, dependencies)).dataHandles, []);
+  equal(h.writes.length, writes);
+
+  // The recorded reviews, ignores and verification authorize the merge handoff.
+  h.context.readResource = read;
+  h.context.writeResource = write;
+  await h.drive.execute({}, h.context);
+  const handoff = result(h);
+  equal(handoff.decision, "authorize_merge");
+  equal(handoff.commit, head);
+  equal(handoff.codeReviewFingerprint, codeReviewFingerprint(legacy));
+  equal(handoff.stateDigest, stateDigest(await loadState(h.context)));
+  assert(
+    handoff.presentation.includes("Delivered change: Legacy delivered change"),
+  );
+  equal(h.calls.length, 0);
+  assert(!h.controls.gitActions.includes("review-context"));
+  assert(JSON.stringify(h.resources.get("handoff")).length < 64 * 1024);
+});
+
+Deno.test("dispatch stores each diff once and keeps state, tasks, driver and handoff small", async () => {
+  const h = harness(implementing());
+  h.controls.featureDiff = `diff --git a/x b/x\n${
+    "+large line\n".repeat(100_000)
+  }`;
+  assert(h.controls.featureDiff.length > 1 << 20);
+  h.controls.evidenceForRole = driverEvidence;
+  await h.drive.execute({ agent: options }, h.context);
+  equal(result(h).decision, "authorize_merge");
+  equal(dispatchedRoles(h), ["implement", "review_code", "review_ux"]);
+  equal(
+    [...h.files.keys()].filter((n) => n.startsWith("review-diff-")).length,
+    1,
+  );
+  for (const name of ["state", "agent-task", "driver", "handoff"]) {
+    const size = JSON.stringify(h.resources.get(name)).length;
+    assert(size < 64 * 1024, `${name} is ${size} bytes`);
+  }
+  // Each worker still receives the complete diff through its assignment files.
+  const review = taskOfCall(
+    h,
+    h.calls.findLast((c) =>
+      c.modelType === "@yinz/agent" && c.method === "run"
+    )!,
+  );
+  equal(review.role, "review_ux");
+  equal(assignmentText(h, review, "featureDiff"), h.controls.featureDiff);
+  assert(!review.prompt.includes("large line"));
 });

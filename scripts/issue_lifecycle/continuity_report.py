@@ -70,13 +70,33 @@ def normalize(export):
         rounds = next((r["content"]["records"] for r in reversed(records) if r["name"] == "rounds"), [])
         recorded = {r["assignmentId"] for r in rounds}
         rounds = rounds + [t["round"] for t in tasks if t.get("round") and t["id"] not in recorded]
+        # Compact tasks name their dispatch snapshot by digest instead of embedding it.
+        snapshots = {r["name"]: r["content"] for r in records if r["specName"] == "snapshot"}
+
+        def dispatched(task):
+            """The task's dispatch state, or only its continuity identity when unexported."""
+            before = task.get("before") or snapshots.get(f"snapshot-{task.get('beforeDigest')}")
+            if before is not None:
+                return before, True
+            continuity = task.get("continuity") or {}
+            if "issueDigest" not in continuity:
+                raise ValueError(f"Task {task['id']} has no dispatch snapshot in the export")
+            return {"issue": {"digest": continuity["issueDigest"]}, "rollbackId": continuity.get("rollbackId")}, False
+
         # Preserve review evidence and exact identity while omitting prompts/issue prose.
-        assignments = [{k: t[k] for k in ("id", "role", "createdAt", "contractVersion", "evidence") if k in t} | {
-            "issueDigest": t["before"]["issue"]["digest"],
-            "rollbackId": t["before"].get("rollbackId"),
-        } | ({
-            "completedRepairDecisionIds": [d["id"] for d in t["before"].get("reviewDecisions", []) if d.get("result")],
-        } if t["role"] in ("review_code", "review_ux") else {}) for t in tasks]
+        assignments = []
+        for t in tasks:
+            before, complete = dispatched(t)
+            entry = {k: t[k] for k in ("id", "role", "createdAt", "contractVersion", "evidence") if k in t} | {
+                "issueDigest": before["issue"]["digest"],
+                "rollbackId": before.get("rollbackId"),
+            }
+            if t["role"] in ("review_code", "review_ux"):
+                if not complete:
+                    raise ValueError(f"Review task {t['id']} needs its dispatch snapshot in the export")
+                entry["completedRepairDecisionIds"] = [
+                    d["id"] for d in before.get("reviewDecisions", []) if d.get("result")]
+            assignments.append(entry)
         for task in assignments:
             if task.get("evidence"):
                 task["evidence"] = copy.deepcopy({k: task["evidence"][k] for k in ("acceptedAt", "payload", "payloadDigest")})

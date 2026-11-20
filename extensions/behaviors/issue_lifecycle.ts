@@ -16,8 +16,10 @@ import {
   agentMethods,
   AgentTaskSchema,
   assertNoPendingAgent,
+  type IssueAgentContext,
   RecoverySchema,
 } from "./_lib/issue_agents.ts";
+import { compactIssue } from "./_lib/issue_compaction.ts";
 import {
   type DecisionAction,
   DecisionInputSchemas,
@@ -58,6 +60,7 @@ import {
   withIssue,
 } from "./_lib/runtime.ts";
 import { RoundRecord } from "./_lib/review_continuity.ts";
+import { handoffStateFields } from "./_lib/handoff_next.ts";
 import {
   loadVerificationSettings,
   runVerification,
@@ -187,7 +190,7 @@ function recordedTransition<K extends keyof typeof ActionSchemas>(
 /** Local behavior; the issue's state and every decision are versioned Swamp data. */
 export const behavior = {
   type: "@yinz/issue-lifecycle",
-  version: "2026.11.18.1",
+  version: "2026.11.20.1",
   globalArguments: GlobalArgsSchema,
   resources: {
     rounds: {
@@ -242,6 +245,13 @@ export const behavior = {
       lifetime: "infinite",
       garbageCollection: 1000,
     },
+    snapshot: {
+      description:
+        "Lifecycle state a pane task was dispatched against, named snapshot-<sha256> by its canonical digest",
+      schema: StateSchema,
+      lifetime: "infinite",
+      garbageCollection: 1,
+    },
     event: {
       description: "Immutable decision and state snapshot",
       schema: EventSchema,
@@ -265,9 +275,31 @@ export const behavior = {
       garbageCollection: 1000,
       streaming: true,
     },
+    "review-diff": {
+      description:
+        "A review diff body stored once, named review-diff-<sha256> by the digest of its decoded bytes",
+      contentType: "application/octet-stream",
+      lifetime: "infinite",
+      garbageCollection: 1,
+    },
   },
   methods: {
     drive: createDriveMethod(),
+    compact: {
+      kind: "update",
+      description:
+        "Move review diff bodies and lifecycle snapshots out of an issue's records, preserving every fingerprint; idempotent",
+      arguments: Empty,
+      execute: (_args: unknown, context: IssueAgentContext) =>
+        withIssue(
+          context,
+          () =>
+            compactIssue(context, {
+              id: () => crypto.randomUUID(),
+              now: () => new Date().toISOString(),
+            }),
+        ),
+    },
     closeout: {
       kind: "update",
       description:
@@ -672,7 +704,7 @@ export const behavior = {
               decision: "complete",
               reason,
               createdAt: new Date().toISOString(),
-              state: StateSchema.parse(next),
+              ...handoffStateFields(StateSchema.parse(next)),
               presentation: reason,
             });
             return { dataHandles: [...filed, ...saved.dataHandles, handoff] };

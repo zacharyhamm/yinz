@@ -80,6 +80,25 @@ class ContinuityReportTests(unittest.TestCase):
         self.assertEqual(len(result["issues"][0]["assignments"]), 1)
         self.assertEqual(len(result["issues"][0]["sourceRefs"]), 3)
 
+    def test_compact_tasks_resolve_their_dispatch_snapshot_from_the_export(self):
+        snapshot = {"issue": {"digest": "a"}, "rollbackId": "r", "reviewDecisions": [{"id": "done", "result": {"commit": "c"}}, {"id": "open"}]}
+        task = {"id": "review", "role": "review_code", "createdAt": "2026-11-01T01:00:00Z", "beforeDigest": "f" * 64}
+        state = {"phase": "done", "issue": {"digest": "a"}}
+
+        def export(*extra):
+            return {"limited": False, "results": [
+                {"name": "agent-task", "specName": "agent-task", "modelName": "issue", "version": 1, "createdAt": task["createdAt"], "content": task},
+                *extra,
+                {"name": "state", "specName": "state", "modelName": "issue", "version": 1, "createdAt": "2026-11-01T02:00:00Z", "content": state}]}
+
+        record = {"name": "snapshot-" + "f" * 64, "specName": "snapshot", "modelName": "issue", "version": 1,
+                  "createdAt": task["createdAt"], "content": snapshot}
+        assignment = normalize(export(record))["issues"][0]["assignments"][0]
+        self.assertEqual((assignment["issueDigest"], assignment["rollbackId"], assignment["completedRepairDecisionIds"]),
+                         ("a", "r", ["done"]))
+        with self.assertRaisesRegex(ValueError, "dispatch snapshot"):
+            normalize(export())
+
     def test_reserved_assignment_carries_original_round_before_journal_projection(self):
         for version in (2, 3):
             with self.subTest(contractVersion=version):

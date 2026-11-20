@@ -19,6 +19,7 @@ import {
   describeMergeFailure,
   implementationReviewFingerprint,
   initialPlanning,
+  type LifecycleState,
   planningGeneration,
   priorImplementationFindings,
   readAgenda,
@@ -28,6 +29,7 @@ import {
   reviewScope,
   RollbackInputSchema,
   rollbackState,
+  stateDigest,
   StateSchema,
   transition,
   UserRequestSchema,
@@ -83,10 +85,17 @@ import {
 } from "./yinz_agent.ts";
 
 import {
+  baselineIdentity,
   ContinuityContext,
   GitBaseline,
   RoundRecord,
 } from "./review_continuity.ts";
+import {
+  baselineBytes,
+  compactBaseline,
+  type DiffStore,
+  swampDiffStore,
+} from "./review_diffs.ts";
 
 const Role = RoleSchema;
 export const AgentInputSchema = z.object({
@@ -127,6 +136,19 @@ const DiscardArgs = z.object({
   confirmedStopped: z.literal(true).optional(),
 }).strip();
 
+const Digest = z.string().regex(/^[0-9a-f]{64}$/);
+/**
+ * An accepted receipt as a task keeps it: the resulting state is identified by
+ * digest. Receipts saved before snapshots moved out of tasks embed `next`.
+ */
+export const TaskEvidenceSchema = EvidenceReceiptSchema.extend({
+  next: StateSchema.optional(),
+  nextDigest: Digest.optional(),
+}).refine(
+  (receipt) =>
+    (receipt.next === undefined) !== (receipt.nextDigest === undefined),
+  "A task receipt identifies its resulting state exactly once",
+);
 export const AgentTaskSchema = z.object({
   id: z.uuid(),
   behaviorName: z.string(),
@@ -140,8 +162,14 @@ export const AgentTaskSchema = z.object({
   assignmentFiles: AssignmentFilesSchema.optional(),
   continuity: ContinuityContext.optional(),
   round: RoundRecord.optional(),
-  before: StateSchema,
+  // The lifecycle state the task was dispatched against. New tasks keep only
+  // its canonical digest; the state itself is the `snapshot-<digest>` resource.
+  // Tasks saved before snapshots moved out keep `before` (and `next`) inline.
+  before: StateSchema.optional(),
+  beforeDigest: Digest.optional(),
   next: StateSchema.optional(),
+  // The imported state, by digest; set once the accepted receipt is applying.
+  nextDigest: Digest.optional(),
   createdAt: z.iso.datetime(),
   reviewCommit: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/).optional(),
   status: z.enum([
@@ -173,14 +201,102 @@ export const AgentTaskSchema = z.object({
   lastError: z.string().optional(),
   cleanup: z.enum(["pending", "done"]).optional(),
   submission: EvidenceTargetSchema.optional(),
-  evidence: EvidenceReceiptSchema.optional(),
+  evidence: TaskEvidenceSchema.optional(),
   continuation: z.object({
     id: z.uuid(),
     request: UserRequestSchema,
     prompt: z.string().min(1),
   }).strict().optional(),
-}).strict();
+}).strict().refine(
+  (task) => task.before !== undefined || task.beforeDigest !== undefined,
+  "A task identifies the lifecycle state it was dispatched against",
+);
 type Task = z.infer<typeof AgentTaskSchema>;
+type State = LifecycleState;
+/** A task with its dispatch snapshot loaded. */
+export type HydratedTask = Task & { before: State };
+
+/** The saved lifecycle snapshot a task names by digest. */
+export function snapshotName(digest: string): string {
+  return `snapshot-${digest}`;
+}
+/** Saves a dispatch snapshot once under its canonical digest. */
+export async function saveSnapshot(
+  context: Pick<Context, "writeResource">,
+  state: State,
+): Promise<string> {
+  const parsed = StateSchema.parse(state);
+  const digest = stateDigest(parsed);
+  await context.writeResource("snapshot", snapshotName(digest), parsed);
+  return digest;
+}
+export async function loadSnapshot(
+  context: Pick<Context, "readResource">,
+  digest: string,
+): Promise<State> {
+  const raw = await context.readResource(snapshotName(digest));
+  if (raw == null) {
+    throw new Error(
+      `Lifecycle snapshot ${digest} is missing; inspect the task before recovery`,
+    );
+  }
+  const state = StateSchema.parse(raw);
+  if (stateDigest(state) !== digest) {
+    throw new Error(`Lifecycle snapshot ${digest} does not match its digest`);
+  }
+  return state;
+}
+/** The digest of the state a task was dispatched against. */
+export function taskBeforeDigest(task: Task): string {
+  return task.beforeDigest ?? stateDigest(task.before!);
+}
+/** The digest of the state a task imported, once known. */
+export function taskNextDigest(task: Task): string | undefined {
+  return task.nextDigest ?? (task.next ? stateDigest(task.next) : undefined);
+}
+/** The task with its dispatch snapshot, loaded by digest when not inline. */
+export async function withBefore(
+  context: Pick<Context, "readResource">,
+  task: Task,
+): Promise<HydratedTask> {
+  if (task.before) return task as HydratedTask;
+  return { ...task, before: await loadSnapshot(context, task.beforeDigest!) };
+}
+/** A receipt without its embedded resulting state. */
+export function taskReceipt(receipt: z.infer<typeof TaskEvidenceSchema>) {
+  if (receipt.next === undefined) return receipt;
+  const { next, ...rest } = receipt;
+  return { ...rest, nextDigest: stateDigest(next) };
+}
+/**
+ * What a task persists anywhere (agent-task, driver, recovery, handoff): a new
+ * task names its snapshots by digest; a legacy task keeps its inline states.
+ */
+export function persistedTask(task: Task): Task {
+  const { before, next, ...rest } = task;
+  return AgentTaskSchema.parse({
+    ...rest,
+    ...(task.beforeDigest ? {} : { before }),
+    ...(next === undefined || task.nextDigest ? {} : { next }),
+  });
+}
+/** The issue and plan version a task was dispatched for. */
+async function taskBasis(context: Pick<Context, "readResource">, task: Task) {
+  if (task.before) {
+    return {
+      issueDigest: task.before.issue.digest,
+      planVersion: task.before.planVersion,
+    };
+  }
+  if (task.continuity) {
+    return {
+      issueDigest: task.continuity.issueDigest,
+      planVersion: task.continuity.planVersion,
+    };
+  }
+  const before = await loadSnapshot(context, task.beforeDigest!);
+  return { issueDigest: before.issue.digest, planVersion: before.planVersion };
+}
 const RestartInput = Input.extend({
   taskId: z.uuid(),
   request: UserRequestSchema,
@@ -237,7 +353,9 @@ export interface IssueAgentDependencies {
   /** The control checkout's baseline checks and rebase-probe switch. */
   verificationSettings: (context: Context) => Promise<VerificationSettings>;
   /** Publishes a contract-3 task's assignment files before any prompt is sent. */
-  publishAssignment: (task: Task) => Promise<void>;
+  publishAssignment: (task: HydratedTask, diffs: DiffStore) => Promise<void>;
+  /** Content-addressed review diff bodies; defaults to the issue's Swamp files. */
+  diffStore?: (context: IssueAgentContext) => DiffStore;
   /** Abortable delay between bounded automatic recovery attempts. */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   /** Monotonic milliseconds for recovery budgets. */
@@ -274,7 +392,7 @@ export const defaultDependencies: IssueAgentDependencies = {
   submissionPreflight,
   verificationSettings: (context) =>
     loadVerificationSettings(context, gitOperation),
-  publishAssignment: (task) => {
+  publishAssignment: (task, diffs) => {
     if (!task.assignmentFiles || !task.submission) {
       return Promise.reject(
         new Error("Task has no assignment files or submission target"),
@@ -284,8 +402,9 @@ export const defaultDependencies: IssueAgentDependencies = {
       ...task,
       assignmentFiles: task.assignmentFiles,
       submission: task.submission,
-    });
+    }, diffs);
   },
+  diffStore: swampDiffStore,
   sleep: abortableSleep,
   monotonicNow: () => performance.now(),
 };
@@ -314,7 +433,7 @@ export async function assertNoPendingAgent(context: Context) {
     if (
       saved && saved.assignment.id !== task?.id &&
       saved.previousAssignmentId === task?.id &&
-      JSON.stringify(saved.assignment.before) === JSON.stringify(state)
+      taskBeforeDigest(saved.assignment) === stateDigest(state)
     ) {
       throw new Error(
         "Reserved pane assignment is unresolved; resume drive or explicitly roll back/restart",
@@ -342,12 +461,19 @@ async function assertNoPendingRecovery(context: Context) {
   }
 }
 
+function diffs(
+  context: IssueAgentContext,
+  dependencies: IssueAgentDependencies,
+) {
+  return (dependencies.diffStore ?? swampDiffStore)(context);
+}
+
 async function saveTask(context: Context, task: Task) {
   await invalidateHandoff(context);
   const saved = await context.writeResource(
     "agent-task",
     "agent-task",
-    AgentTaskSchema.parse(task),
+    persistedTask(task),
   );
   await appendReservedRound(context, task);
   await recordRoundOutcomes(context, task);
@@ -654,13 +780,17 @@ async function completeTask(context: IssueAgentContext, task: Task) {
   };
 }
 
-function taskAssignment(context: IssueAgentContext, task: Task) {
+async function taskAssignment(context: IssueAgentContext, task: Task) {
   if (!task.submission) {
     throw new Error(
       "Legacy task requires a typed submission supplement; use continue-agent on its original worker",
     );
   }
-  const core = assignmentCore(context, task, task.submission.controlDir);
+  const core = assignmentCore(
+    context,
+    await withBefore(context, task),
+    task.submission.controlDir,
+  );
   return AssignmentSchema.parse({
     ...core,
     digest: task.submission.assignmentDigest,
@@ -702,7 +832,7 @@ async function evidenceOperation(
 
 /** The validated accepted receipt for this exact assignment, or an error naming why not. */
 export async function acceptedEvidence(context: IssueAgentContext, task: Task) {
-  const assignment = taskAssignment(context, task);
+  const assignment = await taskAssignment(context, task);
   const bytes = await context.dataRepository.getContent(
     "@yinz/issue-evidence",
     task.submission!.behaviorName,
@@ -774,7 +904,7 @@ async function validateResultFreshness(
       "Agenda requirements changed while the pane task ran; its result is stale",
     );
   }
-  if (canonical(current) !== canonical(task.before)) {
+  if (stateDigest(current) !== taskBeforeDigest(task)) {
     throw new Error(
       "Lifecycle changed while the pane task ran; inspect its result before recording new evidence",
     );
@@ -828,10 +958,10 @@ async function applyResult(
     !task.submission && task.status === "applying" && task.next
   ) {
     if (
-      canonical(task.next) !== canonical(task.before) &&
-      canonical(current) === canonical(task.next)
+      taskNextDigest(task) !== taskBeforeDigest(task) &&
+      stateDigest(current) === taskNextDigest(task)
     ) return completeTask(context, task);
-    if (canonical(current) !== canonical(task.before)) {
+    if (stateDigest(current) !== taskBeforeDigest(task)) {
       throw new Error(
         "Lifecycle changed during legacy evidence reconciliation",
       );
@@ -873,7 +1003,8 @@ async function applyResult(
     canonical(current) === canonical(receipt.next);
   if (
     task.status === "applying" && task.evidence &&
-    canonical(task.evidence) === canonical(receipt) && projected
+    canonical(taskReceipt(task.evidence)) === canonical(taskReceipt(receipt)) &&
+    projected
   ) {
     return completeTask(context, task);
   }
@@ -884,11 +1015,13 @@ async function applyResult(
     dependencies,
     evidenceCommit(task, receipt),
   );
+  // The receipt's state is saved as the lifecycle state; the task names it.
+  const { next: _legacyNext, ...pending } = task;
   const applying: Task = {
-    ...task,
+    ...pending,
     status: "applying",
-    next: receipt.next,
-    evidence: receipt,
+    nextDigest: stateDigest(receipt.next),
+    evidence: taskReceipt(receipt),
     ...(message === undefined ? {} : { message }),
   };
   await saveTask(context, applying);
@@ -904,13 +1037,17 @@ async function applyResult(
   return handles;
 }
 
+/**
+ * A new assignment for the current state. The returned task carries `before`
+ * in memory for dispatch; it persists only the snapshot's digest.
+ */
 export async function prepareTask(
   context: IssueAgentContext,
   args: z.infer<typeof Input>,
   state: z.infer<typeof StateSchema>,
   dependencies: IssueAgentDependencies,
   allowCompleted = false,
-): Promise<Task> {
+): Promise<HydratedTask> {
   if (
     state.closeout?.authorizedRequest &&
     (state.implementation?.worktree ?? state.workerWorktree) ===
@@ -1043,6 +1180,7 @@ export async function prepareTask(
     ...(args.request ? { request: args.request } : {}),
     config,
     before: state,
+    beforeDigest: await saveSnapshot(context, state),
     ...(commit ? { reviewCommit: commit } : {}),
     contractVersion: 3 as const,
     createdAt: dependencies.now(),
@@ -1050,6 +1188,7 @@ export async function prepareTask(
     continuity: undefined as z.infer<typeof ContinuityContext> | undefined,
   };
   let baseline: z.infer<typeof GitBaseline> | undefined;
+  let assignmentDiffs: Awaited<ReturnType<typeof baselineBytes>> | undefined;
   if (
     state.implementation &&
     [
@@ -1074,11 +1213,16 @@ export async function prepareTask(
         action: "review-context",
         worktree: cwd,
         head: commit ?? repo.head,
+        // The helper compares commit identities; diff bodies stay out of line.
         ...(priorReview
-          ? { previous: priorReview.baseline ?? { head: priorReview.commit } }
+          ? {
+            previous: baselineIdentity(
+              priorReview.baseline ?? { head: priorReview.commit },
+            ),
+          }
           : {}),
         ...(args.role === "review_ux" && state.codeReview?.baseline
-          ? { baseline: state.codeReview.baseline }
+          ? { baseline: baselineIdentity(state.codeReview.baseline) }
           : {}),
       }, `review-baseline-${identity.id}`),
     );
@@ -1090,6 +1234,9 @@ export async function prepareTask(
     if (baseline.head !== (commit ?? repo.head)) {
       throw new Error("Captured review baseline differs from dispatch HEAD");
     }
+    // Store each diff body once; the task, its reviews and state reference it.
+    assignmentDiffs = await baselineBytes(undefined, baseline);
+    baseline = await compactBaseline(diffs(context, dependencies), baseline);
   }
   identity.continuity = ContinuityContext.parse({
     version: 1,
@@ -1128,7 +1275,7 @@ export async function prepareTask(
   );
   const assignmentFiles = assignmentManifest(
     join(commonDir, "yinz-lifecycle", "assignments", identity.id),
-    assignmentFileContents({ ...identity, submission }),
+    assignmentFileContents({ ...identity, submission }, assignmentDiffs),
   );
   const prompt = taskPrompt(
     args.role,
@@ -1144,7 +1291,7 @@ export async function prepareTask(
       files: assignmentFiles,
     },
   );
-  const task: Task = {
+  const task: HydratedTask = {
     ...identity,
     submission,
     assignmentFiles,
@@ -1159,7 +1306,7 @@ export async function prepareTask(
 async function createRound(
   context: Context,
   task: Pick<
-    Task,
+    HydratedTask,
     "id" | "role" | "before" | "createdAt" | "request" | "continuity"
   >,
 ) {
@@ -1288,9 +1435,15 @@ async function recordRoundOutcomes(context: Context, task: Task) {
   const record = journal.records.find((r) => r.assignmentId === task.id);
   if (!record) return;
   let changed = false;
+  // Loaded only when a correction is not yet recorded.
+  let snapshot: State | undefined;
+  const before = async () =>
+    snapshot ??= (await withBefore(context, task)).before;
   for (const outcome of payload.evidence.priorFindings ?? []) {
     if (outcome.outcome !== "persists") continue;
-    const fix = task.before.reviewDecisions?.findLast((d) =>
+    const source = `review:${task.id}:${evidenceDigest(outcome)}`;
+    if (record.corrections.some((c) => c.source === source)) continue;
+    const fix = (await before()).reviewDecisions?.findLast((d) =>
       d.result &&
       d.repair.some((r) =>
         r.role === outcome.finding.role &&
@@ -1298,8 +1451,6 @@ async function recordRoundOutcomes(context: Context, task: Task) {
       )
     );
     if (!fix) continue;
-    const source = `review:${task.id}:${evidenceDigest(outcome)}`;
-    if (record.corrections.some((c) => c.source === source)) continue;
     record.corrections.push({
       at: task.evidence!.acceptedAt,
       source,
@@ -1312,16 +1463,17 @@ async function recordRoundOutcomes(context: Context, task: Task) {
     });
     changed = true;
   }
-  const prior = priorImplementationFindings(task.before);
+  let prior: ReturnType<typeof priorImplementationFindings> | undefined;
   for (const finding of payload.evidence.findings) {
+    if (finding.resolution) continue;
+    const source = `review:${task.id}:new:${evidenceDigest(finding)}`;
+    if (record.corrections.some((c) => c.source === source)) continue;
+    prior ??= priorImplementationFindings(await before());
     if (
-      finding.resolution ||
       prior.some((p) =>
         p.ref.role === payload.role && p.finding.id === finding.id
       )
     ) continue;
-    const source = `review:${task.id}:new:${evidenceDigest(finding)}`;
-    if (record.corrections.some((c) => c.source === source)) continue;
     record.corrections.push({
       at: task.evidence!.acceptedAt,
       source,
@@ -1351,7 +1503,7 @@ export async function runTask(
     if (task.submission) {
       await dependencies.submissionPreflight(context);
       await evidenceOperation(context, task, "open", {
-        assignment: taskAssignment(context, task),
+        assignment: await taskAssignment(context, task),
       });
     }
     if (!task.config.control) {
@@ -1396,7 +1548,12 @@ export async function runTask(
         "Contract-3 task has no assignment files; inspect, then explicitly restart the worker",
       );
     }
-    if (task.assignmentFiles) await dependencies.publishAssignment(task);
+    if (task.assignmentFiles) {
+      await dependencies.publishAssignment(
+        await withBefore(context, task),
+        diffs(context, dependencies),
+      );
+    }
     const continuing = recover && task.continuation;
     const outcome = await context.runModel({
       modelType: "@yinz/agent",
@@ -1456,12 +1613,12 @@ export async function finishRecovery(
       await context.writeResource(
         "agent-task",
         `agent-task-${recovery.task.id}`,
-        {
+        persistedTask({
           ...recovery.task,
           status: "superseded",
           cleanup: undefined,
           supersededBy: recovery.id,
-        },
+        }),
       ),
     );
   }
@@ -1549,7 +1706,9 @@ async function beginRecovery(
     ["plan_review_fixes", "implement_review_fixes"].includes(restart.role);
   const selected = repairRestart
     ? activeReviewFix(source) ??
-      (task?.role === restart.role ? activeReviewFix(task.before) : undefined)
+      (task?.role === restart.role
+        ? activeReviewFix((await withBefore(context, task)).before)
+        : undefined)
     : undefined;
   if (restart?.role === "plan_review_fixes") {
     throw new Error(
@@ -1599,11 +1758,10 @@ async function beginRecovery(
       reservations.revisionAuthorization?.assignment,
     ]
   ) {
-    if (
-      previous?.request &&
-      previous.before.issue.digest === before.issue.digest
-    ) {
-      recordFeedback(next, previous.request, previous.before.planVersion);
+    if (!previous?.request) continue;
+    const basis = await taskBasis(context, previous);
+    if (basis.issueDigest === before.issue.digest) {
+      recordFeedback(next, previous.request, basis.planVersion);
     }
   }
   recordFeedback(next, input.request, next.planVersion);
@@ -1625,8 +1783,8 @@ async function beginRecovery(
     status: "pending",
     before,
     next,
-    task,
-    replacement,
+    ...(task ? { task: persistedTask(task) } : {}),
+    ...(replacement ? { replacement: persistedTask(replacement) } : {}),
     restart,
     ...(source !== before ? { reconciled: source } : {}),
   });
@@ -1654,7 +1812,8 @@ async function finishDiscard(context: IssueAgentContext, task: Task) {
   if (!task.discard) throw new Error("No pending discard intent");
   const current = await loadState(context);
   if (
-    task.status === "completed" || canonical(current) !== canonical(task.before)
+    task.status === "completed" ||
+    stateDigest(current) !== taskBeforeDigest(task)
   ) {
     throw new Error(
       "Pane evidence may already be applied; cannot finish pending discard",
@@ -1741,14 +1900,15 @@ export function createAgentMethods(
               : runTask(context, task, dependencies, true);
           }
           const current = await loadState(context);
-          if (canonical(current) !== canonical(task.before)) {
+          if (stateDigest(current) !== taskBeforeDigest(task)) {
             throw new Error(
               "Lifecycle changed; cannot continue a stale submission assignment",
             );
           }
+          const nextDigest = taskNextDigest(task);
           if (
-            task.status === "applying" && task.next &&
-            canonical(task.next) !== canonical(task.before)
+            task.status === "applying" && nextDigest &&
+            nextDigest !== taskBeforeDigest(task)
           ) {
             throw new Error(
               "Resume the existing typed projection before continuing",
@@ -1766,14 +1926,18 @@ export function createAgentMethods(
                 behaviorName: `issue-evidence-${task.id}`,
                 controlDir,
                 assignmentDigest: evidenceDigest(
-                  assignmentCore(context, task, controlDir),
+                  assignmentCore(
+                    context,
+                    await withBefore(context, task),
+                    controlDir,
+                  ),
                 ),
               },
             };
           }
           await saveTask(context, task);
           await evidenceOperation(context, task, "open", {
-            assignment: taskAssignment(context, task),
+            assignment: await taskAssignment(context, task),
           });
           // A prior continuation may already have committed evidence despite a
           // lost CLI response. Never send another prompt before inspecting it.
@@ -1799,7 +1963,7 @@ export function createAgentMethods(
                 "Finish submission of the findings already established in this conversation. Preserve this task and its investigation; do not repeat the review or edit source or Git refs.",
                 args.request,
                 submissionInstructions(
-                  task,
+                  await withBefore(context, task),
                   task.submission!,
                   task.assignmentFiles,
                 ),
@@ -1807,7 +1971,12 @@ export function createAgentMethods(
             };
           task = { ...task, continuation };
           await saveTask(context, task);
-          if (task.assignmentFiles) await dependencies.publishAssignment(task);
+          if (task.assignmentFiles) {
+            await dependencies.publishAssignment(
+              await withBefore(context, task),
+              diffs(context, dependencies),
+            );
+          }
           const outcome = await context.runModel({
             definition: task.behaviorName,
             method: "continue",
@@ -2035,12 +2204,17 @@ export function createAgentMethods(
             ].join("\n"));
           }
           const current = await loadState(context);
-          if (JSON.stringify(current) !== JSON.stringify(task.before)) {
+          if (stateDigest(current) !== taskBeforeDigest(task)) {
             const now = current as Record<string, unknown>;
-            const before = task.before as Record<string, unknown>;
-            const changed = [
-              ...new Set([...Object.keys(now), ...Object.keys(before)]),
-            ].filter((key) => canonical(now[key]) !== canonical(before[key]));
+            const before = await withBefore(context, task).then(
+              (hydrated) => hydrated.before as Record<string, unknown>,
+              () => undefined,
+            );
+            const changed = before
+              ? [
+                ...new Set([...Object.keys(now), ...Object.keys(before)]),
+              ].filter((key) => canonical(now[key]) !== canonical(before[key]))
+              : ["(dispatch snapshot unavailable)"];
             throw new Error(
               `Pane evidence may already be applied: lifecycle fields changed since ${who} was dispatched (${
                 changed.length ? changed.join(", ") : "field order only"

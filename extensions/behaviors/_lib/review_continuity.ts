@@ -30,11 +30,29 @@ export const PriorFindingOutcome = z.object({
   rationale: Text,
   evidence: z.array(Text).min(1),
 }).strict();
+/**
+ * A diff body stored once, out of line, as the issue behavior's
+ * `review-diff-<sha256>` file. `sha256` and `bytes` describe the decoded diff
+ * bytes; `encoding` is how the Git helper encoded them inline, so the inline
+ * form is exactly recoverable.
+ */
+export const DiffRef = z.object({
+  sha256: Digest,
+  bytes: z.number().int().nonnegative(),
+  encoding: z.enum(["utf8", "base64"]),
+}).strict();
+export type DiffRef = z.infer<typeof DiffRef>;
+/**
+ * Endpoints and diffs a review covers. Records saved before diffs moved out of
+ * line carry the bodies inline (`featureDiff`, `delta`); new records carry
+ * `featureDiffRef`/`deltaRef`. Existing keys keep their order: review
+ * fingerprints hash this object's JSON.
+ */
 export const GitBaseline = z.object({
   main: ObjectId,
   mergeBase: ObjectId,
   head: ObjectId,
-  featureDiff: z.string(),
+  featureDiff: z.string().optional(),
   featureDiffEncoding: z.enum(["utf8", "base64"]).optional(),
   previousHead: ObjectId.optional(),
   delta: z.string().optional(),
@@ -46,7 +64,36 @@ export const GitBaseline = z.object({
   baselineComparison: z.enum(["initial", "same", "changed", "unknown"])
     .optional(),
   limitations: z.array(Text),
-}).strict();
+  featureDiffRef: DiffRef.optional(),
+  deltaRef: DiffRef.optional(),
+}).strict().refine(
+  (b) => (b.featureDiff === undefined) !== (b.featureDiffRef === undefined),
+  "A baseline carries its feature diff either inline or by reference",
+).refine(
+  (b) => b.deltaRef === undefined || b.featureDiffRef !== undefined,
+  "A baseline references its delta only alongside its feature diff",
+).refine(
+  (b) =>
+    b.featureDiffRef === undefined ||
+    (b.featureDiffEncoding === undefined && b.delta === undefined &&
+      b.deltaEncoding === undefined),
+  "A referenced baseline keeps no inline diff fields",
+);
+export type GitBaseline = z.infer<typeof GitBaseline>;
+/** Whether a baseline still embeds its diff bodies (saved before compaction). */
+export function isInlineBaseline(baseline: GitBaseline): boolean {
+  return baseline.featureDiff !== undefined;
+}
+/** The commit identity the Git helper compares; never the diff bodies. */
+export function baselineIdentity(baseline: GitBaseline | { head: string }) {
+  return "main" in baseline
+    ? {
+      main: baseline.main,
+      mergeBase: baseline.mergeBase,
+      head: baseline.head,
+    }
+    : { head: baseline.head };
+}
 /**
  * What an implementation review covers. A delta re-review checks the repair
  * diff from `base` (the last same-role reviewed commit) against the listed prior

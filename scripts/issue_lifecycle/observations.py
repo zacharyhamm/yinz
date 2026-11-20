@@ -1,5 +1,39 @@
 """Read-only consistency diagnostics. These observations never authorize import."""
+import hashlib
 import json
+
+
+def state_digest(state):
+    """The controller's canonical state digest: sorted keys, compact JSON, SHA-256."""
+    text = json.dumps(state, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def compact_submission(submission):
+    """A submission as status reports it: its lifecycle states replaced by digests.
+
+    Assignments and receipts saved before compaction embed whole states; the
+    evidence record itself is never rewritten.
+    """
+    if not isinstance(submission, dict):
+        return submission
+    result = dict(submission)
+    for key, field in (("assignment", "before"), ("receipt", "next")):
+        record = result.get(key)
+        if isinstance(record, dict) and field in record:
+            record = dict(record)
+            record[f"{field}Digest"] = state_digest(record.pop(field))
+            result[key] = record
+    return result
+
+
+def dispatched_unchanged(state, task):
+    """Whether the lifecycle still equals the state the task was dispatched against."""
+    if state is None:
+        return False
+    if task.get("beforeDigest"):
+        return state_digest(state) == task["beforeDigest"]
+    return json.dumps(state, sort_keys=True) == json.dumps(task.get("before"), sort_keys=True)
 
 
 def _pane_background(child):
@@ -362,8 +396,7 @@ def task_recovery(state, task, child, submission, rollback, diagnostics):
                                              ("completedWorker", "completed_unusable"))
                       if _all_met(conditions[key])), None)
         # discard-agent refuses once lifecycle fields changed since dispatch.
-        unchanged = state is not None and \
-            json.dumps(state, sort_keys=True) == json.dumps(task.get("before"), sort_keys=True)
+        unchanged = dispatched_unchanged(state, task)
         # Only a rejected launch is proven by durable records alone; the other bases
         # are verified by discard-agent's own fresh observation.
         eligible = False if not basis or not unchanged else True if basis == "rejected_launch" else "unverified"

@@ -23,7 +23,8 @@ export async function notifyHandoff(
   if (!label) return;
   try {
     if (!control) throw new Error("Control pane identity is unavailable");
-    const issue = handoff.state.issue;
+    const issue = handoff.lifecycle?.issue ?? handoff.state?.issue;
+    if (!issue) throw new Error("Handoff names no issue");
     const reason = handoff.reason.replace(/\s+/g, " ").trim();
     const brief = reason.length > 240 ? `${reason.slice(0, 239)}…` : reason;
     const result = await run(

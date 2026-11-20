@@ -1,6 +1,6 @@
 /** Task-specific Swamp submission authority, independent of the waiting controller. */
 import { z } from "npm:zod@4.6.7";
-import { readAgenda, StateSchema } from "./_lib/lifecycle.ts";
+import { readAgenda, stateDigest, StateSchema } from "./_lib/lifecycle.ts";
 import { type Context, inspect } from "./_lib/runtime.ts";
 import {
   type Assignment,
@@ -48,7 +48,9 @@ const ParentTaskSchema = z.object({
   contractVersion: AssignmentSchema.shape.contractVersion,
   continuity: AssignmentSchema.shape.continuity,
   round: AssignmentSchema.shape.round,
-  before: StateSchema,
+  // Tasks saved before snapshots moved out embed `before`; new ones name it.
+  before: StateSchema.optional(),
+  beforeDigest: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   prompt: z.string().min(1),
   promptDigest: z.string(),
   request: z.string().optional(),
@@ -320,12 +322,19 @@ async function parentTaskWithIdentity(
   const task = ParentTaskSchema.parse(
     await parentResource(context, assignment, "agent-task"),
   );
+  // A task that names its dispatch snapshot by digest binds the assignment's.
+  if (
+    !task.before &&
+    (!task.beforeDigest || stateDigest(assignment.before) !== task.beforeDigest)
+  ) {
+    throw new Error("Submission belongs to a stale or different assignment");
+  }
   const core = assignmentCore(
     {
       modelId: assignment.parentId,
       definition: { name: assignment.parentName },
     },
-    task,
+    { ...task, before: task.before ?? assignment.before },
     assignment.controlDir,
   );
   if (
@@ -343,7 +352,7 @@ async function parentTaskWithIdentity(
 
 export const behavior = {
   type: "@yinz/issue-evidence",
-  version: "2026.11.18.1",
+  version: "2026.11.20.1",
   globalArguments: z.object({}).strict(),
   resources: {
     submission: {

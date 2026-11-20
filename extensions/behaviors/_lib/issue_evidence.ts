@@ -24,11 +24,13 @@ import {
 } from "./lifecycle.ts";
 import {
   ContinuityContext,
+  isInlineBaseline,
   RoundRecord,
   validateAdvisory,
 } from "./review_continuity.ts";
 import { AgentConfigSchema } from "./yinz_agent.ts";
 import type { AssignmentFiles } from "./assignment_files.ts";
+import { canonical, evidenceDigest } from "./canonical.ts";
 
 const Digest = z.string().regex(/^[0-9a-f]{64}$/);
 const Commit = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
@@ -196,21 +198,7 @@ export const SubmissionSchema = z.discriminatedUnion("status", [
   }).strict(),
 ]);
 
-/** Sort object keys only; array ordering belongs to the submitted evidence. */
-export function canonical(value: unknown): string {
-  return JSON.stringify(
-    value,
-    (_key, item) =>
-      item !== null && typeof item === "object" && !Array.isArray(item)
-        ? Object.fromEntries(
-          Object.entries(item).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
-        )
-        : item,
-  );
-}
-export function evidenceDigest(value: unknown): string {
-  return createHash("sha256").update(canonical(value)).digest("hex");
-}
+export { canonical, evidenceDigest } from "./canonical.ts";
 /** Contracts 2 and 3 bind review continuity; 3 also delivers assignment files. */
 export const hasContinuityContract = (version?: number) =>
   version === 2 || version === 3;
@@ -252,30 +240,36 @@ export function assignmentCore(
 }
 /** Complete obligations; repeated historical diffs have exact saved-snapshot references. */
 export function reviewPacket(state: z.infer<typeof StateSchema>) {
+  let referenced = false;
   const review = (
     value: NonNullable<typeof state.codeReview | typeof state.uxReview>,
     source: string,
-  ) => ({
-    ...value,
-    sourceRef: `assignment.before.${source}`,
-    ...(value.baseline
-      ? {
-        baseline: {
-          ...value.baseline,
-          featureDiff: {
-            sourceRef: `assignment.before.${source}.baseline.featureDiff`,
+  ) => {
+    const baseline = value.baseline;
+    // Referenced diffs are already small; inline bodies become snapshot refs.
+    if (baseline && !isInlineBaseline(baseline)) referenced = true;
+    return {
+      ...value,
+      sourceRef: `assignment.before.${source}`,
+      ...(baseline && isInlineBaseline(baseline)
+        ? {
+          baseline: {
+            ...baseline,
+            featureDiff: {
+              sourceRef: `assignment.before.${source}.baseline.featureDiff`,
+            },
+            ...(baseline.delta !== undefined
+              ? {
+                delta: {
+                  sourceRef: `assignment.before.${source}.baseline.delta`,
+                },
+              }
+              : {}),
           },
-          ...(value.baseline.delta !== undefined
-            ? {
-              delta: {
-                sourceRef: `assignment.before.${source}.baseline.delta`,
-              },
-            }
-            : {}),
-        },
-      }
-      : {}),
-  });
+        }
+        : {}),
+    };
+  };
   const decisions = (state.reviewDecisions ?? []).map((decision, index) => ({
     ...decision,
     sourceRef: `assignment.before.reviewDecisions[${index}]`,
@@ -324,6 +318,13 @@ export function reviewPacket(state: z.infer<typeof StateSchema>) {
     lastFailure: state.lastFailure,
     limitations: [
       "Historical records are context, never current approval. Saved-snapshot sourceRef paths are retrievable from the assigned submission's content.assignment.before via its authorized data query. Historical diffs are referenced without truncation; the current baseline includes the complete feature diff. Failure log references retain complete output where summary lists are bounded.",
+      // Appended only for referenced baselines, so packets of assignments
+      // saved before diffs moved out of line keep their bound digests.
+      ...(referenced
+        ? [
+          "A baseline's featureDiffRef/deltaRef names a diff stored once by content: its sha256 and byte length describe the decoded diff, readable as the issue behavior's review-diff-<sha256> data. Your current baseline's diffs are delivered as assignment files.",
+        ]
+        : []),
     ],
   };
 }

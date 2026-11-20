@@ -3,7 +3,6 @@
  * reads for its task, derived only from the saved task. They live outside every
  * worktree under the Git common directory, and the prompt binds their manifest.
  */
-import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { z } from "npm:zod@4.6.7";
@@ -23,6 +22,8 @@ import {
   type RoleSchema,
   SubmitRoleSchemas,
 } from "./issue_evidence.ts";
+import { isInlineBaseline } from "./review_continuity.ts";
+import { baselineBytes, decodeDiff, type DiffStore } from "./review_diffs.ts";
 
 const Digest = z.string().regex(/^[0-9a-f]{64}$/);
 const File = z.object({
@@ -70,50 +71,54 @@ const encoder = new TextEncoder();
 function sha256(bytes: Uint8Array) {
   return createHash("sha256").update(bytes).digest("hex");
 }
-function diffBytes(text: string, encoding?: "utf8" | "base64") {
-  return encoding === "base64"
-    ? new Uint8Array(Buffer.from(text, "base64"))
-    : encoder.encode(text);
-}
 function pretty(value: unknown) {
   return encoder.encode(`${JSON.stringify(value, null, 2)}\n`);
 }
 
-/** The worker-facing baseline: diff bodies are replaced by their decoded files. */
-export function baselineView(
-  baseline: NonNullable<
-    NonNullable<AssignmentSource["continuity"]>["baseline"]
-  >,
-) {
+type Baseline = NonNullable<
+  NonNullable<AssignmentSource["continuity"]>["baseline"]
+>;
+/** Decoded diff bytes of one assignment's baseline. */
+export type AssignmentDiffs = { featureDiff: Uint8Array; delta?: Uint8Array };
+
+/**
+ * The worker-facing baseline: diff bodies are replaced by their decoded files.
+ * Inline and referenced baselines produce the same view.
+ */
+export function baselineView(baseline: Baseline) {
+  const describe = (
+    file: string,
+    ref: { sha256: string; bytes: number; encoding: "utf8" | "base64" },
+  ) => ({
+    file,
+    sha256: ref.sha256,
+    bytes: ref.bytes,
+    sourceEncoding: ref.encoding,
+  });
+  const inline = (text: string, encoding?: "utf8" | "base64") => {
+    const bytes = decodeDiff(text, encoding);
+    return {
+      sha256: sha256(bytes),
+      bytes: bytes.length,
+      encoding: encoding ?? "utf8",
+    };
+  };
   const {
     featureDiff,
     featureDiffEncoding,
     delta,
     deltaEncoding,
+    featureDiffRef,
+    deltaRef,
     ...rest
   } = baseline;
-  const feature = diffBytes(featureDiff, featureDiffEncoding);
-  const endpoint = delta === undefined
-    ? undefined
-    : diffBytes(delta, deltaEncoding);
+  const feature = featureDiffRef ?? inline(featureDiff!, featureDiffEncoding);
+  const endpoint = deltaRef ??
+    (delta === undefined ? undefined : inline(delta, deltaEncoding));
   return {
     ...rest,
-    featureDiff: {
-      file: FILE_NAMES.featureDiff,
-      sha256: sha256(feature),
-      bytes: feature.length,
-      sourceEncoding: featureDiffEncoding ?? "utf8",
-    },
-    ...(endpoint
-      ? {
-        delta: {
-          file: FILE_NAMES.delta,
-          sha256: sha256(endpoint),
-          bytes: endpoint.length,
-          sourceEncoding: deltaEncoding ?? "utf8",
-        },
-      }
-      : {}),
+    featureDiff: describe(FILE_NAMES.featureDiff, feature),
+    ...(endpoint ? { delta: describe(FILE_NAMES.delta, endpoint) } : {}),
   };
 }
 
@@ -232,9 +237,13 @@ export function evidenceTemplate(
   return JSON.parse(JSON.stringify({ role: task.role, evidence: evidence() }));
 }
 
-/** Exact file bytes, derived deterministically from the saved task. */
+/**
+ * Exact file bytes, derived deterministically from the saved task. A baseline
+ * whose diffs are stored by reference needs their resolved bytes in `diffs`.
+ */
 export function assignmentFileContents(
   task: AssignmentSource,
+  diffs?: AssignmentDiffs,
 ): Map<AssignmentFileKey, Uint8Array> {
   const continuity = task.continuity;
   if (!continuity) {
@@ -267,14 +276,34 @@ export function assignmentFileContents(
   );
   const baseline = continuity.baseline;
   if (baseline) {
-    contents.set("baseline", encoder.encode(canonical(baselineView(baseline))));
-    contents.set(
-      "featureDiff",
-      diffBytes(baseline.featureDiff, baseline.featureDiffEncoding),
-    );
-    if (baseline.delta !== undefined) {
-      contents.set("delta", diffBytes(baseline.delta, baseline.deltaEncoding));
+    const view = baselineView(baseline);
+    const bytes = isInlineBaseline(baseline)
+      ? {
+        featureDiff: decodeDiff(
+          baseline.featureDiff!,
+          baseline.featureDiffEncoding,
+        ),
+        ...(baseline.delta === undefined
+          ? {}
+          : { delta: decodeDiff(baseline.delta, baseline.deltaEncoding) }),
+      }
+      : diffs;
+    if (!bytes) {
+      throw new Error(
+        "Assignment baseline references stored diffs; resolve them before writing assignment files",
+      );
     }
+    // Delivered bytes always match the digests the baseline records.
+    if (
+      sha256(bytes.featureDiff) !== view.featureDiff.sha256 ||
+      (view.delta?.sha256 ?? undefined) !==
+        (bytes.delta ? sha256(bytes.delta) : undefined)
+    ) {
+      throw new Error("Assignment diffs do not match their baseline digests");
+    }
+    contents.set("baseline", encoder.encode(canonical(view)));
+    contents.set("featureDiff", bytes.featureDiff);
+    if (bytes.delta) contents.set("delta", bytes.delta);
   }
   return contents;
 }
@@ -327,7 +356,7 @@ async function publishFile(
   uid: number,
   name: string,
   expected: Expected,
-  produce: () => Uint8Array | undefined,
+  produce: () => Promise<Uint8Array | undefined> | Uint8Array | undefined,
 ) {
   const path = join(directory, name);
   let exists = true;
@@ -346,7 +375,7 @@ async function publishFile(
     );
   let bytes: Uint8Array | undefined;
   try {
-    bytes = produce();
+    bytes = await produce();
   } catch (error) {
     throw unreproducible(
       error instanceof Error ? error.message : String(error),
@@ -398,9 +427,11 @@ async function publishFile(
  * Publishes the saved task's assignment files before any prompt is delivered.
  * Idempotent: existing files must match the manifest exactly, and a missing file
  * is regenerated only when it reproduces byte for byte (otherwise fail closed).
+ * Referenced diffs are read from `diffs` by digest only when a file is missing.
  */
 export async function publishAssignmentFiles(
   task: { assignmentFiles: AssignmentFiles } & AssignmentSource,
+  diffs?: DiffStore,
 ): Promise<void> {
   const files = AssignmentFilesSchema.parse(task.assignmentFiles);
   const directory = files.directory;
@@ -431,8 +462,14 @@ export async function publishAssignmentFiles(
         `Assignment file ${name} is outside its assignment directory; refusing delivery`,
       );
     }
-    await publishFile(directory, info.uid, name, file, () => {
-      contents ??= assignmentFileContents(task);
+    await publishFile(directory, info.uid, name, file, async () => {
+      const baseline = task.continuity?.baseline;
+      contents ??= assignmentFileContents(
+        task,
+        baseline && !isInlineBaseline(baseline)
+          ? await baselineBytes(diffs, baseline)
+          : undefined,
+      );
       return contents.get(key);
     });
   }

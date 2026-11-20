@@ -127,6 +127,30 @@ else:
         self.assertEqual((recovery["kind"], recovery["command"]), ("finish_rollback", {"method": "drive", "input": {}}))
         self.assertFalse(recovery["requiresUserRequest"])
 
+    def test_status_identifies_a_compact_task_without_its_snapshot(self):
+        state = {"issue": {}, "phase": "implementing"}
+        task = {"id": "6f1e0c8a-2b1f-4d43-9a8e-1c3b5d7f9a0b", "behaviorName": "issue-agent-x", "role": "review_ux",
+                "status": "completed", "cleanup": "done", "promptDigest": "p" * 64, "beforeDigest": "b" * 64,
+                "config": {"session": "dev"}}
+        handoff = {"id": "h", "status": "current", "decision": "authorize_merge", "stateDigest": "d" * 64,
+                   "lifecycle": {"phase": "implementing"}, "presentation": "x"}
+        self.env["TEST_DATA_JSON"] = json.dumps({"results": [state, task, handoff]})
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        document = json.loads(result.stdout)
+        self.assertEqual(document["taskRecovery"]["taskId"], task["id"])
+        self.assertEqual(document["taskRecovery"]["kind"], "none")
+
+    def test_compact_dispatches_without_inputs(self):
+        result = self.launch("compact")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        call = self.calls()[-1]
+        self.assertEqual(call["args"][:4], ["behavior", "run", "issue-work-7", "compact"])
+        self.assertEqual(call["input"], {})
+        inputs = self.root / "compact.json"
+        inputs.write_text(json.dumps({"unexpected": True}))
+        self.assertNotEqual(self.launch("compact", "--input-file", str(inputs)).returncode, 0)
+
     def test_closeout_dispatch_is_thin_and_recovery_does_not_replace_target(self):
         self.env.update(YINZ_SESSION_NAME="recovery", YINZ_PANE_ID="99")
         for method in ("closeout", "resume-closeout"):

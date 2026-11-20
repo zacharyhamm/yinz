@@ -18,7 +18,11 @@ import {
   saveState,
 } from "./runtime.ts";
 import { yinzCommand, type YinzRunner } from "./yinz_agent.ts";
-import { nextStep } from "./handoff_next.ts";
+import {
+  handoffMatchesState,
+  handoffStateFields,
+  nextStep,
+} from "./handoff_next.ts";
 
 export const CloseoutArgsSchema = z.object({
   handoffId: z.uuid().optional(),
@@ -405,9 +409,9 @@ function publishCloseoutOffer(context: Context, state: LifecycleState) {
     decision,
     reason: closeoutPresentation(state),
     createdAt: new Date().toISOString(),
-    state: StateSchema.parse(state),
+    ...handoffStateFields(StateSchema.parse(state)),
     presentation: `${closeoutPresentation(state)}\n${
-      nextStep({ id: c.offerId, decision, state })
+      nextStep({ id: c.offerId, decision }, state)
     }`,
   });
 }
@@ -468,11 +472,12 @@ export async function closeout(
     const handoff = z.object({
       id: z.string(),
       status: z.string(),
-      state: z.unknown(),
+      state: z.unknown().optional(),
+      stateDigest: z.string().optional(),
     }).loose().parse(await context.readResource("handoff"));
     if (
       handoff.id !== c.offerId || handoff.status !== "current" ||
-      JSON.stringify(handoff.state) !== JSON.stringify(state)
+      !handoffMatchesState(handoff, state)
     ) throw new Error("Closeout handoff is stale");
     if (args.decision === "decline") {
       c.decision = "declined";

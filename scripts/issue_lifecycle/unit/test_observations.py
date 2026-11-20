@@ -7,8 +7,8 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from issue_lifecycle.observations import (
-    PENDING_ROLLBACK_METHOD, USER_REQUEST, completed_worker_conditions, diagnose, rejected_launch_conditions,
-    task_recovery, terminal_failure_conditions,
+    PENDING_ROLLBACK_METHOD, USER_REQUEST, compact_submission, completed_worker_conditions, diagnose,
+    rejected_launch_conditions, state_digest, task_recovery, terminal_failure_conditions,
 )
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "discard_cases.json"
@@ -104,6 +104,36 @@ class TaskRecoveryTests(unittest.TestCase):
     def assert_request(self, entry):
         self.assertTrue(entry["requiresUserRequest"])
         self.assertEqual(entry["input"]["request"], USER_REQUEST)
+
+    def test_state_digest_matches_the_controller_canonical_digest(self):
+        # Computed by extensions/behaviors/_lib/lifecycle.ts stateDigest for this state.
+        state = {"issue": {"workspace": "default", "itemId": 7, "text": 'Café ✓ "quoted" \\ slash',
+                           "note": "line\nbreak\ttab\u0001 </tag> \U0001F600", "digest": "d" * 64},
+                 "phase": "triaging", "planVersion": 0}
+        self.assertEqual(state_digest(state), "f24aaafd048940447e6cce8af2d7934b809f533c87ca1513540436515c03dc23")
+
+    def test_status_reports_submission_states_by_digest(self):
+        submission = {"status": "accepted",
+                      "assignment": {"taskId": "task", "digest": "assignment", "before": self.STATE},
+                      "receipt": {"taskId": "task", "payload": {"role": "triage"}, "next": self.STATE}}
+        original = copy.deepcopy(submission)
+        compact = compact_submission(submission)
+        self.assertEqual(submission, original)
+        self.assertEqual(compact["assignment"], {"taskId": "task", "digest": "assignment",
+                                                 "beforeDigest": state_digest(self.STATE)})
+        self.assertEqual(compact["receipt"], {"taskId": "task", "payload": {"role": "triage"},
+                                              "nextDigest": state_digest(self.STATE)})
+        self.assertIsNone(compact_submission(None))
+
+    def test_compact_task_compares_lifecycle_by_digest(self):
+        child = fixture_child("v2 rejected")
+        task = self.task(child)
+        del task["before"]
+        task["beforeDigest"] = state_digest(self.STATE)
+        result = self.recover(child, task)
+        self.assertTrue(result["discard"]["lifecycleUnchanged"])
+        changed = {**self.STATE, "phase": "classified"}
+        self.assertFalse(self.recover(child, task, state=changed)["discard"]["lifecycleUnchanged"])
 
     def test_no_or_resolved_task_needs_no_recovery(self):
         self.assertEqual(task_recovery(self.STATE, None, None, None, None, [])["kind"], "none")
