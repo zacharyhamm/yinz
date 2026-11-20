@@ -370,7 +370,7 @@ impl Screen {
             ))
         } else if restore_source {
             if let Some(extracted) = self.extract_pane_for_transfer(source, owner, false) {
-                self.accept_transferred_panes(vec![(extracted, placement)], target, false);
+                self.accept_transferred_panes(vec![(extracted, placement)], target);
             }
             self.refresh_agent_worktrees();
             self.log_and_report_session_state().map_err(web_failed)
