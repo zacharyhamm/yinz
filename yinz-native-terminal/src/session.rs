@@ -430,6 +430,63 @@ impl Recorder {
     pub fn new(path: Option<&Path>) -> Self {
         path.map_or(Self::Disabled, |path| Self::Pending(path.to_owned()))
     }
+
+    pub fn check_destination(path: &Path) -> Result<()> {
+        use nix::unistd::{access, AccessFlags};
+        use std::os::unix::fs::FileTypeExt;
+
+        // Do not create or truncate a recording until a repaint has been applied.
+        // Follow a dangling link too: File::create would create its target.
+        let mut target = path.to_owned();
+        loop {
+            match std::fs::metadata(&target) {
+                Ok(metadata) => {
+                    ensure!(!metadata.is_dir(), "recording destination is a directory");
+                    ensure!(
+                        !metadata.file_type().is_socket(),
+                        "recording destination is a socket"
+                    );
+                    return access(&target, AccessFlags::W_OK).context("check write access");
+                },
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(error) => return Err(error).context("inspect recording destination"),
+            }
+            let leaf = target
+                .as_os_str()
+                .as_encoded_bytes()
+                .rsplit(|&b| b == b'/')
+                .next();
+            ensure!(
+                !matches!(leaf, None | Some(b"" | b"." | b"..")),
+                "expected a recording file name"
+            );
+            match target.read_link() {
+                Ok(link) => {
+                    target.set_file_name(link);
+                    continue;
+                },
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(error) => return Err(error).context("resolve recording destination"),
+            }
+            let parent = target
+                .parent()
+                .context("locate recording directory")?
+                .join(".");
+            return access(&parent, AccessFlags::W_OK | AccessFlags::X_OK)
+                .with_context(|| format!("check recording directory {}", parent.display()));
+        }
+    }
+
+    pub fn finish(&self, reason: &str) -> Result<()> {
+        if let Self::Pending(path) = self {
+            bail!(
+                "{reason} before the first repaint. No frames were written to {}",
+                path.display()
+            );
+        }
+        Ok(())
+    }
+
     pub fn frame(&mut self, bytes: &[u8]) -> Result<()> {
         if let Self::Pending(path) = self {
             let file = File::create(path.as_path())

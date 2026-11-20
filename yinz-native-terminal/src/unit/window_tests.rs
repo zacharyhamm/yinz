@@ -3906,6 +3906,55 @@ fn advertisement(revision: Option<u32>) -> ServerToClientMsg {
 }
 
 #[test]
+fn graphical_capture_automatic_completion_requires_a_recorded_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("capture.frames");
+    let mut app = switch_app(Default::default());
+    let (sender, _peer) = switch_peer();
+    app.sender = Some(sender);
+    app.connection_geometry.received_frame = false;
+    app.args.duration_secs = Some(1);
+    let end = app.started + Duration::from_secs(1);
+    let normal_exit = || ServerToClientMsg::Exit {
+        exit_reason: ExitReason::Normal,
+    };
+
+    assert!(app.duration_elapsed(end).unwrap());
+    let mut exited = false;
+    app.handle_message(normal_exit(), || exited = true).unwrap();
+    assert!(exited);
+
+    for previous in [None, Some(b"previous capture".as_slice())] {
+        if let Some(bytes) = previous {
+            std::fs::write(&path, bytes).unwrap();
+        }
+        Recorder::check_destination(&path).unwrap();
+        app.recorder = Recorder::new(Some(&path));
+        assert!(!app.duration_elapsed(app.started).unwrap());
+        for (result, reason) in [
+            (
+                app.duration_elapsed(end).unwrap_err(),
+                "Capture duration elapsed",
+            ),
+            (
+                app.handle_message(normal_exit(), || panic!("premature success"))
+                    .unwrap_err(),
+                "Session exited",
+            ),
+        ] {
+            let message = result.to_string();
+            assert!(message.contains(reason), "{message}");
+            assert!(message.contains("before the first repaint"), "{message}");
+            assert!(message.contains(&path.display().to_string()), "{message}");
+        }
+        match previous {
+            Some(bytes) => assert_eq!(std::fs::read(&path).unwrap(), bytes),
+            None => assert!(!path.try_exists().unwrap()),
+        }
+    }
+}
+
+#[test]
 fn render_negotiation_first_repaint_enables_pane_input_and_recording() {
     use winit::event::{DeviceId, Ime};
     use yinz_types::render_negotiation as caps;
@@ -3981,6 +4030,10 @@ fn render_negotiation_first_repaint_enables_pane_input_and_recording() {
     let recorded = std::fs::read(&capture).unwrap();
     assert_eq!(recorded[..4], (frame.len() as u32).to_le_bytes());
     assert_eq!(recorded[4..], frame);
+    app.args.duration_secs = Some(1);
+    assert!(app
+        .duration_elapsed(app.started + Duration::from_secs(1))
+        .unwrap());
     assert!(app.switch_overlay((800, 400), 0).is_none());
     mouse(&mut app, MouseButton::Left, ElementState::Released);
     mouse(&mut app, MouseButton::Right, ElementState::Released);
@@ -4007,6 +4060,15 @@ fn render_negotiation_first_repaint_enables_pane_input_and_recording() {
             }, _)) if event.event_type == expected && event.left && !event.right && !event.middle
         ));
     }
+    let mut exited = false;
+    app.handle_message(
+        ServerToClientMsg::Exit {
+            exit_reason: ExitReason::Normal,
+        },
+        || exited = true,
+    )
+    .unwrap();
+    assert!(exited);
 }
 
 #[test]

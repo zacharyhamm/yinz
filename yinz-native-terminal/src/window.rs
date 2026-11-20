@@ -375,6 +375,12 @@ pub fn run(
     connection: Option<session::Connection>,
 ) -> Result<()> {
     let config = load_native_config(&opts).context("load native settings")?;
+    if connection.is_none()
+        && let Some(path) = &args.record
+    {
+        Recorder::check_destination(path)
+            .with_context(|| format!("cannot record native frames to {}", path.display()))?;
+    }
     let event_loop = EventLoop::<u64>::with_user_event()
         .build()
         .context("initialize native event loop")?;
@@ -1714,7 +1720,10 @@ impl App {
                 }
                 self.present_frame(applied);
             },
-            ServerToClientMsg::Exit { .. } => exit(),
+            ServerToClientMsg::Exit { .. } => {
+                self.recorder.finish("Session exited")?;
+                exit();
+            },
             ServerToClientMsg::SwitchSession { connect_to_session } => {
                 self.begin_switch(connect_to_session, PendingSwitch::stage);
             },
@@ -2420,6 +2429,16 @@ impl App {
         self.error = Some(error);
         event_loop.exit();
     }
+
+    fn duration_elapsed(&self, now: Instant) -> Result<bool> {
+        let duration_elapsed = self.args.duration_secs.is_some_and(|seconds| {
+            now.duration_since(self.started) >= Duration::from_secs(seconds)
+        });
+        if duration_elapsed {
+            self.recorder.finish("Capture duration elapsed")?;
+        }
+        Ok(duration_elapsed)
+    }
 }
 impl ApplicationHandler<u64> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -2485,13 +2504,16 @@ impl ApplicationHandler<u64> for App {
         {
             self.switch_failed(&error);
         }
-        if self
-            .args
-            .duration_secs
-            .is_some_and(|seconds| now.duration_since(self.started) >= Duration::from_secs(seconds))
-        {
-            event_loop.exit();
-            return;
+        match self.duration_elapsed(now) {
+            Ok(true) => {
+                event_loop.exit();
+                return;
+            },
+            Err(error) => {
+                self.fail(error, event_loop);
+                return;
+            },
+            Ok(false) => {},
         }
         if now >= self.next_blink {
             self.blink = if self.blink == BlinkPhase::On {

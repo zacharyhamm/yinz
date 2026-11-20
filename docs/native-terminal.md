@@ -625,9 +625,13 @@ limits until a chunked transport exists.
 The hidden `--headless` option exercises the same session and structured frame
 path without opening a window. `--rows`, `--cols`, and `--duration-secs` bound a
 capture. `--record PATH` also works with graphical windows. Both modes open the
-recording for replacement after applying the first repaint. A headless session
-switch ends the capture with a nonzero exit and reports the source, requested
-destination and last applied frame, or that the switch preceded the first repaint.
+recording for replacement after applying the first repaint. A local graphical
+window checks the recording destination before opening the session. A duration
+limit or normal session exit that ends a graphical capture before its first
+repaint produces a nonzero exit and names the untouched recording path.
+A headless session switch ends the capture with a nonzero exit and reports the
+source, requested destination and last applied frame, or that the switch
+preceded the first repaint.
 
 ```sh
 yinz terminal demo --create --headless --duration-secs 5 --record demo.frames

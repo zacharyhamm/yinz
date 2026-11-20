@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 libc = { workspace = true }
+nix = { workspace = true, features = ["fs"] }
 yinz-key-codec = { workspace = true }
 yinz-session = { workspace = true }
 yinz-types = { workspace = true }

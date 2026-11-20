@@ -7287,6 +7287,7 @@ dependencies = [
  "libloading",
  "log",
  "memmap2",
+ "nix",
  "png",
  "serde",
  "serde_json",

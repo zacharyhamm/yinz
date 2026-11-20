@@ -329,6 +329,40 @@ fn native_startup_layout_error_and_explicit_size_retry() {
 }
 
 #[test]
+fn graphical_capture_create_rejects_invalid_destination_before_session_startup() {
+    let fixture = NativeFixture::new();
+    let root = fixture.fixture.path();
+    let session = "invalid-recording";
+    let socket = fixture
+        .fixture
+        .socket_dir()
+        .join(&*yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR)
+        .join(session);
+    for path in [root.to_owned(), root.join("missing/capture.frames")] {
+        let output = fixture
+            .terminal(session, true, &path)
+            .env_remove("WAYLAND_DISPLAY")
+            .env_remove("DISPLAY")
+            .env_remove("XDG_RUNTIME_DIR")
+            .arg("--duration-secs")
+            .arg("1")
+            .output()
+            .unwrap();
+        let message = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{message}");
+        assert!(
+            message.contains(&format!(
+                "cannot record native frames to {}",
+                path.display()
+            )),
+            "{message}"
+        );
+        assert!(!socket.try_exists().unwrap());
+    }
+    assert!(!root.join("missing").try_exists().unwrap());
+}
+
+#[test]
 fn native_startup_reports_config_source_location() {
     let fixture = NativeFixture::new();
     let path = fixture.fixture.path().join("diagnostic.frames");

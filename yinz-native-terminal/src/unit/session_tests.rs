@@ -10,6 +10,18 @@ fn sessions(names: &[&str]) -> Vec<(SessionName, Duration)> {
 }
 
 #[test]
+fn graphical_capture_preflight_follows_the_recording_link_without_creating_its_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let link = dir.path().join("capture.frames");
+    std::os::unix::fs::symlink("output/new.frames", &link).unwrap();
+    assert!(Recorder::check_destination(&link).is_err());
+    let output = dir.path().join("output");
+    std::fs::create_dir(&output).unwrap();
+    Recorder::check_destination(&link).unwrap();
+    assert!(!output.join("new.frames").try_exists().unwrap());
+}
+
+#[test]
 fn render_negotiation_fallback_passes_literal_shell_arguments() {
     let name = "-team's demo $HOME";
     for (endpoint, expected) in [
