@@ -173,6 +173,25 @@ pub(super) fn remove_client(
     Ok(())
 }
 
+pub(super) fn seal_native_prefix(
+    state: &mut EventLoopState,
+    screen: &mut Screen,
+    client_id: ClientId,
+    high: u64,
+) -> Result<()> {
+    let prefix = screen
+        .core
+        .native_render_clients
+        .remove(&client_id)
+        .or_else(|| screen.core.retired_native_clients.remove(&client_id));
+    remove_client(state, screen, client_id)?;
+    if let Some(mut prefix) = prefix {
+        prefix.retain_prefix(high);
+        screen.core.retired_native_clients.insert(client_id, prefix);
+    }
+    Ok(())
+}
+
 pub(super) fn remove_watcher_client(
     state: &mut EventLoopState,
     screen: &mut Screen,

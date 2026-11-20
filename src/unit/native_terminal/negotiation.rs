@@ -81,12 +81,19 @@ fn start_server(image_count: u8) -> NativeFixture {
         ),
     )
     .unwrap();
-    let output = fixture
-        .terminal(SESSION, true, &path.join("create.frames"))
-        .args(["--headless", "--duration-secs", "2"])
-        .output()
-        .unwrap();
-    assert_success(output);
+    let capture = path.join("create.frames");
+    fixture.capture_until(
+        SESSION,
+        &mut fixture.terminal(SESSION, true, &capture),
+        &capture,
+        "initial native repaint",
+        |recording| {
+            recording
+                .frames
+                .first()
+                .is_some_and(FrameHeader::full_repaint)
+        },
+    );
     fixture
 }
 

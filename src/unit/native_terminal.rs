@@ -100,6 +100,42 @@ impl NativeFixture {
         command
     }
 
+    // Each fixture session has a single interactive client. Detach it once its
+    // recording contains the expected output, including on a slow first attach.
+    fn capture_until(
+        &self,
+        session: &str,
+        command: &mut Command,
+        path: &Path,
+        what: &str,
+        ready: impl Fn(&Recording) -> bool,
+    ) -> Recording {
+        assert!(
+            !path.try_exists().unwrap(),
+            "expected a fresh capture at {}",
+            path.display()
+        );
+        let mut child = command
+            .arg("--headless")
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let mut recording = Recording::default();
+        while_running(
+            &mut child,
+            what,
+            yinz_test_support::default_timeout(),
+            || {
+                recording.read(path);
+                ready(&recording).then_some(())
+            },
+        );
+        self.action(session, &["detach"]);
+        assert_success(child.wait_with_output().unwrap());
+        recording.read(path);
+        recording
+    }
+
     fn action(&self, session: &str, args: &[&str]) {
         assert_success(
             self.command()
@@ -138,11 +174,14 @@ fn while_running<T>(
         if let Some(value) = observe() {
             return value;
         }
-        assert!(
-            child.try_wait().unwrap().is_none(),
-            "native client exited before {what}"
-        );
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("native client exited with {status} before {what}");
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("timed out waiting for {what}");
+        }
         std::thread::park_timeout(Duration::from_millis(20));
     }
 }
@@ -207,7 +246,6 @@ fn native_headless_creates_and_reattaches_with_structured_content() {
             .path()
             .join(format!("{session}-{create}.frames"));
         let mut command = fixture.terminal(session, create, &path);
-        command.args(["--headless", "--duration-secs", "3"]);
         if explicit {
             command.args(["--cols", "96", "--rows", "26"]);
         }
@@ -251,13 +289,11 @@ fn native_headless_creates_and_reattaches_with_structured_content() {
                 .join()
                 .unwrap();
         }
-        assert_success(command.output().unwrap());
-        let mut recording = Recording::default();
-        recording.read(&path);
-        assert_eq!(
-            recording.grid_and_marker(CONTENT),
-            Some(if explicit { (96, 26) } else { (120, 40) })
-        );
+        let size = if explicit { (96, 26) } else { (120, 40) };
+        let recording = fixture.capture_until(session, &mut command, &path, CONTENT, |recording| {
+            recording.grid_and_marker(CONTENT) == Some(size)
+        });
+        assert_eq!(recording.grid_and_marker(CONTENT), Some(size));
     }
 }
 
@@ -280,7 +316,8 @@ fn native_startup_layout_error_and_explicit_size_retry() {
     let path = fixture.fixture.path().join("opening.frames");
     let failed = fixture
         .terminal("bad-opening", true, &path)
-        .args(["--headless", "--duration-secs", "3"])
+        // Bound an unexpected successful attach beyond the client's opening timeout.
+        .args(["--headless", "--duration-secs", "30"])
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&failed.stderr);
@@ -297,15 +334,15 @@ fn native_startup_layout_error_and_explicit_size_retry() {
         "a layout failure before the first repaint must leave the capture path untouched"
     );
 
-    assert_success(
+    let recording = fixture.capture_until(
+        "good-opening",
         fixture
             .terminal("good-opening", true, &path)
-            .args(["--headless", "--rows", "60", "--duration-secs", "3"])
-            .output()
-            .unwrap(),
+            .args(["--rows", "60"]),
+        &path,
+        CONTENT,
+        |recording| recording.grid_and_marker(CONTENT) == Some((120, 60)),
     );
-    let mut recording = Recording::default();
-    recording.read(&path);
     assert_eq!(recording.grid_and_marker(CONTENT), Some((120, 60)));
 
     // A failed tab alongside a usable one stays recoverable.
@@ -319,15 +356,14 @@ fn native_startup_layout_error_and_explicit_size_retry() {
     }"#,
     )
     .unwrap();
-    assert_success(
-        fixture
-            .terminal("partial-opening", true, &path)
-            .args(["--headless", "--duration-secs", "3"])
-            .output()
-            .unwrap(),
+    let path = fixture.fixture.path().join("partial.frames");
+    let recording = fixture.capture_until(
+        "partial-opening",
+        &mut fixture.terminal("partial-opening", true, &path),
+        &path,
+        CONTENT,
+        |recording| recording.grid_and_marker(CONTENT) == Some((120, 40)),
     );
-    let mut recording = Recording::default();
-    recording.read(&path);
     assert_eq!(recording.grid_and_marker(CONTENT), Some((120, 40)));
 }
 

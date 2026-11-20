@@ -567,12 +567,14 @@ impl Screen {
             let Some(surface) = self.command_palette_surface(client) else {
                 continue;
             };
-            let native_geometry = self.core
+            let native_geometry = self
+                .core
                 .native_render_clients
                 .get(&client)
                 .filter(|s| s.negotiated)
                 .and_then(|_| {
-                    self.core.active_tab_ids
+                    self.core
+                        .active_tab_ids
                         .get(&client)
                         .and_then(|id| self.core.tabs.get(id))
                 })
@@ -2119,7 +2121,7 @@ impl crate::screen::CommandPaletteController {
         client: ClientId,
         damage: &[CellRect],
     ) {
-        if let Some(state) = self.palette.command_palettes.get_mut(&client) {
+        if let Some(state) = self.command_palettes.get_mut(&client) {
             state.backing.invalidate(damage);
         }
     }

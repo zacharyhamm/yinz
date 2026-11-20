@@ -690,9 +690,16 @@ pub(super) fn dispatch(
             client_id,
             supported,
         } => clients::set_structured_render_support(screen, client_id, supported)?,
-        ScreenInstruction::NativeRenderRequest(client, request) => screen.negotiate_render(client, request)?,
+        ScreenInstruction::NativeRenderRequest(client, request) => {
+            screen.negotiate_render(client, request)?
+        },
         ScreenInstruction::RenderFrameAck { client_id, seq } => {
-            if let Some(state) = screen.core.native_render_clients.get_mut(&client_id).or_else(|| screen.core.retired_native_clients.get_mut(&client_id)) {
+            if let Some(state) = screen
+                .core
+                .native_render_clients
+                .get_mut(&client_id)
+                .or_else(|| screen.core.retired_native_clients.get_mut(&client_id))
+            {
                 state.acknowledge(seq);
             }
         },
@@ -802,13 +809,7 @@ pub(super) fn dispatch(
             pane_id_to_focus,
         )?,
         ScreenInstruction::SealNativePrefix(client_id, high) => {
-            let prefix = screen.core.native_render_clients.remove(&client_id)
-                .or_else(|| screen.core.retired_native_clients.remove(&client_id));
-            clients::remove_client(state, screen, client_id)?;
-            if let Some(mut prefix) = prefix {
-                prefix.retain_prefix(high);
-                screen.core.retired_native_clients.insert(client_id, prefix);
-            }
+            clients::seal_native_prefix(state, screen, client_id, high)?
         },
         ScreenInstruction::RemoveClient(client_id) => {
             clients::remove_client(state, screen, client_id)?

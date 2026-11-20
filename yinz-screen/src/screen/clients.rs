@@ -431,7 +431,13 @@ impl Screen {
         self.notices.clear_return_target(client_id);
         self.core.watcher_clients.remove(&client_id);
         self.core.sixel_probe_answers.remove(&client_id);
-        if self.core.sixel_host_capabilities.borrow_mut().remove(&client_id).is_some() {
+        if self
+            .core
+            .sixel_host_capabilities
+            .borrow_mut()
+            .remove(&client_id)
+            .is_some()
+        {
             self.push_sixel_host_support_to_tabs();
         }
         self.active_tabs_changed();
