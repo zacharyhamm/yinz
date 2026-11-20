@@ -3617,7 +3617,13 @@ impl Screen {
             },
         };
         match placed {
-            Ok(()) => true,
+            Ok(()) => {
+                // The new pane can start as an agent with a known directory, and the pane
+                // it suppresses leaves the layout: publish both now, as NewPane does, rather
+                // than waiting for an unrelated mutation to notice.
+                self.refresh_agent_worktrees();
+                true
+            },
             Err(error) => {
                 let error = format!("{error:#}");
                 if let Some(completion) = completion_tx.as_mut() {

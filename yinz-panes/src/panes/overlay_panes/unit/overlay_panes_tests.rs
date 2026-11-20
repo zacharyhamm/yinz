@@ -303,7 +303,7 @@ fn reapplying_coordinates_re_resolves_against_the_surface_as_it_is_now() {
         cols: 120,
         rows: 20,
     };
-    panes.reapply_coordinates();
+    panes.reapply_coordinates().expect("TEST");
     assert_eq!(
         panes
             .get(&PaneId::Terminal(crate::TerminalId::new(1)))
@@ -451,7 +451,7 @@ fn replacing_a_pane_keeps_its_slot_its_kind_and_its_coordinates() {
     assert_eq!(panes.kind_of(&replacement), Some(OverlayKind::Modal));
 
     // the carried-over coordinates are what a later reapply resolves against
-    panes.reapply_coordinates();
+    panes.reapply_coordinates().expect("TEST");
     assert_eq!(
         panes
             .get(&replacement)
@@ -711,7 +711,7 @@ fn coordinate_updates_preserve_borderlessness_unless_explicitly_overridden() {
                         .change_pane_coordinates(children[0], coordinates, false)
                         .unwrap();
                 }
-                panes.reapply_coordinates();
+                panes.reapply_coordinates().expect("TEST");
                 let outer = panes.outer_geom(children[0]).unwrap();
                 assert_eq!(outer.cols.as_usize(), 60 + step);
                 assert_eq!(
@@ -1088,7 +1088,7 @@ fn a_dragged_overlay_stays_where_it_was_dropped_when_the_surface_grows() {
         cols: 120,
         rows: 40,
     };
-    panes.reapply_coordinates();
+    panes.reapply_coordinates().expect("TEST");
 
     assert_eq!(
         xy(&panes, 1),
@@ -1503,7 +1503,7 @@ fn a_resize_writes_the_new_size_back_into_the_overlay_s_coordinates() {
         cols: 120,
         rows: 20,
     };
-    panes.reapply_coordinates();
+    panes.reapply_coordinates().expect("TEST");
     assert_eq!(
         size(&panes, 1),
         (53, 10),
@@ -1548,7 +1548,7 @@ fn a_resize_from_the_upper_left_pins_the_position_as_well_as_the_size() {
         cols: 120,
         rows: 40,
     };
-    panes.reapply_coordinates();
+    panes.reapply_coordinates().expect("TEST");
     assert_eq!(xy(&panes, 1), (start_x - 5, start_y - 2));
     assert_eq!(size(&panes, 1), (53, 12));
 }
@@ -2074,7 +2074,7 @@ fn a_hidden_overlay_is_still_re_resolved_against_a_new_surface() {
         rows: 40,
         cols: 160,
     };
-    panes.reapply_coordinates();
+    panes.reapply_coordinates().expect("TEST");
     panes.show_pane(PaneId::Terminal(crate::TerminalId::new(1)));
 
     let geom = panes
@@ -2492,7 +2492,7 @@ fn a_resize_releases_an_overlay_nobody_ever_placed() {
         cols: 100,
         rows: 30,
     };
-    panes.reapply_coordinates();
+    panes.reapply_coordinates().expect("TEST");
 
     assert_eq!(
         panes.rendered_pane_ids(),
@@ -2732,8 +2732,8 @@ fn the_way_back_is_the_rectangle_the_coordinates_always_said() {
         cols: 120,
         rows: 40,
     };
-    panes.reapply_coordinates();
-    untouched.reapply_coordinates();
+    panes.reapply_coordinates().expect("TEST");
+    untouched.reapply_coordinates().expect("TEST");
     assert_eq!(
         drawn(&panes, 1),
         (0, 0, 120, 40),
@@ -3298,7 +3298,7 @@ fn multipane_divider_and_fullscreen_preserve_requested_ratio_through_tiny_surfac
                     rows,
                     cols,
                 };
-                panes.reapply_coordinates();
+                panes.reapply_coordinates().expect("TEST");
                 assert_eq!(panes.multipane_info(&children[0]).unwrap().split, split);
                 for child in children {
                     let geom = panes.get(&child).unwrap().current_geom();
@@ -3317,7 +3317,7 @@ fn multipane_divider_and_fullscreen_preserve_requested_ratio_through_tiny_surfac
             rows: 40,
             cols: 120,
         };
-        panes.reapply_coordinates();
+        panes.reapply_coordinates().expect("TEST");
         panes.unset_fullscreen();
         assert_eq!(panes.outer_geom(children[0]), Some(outer));
         assert_eq!(panes.multipane_info(&children[0]).unwrap().split, split);
@@ -3485,7 +3485,7 @@ fn multipane_renders_each_clients_focused_title_and_keeps_chrome_on_tiny_surface
                     rows,
                     cols,
                 };
-                panes.reapply_coordinates();
+                panes.reapply_coordinates().expect("TEST");
                 let rendered = render(&mut panes);
                 if rows > 0 && cols > 0 {
                     assert!(!rendered[&clients[0]].is_empty());

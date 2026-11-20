@@ -1239,7 +1239,11 @@ impl OverlayPanes {
         }
     }
 
-    pub fn reapply_coordinates(&mut self) {
+    /// Re-resolve every overlay against the surface as it is now.
+    ///
+    /// Geometry is always fully restored; a child whose new size could not be sent is reported
+    /// afterwards, so a whole-tab resize keeps its retry instead of treating the overlay as sized.
+    pub fn reapply_coordinates(&mut self) -> Result<()> {
         let surface = self.surface();
         for overlay in self.panes.values_mut() {
             overlay.geom = Self::resolved(
@@ -1251,8 +1255,9 @@ impl OverlayPanes {
             overlay.carry.awaiting_placement = false;
             overlay.carry.opening_awaits_placement = false;
         }
-        self.set_pane_frames().non_fatal();
+        let sent = self.set_pane_frames();
         self.set_force_render();
+        sent
     }
     const RESIZE_INCREMENT_WIDTH: usize = 5;
     const RESIZE_INCREMENT_HEIGHT: usize = 2;
@@ -1779,9 +1784,13 @@ impl OverlayPanes {
         Ok(())
     }
 
+    /// Lay out every overlay child, then report the first size that could not be sent.
+    ///
+    /// A failed send does not stop the loop: the remaining children still take their geometry.
     pub fn set_pane_frames(&mut self) -> Result<()> {
         let surface = self.surface();
         let viewport = *self.viewport.borrow();
+        let mut sent = Ok(());
         for overlay in self.panes.values_mut() {
             let borderless = overlay.borderless();
             let framed = overlay.framed();
@@ -1817,12 +1826,13 @@ impl OverlayPanes {
                 pane.set_frame(framed && split.is_none());
                 let current = pane.current_geom();
                 if current.cols.as_usize() > 0 && current.rows.as_usize() > 0 {
-                    resize_pty!(pane, os_api, self.senders, self.character_cell_size)
-                        .context("failed to resize overlay child")?;
+                    let result = resize_pty!(pane, os_api, self.senders, self.character_cell_size)
+                        .context("failed to resize overlay child");
+                    sent = sent.and(result);
                 }
             }
         }
-        Ok(())
+        sent
     }
     pub fn visible_pane_id_at(&self, position: &Position) -> Option<PaneId> {
         for id in self.visible_containers().iter().rev() {

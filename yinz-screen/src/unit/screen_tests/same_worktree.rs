@@ -514,3 +514,48 @@ fn same_worktree_stale_completion_after_directory_change_does_not_restore_indica
         "a different checkout does not match"
     );
 }
+
+#[test]
+fn same_worktree_marker_is_published_when_an_agent_opens_in_place() {
+    use yinz_types::data::{OriginatingPlugin, AGENT_PANE_CONTEXT};
+    let repo = repository();
+    let mut scene = Scene::new();
+    scene.add(2, NewPanePlacement::default());
+    scene.add(3, NewPanePlacement::default());
+    scene.report(1, Some(agent(Some(repo.path()))));
+    scene.report(2, Some(agent(Some(repo.path()))));
+    scene.focus(1, CLIENT);
+    scene.wait_for_title("👯 [2]");
+    let scans = scene.screen.core.worktree_scans.get();
+
+    // A plugin opens a marked agent, in the same checkout, in place of the ordinary pane.
+    let run = Run::Command(RunCommand {
+        command: PathBuf::from("codex"),
+        cwd: Some(repo.path().to_path_buf()),
+        originating_plugin: Some(OriginatingPlugin::new(
+            yinz_types::internal_ids::PluginId::new(2),
+            CLIENT,
+            BTreeMap::from([(AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())]),
+        )),
+        ..Default::default()
+    });
+    assert!(scene.screen.replace_pane(
+        pane(4),
+        None,
+        Some(run),
+        None,
+        yinz_bus::pty::ReplacedPane::Suppress,
+        ClientTabIndexOrPaneId::PaneId(pane(3)),
+        &mut None,
+    ));
+    assert_eq!(scene.screen.core.worktree_scans.get(), scans + 1);
+    // The root already resolved, so membership is published without another lookup.
+    let roots = &scene.screen.core.tabs[&TAB].agent_worktrees;
+    assert!(roots.contains_key(&pane(4)), "roots={roots:?}");
+    assert_eq!(roots.get(&pane(4)), roots.get(&pane(1)));
+    assert!(scene.instructions.try_recv().is_err());
+
+    scene.render();
+    let text = scene.text(CLIENT);
+    assert!(text.contains("👯 [2]") && text.contains("👯 [4]"), "{text}");
+}

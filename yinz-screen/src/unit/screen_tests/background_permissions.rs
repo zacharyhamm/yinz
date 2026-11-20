@@ -436,6 +436,34 @@ fn permission_modals_queue_reassign_and_consume_paste_without_changing_mode() {
 }
 
 #[test]
+fn permission_modal_surface_change_lays_out_each_queued_modal_once() {
+    use crate::screen::permission_modal::PERMISSION_MODAL_LAYOUTS;
+    let mut screen = create_non_mirrored_screen(SIZE);
+    new_tab(&mut screen, 1, TabId::new(0));
+    let (tx, _rx) = channels::unbounded();
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    const QUEUED: usize = 4;
+    for request_id in 1..=QUEUED as u64 {
+        let mut request = PluginPermission::new(
+            "queued.scm".into(),
+            vec![PermissionType::ReadApplicationState],
+        );
+        request.request_id = request_id;
+        screen.open_permission_modal(PLUGIN, request);
+    }
+    assert_eq!(
+        screen.permissions.permission_modal_clients().count(),
+        QUEUED,
+        "every queued request belongs to the one interactive client"
+    );
+    PERMISSION_MODAL_LAYOUTS.with(|count| count.set(0));
+    screen
+        .set_client_size(CLIENT, Size { cols: 60, rows: 20 })
+        .unwrap();
+    assert_eq!(PERMISSION_MODAL_LAYOUTS.with(|count| count.get()), QUEUED);
+}
+
+#[test]
 fn permission_modal_mouse_tracks_resizing_and_absorbs_release_after_cancellation() {
     use yinz_types::mouse::MouseEvent;
     use yinz_types::position::Position;

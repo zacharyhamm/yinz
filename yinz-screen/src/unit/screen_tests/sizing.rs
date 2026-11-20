@@ -1490,6 +1490,88 @@ fn tiled_resize_send_failure_retries_inside_a_screen_transaction() {
     }
 }
 
+/// The tiled layer is a plugin and the only terminal is an overlay: the overlay's failed size is
+/// the one signal that the reflow is incomplete, since the plugin resize succeeds and the layout
+/// hint is absorbed by the screen transaction.
+#[test]
+fn overlay_resize_send_failure_retries_inside_a_screen_transaction() {
+    use yinz_bus::os_input_output::ResizeCache;
+    let original = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let requested = Size { cols: 80, rows: 24 };
+    let tab = TabId::new(0);
+    let plugin_pane = PaneId::Plugin(crate::PluginId::new(4));
+    let overlay = PaneId::Terminal(TerminalId::new(2));
+    let mut screen = create_non_mirrored_screen(original);
+    let (writer, receiver) = channels::unbounded();
+    screen.core.bus.senders.to_pty_writer = Some(SenderWithContext::new(writer));
+    let (plugin, _plugin_rx) = channels::unbounded();
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin));
+    let (pty, _pty_rx) = channels::unbounded();
+    let (server, _server_rx) = channels::unbounded();
+    let (jobs, _jobs_rx) = channels::unbounded();
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(pty));
+    screen.core.bus.senders.to_server = Some(SenderWithContext::new(server));
+    screen.core.bus.senders.to_background_jobs = Some(SenderWithContext::new(jobs));
+    screen.core.bus.senders.should_silently_fail = false;
+    new_tab(&mut screen, 1, tab);
+    {
+        let tab = screen.core.tabs.get_mut(&tab).unwrap();
+        for (pane, placement) in [
+            (plugin_pane, NewPanePlacement::default()),
+            (
+                overlay,
+                NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(
+                    FloatingPaneCoordinates {
+                        width: Some(PercentOrFixed::Percent(50)),
+                        height: Some(PercentOrFixed::Percent(50)),
+                        ..Default::default()
+                    },
+                ))),
+            ),
+        ] {
+            tab.new_pane(
+                pane,
+                None,
+                None,
+                false,
+                true,
+                placement,
+                Some(ClientId::new(1)),
+                None,
+            )
+            .unwrap();
+        }
+        tab.close_pane(PaneId::Terminal(TerminalId::new(1)), false, None);
+        assert!(tab.has_selectable_panes());
+        assert!(tab
+            .get_tiled_panes()
+            .all(|(id, _)| matches!(id, PaneId::Plugin(_))));
+        assert_eq!(tab.get_floating_panes().count(), 0);
+    }
+    let before = screen.core.tabs[&tab]
+        .get_pane_with_id(overlay)
+        .unwrap()
+        .position_and_size();
+    drop(receiver);
+    screen.set_client_size(ClientId::new(1), requested).unwrap();
+    for _ in 0..2 {
+        let _batch = ResizeCache::new(screen.core.bus.senders.clone());
+        assert!(screen.reflow_tab(tab).is_err());
+        assert!(screen.core.tabs_needing_reflow.contains(&tab));
+        assert_eq!(screen.core.tabs[&tab].get_display_area(), requested);
+        // The overlay still took its new geometry; only the send is retried.
+        let geom = screen.core.tabs[&tab]
+            .get_pane_with_id(overlay)
+            .unwrap()
+            .position_and_size();
+        assert_ne!(geom, before);
+        assert_eq!(geom.cols.as_usize(), 40);
+    }
+}
+
 /// Keeps a tab's PTY resizes failing while everything else it sends still gets through.
 fn fail_pty_resizes(screen: &mut Screen, tab_id: TabId) -> impl Sized + use<> {
     let (pty, pty_receiver) = channels::unbounded();

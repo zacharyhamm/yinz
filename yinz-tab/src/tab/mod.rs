@@ -2644,7 +2644,8 @@ impl Tab {
         result
     }
     fn resize_whole_tab_locally(&mut self, new_screen_size: Size) -> Result<()> {
-        let err_context = || format!("failed to resize whole tab (id {})", self.id);
+        let id = self.id;
+        let err_context = move || format!("failed to resize whole tab (id {id})");
         self.size = new_screen_size;
         // If a tiled pane is fullscreen, exit fullscreen first so that *all*
         // tiled panes (including the currently hidden ones) participate in the
@@ -2678,7 +2679,10 @@ impl Tab {
         // surface is computed from. `FloatingPanes::reapply_overlay_coordinates` used to run from
         // inside `floating_panes.resize` above, and so re-resolved every overlay against the
         // surface as it was *before* the resize - a 60%-wide overlay kept its old width.
-        self.overlay_panes.reapply_coordinates();
+        let overlay_ptys = self
+            .overlay_panes
+            .reapply_coordinates()
+            .with_context(err_context);
         if self.auto_layout && !self.swap_layouts.is_floating_damaged() {
             // we do this only for floating panes, because the constraint system takes care of the
             // tiled panes
@@ -2728,9 +2732,13 @@ impl Tab {
         // *before* `LayoutApplier::offset_viewport` recomputed it. Called here rather than beside
         // that recompute because the viewport is only final now: the fullscreen restores above
         // are the last thing that can move it.
-        self.refresh_overlay_expansion();
+        let expanded_ptys = self.overlay_expansion().with_context(err_context);
         self.resize_all_stack_list_hidden_members();
-        floating_ptys.and(tiled_ptys).and(caching_resizes)
+        floating_ptys
+            .and(tiled_ptys)
+            .and(overlay_ptys)
+            .and(expanded_ptys)
+            .and(caching_resizes)
     }
     /// Re-derive an overlay expansion against `self.viewport` as it is now.
     ///
@@ -2741,8 +2749,14 @@ impl Tab {
     /// the tab bar or the status bar is turned on or off underneath it, or a layout is applied,
     /// and it is still drawn against a viewport that no longer exists.
     fn refresh_overlay_expansion(&mut self) {
+        self.overlay_expansion().non_fatal();
+    }
+    /// [`Self::refresh_overlay_expansion`], for a caller that retries a failed size send.
+    fn overlay_expansion(&mut self) -> Result<()> {
         if self.overlay_panes.fullscreen_is_active() {
-            self.overlay_panes.set_pane_frames().non_fatal();
+            self.overlay_panes.set_pane_frames()
+        } else {
+            Ok(())
         }
     }
     /// Resize a pane in its own layer. One core for the by-client and by-id entry points, so

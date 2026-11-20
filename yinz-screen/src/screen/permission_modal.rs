@@ -16,6 +16,13 @@ use yinz_types::mouse::{MouseEvent, MouseEventType};
 use yinz_types::pane_size::Viewport;
 use yinz_types::position::Position;
 
+#[cfg(test)]
+thread_local! {
+    /// How many modal layouts this thread has built, so tests can bound surface maintenance.
+    pub(crate) static PERMISSION_MODAL_LAYOUTS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 pub(super) struct PermissionModal {
     request: PluginPermission,
     client: Option<ClientId>,
@@ -119,6 +126,8 @@ impl PermissionModal {
     }
 
     fn layout_with_selection(&self, viewport: Viewport) -> (ContextMenuLayout, usize) {
+        #[cfg(test)]
+        PERMISSION_MODAL_LAYOUTS.with(|count| count.set(count.get() + 1));
         let items = self.items(viewport);
         let selected = items.len() - if self.allow { 1 } else { 2 };
         // The layout helper follows a row at the bottom of the requested viewport.
@@ -282,7 +291,10 @@ impl Screen {
         true
     }
     pub(super) fn permission_surfaces_changed(&mut self) {
-        let clients: Vec<_> = self.permissions.permission_modal_clients().collect();
+        // One visit per client: `surface_changed` already walks every modal that client owns,
+        // and a client owns one entry per queued request.
+        let clients: std::collections::BTreeSet<_> =
+            self.permissions.permission_modal_clients().collect();
         for client in clients {
             let surface = self.permission_surface(client);
             self.permissions.surface_changed(client, surface);
