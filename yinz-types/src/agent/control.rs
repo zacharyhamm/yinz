@@ -127,19 +127,22 @@ pub struct CloseoutFence {
 
 pub const CLOSEOUT_CAPABILITY: &str = "agent-controller-closeout-v1";
 
-/// Terminal bytes from xterm, or a physical key whose encoding depends on the pane.
+/// Keyboard bytes, a mode-sensitive physical key, or encoded xterm mouse reports.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum WebTerminalInput {
     Bytes(String),
     Key(KeyWithModifier),
+    Mouse { mouse: String },
 }
 
 impl WebTerminalInput {
     pub fn validate(&self) -> Result<(), &'static str> {
         use crate::keys::BareKey;
         match self {
-            Self::Bytes(data) if data.is_empty() || data.len() > 32768 => {
+            Self::Bytes(data) | Self::Mouse { mouse: data }
+                if data.is_empty() || data.len() > 32768 =>
+            {
                 Err("terminal input exceeds batch limit")
             },
             Self::Key(key)

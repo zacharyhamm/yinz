@@ -84,6 +84,12 @@
 (define %web-app-prompt
   (%web-app-keep (lambda (value) (and (%web-app-text? value 32768 (list #\newline #\tab)) (not (%web-app-blank? value))))))
 (define %web-app-lines (%web-app-keep (lambda (value) (%web-app-integer? value 1 200))))
+(define %web-app-terminal-input
+  (%web-app-keep (lambda (value)
+    (or (%web-app-text? value 32768 '())
+      (%web-app-exact-keys? value '("bare_key" "key_modifiers"))
+      (and (%web-app-exact-keys? value '("mouse"))
+        (%web-app-text? (hash-ref value "mouse") 32768 '()))))))
 (define %web-app-key-list
   (%web-app-keep (lambda (value)
       (and (list? value) (>= (length value) 1) (<= (length value) 8)
@@ -306,8 +312,7 @@
   (%web-app-post "/api/agent/term" "terminal" (hash "agent" %web-app-agent-ref "after" %web-app-identity)
     (%web-app-require "agent") %web-app-same)
   (%web-app-post "/api/agent/term/input" "terminal_input"
-    (hash "agent" %web-app-agent-ref "data" (%web-app-keep (lambda (value) (or (%web-app-text? value 32768 '())
-      (%web-app-exact-keys? value '("bare_key" "key_modifiers"))))))
+    (hash "agent" %web-app-agent-ref "data" %web-app-terminal-input)
     (%web-app-require "agent" "data") %web-app-same)
   (%web-app-post "/api/agent/screen" "screen" (hash "agent" %web-app-agent-ref "lines" %web-app-lines)
     %web-app-screen %web-app-screen-html)

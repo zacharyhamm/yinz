@@ -70,6 +70,7 @@ impl AgentHost for RecordingHost {
         &mut self,
         _pane: PaneId,
         _bytes: Vec<u8>,
+        _count_input: bool,
     ) -> yinz_runtime::errors::prelude::Result<()> {
         unreachable!("web terminal writes require a terminal")
     }

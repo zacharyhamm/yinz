@@ -3,25 +3,57 @@ import { json } from 'node:stream/consumers';
 import { Terminal } from '../../../../yinz-steel-builtins/assets/plugins/web/static/vendor/xterm.mjs';
 import { useNativeCharacterWidths } from '../../../../yinz-steel-builtins/assets/plugins/web/static/views/character-width.mjs';
 
+async function applyFrame(term, frame) {
+  if (frame.snapshot) {
+    term.reset();
+    term.resize(frame.cols, frame.rows);
+  }
+  await new Promise((done) => term.write(Buffer.from(frame.data, 'base64'), done));
+}
+
+async function replaySteps(name, { steps }) {
+  const term = new Terminal({ allowProposedApi: true });
+  useNativeCharacterWidths(term);
+  const lineFeedModes = [];
+  term.onLineFeed(() => lineFeedModes.push(term.options.convertEol));
+  for (const [index, step] of steps.entries()) {
+    lineFeedModes.length = 0;
+    await applyFrame(term, step.frame);
+    const message = `${name} step ${index + 1}`;
+    const buffer = term.buffer.active;
+    const lines = Array.from({ length: term.rows }, (_, y) => buffer.getLine(buffer.baseY + y).translateToString(true));
+    assert.equal(lines.join('\n').trimEnd(), step.text.trimEnd(), message);
+    assert.deepEqual([buffer.cursorX, buffer.cursorY], step.cursor, message);
+    assert.equal(buffer.type, step.alternate ? 'alternate' : 'normal', message);
+    assert.equal(!term._core.coreService.isCursorHidden, step.visible, message);
+    assert.equal(term.options.convertEol, step.newLineMode, message);
+    step.styles?.forEach((expected, x) => {
+      const cell = buffer.getLine(buffer.baseY).getCell(x);
+      assert.deepEqual([
+        cell.isFgDefault() ? null : cell.getFgColor(),
+        cell.isBgDefault() ? null : cell.getBgColor(),
+        Boolean(cell.isBold()),
+      ], expected, `${message}, cell ${x}`);
+    });
+    if (step.frame.snapshot) {
+      assert.ok(lineFeedModes.every((enabled) => !enabled), message);
+    }
+  }
+  term.dispose();
+}
+
 async function replayMultipart({ parts, delta, alternate, normal, colors }) {
   const term = new Terminal({ allowProposedApi: true });
   useNativeCharacterWidths(term);
-  async function apply({ response: { terminal: frame } }) {
-    if (frame.snapshot) {
-      term.reset();
-      term.resize(frame.cols, frame.rows);
-    }
-    await new Promise((done) => term.write(Buffer.from(frame.data, 'base64'), done));
-  }
   function compare(expected) {
     const buffer = term.buffer.active;
     const lines = Array.from({ length: buffer.length }, (_, y) => buffer.getLine(y).translateToString(true));
     assert.deepEqual([buffer.cursorX, buffer.cursorY], expected.cursor);
     assert.deepEqual(lines.join('\n').trimEnd().split('\n'), expected.text.trimEnd().split('\n'));
   }
-  for (const part of parts) await apply(part);
+  for (const part of parts) await applyFrame(term, part.response.terminal);
   compare(alternate);
-  await apply(delta);
+  await applyFrame(term, delta.response.terminal);
   compare(normal);
   const buffer = term.buffer.normal;
   colors.forEach((row, y) => row.forEach((expected, x) => {
@@ -36,6 +68,10 @@ async function replayMultipart({ parts, delta, alternate, normal, colors }) {
 for (const [name, value] of Object.entries(await json(process.stdin))) {
   if (name === 'multipart') {
     await replayMultipart(value);
+    continue;
+  }
+  if (value.steps) {
+    await replaySteps(name, value);
     continue;
   }
   const [cols, snapshot, delta, nativeText] = value;

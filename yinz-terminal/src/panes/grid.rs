@@ -91,6 +91,12 @@ const MAX_DCS_PAYLOAD_BYTES: usize = 1024 * 1024;
 /// arrives over several reads from a slow remote link, while a stuck pane recovers in a moment.
 pub const SYNCHRONIZED_OUTPUT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// The effect of a Kitty APC on the text grid and cursor.
+pub enum KittyApcEffect {
+    Unchanged,
+    CursorOrTextChanged,
+}
+
 // The notification wire types live with the rest of the pane/host protocol. The pub re-exports
 // keep `panes::grid::{namespace_notification_id, PendingNotification}` working for the pane layer,
 // the screen and the tab tests; the rest is only used here, by the OSC 99 dispatch and the `NotificationTracker`.
@@ -593,6 +599,7 @@ pub struct Grid {
     scroll_region: (usize, usize),
     active_charset: CharsetIndex,
     preceding_char: Option<TerminalCharacter>,
+    repeated_character: bool,
     #[allow(dead_code)]
     terminal_emulator_colors: Rc<RefCell<Palette>>,
     #[allow(dead_code)]
@@ -733,17 +740,30 @@ impl Grid {
             .or(self.pane_default_bg)
             .unwrap_or(self.style.application.theme.background)
     }
+    fn application_default_colors(&self) -> ((u8, u8, u8), (u8, u8, u8)) {
+        (self.application_foreground(), self.application_background())
+    }
     /// OSC 4 answer: the application's literal register override, then the baseline.
     pub(crate) fn application_register(&self, index: u8) -> (u8, u8, u8) {
         self.changed_colors
+            .as_ref()
             .and_then(|colors| colors[index as usize])
             .and_then(rgb_of_ansi_code)
             .unwrap_or_else(|| self.style.application.register(index))
     }
-    /// Store the server-owned color-query baseline. Rendering follows
-    /// `update_terminal_theme` separately.
-    pub fn set_application_baseline(&mut self, baseline: yinz_types::style::ApplicationBaseline) {
+    /// Store the server-owned color-query baseline and report whether it changed the web
+    /// snapshot palette. Native rendering follows `update_terminal_theme` separately.
+    pub fn set_application_baseline(
+        &mut self,
+        baseline: yinz_types::style::ApplicationBaseline,
+    ) -> bool {
+        let defaults = self.application_default_colors();
+        let ansi: [_; 16] = std::array::from_fn(|index| self.application_register(index as u8));
         self.style.application = baseline;
+        defaults != self.application_default_colors()
+            || (0..16)
+                .zip(ansi)
+                .any(|(index, color)| self.application_register(index) != color)
     }
     fn theme_background(&self) -> bool {
         self.style.terminal.is_some()
@@ -779,7 +799,9 @@ impl Grid {
         self.repaint_completed_text = true;
         self.should_render = true;
     }
-    pub fn set_pane_default_colors(&mut self, fg: Option<String>, bg: Option<String>) {
+    /// Set pane defaults and report whether they changed the web snapshot colors.
+    pub fn set_pane_default_colors(&mut self, fg: Option<String>, bg: Option<String>) -> bool {
+        let defaults = self.application_default_colors();
         // Parse inputs; anything that isn't literal RGB (palette
         // index / named colour / parse failure) is silently dropped so
         // the invariant on `pane_default_{fg,bg}` is preserved.
@@ -792,6 +814,7 @@ impl Grid {
             .and_then(|s| xparse_color(s.as_bytes()))
             .and_then(rgb_of_ansi_code);
         self.output_buffer.update_all_lines();
+        defaults != self.application_default_colors()
     }
     pub fn get_pane_default_color_strings(&self) -> (Option<String>, Option<String>) {
         (
@@ -1020,6 +1043,7 @@ impl Grid {
             saved_cursor_position: None,
             scroll_region: (0, rows.saturating_sub(1)),
             preceding_char: None,
+            repeated_character: false,
             width: columns,
             height: rows,
             should_render: true,
@@ -2699,7 +2723,8 @@ impl Grid {
         }
         self.output_buffer.update_all_lines();
     }
-    pub fn add_canonical_line(&mut self) {
+    /// Add a line feed and report whether it scrolled the grid.
+    pub fn add_canonical_line(&mut self) -> bool {
         let (scroll_region_top, scroll_region_bottom) = self.scroll_region;
         if let Some(rows) = self.hyperlink_tracker.update(
             '\n',
@@ -2713,7 +2738,7 @@ impl Grid {
         }
         if self.cursor.y == scroll_region_bottom {
             if scroll_region_top >= self.viewport.len() {
-                return;
+                return false;
             }
             let scroll_bg = self.cursor.pending_styles.background;
             let new_row = Row::new()
@@ -2722,7 +2747,7 @@ impl Grid {
                 .with_agent_theme(Some(self.agent_theme.clone()));
             self.scroll_region_up_at_bottom(new_row, false);
             self.kitty_reanchor_all_from_pixels();
-            return;
+            return true;
         }
         if self.viewport.len() <= self.cursor.y + 1 {
             // Nothing scrolls here (the cursor is above the scroll region's bottom), so this
@@ -2738,6 +2763,7 @@ impl Grid {
             self.cursor.y += 1;
             self.output_buffer.update_line(self.cursor.y);
         }
+        false
     }
     pub fn move_cursor_to_beginning_of_line(&mut self) {
         self.cursor.x = 0;
@@ -3469,7 +3495,8 @@ impl Grid {
             }
         }
     }
-    fn advance_cursor_after_kitty_placement(&mut self, cols: usize, rows: usize) {
+    fn advance_cursor_after_kitty_placement(&mut self, cols: usize, rows: usize) -> KittyApcEffect {
+        let cursor_before = (self.cursor.x, self.cursor.y);
         let mut down_steps = rows.saturating_sub(1);
         let target_x = self.cursor.x + cols;
         if target_x >= self.width {
@@ -3478,11 +3505,17 @@ impl Grid {
         } else {
             self.cursor.x = target_x;
         }
+        let mut scrolled = false;
         for _ in 0..down_steps {
-            self.add_canonical_line();
+            scrolled |= self.add_canonical_line();
+        }
+        if scrolled || (self.cursor.x, self.cursor.y) != cursor_before {
+            KittyApcEffect::CursorOrTextChanged
+        } else {
+            KittyApcEffect::Unchanged
         }
     }
-    pub fn handle_kitty_apc(&mut self, raw: &[u8]) -> Option<Result<KittyReplyData, KittyError>> {
+    pub fn handle_kitty_apc(&mut self, raw: &[u8]) -> Option<Result<KittyApcEffect, KittyError>> {
         if !self.kitty_host_support.protocol_is_enabled() {
             return None;
         }
@@ -3496,19 +3529,19 @@ impl Grid {
             Err(e) => (Err(e), false),
         };
         let reply_bytes = match &result {
-            Ok(reply) => format_kitty_reply(reply, was_query),
+            Ok((reply, _)) => format_kitty_reply(reply, was_query),
             Err(error) => format_kitty_error(error),
         };
         if let Some(reply_bytes) = reply_bytes {
             self.pending_messages_to_pty.push(reply_bytes);
         }
-        Some(result)
+        Some(result.map(|(_, effect)| effect))
     }
     fn execute_kitty_command(
         &mut self,
         command: KittyCommand,
-    ) -> Result<KittyReplyData, KittyError> {
-        match command.action {
+    ) -> Result<(KittyReplyData, KittyApcEffect), KittyError> {
+        let reply = match command.action {
             KittyAction::Query => {
                 if self.kitty_host_support.host_supports_graphics() {
                     Ok(KittyReplyData::from_command(&command))
@@ -3654,39 +3687,40 @@ impl Grid {
                         offset_px_from_line_start: 0,
                     }
                 };
-                match self.kitty_grid.place(
+                let dest_cells = self.kitty_grid.place(
                     pane_image_id,
                     internal,
                     &command,
                     cursor_px,
                     cell,
                     vertical_anchor,
-                ) {
-                    Ok(dest_cells) => {
-                        // `None` covers the two placements that occupy no cells at the cursor: a
-                        // virtual one, which draws nothing until placeholder cells instantiate it,
-                        // and a relative one, which is positioned from its parent and so must
-                        // leave the cursor alone whatever `C` says.
-                        if let Some((cols, rows)) = dest_cells
-                            && !command.suppress_cursor_movement
-                        {
-                            self.advance_cursor_after_kitty_placement(cols as usize, rows as usize);
-                        }
-                        self.kitty_reanchor_all_from_pixels();
-                        self.render_full_viewport();
-                        self.mark_for_rerender();
-                        Ok(KittyReplyData {
-                            image_id: Some(pane_image_id),
-                            image_number: command.image_number,
-                            placement_id: command.placement_id,
-                            frame_number: None,
-                            quiet: command.quiet,
-                        })
+                )?;
+                // `None` covers virtual placements, which draw nothing until placeholder
+                // cells instantiate them, and relative placements, which use their parent
+                // as the anchor. Neither advances the cursor.
+                let effect = if let Some((cols, rows)) = dest_cells
+                    && !command.suppress_cursor_movement
+                {
+                    self.advance_cursor_after_kitty_placement(cols as usize, rows as usize)
+                } else {
+                    KittyApcEffect::Unchanged
+                };
+                self.kitty_reanchor_all_from_pixels();
+                self.render_full_viewport();
+                self.mark_for_rerender();
+                return Ok((
+                    KittyReplyData {
+                        image_id: Some(pane_image_id),
+                        image_number: command.image_number,
+                        placement_id: command.placement_id,
+                        frame_number: None,
+                        quiet: command.quiet,
                     },
-                    Err(e) => Err(e),
-                }
+                    effect,
+                ));
             },
-        }
+        }?;
+        Ok((reply, KittyApcEffect::Unchanged))
     }
     pub fn kitty_commands_handled(&self) -> u64 {
         self.kitty_grid.commands_handled()

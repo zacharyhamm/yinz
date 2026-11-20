@@ -121,6 +121,10 @@ fn web_agents_validation_rejects_bad_operations_and_bounds_without_dispatch() {
         json!({"op":"keys","agent":identity,"keys":["Ctrl c"]}),
         json!({"op":"keys","agent":identity,"keys":[]}),
         json!({"op":"keys","agent":identity,"keys":vec!["enter";9]}),
+        json!({"op":"terminal_input","agent":identity,"data":{"mouse":""}}),
+        json!({"op":"terminal_input","agent":identity,"data":{"mouse":"x".repeat(32769)}}),
+        json!({"op":"terminal_input","agent":identity,"data":{"mouse":123}}),
+        json!({"op":"terminal_input","agent":identity,"data":{"mouse":"G1tNICEh","extra":true}}),
         json!({"op":"screen","agent":identity,"lines":0}),
         json!({"op":"screen","agent":identity,"lines":201}),
     ];

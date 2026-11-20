@@ -1,5 +1,50 @@
 use super::*;
 use yinz_types::agent::control::{valid_web_identity, WebAgentAction, WebTerminalInput};
+
+/// Consume one decimal field of xterm's SGR or SGR-pixel encoding.
+fn mouse_number(bytes: &[u8]) -> Option<(u32, &[u8])> {
+    let end = bytes.iter().position(|b| !b.is_ascii_digit())?;
+    let (digits, rest) = bytes.split_at(end);
+    Some((std::str::from_utf8(digits).ok()?.parse().ok()?, rest))
+}
+
+fn valid_mouse_reports(mut bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    while !bytes.is_empty() {
+        // Shift, Alt and Ctrl occupy bits 2–4 of the xterm button code.
+        match bytes {
+            [0x1b, b'[', b'M', button @ 32..=255, 33..=255, 33..=255, rest @ ..] => {
+                let button = (button - 32) & !0x1c;
+                if !matches!(button, 0..=3 | 32..=35 | 64..=65) {
+                    return false;
+                }
+                bytes = rest;
+            },
+            [0x1b, b'[', b'<', fields @ ..] => {
+                let Some((button, [b';', fields @ ..])) = mouse_number(fields) else {
+                    return false;
+                };
+                let Some((_, [b';', fields @ ..])) = mouse_number(fields) else {
+                    return false;
+                };
+                let Some((_, [end, rest @ ..])) = mouse_number(fields) else {
+                    return false;
+                };
+                // Pixel coordinates may be zero. Wheel and motion reports end in M.
+                let button = button & !0x1c;
+                if !matches!((button, end), (0..=2, b'M' | b'm') | (32..=35 | 64..=65, b'M')) {
+                    return false;
+                }
+                bytes = rest;
+            },
+            _ => return false,
+        }
+    }
+    true
+}
+
 pub(in crate::controller) enum Completion {
     Close(close_completed::AgentClose),
     Refresh,
@@ -29,7 +74,7 @@ impl super::AgentController {
     }
 
     fn web_terminal_input(
-        &self,
+        &mut self,
         host: &mut impl AgentHost,
         pane: PaneId,
         status: &AgentStatus,
@@ -37,16 +82,34 @@ impl super::AgentController {
     ) -> AgentResponse {
         use base64::{engine::general_purpose::STANDARD, Engine};
 
-        if let Err((outcome, message)) = self.verify_agent_input(host, pane, status) {
-            return self.agent_result(host, pane, outcome, Some(message.into()));
-        }
+        let verified = match self.verify_agent_input(host, pane, status) {
+            Ok(state) => state,
+            Err((outcome, message)) => {
+                return self.agent_result(host, pane, outcome, Some(message.into()));
+            },
+        };
         let result = match data {
-            WebTerminalInput::Key(key) => host.write_key(pane, key, None),
+            WebTerminalInput::Key(key) => {
+                self.write_verified_input(host, pane, status, verified, |host| {
+                    host.write_key(pane, key, None)
+                })
+            },
             WebTerminalInput::Bytes(encoded) => {
                 let Ok(bytes) = STANDARD.decode(encoded) else {
                     return AgentResponse::new(AgentOutcome::Rejected);
                 };
-                host.write_web_terminal_bytes(pane, bytes)
+                self.write_verified_input(host, pane, status, verified, |host| {
+                    host.write_web_terminal_bytes(pane, bytes, true)
+                })
+            },
+            WebTerminalInput::Mouse { mouse } => {
+                let Ok(bytes) = STANDARD.decode(mouse) else {
+                    return AgentResponse::new(AgentOutcome::Rejected);
+                };
+                if !valid_mouse_reports(&bytes) {
+                    return AgentResponse::new(AgentOutcome::Rejected);
+                }
+                host.write_web_terminal_bytes(pane, bytes, false)
             },
         };
         match result {

@@ -24,12 +24,18 @@ fn restore_charsets(vt: &mut String, cursor: &Cursor, active: CharsetIndex) {
 }
 
 impl Grid {
+    /// Report and clear whether the last VTE batch executed a repeat with a saved character.
+    pub fn take_character_repeat(&mut self) -> bool {
+        std::mem::take(&mut self.repeated_character)
+    }
+
     /// Recreate the two VT buffers and the modes needed to continue parsing live output.
     pub fn web_terminal_snapshot(&self) -> Option<String> {
+        let (foreground, background) = self.application_default_colors();
         let mut vt = format!(
-            "\x1b]10;{}\x1b\\\x1b]11;{}\x1b\\",
-            rgb_to_hex_string(self.application_foreground()),
-            rgb_to_hex_string(self.application_background())
+            "\x1b[20l\x1b]10;{}\x1b\\\x1b]11;{}\x1b\\",
+            rgb_to_hex_string(foreground),
+            rgb_to_hex_string(background)
         );
         // The first sixteen palette slots are configurable even without an OSC override.
         vt.push_str("\x1b]104\x1b\\\x1b]4");
@@ -152,13 +158,21 @@ impl Grid {
         }
         position(&mut vt, &self.cursor)?;
         restore_charsets(&mut vt, &self.cursor, self.active_charset);
+        vt.push_str(if self.cursor_is_hidden {
+            "\x1b[?25l"
+        } else {
+            "\x1b[?25h"
+        });
+        vt.push_str(if self.new_line_mode {
+            "\x1b[20h"
+        } else {
+            "\x1b[20l"
+        });
         for (enabled, sequence) in [
             (self.cursor_key_mode, "\x1b[?1h"),
             (self.bracketed_paste_mode, "\x1b[?2004h"),
-            (self.cursor_is_hidden, "\x1b[?25l"),
             (self.disable_linewrap, "\x1b[?7l"),
             (self.insert_mode, "\x1b[4h"),
-            (self.new_line_mode, "\x1b[20h"),
             (matches!(self.mouse_mode, MouseMode::Sgr), "\x1b[?1006h"),
             (matches!(self.mouse_mode, MouseMode::Utf8), "\x1b[?1005h"),
             (self.mouse_tracking == MouseTracking::Normal, "\x1b[?1000h"),

@@ -410,11 +410,13 @@ and same-submission retry scenarios also run.
 
 320×480 and 390×480 checks approximate reduced keyboard space: the timeline
 retains positive height and composer controls and safety feedback remain
-reachable in their scrolling regions. Term checks open a legacy link, rotate the viewport,
-measure both edges of the native-width grid, and verify keyboard and bracketed
-paste bytes alongside quick keys and peer target guards. These are Firefox emulation checks, not
-physical touch, virtual-keyboard opening, Tailscale, iOS Safari or safe-area
-hardware coverage. Masked detail screenshots and geometry comparisons are saved
+reachable in their scrolling regions. Term checks measure both edges of the
+scaled grid and the final prompt row on attach, rotation and height changes.
+They cover reading-position restoration, physical key identity across mode
+changes, queue order for keyboard, paste and mouse reports, legacy links,
+quick keys and peer target guards. Physical
+touch, virtual-keyboard opening, Tailscale, iOS Safari and safe-area hardware
+require separate checks. Masked detail screenshots and geometry comparisons are saved
 under `target/web-browser-results/`. For pre-change characterization only, set
 `YINZ_WEB_HEADER_BASELINE=1` on the same browser command; it records geometry for
 the short/long fixtures without asserting the final budgets. Characterization

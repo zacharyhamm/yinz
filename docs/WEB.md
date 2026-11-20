@@ -347,6 +347,8 @@ plugin configuration or secrets.
   - **Term** opens an interactive xterm.js view of the live pane. Tap the
     terminal to type or paste, or use the quick keys below it. The grid scales
     to the available width and keeps the pane's original columns and rows.
+    When the grid is taller than the panel, Term opens at the bottom. Scroll
+    up to keep an earlier row in view, or return to the bottom to follow the prompt.
     Opening an older `tab=screen` bookmark also selects Term. Scrolling up in
     the desktop pane pauses Term and its input until the pane returns to the
     bottom and processes its buffered output. Large snapshots load in parts.

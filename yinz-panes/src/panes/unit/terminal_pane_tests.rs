@@ -3909,15 +3909,20 @@ fn osc7501_frame_status_matches_manifest_with_retained_history() {
     }
 }
 
+fn make_web_terminal_pane(cols: usize, rows: usize) -> TerminalPane {
+    let mut pane = make_pane_for_ingest();
+    let mut geom = pane.geom;
+    geom.cols.set_inner(cols);
+    geom.rows.set_inner(rows);
+    pane.set_geom(geom);
+    pane
+}
+
 #[test]
 #[ignore = "runs the vendored browser terminal with Node.js"]
 fn web_terminal_snapshot_replays_cells_and_cursor_in_xterm() {
     let replay = |cols, prefix: &str, delta: &str| {
-        let mut pane = make_pane_for_ingest();
-        let mut geom = pane.geom;
-        geom.cols.set_inner(cols);
-        geom.rows.set_inner(4);
-        pane.set_geom(geom);
+        let mut pane = make_web_terminal_pane(cols, 4);
         pane.handle_pty_bytes(prefix.as_bytes().to_vec());
         let snapshot = pane.web_terminal_frame(None).unwrap();
         pane.handle_pty_bytes(delta.as_bytes().to_vec());
@@ -3943,6 +3948,118 @@ fn web_terminal_snapshot_replays_cells_and_cursor_in_xterm() {
         "positioned": replay(8, "12345678\x1b[1;8H", "x"),
     });
     run_xterm_replay(cases);
+}
+
+#[test]
+#[ignore = "runs the vendored browser terminal with Node.js"]
+fn web_terminal_modes_and_live_alternate_replays_cells_and_cursor_in_xterm() {
+    use serde_json::json;
+
+    let replay = |writes: &[(&[u8], bool)]| {
+        let mut pane = make_web_terminal_pane(8, 4);
+        let mut cursor = None;
+        let mut steps = Vec::new();
+        for &(bytes, snapshot) in writes {
+            pane.handle_pty_bytes(bytes.to_vec());
+            let after = if snapshot { None } else { cursor.as_deref() };
+            let frame = pane.web_terminal_frame(after).unwrap();
+            assert_eq!(frame.snapshot, snapshot);
+            assert!(!frame.snapshot_continues);
+            let (x, y, visible) = pane.grid.cursor_coordinates().unwrap();
+            steps.push(json!({
+                "frame": frame,
+                "text": pane.grid.dump_screen(false),
+                "cursor": [x, y],
+                "visible": visible,
+                "newLineMode": pane.grid.new_line_mode,
+                "alternate": pane.grid.is_alternate_mode_active(),
+            }));
+            cursor = Some(frame.cursor);
+        }
+        json!({"steps": steps})
+    };
+    run_xterm_replay(json!({
+        "replacement_modes": replay(&[
+            (b"top\r\nxyz\x1b[?25l\x1b[20h", true),
+            (b"\x1b[?25h\x1b[20l", true),
+            (b"\nX", false),
+            (b"\x1b[?25l\x1b[20h", true),
+        ]),
+        "live_alternate": replay(&[
+            (b"stay\r\nsecond\x1b[3;5H", true),
+            (b"\x1b[?10", false),
+            (b"49hA\x1b7B", false),
+            (b"\x1b[?1049hC", false),
+            (b"\x1b8D", false),
+            (b"\x1b[?1049l", false),
+        ]),
+    }));
+}
+
+#[test]
+#[ignore = "runs the vendored browser terminal with Node.js"]
+fn web_terminal_repeat_replays_cells_and_cursor_in_xterm() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use serde_json::json;
+    use yinz_types::agent::control::TerminalFrame;
+
+    let mut pane = make_web_terminal_pane(8, 4);
+    let mut steps = Vec::new();
+    let mut record = |pane: &TerminalPane, frame: &TerminalFrame| {
+        use crate::panes::terminal_character::AnsiCode::{On, RgbCode};
+
+        let (x, y, visible) = pane.grid.cursor_coordinates().unwrap();
+        let styles: Vec<_> = pane.grid.as_character_lines()[0][..x]
+            .iter()
+            .map(|cell| {
+                let rgb = |color| match color {
+                    Some(RgbCode((r, g, b))) => Some(u32::from_be_bytes([0, r, g, b])),
+                    _ => None,
+                };
+                (
+                    rgb(cell.styles.foreground),
+                    rgb(cell.styles.background),
+                    cell.styles.bold == Some(On),
+                )
+            })
+            .collect();
+        steps.push(json!({
+            "frame": frame,
+            "text": pane.grid.dump_screen(false),
+            "cursor": [x, y],
+            "visible": visible,
+            "newLineMode": pane.grid.new_line_mode,
+            "alternate": pane.grid.is_alternate_mode_active(),
+            "styles": styles,
+        }));
+    };
+
+    pane.handle_pty_bytes(b"\x1b[1;38;2;12;34;56;48;2;78;90;123mA\x1b[0;32m".to_vec());
+    let first = pane.web_terminal_frame(None).unwrap();
+    record(&pane, &first);
+
+    pane.handle_pty_bytes(b"\x1b[2".to_vec());
+    let partial = pane.web_terminal_frame(Some(&first.cursor)).unwrap();
+    assert!(!partial.snapshot);
+    assert_eq!(STANDARD.decode(&partial.data).unwrap(), b"\x1b[2");
+    record(&pane, &partial);
+
+    pane.handle_pty_bytes(b"b\x1b[".to_vec());
+    assert_eq!(pane.grid.dump_screen(false).trim_end(), "AAA");
+    assert!(pane.web_terminal_frame(Some(&partial.cursor)).is_none());
+    pane.handle_pty_bytes(b"38;2;9;8;7m".to_vec());
+    let replacement = pane.web_terminal_frame(Some(&partial.cursor)).unwrap();
+    assert!(replacement.snapshot && !replacement.snapshot_continues);
+    assert_ne!(replacement.cursor, partial.cursor);
+    record(&pane, &replacement);
+
+    pane.handle_pty_bytes(b"Z".to_vec());
+    let delta = pane.web_terminal_frame(Some(&replacement.cursor)).unwrap();
+    assert!(!delta.snapshot);
+    assert_eq!(STANDARD.decode(&delta.data).unwrap(), b"Z");
+    record(&pane, &delta);
+
+    run_xterm_replay(json!({ "repeat": { "steps": steps } }));
 }
 
 fn run_xterm_replay(cases: serde_json::Value) {
@@ -4107,4 +4224,211 @@ fn web_terminal_snapshot_and_incremental_reads_follow_the_native_pane() {
     let resized = pane.web_terminal_frame(Some(&delta.cursor)).unwrap();
     assert!(resized.snapshot);
     assert_eq!(resized.cols, 80);
+}
+
+#[test]
+fn web_terminal_repeat_invalidates_only_with_a_saved_character_even_before_kitty() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    let mut pane = make_web_terminal_pane(8, 4);
+    let first = pane.web_terminal_frame(None).unwrap();
+    pane.handle_pty_bytes(b"\x1b[2b".to_vec());
+    let delta = pane.web_terminal_frame(Some(&first.cursor)).unwrap();
+    assert!(!delta.snapshot);
+    assert_eq!(STANDARD.decode(&delta.data).unwrap(), b"\x1b[2b");
+
+    let mut bytes = b"A\x1b[2b".to_vec();
+    bytes.extend(apc_b64("a=t,f=32,s=1,v=1,i=1,q=2", &[255; 4]));
+    pane.handle_pty_bytes(bytes);
+    assert_eq!(pane.grid.kitty_commands_handled(), 1);
+    assert_eq!(pane.grid.dump_screen(false).trim_end(), "AAA");
+    let replacement = pane.web_terminal_frame(Some(&delta.cursor)).unwrap();
+    assert!(replacement.snapshot && !replacement.snapshot_continues);
+    assert_ne!(replacement.cursor, delta.cursor);
+}
+
+#[test]
+fn web_terminal_snapshot_refreshes_only_after_effective_color_changes() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    let mut pane = make_web_terminal_pane(8, 4);
+    let first = pane.web_terminal_frame(None).unwrap();
+    let check_snapshot = |pane: &mut TerminalPane, after: &str, colors: &[&str]| {
+        let frame = pane.web_terminal_frame(Some(after)).unwrap();
+        assert!(frame.snapshot && !frame.snapshot_continues);
+        assert_ne!(frame.cursor, after);
+        let data = String::from_utf8(STANDARD.decode(&frame.data).unwrap()).unwrap();
+        for color in colors {
+            assert!(data.contains(color), "missing {color:?} in {data:?}");
+        }
+        frame.cursor
+    };
+    let check_cursor = |pane: &mut TerminalPane, after: &str| {
+        let frame = pane.web_terminal_frame(Some(after)).unwrap();
+        assert!(!frame.snapshot && frame.data.is_empty());
+        assert_eq!(frame.cursor, after);
+    };
+
+    let mut baseline = pane.style.application;
+    baseline.theme.foreground = (0x12, 0x34, 0x56);
+    pane.update_application_baseline(baseline);
+    let cursor = check_snapshot(&mut pane, &first.cursor, &["\x1b]10;#123456\x1b\\"]);
+    baseline.theme.background = (0x23, 0x45, 0x67);
+    pane.update_application_baseline(baseline);
+    let cursor = check_snapshot(&mut pane, &cursor, &["\x1b]11;#234567\x1b\\"]);
+    baseline.theme.ansi[15] = (0x34, 0x56, 0x78);
+    pane.update_application_baseline(baseline);
+    let cursor = check_snapshot(&mut pane, &cursor, &[";15;#345678\x1b\\"]);
+
+    pane.set_pane_default_colors(Some("#abcdef".into()), None);
+    let cursor = check_snapshot(&mut pane, &cursor, &["\x1b]10;#abcdef\x1b\\"]);
+    pane.set_pane_default_colors(Some("#ABCDEF".into()), Some("#fedcba".into()));
+    let cursor = check_snapshot(&mut pane, &cursor, &["\x1b]11;#fedcba\x1b\\"]);
+    pane.set_pane_default_colors(Some("rgb:ab/cd/ef".into()), Some("#FEDCBA".into()));
+    check_cursor(&mut pane, &cursor);
+
+    pane.handle_pty_bytes(b"\x1b]10;#010203\x07\x1b]11;#040506\x07\x1b]4;15;#070809\x07".to_vec());
+    let delta = pane.web_terminal_frame(Some(&cursor)).unwrap();
+    assert!(!delta.snapshot);
+    pane.set_pane_default_colors(None, None);
+    check_cursor(&mut pane, &delta.cursor);
+    baseline.theme.foreground = (0xa1, 0xb2, 0xc3);
+    baseline.theme.background = (0xd4, 0xe5, 0xf6);
+    baseline.theme.ansi[15] = (0x98, 0x76, 0x54);
+    pane.update_application_baseline(baseline);
+    check_cursor(&mut pane, &delta.cursor);
+
+    baseline.theme.ansi[0] = (0x01, 0x23, 0x45);
+    pane.update_application_baseline(baseline);
+    check_snapshot(
+        &mut pane,
+        &delta.cursor,
+        &[
+            "\x1b]10;#010203\x1b\\",
+            "\x1b]11;#040506\x1b\\",
+            "\x1b]4;0;#012345;",
+            ";15;#070809\x1b\\",
+        ],
+    );
+}
+
+#[test]
+fn web_terminal_snapshot_replaces_cursors_after_kitty_movement_or_scroll() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    for (prefix, cols, position, viewport) in [
+        (&b"top\r\nab"[..], 2, (5, 1, true), "top\nab  X"),
+        (
+            b"one\r\ntwo\r\nthree\r\nfour\r",
+            8,
+            (1, 3, true),
+            "two\nthree\nfour\nX",
+        ),
+    ] {
+        let mut pane = make_web_terminal_pane(8, 4);
+        pane.handle_pty_bytes(prefix.to_vec());
+        let first = pane.web_terminal_frame(None).unwrap();
+        let mut pty_read = apc_b64(&format!("a=T,f=32,s=1,v=1,i=1,c={cols},r=1"), &[255; 4]);
+        pty_read.extend_from_slice(b"X\x1b[");
+        pane.handle_pty_bytes(pty_read);
+        assert_eq!(pane.grid.kitty_placement_count(), 1);
+        assert_eq!(
+            pane.drain_messages_to_pty(),
+            vec![b"\x1b_Gi=1;OK\x1b\\".to_vec()]
+        );
+        assert!(pane.web_terminal_frame(Some(&first.cursor)).is_none());
+        pane.handle_pty_bytes(b"0m".to_vec());
+        let replacement = pane.web_terminal_frame(Some(&first.cursor)).unwrap();
+        assert!(replacement.snapshot && !replacement.snapshot_continues);
+        assert_ne!(replacement.cursor, first.cursor);
+        let bytes = STANDARD.decode(&replacement.data).unwrap();
+        assert!(!bytes.windows(3).any(|prefix| prefix == b"\x1b_G"));
+        let mut replay = make_web_terminal_pane(8, 4);
+        replay.handle_pty_bytes(bytes);
+        assert_eq!(pane.grid.dump_screen(false).trim_end(), viewport);
+        assert_eq!(pane.grid.cursor_coordinates(), Some(position));
+        assert_eq!(replay.grid.dump_screen(true), pane.grid.dump_screen(true));
+        assert_eq!(replay.grid.cursor_coordinates(), Some(position));
+    }
+}
+
+#[test]
+fn web_terminal_snapshot_keeps_delta_cursor_for_kitty_commands_without_text_effects() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    let mut pane = make_web_terminal_pane(8, 4);
+    let first = pane.web_terminal_frame(None).unwrap();
+    let mut cursor = first.cursor;
+    for (control, payload, text, placements) in [
+        ("a=t,f=32,s=1,v=1,i=1,q=2", &[255; 4][..], b'A', 0),
+        ("a=p,i=1,C=1,q=2", &[], b'B', 1),
+        ("a=p,i=2,q=2", &[], b'C', 1),
+    ] {
+        let mut bytes = apc_b64(control, payload);
+        bytes.push(text);
+        pane.handle_pty_bytes(bytes);
+        assert_eq!(pane.grid.kitty_placement_count(), placements);
+        let delta = pane.web_terminal_frame(Some(&cursor)).unwrap();
+        assert!(!delta.snapshot && !delta.snapshot_continues, "{control}");
+        assert_eq!(STANDARD.decode(delta.data).unwrap(), [text]);
+        cursor = delta.cursor;
+    }
+    assert_eq!(pane.grid.dump_screen(false).trim_end(), "ABC");
+}
+
+fn make_pane_with_multipart_web_snapshot() -> TerminalPane {
+    let mut pane = make_web_terminal_pane(128, 4);
+    let pair = "\x1b[38;2;123;145;167;48;2;222;211;200mA\x1b[38;2;201;211;221;48;2;135;146;157mB";
+    let row = format!("{}\r\n", pair.repeat(60));
+    for _ in 0..100 {
+        pane.handle_pty_bytes(row.as_bytes().to_vec());
+    }
+    pane
+}
+
+#[test]
+fn web_terminal_multipart_snapshot_restarts_after_default_color_changes() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    let mut pane = make_pane_with_multipart_web_snapshot();
+    let first = pane.web_terminal_frame(None).unwrap();
+    assert!(first.snapshot && first.snapshot_continues);
+
+    pane.set_pane_default_colors(Some("#123456".into()), None);
+    let replacement = pane.web_terminal_frame(Some(&first.cursor)).unwrap();
+    assert!(replacement.snapshot && replacement.snapshot_continues);
+    assert_ne!(replacement.cursor, first.cursor);
+    let bytes = STANDARD.decode(&replacement.data).unwrap();
+    assert!(bytes.starts_with(b"\x1b[20l\x1b]10;#123456\x1b\\"));
+
+    let mut baseline = pane.style.application;
+    baseline.theme.background = (0x78, 0x9a, 0xbc);
+    pane.update_application_baseline(baseline);
+    let updated = pane.web_terminal_frame(Some(&replacement.cursor)).unwrap();
+    assert!(updated.snapshot && updated.snapshot_continues);
+    assert_ne!(updated.cursor, replacement.cursor);
+    let bytes = STANDARD.decode(&updated.data).unwrap();
+    assert!(bytes.starts_with(b"\x1b[20l\x1b]10;#123456\x1b\\\x1b]11;#789abc\x1b\\"));
+}
+
+#[test]
+fn web_terminal_multipart_snapshot_restarts_after_kitty_placement() {
+    let mut pane = make_pane_with_multipart_web_snapshot();
+    let first = pane.web_terminal_frame(None).unwrap();
+    assert!(first.snapshot && first.snapshot_continues);
+    assert!(
+        !pane
+            .web_terminal_frame(Some(&first.cursor))
+            .unwrap()
+            .snapshot
+    );
+
+    pane.handle_pty_bytes(apc_b64("a=T,f=32,s=1,v=1,i=1,q=2", &[255; 4]));
+    let replacement = pane.web_terminal_frame(Some(&first.cursor)).unwrap();
+    assert!(replacement.snapshot && replacement.snapshot_continues);
+    assert_ne!(replacement.cursor, first.cursor);
+    assert_eq!(
+        pane.web_terminal_frame(Some(&first.cursor)).unwrap(),
+        replacement
+    );
 }

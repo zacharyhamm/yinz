@@ -1204,7 +1204,7 @@ as JSON, with only the listed `*html` fields added.
 | `POST /api/agent/focus` | `agent` | `focus` | none; replies `{"ok":true}` |
 | `POST /api/agent/screen` | `agent`, optional `lines` (1–200, default 80) | `screen` | `html` from the response's `output` |
 | `POST /api/agent/term` | `agent`, optional `after` cursor | `terminal` | none |
-| `POST /api/agent/term/input` | `agent`, `data` (base64 bytes or a key such as `{"bare_key":"Enter","key_modifiers":["Shift"]}`) | `terminal_input` | none |
+| `POST /api/agent/term/input` | `agent`, `data` (base64 keyboard bytes, `{"mouse":"<base64>"}` for mouse reports, or a key such as `{"bare_key":"Enter","key_modifiers":["Shift"]}`) | `terminal_input` | none |
 | `POST /api/agent/keys` | `agent`, `keys` (1–8 native key names) | `keys` | none |
 
 Prompt, keys and screen return the native `{response:AgentResponse}` with

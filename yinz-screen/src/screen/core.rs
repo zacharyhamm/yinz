@@ -146,14 +146,26 @@ impl AgentHost for ScreenCore {
         }
     }
 
-    fn write_web_terminal_bytes(&mut self, pane: PaneId, bytes: Vec<u8>) -> Result<()> {
+    fn write_web_terminal_bytes(
+        &mut self,
+        pane: PaneId,
+        bytes: Vec<u8>,
+        count_input: bool,
+    ) -> Result<()> {
         let enter = bytes == b"\r";
         let tab = self
             .tab_containing_pane_mut(pane)
             .context("agent pane no longer exists")?;
-        tab.write_to_pane_id_without_preprocessing(bytes, pane)?;
-        if let Some(target) = tab.get_pane_with_id_mut(pane) {
-            target.record_agent_input(enter);
+        tab.write_to_pane_id_without_preprocessing(bytes, pane)
+            .context("write web terminal input")?;
+        if count_input
+            && tab
+                .get_pane_with_id_mut(pane)
+                .is_some_and(|target| target.record_agent_input(enter))
+        {
+            tab.senders
+                .send_to_screen(ScreenInstruction::RequestStateUpdateForPlugins)
+                .context("publish program status after web terminal input")?;
         }
         Ok(())
     }

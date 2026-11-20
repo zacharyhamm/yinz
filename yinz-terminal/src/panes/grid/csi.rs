@@ -498,6 +498,7 @@ impl Grid {
             }
         } else if c == 'b' {
             if let Some(c) = self.preceding_char.clone() {
+                self.repeated_character = true;
                 for _ in 0..next_param_or(1) {
                     self.add_character(c.clone());
                 }

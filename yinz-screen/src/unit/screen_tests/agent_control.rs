@@ -6987,6 +6987,107 @@ fn wait_submission(id: &str) -> AgentRequest {
 }
 
 #[test]
+fn web_terminal_dialog_answers_preserve_only_the_verified_submission() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use yinz_types::agent::control::{WebAgentAction, WebTerminalInput};
+
+    for physical in [false, true] {
+        for dialog in [false, true] {
+            let (mut screen, messages, writes) = setup("codex");
+            report(&mut screen, hook("SessionStart"));
+            screen.agent_control_with_clear(identified_prompt("work", true), CLIENT, &writes);
+            finish_paste(&writes);
+            report(&mut screen, hook("UserPromptSubmit"));
+            if dialog {
+                report(&mut screen, permission_wait("codex"));
+                assert_eq!(
+                    replies(&messages, CLIENT)[0].outcome,
+                    AgentOutcome::NeedsInput
+                );
+                // Moving the pointer over a dialog cannot answer it.
+                let motion = b"\x1b[<35;1;2M";
+                screen.agent_control(
+                    guarded_codex_terminal(WebAgentAction::TerminalInput {
+                        data: WebTerminalInput::Mouse {
+                            mouse: STANDARD.encode(motion),
+                        },
+                    }),
+                    ClientId::new(2),
+                );
+                assert_eq!(
+                    replies(&messages, ClientId::new(2))[0].outcome,
+                    AgentOutcome::Ok
+                );
+                assert_eq!(finish_paste(&writes), motion);
+                screen.refresh_agent_controls();
+                screen.agent_control(wait_submission("work"), CLIENT);
+                assert_eq!(
+                    replies(&messages, CLIENT)[0].outcome,
+                    AgentOutcome::NeedsInput
+                );
+            }
+            for (key, bytes) in [
+                (BareKey::Down, b"\x1b[B".as_slice()),
+                (BareKey::Enter, b"\r"),
+            ] {
+                let data = if physical {
+                    WebTerminalInput::Key(KeyWithModifier::new(key))
+                } else {
+                    WebTerminalInput::Bytes(STANDARD.encode(bytes))
+                };
+                let request = AgentRequest::WebGuarded {
+                    pane_id: PANE,
+                    expected_kind: "codex".into(),
+                    expected_session_id: "conversation".into(),
+                    action: WebAgentAction::TerminalInput { data },
+                };
+                if dialog && bytes == b"\x1b[B" {
+                    // A disconnected writer cannot answer the permission request.
+                    let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+                    let writer = tab.senders.to_pty_writer.take();
+                    tab.senders.should_silently_fail = false;
+                    screen.agent_control(request.clone(), ClientId::new(2));
+                    assert_eq!(
+                        replies(&messages, ClientId::new(2))[0].outcome,
+                        AgentOutcome::Failed
+                    );
+                    let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+                    tab.senders.to_pty_writer = writer;
+                    tab.senders.should_silently_fail = true;
+                    screen.refresh_agent_controls();
+                    screen.agent_control(wait_submission("work"), CLIENT);
+                    assert_eq!(
+                        replies(&messages, CLIENT)[0].outcome,
+                        AgentOutcome::NeedsInput
+                    );
+                }
+                screen.agent_control(request, ClientId::new(2));
+                assert_eq!(
+                    replies(&messages, ClientId::new(2))[0].outcome,
+                    AgentOutcome::Ok
+                );
+                screen.refresh_agent_controls();
+            }
+            assert_eq!(finish_paste(&writes), b"\x1b[B\r");
+            if dialog {
+                screen.agent_control(wait_submission("work"), CLIENT);
+                assert!(replies(&messages, CLIENT).is_empty());
+                report(&mut screen, hook("Stop"));
+                assert_eq!(
+                    replies(&messages, CLIENT)[0].outcome,
+                    AgentOutcome::Completed
+                );
+            } else {
+                assert_eq!(
+                    replies(&messages, CLIENT)[0].outcome,
+                    AgentOutcome::Interrupted
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn submission_wait_preserves_failure_after_permission_and_later_turns() {
     for kind in ["codex", "claude", "pi"] {
         let (mut screen, messages, writes) = setup(kind);
@@ -17373,23 +17474,113 @@ fn web_terminal_expires_idle_snapshot_even_if_the_pane_produces_no_output() {
 }
 
 #[test]
+fn web_terminal_mouse_batches_preserve_the_pending_submission() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use yinz_types::agent::control::WebAgentAction;
+
+    // Legacy press, drag and release (including a non-UTF-8 column), then SGR
+    // press, drag and release. The raw keyboard case pastes the very same bytes.
+    let reports = b"\x1b[M \xff!\x1b[M@\xfe!\x1b[M#\xfe!\x1b[<0;1;2M\x1b[<32;2;2M\x1b[<0;2;2m";
+    for keyboard in [false, true] {
+        let (mut screen, messages, writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        screen.agent_control_with_clear(identified_prompt("work", true), CLIENT, &writes);
+        finish_paste(&writes);
+        report(&mut screen, hook("UserPromptSubmit"));
+        let revision = screen
+            .tab_containing_pane(PANE)
+            .unwrap()
+            .agent_input_revision(PANE);
+        let data = if keyboard {
+            WebTerminalInput::Bytes(STANDARD.encode(reports))
+        } else {
+            WebTerminalInput::Mouse {
+                mouse: STANDARD.encode(reports),
+            }
+        };
+        screen.agent_control(
+            guarded_codex_terminal(WebAgentAction::TerminalInput { data }),
+            ClientId::new(2),
+        );
+        assert_eq!(
+            replies(&messages, ClientId::new(2))[0].outcome,
+            AgentOutcome::Ok
+        );
+        assert_eq!(finish_paste(&writes), reports);
+        assert_eq!(
+            screen
+                .tab_containing_pane(PANE)
+                .unwrap()
+                .agent_input_revision(PANE),
+            revision + u64::from(keyboard)
+        );
+        screen.refresh_agent_controls();
+        report(&mut screen, hook("Stop"));
+        assert_eq!(
+            replies(&messages, CLIENT)[0].outcome,
+            if keyboard {
+                AgentOutcome::Interrupted
+            } else {
+                AgentOutcome::Completed
+            }
+        );
+    }
+}
+
+#[test]
+fn web_terminal_rejects_entire_malformed_mouse_batches() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use yinz_types::agent::control::WebAgentAction;
+
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    let revision = screen
+        .tab_containing_pane(PANE)
+        .unwrap()
+        .agent_input_revision(PANE);
+    for mouse in [
+        String::new(),
+        "bad base64".into(),
+        STANDARD.encode(b"\x1b[M !"),
+        STANDARD.encode(b"\x1b[M \x01!"),
+        STANDARD.encode(b"\x1b[<0;2;m"),
+        STANDARD.encode(b"\x1b[<0;2;3"),
+        STANDARD.encode(b"\x1b[<999;2;3M"),
+        STANDARD.encode(b"\x1b[<0;2;3M\r"),
+        STANDARD.encode(b"\x1b[M !!\x1b[<"),
+    ] {
+        screen.agent_control(
+            guarded_codex_terminal(WebAgentAction::TerminalInput {
+                data: WebTerminalInput::Mouse { mouse },
+            }),
+            CLIENT,
+        );
+        assert_eq!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::Rejected
+        );
+        assert!(finish_paste(&writes).is_empty());
+    }
+    assert_eq!(
+        screen
+            .tab_containing_pane(PANE)
+            .unwrap()
+            .agent_input_revision(PANE),
+        revision
+    );
+}
+
+#[test]
 fn web_terminal_input_encodes_negotiated_keys_and_tracks_plain_enter() {
     use yinz_types::agent::control::WebAgentAction;
     let (mut screen, messages, writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     let pid = TerminalId::new(7);
     let mut cursor = None;
-    for enabled in [true, false, true] {
-        let mode = if enabled {
-            b"\x1b[>1u".as_slice()
-        } else {
-            b"\x1b[<u"
-        };
-        screen
-            .tab_containing_pane_mut(PANE)
-            .unwrap()
-            .handle_pty_bytes(pid, mode.to_vec())
-            .unwrap();
+    for (advertised, mode, expected) in [
+        (false, b"\x1b[>1u".as_slice(), b"\x1b[13;2u".as_slice()),
+        (true, b"\x1b[<u", b"\r"),
+    ] {
         screen.agent_control(
             guarded_codex_terminal(WebAgentAction::Terminal {
                 after: cursor.clone(),
@@ -17397,10 +17588,28 @@ fn web_terminal_input_encodes_negotiated_keys_and_tracks_plain_enter() {
             CLIENT,
         );
         let frame = replies(&messages, CLIENT).pop().unwrap().terminal.unwrap();
-        assert_eq!(frame.supports_kitty_keyboard_protocol, enabled);
+        assert_eq!(frame.supports_kitty_keyboard_protocol, advertised);
         assert_eq!(frame.snapshot, cursor.is_none());
         cursor = Some(frame.cursor);
+        screen
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .handle_pty_bytes(pid, mode.to_vec())
+            .unwrap();
+        screen.agent_control(
+            guarded_codex_terminal(WebAgentAction::TerminalInput {
+                data: WebTerminalInput::Key("Shift Enter".parse().unwrap()),
+            }),
+            CLIENT,
+        );
+        assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+        assert_eq!(finish_paste(&writes), expected);
     }
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .handle_pty_bytes(pid, b"\x1b[>1u".to_vec())
+        .unwrap();
     for (name, expected) in [
         ("Shift Enter", b"\x1b[13;2u".as_slice()),
         ("Ctrl Tab", b"\x1b[9;5u"),
@@ -17495,6 +17704,11 @@ fn web_terminal_pauses_until_desktop_scrollback_is_drained() {
     let raw = WebAgentAction::TerminalInput {
         data: WebTerminalInput::Bytes("eQ==".into()),
     };
+    let mouse = WebAgentAction::TerminalInput {
+        data: WebTerminalInput::Mouse {
+            mouse: "G1tNICEh".into(),
+        },
+    };
     let keys = WebAgentAction::SendKeys {
         keys: vec!["y".into()],
     };
@@ -17507,7 +17721,7 @@ fn web_terminal_pauses_until_desktop_scrollback_is_drained() {
             // Even after clearing the viewport, queued output must keep input paused.
             tab.get_pane_with_id_mut(PANE).unwrap().clear_scroll();
         }
-        for action in [read.clone(), raw.clone(), keys.clone()] {
+        for action in [read.clone(), raw.clone(), mouse.clone(), keys.clone()] {
             let response = request(&mut screen, action);
             assert_eq!(response.outcome, AgentOutcome::Rejected);
             assert!(response.message.unwrap().contains("scrollback"));
@@ -19326,8 +19540,13 @@ fn osc_status_replay_requests_a_manifest_with_the_parsed_status() {
 
 #[test]
 fn osc7501_programmatic_enter_publishes_retirement_without_pty_output() {
-    for automated_prompt in [false, true] {
-        let (mut screen, _messages, writes) = setup("codex");
+    use yinz_types::agent::control::WebAgentAction;
+    let web_enter = guarded_codex_terminal(WebAgentAction::TerminalInput {
+        data: WebTerminalInput::Bytes("DQ==".into()),
+    });
+    // A pending prompt sends its own submit key after delivery.
+    for enter in [Some(send_keys(vec![BareKey::Enter])), Some(web_enter), None] {
+        let (mut screen, messages, writes) = setup("codex");
         report(&mut screen, hook("SessionStart"));
         let (to_plugin, plugins) = channels::unbounded();
         screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
@@ -19341,7 +19560,7 @@ fn osc7501_programmatic_enter_publishes_retirement_without_pty_output() {
             .unwrap()
             .senders
             .to_screen = Some(SenderWithContext::new(to_screen));
-        if automated_prompt {
+        if enter.is_none() {
             screen.agent_control_with_clear(prompt(false), CLIENT, &writes);
             finish_paste(&writes);
         }
@@ -19354,19 +19573,13 @@ fn osc7501_programmatic_enter_publishes_retirement_without_pty_output() {
         screen.log_and_report_session_state().unwrap();
         plugins.try_iter().for_each(drop);
         instructions.try_iter().for_each(drop);
-        if automated_prompt {
-            // Delivery completion allows the pending prompt to send its submit key.
-            let now = Instant::now();
-            screen.refresh_agent_controls_at(now);
-            screen.refresh_agent_controls_at(now + Duration::from_secs(1));
-            assert_eq!(finish_paste(&writes), b"\r");
-        } else {
+        if let Some(request) = &enter {
             let tab = screen.tab_containing_pane_mut(PANE).unwrap();
             let writer = tab.senders.to_pty_writer.take();
             tab.senders.should_silently_fail = false;
-            assert!(tab
-                .write_key_to_pane_id(PANE, KeyWithModifier::new(BareKey::Enter), None)
-                .is_err());
+            screen.agent_control(request.clone(), CLIENT);
+            assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Failed);
+            let tab = screen.tab_containing_pane_mut(PANE).unwrap();
             tab.senders.to_pty_writer = writer;
             tab.senders.should_silently_fail = true;
             assert!(tab
@@ -19376,6 +19589,7 @@ fn osc7501_programmatic_enter_publishes_retirement_without_pty_output() {
                 .current
                 .is_some());
             screen.agent_control(send_keys(vec![BareKey::Char('a')]), CLIENT);
+            assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
             assert!(instructions.try_iter().all(|(instruction, _)| !matches!(
                 instruction,
                 ScreenInstruction::RequestStateUpdateForPlugins
@@ -19386,7 +19600,14 @@ fn osc7501_programmatic_enter_publishes_retirement_without_pty_output() {
                 .program_status
                 .current
                 .is_some());
-            screen.agent_control(send_keys(vec![BareKey::Enter]), CLIENT);
+            screen.agent_control(request.clone(), CLIENT);
+            assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+            assert_eq!(finish_paste(&writes), b"a\r");
+        } else {
+            let now = Instant::now();
+            screen.refresh_agent_controls_at(now);
+            screen.refresh_agent_controls_at(now + Duration::from_secs(1));
+            assert_eq!(finish_paste(&writes), b"\r");
         }
         let mut requested = false;
         for (instruction, _) in instructions.try_iter() {
@@ -19395,7 +19616,7 @@ fn osc7501_programmatic_enter_publishes_retirement_without_pty_output() {
                 screen.log_and_report_session_state().unwrap();
             }
         }
-        assert!(requested, "automated_prompt={automated_prompt}");
+        assert!(requested, "{enter:?}");
         assert!(plugins.try_iter().any(|(instruction, _)| {
             let PluginInstruction::Update(updates) = instruction else {
                 return false;
@@ -19411,6 +19632,15 @@ fn osc7501_programmatic_enter_publishes_retirement_without_pty_output() {
                 })
             })
         }));
+        if let Some(request) = enter {
+            screen.agent_control(request, CLIENT);
+            assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+            assert_eq!(finish_paste(&writes), b"\r");
+            assert!(instructions.try_iter().all(|(instruction, _)| !matches!(
+                instruction,
+                ScreenInstruction::RequestStateUpdateForPlugins
+            )));
+        }
     }
 }
 

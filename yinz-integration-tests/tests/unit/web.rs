@@ -1289,18 +1289,22 @@ fn web_builtin_production_http() {
         "{input}"
     );
 
-    let modified_enter = json!({"bare_key": "Enter", "key_modifiers": ["Shift"]});
-    let input = call_ok(
-        addr,
-        "POST",
-        "/api/agent/term/input",
-        &token,
-        &json!({"agent": reference, "data": modified_enter}).to_string(),
-    );
-    assert_eq!(
-        input["response"]["outcome"], "status_unavailable",
-        "{input}"
-    );
+    for data in [
+        json!({"bare_key": "Enter", "key_modifiers": ["Shift"]}),
+        json!({"mouse": "G1tNICEh"}),
+    ] {
+        let input = call_ok(
+            addr,
+            "POST",
+            "/api/agent/term/input",
+            &token,
+            &json!({"agent": reference, "data": data}).to_string(),
+        );
+        assert_eq!(
+            input["response"]["outcome"], "status_unavailable",
+            "{input}"
+        );
+    }
     let invalid_key = json!({"bare_key": {"F": 0}, "key_modifiers": []});
     let invalid = call(
         addr,

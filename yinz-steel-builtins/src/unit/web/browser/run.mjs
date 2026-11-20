@@ -332,16 +332,23 @@ function agentRoute(fx, entry) {
   }
   if (p === '/api/agent/term') {
     if (!validRef(body.agent) || Object.keys(body).some((k) => !['agent', 'after'].includes(k))) return invalid('shape');
-    const changed = body.after && fx.termMouse && body.after !== '1-80';
-    const data = !body.after ? '\x1b[?2004h\x1b[?1h\x1b[32m' + screenOutput(1).replaceAll('\n', '\r\n') + '\x1b[0m\x1b[6n'
-      : changed ? '\x1b[?1049h\x1b[HMouse mode\x1b[?1006h\x1b[?1000h'
-      : !fx.termMouse && body.after === '1-80' ? '\x1b[?1049l\r\nLegacy mode' : '';
-    return [200, { response: { outcome: 'ok', terminal: { snapshot: !body.after, cols: 120, rows: 24,
-      supports_kitty_keyboard_protocol: !!fx.termMouse,
-      cursor: fx.termMouse ? '1-80' : '1-40', data: Buffer.from(data).toString('base64') } } }];
+    const rows = fx.termRows || 24;
+    const cursor = fx.termMouse === 'legacy' ? '1-100' : fx.termMouse ? '1-80' : '1-40';
+    let data = '';
+    if (!body.after) {
+      const output = fx.termRows ? `\x1b[${rows};1H${SCREEN_LAST}` : screenOutput(1).replaceAll('\n', '\r\n');
+      data = '\x1b[?2004h\x1b[?1h\x1b[32m' + output + '\x1b[0m\x1b[6n';
+    } else if (body.after !== cursor) {
+      if (fx.termMouse === 'legacy') data = '\x1b[?1006l\x1b[?2004l\r\nLegacy mouse';
+      else if (fx.termMouse) data = '\x1b[?1049h\x1b[HMouse mode\x1b[?1006h\x1b[?1002h';
+      else data = '\x1b[?1049l\x1b[?1002l\x1b[?2004h\r\nLegacy mode';
+    }
+    return [200, { response: { outcome: 'ok', terminal: { snapshot: !body.after, cols: 120, rows,
+      supports_kitty_keyboard_protocol: fx.termMouse === true, cursor, data: Buffer.from(data).toString('base64') } } }];
   }
   if (p === '/api/agent/term/input') {
-    if (!validRef(body.agent) || (typeof body.data !== 'string' && !exactKeys(body.data, ['bare_key', 'key_modifiers']))) return invalid('shape');
+    const mouse = exactKeys(body.data, ['mouse']) && typeof body.data.mouse === 'string';
+    if (!validRef(body.agent) || (typeof body.data !== 'string' && !mouse && !exactKeys(body.data, ['bare_key', 'key_modifiers']))) return invalid('shape');
     return [200, { response: { outcome: 'ok' } }];
   }
   return [404, { error: { code: 'not_found' } }];
@@ -760,8 +767,8 @@ async function revokeLive(page) {
   check(status === 204, `live logout returned ${status}`);
 }
 
-async function terminalFits(page) {
-  await textUntil(page, '.xterm-rows', '2. No', 'terminal populated before measuring the grid');
+async function terminalFits(page, content = '2. No') {
+  await textUntil(page, '.xterm-rows', content, 'terminal populated before measuring the grid');
   await until('native terminal grid fits the panel width', () => page.evaluate(() => {
     const grid = document.querySelector('.xterm-screen')?.getBoundingClientRect();
     const stage = document.querySelector('.term-stage')?.getBoundingClientRect();
@@ -954,7 +961,7 @@ async function iphoneScreenKeys(open, customKeys) {
   }, customKeys);
   await openDetail(page);
   const readPath = '/api/agent/term';
-  fx.fail.set(readPath, { mode: 'hold', times: 2 });
+  fx.fail.set(readPath, { mode: 'hold', times: customKeys ? 4 : 3 });
   await page.click('#tab-term');
   await until('empty terminal mounted with snapshot in flight', async () =>
     fx.held.length === 1 && await exists(page, '.xterm-rows'));
@@ -975,6 +982,22 @@ async function iphoneScreenKeys(open, customKeys) {
   await fulfillPart({ snapshot: false, data: bytes.subarray(split).toString('base64') });
   await textUntil(page, '.xterm-rows', '2. No', 'terminal populated before measuring and photographing keys');
   check((await textOf(page, '.xterm-rows')).includes('1. Yes'), 'final part cleared the first part');
+  const quickKey = page.locator('.screen-keys .quick-key').first();
+  await until('live cursor poll in flight', () => fx.held.length === 1);
+  check(fx.bodies(readPath).at(-1).after === frame.cursor, 'wrong live cursor');
+  check(await quickKey.isDisabled(), 'input enabled at snapshot capture offset');
+  await page.locator('.xterm-helper-textarea').focus();
+  await page.keyboard.type('ignored');
+  if (customKeys) {
+    await fulfillPart({ snapshot: true, cursor: 'replacement', data: frame.data });
+    await until('replacement snapshot catch-up', () => fx.held.length === 1);
+    check(fx.bodies(readPath).at(-1).after === 'replacement', 'wrong replacement cursor');
+    check(await quickKey.isDisabled(), 'replacement snapshot released input');
+  }
+  const delta = customKeys ? '' : '\r\nDialog updated';
+  await fulfillPart({ snapshot: false, data: Buffer.from(delta).toString('base64') });
+  await until('input enabled after live delta', () => quickKey.isEnabled());
+  if (delta) await textUntil(page, '.xterm-rows', 'Dialog updated', 'updated dialog rendered');
   const { header } = await detailGeometry(page);
   check(header <= 96, `393px collapsed header is ${header}px tall`);
   const keys = await page.locator('.screen-keys .quick-key').evaluateAll((buttons) => buttons.map((button) => {
@@ -994,6 +1017,7 @@ async function iphoneScreenKeys(open, customKeys) {
   await page.screenshot({ path: path.join(RESULTS_DIR, `screen-393-${keys.length}-keys.png`), mask: [page.locator('#composer-input')] });
   await page.click('.screen-keys [data-key="enter"]');
   await until('Screen Enter delivered', () => fx.count('/api/agent/keys') === 1);
+  check(fx.count('/api/agent/term/input') === 0, 'keyboard input leaked during catch-up');
   check(JSON.stringify(fx.bodies('/api/agent/keys')[0]) === JSON.stringify({ agent: REF7, keys: ['enter'] }),
     'Screen Enter sent the wrong key or target');
 }
@@ -1270,6 +1294,45 @@ async function compactDetail(open, width, scheme) {
   await terminalFits(page);
 }
 
+async function terminalViewport(open) {
+  const { page, fx } = await open({ viewport: { width: 390, height: 640 } });
+  fx.termRows = 160;
+  await openApp(page, detailHash('run-7', 'term'));
+  const scroll = page.locator('.screen-scroll');
+  const promptVisible = async (what) => {
+    await terminalFits(page);
+    await until(what, () => scroll.evaluate((el) => {
+      const row = el.querySelector('.xterm-rows > :last-child');
+      const rect = row.getBoundingClientRect();
+      const viewport = el.getBoundingClientRect();
+      return row.textContent.includes('2. No') && rect.height > 0 &&
+        rect.top >= Math.max(0, viewport.top) - 1 && rect.bottom <= Math.min(innerHeight, viewport.bottom) + 1 &&
+        el.scrollTop > 20 && el.scrollHeight - el.clientHeight - el.scrollTop <= 2;
+    }));
+  };
+  await promptVisible('final row visible on attach');
+  await page.setViewportSize({ width: 640, height: 390 });
+  await promptVisible('final row visible after rotation');
+  await page.setViewportSize({ width: 640, height: 360 });
+  await promptVisible('final row visible after height-only resize');
+
+  await scroll.evaluate((el) => { el.scrollTop = 120; });
+  await nextFrame(page);
+  const readingRow = () => scroll.evaluate((el) => {
+    const row = el.querySelector('.xterm-rows > :first-child').getBoundingClientRect();
+    return (el.getBoundingClientRect().top - row.top) / row.height;
+  });
+  const previous = await readingRow();
+  await page.setViewportSize({ width: 390, height: 600 });
+  await terminalFits(page);
+  await until('same row at the top after resizing while reading', async () =>
+    Math.abs(await readingRow() - previous) < 0.5);
+  await scroll.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  await promptVisible('reader returned to the final row');
+  await page.setViewportSize({ width: 390, height: 510 });
+  await promptVisible('final row follows a subsequent resize');
+}
+
 async function terminalInteraction(open, width, scheme) {
   const { page, fx } = await open({ viewport: { width, height: 640 }, colorScheme: scheme });
   await openApp(page, detailHash('run-7', 'screen'));
@@ -1284,43 +1347,76 @@ async function terminalInteraction(open, width, scheme) {
   await page.keyboard.type('abc');
   await page.keyboard.press('ArrowUp');
   await page.keyboard.press('Control+c');
-  await page.evaluate(() => {
-    // Firefox supplies its own DataTransfer for constructed clipboard events.
-    const paste = new ClipboardEvent('paste', { bubbles: true });
-    paste.clipboardData.setData('text/plain', '貼り付け');
-    document.activeElement.dispatchEvent(paste);
+  const textarea = page.locator('.xterm-helper-textarea');
+  await textarea.evaluate((el) => {
+    // Mobile dictation can insert text without a preceding key event.
+    el.setRangeText('voix 🎙');
+    el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: 'voix 🎙', composed: true }));
+    el.dispatchEvent(new CompositionEvent('compositionstart'));
+    el.value += '字';
+    el.dispatchEvent(new CompositionEvent('compositionend', { data: '字' }));
+    el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '字', composed: true }));
   });
-  const expected = 'abc\x1bOA\x03\x1b[200~貼り付け\x1b[201~';
-  const received = () => Buffer.concat(fx.bodies('/api/agent/term/input').map((b) => Buffer.from(b.data, 'base64')));
+  const pasteText = (text) => textarea.evaluate((el, data) => {
+    const paste = new ClipboardEvent('paste', { bubbles: true });
+    paste.clipboardData.setData('text/plain', data);
+    el.dispatchEvent(paste);
+  }, text);
+  const inputPath = '/api/agent/term/input';
+  const keyboardBytes = (body) => typeof body.data === 'string';
+  const received = () => Buffer.concat(fx.bodies(inputPath).filter(keyboardBytes).map((body) => Buffer.from(body.data, 'base64')));
+  const typed = 'abc\x1bOAvoix 🎙字';
+  await until('input-only text and IME commit arrive once', () => received().toString() === typed);
+  const typedBodies = fx.bodies(inputPath);
+  const control = typedBodies.findIndex((body) => !keyboardBytes(body));
+  check(JSON.stringify(typedBodies[control]?.data) === JSON.stringify({ bare_key: { Char: 'c' }, key_modifiers: ['Ctrl'] })
+    && typedBodies.filter((body) => !keyboardBytes(body)).length === 1
+    && Buffer.concat(typedBodies.slice(0, control).map((body) => Buffer.from(body.data, 'base64'))).toString() === 'abc\x1bOA',
+    'Ctrl+C lost its physical identity or arrived out of order');
+  await pasteText('貼り付け');
+  const expected = typed + '\x1b[200~貼り付け\x1b[201~';
   try {
     await until('ordered keyboard and bracketed paste bytes', () => received().toString() === expected);
   } catch (error) {
     throw new Error(`${error.message}; fixture received ${received().toString('hex')}, focused ${await page.evaluate(() => document.activeElement.className)}`);
   }
-  // Keep the first write in flight until a read fails with the paste suffix still queued.
-  const inputPath = '/api/agent/term/input';
   const readPath = '/api/agent/term';
   const quickKey = page.locator('.screen-keys .quick-key').first();
-  const largePaste = 'p'.repeat(20000);
-  const inputBytes = (entry) => Buffer.from(entry.body.data, 'base64').toString();
-  fx.fail.set(inputPath, { mode: 'hold', times: 1, matches: (entry) => inputBytes(entry).startsWith('\x1b[200~pp') });
-  await page.evaluate((text) => {
-    const paste = new ClipboardEvent('paste', { bubbles: true });
-    paste.clipboardData.setData('text/plain', text);
-    document.activeElement.dispatchEvent(paste);
-  }, largePaste);
-  await until('first paste chunk in flight', () => fx.held.length === 1);
-  check(received().length === Buffer.byteLength(expected) + 16384, 'unexpected first paste chunk length');
+  const inputText = (body) => keyboardBytes(body) ? Buffer.from(body.data, 'base64').toString() : null;
+  // Twelve framing bytes plus the UTF-8 payload fill one guarded write.
+  const atLimit = 'p'.repeat(16370) + 'é';
+  const framed = '\x1b[200~' + atLimit + '\x1b[201~';
+  await pasteText(atLimit + 'x');
+  await textUntil(page, '.screen-feedback', '16 KiB', 'oversized paste rejected locally');
+  check(await quickKey.isEnabled(), 'size warning disabled the terminal');
+  const beforePaste = fx.count(inputPath);
+  fx.fail.set(inputPath, { mode: 'hold', times: 1 });
+  await pasteText(atLimit);
+  await until('complete paste in flight', () => fx.held.length === 1);
+  check(inputText(fx.bodies(inputPath)[beforePaste]) === framed, 'paste boundaries or size changed');
+  // Hold queued typing across a failed read and multipart replacement.
+  await page.keyboard.type('q');
   fx.fail.set(readPath, { mode: 'abort', times: Infinity });
   await until('failed read pauses typing', () => quickKey.isDisabled());
   await fx.held.shift().fulfill({ status: 200, json: { response: { outcome: 'ok' } } });
   await page.keyboard.type('ignored');
-  fx.fail.delete(readPath);
+  fx.fail.set(readPath, { mode: 'hold', times: 3 });
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-  await until('recovered poll drains the complete paste once', () =>
-    received().toString() === expected + '\x1b[200~' + largePaste + '\x1b[201~');
+  const part = async (frame) => {
+    await until('held replay read', () => fx.held.length === 1);
+    return fx.held.shift().fulfill({ status: 200, json: { response: { outcome: 'ok',
+      terminal: { cols: 120, rows: 24, ...frame },
+    } } });
+  };
+  await part({ snapshot: true, snapshot_continues: true, cursor: 'part:1', data: Buffer.from('\x1b[?2004h').toString('base64') });
+  await part({ snapshot: false, cursor: 'capture' });
+  await until('live read outstanding', () => fx.held.length === 1);
+  check(await quickKey.isDisabled(), 'queued typing released at capture offset');
+  check(fx.count(inputPath) === beforePaste + 1, 'queued typing reached stale dialog');
+  await part({ snapshot: false, cursor: '1-40', data: Buffer.from('Current dialog').toString('base64') });
+  await until('live poll releases queued typing once', () => received().toString() === expected + framed + 'q');
   await page.setViewportSize({ width, height: 640 });
-  await terminalFits(page);
+  await terminalFits(page, 'Current dialog');
   fx.termMouse = true;
   await textUntil(page, '.xterm-rows', 'Mouse mode', 'alternate-screen mouse application');
   await until('screen reader can read Mouse mode', () =>
@@ -1328,12 +1424,18 @@ async function terminalInteraction(open, width, scheme) {
   const grid = page.locator('.xterm-screen');
   await grid.scrollIntoViewIfNeeded();
   const box = await grid.boundingBox();
-  await page.mouse.click(box.x + box.width * 99.5 / 120, box.y + box.height * 2.5 / 24);
-  await until('scaled mouse reports column 100, row 3', () =>
-    Buffer.concat(fx.bodies('/api/agent/term/input').map((b) => Buffer.from(b.data, 'base64'))).toString()
-      .endsWith('\x1b[<0;100;3M\x1b[<0;100;3m'));
-  fx.fail.set(inputPath, { mode: 'abort', times: 1, matches: (entry) => inputBytes(entry) === 'x' });
-  await page.keyboard.type('x');
+  const point = (column) => box.x + box.width * (column - 0.5) / 120;
+  const y = box.y + box.height * 2.5 / 24;
+  const beforeMouse = fx.count(inputPath);
+  await page.mouse.move(point(99), y);
+  await page.mouse.down();
+  await page.mouse.move(point(100), y);
+  await page.mouse.up();
+  const mouseBytes = (start) => Buffer.concat(fx.bodies(inputPath).slice(start).map(({ data }) => Buffer.from(data.mouse, 'base64')));
+  await until('SGR press, drag and release at scaled coordinates', () =>
+    mouseBytes(beforeMouse).toString() === '\x1b[<0;99;3M\x1b[<32;100;3M\x1b[<0;100;3m');
+  fx.fail.set(inputPath, { mode: 'abort', times: 1, matches: (entry) => inputText(entry.body) === framed });
+  await pasteText(atLimit);
   await textUntil(page, '.screen-feedback', 'Input stopped', 'uncertain terminal input stops delivery');
   const reads = fx.count(readPath);
   await until('polling continues after the failed write', () => fx.count(readPath) >= reads + 2);
@@ -1345,7 +1447,7 @@ async function terminalInteraction(open, width, scheme) {
   await page.locator('.xterm-helper-textarea').focus();
   await page.keyboard.type('z');
   await until('fresh input after reconnect', () => fx.count('/api/agent/term/input') === writes + 1);
-  check(received().toString().endsWith('xz'), `unexpected bytes after reconnect: ${received().subarray(-32).toString('hex')}`);
+  check(received().toString().endsWith(framed + 'z'), `unexpected bytes after reconnect: ${received().subarray(-32).toString('hex')}`);
 
   const beforeKeys = fx.count(inputPath);
   await page.keyboard.type('a');
@@ -1362,12 +1464,39 @@ async function terminalInteraction(open, width, scheme) {
     return JSON.stringify(delivered) === JSON.stringify(ordered);
   });
 
+  fx.termMouse = 'legacy';
+  await textUntil(page, '.xterm-rows', 'Legacy mouse', 'legacy encoding with unbracketed paste');
+  fx.fail.set(inputPath, { mode: 'hold', times: 1 });
+  await page.keyboard.type('h');
+  await until('keyboard write in flight before mouse and paste', () => fx.held.length === 1);
+  const beforeMixed = fx.count(inputPath);
+  await page.mouse.click(point(1), y);
+  const legacyPress = '\x1b[M !#';
+  const legacyClick = legacyPress + '\x1b[M#!#';
+  await pasteText(legacyPress);
+  await page.mouse.click(point(100), y); // column 100 encodes as a single non-UTF-8 byte
+  await page.keyboard.press('Enter');
+  await page.keyboard.type('k');
+  await fx.held.shift().fulfill({ status: 200, json: { response: { outcome: 'ok' } } });
+  const encode = (s) => Buffer.from(s, 'latin1').toString('base64');
+  const mixed = [{ mouse: encode(legacyClick) }, encode(legacyPress),
+    { mouse: encode('\x1b[M \x84#\x1b[M#\x84#') }, 'DQ==', 'aw=='];
+  await until('legacy mouse, identical keyboard paste, mouse, Enter and typing retain order', () =>
+    JSON.stringify(fx.bodies(inputPath).slice(beforeMixed).map((body) => body.data)) === JSON.stringify(mixed));
+
   fx.termMouse = false;
   await textUntil(page, '.xterm-rows', 'Legacy mode', 'pane disabled Kitty keyboard mode');
+  const beforeShiftEnter = fx.count(inputPath);
   await page.keyboard.press('Shift+Enter');
-  await until('legacy Shift+Enter sends carriage return', () =>
-    fx.bodies(inputPath).slice(beforeKeys + ordered.length)[0]?.data === 'DQ==');
+  await until('Shift+Enter has the same physical identity after a legacy frame', () =>
+    JSON.stringify(fx.bodies(inputPath)[beforeShiftEnter]?.data) === JSON.stringify(ordered[1]));
 
+  fx.fail.set(inputPath, { mode: 'hold', times: 1 });
+  await pasteText(atLimit);
+  await until('paste request before navigation', () => fx.held.length === 1);
+  check(inputText(fx.bodies(inputPath).at(-1)) === framed, 'navigation can discard a paste suffix');
+  await page.click('#tab-details');
+  await fx.held.shift().abort();
 }
 
 async function detailSafety(open, width, scheme) {
@@ -3358,6 +3487,7 @@ async function main() {
   for (const width of [320, 390, 1024]) for (const scheme of ['light', 'dark']) {
     await scenario(`compact detail ${width}px ${scheme}`, (open) => compactDetail(open, width, scheme));
   }
+  await scenario('interactive terminal viewport pinning', terminalViewport);
   for (const width of [320, 390]) for (const scheme of ['light', 'dark']) {
     await scenario(`interactive terminal ${width}px ${scheme}`, (open) => terminalInteraction(open, width, scheme));
   }

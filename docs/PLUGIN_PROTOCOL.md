@@ -947,7 +947,7 @@ handler that survives terminal detach. Operations reject unknown fields. No nati
 | `prompt` | `agent:AgentRef`, `submission_id`, `text` | `{response:AgentResponse}` |
 | `screen` | `agent:AgentRef`, `lines` (1–200, default 80) | `{response:AgentResponse}` |
 | `terminal` | `agent:AgentRef`, optional opaque `after` | `{response:AgentResponse}` |
-| `terminal_input` | `agent:AgentRef`, `data` as base64 (1–32768 encoded bytes) or a native `KeyWithModifier` object | `{response:AgentResponse}` |
+| `terminal_input` | `agent:AgentRef`, `data` as base64 keyboard bytes, a native `KeyWithModifier`, or `{"mouse":"<base64>"}` (1–32768 encoded bytes per batch) | `{response:AgentResponse}` |
 | `keys` | `agent:AgentRef`, `keys` (1–8) | `{response:AgentResponse}` |
 | `focus` | `agent:AgentRef` | `true` |
 
@@ -959,11 +959,16 @@ Terminal reads return `response.terminal` with native `cols`, `rows`, an opaque
 `supports_kitty_keyboard_protocol` and base64 VT `data`. Reset and resize the
 emulator when `snapshot` is true. Snapshots larger than 256 KiB arrive in parts.
 After writing each part with `snapshot_continues: true`, immediately request the
-next part with its cursor. Enable input after writing the final part. Its cursor
-resumes live output at the snapshot boundary. A missing `snapshot_continues`
+next part with its cursor. After the final part, immediately poll its live cursor and
+apply the delta before enabling input. If that read returns a replacement
+snapshot, follow its final cursor to live output as well. A missing `snapshot_continues`
 defaults to false. A read awaiting a complete parser boundary has no frame and
 can be polled again.
 Prompt, terminal input, terminal reads, screen and keys also recheck kind and conversation on the owning screen.
+The screen encodes physical keys using the pane's current keyboard mode. Mouse
+batches must consist entirely of complete legacy or SGR reports. They reach the
+PTY without changing the agent input revision. A base64 keyboard string with
+the same bytes still counts as keyboard input.
 Local requests use `WebGuarded`. Peer requests use `WebPeerGuarded`, which
 also checks the running Screen instance before dispatch. The host uses the
 snapshot's scanned socket owner for one dispatch attempt. An older peer

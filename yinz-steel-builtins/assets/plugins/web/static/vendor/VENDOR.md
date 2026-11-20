@@ -32,7 +32,7 @@ Preact and Preact hooks ESM builds plus htm's standalone core.
 | `htm.module.js` | htm: `package/dist/htm.module.js` | `ab33dd3f38059b9be4d5f5350128eefb2356639c4e0bbe9d9e8b3ba75847e9e4` | `ab33dd3f38059b9be4d5f5350128eefb2356639c4e0bbe9d9e8b3ba75847e9e4` |
 | `LICENSE-preact.txt` | preact: `package/LICENSE` (MIT) | `1fe6958409c8c257a70c587a18b6f7f412b179b456630790d30b2ec9a8e4b7d4` | `1fe6958409c8c257a70c587a18b6f7f412b179b456630790d30b2ec9a8e4b7d4` |
 | `LICENSE-htm.txt` | htm: `package/LICENSE` (Apache License 2.0) | `740725f7252e750af735d0028cc534970772f513331e9f68150fede8fb3ce00f` | `740725f7252e750af735d0028cc534970772f513331e9f68150fede8fb3ce00f` |
-| `xterm.mjs` | @xterm/xterm: `package/lib/xterm.mjs` | `b336ec65a086c056d4804b3d4c2347da5663d3f23c3f25be866467bd8857ad59` | `01cb5f96a0e7f21d3ed71426e4f4a5ff040e77b1c1eeac16df468e8a4d6dd2aa` |
+| `xterm.mjs` | @xterm/xterm: `package/lib/xterm.mjs` | `b336ec65a086c056d4804b3d4c2347da5663d3f23c3f25be866467bd8857ad59` | `59ca5174aa9e0fd9485fb464a4564b9ff4a2afe26968a182ed4d63fc863b849b` |
 | `xterm.css` | @xterm/xterm: `package/css/xterm.css` | `854a7c0fb70e8b1a083c16797ab827299fb18744f5ad34f227b48337e33293c6` | `854a7c0fb70e8b1a083c16797ab827299fb18744f5ad34f227b48337e33293c6` |
 | `LICENSE-xterm.txt` | @xterm/xterm: `package/LICENSE` | `b569f629d00f2626a8100df2a1798210535621e42164dfd426a6fe5aac7b0ccd` | `b569f629d00f2626a8100df2a1798210535621e42164dfd426a6fe5aac7b0ccd` |
 
@@ -65,4 +65,11 @@ are converted from the scaled bounding rectangle into local layout pixels
 before cell lookup. The print loop skips zero-width codepoints when the width provider marks them
 as non-joining, matching the native grid. Cursor save and restore copy all four
 charset designations and retain the active shift level, as the native cursor
-does. The unshipped source map reference is removed.
+does. Committed input-only insertions use the normal input handler in screen-reader
+mode. The composition helper retains ownership through commit delivery.
+All mouse encodings emit through `onBinary` so the client can distinguish
+pointer reports from keyboard input and pasted bytes.
+DECSET 1049 saves the normal cursor and starts the alternate buffer at the
+top left. Repeating it while the alternate buffer is active preserves both
+cursors. Modes 47 and 1047 still enter at the normal cursor position.
+The unshipped source map reference is removed.

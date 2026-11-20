@@ -7,7 +7,7 @@ use crate::panes::sixel::SixelImageStore;
 use crate::panes::FrameColorOverride;
 use crate::panes::LinkHandler;
 use crate::panes::{
-    grid::{Grid, PendingNotification},
+    grid::{Grid, KittyApcEffect, PendingNotification},
     nested_session_modal::GuestModalShortcuts,
     terminal_character::{render_first_run_banner, TerminalCharacter, EMPTY_TERMINAL_CHARACTER},
 };
@@ -165,7 +165,13 @@ impl WebTerminalLog {
         }
     }
 
-    fn append(log: &mut Option<Self>, bytes: &[u8]) {
+    fn record_pty_batch(log: &mut Option<Self>, grid: &mut Grid, bytes: &[u8]) {
+        if grid.take_character_repeat() {
+            // xterm cannot recover the native saved character and its styles from a
+            // snapshot. Start a new log so the next snapshot carries the repeated cells.
+            *log = None;
+            return;
+        }
         let Some(current) = log else { return };
         if current.read_at.elapsed().as_secs() >= 60 {
             *log = None;
@@ -411,7 +417,11 @@ impl Pane for TerminalPane {
                         let consumed = self
                             .vte_parser
                             .advance_until_terminated(&mut self.grid, &forwarded);
-                        WebTerminalLog::append(&mut self.web_terminal, &forwarded[..consumed]);
+                        WebTerminalLog::record_pty_batch(
+                            &mut self.web_terminal,
+                            &mut self.grid,
+                            &forwarded[..consumed],
+                        );
                         self.parser_boundary.advance(&forwarded[..consumed]);
                         if !self.grid.pending_forwarded_queries.is_empty() {
                             self.pending_pty_input.extend(&forwarded[consumed..]);
@@ -425,7 +435,14 @@ impl Pane for TerminalPane {
                     }
                 },
                 Piece::Captured(cmd) => {
-                    self.grid.handle_kitty_apc(&cmd);
+                    if matches!(
+                        self.grid.handle_kitty_apc(&cmd),
+                        Some(Ok(KittyApcEffect::CursorOrTextChanged))
+                    ) {
+                        // Kitty bytes stay out of web replay. A replacement snapshot carries
+                        // the cursor and text changes from the placement.
+                        self.web_terminal = None;
+                    }
                     if !self.grid.pending_forwarded_queries.is_empty() {
                         // Grid produced a forward. Stop feeding; queue the
                         // un-fed remainder so Tab can replay it after the
@@ -444,7 +461,11 @@ impl Pane for TerminalPane {
             let consumed = self
                 .vte_parser
                 .advance_until_terminated(&mut self.grid, &forwarded);
-            WebTerminalLog::append(&mut self.web_terminal, &forwarded[..consumed]);
+            WebTerminalLog::record_pty_batch(
+                &mut self.web_terminal,
+                &mut self.grid,
+                &forwarded[..consumed],
+            );
             self.parser_boundary.advance(&forwarded[..consumed]);
             if !self.grid.pending_forwarded_queries.is_empty() {
                 self.pending_pty_input.extend(&forwarded[consumed..]);
@@ -698,13 +719,17 @@ impl Pane for TerminalPane {
     }
     fn update_application_baseline(&mut self, baseline: yinz_types::style::ApplicationBaseline) {
         self.style.application = baseline;
-        self.grid.set_application_baseline(baseline);
+        if self.grid.set_application_baseline(baseline) {
+            self.web_terminal = None;
+        }
     }
     fn host_colors(&self) -> (PaletteColor, PaletteColor) {
         self.grid.host_colors()
     }
     fn set_pane_default_colors(&mut self, fg: Option<String>, bg: Option<String>) {
-        self.grid.set_pane_default_colors(fg, bg);
+        if self.grid.set_pane_default_colors(fg, bg) {
+            self.web_terminal = None;
+        }
         self.set_should_render(true);
     }
     fn get_pane_default_colors(&self) -> (Option<String>, Option<String>) {

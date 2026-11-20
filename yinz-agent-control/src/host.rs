@@ -53,6 +53,7 @@ pub trait AgentHost {
         &mut self,
         pane: PaneId,
         bytes: Vec<u8>,
+        count_input: bool,
     ) -> yinz_runtime::errors::prelude::Result<()>;
     fn agent_input_revision(&self, pane: PaneId) -> u64;
     fn agent_input_at(&self, pane: PaneId) -> Option<Instant>;

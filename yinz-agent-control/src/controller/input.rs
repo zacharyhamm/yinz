@@ -296,32 +296,14 @@ impl super::AgentController {
         Ok((startup, provisional))
     }
 
-    pub(in crate::controller) fn send_agent_keys(
+    pub(super) fn write_verified_input<H: AgentHost>(
         &mut self,
-        host: &mut impl AgentHost,
+        host: &mut H,
         pane: PaneId,
-        client: Reply,
-        status: AgentStatus,
-        keys: Vec<KeyWithModifier>,
-    ) {
-        let (startup, provisional) = match self.verify_agent_input(host, pane, &status) {
-            Ok(state) => state,
-            Err((outcome, message)) => {
-                self.reject_control(host, &client, pane, None, outcome, message);
-                return;
-            },
-        };
-        if keys.is_empty() || keys.len() > 1024 {
-            self.reject_control(
-                host,
-                &client,
-                pane,
-                None,
-                AgentOutcome::Rejected,
-                "send between 1 and 1024 keys",
-            );
-            return;
-        }
+        status: &AgentStatus,
+        (startup, provisional): (bool, bool),
+        write: impl FnOnce(&mut H) -> yinz_runtime::errors::prelude::Result<()>,
+    ) -> yinz_runtime::errors::prelude::Result<()> {
         let revision = host.agent_input_revision(pane);
         let pre_submit_dialog = self.pi_pre_submit_dialog(pane, &status.agent);
         let dialog = ((startup && !(provisional && providers::muse_composer(host, pane, false)))
@@ -348,40 +330,71 @@ impl super::AgentController {
                             || pending.conversation != status.agent.session_id
                     })
             });
-        let result = keys
-            .into_iter()
-            .try_for_each(|key| host.write_key(pane, key, None));
-        match result {
-            Ok(()) => {
-                let input_revision = host.agent_input_revision(pane);
-                if dialog && input_revision > revision {
-                    self.agent_dialog_inputs.insert(
-                        pane,
-                        DialogInput {
-                            kind: status.agent.kind.clone(),
-                            conversation: status.agent.session_id.clone(),
-                            input_revision,
-                            startup,
-                            fresh_waiting: false,
-                        },
-                    );
-                    // Dialog answers preserve the pending prompt, including Pi dialogs
-                    // before submission. The checks above exclude incomplete delivery
-                    // and intervening manual input.
-                    for pending in &mut self.agent_controls {
-                        if pending.pane == pane && pending.prompt.is_some() {
-                            pending.input_revision = input_revision;
-                        }
-                    }
+        if let Err(error) = write(host) {
+            self.agent_dialog_inputs.remove(&pane);
+            return Err(error);
+        }
+        let input_revision = host.agent_input_revision(pane);
+        if dialog && input_revision > revision {
+            self.agent_dialog_inputs.insert(
+                pane,
+                DialogInput {
+                    kind: status.agent.kind.clone(),
+                    conversation: status.agent.session_id.clone(),
+                    input_revision,
+                    startup,
+                    fresh_waiting: false,
+                },
+            );
+            // Dialog answers preserve the pending prompt, including Pi dialogs
+            // before submission. The checks above exclude incomplete delivery
+            // and intervening manual input.
+            for pending in &mut self.agent_controls {
+                if pending.pane == pane && pending.prompt.is_some() {
+                    pending.input_revision = input_revision;
                 }
-                self.agent_reply(
-                    host,
-                    &client,
-                    self.agent_result(host, pane, AgentOutcome::Ok, None),
-                )
+            }
+        }
+        Ok(())
+    }
+
+    pub(in crate::controller) fn send_agent_keys(
+        &mut self,
+        host: &mut impl AgentHost,
+        pane: PaneId,
+        client: Reply,
+        status: AgentStatus,
+        keys: Vec<KeyWithModifier>,
+    ) {
+        let verified = match self.verify_agent_input(host, pane, &status) {
+            Ok(state) => state,
+            Err((outcome, message)) => {
+                self.reject_control(host, &client, pane, None, outcome, message);
+                return;
             },
+        };
+        if keys.is_empty() || keys.len() > 1024 {
+            self.reject_control(
+                host,
+                &client,
+                pane,
+                None,
+                AgentOutcome::Rejected,
+                "send between 1 and 1024 keys",
+            );
+            return;
+        }
+        let result = self.write_verified_input(host, pane, &status, verified, |host| {
+            keys.into_iter()
+                .try_for_each(|key| host.write_key(pane, key, None))
+        });
+        match result {
+            Ok(()) => self.agent_reply(
+                host,
+                &client,
+                self.agent_result(host, pane, AgentOutcome::Ok, None),
+            ),
             Err(error) => {
-                self.agent_dialog_inputs.remove(&pane);
                 self.reject_control(
                     host,
                     &client,

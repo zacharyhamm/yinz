@@ -22,6 +22,8 @@ function registerTerminalStyles() {
   customElements.define('yinz-xterm-style', TerminalStyles);
 }
 
+const maxInputBytes = 16 * 1024;
+
 const terminalKeys = new Map([
   ['Enter', 'Enter'], ['Escape', 'Esc'], ['Tab', 'Tab'], ['Backspace', 'Backspace'],
   ['ArrowLeft', 'Left'], ['ArrowRight', 'Right'], ['ArrowUp', 'Up'], ['ArrowDown', 'Down'],
@@ -52,6 +54,7 @@ export function TermPanel({ env, target, onTargetGone }) {
   const session = useRef(null);
   const [ready, setReady] = useState(false);
   const [warning, setWarning] = useState('');
+  const [sizeWarning, setSizeWarning] = useState('');
   const [state, refresh] = usePoller({
     key: 'term', intervalMs: env.config.poll.screen_ms, env,
     run: async ({ signal }) => {
@@ -84,8 +87,17 @@ export function TermPanel({ env, target, onTargetGone }) {
         }
         if (signal.aborted || session.current !== active) return r;
         active.cursor = frame.cursor;
-        if (frame.snapshot_continues) continue;
-        active.kitty = frame.supports_kitty_keyboard_protocol === true;
+        if (frame.snapshot_continues) {
+          active.replay = 'parts';
+          continue;
+        }
+        // The last part ends at capture time. Follow its live cursor even
+        // when a retry or replacement snapshot intervenes.
+        if (active.replay === 'parts' || (active.replay === 'live' && frame.snapshot)) {
+          active.replay = 'live';
+          continue;
+        }
+        active.replay = null;
         active.accepting = !active.uncertain;
         setReady(active.accepting);
         active.scheduleWrite();
@@ -99,23 +111,45 @@ export function TermPanel({ env, target, onTargetGone }) {
     const term = new Terminal({ scrollback: 2000, fontSize: 14, allowProposedApi: true, screenReaderMode: true });
     useNativeCharacterWidths(term);
     const controller = new AbortController();
-    const active = { term, cursor: null, accepting: false, uncertain: false, queue: [], sending: false };
+    const active = { term, cursor: null, replay: null, accepting: false, uncertain: false, queue: [], sending: false };
     session.current = active;
     term.open(host.current);
 
     const layout = new CSSStyleSheet();
     document.adoptedStyleSheets.push(layout);
     const grid = host.current.querySelector('.xterm-screen');
+    const scroll = stage.current.parentElement;
+    let pinned = true;
+    let readingOffset = 0;
+    let scale = 1;
+    let viewportHeight, viewportWidth, contentHeight, paddingTop;
+    const rememberScroll = () => {
+      // Reflow can clamp scrollTop and fire scroll before the resize observer.
+      if (scroll.clientHeight !== viewportHeight || scroll.clientWidth !== viewportWidth
+          || scroll.scrollHeight !== contentHeight) return;
+      pinned = contentHeight - viewportHeight - scroll.scrollTop <= 2;
+      // Keep the top of the reading area in the grid's unscaled coordinates.
+      readingOffset = (scroll.scrollTop - paddingTop) / scale;
+    };
+    scroll.addEventListener('scroll', rememberScroll, { signal: controller.signal });
     const fit = () => {
       const width = grid.offsetWidth;
       if (!width || !stage.current) return;
-      const scale = stage.current.clientWidth / width;
+      scale = stage.current.clientWidth / width;
+      if (!scale) return;
       layout.replaceSync(`.term-stage { height: ${Math.ceil(grid.offsetHeight * scale)}px }
         .term-host { width: ${width}px; transform: scale(${scale}) }`);
+      viewportHeight = scroll.clientHeight;
+      viewportWidth = scroll.clientWidth;
+      contentHeight = scroll.scrollHeight;
+      paddingTop = parseFloat(getComputedStyle(scroll).paddingTop);
+      const top = pinned ? contentHeight - viewportHeight : readingOffset * scale + paddingTop;
+      if (Math.abs(scroll.scrollTop - top) > 1) scroll.scrollTop = top;
     };
     const observer = new ResizeObserver(fit);
     observer.observe(stage.current);
     observer.observe(grid);
+    observer.observe(scroll);
     fit();
 
     let timer;
@@ -131,7 +165,13 @@ export function TermPanel({ env, target, onTargetGone }) {
       active.sending = true;
       const item = active.queue.shift();
       const key = item.key !== undefined;
-      const body = key ? { keys: [item.key] } : { data: item.terminalKey ?? btoa(item.bytes) };
+      let body;
+      if (key) body = { keys: [item.key] };
+      else if (item.terminalKey) body = { data: item.terminalKey };
+      else {
+        const encoded = btoa(item.bytes);
+        body = { data: item.mouse ? { mouse: encoded } : encoded };
+      }
       try {
         const r = await env.api.post(key ? '/api/agent/keys' : '/api/agent/term/input',
           { agent: target, ...body }, { signal: controller.signal });
@@ -154,19 +194,24 @@ export function TermPanel({ env, target, onTargetGone }) {
       active.queue.push({ key });
       scheduleWrite();
     };
-    function send(bytes) {
+    function send(bytes, mouse) {
       if (!active.accepting) return;
-      for (let pos = 0; pos < bytes.length; pos += 16384) {
-        const chunk = String.fromCharCode(...bytes.subarray(pos, pos + 16384));
-        const last = active.queue.at(-1);
-        // The host records a standalone Enter as an agent submission boundary.
-        if (last?.bytes && last.bytes !== '\r' && chunk !== '\r' && last.bytes.length + chunk.length <= 16384) last.bytes += chunk;
-        else active.queue.push({ bytes: chunk });
+      // xterm emits the whole paste, including both paste markers, in one event.
+      if (bytes.length > maxInputBytes) {
+        setSizeWarning('Input exceeds the 16 KiB limit. Send a smaller paste.');
+        return;
       }
+      if (!bytes.length) return;
+      setSizeWarning('');
+      const chunk = String.fromCharCode(...bytes);
+      const last = active.queue.at(-1);
+      // The host records a standalone Enter as an agent submission boundary.
+      if (last?.mouse === mouse && last.bytes !== '\r' && chunk !== '\r' && last.bytes.length + chunk.length <= maxInputBytes) last.bytes += chunk;
+      else active.queue.push({ bytes: chunk, mouse });
       scheduleWrite();
     }
     term.attachCustomKeyEventHandler((event) => {
-      const terminalKey = active.kitty && negotiatedKey(event);
+      const terminalKey = negotiatedKey(event);
       if (!terminalKey) return true;
       event.preventDefault();
       if (active.accepting) {
@@ -175,8 +220,8 @@ export function TermPanel({ env, target, onTargetGone }) {
       }
       return false;
     });
-    term.onData((text) => send(new TextEncoder().encode(text)));
-    term.onBinary((text) => send(Uint8Array.from(text, (c) => c.charCodeAt(0))));
+    term.onData((text) => send(new TextEncoder().encode(text), false));
+    term.onBinary((text) => send(Uint8Array.from(text, (c) => c.charCodeAt(0)), true));
     return () => {
       active.accepting = false;
       active.queue.length = 0;
@@ -190,7 +235,7 @@ export function TermPanel({ env, target, onTargetGone }) {
   }, []);
 
   const response = state?.data?.response;
-  const error = warning || (state?.error ? describeError(state.error) : response && response.outcome !== 'ok' && responseText(response));
+  const error = warning || (state?.error ? describeError(state.error) : response && response.outcome !== 'ok' && responseText(response)) || sizeWarning;
   function reconnect() {
     const active = session.current;
     active.uncertain = false;
