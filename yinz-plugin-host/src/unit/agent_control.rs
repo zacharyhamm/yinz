@@ -1127,7 +1127,7 @@ fn bubblewrap_preparation_validates_each_distinct_checkout_once() {
         &bin.join("git"),
         r#"
 case "$*" in
-    *--path-format=absolute*)
+    *"rev-parse --path-format=absolute --absolute-git-dir --git-common-dir")
         printf 'metadata\n' >> "$YINZ_TEST_BWRAP_VALIDATION/calls"
         if [ "${YINZ_TEST_GIT_OUTPUT+x}" = x ]; then
             printf '%s\n' "$YINZ_TEST_GIT_OUTPUT"

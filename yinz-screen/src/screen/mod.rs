@@ -3753,8 +3753,12 @@ impl Screen {
                     .chain(t.get_floating_panes())
                     .any(|(id, _)| *id == pane_id_of_existing_pane);
                 let carried_respawn = t.take_pending_respawn(pane_id_of_existing_pane);
-                t.extract_pane_leaving_tab(pane_id_of_existing_pane, true)
-                    .map(|pane| (pane, carried_respawn, retains_tab))
+                let pane = if tab_of_existing_pane == tab_of_pane_to_replace {
+                    t.extract_pane(pane_id_of_existing_pane, true)
+                } else {
+                    t.extract_pane_leaving_tab(pane_id_of_existing_pane, true)
+                };
+                pane.map(|pane| (pane, carried_respawn, retains_tab))
             })
             .with_context(|| format!("failed to take pane {pane_id_of_existing_pane:?}"))?;
         let tab = self
@@ -3874,7 +3878,12 @@ impl Screen {
             for pane_id in &pane_ids_to_stack {
                 if tab.has_pane_with_pid(pane_id) {
                     let carried_respawn = tab.take_pending_respawn(*pane_id);
-                    match tab.extract_pane_leaving_tab(*pane_id, false) {
+                    let extracted = if *tab_id == root_tab_id {
+                        tab.extract_pane(*pane_id, false)
+                    } else {
+                        tab.extract_pane_leaving_tab(*pane_id, false)
+                    };
+                    match extracted {
                         Some(pane) => {
                             moved_between_tabs |= *tab_id != root_tab_id;
                             panes_to_stack.push(pane);
