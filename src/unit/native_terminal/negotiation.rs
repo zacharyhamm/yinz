@@ -103,7 +103,7 @@ fn server(fixture: &NativeFixture) -> UnixStream {
     )
 }
 
-fn text_viewer(fixture: &NativeFixture) -> UnixStream {
+fn attach(fixture: &NativeFixture) -> UnixStream {
     let mut stream = server(fixture);
     send(
         &mut stream,
@@ -119,13 +119,26 @@ fn text_viewer(fixture: &NativeFixture) -> UnixStream {
             pane_to_focus: None,
         },
     );
-    while !matches!(
-        server_message(&read_packet(&mut stream)),
-        Server::Connected {
-            native_render_revision: Some(1),
-            ..
+    loop {
+        match server_message(&read_packet(&mut stream)) {
+            Server::Connected {
+                native_render_revision,
+                ..
+            } => {
+                assert_eq!(native_render_revision, Some(1));
+                break;
+            },
+            Server::RenderFrame { .. } | Server::NativeRenderResult(_) => {
+                panic!("native output before attachment advertisement")
+            },
+            _ => {},
         }
-    ) {}
+    }
+    stream
+}
+
+fn text_viewer(fixture: &NativeFixture) -> UnixStream {
+    let mut stream = attach(fixture);
     let mut text = caps::Offer::reader(None);
     text.features = 0;
     send(
@@ -588,32 +601,7 @@ fn render_negotiation_withdrawal_keeps_the_last_shared_residency_until_consumed(
     let mut text = text_viewer(&fixture);
     let probe = Probe::create(&fixture.fixture.path().join("tmp")).unwrap();
     let offer = caps::Offer::reader(Some(probe.offer.clone()));
-    let mut local = server(&fixture);
-    send(
-        &mut local,
-        Client::AttachClient {
-            cli_assets: CliAssets {
-                terminal_window_size: Size {
-                    rows: 40,
-                    cols: 120,
-                },
-                ..Default::default()
-            },
-            tab_number_to_focus: None,
-            pane_to_focus: None,
-        },
-    );
-    loop {
-        if matches!(
-            server_message(&read_packet(&mut local)),
-            Server::Connected {
-                native_render_revision: Some(1),
-                ..
-            }
-        ) {
-            break;
-        }
-    }
+    let mut local = attach(&fixture);
     send(
         &mut local,
         Client::NativeRenderRequest(caps::Request::Offer(offer.clone())),
@@ -708,6 +696,107 @@ fn render_negotiation_withdrawal_keeps_the_last_shared_residency_until_consumed(
         match server_message(&read_packet(&mut local)) {
             Server::Render { content } if content.contains("DURING-DRAIN") => break,
             Server::RenderFrame { .. } => panic!("native output resumed after withdrawal"),
+            _ => {},
+        }
+    }
+}
+
+#[test]
+fn render_negotiation_legacy_and_incompatible_first_offer_on_live_attachments() {
+    let fixture = start_server(1);
+    let mut text = text_viewer(&fixture);
+    let mut legacy = attach(&fixture);
+    send(
+        &mut legacy,
+        Client::StructuredRenderSupport { supported: true },
+    );
+    let mut state = TerminalState::new(40, 120);
+    let mut first = true;
+    loop {
+        match server_message(&read_packet(&mut legacy)) {
+            Server::NativeRenderResult(result) => panic!("legacy client received {result:?}"),
+            Server::RenderFrame { frame } => {
+                let view = decode(&frame).unwrap();
+                assert_eq!(view.header().version, 4);
+                if first {
+                    assert!(view.header().full_repaint());
+                }
+                let seq = state.apply_frame(&frame).unwrap().seq;
+                send(&mut legacy, Client::RenderFrameAck { seq });
+                if first {
+                    trigger(&fixture, "image-1");
+                    first = false;
+                }
+                if let Some((id, medium)) = view.graphics().into_iter().find_map(|r| match r {
+                    GraphicsRecord::Residency { id, medium, .. } => Some((id, medium)),
+                    _ => None,
+                }) {
+                    assert_eq!(medium, GraphicsMedium::Inline);
+                    assert_eq!(
+                        state.graphics().image(id).unwrap().pixels,
+                        [1, 72, 13, 255].repeat(256 * 256)
+                    );
+                    break;
+                }
+            },
+            _ => {},
+        }
+    }
+    send(
+        &mut legacy,
+        Client::StructuredRenderSupport { supported: false },
+    );
+    trigger(&fixture, "during");
+    wait_ansi_after_legacy(&mut legacy, &mut state, "DURING-DRAIN");
+    wait_text(&mut text, "DURING-DRAIN");
+
+    let mut incompatible = attach(&fixture);
+    let mut offer = caps::Offer::reader(None);
+    offer.versions = vec![3, 2];
+    send(
+        &mut incompatible,
+        Client::NativeRenderRequest(caps::Request::Offer(offer)),
+    );
+    loop {
+        match server_message(&read_packet(&mut incompatible)) {
+            Server::NativeRenderResult(caps::Decision::Rejected(reason)) => {
+                assert!(
+                    reason.contains("no common native frame version"),
+                    "{reason}"
+                );
+                assert!(reason.contains("offered [3, 2]"), "{reason}");
+                assert!(reason.contains("writable [4]"), "{reason}");
+                break;
+            },
+            Server::RenderFrame { .. } | Server::NativeRenderResult(_) => {
+                panic!("incompatible offer enabled native output")
+            },
+            _ => {},
+        }
+    }
+    trigger(&fixture, "after");
+    loop {
+        match server_message(&read_packet(&mut incompatible)) {
+            Server::Render { content } if content.contains("AFTER-DRAIN") => break,
+            Server::RenderFrame { .. } | Server::NativeRenderResult(_) => {
+                panic!("unexpected native output after rejection")
+            },
+            _ => {},
+        }
+    }
+    wait_text(&mut text, "AFTER-DRAIN");
+}
+
+fn wait_ansi_after_legacy(stream: &mut UnixStream, state: &mut TerminalState, marker: &str) {
+    loop {
+        match server_message(&read_packet(stream)) {
+            Server::Render { content } if content.contains(marker) => return,
+            Server::NativeRenderResult(result) => panic!("legacy client received {result:?}"),
+            Server::RenderFrame { frame } => {
+                // Frames queued before the boolean withdrawal may still arrive.
+                let seq = state.apply_frame(&frame).unwrap().seq;
+                send(stream, Client::RenderFrameAck { seq });
+            },
             _ => {},
         }
     }

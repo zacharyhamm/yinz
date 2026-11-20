@@ -723,8 +723,9 @@ type PendingSessionRequests = HashMap<(ClientId, String), (SessionReplySender, s
 const SESSION_REQUEST_RETENTION: Duration = Duration::from_secs(5);
 
 macro_rules! send_to_client {
-    ($client_id:expr_2021, $os_input:expr_2021, $msg:expr_2021, $session_state:expr_2021, $session_data:expr_2021) => {
+    ($client_id:expr_2021, $os_input:expr_2021, $msg:expr_2021, $session_state:expr_2021, $session_data:expr_2021) => {{
         let send_to_client_res = $os_input.send_to_client($client_id, $msg);
+        let delivered = send_to_client_res.is_ok();
         if let Err(e) = send_to_client_res
             && !matches!(
                 e.downcast_ref::<YinzError>(),
@@ -748,7 +749,8 @@ macro_rules! send_to_client {
             // failed to send to client, remove it
             remove_client!($client_id, $os_input, $session_state, $session_data);
         }
-    };
+        delivered
+    }};
 }
 
 fn handoff_session_switch(
@@ -765,14 +767,14 @@ fn handoff_session_switch(
         .update_client_assets
         .get(&client_id)
         .is_some_and(|assets| assets.retains_source_on_switch);
-    send_to_client!(
+    let delivered = send_to_client!(
         client_id,
         *os_input,
         ServerToClientMsg::SwitchSession { connect_to_session },
         session_state,
         session_data
     );
-    if !retain_source {
+    if delivered && !retain_source {
         remove_client!(client_id, *os_input, session_state, session_data);
     }
     Ok(())

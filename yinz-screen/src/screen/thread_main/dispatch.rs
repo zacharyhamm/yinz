@@ -700,7 +700,7 @@ pub(super) fn dispatch(
             client_id,
             supported,
         } => {
-            screen.update_sixel_support(client_id, supported);
+            screen.update_sixel_support(client_id, supported)?;
         },
         ScreenInstruction::SetSynchronizedOutputSupport {
             client_id,

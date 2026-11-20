@@ -900,6 +900,9 @@ fn watcher_signal_quit_exits_normally_without_terminating_the_session() {
     let server = listener.accept().unwrap();
     let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(client);
     sender
+        .send_client_msg(ClientToServerMsg::SixelSupport { supported: true })
+        .unwrap();
+    sender
         .send_client_msg(ClientToServerMsg::SignalQuit)
         .unwrap();
     // Bound a broken implementation: ignoring SignalQuit must not hang this test.
@@ -914,8 +917,9 @@ fn watcher_signal_quit_exits_normally_without_terminating_the_session() {
     state.interactive_clients.insert(interactive);
     let state = Arc::new(RwLock::new(state));
     let os = CapturingOs::default();
+    let session = Arc::new(RwLock::new(Some(session)));
     route_thread_main(
-        Arc::new(RwLock::new(Some(session))),
+        session.clone(),
         state.clone(),
         Box::new(os.clone()),
         threads.to_server.clone(),
@@ -926,9 +930,12 @@ fn watcher_signal_quit_exits_normally_without_terminating_the_session() {
     .unwrap();
     assert_eq!(
         os.server_to_client_messages.get().get(&watcher),
-        Some(&vec![ServerToClientMsg::Exit {
-            exit_reason: ExitReason::Normal
-        }])
+        Some(&vec![
+            ServerToClientMsg::UnblockInputThread,
+            ServerToClientMsg::Exit {
+                exit_reason: ExitReason::Normal
+            },
+        ])
     );
     let instructions: Vec<_> = threads
         .server_receiver
@@ -939,7 +946,18 @@ fn watcher_signal_quit_exits_normally_without_terminating_the_session() {
         matches!(instructions.as_slice(), [ServerInstruction::RemoveClient(id)] if *id == watcher),
         "{instructions:?}"
     );
-    assert!(threads.screen_receiver.try_iter().any(|(instruction, _)| matches!(instruction, ScreenInstruction::RemoveWatcherClient(id) if id == watcher)));
+    let screen: Vec<_> = threads
+        .screen_receiver
+        .try_iter()
+        .map(|(message, _)| message)
+        .collect();
+    assert!(
+        matches!(screen.as_slice(), [
+        ScreenInstruction::SetSixelSupport { client_id, supported: true },
+        ScreenInstruction::RemoveWatcherClient(removed),
+    ] if *client_id == watcher && *removed == watcher),
+        "{screen:?}"
+    );
     assert!(state
         .read()
         .unwrap()

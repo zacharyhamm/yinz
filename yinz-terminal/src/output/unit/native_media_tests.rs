@@ -14,10 +14,12 @@ fn native_disabled_styled_underlines_keep_default_color() {
 
 #[test]
 fn shared_uploads_survive_until_the_frame_is_acknowledged() {
-    let first = tempfile::NamedTempFile::new().unwrap();
-    let second = tempfile::NamedTempFile::new().unwrap();
-    let first_path = first.path().to_owned();
-    let second_path = second.path().to_owned();
+    let directory = tempfile::tempdir().unwrap();
+    let root = MediaRoot::open(directory.path()).unwrap();
+    let first = root.write_image(&[1]).unwrap();
+    let second = root.write_image(&[2]).unwrap();
+    let first_path = first.path();
+    let second_path = second.path();
     let mut state = NativeRenderState {
         seq: 2,
         media: vec![(1, first), (2, second)],

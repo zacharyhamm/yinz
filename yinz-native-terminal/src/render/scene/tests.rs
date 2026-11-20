@@ -1744,6 +1744,41 @@ fn render_negotiation_clips_live_kitty_and_sixel_on_layout_change() {
 }
 
 #[test]
+fn render_negotiation_layout_delta_validates_surviving_sixels() {
+    use yinz_types::{
+        render_negotiation as caps,
+        structured_render::{FrameBuilder, WireCell},
+    };
+    let mut state = TerminalState::new(2, 4);
+    state.set_cell_size(8, 16);
+    state.negotiate(caps::Agreement::default(), None);
+    let pane = clipping_pane(0, 0, 4, 2);
+    let mut first = FrameBuilder::new(4, 2, 1);
+    first.set_full_repaint(true);
+    first.push_geometry(&GeometryRecord { panes: vec![pane] });
+    first.extend_graphics(&[painter::sixel_chunk(0, 0, 16, 6, &sixel(16, 6))]);
+    state.apply_frame(&first.finish()).unwrap();
+    let geometry = GeometryRecord {
+        panes: vec![PaneRect { left: 1, ..pane }],
+    };
+    for erased_cells in [1, 2] {
+        let mut delta = FrameBuilder::new(4, 2, 2);
+        delta.push_geometry(&geometry);
+        delta.push_row(0, 0, &vec![WireCell::BLANK; erased_cells]);
+        let result = state.apply_frame(&delta.finish());
+        if erased_cells == 1 {
+            assert!(result.is_err());
+            assert_eq!(state.geometry().panes[0].left, 0);
+            assert_eq!(state.sixels().chunks().next().unwrap().image.pixels[3], 255);
+        } else {
+            assert_eq!(result.unwrap().seq, 2);
+            assert_eq!(state.geometry(), &geometry);
+            assert!(state.sixels().chunks().next().is_none());
+        }
+    }
+}
+
+#[test]
 fn quads_are_ordered_by_z_index() {
     let scene = scene_with_graphics(
         4,

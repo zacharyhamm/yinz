@@ -417,6 +417,18 @@ pub(crate) fn route_thread_main(
                             return Ok(true);
                         }
                         match &instruction {
+                            ClientToServerMsg::SixelSupport { supported } => {
+                                send_to_screen_or_retry_queue!(
+                                    senders,
+                                    ScreenInstruction::SetSixelSupport {
+                                        client_id,
+                                        supported: *supported
+                                    },
+                                    instruction.clone(),
+                                    retry_queue
+                                )
+                                .with_context(err_context)?;
+                            },
                             ClientToServerMsg::RequestRepaint => {
                                 send_to_screen_or_retry_queue!(
                                     senders,

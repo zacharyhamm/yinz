@@ -1662,6 +1662,49 @@ mod client_writer_flush {
     }
 
     #[test]
+    fn ordinary_envelope_refusal_preserves_the_socket() {
+        use super::super::CoalescingSendQueue;
+        use std::os::fd::AsFd;
+        let (_dir, server, peer) = socket_pair();
+        let interprocess::local_socket::Stream::UdSocket(uds) = &server;
+        let fd = uds.as_fd().try_clone_to_owned().unwrap();
+        let mut rx = IpcReceiverWithContext::<ServerToClientMsg>::new(peer);
+        rx.set_recv_timeout(Some(super::AMPLE_TIMEOUT)).unwrap();
+        let mut reverse = rx.get_sender::<ClientToServerMsg>().unwrap();
+        let tx = IpcSenderWithContext::new(server);
+        let mut incoming = tx.get_receiver::<ClientToServerMsg>().unwrap();
+        incoming
+            .set_recv_timeout(Some(super::AMPLE_TIMEOUT))
+            .unwrap();
+        let queue = Arc::new(CoalescingSendQueue::new());
+        let limit = 64;
+        queue.push(ServerToClientMsg::Log {
+            lines: vec!["x".repeat(limit)],
+        });
+        let next = ServerToClientMsg::Render {
+            content: "still connected".into(),
+        };
+        queue.push(next.clone());
+        let _writer = ClientSender::with_queue(
+            crate::ClientId::new(1),
+            tx,
+            Arc::default(),
+            fd,
+            queue,
+            limit,
+        )
+        .unwrap();
+        assert_eq!(rx.recv_server_msg().msg().unwrap().0, next);
+        reverse
+            .send_client_msg(ClientToServerMsg::ConnStatus)
+            .unwrap();
+        assert_eq!(
+            incoming.recv_client_msg().msg().unwrap().0,
+            ClientToServerMsg::ConnStatus
+        );
+    }
+
+    #[test]
     fn native_refusal_prefix_writer() {
         use super::super::{
             CoalescingSendQueue, SendQueuePush, SEND_QUEUE_RENDER_BYTE_CAPACITY as LIMIT,

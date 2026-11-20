@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use yinz_types::structured_render::{
-    CursorState, FrameView, WireCell, ATTR_FAST_BLINK, ATTR_SLOW_BLINK, CURSOR_SHAPE_BEAM,
-    CURSOR_SHAPE_DEFAULT, CURSOR_SHAPE_UNDERLINE, LINK_NONE,
+    CursorState, FrameView, ShiftEntry, WireCell, ATTR_FAST_BLINK, ATTR_SLOW_BLINK,
+    CURSOR_SHAPE_BEAM, CURSOR_SHAPE_DEFAULT, CURSOR_SHAPE_UNDERLINE, LINK_NONE,
 };
 
 use crate::emulation::damage::Span;
@@ -275,6 +275,33 @@ impl ScreenBuffer {
         self.cell(row, col).link
     }
 
+    pub(super) fn written_spans(frame: &FrameView<'_>, shifts: &[ShiftEntry]) -> Vec<Span> {
+        let header = frame.header();
+        let mut written = Vec::with_capacity(header.row_record_count as usize);
+        if !header.full_repaint() && !header.clear() {
+            for shift in shifts
+                .iter()
+                .filter(|shift| shift.fits(header.cols as usize, header.rows as usize))
+            {
+                let last = shift.x as usize + shift.cols as usize;
+                for line in shift.y as usize..shift.y as usize + shift.rows as usize {
+                    written.push(Span::new(line, shift.x as usize, last.saturating_sub(1)));
+                }
+            }
+        }
+        for index in 0..header.row_record_count as usize {
+            if let Some(record) = frame.record(index) {
+                let last = record.x0 as usize + record.len as usize;
+                written.push(Span::new(
+                    record.y as usize,
+                    record.x0 as usize,
+                    last.saturating_sub(1),
+                ));
+            }
+        }
+        written
+    }
+
     pub fn apply(&mut self, frame: &FrameView<'_>) -> Result<Applied, ApplyError> {
         let header = frame.header();
         let (cols, rows) = (header.cols as usize, header.rows as usize);
@@ -312,9 +339,10 @@ impl ScreenBuffer {
             self.links.insert(entry.id, entry.uri);
         }
 
-        let mut written = Vec::with_capacity(header.row_record_count as usize);
+        let shifts = frame.shifts().entries;
+        let written = Self::written_spans(frame, &shifts);
         if !reshaped && !header.full_repaint() && !header.clear() {
-            for shift in frame.shifts().entries {
+            for shift in &shifts {
                 if !shift.fits(self.cols, self.rows) {
                     continue;
                 }
@@ -329,20 +357,6 @@ impl ScreenBuffer {
                         })
                         .collect();
                 }
-                let last = shift.x as usize + shift.cols as usize;
-                for line in shift.y as usize..shift.y as usize + shift.rows as usize {
-                    written.push(Span::new(line, shift.x as usize, last.saturating_sub(1)));
-                }
-            }
-        }
-        for index in 0..header.row_record_count as usize {
-            if let Some(record) = frame.record(index) {
-                let last = record.x0 as usize + record.len as usize;
-                written.push(Span::new(
-                    record.y as usize,
-                    record.x0 as usize,
-                    last.saturating_sub(1),
-                ));
             }
         }
         frame.apply(&mut self.cells, self.cols, self.rows);

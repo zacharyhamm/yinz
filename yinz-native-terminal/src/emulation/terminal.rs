@@ -250,7 +250,11 @@ impl TerminalState {
             {
                 return Err(invalid("unnegotiated structured section"));
             }
-            if !records.is_empty() {
+            let validate_retained_sixels = geometry.is_some()
+                && !h.full_repaint()
+                && !h.clear()
+                && self.sixels.chunks().next().is_some();
+            if !records.is_empty() || validate_retained_sixels {
                 let mut graphics = self.graphics.clone();
                 let mut sixels = self.sixels.clone();
                 if h.full_repaint() || h.clear() {
@@ -275,6 +279,11 @@ impl TerminalState {
                     )),
                 )
                 .map_err(|reason| FrameError::Protocol(h.seq, reason))?;
+                // New Sixels paint over row damage. Validate the chunks left by both operations.
+                if sixels.chunks().next().is_some() {
+                    sixels.cut_spans(&ScreenBuffer::written_spans(&view, &shifts.entries));
+                }
+                sixels.commit();
                 staged = Some((graphics, sixels));
             }
             if let Some(geometry) = geometry.filter(|_| !h.full_repaint() && !h.clear()) {
@@ -326,20 +335,22 @@ impl TerminalState {
         if let Some((graphics, sixels)) = staged {
             self.graphics = graphics;
             self.sixels = sixels;
-        } else if self.live.is_none() {
-            let _ = Self::consume_graphics(
-                &records,
-                &mut self.graphics,
-                &mut self.sixels,
-                self.shared_media,
-                None,
-            );
+        } else {
+            if self.live.is_none() {
+                let _ = Self::consume_graphics(
+                    &records,
+                    &mut self.graphics,
+                    &mut self.sixels,
+                    self.shared_media,
+                    None,
+                );
+            }
+            self.sixels.cut_spans(&applied.written);
+            self.sixels.commit();
         }
         if self.live.is_some() {
             self.applied_seq = Some(applied.seq);
         }
-        self.sixels.cut_spans(&applied.written);
-        self.sixels.commit();
 
         let damage = if everything {
             Damage::Everything

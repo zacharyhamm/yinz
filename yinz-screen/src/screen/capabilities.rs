@@ -200,9 +200,17 @@ impl Screen {
         }
     }
 
-    pub fn update_sixel_support(&mut self, client_id: ClientId, supported: bool) {
-        self.core.sixel_probe_answers.insert(client_id, supported);
+    pub fn update_sixel_support(&mut self, client_id: ClientId, supported: bool) -> Result<()> {
+        let previous = self.core.sixel_probe_answers.insert(client_id, supported);
         self.apply_sixel_answer(client_id);
+        if previous.unwrap_or(false) != supported
+            && let Some(watcher) = self.core.watcher_clients.get_mut(&client_id)
+        {
+            watcher.set_force_render();
+            self.render()
+                .context("repaint watcher after Sixel capability change")?;
+        }
+        Ok(())
     }
 
     fn apply_sixel_answer(&mut self, client_id: ClientId) {

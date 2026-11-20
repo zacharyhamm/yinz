@@ -428,6 +428,10 @@ impl Screen {
     pub fn remove_watcher_client(&mut self, client_id: ClientId) {
         self.notices.clear_return_target(client_id);
         self.core.watcher_clients.remove(&client_id);
+        self.core.sixel_probe_answers.remove(&client_id);
+        if self.core.sixel_host_capabilities.borrow_mut().remove(&client_id).is_some() {
+            self.push_sixel_host_support_to_tabs();
+        }
         self.active_tabs_changed();
         self.core.client_pixel_dimensions.remove(&client_id);
         self.core.client_cell_pixel_sizes.remove(&client_id);

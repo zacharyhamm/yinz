@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 sha2 = { workspace = true }
 jiff = { workspace = true }
+rand = { workspace = true }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 serde_json = { workspace = true }
 libc = { workspace = true }
@@ -41,7 +42,4 @@ hegeltest = "0.29.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
-nix = { workspace = true, features = ["hostname", "user", "term"] }
-
-[target.'cfg(unix)'.dev-dependencies]
-nix = { workspace = true, features = ["fs"] }
+nix = { workspace = true, features = ["fs", "hostname", "user", "term"] }

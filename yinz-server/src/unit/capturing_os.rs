@@ -108,6 +108,9 @@ impl ClientTransport for CapturingOs {
         }
     }
     fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()> {
+        if self.native_drain(client_id).is_some() {
+            return Err(YinzError::NativeOutputSealed { client_id }.into());
+        }
         if self.fail_client == Some(client_id) {
             return Err(anyhow!("client disconnected"));
         }

@@ -1,13 +1,20 @@
 //! Prove and retain a specific shared directory for one native attachment.
 use crate::{errors::prelude::*, fs_beneath};
 use anyhow::ensure;
+use nix::{
+    errno::Errno,
+    fcntl::{openat, OFlag},
+    sys::stat::Mode,
+    unistd::{unlinkat, UnlinkatFlags},
+};
+use rand::distr::{Alphanumeric, SampleString};
 use std::{
     fs::File,
     io::{Read, Write},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
+    sync::Arc,
 };
-use tempfile::NamedTempFile;
 use yinz_types::render_negotiation::MediaProof;
 
 const PROBE_PREFIX: &str = "yinz-native-probe-";
@@ -18,10 +25,10 @@ pub fn directory() -> PathBuf {
     std::env::temp_dir()
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct MediaRoot {
     path: PathBuf,
-    fd: File,
+    fd: Arc<File>,
 }
 
 impl MediaRoot {
@@ -30,7 +37,10 @@ impl MediaRoot {
             .canonicalize()
             .context("resolve native media directory")?;
         let fd = fs_beneath::open_root(&path).context("pin native media directory")?;
-        Ok(Self { path, fd })
+        Ok(Self {
+            path,
+            fd: Arc::new(fd),
+        })
     }
 
     fn read(&self, name: &str, prefix: &str, len: usize) -> Result<Vec<u8>> {
@@ -85,24 +95,64 @@ impl MediaRoot {
         Ok(tokens[TOKEN_LEN..].to_vec())
     }
 
-    pub fn write_image(&self, bytes: &[u8]) -> Result<NamedTempFile> {
-        let mut file = tempfile::Builder::new()
-            .prefix(IMAGE_PREFIX)
-            .tempfile_in(&self.path)
+    fn create_file(&self, prefix: &str) -> Result<MediaFile> {
+        for _ in 0..32 {
+            let suffix = Alphanumeric.sample_string(&mut rand::rng(), 6);
+            let basename = format!("{prefix}{suffix}");
+            let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_CLOEXEC;
+            match openat(
+                &*self.fd,
+                basename.as_str(),
+                flags,
+                Mode::S_IRUSR | Mode::S_IWUSR,
+            ) {
+                Ok(fd) => {
+                    return Ok(MediaFile {
+                        root: self.clone(),
+                        basename,
+                        file: fd.into(),
+                    })
+                },
+                Err(Errno::EEXIST) => continue,
+                Err(error) => {
+                    return Err(error).context("create file in pinned native media directory")
+                },
+            }
+        }
+        bail!("unable to allocate a unique native media basename")
+    }
+
+    pub fn write_image(&self, bytes: &[u8]) -> Result<MediaFile> {
+        let mut image = self
+            .create_file(IMAGE_PREFIX)
             .context("create native image")?;
-        // Verify the new file is in the pinned directory even if its pathname was replaced.
-        let pinned = fs_beneath::open_beneath(
-            &self.fd,
-            Path::new(file.path().file_name().context("missing image basename")?),
-        )?
-        .metadata()?;
-        let actual = file.as_file().metadata()?;
-        ensure!(
-            (actual.dev(), actual.ino()) == (pinned.dev(), pinned.ino()),
-            "native image root changed"
-        );
-        file.write_all(bytes).context("stage native image")?;
-        Ok(file)
+        image.file.write_all(bytes).context("stage native image")?;
+        Ok(image)
+    }
+}
+
+/// Owns a staging entry in the pinned directory until its probe or frame is released.
+pub struct MediaFile {
+    root: MediaRoot,
+    basename: String,
+    file: File,
+}
+
+impl MediaFile {
+    pub fn path(&self) -> PathBuf {
+        self.root.path.join(&self.basename)
+    }
+}
+
+impl Drop for MediaFile {
+    fn drop(&mut self) {
+        unlinkat(
+            &*self.root.fd,
+            self.basename.as_str(),
+            UnlinkatFlags::NoRemoveDir,
+        )
+        .context("remove staged native media")
+        .non_fatal();
     }
 }
 
@@ -110,40 +160,42 @@ pub struct Probe {
     pub root: MediaRoot,
     pub offer: MediaProof,
     pub expected: [u8; TOKEN_LEN],
-    _file: NamedTempFile,
+    _file: MediaFile,
 }
 
 impl Probe {
     pub fn create(path: &Path) -> Result<Self> {
-        let root = MediaRoot::open(path)?;
-        let mut file = tempfile::Builder::new()
-            .prefix(PROBE_PREFIX)
-            .tempfile_in(&root.path)
+        Self::create_in(MediaRoot::open(path).context("open native probe directory")?)
+    }
+
+    fn create_in(root: MediaRoot) -> Result<Self> {
+        let mut probe = root
+            .create_file(PROBE_PREFIX)
             .context("create native media probe")?;
         let challenge = uuid::Uuid::new_v4().into_bytes();
         let expected = uuid::Uuid::new_v4().into_bytes();
-        file.write_all(&challenge)
+        probe
+            .file
+            .write_all(&challenge)
             .context("write native challenge")?;
-        file.write_all(&expected).context("write native response")?;
+        probe
+            .file
+            .write_all(&expected)
+            .context("write native response")?;
         let offer = MediaProof {
             root: root
                 .path
                 .to_str()
                 .context("invalid native root encoding")?
                 .into(),
-            basename: file
-                .path()
-                .file_name()
-                .and_then(|n| n.to_str())
-                .context("invalid native probe basename")?
-                .into(),
+            basename: probe.basename.clone(),
             challenge: challenge.into(),
         };
         Ok(Self {
             root,
             offer,
             expected,
-            _file: file,
+            _file: probe,
         })
     }
 }

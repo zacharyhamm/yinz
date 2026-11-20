@@ -1258,6 +1258,12 @@ fn native_refusal_prefix_route() {
         matches!(screen_rx.try_recv().unwrap().0,ScreenInstruction::SealNativePrefix(id,9) if id == client)
     );
     assert!(screen_rx.try_recv().is_err());
+    // A plugin switch queued before refusal must leave this headless client able to ACK.
+    let mut transport: Box<dyn ServerOsApi> = Box::new(os.clone());
+    handoff_session_switch(client, Default::default(), &mut transport, &state, &data).unwrap();
+    assert!(os.removed_clients.lock().is_empty());
+    assert!(os.server_to_client_messages.lock().is_empty());
+    assert!(screen_rx.try_recv().is_err());
     assert!(state.read().unwrap().clients.contains(&client));
     assert_eq!(state.read().unwrap().pick_forward_target(), Some(other));
     state.write().unwrap().remove_client(other);

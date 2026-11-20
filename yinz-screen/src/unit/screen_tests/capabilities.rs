@@ -322,7 +322,9 @@ fn primary_da_advertises_sixel_when_capable_client_connected() {
     };
     let mut screen = create_new_screen(size, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.update_sixel_support(crate::ClientId::new(1), true);
+    screen
+        .update_sixel_support(crate::ClientId::new(1), true)
+        .unwrap();
     assert_eq!(
         screen
             .core
@@ -353,7 +355,9 @@ fn primary_da_omits_sixel_when_no_capable_client() {
     };
     let mut screen = create_new_screen(size, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.update_sixel_support(crate::ClientId::new(1), false);
+    screen
+        .update_sixel_support(crate::ClientId::new(1), false)
+        .unwrap();
     assert_eq!(
         screen
             .core
@@ -385,8 +389,12 @@ fn sixel_support_recomputed_on_client_detach() {
     let mut screen = create_new_screen(size, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
     screen.add_client(crate::ClientId::new(2)).expect("TEST");
-    screen.update_sixel_support(crate::ClientId::new(1), false);
-    screen.update_sixel_support(crate::ClientId::new(2), true);
+    screen
+        .update_sixel_support(crate::ClientId::new(1), false)
+        .unwrap();
+    screen
+        .update_sixel_support(crate::ClientId::new(2), true)
+        .unwrap();
     screen.remove_client(crate::ClientId::new(2)).expect("TEST");
     let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
     let active_pane = active_tab
@@ -1395,4 +1403,33 @@ fn render_negotiation_profiles_survive_reload_withdraw_and_detach() {
     assert!(!screen.core.kitty_host_capabilities.borrow()[&graphics]);
     screen.remove_client(graphics).unwrap();
     assert!(!screen.core.retired_native_clients.contains_key(&graphics));
+}
+
+#[test]
+fn watcher_sixel_change_repaints_and_removal_forgets_the_answer() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
+    let watcher = ClientId::new(2);
+    let followed = ClientId::new(1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.add_client(followed).unwrap();
+    screen.update_sixel_support(followed, false).unwrap();
+    screen.add_watcher_client(watcher).unwrap();
+    for supported in [true, false, true] {
+        screen.core
+            .watcher_clients
+            .get_mut(&watcher)
+            .unwrap()
+            .clear_force_render();
+        screen.update_sixel_support(watcher, supported).unwrap();
+        assert!(screen.core.watcher_clients[&watcher].should_force_render());
+        assert_eq!(screen.core.sixel_host_capabilities.borrow()[&watcher], supported);
+        assert!(!screen.core.sixel_host_capabilities.borrow()[&followed]);
+    }
+    screen.remove_watcher_client(watcher);
+    screen.add_watcher_client(watcher).unwrap();
+    assert!(!screen.core.sixel_probe_answers.contains_key(&watcher));
+    assert!(!screen.core
+        .sixel_host_capabilities
+        .borrow()
+        .contains_key(&watcher));
 }

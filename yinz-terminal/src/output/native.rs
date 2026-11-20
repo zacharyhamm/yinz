@@ -1,7 +1,7 @@
 //! Structured counterpart of the ANSI serializer. Both consume the same composed chunks.
 use super::*;
 use crate::panes::terminal_character::{AnsiStyledUnderline, NamedColor};
-use yinz_runtime::native_media::MediaRoot;
+use yinz_runtime::native_media::{MediaFile, MediaRoot};
 use yinz_types::render_negotiation as caps;
 use yinz_types::{data::PaletteColor, structured_render::*};
 
@@ -12,7 +12,7 @@ pub struct NativeRenderState {
     root: Option<MediaRoot>,
     pub seq: u64,
     pub acknowledged: u64,
-    media: Vec<(u64, tempfile::NamedTempFile)>,
+    media: Vec<(u64, MediaFile)>,
     cursor: CursorState,
     links: Vec<String>,
     viewport_links: Vec<u8>,
@@ -493,7 +493,7 @@ fn flatten_kitty_frame(
     kitty_input: KittyFrameInput,
     out: &mut Vec<GraphicsRecord>,
     seq: u64,
-    media: &mut Vec<(u64, tempfile::NamedTempFile)>,
+    media: &mut Vec<(u64, MediaFile)>,
     root: Option<&MediaRoot>,
 ) -> Result<()> {
     let KittyFrameInput {
