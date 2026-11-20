@@ -161,6 +161,7 @@ pub(super) fn create_entity(
         owner_plugin: owner_plugin.to_owned(),
     };
     create_table(exec, &schema)?;
+    super::ddl::archive_order_indexes(exec, namespace, &schema, true)?;
 
     let mut indexes_created = Vec::new();
     for attr in &def.attrs {

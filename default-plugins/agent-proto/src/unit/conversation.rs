@@ -697,59 +697,167 @@ fn v5_archive_upgrade_leaves_attribution_unresolved_without_payload_backfill() {
     }
 }
 
-#[test]
-fn collapsed_activity_never_reads_current_payloads_even_for_discarded_workers() {
-    use std::cell::Cell;
-    use yinz_tile::prelude::*;
-    struct Instrumented {
-        inner: store::Local,
-        scalar_fetches: Cell<usize>,
-        legacy_fetches: Cell<usize>,
-        counts: Cell<usize>,
-    }
-    impl Backend for Instrumented {
-        fn fetch(&self, request: &FetchRequest) -> Result<DataRows, String> {
-            assert!(
-                !request.select.is_empty(),
-                "collapsed activity must project columns"
+use std::cell::{Cell, RefCell};
+use yinz_tile::prelude::*;
+struct Instrumented {
+    inner: store::Local,
+    scalar_limits: RefCell<Vec<u32>>,
+    legacy_cursors: RefCell<Vec<Option<DataRowId>>>,
+    counts: Cell<usize>,
+}
+impl Backend for Instrumented {
+    fn fetch(&self, request: &FetchRequest) -> Result<DataRows, String> {
+        assert!(
+            !request.select.is_empty(),
+            "collapsed activity must project columns"
+        );
+        if request
+            .select
+            .iter()
+            .any(|field| field == "tool" || field == "text")
+        {
+            // Verify the predicate excludes *all* current rows, including workers
+            // that would later be discarded by the caller's scope filter.
+            assert_eq!(
+                self.inner.count(
+                    &request
+                        .clone()
+                        .filter(Pred::eq("attribution_resolved", true))
+                )?,
+                0
             );
-            if request
-                .select
-                .iter()
-                .any(|field| field == "tool" || field == "text")
-            {
-                // Verify the predicate excludes *all* current rows, including workers
-                // that would later be discarded by the caller's scope filter.
-                assert_eq!(
-                    self.inner.count(
-                        &request
-                            .clone()
-                            .filter(Pred::eq("attribution_resolved", true))
-                    )?,
-                    0
-                );
-                assert!(request.limit <= 100);
-                self.legacy_fetches.set(self.legacy_fetches.get() + 1);
-            } else {
-                assert_eq!(request.limit, 1);
-                self.scalar_fetches.set(self.scalar_fetches.get() + 1);
-            }
+            assert!(request.limit <= 100);
+            assert!(request.sort.is_empty());
+            let mut cursors = self.legacy_cursors.borrow_mut();
+            assert_eq!(request.after_id, cursors.last().copied().flatten());
+            let fetched = self.inner.fetch(request)?;
+            cursors.push(fetched.next_cursor);
+            Ok(fetched)
+        } else {
+            assert!(request.limit <= 1000);
+            self.scalar_limits.borrow_mut().push(request.limit);
             self.inner.fetch(request)
         }
-        fn count(&self, request: &FetchRequest) -> Result<u64, String> {
-            self.counts.set(self.counts.get() + 1);
-            self.inner.count(request)
-        }
-        fn define(&self, _: &EntityDef) -> Result<DataSchemaInfo, String> {
-            unreachable!()
-        }
-        fn apply(&self, _: Vec<Mutation>) -> Result<ApplyReport, WriteError> {
-            unreachable!()
-        }
-        fn watch(&self, _: &FetchRequest, _: WatchMode) -> Result<DataWatchHandle, String> {
-            unreachable!()
-        }
     }
+    fn count(&self, request: &FetchRequest) -> Result<u64, String> {
+        self.counts.set(self.counts.get() + 1);
+        self.inner.count(request)
+    }
+    fn define(&self, _: &EntityDef) -> Result<DataSchemaInfo, String> {
+        unreachable!()
+    }
+    fn apply(&self, _: Vec<Mutation>) -> Result<ApplyReport, WriteError> {
+        unreachable!()
+    }
+    fn watch(&self, _: &FetchRequest, _: WatchMode) -> Result<DataWatchHandle, String> {
+        unreachable!()
+    }
+}
+
+#[test]
+fn empty_tool_gaps_for_a_full_page_take_two_fetches() {
+    let inner = backend();
+    let prose: Vec<_> = (1..=30)
+        .map(|r| {
+            entry(
+                r,
+                RunEntryKind::Message,
+                Some(r as i64),
+                None,
+                None,
+                "message",
+            )
+        })
+        .collect();
+    save(&inner, &prose);
+    let b = Instrumented {
+        inner,
+        scalar_limits: RefCell::default(),
+        legacy_cursors: RefCell::default(),
+        counts: Cell::new(0),
+    };
+    let mut start = None;
+    let ranges: Vec<_> = prose
+        .iter()
+        .map(|e| Some(cursor(e)))
+        .chain([None])
+        .map(|end| {
+            let range = Range {
+                start,
+                end,
+                worker: None,
+            };
+            start = end;
+            range
+        })
+        .collect();
+    let mut reader = ActivityReader::new(&b, "run");
+    for _ in 0..2 {
+        let summaries = reader.read(&ranges).unwrap();
+        assert_eq!(summaries.len(), 31);
+        assert!(summaries.iter().all(Option::is_none));
+    }
+    assert_eq!(
+        (
+            b.scalar_limits.borrow().len(),
+            b.legacy_cursors.borrow().len(),
+            b.counts.get()
+        ),
+        (1, 1, 0)
+    );
+}
+
+#[test]
+fn dense_tool_gap_after_a_prompt_aggregates_after_one_scalar_batch() {
+    let inner = backend();
+    let prompt = entry(1, RunEntryKind::Prompt, Some(1), None, None, "start");
+    let boundary = cursor(&prompt);
+    save(&inner, &[prompt]);
+    let result = entry(2, RunEntryKind::ToolResult, Some(2), None, None, "");
+    let first = cursor(&result);
+    save(&inner, &[result]);
+    let calls: Vec<_> = (3..3 + u64::from(MAX_FETCH_ROWS))
+        .map(|r| entry(r, RunEntryKind::ToolCall, Some(r as i64), None, None, ""))
+        .collect();
+    for chunk in calls.chunks(100) {
+        save(&inner, chunk);
+    }
+
+    let b = Instrumented {
+        inner,
+        scalar_limits: RefCell::default(),
+        legacy_cursors: RefCell::default(),
+        counts: Cell::new(0),
+    };
+    let ranges = [
+        Range {
+            start: None,
+            end: Some(boundary),
+            worker: None,
+        },
+        Range {
+            start: Some(boundary),
+            end: None,
+            worker: None,
+        },
+    ];
+    assert_eq!(
+        ActivityReader::new(&b, "run").read(&ranges).unwrap(),
+        [
+            None,
+            Some(Activity {
+                first,
+                tool_calls: calls.len()
+            })
+        ]
+    );
+    assert_eq!(*b.scalar_limits.borrow(), [MAX_FETCH_ROWS, 1, 1]);
+    assert_eq!(b.counts.get(), 2);
+    assert_eq!(b.legacy_cursors.borrow().len(), 1);
+}
+
+#[test]
+fn collapsed_activity_never_reads_current_payloads_even_for_discarded_workers() {
     let b = backend();
     let hook = yinz_tile::agent::HookEvent {
         hook_event_name: "PostToolUse".into(),
@@ -789,8 +897,8 @@ fn collapsed_activity_never_reads_current_payloads_even_for_discarded_workers() 
     }
     let b = Instrumented {
         inner: b,
-        scalar_fetches: Cell::new(0),
-        legacy_fetches: Cell::new(0),
+        scalar_limits: RefCell::default(),
+        legacy_cursors: RefCell::default(),
         counts: Cell::new(0),
     };
     for worker in [None, Some("worker"), Some("absent")] {
@@ -810,8 +918,8 @@ fn collapsed_activity_never_reads_current_payloads_even_for_discarded_workers() 
         }
     }
     assert_eq!(b.counts.get(), 3);
-    assert_eq!(b.scalar_fetches.get(), 3);
-    assert_eq!(b.legacy_fetches.get(), 3);
+    assert_eq!(b.scalar_limits.borrow().len(), 3);
+    assert_eq!(b.legacy_cursors.borrow().len(), 3);
 }
 
 #[test]
@@ -984,5 +1092,73 @@ fn scalar_attribution_preserves_legacy_precedence_for_current_and_unmarked_rows(
                 .collect::<Vec<_>>(),
             [revision, revision + 10]
         );
+    }
+}
+
+#[test]
+fn batched_activity_matches_individual_gaps_for_legacy_and_current_rows() {
+    use yinz_tile::prelude::Mutation;
+    let b = backend();
+    let mut mutations = vec![];
+    for revision in 1..=310 {
+        let kind = if revision % 2 == 0 {
+            RunEntryKind::ToolResult
+        } else {
+            RunEntryKind::ToolCall
+        };
+        let text = if revision % 3 == 0 {
+            "Subagent w:\noutput"
+        } else {
+            "parent"
+        };
+        let at = (revision % 5 != 0).then_some((revision % 7) as i64);
+        let mut mutation = rows::entry_mutation(
+            "run",
+            &"host".into(),
+            &entry(revision, kind, at, None, None, text),
+        );
+        if revision % 4 != 0
+            && let Mutation::Put { values, .. } = &mut mutation
+        {
+            values.retain(|(k, _)| k != "attribution_resolved" && k != "worker_id");
+        }
+        mutations.push(mutation);
+    }
+    for chunk in mutations.chunks(100) {
+        b.apply(chunk.to_vec()).unwrap();
+    }
+    let mut ranges = vec![];
+    for worker in [None, Some("w")] {
+        let mut start = None;
+        for end in [
+            Some(Cursor {
+                created_at_ms: None,
+                revision: 15,
+            }),
+            Some(Cursor {
+                created_at_ms: Some(1),
+                revision: 120,
+            }),
+            None,
+        ] {
+            ranges.push(Range {
+                start,
+                end,
+                worker: worker.map(str::to_owned),
+            });
+            start = end;
+        }
+    }
+    let b = Instrumented {
+        inner: b,
+        scalar_limits: RefCell::default(),
+        legacy_cursors: RefCell::default(),
+        counts: Cell::new(0),
+    };
+    let summaries = ActivityReader::new(&b, "run").read(&ranges).unwrap();
+    // Each worker scope scans the same 233 legacy rows in three batches.
+    assert_eq!(b.legacy_cursors.borrow().len(), 6);
+    for (range, summary) in ranges.iter().zip(summaries) {
+        assert_eq!(summary, activity(&b, "run", range).unwrap());
     }
 }

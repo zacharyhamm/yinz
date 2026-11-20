@@ -113,3 +113,42 @@ pub(super) fn rebuild_full_text(
         .context("failed to build the full-text index")?;
     Ok(true)
 }
+
+/// Physical indexes for the builtin archive's two orderings. The final ascending row id
+/// matches the store's deterministic tie-breaker when scanning the newest rows first.
+pub(super) fn archive_order_indexes(
+    exec: &mut dyn Executor,
+    namespace: &str,
+    schema: &EntitySchema,
+    create: bool,
+) -> Result<(), DataError> {
+    if namespace != "shared:yinz"
+        || schema.def.name != "agent_run_entry"
+        || (create && schema.def.version < 7)
+    {
+        return Ok(());
+    }
+    let table = schema.table();
+    for (suffix, order) in [
+        ("revision", "revision DESC"),
+        ("chronology", "created_at_ms DESC, revision DESC"),
+    ] {
+        let name = quote_ident(&format!("{table}_archive_{suffix}"));
+        if create {
+            if schema.attr("run_id").is_some()
+                && schema.attr("revision").is_some()
+                && (suffix == "revision" || schema.attr("created_at_ms").is_some())
+            {
+                exec.execute_batch(&format!(
+                    "CREATE INDEX IF NOT EXISTS {name} ON {} (run_id, {order}, id ASC)",
+                    quote_ident(&table)
+                ))
+                .context("failed to create an archive ordering index")?;
+            }
+        } else {
+            exec.execute_batch(&format!("DROP INDEX IF EXISTS {name}"))
+                .context("failed to drop an archive ordering index")?;
+        }
+    }
+    Ok(())
+}

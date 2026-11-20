@@ -680,7 +680,7 @@ pub(crate) fn legacy_project_fields(value: &mut Value) {
 pub(crate) fn legacy_entry_definition(value: &mut Value) {
     if let Some(def) = value.pointer_mut("/DataDefineEntity/def")
         && def["name"] == "agent_run_entry"
-        && def["version"] == 6
+        && def["version"] == 7
     {
         assert_eq!(
             *def,

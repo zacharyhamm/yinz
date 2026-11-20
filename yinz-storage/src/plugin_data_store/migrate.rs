@@ -143,6 +143,12 @@ pub(super) fn migrate_entity(
         }
     }
 
+    if removed
+        .iter()
+        .any(|a| matches!(a.name.as_str(), "run_id" | "created_at_ms" | "revision"))
+    {
+        super::ddl::archive_order_indexes(exec, namespace, existing, false)?;
+    }
     for attr in removed {
         drop_attr_indexes(exec, existing, &attr.name)?;
         exec.execute_batch(&format!(
@@ -162,6 +168,7 @@ pub(super) fn migrate_entity(
         info.full_text_rebuilt = rebuild_full_text(exec, &updated)?;
     }
 
+    super::ddl::archive_order_indexes(exec, namespace, &updated, true)?;
     store_definition(exec, existing.row_id, def)?;
     Ok(info)
 }

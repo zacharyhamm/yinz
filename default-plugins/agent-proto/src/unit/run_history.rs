@@ -1517,6 +1517,53 @@ fn a_header_comes_back_for_a_run_that_exists() {
     assert_eq!(header.cwd.as_deref(), Some("/work/agent"));
 }
 
+#[test]
+fn a_run_header_reads_payload_only_when_the_stored_header_is_missing() {
+    use yinz_tile::prelude::{AttrDef, EntityDef, Mutation};
+    let old = store::Local::shared("legacy");
+    let def = EntityDef::new(rows::RUN_ENTITY, 1)
+        .attr(AttrDef::int("pane_id").indexed().required())
+        .attr(AttrDef::text("session_id").indexed().required().default(""))
+        .attr(AttrDef::text("kind").required())
+        .attr(
+            AttrDef::boolean("active")
+                .indexed()
+                .required()
+                .default(true),
+        )
+        .attr(AttrDef::int("started_at_ms").required())
+        .attr(AttrDef::json("payload").required());
+    old.define(&def).unwrap();
+    let run = run("legacy", "claude", "main", 1);
+    old.apply(vec![Mutation::put(rows::RUN_ENTITY)
+        .uid("legacy")
+        .set("pane_id", i64::from(run.pane_id))
+        .set("kind", run.kind.clone())
+        .set("started_at_ms", run.started_at_ms)
+        .set("payload", serde_json::to_string(&run).unwrap())
+        .build()])
+        .unwrap();
+    assert_eq!(run_header(&old, "legacy").unwrap(), Some(run.header()));
+    old.define(&store::agent_run_def()).unwrap();
+    let by_id = Pred::eq("uid", "legacy");
+    old.apply(vec![Mutation::update(rows::RUN_ENTITY, by_id.clone())
+        .set("host_id", "new-host")
+        .set("yinz_session_name", "new-session")
+        .build()])
+        .unwrap();
+    let mut header = run.header();
+    header.host_id = "new-host".into();
+    header.yinz_session_name = "new-session".into();
+    assert_eq!(run_header(&old, "legacy").unwrap(), Some(header.clone()));
+    header.title = "Recorded title".into();
+    old.apply(vec![Mutation::update(rows::RUN_ENTITY, by_id)
+        .set("header", serde_json::to_string(&header).unwrap())
+        .set("payload", "{}")
+        .build()])
+        .unwrap();
+    assert_eq!(run_header(&old, "legacy").unwrap(), Some(header));
+}
+
 // -- snippets -------------------------------------------------------
 
 #[test]

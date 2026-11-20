@@ -44,6 +44,8 @@ fn defined() -> (PluginDataStore, Guard) {
     (store, dir)
 }
 
+#[path = "../unit/archive_indexes.rs"]
+mod archive_indexes;
 #[path = "concurrency.rs"]
 mod concurrency;
 #[path = "../unit/cross_process.rs"]

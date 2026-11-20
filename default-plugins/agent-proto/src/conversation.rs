@@ -3,7 +3,8 @@ use crate::{
     agents::{rows, RunEntry, RunEntryKind},
     store::Backend,
 };
-use yinz_tile::prelude::{FetchRequest, Pred, SortDir};
+use std::collections::HashMap;
+use yinz_tile::prelude::{FetchRequest, Pred, SortDir, MAX_FETCH_ROWS};
 
 pub use yinz_types::agent::history::{Cursor, Range};
 fn cursor(entry: &RunEntry) -> Cursor {
@@ -33,7 +34,18 @@ pub fn page(
     before: Option<Cursor>,
     after_revision: Option<u64>,
 ) -> Result<Page, String> {
-    let latest = read(
+    page_with_watermark(
+        backend,
+        id,
+        worker,
+        before,
+        after_revision,
+        latest_revision(backend, id)?,
+    )
+}
+
+pub fn latest_revision(backend: &impl Backend, id: &str) -> Result<u64, String> {
+    Ok(read(
         backend,
         id,
         &FetchRequest::entity(rows::ENTRY_ENTITY)
@@ -43,11 +55,21 @@ pub fn page(
             .limit(1),
     )?
     .first()
-    .map_or(0, |e| e.revision);
+    .map_or(0, |e| e.revision))
+}
+
+pub fn page_with_watermark(
+    backend: &impl Backend,
+    id: &str,
+    worker: Option<&str>,
+    before: Option<Cursor>,
+    after_revision: Option<u64>,
+    latest: u64,
+) -> Result<Page, String> {
     if let Some(after) = after_revision {
         return delivery(backend, id, worker, after, latest);
     }
-    let base = FetchRequest::entity(rows::ENTRY_ENTITY)
+    let request = FetchRequest::entity(rows::ENTRY_ENTITY)
         .filter(Pred::eq("run_id", id))
         .filter(Pred::Not(Box::new(Pred::is_in(
             "kind",
@@ -56,10 +78,6 @@ pub fn page(
         .sort_by("created_at_ms", SortDir::Desc)
         .sort_by("revision", SortDir::Desc)
         .limit(100);
-    let mut request = base.clone();
-    if let Some(after) = after_revision {
-        request = request.filter(Pred::gte("revision", after as i64));
-    }
     let mut position = before;
     let mut entries = Vec::new();
     let mut suppressed_result_revisions = Vec::new();
@@ -289,6 +307,7 @@ fn resolved_worker(worker: Option<&str>) -> Pred {
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Activity {
     pub first: Cursor,
     pub tool_calls: usize,
@@ -301,58 +320,169 @@ pub fn activity(
     id: &str,
     range: &Range,
 ) -> Result<Option<Activity>, String> {
-    let base = range
+    Ok(ActivityReader::new(backend, id)
+        .read(std::slice::from_ref(range))?
+        .pop()
+        .flatten())
+}
+
+/// Request-local activity summaries shared by delivery and the chronological tail.
+pub struct ActivityReader<'a, B> {
+    backend: &'a B,
+    run_id: &'a str,
+    cache: HashMap<Range, Option<Activity>>,
+}
+
+impl<'a, B: Backend> ActivityReader<'a, B> {
+    pub fn new(backend: &'a B, run_id: &'a str) -> Self {
+        Self {
+            backend,
+            run_id,
+            cache: HashMap::new(),
+        }
+    }
+
+    /// Summarize contiguous gaps together. Delivery can also request isolated gaps
+    /// around late arrivals, so keep unrelated stretches of the archive out of the scan.
+    pub fn read(&mut self, ranges: &[Range]) -> Result<Vec<Option<Activity>>, String> {
+        let mut pending: Vec<_> = ranges
+            .iter()
+            .filter(|r| !self.cache.contains_key(*r))
+            .collect();
+        pending.sort_by_key(|r| (&r.worker, r.start, r.end));
+        pending.dedup();
+        let mut rest = pending.as_slice();
+        while let Some((&first, others)) = rest.split_first() {
+            let mut span = first.clone();
+            let mut length = 1;
+            for &next in others {
+                if next.worker != span.worker
+                    || span
+                        .end
+                        .zip(next.start)
+                        .is_some_and(|(end, start)| end < start)
+                {
+                    break;
+                }
+                span.end = span.end.zip(next.end).map(|(a, b)| a.max(b));
+                length += 1;
+            }
+            let (group, remaining) = rest.split_at(length);
+            let summaries = summarize_span(self.backend, self.run_id, &span, group)?;
+            self.cache
+                .extend(group.iter().map(|r| (*r).clone()).zip(summaries));
+            rest = remaining;
+        }
+        Ok(ranges.iter().map(|range| self.cache[range]).collect())
+    }
+}
+
+fn tool_activity_request(range: &Range, id: &str) -> FetchRequest {
+    let mut base = range
         .request(id)
-        .filter(Pred::is_in("kind", ["tool_call", "tool_result"]));
-    let current = base
-        .clone()
-        .filter(resolved_worker(range.worker.as_deref()));
-    let mut count = backend.count(&current.clone().filter(Pred::eq("kind", "tool_call")))?;
-    let mut first = read(
+        .filter(Pred::is_in("kind", ["tool_call", "tool_result"]))
+        .select(["run_id", "revision", "kind", "created_at_ms"]);
+    // Expose the timestamp bound to the compound index as well as checking the exact cursor.
+    if let Some(at) = range.start.and_then(|c| c.created_at_ms) {
+        base = base.filter(Pred::gte("created_at_ms", at));
+        if let Some(end) = range.end.and_then(|c| c.created_at_ms) {
+            base = base.filter(Pred::lte("created_at_ms", end));
+        }
+    }
+    base
+}
+
+fn resolved_activity_request(range: &Range, id: &str) -> FetchRequest {
+    tool_activity_request(range, id).filter(resolved_worker(range.worker.as_deref()))
+}
+
+fn aggregate_resolved_activity(
+    backend: &impl Backend,
+    id: &str,
+    range: &Range,
+) -> Result<Option<Activity>, String> {
+    let request = resolved_activity_request(range, id);
+    let count = backend.count(&request.clone().filter(Pred::eq("kind", "tool_call")))?;
+    let first = read(
         backend,
         id,
-        &current
-            .select(["run_id", "revision", "kind", "created_at_ms"])
+        &request
             .sort_by("created_at_ms", SortDir::Asc)
             .sort_by("revision", SortDir::Asc)
             .limit(1),
-    )?
-    .first()
-    .map(cursor);
-    let legacy = base
-        .filter(Pred::is_null("attribution_resolved"))
-        .select([
-            "run_id",
-            "revision",
-            "kind",
-            "created_at_ms",
-            "worker_id",
-            "tool",
-            "text",
-        ])
-        .sort_by("created_at_ms", SortDir::Desc)
-        .sort_by("revision", SortDir::Desc)
-        .limit(100);
-    let mut position: Option<Cursor> = None;
-    loop {
-        let request = match position {
-            Some(c) => legacy.clone().filter(c.before()),
-            None => legacy.clone(),
-        };
-        let mut batch = read(backend, id, &request)?;
-        if batch.is_empty() {
-            break;
-        }
-        batch.sort_by_key(cursor);
-        position = batch.first().map(cursor);
-        for entry in batch.into_iter().filter(|e| e.worker() == range.worker) {
-            count += u64::from(entry.kind == RunEntryKind::ToolCall);
-            let at = cursor(&entry);
-            first = Some(first.map_or(at, |first| first.min(at)));
+    )?;
+    let tool_calls = usize::try_from(count).map_err(|e| e.to_string())?;
+    Ok(first.first().map(|entry| Activity {
+        first: cursor(entry),
+        tool_calls,
+    }))
+}
+
+fn include_activity(entry: &RunEntry, ranges: &[&Range], summaries: &mut [Option<Activity>]) {
+    let at = cursor(entry);
+    for (range, summary) in ranges.iter().zip(summaries) {
+        if range
+            .start
+            .is_none_or(|start| start < at && start.revision != at.revision)
+            && range.end.is_none_or(|end| at < end)
+        {
+            let summary = summary.get_or_insert(Activity {
+                first: at,
+                tool_calls: 0,
+            });
+            summary.first = summary.first.min(at);
+            summary.tool_calls += usize::from(entry.kind == RunEntryKind::ToolCall);
         }
     }
-    let tool_calls = usize::try_from(count).map_err(|e| e.to_string())?;
-    Ok(first.map(|first| Activity { first, tool_calls }))
+}
+
+fn summarize_span(
+    backend: &impl Backend,
+    id: &str,
+    span: &Range,
+    ranges: &[&Range],
+) -> Result<Vec<Option<Activity>>, String> {
+    let mut summaries = vec![None; ranges.len()];
+    if let [range] = ranges {
+        summaries[0] = aggregate_resolved_activity(backend, id, range)?;
+    } else {
+        let request = resolved_activity_request(span, id)
+            .sort_by("created_at_ms", SortDir::Desc)
+            .sort_by("revision", SortDir::Desc)
+            .limit(MAX_FETCH_ROWS);
+        let fetched = backend.fetch(&request)?;
+        if fetched.truncated {
+            // Dense gaps need only a count and a cursor each. Leave their rows in SQLite.
+            for (range, summary) in ranges.iter().zip(&mut summaries) {
+                *summary = aggregate_resolved_activity(backend, id, range)?;
+            }
+        } else if let Some(entries) = rows::entries_from_rows(&fetched).get(id) {
+            for entry in entries {
+                include_activity(entry, ranges, &mut summaries);
+            }
+        }
+    }
+
+    // The summary tracks the earliest cursor itself, so SQLite can page by row ID.
+    let mut legacy = tool_activity_request(span, id)
+        .filter(Pred::is_null("attribution_resolved"))
+        .select(["worker_id", "tool", "text"])
+        .limit(100);
+    loop {
+        let fetched = backend.fetch(&legacy)?;
+        if let Some(entries) = rows::entries_from_rows(&fetched).get(id) {
+            for entry in entries {
+                if entry.worker() == span.worker {
+                    include_activity(entry, ranges, &mut summaries);
+                }
+            }
+        }
+        let Some(next) = fetched.next_cursor else {
+            break;
+        };
+        legacy = legacy.after_id(next);
+    }
+    Ok(summaries)
 }
 
 /// Expanded activity reads at most 30 records, with full retained payloads under

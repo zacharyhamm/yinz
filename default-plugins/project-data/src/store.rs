@@ -299,7 +299,8 @@ pub fn agent_run_def() -> EntityDef {
 /// `revision` is the run's own monotonic counter, which is what orders the timeline; `id`
 /// order agrees with it, since a row is written when its entry is made.
 pub fn agent_run_entry_def() -> EntityDef {
-    EntityDef::new("agent_run_entry", 6)
+    // Redeclaring v7 installs the per-run revision and chronological indexes on existing stores.
+    EntityDef::new("agent_run_entry", 7)
         // Null on legacy rows: only those rows need payload/text attribution fallback.
         // No default or backfill; a marked null worker_id unambiguously means parent.
         .attr(AttrDef::boolean("attribution_resolved").indexed())

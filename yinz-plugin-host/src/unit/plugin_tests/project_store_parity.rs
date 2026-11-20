@@ -170,7 +170,7 @@ impl Pair {
             for command in &mut commands {
                 if let Some(def) = command.pointer_mut("/DataDefineEntity/def")
                     && def["name"] == agents::rows::ENTRY_ENTITY
-                    && def["version"] == 6
+                    && def["version"] == 7
                 {
                     // The retained Wasm reference predates nullable worker/turn
                     // attribution and its resolution marker. Assert the complete new

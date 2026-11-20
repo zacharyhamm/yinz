@@ -394,7 +394,28 @@ pub fn list_runs_page(filter: &Filter, limit: usize, fetched: &DataRows) -> RunP
 
 /// One run's header, whatever session it belongs to and whether or not it is still open.
 pub fn run_header(backend: &impl Backend, run_id: &str) -> Result<Option<AgentRunHeader>, String> {
-    let rows = backend.fetch(&rows::run_by_id_request(run_id))?;
+    let by_id = FetchRequest::entity(rows::RUN_ENTITY)
+        .filter(Pred::eq("uid", run_id))
+        .limit(1);
+    let header_request = by_id
+        .clone()
+        .select(["header", "host_id", "yinz_session_name"]);
+    if let Ok(stored) = backend.fetch(&header_request) {
+        if stored.is_empty() {
+            return Ok(None);
+        }
+        if let Some(header) = rows::run_headers_from_rows(&stored).into_iter().next() {
+            return Ok(Some(header));
+        }
+    }
+    // Legacy records may lack a header, including on stores whose entity declaration
+    // predates the header column itself.
+    let rows = backend
+        .fetch(&rows::run_by_id_request(run_id))
+        .or_else(|_| {
+            // The original schema also predates the ownership columns.
+            backend.fetch(&by_id.select(["payload"]))
+        })?;
     Ok(rows::runs_from_rows(&rows)
         .into_iter()
         .next()

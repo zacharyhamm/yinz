@@ -220,7 +220,7 @@ pub(super) fn execute(
             )
         },
         HistoryAction::Tools { id, range, before } => {
-            return conversation_view(
+            return conversation_refresh(
                 request,
                 &Reader(data),
                 id,
@@ -280,7 +280,7 @@ pub(super) fn execute(
                 end: None,
                 worker: entry.worker(),
             });
-            let mut reply = conversation_view(
+            let mut reply = conversation_refresh(
                 request,
                 &Reader(data),
                 id,
@@ -597,7 +597,18 @@ fn conversation_refresh(
     id: &str,
     read: ConversationRead<'_>,
 ) -> Result<AgentReply, String> {
-    let mut reply = conversation_view(request, backend, id, read)?;
+    let Some(header) = history::run_header(backend, id)? else {
+        return Ok(unavailable_history());
+    };
+    let latest = if read.tools.is_none() {
+        agent_proto::conversation::latest_revision(backend, id)?
+    } else {
+        0
+    };
+    let mut activity = agent_proto::conversation::ActivityReader::new(backend, id);
+    let mut view =
+        |read| conversation_view(request, backend, id, &header, latest, read, &mut activity);
+    let mut reply = view(read)?;
     if read.after.is_some() {
         // Refresh scoped activity counts at the chronological tail without
         // acknowledging revisions that delivery has not reached yet.
@@ -618,15 +629,10 @@ fn conversation_refresh(
             }),
         ) = (
             &mut reply,
-            conversation_view(
-                request,
-                backend,
-                id,
-                ConversationRead {
-                    after: None,
-                    ..read
-                },
-            )?,
+            view(ConversationRead {
+                after: None,
+                ..read
+            })?,
         ) {
             events.extend(tail);
             suppressed_result_revisions.extend(tail_suppressed);
@@ -643,11 +649,14 @@ fn conversation_refresh(
     Ok(reply)
 }
 
-fn conversation_view(
+fn conversation_view<B: store::Backend>(
     request: &AgentRequest,
-    backend: &impl store::Backend,
+    backend: &B,
     id: &str,
+    h: &AgentRunHeader,
+    latest: u64,
     read: ConversationRead<'_>,
+    activity: &mut agent_proto::conversation::ActivityReader<'_, B>,
 ) -> Result<AgentReply, String> {
     let ConversationRead {
         worker,
@@ -656,12 +665,9 @@ fn conversation_view(
         tools,
     } = read;
     use agent_proto::conversation::{self, Cursor, Range};
-    let Some(h) = history::run_header(backend, id)? else {
-        return Ok(unavailable_history());
-    };
     let page = match tools {
         Some(range) => conversation::tools(backend, id, range, before)?,
-        None => conversation::page(backend, id, worker, before, after)?,
+        None => conversation::page_with_watermark(backend, id, worker, before, after, latest)?,
     };
     let mut rows = Vec::new();
     if tools.is_none() {
@@ -745,11 +751,8 @@ fn conversation_view(
         Vec::new()
     };
     let timestamp = |at| request.timezone.timestamp(at);
-    for range in &activity_ranges {
-        activity(backend, id, range.clone(), &timestamp, &mut events)?;
-    }
     let mut start = None;
-    for entry in page.entries {
+    for entry in &page.entries {
         let end = Cursor {
             created_at_ms: entry.created_at_ms,
             revision: entry.revision,
@@ -760,10 +763,31 @@ fn conversation_view(
                 end: Some(end),
                 worker: worker.map(str::to_owned),
             };
-            activity(backend, id, range.clone(), &timestamp, &mut events)?;
             activity_ranges.push(range);
         }
         start = Some(end);
+    }
+    if tools.is_none() && after.is_none() {
+        activity_ranges.push(Range {
+            start,
+            end: before,
+            worker: worker.map(str::to_owned),
+        });
+    }
+    let mut summaries = activity
+        .read(&activity_ranges)?
+        .into_iter()
+        .zip(&activity_ranges)
+        .map(|(summary, range)| {
+            summary.map(|activity| activity_event(range, activity, &timestamp))
+        });
+    if after.is_some() {
+        events.extend(summaries.by_ref().flatten());
+    }
+    for (index, entry) in page.entries.into_iter().enumerate() {
+        if tools.is_none() && after.is_none() && (index > 0 || page.earlier.is_none()) {
+            events.extend(summaries.next().flatten());
+        }
         rows.push(row(
             format!("event:{}", entry.revision),
             "",
@@ -798,16 +822,7 @@ fn conversation_view(
             truncated: page.shortened.contains(&entry.revision),
         });
     }
-    if tools.is_none() && after.is_none() {
-        // An earlier page owns the gap up to the next page's first message.
-        let range = Range {
-            start,
-            end: before,
-            worker: worker.map(str::to_owned),
-        };
-        activity(backend, id, range.clone(), &timestamp, &mut events)?;
-        activity_ranges.push(range);
-    }
+    events.extend(summaries.flatten());
     if tools.is_none() && after.is_none() {
         if worker.is_none() {
             rows.push(row(
@@ -869,7 +884,7 @@ fn conversation_view(
             started: timestamp(Some(h.started_at_ms)),
             session_id: format!("session {}", h.session_id),
             task: h.title.clone(),
-            details: run_details(&h, &timestamp),
+            details: run_details(h, &timestamp),
             project: agent_proto::agents::checkout_location(h.host.as_deref(), h.cwd.as_deref())
                 .and_then(|location| {
                     project_data::projects::for_cwd(
@@ -897,27 +912,21 @@ fn conversation_view(
         .into(),
     }))
 }
-fn activity(
-    backend: &impl store::Backend,
-    id: &str,
-    range: agent_proto::conversation::Range,
+fn activity_event(
+    range: &agent_proto::conversation::Range,
+    activity: agent_proto::conversation::Activity,
     timestamp: &impl Fn(Option<i64>) -> String,
-    events: &mut Vec<HistoryEvent>,
-) -> Result<(), String> {
-    if let Some(activity) = agent_proto::conversation::activity(backend, id, &range)? {
-        let entry = activity.first;
-        events.push(HistoryEvent {
-            revision: entry.revision,
-            tool_calls: activity.tool_calls,
-            kind: "tools".into(),
-            time: timestamp(entry.created_at_ms),
-            created_at_ms: entry.created_at_ms,
-            markdown: String::new(),
-            truncated: false,
-            range: Some(range),
-        });
+) -> HistoryEvent {
+    HistoryEvent {
+        revision: activity.first.revision,
+        tool_calls: activity.tool_calls,
+        kind: "tools".into(),
+        time: timestamp(activity.first.created_at_ms),
+        created_at_ms: activity.first.created_at_ms,
+        markdown: String::new(),
+        truncated: false,
+        range: Some(range.clone()),
     }
-    Ok(())
 }
 
 fn run_details(h: &AgentRunHeader, timestamp: &impl Fn(Option<i64>) -> String) -> String {
