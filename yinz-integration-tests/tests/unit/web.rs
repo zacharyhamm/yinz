@@ -302,6 +302,12 @@ fn public_request(addr: SocketAddr, method: &str, path: &str, extra: &str) -> St
 }
 
 fn wait_public(addr: SocketAddr, path: &str, text: &str) {
+    wait_http("Steel public publication", || {
+        get(addr, path).contains(text)
+    });
+}
+
+fn wait_http(what: &str, ready: impl Fn() -> bool + Send) {
     let published = Watched::new(false);
     let observed = published.clone();
     std::thread::scope(|scope| {
@@ -315,7 +321,7 @@ fn wait_public(addr: SocketAddr, path: &str, text: &str) {
                     let mut tick = tokio::time::interval(Duration::from_millis(20));
                     loop {
                         tick.tick().await;
-                        if get(addr, path).contains(text) {
+                        if ready() {
                             *observed.lock() = true;
                             break;
                         }
@@ -325,9 +331,7 @@ fn wait_public(addr: SocketAddr, path: &str, text: &str) {
                     }
                 });
         });
-        published.wait_until("Steel public publication", default_timeout(), |ready| {
-            ready.then_some(())
-        });
+        published.wait_until(what, default_timeout(), |ready| ready.then_some(()));
     });
 }
 fn web_plugin_operation(
@@ -1568,7 +1572,23 @@ fn web_builtin_manage_agent_routes() {
         .unwrap();
     assert_eq!(moved["pane_id"], launched["pane_id"]);
     assert_ne!(moved["location"]["group"]["id"], inventory["current_group"]);
-    assert_eq!(moved["location"]["tab"]["name"], "First");
+    let moved_tab = &moved["location"]["tab"];
+    assert_eq!(
+        moved_tab["name"],
+        format!("[{}] First", agent.terminal_id())
+    );
+    // Close requires a settled source. The destination inventory lists the tab once
+    // its background layout lands, with the same displayed name as the live location.
+    wait_http("moved agent tab available for management", || {
+        let inventory = call_ok(addr, "POST", "/api/agent/destinations", &token, &target);
+        inventory["groups"].as_array().unwrap().iter().any(|group| {
+            group["tabs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tab| tab["id"] == moved_tab["id"] && tab["name"] == moved_tab["name"])
+        })
+    });
 
     call_ok(addr, "POST", "/api/agent/close", &token, &target);
     assert!(list()["agents"]
