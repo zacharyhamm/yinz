@@ -1752,12 +1752,9 @@ impl App {
                 self.present_frame(applied);
             },
             ServerToClientMsg::Exit { exit_reason } => {
-                if exit_reason == ExitReason::Normal {
-                    self.recorder.finish("Attachment ended")?;
-                } else {
-                    self.recorder
-                        .finish(&format!("Attachment ended ({exit_reason})"))?;
-                }
+                let name = self.args.session_name.as_deref().unwrap_or("session");
+                self.recorder
+                    .finish(&self.endpoint.attachment_end(name, &exit_reason))?;
                 exit();
             },
             ServerToClientMsg::SwitchSession { connect_to_session } => {

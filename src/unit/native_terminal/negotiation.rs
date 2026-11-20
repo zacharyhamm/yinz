@@ -595,7 +595,7 @@ fn render_negotiation_headless_distinguishes_missing_unsupported_and_unanswered(
         (Some(Some(1)), "did not answer"),
     ] {
         let (child, mut peer) =
-            scripted_attachment(&fixture, proxy.path(), &listener, session, &capture, "1");
+            scripted_attachment(&fixture, proxy.path(), &listener, session, &capture, "30");
         if let Some(revision) = advertised {
             write_packet(&mut peer, &advertisement(revision));
         }
@@ -614,6 +614,53 @@ fn render_negotiation_headless_distinguishes_missing_unsupported_and_unanswered(
         }
         assert_eq!(fs::read(&capture).unwrap(), b"previous recording");
         assert_eq!(peer.read(&mut [0]).unwrap(), 0, "unexpected native message");
+    }
+}
+
+#[test]
+fn render_negotiation_headless_reports_why_capture_ended_before_repaint() {
+    let fixture = NativeFixture::new();
+    let (proxy, listener) = scripted_listener(SESSION);
+    let capture = proxy.path().join("kept.frames");
+    fs::write(&capture, b"previous recording").unwrap();
+
+    for (exit, expected) in [
+        (Some(ExitReason::NormalDetached), "Session detached"),
+        (Some(ExitReason::KickedByHost), "Disconnected by host"),
+        (None, "Capture duration elapsed"),
+    ] {
+        let duration = if exit.is_some() { "30" } else { "1" };
+        let (child, mut peer) = scripted_attachment(
+            &fixture,
+            proxy.path(),
+            &listener,
+            SESSION,
+            &capture,
+            duration,
+        );
+        write_packet(&mut peer, &advertisement(Some(1)));
+        assert!(matches!(
+            client_message(&read_packet(&mut peer)),
+            Client::NativeRenderRequest(caps::Request::Offer(_))
+        ));
+        if let Some(exit_reason) = exit {
+            write_packet(
+                &mut peer,
+                &wire::ServerToClientMsg::from(Server::Exit { exit_reason }).encode_to_vec(),
+            );
+        }
+        let output = child.wait_with_output().unwrap();
+        let message = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{message}");
+        for part in [
+            expected,
+            "before the first repaint",
+            capture.to_str().unwrap(),
+        ] {
+            assert!(message.contains(part), "{message}");
+        }
+        assert_eq!(fs::read(&capture).unwrap(), b"previous recording");
+        assert_eq!(peer.read(&mut [0]).unwrap(), 0, "unexpected frame ACK");
     }
 }
 

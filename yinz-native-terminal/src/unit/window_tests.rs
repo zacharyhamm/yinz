@@ -3930,6 +3930,7 @@ fn graphical_capture_automatic_completion_requires_a_recorded_frame() {
         }
         Recorder::check_destination(&path).unwrap();
         app.recorder = Recorder::new(Some(&path));
+        app.endpoint = session::Endpoint::Forwarded(Some("build host".into()));
         assert!(!app.duration_elapsed(app.started).unwrap());
         for (result, reason) in [
             (
@@ -3950,6 +3951,16 @@ fn graphical_capture_automatic_completion_requires_a_recorded_frame() {
                 )
                 .unwrap_err(),
                 "Attachment ended (Disconnected by host)",
+            ),
+            (
+                app.handle_message(
+                    ServerToClientMsg::Exit {
+                        exit_reason: ExitReason::Disconnect,
+                    },
+                    || panic!("premature success"),
+                )
+                .unwrap_err(),
+                "lost its connection to \"source\" (reattach with `yinz attach --remote='build host' -- source`)",
             ),
         ] {
             let message = result.to_string();

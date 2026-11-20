@@ -3,6 +3,7 @@ use anyhow::ensure;
 use interprocess::local_socket::Stream;
 use std::fs::File;
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -12,7 +13,7 @@ use yinz_client::os_input_output::{
 };
 use yinz_config::config::ConfigError;
 use yinz_ipc::ipc::{
-    ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg,
+    ClientToServerMsg, ExitReason, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg,
 };
 use yinz_runtime::errors::prelude::*;
 use yinz_runtime::native_media::{self, MediaRoot, Probe};
@@ -105,6 +106,17 @@ pub enum Endpoint {
 }
 
 impl Endpoint {
+    pub fn attachment_end(&self, name: &str, reason: &ExitReason) -> String {
+        match reason {
+            ExitReason::Normal => "Attachment ended".into(),
+            ExitReason::Disconnect => format!(
+                "Attachment lost its connection to {name:?} (reattach with {})",
+                self.ansi_attach(name)
+            ),
+            _ => format!("Attachment ended ({reason})"),
+        }
+    }
+
     pub fn ansi_attach(&self, name: &str) -> String {
         let name = shell_argument(name);
         match self {
@@ -478,19 +490,49 @@ impl Recorder {
     }
 
     pub fn finish(&self, reason: &str) -> Result<()> {
-        if let Self::Pending(path) = self {
-            bail!(
-                "{reason} before the first repaint. No frames were written to {}",
-                path.display()
-            );
+        if matches!(self, Self::Pending(_)) {
+            return Err(self.before_first_repaint(reason));
         }
         Ok(())
     }
 
+    fn before_first_repaint(&self, reason: &str) -> anyhow::Error {
+        if let Self::Pending(path) = self {
+            anyhow!(
+                "{reason} before the first repaint. No frames were written to {}",
+                path.display()
+            )
+        } else {
+            anyhow!("{reason} before the first repaint")
+        }
+    }
+
     pub fn frame(&mut self, bytes: &[u8]) -> Result<()> {
         if let Self::Pending(path) = self {
-            let file = File::create(path.as_path())
-                .with_context(|| format!("create native frame recording {}", path.display()))?;
+            // The path can be a FIFO even if it was a regular file at preflight.
+            let opened = File::options()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(path.as_path());
+            let file = match opened {
+                Err(error) if error.raw_os_error() == Some(libc::ENXIO) => {
+                    return Err(error).with_context(|| format!(
+                        "cannot open {} for recording; start the named pipe reader before recording",
+                        path.display()
+                    ));
+                },
+                result => result
+                    .with_context(|| format!("create native frame recording {}", path.display()))?,
+            };
+            // Only the open is a readiness check. Once a reader is connected,
+            // keep write_all's blocking semantics for frames larger than the pipe.
+            nix::fcntl::fcntl(
+                &file,
+                nix::fcntl::FcntlArg::F_SETFL(nix::fcntl::OFlag::empty()),
+            )
+            .context("restore blocking recording writes")?;
             *self = Self::Writing(file);
         }
         if let Self::Writing(file) = self {
@@ -521,15 +563,18 @@ pub fn headless(mut connection: Connection, args: &TerminalArgs) -> Result<()> {
         .map(|seconds| started + Duration::from_secs(seconds));
     let mut last_frame = None;
     let mut handshake = Handshake::default();
+    let opening_deadline = started + Duration::from_secs(10);
     loop {
         let deadline = if last_frame.is_some() {
             finish.unwrap_or_else(|| Instant::now() + Duration::from_secs(3600))
         } else {
-            (started + Duration::from_secs(10))
-                .min(finish.unwrap_or(started + Duration::from_secs(10)))
+            finish.map_or(opening_deadline, |end| end.min(opening_deadline))
         };
         if Instant::now() >= deadline {
             if last_frame.is_none() {
+                if finish == Some(deadline) {
+                    return Err(recorder.before_first_repaint("Capture duration elapsed"));
+                }
                 return Err(handshake.timeout(&connection.endpoint, &connection.name));
             }
             break;
@@ -586,8 +631,11 @@ pub fn headless(mut connection: Connection, args: &TerminalArgs) -> Result<()> {
                     );
                     bail!("session {:?} requested a switch to {destination}; headless capture ended {boundary} on the source", connection.name);
                 },
-                ServerToClientMsg::Exit { .. } if last_frame.is_none() => {
-                    bail!("session exited before native negotiation and repaint")
+                ServerToClientMsg::Exit { exit_reason } if last_frame.is_none() => {
+                    let reason = connection
+                        .endpoint
+                        .attachment_end(&connection.name, &exit_reason);
+                    return Err(recorder.before_first_repaint(&reason));
                 },
                 ServerToClientMsg::Exit { .. } => break,
                 ServerToClientMsg::ConfigFileUpdated if args.record.is_some() => {

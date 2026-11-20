@@ -10,6 +10,44 @@ fn sessions(names: &[&str]) -> Vec<(SessionName, Duration)> {
 }
 
 #[test]
+fn recording_fifo_requires_a_ready_reader() {
+    use std::io::Read;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("capture.fifo");
+    nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRWXU).unwrap();
+    Recorder::check_destination(&path).unwrap();
+    let mut recorder = Recorder::new(Some(&path));
+    let error = recorder.frame(b"first").unwrap_err().to_string();
+    assert!(error.contains("start the named pipe reader"), "{error}");
+    assert!(error.contains(path.to_str().unwrap()), "{error}");
+
+    let ready_reader = File::options()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&path)
+        .unwrap();
+    recorder.frame(b"first").unwrap();
+    let mut reader = File::open(&path).unwrap();
+    drop(ready_reader);
+    let large_frame = vec![42; 4 * 1024 * 1024];
+    std::thread::scope(|scope| {
+        let drained = scope.spawn(|| {
+            let mut captured = Vec::new();
+            reader.read_to_end(&mut captured).unwrap();
+            captured
+        });
+        let result = recorder.frame(&large_frame);
+        drop(recorder);
+        result.unwrap();
+        let captured = drained.join().unwrap();
+        assert_eq!(&captured[..9], b"\x05\x00\x00\x00first");
+        assert_eq!(&captured[9..13], &(large_frame.len() as u32).to_le_bytes());
+        assert_eq!(&captured[13..], large_frame);
+    });
+}
+
+#[test]
 fn graphical_capture_preflight_follows_the_recording_link_without_creating_its_target() {
     let dir = tempfile::tempdir().unwrap();
     let link = dir.path().join("capture.frames");

@@ -627,10 +627,14 @@ The hidden `--headless` option exercises the same session and structured frame
 path without opening a window. `--rows`, `--cols`, and `--duration-secs` bound a
 capture. `--record PATH` also works with graphical windows. Both modes open the
 recording for replacement after applying the first repaint. A local graphical
-window checks the recording destination before opening the session. A duration
+window checks the recording destination before opening the session. To record
+to a named pipe, start its reader before the first repaint. If the pipe has no
+reader at that point, the capture exits with an error naming the pipe. A duration
 limit, normal detach or host-initiated disconnect before the first repaint
 produces a nonzero exit and names the untouched recording path. The message
-identifies a host-initiated disconnect.
+identifies a host-initiated disconnect. If a forwarded attachment loses its
+server connection and receives a disconnect reason, its recovery command
+addresses the remote session.
 A headless session switch ends the capture with a nonzero exit and reports the
 source, requested destination and last applied frame, or that the switch
 preceded the first repaint.
