@@ -160,13 +160,15 @@ impl yinz_agent_control::controller::dispatch::AgentSession for Screen {
     }
     fn publish_if_tab_names_changed(&mut self) -> Result<()> {
         if self.update_plugin_tab_names() {
-            self.log_and_report_session_state()?;
+            self.log_and_report_session_state()
+                .context("report session state after agent tab names changed")?;
         }
         Ok(())
     }
     fn publish_panes(&mut self) -> Result<()> {
-        self.report_pane_state()?;
-        self.render()
+        self.report_pane_state()
+            .context("report pane state after an agent report")?;
+        self.render().context("render after an agent report")
     }
     fn publish_activity(&mut self, pane: PaneId, agent: AgentInfo) -> Result<()> {
         super::agent_reports::publish_pane_agent_activity(self, pane, agent).map(|_| ())
@@ -183,6 +185,7 @@ impl yinz_agent_control::controller::dispatch::AgentSession for Screen {
                 None,
                 yinz_types::data::Event::AgentEvent(event),
             )]))
+            .context("enqueue agent event for plugins")
     }
     fn frame_now(&self) -> Instant {
         self.frame_now()

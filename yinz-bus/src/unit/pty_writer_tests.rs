@@ -878,3 +878,24 @@ fn failed_screen_turn_closes_its_resize_scope_before_the_next_instruction() {
         "{messages:?}"
     );
 }
+
+#[test]
+fn layout_hint_outside_a_screen_turn_does_not_leave_the_writer_caching() {
+    use crate::thread_bus::ThreadSenders;
+    use PtyWriteInstruction::*;
+    let (tx, rx) = channels::unbounded();
+    let senders = ThreadSenders {
+        to_pty_writer: Some(SenderWithContext::new(tx)),
+        ..Default::default()
+    };
+    // Nothing would send `ApplyCachedResizes` after this hint, so it must not reach the writer.
+    senders.send_to_pty_writer(StartCachingResizes).unwrap();
+    senders
+        .send_to_pty_writer(ResizePty(TerminalId::new(4), 80, 24, None, None))
+        .unwrap();
+    let messages: Vec<_> = rx.try_iter().map(|(instruction, _)| instruction).collect();
+    assert!(
+        matches!(messages.as_slice(), [ResizePty(..)]),
+        "{messages:?}"
+    );
+}

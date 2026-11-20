@@ -559,7 +559,12 @@ impl ResizeCache {
                     .as_ref()
                     .is_some_and(|writer| writer.same_channel(&batch.writer))
             }) else {
-                return Ok(true);
+                // No screen transaction on this thread will send `ApplyCachedResizes` for
+                // this writer, so a bare layout hint would leave it caching resizes and
+                // holding placement acknowledgements until some later turn happens to
+                // resize. Drop the hint; a missing writer still reports its send failure.
+                return Ok(!(matches!(instruction, StartCachingResizes)
+                    && senders.to_pty_writer.is_some()));
             };
             // Layout code also hints that subsequent resizes should be coalesced.
             // The first actual resize or placement opens our transaction.
