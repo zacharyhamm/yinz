@@ -95,7 +95,7 @@ pub(crate) enum Notice<'a> {
     Text(&'a str),
     Pending {
         destination: &'a str,
-        source: &'a str,
+        input_source: Option<&'a str>,
     },
 }
 
@@ -139,7 +139,7 @@ pub(crate) fn notice_scene(
         Notice::Text(text) => Cow::Borrowed(text),
         Notice::Pending {
             destination,
-            source,
+            input_source,
         } => {
             let hint = match columns {
                 2 => "⎋",
@@ -148,7 +148,12 @@ pub(crate) fn notice_scene(
             };
             let mut text = hint.to_owned();
             push_pending_notice_line(&mut text, "Opening: ", destination, columns);
-            push_pending_notice_line(&mut text, "Input: ", source, columns);
+            push_pending_notice_line(
+                &mut text,
+                "Input: ",
+                input_source.unwrap_or("waiting for first repaint"),
+                columns,
+            );
             Cow::Owned(text)
         },
     };

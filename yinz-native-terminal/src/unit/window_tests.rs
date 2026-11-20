@@ -276,6 +276,37 @@ fn native_switch_pending_notice_tracks_request_and_resolution() {
 
 #[cfg(unix)]
 #[test]
+fn native_switch_before_source_repaint_shows_destination_and_keeps_input_gated() {
+    let mut app = switch_app(CliArgs::default());
+    app.connection_geometry.received_frame = false;
+    let (source, mut peer) = switch_peer();
+    app.sender = Some(source);
+    let target = (768, 384);
+    let waiting = app.switch_overlay(target, 0).unwrap();
+    let (_opened, _events) = begin_test_switch(&mut app, Some("destination"), Instant::now());
+    let expected = notice_scene(
+        Notice::Text("Esc cancels\nOpening: destination\nInput: waiting for first repaint"),
+        &mut app.cache,
+        target,
+        0,
+    );
+    assert_eq!(app.switch_overlay(target, 0), Some(expected));
+
+    for key in [Key::Character("x".into()), Key::Named(NamedKey::Escape)] {
+        app.key_pressed(&keyboard::Press::new(key, ModifiersState::empty()), false)
+            .unwrap();
+    }
+    assert!(app.pending_switch.is_none());
+    assert_eq!(app.switch_overlay(target, 0), Some(waiting));
+    drop(app);
+    assert!(matches!(
+        peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::ClientExited, _))
+    ));
+}
+
+#[cfg(unix)]
+#[test]
 fn native_switch_pending_escape_cancels_without_detaching_source() {
     use winit::event::Ime;
     use yinz_types::data::{BareKey, KeyModifier};
@@ -3897,11 +3928,13 @@ fn render_negotiation_first_repaint_enables_pane_input_and_recording() {
         }
         app.event(WindowEvent::Ime(Ime::Commit("text".into())), || panic!())
             .unwrap();
+    };
+    let mouse = |app: &mut App, button, state| {
         app.event(
             WindowEvent::MouseInput {
                 device_id: DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
+                state,
+                button,
             },
             || panic!(),
         )
@@ -3913,6 +3946,8 @@ fn render_negotiation_first_repaint_enables_pane_input_and_recording() {
         assert_eq!(std::fs::read(&capture).unwrap(), b"earlier capture");
     };
     waiting(&mut app);
+    mouse(&mut app, MouseButton::Left, ElementState::Pressed);
+    mouse(&mut app, MouseButton::Right, ElementState::Pressed);
     app.handle_message(advertisement(Some(1)), || panic!())
         .unwrap();
     let Some((ClientToServerMsg::NativeRenderRequest(caps::Request::Offer(offer)), _)) =
@@ -3947,6 +3982,8 @@ fn render_negotiation_first_repaint_enables_pane_input_and_recording() {
     assert_eq!(recorded[..4], (frame.len() as u32).to_le_bytes());
     assert_eq!(recorded[4..], frame);
     assert!(app.switch_overlay((800, 400), 0).is_none());
+    mouse(&mut app, MouseButton::Left, ElementState::Released);
+    mouse(&mut app, MouseButton::Right, ElementState::Released);
     input(&mut app);
     assert!(matches!(
         peer.recv_client_msg().msg(),
@@ -3958,16 +3995,18 @@ fn render_negotiation_first_repaint_enables_pane_input_and_recording() {
     assert!(
         matches!(peer.recv_client_msg().msg(), Some((ClientToServerMsg::Text(s), _)) if s == "text")
     );
-    assert!(matches!(
-        peer.recv_client_msg().msg(),
-        Some((
-            ClientToServerMsg::Action {
-                action: Action::MouseEvent { .. },
-                ..
-            },
-            _
-        ))
-    ));
+    for (state, expected) in [
+        (ElementState::Pressed, MouseEventType::Press),
+        (ElementState::Released, MouseEventType::Release),
+    ] {
+        mouse(&mut app, MouseButton::Left, state);
+        assert!(matches!(
+            peer.recv_client_msg().msg(),
+            Some((ClientToServerMsg::Action {
+                action: Action::MouseEvent { event }, ..
+            }, _)) if event.event_type == expected && event.left && !event.right && !event.middle
+        ));
+    }
 }
 
 #[test]

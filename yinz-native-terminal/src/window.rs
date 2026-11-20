@@ -22,6 +22,7 @@ use glutin::display::GetGlDisplay;
 use glutin::prelude::*;
 use glutin::surface::{Surface, SurfaceAttributesBuilder, SwapInterval, WindowSurface};
 use glutin_winit::DisplayBuilder;
+use std::collections::HashSet;
 use std::num::NonZeroU32;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
@@ -126,6 +127,7 @@ struct App {
     pointer: (f64, f64),
     scroll: ScrollAccumulator,
     buttons: (bool, bool, bool),
+    buttons_pressed_before_repaint: HashSet<MouseButton>,
     selection: LocalSelection,
     mouse_mode: bool,
     focused: bool,
@@ -1212,6 +1214,7 @@ impl App {
             pointer: (0.0, 0.0),
             scroll: ScrollAccumulator::default(),
             buttons: (false, false, false),
+            buttons_pressed_before_repaint: HashSet::new(),
             selection: LocalSelection::default(),
             mouse_mode: true,
             focused: true,
@@ -1969,19 +1972,20 @@ impl App {
     fn switch_overlay(&mut self, size: (u32, u32), padding: u32) -> Option<RowScene> {
         let notice = if let Some(text) = self.switch_notice.as_deref() {
             Notice::Text(text)
+        } else if let Some(pending) = &self.pending_switch {
+            Notice::Pending {
+                destination: &pending.destination,
+                input_source: self.connection_geometry.received_frame.then_some(
+                    self.args
+                        .session_name
+                        .as_deref()
+                        .unwrap_or("current session"),
+                ),
+            }
         } else if !self.connection_geometry.received_frame {
             Notice::Text(
                 "Waiting for the first repaint. Input will be available when the session appears.",
             )
-        } else if let Some(pending) = &self.pending_switch {
-            Notice::Pending {
-                destination: &pending.destination,
-                source: self
-                    .args
-                    .session_name
-                    .as_deref()
-                    .unwrap_or("current session"),
-            }
         } else {
             return None;
         };
@@ -2183,10 +2187,17 @@ impl App {
                     self.mouse(MouseEventType::Motion, (false, false, false, false))?;
                 }
             },
-            WindowEvent::MouseInput { state, button, .. }
-                if self.connection_geometry.received_frame =>
-            {
+            WindowEvent::MouseInput { state, button, .. } => {
                 let pressed = state == ElementState::Pressed;
+                if !self.connection_geometry.received_frame && pressed {
+                    self.buttons_pressed_before_repaint.insert(button);
+                    return Ok(());
+                }
+                let pressed_before_repaint = self.buttons_pressed_before_repaint.remove(&button);
+                if !self.connection_geometry.received_frame || (!pressed && pressed_before_repaint)
+                {
+                    return Ok(());
+                }
                 match button {
                     MouseButton::Left => self.buttons.0 = pressed,
                     MouseButton::Right => self.buttons.1 = pressed,

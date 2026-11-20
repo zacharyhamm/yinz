@@ -301,12 +301,13 @@ is selected. If a selected input is reported as unusable, restore a readable
 regular file or remove an optional input to use the layout's fallback before
 retrying. A graphical native window connected to a server from the same build
 keeps its source session active until the destination supplies its first
-structured frame. While you wait, the notice shows which session is opening
-and which session still receives ordinary input. A second switch request
-leaves the current attempt in progress. Press Escape without modifiers to
-cancel the pending attachment and keep the source open. A destination session
-that has already started opening may still be available later. Use the same
-switch action to try again.
+structured frame. While you wait, the notice names the destination. If the
+source has already shown its first repaint, the notice names it as the session
+receiving input. Otherwise, pane input waits for the first repaint. A second
+switch request leaves the current attempt in progress. Press Escape without
+modifiers to cancel the pending attachment and keep the source open. A
+destination session that has already started opening may still be available
+later. Use the same switch action to try again.
 
 If the destination fails to open or render, the window shows the error and
 keeps the source available. Press Escape to dismiss the error notice.

@@ -313,7 +313,7 @@ fn native_switch_pending_notice_draws_and_clears_over_source_content() {
             let notice = notice_scene(
                 Notice::Pending {
                     destination: "中AB\ndestination",
-                    source: "source\u{2028}room",
+                    input_source: Some("source\u{2028}room"),
                 },
                 &mut cache,
                 target,
