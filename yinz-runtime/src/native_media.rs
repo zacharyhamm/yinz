@@ -126,6 +126,15 @@ impl MediaRoot {
         let mut image = self
             .create_file(IMAGE_PREFIX)
             .context("create native image")?;
+        // The server's umask can differ from the client that created the probe.
+        let metadata = image
+            .file
+            .metadata()
+            .context("inspect staged native image")?;
+        ensure!(
+            metadata.mode() & 0o777 == 0o600,
+            "staged native image requires mode 0600"
+        );
         image.file.write_all(bytes).context("stage native image")?;
         Ok(image)
     }

@@ -51,6 +51,17 @@ fn render_negotiation_intersects_versions_features_and_media() {
 }
 
 #[test]
+fn render_negotiation_bounds_the_offered_versions_in_a_rejection() {
+    let mut offer = Offer::reader(None);
+    offer.versions = vec![u32::MAX; 100_000];
+    let reason = offer.select(None).unwrap_err();
+    assert_eq!(reason.matches("4294967295").count(), 8);
+    assert!(reason.contains("(+99992 more), writable [4]"));
+    offer.versions.push(4);
+    assert_eq!(offer.select(None).unwrap().version, 4);
+}
+
+#[test]
 fn render_negotiation_shared_requires_the_exact_offered_challenge_response() {
     let offer = Offer::reader(Some(MediaProof {
         root: "/tmp".into(),

@@ -91,9 +91,16 @@ impl Offer {
             .filter(|v| self.versions.contains(v))
             .max()
             .ok_or_else(|| {
+                const MAX_DISPLAYED: usize = 8;
+                let shown = &self.versions[..self.versions.len().min(MAX_DISPLAYED)];
+                let omitted = self.versions.len() - shown.len();
+                let remainder = if omitted == 0 {
+                    String::new()
+                } else {
+                    format!(" (+{omitted} more)")
+                };
                 format!(
-                    "no common native frame version: offered {:?}, writable {writable:?}",
-                    self.versions
+                    "no common native frame version: offered {shown:?}{remainder}, writable {writable:?}"
                 )
             })?;
         let mut features = self.features & supported;

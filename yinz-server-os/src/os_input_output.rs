@@ -693,7 +693,7 @@ impl ClientSender {
                         "attach trace: server client writer client_id={client_id} socket write begin message={kind}"
                     );
                 }
-                let native_frame = matches!(&msg, ServerToClientMsg::RenderFrame { .. });
+                let mandatory_native = matches!(&msg, ServerToClientMsg::RenderFrame { .. } | ServerToClientMsg::NativeRenderResult(_));
                 let native_seq = match &msg { ServerToClientMsg::RenderFrame { frame } => yinz_types::structured_render::frame_sequence(frame), _ => None };
                 let result = sender.send_server_msg_observing(msg, wire_limit, || {
                     if let Some(seq) = native_seq { writer_queue.recover_state(writer_queue.state.lock()).writable_prefix = seq; }
@@ -723,7 +723,7 @@ impl ClientSender {
                 if let Err(error) = result {
                     // The encoder builds a complete packet before its first write. An ordinary
                     // message that fails preflight leaves both directions available.
-                    if !native_frame && !error.is::<io::Error>() {
+                    if !mandatory_native && !error.is::<io::Error>() {
                         log::warn!("skipped unencodable {message_kind} for client {client_id}: {error:#}");
                         continue;
                     }

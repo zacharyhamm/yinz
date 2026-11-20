@@ -2,6 +2,37 @@ use super::*;
 use std::os::unix::fs::{symlink, PermissionsExt};
 
 #[test]
+fn render_negotiation_rejects_an_image_with_masked_owner_permissions() {
+    const SERVER_ROOT: &str = "YINZ_TEST_MASKED_IMAGE_ROOT";
+    if let Some(path) = std::env::var_os(SERVER_ROOT) {
+        let root = MediaRoot::open(Path::new(&path)).unwrap();
+        nix::sys::stat::umask(Mode::from_bits_truncate(0o477));
+        let error = root.write_image(&[1]).err().expect("reject mode 0200");
+        assert!(error.to_string().contains("requires mode 0600"), "{error}");
+        return;
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let probe = Probe::create(directory.path()).unwrap();
+    let root = MediaRoot::open(directory.path()).unwrap();
+    assert_eq!(root.answer(&probe.offer).unwrap(), probe.expected);
+    // The server has its own process-wide umask, independent of the probe's creator.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", std::thread::current().name().unwrap()])
+        .env(SERVER_ROOT, directory.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    drop(probe);
+    assert!(directory.path().read_dir().unwrap().next().is_none());
+}
+
+#[test]
 fn render_negotiation_proof_and_image_use_the_pinned_directory() {
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("root");

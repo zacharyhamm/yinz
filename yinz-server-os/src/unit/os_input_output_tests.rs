@@ -1705,6 +1705,36 @@ mod client_writer_flush {
     }
 
     #[test]
+    fn render_negotiation_undeliverable_result_closes_the_attachment() {
+        use super::super::CoalescingSendQueue;
+        use std::os::fd::AsFd;
+        use yinz_types::render_negotiation::Decision;
+        let (_dir, server, peer) = socket_pair();
+        let interprocess::local_socket::Stream::UdSocket(uds) = &server;
+        let fd = uds.as_fd().try_clone_to_owned().unwrap();
+        let mut rx = IpcReceiverWithContext::<ServerToClientMsg>::new(peer);
+        rx.set_recv_timeout(Some(super::AMPLE_TIMEOUT)).unwrap();
+        let queue = Arc::new(CoalescingSendQueue::new());
+        let limit = 64;
+        queue.push(ServerToClientMsg::NativeRenderResult(Decision::Rejected(
+            "x".repeat(limit),
+        )));
+        queue.push(ServerToClientMsg::Render {
+            content: "after decision".into(),
+        });
+        let _writer = ClientSender::with_queue(
+            crate::ClientId::new(1),
+            IpcSenderWithContext::new(server),
+            Arc::default(),
+            fd,
+            queue,
+            limit,
+        )
+        .unwrap();
+        assert!(matches!(rx.recv_server_msg(), IpcRecv::Eof));
+    }
+
+    #[test]
     fn native_refusal_prefix_writer() {
         use super::super::{
             CoalescingSendQueue, SendQueuePush, SEND_QUEUE_RENDER_BYTE_CAPACITY as LIMIT,

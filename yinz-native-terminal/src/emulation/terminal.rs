@@ -250,10 +250,11 @@ impl TerminalState {
             {
                 return Err(invalid("unnegotiated structured section"));
             }
-            let validate_retained_sixels = geometry.is_some()
-                && !h.full_repaint()
-                && !h.clear()
-                && self.sixels.chunks().next().is_some();
+            let replacement = geometry
+                .as_ref()
+                .filter(|g| !h.full_repaint() && !h.clear() && **g != self.geometry);
+            let validate_retained_sixels =
+                replacement.is_some() && self.sixels.chunks().next().is_some();
             if !records.is_empty() || validate_retained_sixels {
                 let mut graphics = self.graphics.clone();
                 let mut sixels = self.sixels.clone();
@@ -286,7 +287,7 @@ impl TerminalState {
                 sixels.commit();
                 staged = Some((graphics, sixels));
             }
-            if let Some(geometry) = geometry.filter(|_| !h.full_repaint() && !h.clear()) {
+            if let Some(geometry) = replacement {
                 let (graphics, sixels) = staged
                     .as_ref()
                     .map(|(g, s)| (g, s))

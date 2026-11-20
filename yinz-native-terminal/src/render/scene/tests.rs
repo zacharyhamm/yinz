@@ -1744,6 +1744,41 @@ fn render_negotiation_clips_live_kitty_and_sixel_on_layout_change() {
 }
 
 #[test]
+fn render_negotiation_repeated_geometry_erases_sixel_pixels_in_place() {
+    use yinz_types::{
+        render_negotiation as caps,
+        structured_render::{FrameBuilder, WireCell},
+    };
+    let mut state = TerminalState::new(2, 4);
+    state.set_cell_size(8, 16);
+    state.negotiate(caps::Agreement::default(), None);
+    let geometry = GeometryRecord {
+        panes: vec![clipping_pane(0, 0, 4, 2)],
+    };
+    let mut first = FrameBuilder::new(4, 2, 1);
+    first.set_full_repaint(true);
+    first.push_geometry(&geometry);
+    first.extend_graphics(&[painter::sixel_chunk(0, 0, 16, 6, &sixel(16, 6))]);
+    state.apply_frame(&first.finish()).unwrap();
+    let pixels = state
+        .sixels()
+        .chunks()
+        .next()
+        .unwrap()
+        .image
+        .pixels
+        .as_ptr();
+    let mut delta = FrameBuilder::new(4, 2, 2);
+    delta.push_geometry(&geometry);
+    delta.push_row(0, 0, &[WireCell::BLANK]);
+    state.apply_frame(&delta.finish()).unwrap();
+    let remaining = &state.sixels().chunks().next().unwrap().image.pixels;
+    assert_eq!(remaining.as_ptr(), pixels);
+    assert_eq!(remaining[3], 0);
+    assert_eq!(remaining[8 * 4 + 3], 255);
+}
+
+#[test]
 fn render_negotiation_layout_delta_validates_surviving_sixels() {
     use yinz_types::{
         render_negotiation as caps,

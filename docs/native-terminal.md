@@ -531,7 +531,7 @@ first repaint. A failed opening leaves the source window available.
 | Older boolean native client with revision-1 server | Legacy support (client tag 42) selects the v4 legacy profile with inline images. No negotiation result is sent. False returns to ANSI. |
 | Revision-1 native client with an older or silent server | Missing advertisement on Connected or an opening timeout ends native startup with endpoint-specific recovery guidance. |
 | Revision-1 native client with an unfamiliar advertised revision, including zero | Reports the received and supported revisions and stops before sending an offer. |
-| Revision-1 endpoints with no common frame version | An explicit rejection reports both offered and writable versions, even for an empty offer. Other attachments keep their profiles. |
+| Revision-1 endpoints with no common frame version | An explicit rejection lists the first eight offered versions, the count of any remaining entries, and the writable versions. An empty offer appears as `[]`. If the server cannot deliver a negotiation result, it closes that attachment. Other attachments keep their profiles. |
 | Revision-1 endpoints with a common version | Client request tag 45 and server result tag 36 establish a profile. The receiver checks the selection against its offer and proof. Frames use server tag 35 and cumulative ACKs use client tag 43. |
 
 Use `yinz attach NAME` locally or `yinz attach --remote HOST NAME` for SSH.
