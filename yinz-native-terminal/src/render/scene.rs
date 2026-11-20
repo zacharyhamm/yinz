@@ -92,7 +92,7 @@ impl RowScene {
 }
 
 pub(crate) enum Notice<'a> {
-    Failure(&'a str),
+    Text(&'a str),
     Pending {
         destination: &'a str,
         source: &'a str,
@@ -136,7 +136,7 @@ pub(crate) fn notice_scene(
         return scene;
     }
     let text = match notice {
-        Notice::Failure(text) => Cow::Borrowed(text),
+        Notice::Text(text) => Cow::Borrowed(text),
         Notice::Pending {
             destination,
             source,

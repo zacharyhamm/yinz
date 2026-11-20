@@ -309,8 +309,7 @@ that has already started opening may still be available later. Use the same
 switch action to try again.
 
 If the destination fails to open or render, the window shows the error and
-keeps the source available. Press Escape to dismiss the error notice. Correct
-the reported input and use the same switch action again.
+keeps the source available. Press Escape to dismiss the error notice.
 
 If the window cannot read its configuration on reload, it keeps its
 current settings and reports the error in the client log. After repairing a
@@ -522,8 +521,9 @@ A probe on a separate socket gives no authority to send an offer. On revision 1
 the native client offers its frame versions, feature mask and image media. The
 server sends its decision before the first full native repaint. Ordinary controls
 can precede either message. Graphical startup and switching process controls in
-order while waiting. A staged window promotes the destination after applying its
-first repaint. A failed opening leaves the source window available.
+order while waiting. A new window displays a waiting notice and accepts pane
+input after applying its first repaint. A staged window promotes the destination
+after applying its first repaint. A failed opening leaves the source window available.
 
 | Client and server | Attachment behavior |
 |---|---|
@@ -623,7 +623,10 @@ limits until a chunked transport exists.
 
 The hidden `--headless` option exercises the same session and structured frame
 path without opening a window. `--rows`, `--cols`, and `--duration-secs` bound a
-capture. `--record PATH` also works with graphical windows.
+capture. `--record PATH` also works with graphical windows. Both modes open the
+recording for replacement after applying the first repaint. A headless session
+switch ends the capture with a nonzero exit and reports the source, requested
+destination and last applied frame, or that the switch preceded the first repaint.
 
 ```sh
 yinz terminal demo --create --headless --duration-secs 5 --record demo.frames

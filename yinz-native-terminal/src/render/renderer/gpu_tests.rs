@@ -231,7 +231,7 @@ fn native_switch_notice_draws_and_dismisses_over_source_content() {
         assert_eq!(baseline_offset_atlas_retry_pixel(&baseline, 1, 1), original);
         let target = (768, 384);
         let notice = notice_scene(
-            Notice::Failure(
+            Notice::Text(
                 "Could not switch to destination. Esc dismisses.\nFix /work/layout.swap.kdl and retry.",
             ),
             &mut cache,
@@ -321,7 +321,7 @@ fn native_switch_pending_notice_draws_and_clears_over_source_content() {
             );
             assert_eq!(
                 notice,
-                notice_scene(Notice::Failure(expected), &mut cache, target, 0)
+                notice_scene(Notice::Text(expected), &mut cache, target, 0)
             );
             renderer.draw_retained(
                 &retained,

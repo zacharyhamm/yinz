@@ -228,7 +228,7 @@ fn native_switch_pending_notice_tracks_request_and_resolution() {
     let next_draw = now + app.pacer.interval();
     let target = (768, 384);
     let assert_overlay = |app: &mut App, text| {
-        let expected = notice_scene(Notice::Failure(text), &mut app.cache, target, 0);
+        let expected = notice_scene(Notice::Text(text), &mut app.cache, target, 0);
         assert_eq!(app.switch_overlay(target, 0), Some(expected));
     };
     app.pacer.drawn(now);
@@ -3875,17 +3875,113 @@ fn advertisement(revision: Option<u32>) -> ServerToClientMsg {
 }
 
 #[test]
+fn render_negotiation_first_repaint_enables_pane_input_and_recording() {
+    use winit::event::{DeviceId, Ime};
+    use yinz_types::render_negotiation as caps;
+    let dir = tempfile::tempdir().unwrap();
+    let capture = dir.path().join("window.frames");
+    std::fs::write(&capture, b"earlier capture").unwrap();
+    let mut app = switch_app(Default::default());
+    app.recorder = Recorder::new(Some(&capture));
+    app.connection_geometry.received_frame = false;
+    app.endpoint = session::Endpoint::Forwarded(Some("remote".into()));
+    let (source, mut peer) = switch_peer();
+    app.sender = Some(source);
+    app.set_clipboard("paste".into());
+    let input = |app: &mut App| {
+        for key in [
+            keyboard::Press::new(Key::Character("x".into()), ModifiersState::empty()),
+            keyboard::Press::new(Key::Named(NamedKey::Insert), ModifiersState::SHIFT),
+        ] {
+            app.key_pressed(&key, false).unwrap();
+        }
+        app.event(WindowEvent::Ime(Ime::Commit("text".into())), || panic!())
+            .unwrap();
+        app.event(
+            WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            || panic!(),
+        )
+        .unwrap();
+    };
+    let waiting = |app: &mut App| {
+        assert!(app.switch_overlay((800, 400), 0).is_some());
+        input(app);
+        assert_eq!(std::fs::read(&capture).unwrap(), b"earlier capture");
+    };
+    waiting(&mut app);
+    app.handle_message(advertisement(Some(1)), || panic!())
+        .unwrap();
+    let Some((ClientToServerMsg::NativeRenderRequest(caps::Request::Offer(offer)), _)) =
+        peer.recv_client_msg().msg()
+    else {
+        panic!("expected the offer before any pane input")
+    };
+    waiting(&mut app);
+    app.handle_message(
+        ServerToClientMsg::NativeRenderResult(caps::Decision::Selected(
+            offer.select(None).unwrap(),
+        )),
+        || panic!(),
+    )
+    .unwrap();
+    waiting(&mut app);
+    let ServerToClientMsg::RenderFrame { frame } = destination_frame() else {
+        unreachable!()
+    };
+    app.handle_message(
+        ServerToClientMsg::RenderFrame {
+            frame: frame.clone(),
+        },
+        || panic!(),
+    )
+    .unwrap();
+    assert!(matches!(
+        peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::RenderFrameAck { seq: 9 }, _))
+    ));
+    let recorded = std::fs::read(&capture).unwrap();
+    assert_eq!(recorded[..4], (frame.len() as u32).to_le_bytes());
+    assert_eq!(recorded[4..], frame);
+    assert!(app.switch_overlay((800, 400), 0).is_none());
+    input(&mut app);
+    assert!(matches!(
+        peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::Key { .. }, _))
+    ));
+    assert!(
+        matches!(peer.recv_client_msg().msg(), Some((ClientToServerMsg::Paste(s), _)) if s == "paste")
+    );
+    assert!(
+        matches!(peer.recv_client_msg().msg(), Some((ClientToServerMsg::Text(s), _)) if s == "text")
+    );
+    assert!(matches!(
+        peer.recv_client_msg().msg(),
+        Some((
+            ClientToServerMsg::Action {
+                action: Action::MouseEvent { .. },
+                ..
+            },
+            _
+        ))
+    ));
+}
+
+#[test]
 fn render_negotiation_opening_guidance_and_forwarded_switch_stay_on_source() {
     use yinz_types::render_negotiation as caps;
     for (endpoint, guidance) in [
-        (session::Endpoint::Local, "yinz attach source"),
+        (session::Endpoint::Local, "yinz attach -- source"),
         (
             session::Endpoint::Forwarded(Some("box".into())),
-            "yinz attach --remote box source",
+            "yinz attach --remote=box -- source",
         ),
         (
             session::Endpoint::Forwarded(None),
-            "yinz attach --remote HOST source",
+            "yinz attach --remote HOST -- source",
         ),
     ] {
         for rev in [None, Some(0), Some(2)] {
@@ -3942,9 +4038,9 @@ fn render_negotiation_opening_guidance_and_forwarded_switch_stay_on_source() {
             peer.recv_client_msg().msg(),
             Some((ClientToServerMsg::RenderFrameAck { seq: 9 }, _))
         ));
-        for name in [Some("collision".into()), None] {
+        for name in [Some("collision"), None] {
             let target = SessionConnection {
-                name,
+                name: name.map(Into::into),
                 ..Default::default()
             };
             app.handle_message(
@@ -3955,7 +4051,18 @@ fn render_negotiation_opening_guidance_and_forwarded_switch_stay_on_source() {
             )
             .unwrap();
             assert!(app.pending_switch.is_none());
-            assert!(app.switch_notice.as_ref().unwrap().contains("--remote"));
+            let notice = app.switch_notice.as_deref().unwrap();
+            assert!(notice.contains("fresh forward"), "{notice}");
+            assert!(notice.contains("same remote host"), "{notice}");
+            if let Some(name) = name {
+                assert!(notice.contains(name), "{notice}");
+                assert!(notice.contains("--remote"), "{notice}");
+            } else {
+                assert!(notice.contains("Create a new session"), "{notice}");
+            }
+            for irrelevant in ["update", "swap", "reported input"] {
+                assert!(!notice.contains(irrelevant), "{notice}");
+            }
         }
         let mut next = yinz_types::structured_render::FrameBuilder::new(18, 2, 10);
         next.sideband_mut().push(7);
@@ -4012,6 +4119,11 @@ fn render_negotiation_staged_refusal_preserves_source_mouse_input() {
             app.receive_switch(1, now).unwrap();
         }
         assert!(app.pending_switch.is_none());
+        let notice = app.switch_notice.as_deref().unwrap();
+        assert!(
+            !notice.contains("swap") && !notice.contains("reported input"),
+            "{notice}"
+        );
         assert!(app
             .switch_notice
             .as_ref()

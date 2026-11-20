@@ -113,6 +113,28 @@ fn removed_automation_spellings_have_no_aliases() {
 }
 
 #[test]
+fn native_terminal_help_directs_ssh_users_to_attach() {
+    for flag in ["-h", "--help"] {
+        let help = try_parse_cli(["yinz", "terminal", flag]).unwrap_err();
+        assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = help.to_string();
+        assert!(
+            help.contains("Native windows open local sessions"),
+            "{help}"
+        );
+        assert!(help.contains("yinz attach --remote HOST NAME"), "{help}");
+        assert!(!help.contains("--remote <HOST>"), "{help}");
+    }
+    let attach = try_parse_cli(["yinz", "attach", "--help"])
+        .unwrap_err()
+        .to_string();
+    assert!(attach.contains("--remote <HOST>"), "{attach}");
+    // Dispatch still receives the option so it can explain a refused native invocation.
+    let native = try_parse_cli(["yinz", "terminal", "--remote", "box", "demo"]).unwrap();
+    assert_eq!(native.remote.as_deref(), Some("box"));
+}
+
+#[test]
 fn help_preserves_the_existing_cli() {
     for (args, expected) in [
         (

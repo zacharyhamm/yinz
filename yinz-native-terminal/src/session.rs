@@ -3,7 +3,7 @@ use anyhow::ensure;
 use interprocess::local_socket::Stream;
 use std::fs::File;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use yinz_cli::args::{CliArgs, TerminalArgs};
@@ -105,12 +105,33 @@ pub enum Endpoint {
 }
 
 impl Endpoint {
-    pub fn guidance(&self, name: &str) -> String {
+    pub fn ansi_attach(&self, name: &str) -> String {
+        let name = shell_argument(name);
         match self {
-            Self::Local => format!("update the server or use `yinz attach {name}`"),
-            Self::Forwarded(Some(host)) => format!("update the remote server or use `yinz attach --remote {host} {name}`"),
-            Self::Forwarded(None) => format!("update the remote server or use `yinz attach --remote HOST {name}`, replacing HOST with the host used to establish the forward"),
+            Self::Local => format!("`yinz attach -- {name}`"),
+            Self::Forwarded(Some(host)) => format!("`yinz attach --remote={} -- {name}`", shell_argument(host)),
+            Self::Forwarded(None) => format!("`yinz attach --remote HOST -- {name}`, replacing HOST with the host used to establish the forward"),
         }
+    }
+
+    fn guidance(&self, name: &str) -> String {
+        let server = match self {
+            Self::Local => "server",
+            Self::Forwarded(_) => "remote server",
+        };
+        format!("update the {server} or use {}", self.ansi_attach(name))
+    }
+}
+
+fn shell_argument(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-.:@".contains(&b))
+    {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
     }
 }
 
@@ -325,7 +346,7 @@ pub(crate) fn prepare_connection(
         .map_err(|error| {
             let detail = error.diagnostic_message();
             if matches!(error, ConfigError::IoPath(..)) {
-                anyhow!("{detail}. Restore a readable regular file at the reported path.")
+                anyhow!("{detail}. Restore a readable regular file at the reported path and retry.")
             } else {
                 anyhow!("{detail}")
             }
@@ -400,17 +421,22 @@ fn select_session_name(
     }
 }
 
-pub struct Recorder(Option<File>);
+pub enum Recorder {
+    Disabled,
+    Pending(PathBuf),
+    Writing(File),
+}
 impl Recorder {
-    pub fn new(path: Option<&Path>) -> Result<Self> {
-        Ok(Self(
-            path.map(File::create)
-                .transpose()
-                .context("create native frame recording")?,
-        ))
+    pub fn new(path: Option<&Path>) -> Self {
+        path.map_or(Self::Disabled, |path| Self::Pending(path.to_owned()))
     }
     pub fn frame(&mut self, bytes: &[u8]) -> Result<()> {
-        if let Some(file) = &mut self.0 {
+        if let Self::Pending(path) = self {
+            let file = File::create(path.as_path())
+                .with_context(|| format!("create native frame recording {}", path.display()))?;
+            *self = Self::Writing(file);
+        }
+        if let Self::Writing(file) = self {
             let len = u32::try_from(bytes.len()).context("native frame too large to record")?;
             file.write_all(&len.to_le_bytes())
                 .context("write native frame length")?;
@@ -431,22 +457,22 @@ pub(crate) fn exit_error(message: String) -> anyhow::Error {
 pub fn headless(mut connection: Connection, args: &TerminalArgs) -> Result<()> {
     let size = args.opening_size();
     let mut state = TerminalState::new(size.rows, size.cols);
-    let mut recorder = Recorder::new(args.record.as_deref())?;
+    let mut recorder = Recorder::new(args.record.as_deref());
     let started = Instant::now();
     let finish = args
         .duration_secs
         .map(|seconds| started + Duration::from_secs(seconds));
-    let mut seen_frame = false;
+    let mut last_frame = None;
     let mut handshake = Handshake::default();
     loop {
-        let deadline = if seen_frame {
+        let deadline = if last_frame.is_some() {
             finish.unwrap_or_else(|| Instant::now() + Duration::from_secs(3600))
         } else {
             (started + Duration::from_secs(10))
                 .min(finish.unwrap_or(started + Duration::from_secs(10)))
         };
         if Instant::now() >= deadline {
-            if !seen_frame {
+            if last_frame.is_none() {
                 return Err(handshake.timeout(&connection.endpoint, &connection.name));
             }
             break;
@@ -476,14 +502,14 @@ pub fn headless(mut connection: Connection, args: &TerminalArgs) -> Result<()> {
             }
             match message {
                 ServerToClientMsg::RenderFrame { frame } => {
-                    if !seen_frame {
+                    if last_frame.is_none() {
                         handshake.begin_frames(&mut state)?;
                     }
                     let applied = state
                         .apply_frame(&frame)
                         .context("apply headless native frame")?;
-                    seen_frame = true;
                     recorder.frame(&frame)?;
+                    last_frame = Some(applied.seq);
                     send(
                         &connection.sender,
                         ClientToServerMsg::RenderFrameAck { seq: applied.seq },
@@ -492,7 +518,18 @@ pub fn headless(mut connection: Connection, args: &TerminalArgs) -> Result<()> {
                 ServerToClientMsg::Exit {
                     exit_reason: yinz_ipc::ipc::ExitReason::Error(message),
                 } => return Err(exit_error(message)),
-                ServerToClientMsg::Exit { .. } if !seen_frame => {
+                ServerToClientMsg::SwitchSession { connect_to_session } => {
+                    let destination = connect_to_session.name.as_ref().map_or_else(
+                        || "a new session".to_owned(),
+                        |name| format!("{:?}", name.as_str()),
+                    );
+                    let boundary = last_frame.map_or_else(
+                        || "before the first repaint".to_owned(),
+                        |seq| format!("after frame {seq}"),
+                    );
+                    bail!("session {:?} requested a switch to {destination}; headless capture ended {boundary} on the source", connection.name);
+                },
+                ServerToClientMsg::Exit { .. } if last_frame.is_none() => {
                     bail!("session exited before native negotiation and repaint")
                 },
                 ServerToClientMsg::Exit { .. } => break,

@@ -10,6 +10,39 @@ fn sessions(names: &[&str]) -> Vec<(SessionName, Duration)> {
 }
 
 #[test]
+fn render_negotiation_fallback_passes_literal_shell_arguments() {
+    let name = "-team's demo $HOME";
+    for (endpoint, expected) in [
+        (Endpoint::Local, vec!["attach", "--", name]),
+        (
+            Endpoint::Forwarded(Some("Team's Mac".into())),
+            vec!["attach", "--remote=Team's Mac", "--", name],
+        ),
+        (
+            Endpoint::Forwarded(None),
+            vec!["attach", "--remote", "HOST", "--", name],
+        ),
+    ] {
+        let guidance = endpoint.ansi_attach(name);
+        let command = guidance.split('`').nth(1).unwrap();
+        // Capture argv from the literal command displayed to the user.
+        let output = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("yinz() {{ printf '%s\\n' \"$@\"; }}\n{command}"))
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+}
+
+#[test]
 fn unnamed_reconnect_creates_a_fresh_name_regardless_of_sessions_or_startup_args() {
     for names in [vec![], vec!["existing-a"], vec!["existing-a", "existing-b"]] {
         for terminal_name in [None, Some("stale-terminal")] {

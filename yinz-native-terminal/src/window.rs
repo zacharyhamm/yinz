@@ -353,9 +353,7 @@ impl PendingSwitch {
 }
 
 fn switch_notice(destination: &str, error: &anyhow::Error) -> String {
-    format!(
-        "Could not switch to {destination}. Esc dismisses.\nFix the reported input or remove the optional swap, then retry the switch.\n{error:#}"
-    )
+    format!("Could not switch to {destination}. Esc dismisses.\n{error:#}")
 }
 
 fn load_native_config(opts: &CliArgs) -> Result<(Config, Options)> {
@@ -1175,7 +1173,7 @@ impl App {
         wake_reader: ReaderWake,
         clipboard: impl FnOnce() -> Clipboard,
     ) -> Result<Self> {
-        let recorder = Recorder::new(args.record.as_deref())?;
+        let recorder = Recorder::new(args.record.as_deref());
         let active_fonts = effective_font_options(&config.terminal, 1.0, 1.0);
         let fonts = active_fonts
             .stack(1.0)
@@ -1853,11 +1851,15 @@ impl App {
             .as_ref()
             .map_or_else(|| "a new session".to_owned(), |name| format!("{name}"));
         if matches!(self.endpoint, session::Endpoint::Forwarded(_)) {
-            let error = anyhow!(
-                "open the destination on the same remote host; {}",
-                self.endpoint
-                    .guidance(target.name.as_ref().map_or("SESSION", |n| n.as_str()))
-            );
+            let error = match &target.name {
+                Some(name) => anyhow!(
+                    "Open a fresh forward to the destination on the same remote host, or use {}.",
+                    self.endpoint.ansi_attach(name.as_str())
+                ),
+                None => anyhow!(
+                    "Create a new session on the same remote host and open a fresh forward to it."
+                ),
+            };
             self.show_switch_notice(&destination, &error);
             return;
         }
@@ -1965,7 +1967,13 @@ impl App {
     }
 
     fn switch_overlay(&mut self, size: (u32, u32), padding: u32) -> Option<RowScene> {
-        let notice = if let Some(pending) = &self.pending_switch {
+        let notice = if let Some(text) = self.switch_notice.as_deref() {
+            Notice::Text(text)
+        } else if !self.connection_geometry.received_frame {
+            Notice::Text(
+                "Waiting for the first repaint. Input will be available when the session appears.",
+            )
+        } else if let Some(pending) = &self.pending_switch {
             Notice::Pending {
                 destination: &pending.destination,
                 source: self
@@ -1975,7 +1983,7 @@ impl App {
                     .unwrap_or("current session"),
             }
         } else {
-            Notice::Failure(self.switch_notice.as_deref()?)
+            return None;
         };
         Some(notice_scene(notice, &mut self.cache, size, padding))
     }
@@ -2048,7 +2056,7 @@ impl App {
         }
         Ok(())
     }
-    fn event(&mut self, event: WindowEvent, event_loop: &ActiveEventLoop) -> Result<()> {
+    fn event(&mut self, event: WindowEvent, exit: impl FnOnce()) -> Result<()> {
         match event {
             WindowEvent::CloseRequested => {
                 if let Some(surfaces) = &self.surfaces {
@@ -2064,7 +2072,7 @@ impl App {
                         .context("remember native window size")
                         .non_fatal();
                 }
-                event_loop.exit();
+                exit();
             },
             WindowEvent::Resized(_) => {
                 if let Some(opening) = &mut self.opening {
@@ -2132,17 +2140,19 @@ impl App {
                 .collect();
                 self.send(ClientToServerMsg::ModifiersHeld { modifiers })?;
             },
-            WindowEvent::Ime(event) => match self.composition.ime(event) {
-                Reaction::Commit(chars) => {
-                    self.type_text(chars)?;
-                    self.retained.mark_everything();
-                    self.pacer.schedule();
-                },
-                Reaction::Redraw => {
-                    self.retained.mark_everything();
-                    self.pacer.schedule();
-                },
-                Reaction::Nothing => {},
+            WindowEvent::Ime(event) if self.connection_geometry.received_frame => {
+                match self.composition.ime(event) {
+                    Reaction::Commit(chars) => {
+                        self.type_text(chars)?;
+                        self.retained.mark_everything();
+                        self.pacer.schedule();
+                    },
+                    Reaction::Redraw => {
+                        self.retained.mark_everything();
+                        self.pacer.schedule();
+                    },
+                    Reaction::Nothing => {},
+                }
             },
             WindowEvent::KeyboardInput {
                 event,
@@ -2162,6 +2172,9 @@ impl App {
             },
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = (position.x, position.y);
+                if !self.connection_geometry.received_frame {
+                    return Ok(());
+                }
                 if self.buttons.0 && (self.modifiers.shift_key() || !self.mouse_mode) {
                     let (row, col) = self.cell();
                     self.selection.extend(row, col);
@@ -2170,7 +2183,9 @@ impl App {
                     self.mouse(MouseEventType::Motion, (false, false, false, false))?;
                 }
             },
-            WindowEvent::MouseInput { state, button, .. } => {
+            WindowEvent::MouseInput { state, button, .. }
+                if self.connection_geometry.received_frame =>
+            {
                 let pressed = state == ElementState::Pressed;
                 match button {
                     MouseButton::Left => self.buttons.0 = pressed,
@@ -2200,11 +2215,7 @@ impl App {
                     && pressed
                     && self.settings.middle_click_paste.unwrap_or(true)
                 {
-                    if let Some(chars) = self.get_clipboard() {
-                        self.selection.clear();
-                        self.pacer.schedule();
-                        self.send(ClientToServerMsg::Paste(chars))?;
-                    }
+                    self.paste()?;
                 } else if self.mouse_mode {
                     // A release names the button being released, even though it is no
                     // longer in the set of held buttons sent by subsequent motion events.
@@ -2228,7 +2239,7 @@ impl App {
                     result?;
                 }
             },
-            WindowEvent::MouseWheel { delta, .. } => {
+            WindowEvent::MouseWheel { delta, .. } if self.connection_geometry.received_frame => {
                 let metrics = self.cache.metrics();
                 let (x, y) = self
                     .scroll
@@ -2265,15 +2276,11 @@ impl App {
                 return Ok(());
             }
         }
+        let pane_ready = self.connection_geometry.received_frame;
         if press.logical == Key::Named(NamedKey::Insert) && press.modifiers.shift_key() {
-            if let Some(chars) = self.get_clipboard() {
-                self.selection.clear();
-                self.pacer.schedule();
-                self.send(ClientToServerMsg::Paste(chars))?;
-            }
-            return Ok(());
+            return self.paste();
         }
-        if self.compose_key(press)? {
+        if pane_ready && self.compose_key(press)? {
             return Ok(());
         }
         let shortcut = (press.modifiers.control_key() && press.modifiers.shift_key())
@@ -2286,14 +2293,7 @@ impl App {
                         return Ok(());
                     }
                 },
-                "v" => {
-                    if let Some(chars) = self.get_clipboard() {
-                        self.selection.clear();
-                        self.pacer.schedule();
-                        self.send(ClientToServerMsg::Paste(chars))?;
-                    }
-                    return Ok(());
-                },
+                "v" => return self.paste(),
                 "+" | "=" => {
                     self.change_scale((self.zoom * 1.1).min(4.0), self.scale)?;
                     return Ok(());
@@ -2308,6 +2308,9 @@ impl App {
                 },
                 _ => {},
             }
+        }
+        if !pane_ready {
+            return Ok(());
         }
         if escape {
             self.selection.clear();
@@ -2381,6 +2384,16 @@ impl App {
         }
         Ok(false)
     }
+    fn paste(&mut self) -> Result<()> {
+        if self.connection_geometry.received_frame
+            && let Some(chars) = self.get_clipboard()
+        {
+            self.selection.clear();
+            self.pacer.schedule();
+            self.send(ClientToServerMsg::Paste(chars))?;
+        }
+        Ok(())
+    }
     fn get_clipboard(&self) -> Option<String> {
         self.clipboard
             .lock()
@@ -2406,7 +2419,7 @@ impl ApplicationHandler<u64> for App {
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        if let Err(error) = self.event(event, event_loop) {
+        if let Err(error) = self.event(event, || event_loop.exit()) {
             self.fail(error, event_loop);
         }
     }

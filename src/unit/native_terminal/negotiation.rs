@@ -532,26 +532,61 @@ fn render_negotiation_established_forward_uses_portable_pixels_and_terminal_asse
         .any(|p| p.image_id == image_id));
 }
 
-#[test]
-fn render_negotiation_headless_distinguishes_missing_unsupported_and_unanswered() {
-    fn advertisement(revision: Option<u32>) -> Vec<u8> {
-        wire::ServerToClientMsg {
-            message: Some(wire::server_to_client_msg::Message::Connected(
-                wire::ConnectedMsg {
-                    native_render_revision: revision,
-                    ..Default::default()
-                },
-            )),
-        }
-        .encode_to_vec()
+fn advertisement(revision: Option<u32>) -> Vec<u8> {
+    wire::ServerToClientMsg {
+        message: Some(wire::server_to_client_msg::Message::Connected(
+            wire::ConnectedMsg {
+                native_render_revision: revision,
+                ..Default::default()
+            },
+        )),
     }
-    let fixture = NativeFixture::new();
+    .encode_to_vec()
+}
+
+fn scripted_listener(session: &str) -> (tempfile::TempDir, UnixListener) {
     let proxy = tempfile::tempdir_in("/tmp").unwrap();
     let dir = proxy
         .path()
         .join(&*yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR);
     fs::create_dir(&dir).unwrap();
-    let listener = UnixListener::bind(dir.join(SESSION)).unwrap();
+    let listener = UnixListener::bind(dir.join(session)).unwrap();
+    (proxy, listener)
+}
+
+fn scripted_attachment(
+    fixture: &NativeFixture,
+    proxy: &Path,
+    listener: &UnixListener,
+    session: &str,
+    capture: &Path,
+    duration: &str,
+) -> (Child, UnixStream) {
+    let child = fixture
+        .terminal(session, false, capture)
+        .env("YINZ_SOCKET_DIR", proxy)
+        .args(["--headless", "--duration-secs", duration])
+        .spawn()
+        .unwrap();
+    let mut probe = bounded(listener.accept().unwrap().0);
+    assert_eq!(client_message(&read_packet(&mut probe)), Client::ConnStatus);
+    write_packet(&mut probe, &advertisement(Some(1)));
+    drop(probe);
+    let mut peer = bounded(listener.accept().unwrap().0);
+    assert!(matches!(
+        client_message(&read_packet(&mut peer)),
+        Client::AttachClient { .. }
+    ));
+    (child, peer)
+}
+
+#[test]
+fn render_negotiation_headless_distinguishes_missing_unsupported_and_unanswered() {
+    let fixture = NativeFixture::new();
+    let session = "team demo";
+    let (proxy, listener) = scripted_listener(session);
+    let capture = proxy.path().join("opening.frames");
+    fs::write(&capture, b"previous recording").unwrap();
     for (advertised, reason) in [
         (Some(Some(0)), "revision 0, supported 1"),
         (Some(Some(7)), "revision 7, supported 1"),
@@ -559,21 +594,8 @@ fn render_negotiation_headless_distinguishes_missing_unsupported_and_unanswered(
         (None, "did not advertise"),
         (Some(Some(1)), "did not answer"),
     ] {
-        let child = fixture
-            .terminal(SESSION, false, &proxy.path().join("opening.frames"))
-            .env("YINZ_SOCKET_DIR", proxy.path())
-            .args(["--headless", "--duration-secs", "1"])
-            .spawn()
-            .unwrap();
-        let mut probe = bounded(listener.accept().unwrap().0);
-        assert_eq!(client_message(&read_packet(&mut probe)), Client::ConnStatus);
-        write_packet(&mut probe, &advertisement(Some(1)));
-        drop(probe);
-        let mut peer = bounded(listener.accept().unwrap().0);
-        assert!(matches!(
-            client_message(&read_packet(&mut peer)),
-            Client::AttachClient { .. }
-        ));
+        let (child, mut peer) =
+            scripted_attachment(&fixture, proxy.path(), &listener, session, &capture, "1");
         if let Some(revision) = advertised {
             write_packet(&mut peer, &advertisement(revision));
         }
@@ -588,9 +610,73 @@ fn render_negotiation_headless_distinguishes_missing_unsupported_and_unanswered(
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains(reason), "{stderr}");
         if advertised != Some(Some(1)) {
-            assert!(stderr.contains("yinz attach native-media"), "{stderr}");
+            assert!(stderr.contains("yinz attach -- 'team demo'"), "{stderr}");
         }
+        assert_eq!(fs::read(&capture).unwrap(), b"previous recording");
         assert_eq!(peer.read(&mut [0]).unwrap(), 0, "unexpected native message");
+    }
+}
+
+#[test]
+fn render_negotiation_headless_switch_reports_capture_boundary() {
+    let fixture = NativeFixture::new();
+    let (proxy, listener) = scripted_listener(SESSION);
+    let capture = proxy.path().join("switch.frames");
+    for (destination, boundary) in [
+        (Some("next session"), "after frame 9"),
+        (None, "before the first repaint"),
+    ] {
+        fs::write(&capture, b"previous recording").unwrap();
+        let (child, mut peer) =
+            scripted_attachment(&fixture, proxy.path(), &listener, SESSION, &capture, "10");
+        write_packet(&mut peer, &advertisement(Some(1)));
+        let Client::NativeRenderRequest(caps::Request::Offer(offer)) =
+            client_message(&read_packet(&mut peer))
+        else {
+            panic!("expected native offer")
+        };
+        let send_server = |peer: &mut UnixStream, msg: Server| {
+            write_packet(peer, &wire::ServerToClientMsg::from(msg).encode_to_vec())
+        };
+        send_server(
+            &mut peer,
+            Server::NativeRenderResult(caps::Decision::Selected(offer.select(None).unwrap())),
+        );
+        let mut expected = b"previous recording".to_vec();
+        if destination.is_some() {
+            let mut frame = yinz_types::structured_render::FrameBuilder::new(80, 24, 9);
+            frame.set_full_repaint(true);
+            let frame = frame.finish();
+            expected = (frame.len() as u32).to_le_bytes().to_vec();
+            expected.extend_from_slice(&frame);
+            send_server(&mut peer, Server::RenderFrame { frame });
+            assert_eq!(
+                client_message(&read_packet(&mut peer)),
+                Client::RenderFrameAck { seq: 9 }
+            );
+        }
+        send_server(
+            &mut peer,
+            Server::SwitchSession {
+                connect_to_session: yinz_types::data::SessionConnection {
+                    name: destination.map(Into::into),
+                    ..Default::default()
+                },
+            },
+        );
+        peer.shutdown(std::net::Shutdown::Write).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        for part in [
+            SESSION,
+            "requested a switch",
+            destination.unwrap_or("a new session"),
+            boundary,
+        ] {
+            assert!(stderr.contains(part), "{stderr}");
+        }
+        assert_eq!(fs::read(&capture).unwrap(), expected);
     }
 }
 

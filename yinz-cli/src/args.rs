@@ -441,6 +441,10 @@ pub enum PtyHosts {
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Command {
     /// Open a native GPU terminal window.
+    #[command(
+        after_help = "Native windows open local sessions. For an SSH session, use `yinz attach --remote HOST NAME` in your terminal.",
+        defer = |cmd| cmd.mut_args(|arg| if arg.get_id() == "remote" { arg.hide(true) } else { arg })
+    )]
     Terminal(TerminalArgs),
     /// Install the latest stable GitHub release into the current installation.
     Update {
