@@ -1643,7 +1643,7 @@ fn ordinary_remote_probe_batches_retry_and_publish_locations() {
         .map(|id| PaneInfo {
             id: PaneId::Terminal(TerminalId::new(id)),
             host: Some(format!("builder-{id}")),
-            cwd: Some(pane_cwd(id).into()),
+            cwd: Some(pane_cwd(id)),
             terminal_command: Some("claude".into()),
             ..Default::default()
         })
