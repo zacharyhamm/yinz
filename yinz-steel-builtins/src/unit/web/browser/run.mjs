@@ -313,7 +313,34 @@ function agentRoute(fx, entry) {
     fx.problems.push(`frontend sent an invalid ${p} body (${why})`);
     return [400, { error: { code: 'invalid', message: 'Invalid request body' } }];
   };
+  if (p === '/api/agent/launch-choices' && entry.method === 'GET') {
+    return [200, { server_instance: 'browser-instance', providers: ['codex'], projects: ['Review'], worktrees: entry.query.has('project')
+      ? [{ path: '/review', branch: null }] : [] }];
+  }
   if (entry.method !== 'POST') return [405, { error: { code: 'method_not_allowed' } }];
+  if (p === '/api/agent/launch') {
+    if (!/^browser-instance\.[0-9a-f]{32}$/.test(body?.submission_id)) return invalid('submission id');
+    if (body?.kind !== 'codex' || body.project !== 'Review' || body.checkout?.path !== '/review') return invalid('checkout');
+    return [200, { session: 'browser-check', pane_id: '7', kind: 'codex' }];
+  }
+  if (p === '/api/agent/destinations') {
+    if (!validRef(body?.agent)) return invalid('agent');
+    return [200, { current_group: 0, current_tab: 1, allow_new_group: true,
+      groups: [{ id: 0, name: 'Default', tabs: [{ id: 1, name: 'Shell', incarnation: 'old' }] },
+        { id: 4, name: 'Review', tabs: [{ id: 5, name: 'Shell', incarnation: 'other' }] }] }];
+  }
+  if (p === '/api/agent/move') {
+    const dest = body?.destination;
+    if (body.agent?.session_id !== REF7.session_id || dest?.group !== 4 || dest.tab !== 5 || dest.incarnation !== 'other') return invalid('destination');
+    fx.live.location = { group: { id: 4, name: 'Review' }, tab: { id: 5, name: 'Shell' } };
+    return [200, { ok: true }];
+  }
+  if (p === '/api/agent/close') {
+    if (!validRef(body?.agent)) return invalid('agent');
+    fx.rows = [];
+    fx.gone = true;
+    return [200, { ok: true }];
+  }
   if (p === '/api/agent/prompt') {
     if (!exactKeys(body, ['agent', 'submission_id', 'text']) || !validRef(body.agent)) return invalid('shape');
     if (!UUID.test(body.submission_id) || typeof body.text !== 'string' || !body.text.trim()) return invalid('fields');
@@ -1747,6 +1774,8 @@ async function compactAgentList(open, width, scheme) {
   await page.keyboard.press('Tab');
   check(await activeId(page) === 'list-next-waiting', 'waiting shortcut missing from tab order');
   await page.keyboard.press('Tab');
+  check(await activeId(page) === 'start-agent', 'Start agent missing from tab order');
+  await page.keyboard.press('Tab');
   check(await page.evaluate(() => document.activeElement.matches('.agent-open-area') && parseFloat(getComputedStyle(document.activeElement).outlineWidth) >= 2), 'card keyboard focus indication missing');
   await page.keyboard.press('Enter');
   await until('card opens waiting screen', async () => hashOf(page) === detailHash('run-7', 'term') && exists(page, '.xterm-rows'));
@@ -2302,12 +2331,87 @@ async function assertPeerRecovery(page, texts) {
   check(await page.locator('#tab-term').isDisabled(), 'an unverified peer allowed Screen');
 }
 
+async function manageAgent(open) {
+  const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
+  const malformed = (path, body) => fx.fail.set(path, { mode: 'reply', status: 200, times: 1, body });
+  const retryMalformed = async (sheet, submit) => {
+    await until('malformed inventory reported in the open sheet', async () =>
+      (await sheet.getByRole('alert').allTextContents()).some((text) => text.includes('response this page cannot read')));
+    check(await submit.isDisabled(), 'malformed inventory enabled submission');
+    await sheet.getByRole('button', { name: 'Retry', exact: true }).click();
+  };
+  fx.rows = [];
+  await openApp(page, '#/');
+  await textUntil(page, '#list-empty', 'No agents', 'empty list');
+  malformed('/api/agent/launch-choices', {});
+  await page.click('#start-agent');
+  const start = page.locator('#sheet-start');
+  const submitStart = start.getByRole('button', { name: 'Start agent', exact: true });
+  await retryMalformed(start, submitStart);
+  await start.getByLabel('Provider').selectOption('codex');
+  malformed('/api/agent/launch-choices', { server_instance: 'browser-instance', providers: ['bad provider'],
+    projects: ['Review'], worktrees: [{ path: '/review', branch: 7 }] });
+  await start.getByLabel('Project').selectOption('Review');
+  await retryMalformed(start, submitStart);
+  check(await start.getByLabel('Provider').inputValue() === 'codex', 'invalid choices replaced the selected provider');
+  await start.getByLabel('Worktree').selectOption({ label: 'Detached HEAD · /review' });
+  fx.fail.set('/api/agent/launch', { mode: 'abort', times: 1 });
+  await submitStart.click();
+  await textUntil(page, '#sheet-start [role=alert]', 'Cannot reach', 'uncertain launch');
+  const key = 'yinz.web.v1.pending-launch';
+  const saved = await page.evaluate((k) => JSON.parse(sessionStorage.getItem(k)), key);
+  await page.reload();
+  await page.click('#start-agent');
+  await start.getByRole('button', { name: 'Check launch' }).click();
+  await until('pending launch is cleared', () => page.evaluate((k) => sessionStorage.getItem(k) === null, key));
+  const attempts = fx.log.filter((r) => r.path === '/api/agent/launch');
+  check(attempts.length === 2 && attempts.every((r) => r.body.submission_id === saved.submission_id),
+    'recovering a launch must preserve its submission ID');
+  await textUntil(page, '.banner', 'Waiting for codex', 'launch awaiting identity');
+  fx.live = { title: 'Phone agent', location: { group: { id: 0, name: 'Default' }, tab: { id: 1, name: 'Shell' } } };
+  fx.rows = [row(fx, AGENT_ID, 'idle', fx.live)];
+  await page.click('#list-refresh');
+  await until('launched agent opens', () => exists(page, '#overflow-button'));
+  const opened = hashOf(page);
+  await page.click('#overflow-button');
+  malformed('/api/agent/destinations', {});
+  await page.click('#action-move');
+  const move = page.locator('#sheet-move');
+  const submitMove = move.getByRole('button', { name: 'Move agent', exact: true });
+  await retryMalformed(move, submitMove);
+  await move.getByLabel('Group', { exact: true }).selectOption('4');
+  await move.getByLabel('Tab', { exact: true }).selectOption('other');
+  malformed('/api/agent/destinations', { current_group: 0, current_tab: 1, allow_new_group: true,
+    groups: [{ id: 4, name: 'Review', tabs: [{ id: 5, name: 'Shell', incarnation: 7 }] }] });
+  await move.getByRole('button', { name: 'Refresh destinations' }).click();
+  await retryMalformed(move, submitMove);
+  fx.fail.set('/api/agent/move', { mode: 'reply', times: 1, status: 409, body: { error: { code: 'unavailable', message: 'Destination unavailable' } } });
+  await submitMove.click();
+  await textUntil(page, '#sheet-move [role="alert"]', 'Destination unavailable', 'move failure shown in picker');
+  check(await move.getByLabel('Tab', { exact: true }).inputValue() === 'other', 'move lost the selected tab');
+  await submitMove.click();
+  await until('move form closed', async () => !(await exists(page, '#sheet-move')));
+  check(hashOf(page) === opened, 'move left the conversation');
+  await page.click('#detail-information-toggle');
+  await textUntil(page, '#detail-location', 'Review (#4) · Shell (#5)', 'location refreshed after move');
+  for (const confirm of [false, true]) {
+    await page.click('#overflow-button');
+    await page.click('#action-close');
+    await textUntil(page, '#sheet-close-agent', 'Phone agent in browser-check · Review (#4)', 'close identifies agent and location');
+    await page.locator('#sheet-close-agent').getByRole('button', { name: confirm ? 'Close agent' : 'Cancel', exact: true }).click();
+    if (!confirm) check(fx.count('/api/agent/close') === 0 && hashOf(page) === opened, 'cancel closed the agent');
+  }
+  await textUntil(page, '#list-empty', 'No agents', 'returned to refreshed list');
+  check(fx.count('/api/agent/close') === 1, 'sent multiple close requests');
+}
+
 async function peerDesktopFocus(open) {
   const { page, fx, peer } = await openScopedPeer(open);
   const focus = async (status, body) => {
     fx.fail.set('/api/agent/focus', { mode: 'reply', times: 1, status, body });
     await page.click('#overflow-button');
     await sheetReady(page, 'sheet-overflow', 'Focus actions are available');
+    check(!(await exists(page, '#action-move, #action-close')), 'peer offered local management actions');
     await page.click('#action-focus');
   };
   for (const message of ['Focus is temporarily unavailable while the peer publishes its renamed session.', 'No terminal attached']) {
@@ -3474,6 +3578,7 @@ async function main() {
   await scenario('Agents peer focus across republication: Open', (open) => peerFocusAcrossRepublication(open, '.agent-open'));
   await scenario('Agents peer focus across republication: quick key', (open) => peerFocusAcrossRepublication(open, '.quick-key[data-key="1"]'));
   await scenario('Agents peer Detail routing and draft isolation', scopedPeerDetails);
+  await scenario('Agents start, move and close on a phone', manageAgent);
   await scenario('Agents peer desktop Focus response and controls', peerDesktopFocus);
   await scenario('Agents scoped peer retry through cache loss', scopedPeerRetry);
   await scenario('Agents scoped draft recovery after first lookup failure', scopedPeerInitialLookupFailure);

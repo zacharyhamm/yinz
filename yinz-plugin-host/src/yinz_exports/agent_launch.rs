@@ -923,16 +923,22 @@ pub(super) fn prepare_git_checkout_in_tracked(
         });
         Ok::<(), String>(())
     };
-    let root_output = process::Command::new("git")
-        .arg("-C")
-        .arg(&source_directory)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(|error| format!("failed to run git: {error}"))?;
-    if !root_output.status.success() {
-        return Err(git_error("find the repository root", &root_output.stderr));
-    }
-    let root = PathBuf::from(String::from_utf8_lossy(&root_output.stdout).trim());
+    let root = match checkout {
+        // Anchor new worktrees to the primary entry, including when the repository is bare.
+        GitCheckout::NewWorktree { .. } => primary_worktree(&source_directory)?,
+        GitCheckout::Current | GitCheckout::NewBranch { .. } => {
+            let output = process::Command::new("git")
+                .arg("-C")
+                .arg(&source_directory)
+                .args(["rev-parse", "--show-toplevel"])
+                .output()
+                .map_err(|error| format!("failed to run git: {error}"))?;
+            if !output.status.success() {
+                return Err(git_error("find the repository root", &output.stderr));
+            }
+            PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
+        },
+    };
     match checkout {
         GitCheckout::Current => {
             guard.check(&root)?;
@@ -1003,11 +1009,6 @@ pub(super) fn prepare_git_checkout_in_tracked(
             })
         },
         GitCheckout::NewWorktree { branch, base, path } => {
-            // Anchored to the primary checkout, not to the caller's. A relative path
-            // joined onto the caller's root nests a worktree inside a worktree
-            // whenever the agent asking for one is already sitting in a worktree,
-            // and a nested worktree is stranded the moment its parent is removed.
-            let root = primary_worktree(&root)?;
             validate_git_names(&root, &branch, &base)?;
             let path = if path.is_absolute() {
                 path
@@ -1288,6 +1289,27 @@ pub(super) fn primary_worktree(root: &std::path::Path) -> Result<PathBuf, String
 pub(super) struct Worktree {
     pub(super) path: PathBuf,
     pub(super) branch: Option<String>,
+}
+
+/// Existing checkouts offered for launching. A bare repository has no working
+/// directory, and Git may still list a linked checkout after its directory was removed.
+pub(super) fn available_worktrees(root: &Path) -> Result<Vec<Worktree>, String> {
+    Ok(worktrees(root)?
+        .into_iter()
+        .filter(|w| w.path.join(".git").exists())
+        .collect())
+}
+
+pub(super) fn selected_worktree(root: &Path, path: &Path) -> Result<PathBuf, String> {
+    let selected = available_worktrees(root)?
+        .into_iter()
+        .find(|w| same_path(&w.path, path))
+        .ok_or("Selected worktree no longer belongs to this project")?;
+    // A stale admin entry can point at a directory since occupied by a different repository.
+    if !same_path(&primary_worktree(root)?, &primary_worktree(&selected.path)?) {
+        return Err("Selected checkout now belongs to another repository".into());
+    }
+    Ok(selected.path)
 }
 
 /// Every checkout of the repository, primary first.

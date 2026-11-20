@@ -23,6 +23,35 @@ pub(super) struct TabGroup {
 }
 
 impl Screen {
+    pub(super) fn next_group_id(&self) -> Result<u32> {
+        u32::try_from(self.core.next_tab_group_id).context("tab group IDs exhausted")
+    }
+
+    pub(super) fn start_tab_group(&mut self, id: u32, tab: TabId, name: Option<String>) {
+        self.core.next_tab_group_id += 1;
+        let mut number = 1u64;
+        while self
+            .core
+            .tab_groups
+            .values()
+            .any(|group| group.name == format!("Group {number}"))
+        {
+            number += 1;
+        }
+        self.core.tab_groups.insert(
+            id,
+            TabGroup {
+                name: name
+                    .map(|name| yinz_types::text::clean_string_from_control_and_linebreak(&name))
+                    .unwrap_or_else(|| format!("Group {number}")),
+                preferred: Some(tab),
+                restored_preferred: None,
+            },
+        );
+        self.core.tab_group_ids.insert(tab, id);
+        self.prune_tab_groups();
+    }
+
     pub(super) fn tab_groups_enabled(&self) -> bool {
         self.core.default_mode_info.tab_groups != Some(false)
     }
@@ -401,18 +430,7 @@ impl Screen {
                     Action::NewNamedTabGroup { name } => (name, true),
                     _ => (None, false),
                 };
-                let id = u32::try_from(self.core.next_tab_group_id)
-                    .context("tab group IDs exhausted")?;
-                self.core.next_tab_group_id += 1;
-                let mut number = 1u64;
-                while self
-                    .core
-                    .tab_groups
-                    .values()
-                    .any(|group| group.name == format!("Group {number}"))
-                {
-                    number += 1;
-                }
+                let id = self.next_group_id()?;
                 let tab = self.get_new_tab_id();
                 self.new_tab(
                     tab,
@@ -424,20 +442,7 @@ impl Screen {
                     Some(client),
                 )
                 .context("create first tab in group")?;
-                self.core.tab_groups.insert(
-                    id,
-                    TabGroup {
-                        name: name
-                            .map(|name| {
-                                yinz_types::text::clean_string_from_control_and_linebreak(&name)
-                            })
-                            .unwrap_or_else(|| format!("Group {number}")),
-                        preferred: Some(tab),
-                        restored_preferred: None,
-                    },
-                );
-                self.core.tab_group_ids.insert(tab, id);
-                self.prune_tab_groups();
+                self.start_tab_group(id, tab, name);
                 if let Some(completion) = completion.as_mut() {
                     completion.wait_for_placement();
                     if report_id {

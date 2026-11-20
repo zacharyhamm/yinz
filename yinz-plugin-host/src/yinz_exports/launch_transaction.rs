@@ -312,6 +312,32 @@ pub(super) fn launch_with_prepare(
     title: Option<String>,
     prepare: Option<Preparation<'_>>,
 ) -> AgentResponse {
+    launch_with_preflight(
+        id,
+        request,
+        client,
+        senders,
+        data,
+        opening_prompt,
+        origin,
+        title,
+        || Ok(prepare),
+    )
+}
+
+/// Only a newly recorded intent runs preflight. Its preparation callback can
+/// carry the validated project identity across the wait for pane placement.
+pub(super) fn launch_with_preflight<'a>(
+    id: String,
+    request: LaunchRequest,
+    client: crate::ClientId,
+    senders: &ThreadSenders,
+    data: &DataAccess,
+    opening_prompt: OpeningPromptPolicy,
+    origin: Option<yinz_types::data::OriginatingPlugin>,
+    title: Option<String>,
+    preflight: impl FnOnce() -> Result<Option<Preparation<'a>>, AgentSpawnError>,
+) -> AgentResponse {
     let digest = match request.digest() {
         Ok(digest) => digest,
         Err(e) => return unavailable(&id, String::new(), e.to_string()),
@@ -416,55 +442,57 @@ pub(super) fn launch_with_prepare(
             .insert(id.clone(), receipt.clone());
         Ok(())
     };
-    let result = spawn_agent_prepared_with_gate(
-        request.placement,
-        request.spec,
-        client,
-        senders,
-        gate.clone(),
-        opening_prompt,
-        origin,
-        title,
-        |spec| {
-            publish(LaunchPhase::Prepares, None)?;
-            if let Some(prepare) = prepare {
-                return prepare(spec);
-            }
-            if let Some((name, destination)) = request.new_project {
-                let mut project_progress = NewProjectProgress::default();
-                return prepare_new_project_agent(
-                    spec,
-                    &name,
-                    &destination,
-                    senders,
-                    data,
-                    &mut project_progress,
-                )
-                .map_err(|mut error| {
-                    if let Some(root) = project_progress.retained {
+    let result = preflight().and_then(|prepare| {
+        spawn_agent_prepared_with_gate(
+            request.placement,
+            request.spec,
+            client,
+            senders,
+            gate.clone(),
+            opening_prompt,
+            origin,
+            title,
+            |spec| {
+                publish(LaunchPhase::Prepares, None)?;
+                if let Some(prepare) = prepare {
+                    return prepare(spec);
+                }
+                if let Some((name, destination)) = request.new_project {
+                    let mut project_progress = NewProjectProgress::default();
+                    return prepare_new_project_agent(
+                        spec,
+                        &name,
+                        &destination,
+                        senders,
+                        data,
+                        &mut project_progress,
+                    )
+                    .map_err(|mut error| {
+                        if let Some(root) = project_progress.retained {
+                            error
+                                .0
+                                .launch_resources
+                                .get_or_insert_with(Default::default)
+                                .cwd = Some(root);
+                        }
                         error
-                            .0
-                            .launch_resources
-                            .get_or_insert_with(Default::default)
-                            .cwd = Some(root);
-                    }
-                    error
-                });
-            }
-            prepare_automation_agent(
-                spec,
-                request.cwd,
-                request.project,
-                request.remote_host,
-                data,
-                &senders.session.current(),
-            )
-        },
-        |resources, git| {
-            progress.borrow_mut().0.resources.git = git.to_vec();
-            publish(LaunchPhase::Starts, Some(resources.clone()))
-        },
-    );
+                    });
+                }
+                prepare_automation_agent(
+                    spec,
+                    request.cwd,
+                    request.project,
+                    request.remote_host,
+                    data,
+                    &senders.session.current(),
+                )
+            },
+            |resources, git| {
+                progress.borrow_mut().0.resources.git = git.to_vec();
+                publish(LaunchPhase::Starts, Some(resources.clone()))
+            },
+        )
+    });
     let mut response = finish_spawn(result, senders);
     let (mut receipt, mut rev) = progress.into_inner();
     let state = gate.snapshot();

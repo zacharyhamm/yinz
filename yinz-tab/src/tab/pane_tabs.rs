@@ -95,6 +95,13 @@ impl Tab {
         self.pane_tabs.get(&id).map(|tabs| tabs.info.clone())
     }
 
+    /// The pane occupying the container's slot when a move names any pane-tab member.
+    pub fn pane_owner_for_extraction(&self, pane: PaneId) -> PaneId {
+        self.pane_tabs_of(pane)
+            .map(|id| self.pane_tabs[&id].info.pane_id)
+            .unwrap_or(pane)
+    }
+
     pub fn pane_tabs_of(&self, pane: PaneId) -> Option<PaneTabsId> {
         self.pane_tabs.iter().find_map(|(id, tabs)| {
             (tabs.info.pane_id == pane

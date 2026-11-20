@@ -78,7 +78,7 @@ fn target_of(
     (placed.target, placed.focus_after_placing, placement)
 }
 
-fn plugin_capture(screen: &mut Screen) -> Receiver<(PluginInstruction, ErrorContext)> {
+pub(super) fn plugin_capture(screen: &mut Screen) -> Receiver<(PluginInstruction, ErrorContext)> {
     let (to_plugin, plugin_receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
     screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
     plugin_receiver
@@ -86,7 +86,7 @@ fn plugin_capture(screen: &mut Screen) -> Receiver<(PluginInstruction, ErrorCont
 
 /// Every `NewTab` the plugin thread was asked for: its tab id, whether the client follows, and
 /// the run instructions its layout is told to leave alone.
-fn new_tabs_asked_for(
+pub(super) fn new_tabs_asked_for(
     receiver: &Receiver<(PluginInstruction, ErrorContext)>,
 ) -> Vec<(TabId, bool, Vec<Option<Run>>)> {
     new_tabs_asked_for_by_client(receiver)

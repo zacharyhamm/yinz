@@ -194,10 +194,7 @@ impl Tab {
         id: PaneId,
         dont_swap_if_suppressed: bool,
     ) -> Option<Box<dyn Pane>> {
-        let id = self
-            .pane_tabs_of(id)
-            .map(|tabs| self.pane_tabs[&tabs].info.pane_id)
-            .unwrap_or(id);
+        let id = self.pane_owner_for_extraction(id);
         // Structural moves must take the owning container, never an individual child.
         if self.overlay_panes.multipane_info(&id).is_some() {
             return None;

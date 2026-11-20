@@ -937,6 +937,11 @@ handler that survives terminal detach. Operations reject unknown fields. No nati
 | `op` | Fields | `ok` payload |
 | --- | --- | --- |
 | `list` | none | `{session, now_ms, counts:{waiting,busy,idle}, agents:[row]}` |
+| `launch_choices` | optional registered `project` | `{server_instance, providers, projects, worktrees:[{branch,path}]}` with a null branch for a detached checkout |
+| `launch` | `submission_id`, `kind`, `project`, `checkout` | `{session, pane_id, kind}` |
+| `destinations` | `agent:AgentRef` | `{groups:[{id,name,tabs:[{id,name,incarnation}]}], current_group, current_tab, allow_new_group}` |
+| `move` | `agent:AgentRef`, `destination` | `{"ok":true}` |
+| `close` | `agent:AgentRef` | `{"ok":true}` |
 | `history` | `run`, optional `agent` (live lookup), `query` (default empty), `from`, `worker`, `before`, `after_revision`, `tz` | History page below |
 | `hit` | `run`, `revision`, optional `tz` | History page with context/latest navigation |
 | `event` | `run`, `revision`, optional `tz` | `{header:string, markdown:string, tool:string}` |
@@ -949,6 +954,18 @@ handler that survives terminal detach. Operations reject unknown fields. No nati
 | `terminal_input` | `agent:AgentRef`, `data` as base64 keyboard bytes, a native `KeyWithModifier`, or `{"mouse":"<base64>"}` (1–32768 encoded bytes per batch) | `{response:AgentResponse}` |
 | `keys` | `agent:AgentRef`, `keys` (1–8) | `{response:AgentResponse}` |
 | `focus` | `agent:AgentRef` | `true` |
+
+Launch accepts `{type:"existing",path}` or `{type:"new",branch}`. Use the advertised
+`server_instance`, a period, and a fresh random nonce as the submission ID. After
+an uncertain response, repeat the same body to retrieve its launch receipt.
+Reusing the ID with different choices returns `launch_conflict`. Read the list
+until the returned session, pane and provider have a complete local reference.
+For move, send `{type:"tab",group,tab,incarnation}`, `{type:"new_tab",group,name}`
+or `{type:"new_group",name,tab_name}`. Names are optional. The incarnation
+must match the advertised tab even if the numeric ID has since been reused.
+The serving screen checks the complete local agent reference before listing
+destinations, moving, or closing. Local live rows include the current
+`location` with `group` and `tab` name/ID pairs.
 
 `AgentRef` is `{id, kind, session_id}`. All identity strings must be nonblank
 and contain no control characters. Actions take a fresh snapshot and require a

@@ -1600,6 +1600,16 @@ pub(super) fn dispatch(
         ScreenInstruction::WebLiveAgents { reply } => {
             screen.web_live_agents(reply);
         },
+        ScreenInstruction::WebManageAgent {
+            agent,
+            action,
+            client,
+            deadline,
+            reply,
+        } => {
+            let result = screen.web_manage_agent(&agent, action, client, deadline);
+            let _ = reply.send(result);
+        },
         ScreenInstruction::WebFocusAgent {
             agent,
             owner,

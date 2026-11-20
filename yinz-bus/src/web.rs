@@ -14,7 +14,7 @@ use yinz_types::agent::control::{peer_web_detail_id, valid_web_identity};
 use yinz_types::agent::AgentInfo;
 use yinz_types::data::PaneInfo;
 use yinz_types::input::layout::RunPluginOrAlias;
-use yinz_types::internal_ids::{ClientId, PluginId, SessionName};
+use yinz_types::internal_ids::{ClientId, PluginId, SessionName, TabId};
 use yinz_types::tab_bar::TabGroupInfo;
 use yinz_types::web::{SiteHandle, WebReply, WebRequest};
 
@@ -114,6 +114,7 @@ pub struct WebLiveAgent {
     pub tab_group_session: SessionName,
     /// Group identity and display name within `tab_group_session`.
     pub tab_group: Option<TabGroupInfo>,
+    pub local_tab: Option<WebTab>,
     pub current_session: bool,
     pub peer_instance: Option<String>,
     pub pane: PaneInfo,
@@ -157,6 +158,53 @@ pub struct WebAgentRef {
     pub id: String,
     pub kind: String,
     pub session_id: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct WebTab {
+    pub id: TabId,
+    pub name: String,
+    pub incarnation: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct WebGroup {
+    pub id: u32,
+    pub name: String,
+    pub tabs: Vec<WebTab>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MoveDestinations {
+    pub groups: Vec<WebGroup>,
+    pub current_group: u32,
+    pub current_tab: TabId,
+    pub allow_new_group: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MoveDestination {
+    Tab {
+        group: u32,
+        tab: TabId,
+        incarnation: String,
+    },
+    NewTab {
+        group: u32,
+        name: Option<String>,
+    },
+    NewGroup {
+        name: Option<String>,
+        tab_name: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub enum WebManageAction {
+    Destinations,
+    Move(MoveDestination),
+    Close,
 }
 
 impl WebAgentRef {

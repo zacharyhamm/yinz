@@ -1200,6 +1200,11 @@ as JSON, with only the listed `*html` fields added.
 | `GET /api/tools` | `run` (required), exactly one of `revisions` or `range`, `before` (range only), `tz` | `tools` | `html`; range mode keeps `page` unchanged |
 | `GET /api/usage` | `agent` (required) | `usage` | none |
 | `GET /api/prompts` | none | `prompts` | none |
+| `GET /api/agent/launch-choices` | optional `project` | `launch_choices` | none |
+| `POST /api/agent/launch` | `submission_id`, `kind`, `project`, `checkout` | `launch` | none |
+| `POST /api/agent/destinations` | `agent` | `destinations` | none |
+| `POST /api/agent/move` | `agent`, `destination` | `move` | none |
+| `POST /api/agent/close` | `agent` | `close` | none |
 | `POST /api/agent/prompt` | `agent`, `submission_id`, `text` | `prompt` | none |
 | `POST /api/agent/focus` | `agent` | `focus` | none; replies `{"ok":true}` |
 | `POST /api/agent/screen` | `agent`, optional `lines` (1–200, default 80) | `screen` | `html` from the response's `output` |

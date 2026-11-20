@@ -303,6 +303,7 @@ pub enum ScreenContext {
     AgentControlReply,
     WebLiveAgents,
     WebFocusAgent,
+    WebManageAgent,
     ResolveAgentTab,
     CleanupAgentTab,
     AgentSpawned,

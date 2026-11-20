@@ -128,6 +128,7 @@ function App({ initialNotice }) {
     api,
     config,
     local,
+    session,
     timelines,
     submissions,
     visibility,

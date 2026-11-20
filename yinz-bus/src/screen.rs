@@ -1069,6 +1069,15 @@ pub enum ScreenInstruction {
     WebLiveAgents {
         reply: crossbeam::channel::Sender<Vec<crate::web::WebLiveAgent>>,
     },
+    WebManageAgent {
+        agent: crate::web::WebAgentRef,
+        action: crate::web::WebManageAction,
+        client: ClientId,
+        deadline: Instant,
+        reply: crossbeam::channel::Sender<
+            Result<Option<crate::web::MoveDestinations>, crate::web::WebFocusError>,
+        >,
+    },
     /// Focus a live agent for the first connected client, as the palette would.
     WebFocusAgent {
         agent: crate::web::WebAgentRef,

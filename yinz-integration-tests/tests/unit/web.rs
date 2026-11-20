@@ -1380,6 +1380,173 @@ fn web_builtin_production_http() {
 }
 
 #[test]
+fn web_builtin_manage_agent_routes() {
+    use serde_json::json;
+    use yinz_integration_tests::test_env::write_git_repository;
+
+    let root = write_git_repository("web-launch", "trunk")
+        .canonicalize()
+        .unwrap();
+    let detached = root.join("side");
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    git(&["worktree", "add", "--detach", detached.to_str().unwrap()]);
+    let dir = private_data();
+    set(dir.path());
+    let run = seed_retained_run(dir.path());
+    let mut project =
+        agent_proto::projects::validate("web-project", root.to_str().unwrap()).unwrap();
+    project.worktree_dir = Some("branches".into());
+    yinz_storage::data_access::DataAccess::sqlite(dir.path())
+        .plugin_data()
+        .apply(
+            agent_proto::store::SHARED,
+            &[agent_proto::projects::to_mutation(&project)],
+        )
+        .unwrap();
+    let records = Records::new(dir.path().to_owned());
+    let mut session = TestRunner::new(TERMINAL_SIZE)
+        .with_data_dir(dir.path().to_owned())
+        .with_config("web { enabled true; port 0; }")
+        .start();
+    let _shell = claim_first_terminal_and_wait_for_prompt(&session);
+    let addr = records.serving(session.session_name());
+    wait_public(addr, "/", r#"<div id="app"></div>"#);
+    let token = login(addr);
+    let choices = call_ok(
+        addr,
+        "GET",
+        "/api/agent/launch-choices?project=web-project",
+        &token,
+        "",
+    );
+    assert!(choices["providers"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("codex")));
+    assert!(choices["projects"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("web-project")));
+    assert!(choices["worktrees"]
+        .as_array()
+        .unwrap()
+        .contains(&json!({"path": detached, "branch": null})));
+    let instance = choices["server_instance"].as_str().unwrap();
+    let launch = |id: &str, checkout| {
+        json!({"submission_id":format!("{instance}.{id}"),"kind":"codex","project":"web-project","checkout":checkout}).to_string()
+    };
+    let body = launch("first", json!({"type":"existing","path":detached}));
+    assert_eq!(
+        call(addr, "POST", "/api/agent/launch", None, &body).error_code(401),
+        "unauthenticated"
+    );
+    let launched = call_ok(addr, "POST", "/api/agent/launch", &token, &body);
+    let agent = session.expect_pty_spawn();
+    assert_eq!(
+        launched["pane_id"],
+        yinz_types::pane_id::PaneId::Terminal(agent.terminal_id()).to_string()
+    );
+    assert_eq!(agent.run_command().cwd, Some(detached.clone()));
+    assert_eq!(
+        git(&[
+            "-C",
+            detached.to_str().unwrap(),
+            "rev-parse",
+            "--abbrev-ref",
+            "HEAD"
+        ])
+        .trim(),
+        "HEAD"
+    );
+
+    git(&["worktree", "remove", detached.to_str().unwrap()]);
+    // Recovery reads the original receipt even though the worktree is gone.
+    assert_eq!(
+        call_ok(addr, "POST", "/api/agent/launch", &token, &body),
+        launched
+    );
+    let missing = launch("missing", json!({"type":"existing","path":detached}));
+    assert_eq!(
+        call(addr, "POST", "/api/agent/launch", Some(&token), &missing).error_code(400),
+        "invalid"
+    );
+    let new_checkout = json!({"type":"new","branch":"topic"});
+    let conflict = launch("first", new_checkout.clone());
+    assert_eq!(
+        call(addr, "POST", "/api/agent/launch", Some(&token), &conflict).error_code(409),
+        "launch_conflict"
+    );
+    let new_body = launch("second", new_checkout);
+    let created = call_ok(addr, "POST", "/api/agent/launch", &token, &new_body);
+    assert_eq!(
+        call_ok(addr, "POST", "/api/agent/launch", &token, &new_body),
+        created
+    );
+    assert!(!root.join("branches/topic-2").exists());
+    let second = session.expect_pty_spawn();
+    assert_eq!(second.run_command().cwd, Some(root.join("branches/topic")));
+    assert_eq!(git(&["rev-parse", "topic"]), git(&["rev-parse", "trunk"]));
+
+    report_codex_session_start(&session, &agent);
+    let list = || call_ok(addr, "GET", "/api/agents", &token, "");
+    let rows = list();
+    let row = rows["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["pane_id"] == launched["pane_id"])
+        .unwrap();
+    let reference = &row["ref"];
+    let target = json!({"agent":reference}).to_string();
+    let inventory = call_ok(addr, "POST", "/api/agent/destinations", &token, &target);
+    assert_eq!(inventory["current_tab"], row["location"]["tab"]["id"]);
+    let moved = call_ok(addr, "POST", "/api/agent/move", &token,
+        &json!({"agent":reference,"destination":{"type":"new_group","name":"Review","tab_name":"First"}}).to_string());
+    assert_eq!(moved["ok"], true);
+    let rows = list();
+    let moved = rows["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| &a["ref"] == reference)
+        .unwrap();
+    assert_eq!(moved["pane_id"], launched["pane_id"]);
+    assert_ne!(moved["location"]["group"]["id"], inventory["current_group"]);
+    assert_eq!(moved["location"]["tab"]["name"], "First");
+
+    call_ok(addr, "POST", "/api/agent/close", &token, &target);
+    assert!(list()["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| &a["ref"] != reference));
+    assert_eq!(
+        call(addr, "POST", "/api/agent/close", Some(&token), &target).error_code(409),
+        "target_changed"
+    );
+    let history = call_ok(
+        addr,
+        "GET",
+        &query("/api/history", &[("run", &run.id)]),
+        &token,
+        "",
+    );
+    assert_eq!(
+        history["events"][0]["markdown"],
+        "Native web retained conversation"
+    );
+    session.quit();
+}
+
+#[test]
 #[ignore = "needs the test-only Playwright package and Firefox; see docs/PLUGIN_TESTING.md"]
 fn web_builtin_browser_phone_flows() {
     use std::{

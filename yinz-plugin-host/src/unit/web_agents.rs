@@ -37,6 +37,7 @@ fn live(session: &str, state: AgentState, current_session: bool) -> WebLiveAgent
         ..Default::default()
     };
     WebLiveAgent {
+        local_tab: None,
         tab_group_session: session.into(),
         tab_group: Some(yinz_types::tab_bar::TabGroupInfo {
             id: 0,
@@ -101,6 +102,12 @@ fn web_agents_validation_rejects_bad_operations_and_bounds_without_dispatch() {
         json!({}),
         json!({"op":"restart"}),
         json!({"op":"list","session":"arbitrary"}),
+        json!({"op":"launch","submission_id":format!("{}.unknown",yinz_bus::agent_launch::server_instance()),"project":"project","kind":"unknown","checkout":{"type":"new","branch":"main"}}),
+        json!({"op":"launch","submission_id":"test","project":"project","kind":"codex","checkout":{"type":"existing","path":"relative"}}),
+        json!({"op":"launch","submission_id":"test","project":"project","kind":"codex","checkout":{"type":"new","branch":"topic","path":"/other"}}),
+        json!({"op":"move","agent":identity,"destination":{"type":"tab","group":0,"tab":1}}),
+        json!({"op":"move","agent":identity,"destination":{"type":"new_group","name":"bad\nname"}}),
+        json!({"op":"close","agent":identity,"session":"peer"}),
         json!({"op":"event","run":"run","revision":0}),
         json!({"op":"event","run":"run","revision":i64::MAX as u64}),
         json!({"op":"event","run":"run","revision":u64::MAX}),

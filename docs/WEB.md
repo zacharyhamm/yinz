@@ -324,6 +324,20 @@ plugin configuration or secrets.
   **Open** button. The header shows how long ago the list was updated and the
   serving session. The menu has **Log out** and **Log out everywhere**, which
   asks for confirmation.
+- **Start agent** is available even when the list is empty. Choose a provider,
+  a registered project, and a checkout by branch and path. A detached checkout
+  appears as **Detached HEAD**. **Create new worktree** asks for a branch and
+  uses the same directory and base as the command palette. Yinz places the pane
+  in the serving session and opens its detail when the provider reports a live
+  conversation. If the response is lost, reopen **Start agent** in the same
+  browser tab and choose **Check launch** to recover the original submission.
+- In a serving-session agent's **More actions** menu, **Move agent** shows its
+  location and lets you choose a group and tab by name and ID. You can also
+  create a tab in an existing group, or create a group and move into its first
+  tab. Leave names blank to use the Yinz defaults. The pane and conversation
+  stay together and the detail view stays open. **Close agent** shows the agent
+  and location for confirmation, closes the pane, and returns to Agents. Its
+  recorded history stays available. Yinz refuses a close that would also close other panes. Peer agents retain their existing controls.
 - **Agent detail** (`#/a/<id>?run=<run>&tab=timeline|term|details`): a compact
   title and labelled live state, Back, **Agent information** (ⓘ), available
   actions and three tabs. Agent information starts collapsed on phones and

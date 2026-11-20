@@ -198,6 +198,6 @@
   (define decoded (if (string? value) (yinz-agent-view-error value) value))
   (define code (%async-get decoded "code" "failed"))
   (cond ((equal? code "invalid") 400) ((equal? code "not_found") 404)
-        ((equal? code "target_changed") 409)
+        ((member code '("target_changed" "launch_conflict")) 409)
         ((and (equal? code "unavailable") (equal? (%async-get decoded "op" #f) "focus") (equal? (%async-get decoded "origin" #f) "native")) 409)
         ((member code '("paused" "unavailable")) 503) (else 502)))

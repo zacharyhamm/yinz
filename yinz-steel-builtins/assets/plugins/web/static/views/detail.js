@@ -9,6 +9,7 @@ import {
   html, useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, usePoller, useNow,
   ServerHtml, StateBadge, RowBadges, QuotaBar, Banner, responseText, cx,
 } from './ui.js';
+import { MoveSheet, CloseSheet, agentLocation } from './manage.js';
 import { Sheet, ConfirmSheet } from './sheets.js';
 import { Composer, StaleSubmissions } from './composer.js';
 import { TermPanel } from './term.js';
@@ -194,7 +195,7 @@ function ToolsReaderSheet({ env, item, tz, onClose }) {
   <//>`;
 }
 
-function OverflowSheet({ env, live, target, onClose, onInterrupt, onKeys, onTargetGone }) {
+function OverflowSheet({ env, live, target, onClose, onInterrupt, onKeys, onManage, onTargetGone }) {
   const peer = live.current_session === false;
   async function focus() {
     onClose();
@@ -217,6 +218,8 @@ function OverflowSheet({ env, live, target, onClose, onInterrupt, onKeys, onTarg
       <button type="button" class="button menu-item" id="action-interrupt" onClick=${() => { onClose(); onInterrupt(); }}>
         <span>Interrupt</span><span class="menu-sub">sends Esc after you confirm</span>
       </button>
+      ${onManage ? html`<button type="button" class="button menu-item" id="action-move" onClick=${() => onManage('move')}>Move agent</button>
+        <button type="button" class="button menu-item" id="action-close" onClick=${() => onManage('close')}>Close agent</button>` : null}
       <button type="button" class="button menu-item" id="action-keys" onClick=${() => { onClose(); onKeys(); }}>Send keys…</button>
     </div>
   <//>`;
@@ -344,6 +347,7 @@ export function DetailView({ env, route }) {
   const candidate = controlTarget(live);
   const currentRef = candidate?.id === route.id ? candidate : null;
   const actions = route.bind && !!currentRef && !meta.agent_gone && !peerRejected;
+  const manage = actions && !scoped && live.current_session === true;
   const unavailable = meta.agent_gone || peerRejected || ((store?.confirmed || list?.data) && !currentRef);
   const lookup = store ? tail : list;
   const stale = lookup && ['offline', 'retrying', 'error'].includes(lookup.status);
@@ -530,6 +534,7 @@ export function DetailView({ env, route }) {
         <h2 class="information-title">${title}</h2>
         ${store && store.meta.header_html ? html`<${ServerHtml} html=${store.meta.header_html} class="header-html" id="detail-header-html" />`
           : null}
+        ${manage && live.location ? html`<p id="detail-location">${agentLocation(live)}</p>` : null}
         ${live ? html`<${RowBadges} row=${live} showState=${false} />` : null}
         ${live ? html`<${QuotaBar} usage=${usage && usage.data && usage.data.usage} error=${usage && !usage.data && usage.error ? describeError(usage.error) : null} />` : null}
       </section>
@@ -578,7 +583,12 @@ export function DetailView({ env, route }) {
     ${((route.bind && !scoped && !live) || scopedRecovery) ? html`<${StaleSubmissions} env=${env}
       agentId=${route.id} scoped=${recoverScoped} dock=${true} />` : null}
     ${actions && sheet?.type === 'overflow' ? html`<${OverflowSheet} env=${env} live=${live} target=${currentRef} onClose=${() => setSheet(null)}
+      onManage=${manage ? (type) => setSheet({ type, agent: currentRef }) : null}
       onInterrupt=${() => setSheet({ type: 'interrupt' })} onKeys=${() => setSheet({ type: 'keys' })} onTargetGone=${onTargetGone} />` : null}
+    ${manage && sheet?.type === 'move' && sameTarget(sheet.agent, currentRef) ? html`<${MoveSheet} env=${env} live=${live} agent=${sheet.agent}
+      onClose=${() => setSheet(null)} onMoved=${() => { setSheet(null); refreshTarget(); env.toast('Agent moved.'); }} />` : null}
+    ${manage && sheet?.type === 'close' && sameTarget(sheet.agent, currentRef) ? html`<${CloseSheet} env=${env} live=${live} agent=${sheet.agent}
+      onClose=${() => setSheet(null)} onClosed=${() => env.replaceHash('#/')} />` : null}
     ${actions && sheet?.type === 'interrupt' ? html`<${ConfirmSheet} id="sheet-interrupt-confirm" title="Interrupt the agent?" danger=${true}
       message="This sends a single Esc key to the agent's terminal. It is not retried automatically."
       confirmLabel="Send Esc" confirmId="action-interrupt-confirm" onClose=${() => setSheet(null)} onConfirm=${interrupt} />` : null}

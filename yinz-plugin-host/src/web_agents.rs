@@ -13,7 +13,7 @@ use yinz_bus::{
     command_palette::{self as palette, AgentAction, AgentReply, HistoryAction, HistoryReply},
     screen::ScreenInstruction,
     thread_bus::ThreadSenders,
-    web::{WebAgentRef, WebFocusError, WebLiveAgent},
+    web::{MoveDestination, WebAgentRef, WebFocusError, WebLiveAgent, WebManageAction},
 };
 use yinz_storage::data_access::DataAccess;
 use yinz_types::{
@@ -32,6 +32,25 @@ use yinz_types::{
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum Operation {
     List {},
+    LaunchChoices {
+        project: Option<String>,
+    },
+    Launch {
+        submission_id: String,
+        kind: String,
+        project: String,
+        checkout: Checkout,
+    },
+    Destinations {
+        agent: WebAgentRef,
+    },
+    Move {
+        agent: WebAgentRef,
+        destination: MoveDestination,
+    },
+    Close {
+        agent: WebAgentRef,
+    },
     History {
         agent: Option<String>,
         run: String,
@@ -90,6 +109,13 @@ enum Operation {
         keys: Vec<String>,
     },
 }
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum Checkout {
+    Existing { path: std::path::PathBuf },
+    New { branch: String },
+}
+
 fn screen_lines() -> usize {
     80
 }
@@ -242,7 +268,50 @@ impl Operation {
                 }
             },
             Self::Usage { agent } => identifier(agent)?,
-            Self::Focus { agent } => agent_ref(agent)?,
+            Self::LaunchChoices { project } => {
+                if let Some(project) = project {
+                    identifier(project)?;
+                }
+            },
+            Self::Launch {
+                submission_id,
+                kind,
+                project,
+                checkout,
+            } => {
+                yinz_types::agent::control::validate_submission_id(submission_id)
+                    .map_err(invalid)?;
+                identifier(project)?;
+                identifier(kind)?;
+                match checkout {
+                    Checkout::Existing { path } if !path.is_absolute() => {
+                        return Err(invalid("Choose an absolute checkout path"))
+                    },
+                    Checkout::New { branch } => identifier(branch)?,
+                    _ => {},
+                }
+            },
+            Self::Move { agent, destination } => {
+                agent_ref(agent)?;
+                let names = match destination {
+                    MoveDestination::NewTab { name, .. } => [name.as_ref(), None],
+                    MoveDestination::NewGroup { name, tab_name } => {
+                        [name.as_ref(), tab_name.as_ref()]
+                    },
+                    MoveDestination::Tab { incarnation, .. } => {
+                        identifier(incarnation)?;
+                        [None, None]
+                    },
+                };
+                for name in names.into_iter().flatten() {
+                    if name.len() > 512 || name.chars().any(char::is_control) {
+                        return Err(invalid("Invalid destination name"));
+                    }
+                }
+            },
+            Self::Destinations { agent } | Self::Close { agent } | Self::Focus { agent } => {
+                agent_ref(agent)?
+            },
             Self::Prompt {
                 agent,
                 submission_id,
@@ -358,6 +427,9 @@ fn row(live: &WebLiveAgent, label: Option<&palette::AgentLabels>) -> Value {
             None
         },
         "usage_unavailable":live.usage_unavailable});
+    if let Some(tab) = &live.local_tab {
+        row["location"] = json!({"group":live.tab_group,"tab":{"id":tab.id,"name":tab.name}});
+    }
     if let Some(id) = detail_id {
         row["detail_id"] = json!(id);
     }
@@ -608,6 +680,187 @@ fn adapt(
     }
 }
 
+fn web_error(e: WebFocusError) -> Error {
+    match e {
+        WebFocusError::TargetChanged => {
+            error("target_changed", "Agent disappeared or changed identity")
+        },
+        WebFocusError::NoTerminal => error("unavailable", "No terminal attached"),
+        WebFocusError::Unavailable(message) => error("unavailable", message),
+        WebFocusError::Failed(message) => error("failed", message),
+    }
+}
+
+fn manage(
+    agent: WebAgentRef,
+    action: WebManageAction,
+    client: ClientId,
+    senders: &ThreadSenders,
+) -> Result<Value> {
+    let (reply, rx) = crossbeam::channel::bounded(1);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    senders
+        .send_to_screen(ScreenInstruction::WebManageAgent {
+            agent,
+            action,
+            client,
+            deadline,
+            reply,
+        })
+        .map_err(|e| error("failed", e.to_string()))?;
+    match rx
+        .recv_deadline(deadline)
+        .map_err(|_| {
+            error(
+                "unavailable",
+                "Request timed out. Refresh Agents to check the result.",
+            )
+        })?
+        .map_err(web_error)?
+    {
+        Some(inventory) => Ok(json!(inventory)),
+        None => Ok(json!({"ok":true})),
+    }
+}
+
+fn launch(
+    id: String,
+    kind: String,
+    project: String,
+    checkout: Checkout,
+    client: ClientId,
+    senders: &ThreadSenders,
+    data: &DataAccess,
+) -> Result<Value> {
+    use super::agent_launch::{prepare_agent, OpeningPromptPolicy};
+    use yinz_types::agent::{
+        control::AgentPlacement,
+        launch::{LaunchOutcome, LaunchRequest},
+        AgentSpawnSpec,
+    };
+
+    let (path, branch) = match checkout {
+        Checkout::Existing { path } => (Some(path), None),
+        Checkout::New { branch } => (None, Some(branch)),
+    };
+    // Hash only the submitted intent. Project settings and available branches
+    // can change while a browser is recovering the original receipt.
+    let request = LaunchRequest {
+        placement: AgentPlacement::Automatic,
+        spec: AgentSpawnSpec {
+            kind: Some(kind.clone()),
+            branch: branch.clone(),
+            ..Default::default()
+        },
+        project: Some(project.clone()),
+        cwd: path.clone(),
+        remote_host: None,
+        new_project: None,
+    };
+    let project = palette::AgentProject::Registered(project);
+    let resolve =
+        || palette_agents::project_launch(&kind, &project, path.as_deref(), branch.clone(), data);
+    let response = super::launch_transaction::launch_with_preflight(
+        id,
+        request,
+        client,
+        senders,
+        data,
+        OpeningPromptPolicy::Reject,
+        None,
+        None,
+        || {
+            if !yinz_runtime::agent::launch::offered().contains(&kind) {
+                return Err("Choose an offered provider".into());
+            }
+            let (_, cwd) = resolve()?;
+            let original = CheckoutIdentity::open(&cwd)?;
+            Ok(Some(Box::new(move |spec| {
+                let (current, cwd) = resolve()?;
+                original.verify(&cwd)?;
+                *spec = current;
+                spec.env
+                    .insert(yinz_types::agent::AGENT_PANE_ENV.into(), "1".into());
+                prepare_agent(spec, cwd, None, data, &senders.session.current())
+            })))
+        },
+    );
+    let receipt = response
+        .launch
+        .ok_or_else(|| error("unavailable", "Launch receipt unavailable"))?;
+    match receipt.outcome {
+        LaunchOutcome::Started if response.outcome != AgentOutcome::Ok => Err(error(
+            "launch_failed",
+            "The agent started, but its original pane is no longer available.",
+        )),
+        LaunchOutcome::Started => {
+            let spawned = receipt
+                .spawned
+                .ok_or_else(|| error("unavailable", "Launch receipt has no pane"))?;
+            Ok(
+                json!({"session":senders.session.current(), "pane_id":spawned.pane_id.to_string(), "kind":kind}),
+            )
+        },
+        LaunchOutcome::Pending | LaunchOutcome::Unknown => Err(error(
+            "unavailable",
+            response
+                .message
+                .unwrap_or_else(|| "Launch outcome is pending. Check this launch again.".into()),
+        )),
+        outcome => {
+            let code = match outcome {
+                LaunchOutcome::Rejected => "invalid",
+                LaunchOutcome::Conflict => "launch_conflict",
+                _ => "launch_failed",
+            };
+            Err(error(
+                code,
+                response
+                    .message
+                    .unwrap_or_else(|| format!("Launch {outcome:?} ({:?})", receipt.reason)),
+            ))
+        },
+    }
+}
+
+// Keep the original Git directory open across reservation. Even if the entire
+// project is replaced at the same pathname its inode cannot be recycled.
+struct CheckoutIdentity(std::fs::File);
+
+impl CheckoutIdentity {
+    fn open(cwd: &std::path::Path) -> std::result::Result<Self, String> {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(["rev-parse", "--absolute-git-dir"])
+            .output()
+            .map_err(|e| format!("Identify checkout: {e}"))?;
+        if !output.status.success() {
+            return Err("Cannot identify selected checkout".into());
+        }
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::OsStr::from_bytes(
+            output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout),
+        );
+        std::fs::File::open(path)
+            .map(Self)
+            .map_err(|e| format!("Open selected Git directory: {e}"))
+    }
+
+    fn verify(&self, cwd: &std::path::Path) -> std::result::Result<(), String> {
+        use std::os::unix::fs::MetadataExt;
+        let identity = |file: &std::fs::File| {
+            file.metadata()
+                .map(|m| (m.dev(), m.ino()))
+                .map_err(|e| format!("Identify Git directory: {e}"))
+        };
+        if identity(&self.0)? != identity(&Self::open(cwd)?.0)? {
+            return Err("Selected checkout changed during pane reservation".into());
+        }
+        Ok(())
+    }
+}
+
 fn execute(
     op: Operation,
     client: ClientId,
@@ -615,6 +868,47 @@ fn execute(
     data: &DataAccess,
 ) -> Result<Value> {
     match op {
+        Operation::LaunchChoices { project } => {
+            let registry = project_data::projects::from_rows(
+                &agent_control::projects(data).map_err(|e| error("failed", e))?,
+            );
+            let checkouts = if let Some(name) = project {
+                let project = registry
+                    .get(&name)
+                    .ok_or_else(|| invalid("Project no longer exists"))?;
+                super::agent_launch::available_worktrees(std::path::Path::new(&project.root))
+                    .map_err(invalid)?
+                    .into_iter()
+                    .map(|w| json!({"path":w.path,"branch":w.branch}))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            Ok(
+                json!({"server_instance":yinz_bus::agent_launch::server_instance(),"providers":yinz_runtime::agent::launch::offered(), "projects":registry.keys().collect::<Vec<_>>(), "worktrees":checkouts}),
+            )
+        },
+        Operation::Launch {
+            submission_id,
+            kind,
+            project,
+            checkout,
+        } => launch(
+            submission_id,
+            kind,
+            project,
+            checkout,
+            client,
+            senders,
+            data,
+        ),
+        Operation::Destinations { agent } => {
+            manage(agent, WebManageAction::Destinations, client, senders)
+        },
+        Operation::Move { agent, destination } => {
+            manage(agent, WebManageAction::Move(destination), client, senders)
+        },
+        Operation::Close { agent } => manage(agent, WebManageAction::Close, client, senders),
         Operation::List {} => {
             let live = snapshot(senders)?;
             let sources = live
@@ -731,14 +1025,7 @@ fn execute(
                         "Focus unavailable. Refresh Agents and try again.",
                     )
                 })?
-                .map_err(|e| match e {
-                    WebFocusError::TargetChanged => {
-                        error("target_changed", "Agent disappeared or changed identity")
-                    },
-                    WebFocusError::NoTerminal => error("unavailable", "No terminal attached"),
-                    WebFocusError::Unavailable(message) => error("unavailable", message),
-                    WebFocusError::Failed(message) => error("failed", message),
-                })?;
+                .map_err(web_error)?;
             Ok(json!(true))
         },
         Operation::Prompt {

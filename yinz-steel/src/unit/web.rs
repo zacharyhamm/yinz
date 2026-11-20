@@ -164,7 +164,7 @@ fn hooks_pass_next_arguments_republish_and_preserve_wrappers_on_default_change()
     h.eval("(define routes-again (length %web-routes)) (define hooks-again (yinz-web-hook-names))");
     assert_eq!(h.commands.lock().unwrap().len(), commands);
     assert_eq!(h.value("routes"), h.value("routes-again"));
-    assert_eq!(h.value("routes"), 26);
+    assert_eq!(h.value("routes"), 18 * 2); // Each endpoint also registers a method fallback.
     assert_eq!(h.value("hooks"), h.value("hooks-again"));
 }
 

@@ -1,8 +1,8 @@
 //! Blocking native palette work. No Git operation or launch wait runs on screen.
 use super::agent_control;
 use super::agent_launch::{
-    branch_exists, prepare_agent, primary_worktree, spawn_agent_prepared, worktree_at, worktrees,
-    AgentSpawnError, PreparedAgent,
+    available_worktrees, branch_exists, prepare_agent, primary_worktree, selected_worktree,
+    spawn_agent_prepared, AgentSpawnError, PreparedAgent,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic;
@@ -421,23 +421,18 @@ pub(crate) fn execute(
                     path: None,
                 },
             )];
-            entries.extend(
-                worktrees(&root)?
-                    .into_iter()
-                    .filter(|w| w.path.is_dir())
-                    .map(|w| {
-                        choice(
-                            w.branch.unwrap_or_else(|| "Detached HEAD".into()),
-                            w.path.display().to_string(),
-                            Checkout {
-                                kind: kind.clone(),
+            entries.extend(available_worktrees(&root)?.into_iter().map(|w| {
+                choice(
+                    w.branch.unwrap_or_else(|| "Detached HEAD".into()),
+                    w.path.display().to_string(),
+                    Checkout {
+                        kind: kind.clone(),
 
-                                project: project.clone(),
-                                path: Some(w.path),
-                            },
-                        )
-                    }),
-            );
+                        project: project.clone(),
+                        path: Some(w.path),
+                    },
+                )
+            }));
             entries.push(choice(
                 "Change project…".into(),
                 String::new(),
@@ -491,37 +486,7 @@ pub(crate) fn execute(
             path,
             branch,
         } => {
-            let (root, registered) = project_root(project, data)?;
-            let cwd = if let Some(path) = path {
-                let selected = worktree_at(&root, path)?
-                    .ok_or("Selected worktree no longer belongs to this project")?;
-                if !selected.path.is_dir() {
-                    return Err("Selected worktree no longer exists".into());
-                }
-                selected.path
-            } else {
-                root
-            };
-            let spec = AgentSpawnSpec {
-                kind: Some(kind.clone()),
-                branch: branch.clone(),
-                base: branch.as_ref().map(|_| {
-                    let default = yinz_runtime::agent::launch::DEFAULT_BASE;
-                    if branch_exists(&cwd, default) {
-                        default.into()
-                    } else {
-                        // Worktree creation resolves HEAD in the primary checkout.
-                        "HEAD".into()
-                    }
-                }),
-                worktree_dir: registered
-                    .as_ref()
-                    .filter(|_| branch.is_some())
-                    .and_then(|p| p.worktree_dir.clone()),
-                // An explicitly selected checkout is reused exactly, including detached HEAD.
-                allow_outside_worktree: Some(path.is_some()),
-                ..Default::default()
-            };
+            let (spec, cwd) = project_launch(kind, project, path.as_deref(), branch.clone(), data)?;
             launch(request, senders, data, spec, |spec| {
                 prepare_agent(spec, cwd, None, data, &senders.session.current())
             })
@@ -572,6 +537,42 @@ pub(crate) fn execute(
     }
 }
 
+pub(super) fn project_launch(
+    kind: &str,
+    project: &AgentProject,
+    path: Option<&Path>,
+    branch: Option<String>,
+    data: &DataAccess,
+) -> Result<(AgentSpawnSpec, PathBuf), String> {
+    let (root, registered) = project_root(project, data)?;
+    let cwd = if let Some(path) = path {
+        selected_worktree(&root, path)?
+    } else {
+        root
+    };
+    let spec = AgentSpawnSpec {
+        kind: Some(kind.to_owned()),
+        branch: branch.clone(),
+        base: branch.as_ref().map(|_| {
+            let default = yinz_runtime::agent::launch::DEFAULT_BASE;
+            if branch_exists(&cwd, default) {
+                default.into()
+            } else {
+                // Worktree creation resolves HEAD in the primary checkout.
+                "HEAD".into()
+            }
+        }),
+        worktree_dir: registered
+            .as_ref()
+            .filter(|_| branch.is_some())
+            .and_then(|p| p.worktree_dir.clone()),
+        // An explicitly selected checkout is reused exactly, including detached HEAD.
+        allow_outside_worktree: Some(path.is_some()),
+        ..Default::default()
+    };
+    Ok((spec, cwd))
+}
+
 fn existing_command(
     kind: &str,
     cwd: &str,
@@ -600,7 +601,24 @@ fn launch(
     spec: AgentSpawnSpec,
     prepare: impl FnOnce(&mut AgentSpawnSpec) -> Result<PreparedAgent, AgentSpawnError>,
 ) -> Result<AgentReply, String> {
-    let still_valid = || current_source(request, senders).map(drop);
+    Ok(AgentReply::Launched(launch_prepared(
+        request.client,
+        senders,
+        data,
+        spec,
+        prepare,
+        || current_source(request, senders).map(drop),
+    )?))
+}
+
+pub(super) fn launch_prepared(
+    client: yinz_types::internal_ids::ClientId,
+    senders: &ThreadSenders,
+    data: &DataAccess,
+    spec: AgentSpawnSpec,
+    prepare: impl FnOnce(&mut AgentSpawnSpec) -> Result<PreparedAgent, AgentSpawnError>,
+    still_valid: impl Fn() -> Result<(), String>,
+) -> Result<yinz_types::agent::control::AgentResponse, String> {
     still_valid()?;
     let prepare = |spec: &mut AgentSpawnSpec| {
         let mut prepared = prepare(spec)?;
@@ -622,7 +640,7 @@ fn launch(
     let response = match spawn_agent_prepared(
         AgentPlacement::Automatic,
         spec,
-        request.client,
+        client,
         senders,
         data,
         prepare,
@@ -630,7 +648,7 @@ fn launch(
         Ok(spawned) => agent_control::register_spawned_agent(senders, spawned),
         Err(error) => error.into_response(),
     };
-    Ok(AgentReply::Launched(response))
+    Ok(response)
 }
 
 // A peer pane id is meaningful only inside its owning session. Send one guarded request

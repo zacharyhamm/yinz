@@ -1662,7 +1662,7 @@ fn screen_for_moving_a_pane_right() -> (Screen, MoveChannels) {
 }
 
 /// Fill `tab_id` until it has no room for a pane arriving as `placement`.
-fn fill_tab(screen: &mut Screen, tab_id: TabId, placement: ExtractedPanePlacement) {
+pub(super) fn fill_tab(screen: &mut Screen, tab_id: TabId, placement: ExtractedPanePlacement) {
     let floating = !matches!(placement, ExtractedPanePlacement::Tiled);
     for next in 100..200 {
         if !screen

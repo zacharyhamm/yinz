@@ -304,6 +304,17 @@
     %web-app-tools %web-app-reader)
   (%web-app-get "/api/usage" "usage" (hash "agent" %web-app-identity) (%web-app-require "agent") %web-app-same)
   (%web-app-get "/api/prompts" "prompts" (hash) %web-app-same %web-app-same)
+  (%web-app-get "/api/agent/launch-choices" "launch_choices" (hash "project" %web-app-identity) %web-app-same %web-app-same)
+  (%web-app-post "/api/agent/launch" "launch"
+    (hash "kind" %web-app-identity "project" %web-app-identity "checkout" (%web-app-keep hash?)
+      "submission_id" (%web-app-keep (lambda (v) (and (string? v) (regex-match? (regex "^[A-Za-z0-9._-]{1,128}$") v)))))
+    (%web-app-require "kind" "project" "checkout" "submission_id") %web-app-same)
+  (%web-app-post "/api/agent/destinations" "destinations" (hash "agent" %web-app-agent-ref)
+    (%web-app-require "agent") %web-app-same)
+  (%web-app-post "/api/agent/move" "move" (hash "agent" %web-app-agent-ref "destination" (%web-app-keep hash?))
+    (%web-app-require "agent" "destination") %web-app-same)
+  (%web-app-post "/api/agent/close" "close" (hash "agent" %web-app-agent-ref)
+    (%web-app-require "agent") %web-app-same)
   (%web-app-post "/api/agent/prompt" "prompt"
     (hash "agent" %web-app-agent-ref "submission_id" %web-app-submission "text" %web-app-prompt)
     (%web-app-require "agent" "submission_id" "text") %web-app-same)

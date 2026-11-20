@@ -120,8 +120,12 @@ fn repository() -> (tempfile::TempDir, DataAccess) {
             .define_entity(project_data::store::SHARED, "test", &definition, false)
             .unwrap();
     }
-    let mut project =
-        project_data::projects::validate("project", temp.path().to_str().unwrap()).unwrap();
+    register_project(&data, "project", temp.path());
+    (temp, data)
+}
+
+fn register_project(data: &DataAccess, name: &str, root: &Path) {
+    let mut project = project_data::projects::validate(name, root.to_str().unwrap()).unwrap();
     project.remote = Some("git@example.com:team/repository.git".into());
     project.worktree_dir = Some("custom-checkouts".into());
     data.plugin_data()
@@ -130,7 +134,6 @@ fn repository() -> (tempfile::TempDir, DataAccess) {
             &[project_data::projects::to_mutation(&project)],
         )
         .unwrap();
-    (temp, data)
 }
 
 fn git(root: &Path, args: &[&str]) -> String {
@@ -514,13 +517,20 @@ fn palette_projects_worktrees_creation_and_exact_external_detached_reuse() {
         .into_iter()
         .find(|c| c.label == "Detached HEAD")
         .unwrap();
-    let (reply, commands) = run(&request(repo.path(), selected.action), &data);
+    let selection = request(repo.path(), selected.action);
+    let (reply, commands) = run(&selection, &data);
     assert!(
         matches!(&reply, Ok(AgentReply::Launched(r)) if r.outcome == AgentOutcome::Ok),
         "{reply:?}"
     );
     assert_eq!(commands[0].cwd, Some(checkout.canonicalize().unwrap()));
     assert!(commands[0].args.iter().any(|a| a == "claude"));
+    // Git still lists the checkout after another repository takes its path.
+    fs::rename(&checkout, external.path().join("moved")).unwrap();
+    git(external.path(), &["init", "detached"]);
+    let (reply, commands) = run(&selection, &data);
+    assert!(reply.unwrap_err().contains("another repository"));
+    assert!(commands.is_empty());
     let mut create = request(
         repo.path(),
         AgentAction::Checkout {
@@ -574,6 +584,123 @@ fn palette_projects_worktrees_creation_and_exact_external_detached_reuse() {
     );
     assert!(reply.unwrap_err().contains("no longer exists"));
     assert!(commands.is_empty());
+}
+
+#[test]
+fn web_agent_launch_creates_the_first_worktree_for_a_bare_repository() {
+    use super::super::{launch_transaction::tests::Host, web_agents};
+    use serde_json::json;
+
+    let (seed, data) = repository();
+    let bare = tempfile::tempdir().unwrap();
+    git(
+        seed.path(),
+        &["clone", "--bare", ".", bare.path().to_str().unwrap()],
+    );
+    register_project(&data, "bare", bare.path());
+    let host = Host::new(false, true, false);
+    let request = |body: serde_json::Value| {
+        web_agents::handle(&body.to_string(), ClientId::new(1), &host.senders, &data)
+    };
+    let choices = request(json!({"op": "launch_choices", "project": "bare"}));
+    assert_eq!(choices["ok"]["worktrees"], json!([]), "{choices}");
+    let instance = choices["ok"]["server_instance"].as_str().unwrap();
+    let reply = request(json!({
+        "op": "launch", "submission_id": format!("{instance}.bare"), "kind": "codex",
+        "project": "bare", "checkout": {"type": "new", "branch": "topic"}
+    }));
+    assert_eq!(reply["ok"]["kind"], "codex", "{reply}");
+    let path = bare
+        .path()
+        .join("custom-checkouts/topic")
+        .canonicalize()
+        .unwrap();
+    let commands = host.commands.lock();
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].cwd.as_ref(), Some(&path));
+    assert_eq!(git(&path, &["branch", "--show-current"]).trim(), "topic");
+    assert_eq!(
+        git(&path, &["rev-parse", "HEAD"]),
+        git(seed.path(), &["rev-parse", "main"])
+    );
+}
+
+#[test]
+fn web_agent_launch_rechecks_the_repository_after_reserving_a_pane() {
+    use super::super::{launch_transaction::tests::Host, web_agents};
+    use std::time::Duration;
+    use yinz_bus::pty::PtyInstruction;
+
+    for new_worktree in [false, true] {
+        let (root, data) = repository();
+        let external = tempfile::tempdir().unwrap();
+        let path = external.path().join("detached");
+        let checkout = if new_worktree {
+            serde_json::json!({"type":"new","branch":"topic"})
+        } else {
+            git(
+                root.path(),
+                &["worktree", "add", "--detach", path.to_str().unwrap()],
+            );
+            serde_json::json!({"type":"existing","path":path})
+        };
+        let input = serde_json::json!({
+            "op":"launch", "kind":"codex", "project":"project", "checkout":checkout,
+            "submission_id":format!("{}.race", yinz_bus::agent_launch::server_instance())
+        })
+        .to_string();
+        let host = Host::new(false, true, false);
+        let (tx, rx) = unbounded();
+        let senders = ThreadSenders {
+            to_pty: Some(SenderWithContext::new(tx)),
+            ..host.senders.clone()
+        };
+        let request =
+            |senders: &ThreadSenders| web_agents::handle(&input, ClientId::new(1), senders, &data);
+        thread::scope(|scope| {
+            let pending = scope.spawn(move || request(&senders));
+            let (reserve, _) = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert!(matches!(reserve, PtyInstruction::SpawnTerminal(..)));
+            let observation = request(&host.senders);
+            assert_eq!(observation["error"]["code"], "unavailable", "{observation}");
+            if new_worktree {
+                fs::rename(root.path().join(".git"), root.path().join("old-git")).unwrap();
+                git(root.path(), &["init", "-b", "replacement"]);
+            } else {
+                fs::rename(&path, external.path().join("moved")).unwrap();
+                git(external.path(), &["init", "detached"]);
+            }
+            host.senders.send_to_pty(reserve).unwrap();
+            // Forward cleanup so the transaction can publish its terminal receipt.
+            while let Ok((instruction, _)) = rx.recv_timeout(Duration::from_secs(10)) {
+                assert!(matches!(instruction, PtyInstruction::ClosePane(..)));
+                host.senders.send_to_pty(instruction).unwrap();
+            }
+            let failure = pending.join().unwrap();
+            assert_eq!(failure["error"]["code"], "launch_failed", "{failure}");
+            let expected = if new_worktree {
+                "checkout changed"
+            } else {
+                "another repository"
+            };
+            assert!(
+                failure["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(expected),
+                "{failure}"
+            );
+            let gate = host
+                .senders
+                .launches
+                .gate(TerminalId::new(0))
+                .unwrap()
+                .snapshot();
+            assert!(gate.cleanup_confirmed && gate.layout_released);
+        });
+        assert!(host.commands.lock().is_empty());
+        assert!(!root.path().join("custom-checkouts/topic").exists());
+    }
 }
 
 #[test]
