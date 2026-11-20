@@ -101,7 +101,25 @@ impl Host {
     pub(crate) fn new(reject: bool, register: bool, cancel: bool) -> Self {
         Self::with_lost_reply(reject, register, cancel, LostLaunchReply::None)
     }
+    pub(crate) fn with_reservation(inspect: impl FnOnce() + Send + 'static) -> Self {
+        Self::setup(
+            false,
+            true,
+            false,
+            LostLaunchReply::None,
+            Some(Box::new(inspect)),
+        )
+    }
     fn with_lost_reply(reject: bool, register: bool, cancel: bool, lost: LostLaunchReply) -> Self {
+        Self::setup(reject, register, cancel, lost, None)
+    }
+    fn setup(
+        reject: bool,
+        register: bool,
+        cancel: bool,
+        lost: LostLaunchReply,
+        mut on_reservation: Option<Box<dyn FnOnce() + Send>>,
+    ) -> Self {
         use yinz_bus::{pty::PtyInstruction, route::AgentTabPlacement};
         use yinz_runtime::channels::{self, SenderWithContext};
         use yinz_types::{
@@ -217,6 +235,9 @@ impl Host {
                                 worker_region: None,
                                 placement_generation: terminal.get() as u64,
                             });
+                            if let Some(on_reservation) = on_reservation.take() {
+                                on_reservation();
+                            }
                             completion.set_affected_pane_id(PaneId::Terminal(terminal));
                             completion.complete_pane_placement(TabId::new(7));
                         }
@@ -490,7 +511,7 @@ impl Drop for Host {
         }
     }
 }
-fn repository() -> (tempfile::TempDir, DataAccess, LaunchRequest) {
+pub(crate) fn repository() -> (tempfile::TempDir, DataAccess, LaunchRequest) {
     let root = tempfile::tempdir().unwrap();
     for args in [
         vec!["init", "-b", "main"],

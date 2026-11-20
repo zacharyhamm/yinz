@@ -388,7 +388,7 @@ impl Screen {
             .with_context(|| format!("failed to sync scroll mode on focus for client {client_id}"))
     }
     // Whether the client's currently focused pane is scrolled.
-    pub(super) fn active_pane_is_scrolled(&mut self, client_id: ClientId) -> bool {
+    pub(super) fn active_pane_is_scrolled(&self, client_id: ClientId) -> bool {
         self.get_active_tab(client_id)
             .map(|tab| tab.active_pane_is_scrolled(client_id))
             .unwrap_or(false)

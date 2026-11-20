@@ -13,7 +13,9 @@
 //! [`plan`] turns it into the pair Yinz wants. Everything here is pure and tests on the
 //! host triple; the host call that acts on the plan is the server's `spawn_agent` handler.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
+
+use yinz_types::agent::provider::{provider, AgentProvider};
 
 use yinz_types::{
     agent::AgentSpawnSpec,
@@ -52,6 +54,37 @@ pub fn offered() -> Vec<String> {
                 .map(|provider| provider.kind),
         )
         .collect()
+}
+
+/// The provider chosen for a launch before reserving a pane.
+pub enum OfferedProvider {
+    Builtin(&'static str),
+    Custom(Arc<AgentProvider>),
+}
+
+impl OfferedProvider {
+    /// Resolve only canonical kinds offered in the chooser.
+    pub fn resolve(kind: &str) -> Option<Self> {
+        if let Some(&builtin) = OFFERED.iter().find(|&&builtin| builtin == kind) {
+            return Some(Self::Builtin(builtin));
+        }
+        provider(kind)
+            .filter(|provider| provider.kind == kind)
+            .map(Self::Custom)
+    }
+
+    /// Plan with the selected executable and argument grammar for the entire launch.
+    pub fn plan(&self, spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
+        let (kind, provider, program) = match self {
+            Self::Builtin(kind) => (*kind, None, builtin_binary_for(kind)),
+            Self::Custom(provider) => (
+                provider.kind.as_str(),
+                Some(provider.as_ref()),
+                provider.executable.as_str(),
+            ),
+        };
+        plan_command(spec, Some(kind), provider, program.to_owned(), false)
+    }
 }
 
 /// Fresh conversation in an existing pane's location, with target-appropriate hooks.
@@ -644,11 +677,8 @@ fn launch_environment(spec: &Spec, kind: Option<&str>) -> BTreeMap<String, Strin
 /// status row, agent hands them back to the model as the tool result — so they say what
 /// is missing rather than that something is.
 pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
-    let target = PaneTarget::Local;
     let kind = kind_for_spec(spec);
-    let provider = kind
-        .as_deref()
-        .and_then(yinz_types::agent::provider::provider);
+    let provider = kind.as_deref().and_then(provider);
     let executable = trimmed(&spec.command);
     if let (Some(explicit), Some(executable)) = (trimmed(&spec.kind), executable)
         && let Some(detected) = yinz_types::agent::kind_from_program_and_args(
@@ -683,16 +713,29 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
             &spec.args,
         )
         .is_some();
-    if matches!(kind.as_deref(), Some("codex" | "muse"))
-        && spec.hooks.unwrap_or(true)
-        && indirect_agent
-    {
+    plan_command(
+        spec,
+        kind.as_deref(),
+        provider.as_deref(),
+        program,
+        indirect_agent,
+    )
+}
+
+fn plan_command(
+    spec: &Spec,
+    kind: Option<&str>,
+    provider: Option<&AgentProvider>,
+    program: String,
+    indirect_agent: bool,
+) -> Result<(CommandToRun, GitCheckout), String> {
+    if matches!(kind, Some("codex" | "muse")) && spec.hooks.unwrap_or(true) && indirect_agent {
         return Err("managed Codex and Muse require a directly executable agent, not an interpreter command; point command at the agent's executable shim".to_owned());
     }
 
-    let (leading, flags) = match &provider {
+    let (leading, flags) = match provider {
         Some(provider) => provider_args(provider, spec)?,
-        None => builtin_shape_args(kind.as_deref(), spec)?,
+        None => builtin_shape_args(kind, spec)?,
     };
     if indirect_agent && !leading.is_empty() {
         return Err("resume for an interpreter or wrapper command requires a directly executable agent shim; alternatively, put the complete resume invocation in args and omit resume".to_owned());
@@ -703,10 +746,10 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
     // Settled from the flags alone, before the prompt joins them: a prompt whose text reads
     // like a flag is still a prompt, and what the agent was asked to do says nothing about
     // how it was asked to run.
-    let env = launch_environment(spec, kind.as_deref());
-    args.extend(prompt_args(kind.as_deref(), provider.as_deref(), spec)?);
+    let env = launch_environment(spec, kind);
+    args.extend(prompt_args(kind, provider, spec)?);
 
-    let (program, args) = match kind.as_deref() {
+    let (program, args) = match kind {
         Some("codex") if spec.hooks.unwrap_or(true) => wrap_codex(program, args),
         Some("codex") => wrap_agent_launcher("codex-untracked", program, args),
         Some("claude") => wrap_agent_launcher("claude", program, args),
@@ -728,7 +771,7 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
     let command = CommandToRun {
         path: path.into(),
         args,
-        target,
+        target: PaneTarget::Local,
         ..Default::default()
     };
 

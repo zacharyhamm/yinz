@@ -185,7 +185,7 @@ impl Screen {
             },
             WebManageAction::Close => {
                 if !self.core.tabs[&source].explicit_close_is_single_pane(pane)
-                    || self.settlement_after_close_risks_other_terminals(source, pane)
+                    || self.settlement_after_close_risks_other_panes(source, pane)
                 {
                     return Err(WebFocusError::Unavailable(
                         "Closing this agent would also close other panes.".into(),
@@ -197,7 +197,10 @@ impl Screen {
         };
         for &client in self.core.connected_clients.borrow().iter() {
             if !self.core.watcher_clients.contains_key(&client) {
-                let previous = self.active_pane_id(client);
+                let previous = (
+                    self.active_pane_id(client),
+                    self.active_pane_is_scrolled(client),
+                );
                 self.core
                     .focus_before_web_mutation
                     .entry(client)
@@ -226,14 +229,24 @@ impl Screen {
                 self.core.focus_before_web_mutation.insert(client, previous);
                 continue;
             }
-            if let Some(current) = tab.get_active_pane_id(client)
-                && (previous != Some(current)
+            let (previous_pane, was_scrolled) = previous;
+            let active_pane = tab.get_active_pane_id(client);
+            let focus_changed = previous_pane != active_pane;
+            let scroll_changed = was_scrolled != tab.active_pane_is_scrolled(client);
+            if let Some(current) = active_pane
+                && (focus_changed
                     || self.nested.dimmed_clients.contains(&client)
                         != self.should_route_keys_to_pane(client, current))
             {
-                self.report_key_passthrough_state(client, previous.unwrap_or(current), current);
+                self.report_key_passthrough_state(
+                    client,
+                    previous_pane.unwrap_or(current),
+                    current,
+                );
             }
-            self.sync_scroll_mode_on_focus(client).non_fatal();
+            if focus_changed || scroll_changed {
+                self.sync_scroll_mode_on_focus(client).non_fatal();
+            }
         }
     }
 
@@ -340,6 +353,7 @@ impl Screen {
             if let Some(extracted) = self.extract_pane_for_transfer(source, owner, false) {
                 self.accept_transferred_panes(vec![(extracted, placement)], target, false);
             }
+            self.refresh_agent_worktrees();
             self.log_and_report_session_state().map_err(web_failed)
         } else {
             self.break_multiple_panes_to_tab_with_id(vec![owner], target, false, client)

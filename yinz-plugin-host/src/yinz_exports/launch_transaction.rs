@@ -17,6 +17,7 @@ use yinz_types::{
         control::{validate_submission_id, AgentOutcome, AgentResponse},
         launch::*,
     },
+    command::CommandToRun,
     internal_ids::DataRevision,
     plugin_data::*,
 };
@@ -301,6 +302,12 @@ type Preparation<'a> = Box<
         ) -> Result<super::agent_launch::PreparedAgent, AgentSpawnError>
         + 'a,
 >;
+#[derive(Default)]
+pub(super) struct LaunchPreflight<'a> {
+    pub(super) placeholder: Option<CommandToRun>,
+    pub(super) prepare: Option<Preparation<'a>>,
+}
+
 pub(super) fn launch_with_prepare(
     id: String,
     request: LaunchRequest,
@@ -321,12 +328,17 @@ pub(super) fn launch_with_prepare(
         opening_prompt,
         origin,
         title,
-        || Ok(prepare),
+        |_| {
+            Ok(LaunchPreflight {
+                prepare,
+                ..Default::default()
+            })
+        },
     )
 }
 
 /// Only a newly recorded intent runs preflight. Its preparation callback can
-/// carry the validated project identity across the wait for pane placement.
+/// carry the validated project identity and provider across the wait for pane placement.
 pub(super) fn launch_with_preflight<'a>(
     id: String,
     request: LaunchRequest,
@@ -336,7 +348,9 @@ pub(super) fn launch_with_preflight<'a>(
     opening_prompt: OpeningPromptPolicy,
     origin: Option<yinz_types::data::OriginatingPlugin>,
     title: Option<String>,
-    preflight: impl FnOnce() -> Result<Option<Preparation<'a>>, AgentSpawnError>,
+    preflight: impl FnOnce(
+        &yinz_types::agent::AgentSpawnSpec,
+    ) -> Result<LaunchPreflight<'a>, AgentSpawnError>,
 ) -> AgentResponse {
     let digest = match request.digest() {
         Ok(digest) => digest,
@@ -442,7 +456,12 @@ pub(super) fn launch_with_preflight<'a>(
             .insert(id.clone(), receipt.clone());
         Ok(())
     };
-    let result = preflight().and_then(|prepare| {
+    let preflight = preflight(&request.spec);
+    let result = preflight.and_then(|preflight| {
+        let LaunchPreflight {
+            placeholder,
+            prepare,
+        } = preflight;
         spawn_agent_prepared_with_gate(
             request.placement,
             request.spec,
@@ -452,6 +471,7 @@ pub(super) fn launch_with_preflight<'a>(
             opening_prompt,
             origin,
             title,
+            placeholder,
             |spec| {
                 publish(LaunchPhase::Prepares, None)?;
                 if let Some(prepare) = prepare {

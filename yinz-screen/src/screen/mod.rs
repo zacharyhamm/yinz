@@ -816,8 +816,8 @@ struct ScreenCore {
     connected_clients: Rc<RefCell<AttachedClients>>,
     /// The indices of this [`Screen`]'s active [`Tab`]s.
     active_tab_ids: BTreeMap<ClientId, TabId>,
-    /// Focus before a web move or close, until tab settlement lands the client.
-    focus_before_web_mutation: HashMap<ClientId, Option<PaneId>>,
+    /// Active pane and its scroll state before a web move or close, until the client settles.
+    focus_before_web_mutation: HashMap<ClientId, (Option<PaneId>, bool)>,
     client_sizes: HashMap<ClientId, Size>,
     /// Last sequence on a legacy attachment that toggled back to ANSI.
     paused_legacy_sequences: HashMap<ClientId, u64>,

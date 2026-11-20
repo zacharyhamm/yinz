@@ -18,6 +18,200 @@ fn data() -> (tempfile::TempDir, DataAccess) {
     }
     (directory, data)
 }
+fn registered_launch_project() -> (tempfile::TempDir, DataAccess) {
+    use crate::yinz_exports::launch_transaction::tests::repository;
+    use project_data::{projects, store};
+
+    let (root, data, _) = repository();
+    for def in store::shared_defs() {
+        data.plugin_data()
+            .define_entity(store::SHARED, "test", &def, false)
+            .unwrap();
+    }
+    let project = projects::validate("launch-project", root.path().to_str().unwrap()).unwrap();
+    data.plugin_data()
+        .apply(store::SHARED, &[projects::to_mutation(&project)])
+        .unwrap();
+    (root, data)
+}
+
+fn launch_request(kind: &str) -> String {
+    json!({
+        "op": "launch",
+        "submission_id": format!("{}.web-launch", yinz_bus::agent_launch::server_instance()),
+        "project": "launch-project",
+        "kind": kind,
+        "checkout": {"type":"new", "branch":"agent-work"},
+    })
+    .to_string()
+}
+
+#[test]
+fn web_agents_launch_pins_the_provider_at_reservation_and_replays_the_receipt() {
+    use crate::yinz_exports::launch_transaction::tests::Host;
+    use yinz_types::agent::provider::{self, AgentLaunch, AgentProvider};
+
+    const OWNER: u64 = 781;
+    const KIND: &str = "web-race-provider";
+    for replace in [true, false] {
+        let (_root, data) = registered_launch_project();
+        let original = AgentProvider {
+            kind: KIND.into(),
+            executable: "/opt/yinz-test/original-agent".into(),
+            aliases: vec!["web-race-alias".into()],
+            launch: AgentLaunch {
+                args: vec!["--original".into(), "original value".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        provider::register(OWNER, original.clone()).unwrap();
+        let host = Host::with_reservation(move || {
+            // PTY has admitted the reservation and has yet to acknowledge it to the host.
+            if replace {
+                provider::register(
+                    OWNER,
+                    AgentProvider {
+                        executable: "/opt/yinz-test/replacement-agent".into(),
+                        launch: AgentLaunch {
+                            args: vec!["--replacement".into()],
+                            ..Default::default()
+                        },
+                        ..original
+                    },
+                )
+                .unwrap();
+            } else {
+                assert!(provider::unregister_owner(OWNER));
+            }
+        });
+
+        let request = launch_request(KIND);
+        let first = handle(&request, ClientId::new(1), &host.senders, &data);
+        assert_eq!(first["ok"]["kind"], KIND, "{first}");
+        assert_eq!(first["ok"]["pane_id"], "terminal_0", "{first}");
+        let retry = handle(&request, ClientId::new(1), &host.senders, &data);
+        assert_eq!(retry, first);
+        let commands = host.commands.lock();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].command.to_str(), Some("env"));
+        assert_eq!(
+            commands[0].args,
+            [
+                &format!("{}=1", yinz_types::agent::AGENT_PANE_ENV),
+                "/opt/yinz-test/original-agent",
+                "--original",
+                "original value",
+            ]
+        );
+        assert_eq!(host.senders.launches.gates.lock().unwrap().len(), 1);
+        assert_eq!(provider::unregister_owner(OWNER), replace);
+    }
+}
+
+#[test]
+fn web_agents_launch_rejects_unknown_kinds_before_reserving_and_starts_builtins() {
+    use crate::yinz_exports::launch_transaction::tests::Host;
+
+    let (_root, data) = registered_launch_project();
+    let host = Host::new(false, true, false);
+    let rejected = handle(
+        &launch_request("web-unknown-provider"),
+        ClientId::new(1),
+        &host.senders,
+        &data,
+    );
+    assert_eq!(
+        rejected["error"],
+        json!({"code":"invalid", "message":"Choose an offered provider"})
+    );
+    assert!(host.senders.launches.gates.lock().unwrap().is_empty());
+    assert!(host.commands.lock().is_empty());
+
+    let (_root, data) = registered_launch_project();
+    let host = Host::new(false, true, false);
+    let started = handle(
+        &launch_request("cursor"),
+        ClientId::new(1),
+        &host.senders,
+        &data,
+    );
+    assert_eq!(started["ok"]["kind"], "cursor", "{started}");
+    assert_eq!(started["ok"]["pane_id"], "terminal_0", "{started}");
+    let commands = host.commands.lock();
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].command.to_str(), Some("env"));
+    assert_eq!(
+        commands[0].args,
+        [
+            &format!("{}=1", yinz_types::agent::AGENT_PANE_ENV),
+            "cursor-agent"
+        ]
+    );
+}
+
+#[test]
+fn web_agents_launch_status_rejects_reused_pane_with_same_conversation() {
+    use crate::yinz_exports::launch_transaction::{status, tests::Host};
+    use yinz_bus::agent_launch::{server_instance, LaunchGate};
+    use yinz_types::agent::launch::{LaunchOutcome, WorkerDisposition};
+
+    let (_root, data) = registered_launch_project();
+    let host = Host::new(false, true, false);
+    let session = "launch-session";
+    host.senders.session.set(session.into());
+    let client = ClientId::new(1);
+    let request = launch_request("codex");
+    let submission = serde_json::from_str::<Value>(&request).unwrap();
+    let submission_id = submission["submission_id"].as_str().unwrap();
+    let started = handle(&request, client, &host.senders, &data);
+    let receipt = status(submission_id, &host.senders, &data).launch.unwrap();
+    let pane_id = receipt.spawned.unwrap().pane_id;
+    let PaneId::Terminal(terminal) = pane_id else {
+        panic!("expected a launched terminal, got {pane_id}");
+    };
+    assert_eq!(
+        started["ok"],
+        json!({"session":session, "pane_id":pane_id.to_string(), "kind":"codex"})
+    );
+
+    let mut row = live(session, AgentState::Idle, true);
+    row.pane.id = pane_id;
+    row.id = format!("live:{session}:{}", terminal.get());
+    let agent = json!({"id":row.id, "kind":"codex", "session_id":"conversation"});
+    let verification = json!({"op":"launch_status", "submission_id":submission_id, "agent":agent});
+    let verify = || {
+        with_snapshot_from(
+            verification.clone(),
+            vec![row.clone()],
+            &data,
+            host.senders.clone(),
+        )
+    };
+    assert_eq!(
+        verify()["ok"],
+        json!({"session":session, "pane_id":pane_id.to_string(), "agent":agent})
+    );
+
+    // A different launch reuses the pane and resumes the same conversation.
+    let replacement = Arc::new(LaunchGate::new(
+        format!("{}.replacement", server_instance()),
+        false,
+    ));
+    replacement.allocated(terminal);
+    host.senders
+        .launches
+        .gates
+        .lock()
+        .unwrap()
+        .insert(terminal, replacement);
+    let original = status(submission_id, &host.senders, &data).launch.unwrap();
+    assert_eq!(original.outcome, LaunchOutcome::Started);
+    assert_eq!(original.disposition, WorkerDisposition::Available);
+    assert_eq!(original.spawned.unwrap().pane_id, pane_id);
+    assert_eq!(verify()["error"]["code"], "target_changed");
+}
+
 fn live(session: &str, state: AgentState, current_session: bool) -> WebLiveAgent {
     let id = format!("live:{session}:7");
     let pane = PaneInfo {
@@ -75,11 +269,16 @@ fn live(session: &str, state: AgentState, current_session: bool) -> WebLiveAgent
     }
 }
 fn with_snapshot(input: Value, agents: Vec<WebLiveAgent>, data: &DataAccess) -> Value {
+    with_snapshot_from(input, agents, data, ThreadSenders::default())
+}
+fn with_snapshot_from(
+    input: Value,
+    agents: Vec<WebLiveAgent>,
+    data: &DataAccess,
+    mut senders: ThreadSenders,
+) -> Value {
     let (tx, rx) = channels::unbounded();
-    let senders = ThreadSenders {
-        to_screen: Some(SenderWithContext::new(tx)),
-        ..Default::default()
-    };
+    senders.to_screen = Some(SenderWithContext::new(tx));
     thread::scope(|scope| {
         scope.spawn(move || {
             let (ScreenInstruction::WebLiveAgents { reply }, _) =

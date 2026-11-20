@@ -158,13 +158,25 @@ fn hooks_pass_next_arguments_republish_and_preserve_wrappers_on_default_change()
         .as_str()
         .unwrap()
         .contains(r#"<p class="wrapped">w</p><div id="app">"#));
-    h.eval("(define routes (length %web-routes)) (define hooks (yinz-web-hook-names))");
+    h.eval("(define routes %web-routes) (define route-count (length routes)) (define hooks (yinz-web-hook-names))");
+    h.eval(
+        r#"
+      (define launch-status-registered
+        (ormap (lambda (route)
+          (and (equal? (vector-ref route 0) "POST")
+               (equal? (vector-ref route 1) "/api/agent/launch-status")))
+          %web-routes))
+    "#,
+    );
+    assert_eq!(h.value("launch-status-registered"), true);
     let commands = h.commands.lock().unwrap().len();
     h.eval(r#"(yinz-web-agent-app (hash "title" "replacement"))"#);
-    h.eval("(define routes-again (length %web-routes)) (define hooks-again (yinz-web-hook-names))");
+    h.eval(
+        "(define same-routes (eq? routes %web-routes)) (define hooks-again (yinz-web-hook-names))",
+    );
     assert_eq!(h.commands.lock().unwrap().len(), commands);
-    assert_eq!(h.value("routes"), h.value("routes-again"));
-    assert_eq!(h.value("routes"), 18 * 2); // Each endpoint also registers a method fallback.
+    assert_eq!(h.value("same-routes"), true);
+    assert_eq!(h.value("route-count"), 38); // Each endpoint also registers a method fallback.
     assert_eq!(h.value("hooks"), h.value("hooks-again"));
 }
 

@@ -415,6 +415,71 @@ fn same_worktree_markers_follow_resolved_agents_across_tab_moves() {
 }
 
 #[test]
+fn same_worktree_marker_follows_an_in_place_agent_moved_from_the_web() {
+    use super::agent_control::{web_agents_reference, web_agents_snapshot, web_tab_destination};
+    use yinz_bus::web::WebManageAction;
+
+    let repo = repository();
+    let mut scene = Scene::new();
+    scene.add(
+        2,
+        NewPanePlacement::InPlace {
+            pane_id_to_replace: Some(pane(1)),
+            close_replaced_pane: false,
+            borderless: None,
+        },
+    );
+    scene.add(4, NewPanePlacement::default());
+    scene.report(
+        2,
+        Some(AgentInfo {
+            session_id: Some("moved-conversation".into()),
+            ..agent(Some(repo.path()))
+        }),
+    );
+    scene.report(4, Some(agent(Some(repo.path()))));
+    scene.focus(2, CLIENT);
+    scene.wait_for_title("👯 [4]");
+    assert!(scene.screen.core.tabs[&TAB]
+        .agent_worktrees
+        .contains_key(&pane(2)));
+
+    let destination = TabId::new(1);
+    new_tab(&mut scene.screen, 3, destination);
+    scene
+        .screen
+        .core
+        .tabs
+        .get_mut(&destination)
+        .unwrap()
+        .set_pane_frames(PaneFrameStyle::Full);
+    scene.report(3, Some(agent(Some(repo.path()))));
+    let agents = web_agents_snapshot(&mut scene.screen);
+    let moved = web_agents_reference(agents.iter().find(|row| row.pane.id == pane(2)).unwrap());
+    let target = web_tab_destination(&scene.screen, destination);
+    scene
+        .screen
+        .web_manage_agent(
+            &moved,
+            WebManageAction::Move(target),
+            CLIENT,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap();
+
+    let source = &scene.screen.core.tabs[&TAB];
+    assert!(source.has_non_suppressed_pane_with_pid(&pane(1)));
+    assert!(!source.agent_worktrees.contains_key(&pane(2)));
+    let roots = &scene.screen.core.tabs[&destination].agent_worktrees;
+    assert!(roots.contains_key(&pane(2)));
+    assert_eq!(roots.get(&pane(2)), roots.get(&pane(3)));
+    assert_eq!(scene.screen.active_pane_id(CLIENT), Some(pane(3)));
+    scene.render();
+    let text = scene.text(CLIENT);
+    assert!(text.contains("👯 [2]"), "{text}");
+}
+
+#[test]
 fn same_worktree_surviving_overlay_is_published_in_its_destination() {
     let repo = repository();
     let nested = repo.path().join("overlay");

@@ -2460,6 +2460,29 @@ impl Tab {
     pub fn get_suppressed_panes(&self) -> impl Iterator<Item = (&PaneId, &SuppressedPane)> {
         self.suppressed_panes.iter()
     }
+    /// Include panes that leave with a stand-in, following every restoration link behind it.
+    pub fn include_suppressed_behind(
+        &self,
+        panes: &mut HashSet<PaneId>,
+        follows_stand_in: impl Fn(PaneId) -> bool,
+    ) {
+        loop {
+            let previous_count = panes.len();
+            for (&id, suppressed) in &self.suppressed_panes {
+                if follows_stand_in(id)
+                    && suppressed
+                        .restored_by
+                        .is_some_and(|stand_in| panes.contains(&stand_in.pane_id))
+                {
+                    panes.insert(id);
+                }
+            }
+            if panes.len() == previous_count {
+                break;
+            }
+        }
+    }
+
     fn get_selectable_tiled_panes(&self) -> impl Iterator<Item = (&PaneId, &Box<dyn Pane>)> {
         self.get_tiled_panes().filter(|(_, p)| p.selectable())
     }
@@ -2582,6 +2605,12 @@ impl Tab {
                             .any(|pane| pane == id)));
         }
         self.has_selectable_panes_except(id)
+    }
+
+    /// The suppressed pane that takes over the slot after a single-pane close.
+    pub fn pane_revealed_by_single_close(&self, id: PaneId) -> Option<PaneId> {
+        self.stands_in_for_a_pane(id)
+            .or_else(|| self.stack_list_promote_target(id))
     }
 
     fn selectable_pane_ids(&self) -> impl Iterator<Item = PaneId> + '_ {

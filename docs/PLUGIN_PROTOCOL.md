@@ -939,6 +939,7 @@ handler that survives terminal detach. Operations reject unknown fields. No nati
 | `list` | none | `{session, now_ms, counts:{waiting,busy,idle}, agents:[row]}` |
 | `launch_choices` | optional registered `project` | `{server_instance, providers, projects, worktrees:[{branch,path}]}` with a null branch for a detached checkout |
 | `launch` | `submission_id`, `kind`, `project`, `checkout` | `{session, pane_id, kind}` |
+| `launch_status` | `submission_id`, `agent:AgentRef` | `{session, pane_id, agent}` |
 | `destinations` | `agent:AgentRef` | `{groups:[{id,name,tabs:[{id,name,incarnation}]}], current_group, current_tab, allow_new_group}` |
 | `move` | `agent:AgentRef`, `destination` | `{"ok":true}` |
 | `close` | `agent:AgentRef` | `{"ok":true}` |
@@ -958,8 +959,14 @@ handler that survives terminal detach. Operations reject unknown fields. No nati
 Launch accepts `{type:"existing",path}` or `{type:"new",branch}`. Use the advertised
 `server_instance`, a period, and a fresh random nonce as the submission ID. After
 an uncertain response, repeat the same body to retrieve its launch receipt.
-Reusing the ID with different choices returns `launch_conflict`. Read the list
-until the returned session, pane and provider have a complete local reference.
+Reusing the ID with different choices returns `launch_conflict`. Poll `list`
+for a complete local `AgentRef` whose row matches the receipt's `session`,
+`pane_id` and provider (`kind`). Send `{submission_id, agent}` to `launch_status`
+using the original submission ID. Open the conversation only after verification
+returns the expected `{session, pane_id, agent}`. A stale receipt or changed
+target returns `target_changed`. To recover, repeat the saved `launch`
+submission with the same ID and body.
+
 For move, send `{type:"tab",group,tab,incarnation}`, `{type:"new_tab",group,name}`
 or `{type:"new_group",name,tab_name}`. Names are optional. The incarnation
 must match the advertised tab even if the numeric ID has since been reused.

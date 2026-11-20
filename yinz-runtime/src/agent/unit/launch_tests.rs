@@ -1,6 +1,60 @@
 use super::{display_command, plan, Spec};
 
 #[test]
+fn offered_provider_keeps_its_executable_options_and_prompt_template() {
+    use super::OfferedProvider;
+    use yinz_types::agent::provider::{with_snapshot, AgentLaunch, AgentProvider};
+
+    let original = AgentProvider {
+        kind: "custom-test".into(),
+        executable: "/opt/original-agent".into(),
+        aliases: vec!["custom-alias".into()],
+        launch: AgentLaunch {
+            args: vec!["--original".into()],
+            model_args: vec!["--model={value}".into()],
+            prompt_args: vec!["--prompt".into(), "{value}".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let selection = with_snapshot(std::slice::from_ref(&original), || {
+        assert!(OfferedProvider::resolve("custom-alias").is_none());
+        assert!(OfferedProvider::resolve("antigravity").is_none());
+        OfferedProvider::resolve("custom-test").unwrap()
+    });
+    let spec = Spec {
+        kind: Some("custom-test".into()),
+        model: Some("chosen".into()),
+        prompt: Some("one argument".into()),
+        ..Default::default()
+    };
+    let replacement = AgentProvider {
+        executable: "/opt/replacement-agent".into(),
+        launch: AgentLaunch {
+            model_args: vec!["--different-model".into(), "{value}".into()],
+            prompt_args: vec!["{value}".into()],
+            ..Default::default()
+        },
+        ..original
+    };
+    with_snapshot(&[replacement], || {
+        let (command, _) = selection.plan(&spec).unwrap();
+        assert_eq!(command.path.to_str(), Some("/opt/original-agent"));
+        assert_eq!(
+            command.args,
+            ["--original", "--model=chosen", "--prompt", "one argument"]
+        );
+
+        let (current, _) = plan(&spec).unwrap();
+        assert_eq!(current.path.to_str(), Some("/opt/replacement-agent"));
+        assert_eq!(
+            current.args,
+            ["--different-model", "chosen", "one argument"]
+        );
+    });
+}
+
+#[test]
 fn custom_executables_keep_their_path_and_receive_their_agent_launch_support() {
     for kind in [None, Some(" CoDeX ")] {
         let spec = Spec {

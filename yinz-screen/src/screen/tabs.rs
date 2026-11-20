@@ -17,7 +17,8 @@ use yinz_types::data::CommandOrPlugin;
 use yinz_types::geometry::Direction;
 use yinz_types::input::command::{RunCommand, TerminalAction};
 use yinz_types::input::layout::{
-    FloatingPaneLayout, SwapFloatingLayout, SwapTiledLayout, TabLayoutInfo, TiledPaneLayout,
+    FloatingPaneLayout, Run, RunPluginLocation, SwapFloatingLayout, SwapTiledLayout, TabLayoutInfo,
+    TiledPaneLayout,
 };
 use {yinz_types::data::Event, yinz_types::data::ModeInfo};
 
@@ -31,6 +32,40 @@ struct TabSettlement {
     usable: Vec<TabId>,
     another_destination: bool,
     doomed: Vec<TabId>,
+}
+
+fn panes_closed_with_surviving_tab(
+    tab: &Tab,
+    excluded: Option<PaneId>,
+    revealed: Option<PaneId>,
+    transferred: &HashSet<PaneId>,
+) -> HashSet<PaneId> {
+    let stays = |id| Some(id) != excluded && !transferred.contains(&id);
+    let mut closing = tab
+        .get_all_pane_ids()
+        .into_iter()
+        .filter(|id| {
+            stays(*id)
+                && (Some(*id) == revealed
+                    || tab.has_non_suppressed_pane_with_pid(id)
+                    || tab.pane_is_stack_list_member(id))
+        })
+        .collect();
+    tab.include_suppressed_behind(&mut closing, stays);
+    closing
+}
+
+fn is_layout_chrome(tab: &Tab, id: PaneId) -> bool {
+    tab.get_pane_with_id(id).is_some_and(|pane| {
+        !pane.selectable()
+            && matches!(
+                pane.invoked_with(),
+                Some(Run::Plugin(plugin)) if plugin.get_run_plugin().is_some_and(|plugin| {
+                    matches!(plugin.location, RunPluginLocation::Yinz(tag)
+                        if matches!(tag.as_str(), "tab-bar" | "status-bar" | "compact-bar"))
+                })
+            )
+    })
 }
 
 pub(super) enum TabSwitchPaneFocus {
@@ -510,7 +545,7 @@ impl Screen {
     /// An overlay belongs to a `Tab` but is drawn over the whole session surface, and agent
     /// keeps a session's worth of conversation in one. Closing the tab it happens to be sitting
     /// on is not a request to throw that away - so `close_tab_by_id` extracts them
-    /// ([`Tab::extract_overlay_panes`]) and they land here.
+    /// and they land here.
     ///
     /// **Where they land is where the user lands.** `client` is the lowest-numbered client of
     /// the tab that closed, and `move_clients_from_closed_tab` has already written its
@@ -531,8 +566,8 @@ impl Screen {
     /// A panel that had a client's keys **keeps them**: `close_tab_by_id` extracts it while that
     /// client is still on the closing tab, so the keyboard goes where the user goes. Only a panel
     /// carried after its client switched tabs - agent following a tab switch itself - arrives
-    /// unfocused (`OverlayPanes::take_container`). Modals never reach here - see
-    /// [`Tab::extract_overlay_panes`] for why they close with their tab instead.
+    /// unfocused (`OverlayPanes::take_container`). A modal normally closes with its tab because
+    /// re-homing it unfocused would block keyboard input to the other overlays.
     fn move_overlay_panes_from_closed_tab(
         &mut self,
         overlay_panes: Vec<crate::tab::OverlayTransfer>,
@@ -1072,20 +1107,127 @@ impl Screen {
     }
 
     /// Background requests must also account for hidden work that settlement could reap.
-    pub(super) fn settlement_after_close_risks_other_terminals(
+    pub(super) fn settlement_after_close_risks_other_panes(
         &self,
         source: TabId,
         pane: PaneId,
     ) -> bool {
-        self.tab_settlement(Some((source, pane)))
-            .doomed
-            .into_iter()
-            .any(|tab| {
-                self.core.tabs[&tab]
-                    .get_all_pane_ids()
-                    .into_iter()
-                    .any(|id| id != pane && matches!(id, PaneId::Terminal(_)))
+        let TabSettlement { usable, doomed, .. } = self.tab_settlement(Some((source, pane)));
+        // A pending layout or a replacement that has yet to open cannot guarantee a destination.
+        let has_destination = self
+            .core
+            .tabs
+            .values()
+            .any(|tab| !tab.is_pending() && !doomed.contains(&tab.id));
+        doomed.into_iter().any(|id| {
+            let tab = &self.core.tabs[&id];
+            let panes = tab.get_all_pane_ids();
+            if panes
+                .iter()
+                .any(|id| *id != pane && matches!(id, PaneId::Terminal(_)))
+            {
+                return true;
+            }
+            let plugins_to_protect = || {
+                panes.iter().copied().filter(|id| {
+                    *id != pane && matches!(id, PaneId::Plugin(_)) && !is_layout_chrome(tab, *id)
+                })
+            };
+            if !has_destination {
+                return plugins_to_protect().next().is_some();
+            }
+            let excluded = (source == id).then_some(pane);
+            let revealed = excluded.and_then(|pane| tab.pane_revealed_by_single_close(pane));
+            let transferred =
+                self.panes_transferred_at_teardown(tab, excluded, revealed, !usable.is_empty());
+            let closing = panes_closed_with_surviving_tab(tab, excluded, revealed, &transferred);
+            plugins_to_protect().any(|id| closing.contains(&id))
+        })
+    }
+
+    fn guarded_panes(&self, preserve_guards: bool) -> impl Iterator<Item = PaneId> + '_ {
+        self.core
+            .quit_notices
+            .iter()
+            .filter_map(move |(&plugin, notice)| {
+                (preserve_guards && notice.guard).then_some(PaneId::Plugin(plugin))
             })
+    }
+
+    /// Dismissible overlays follow the user. Modals stay with their tab unless they guard quit.
+    fn overlays_to_transfer(
+        &self,
+        tab: &Tab,
+        preserve_guards: bool,
+        original_slot: impl Fn(PaneId) -> PaneId,
+        pane_in_slot: impl Fn(PaneId) -> Option<PaneId>,
+    ) -> Vec<PaneId> {
+        let mut overlays: Vec<_> = tab
+            .get_all_pane_ids()
+            .into_iter()
+            .filter(|&id| {
+                tab.overlay_placement_for(id)
+                    .is_some_and(|placement| !placement.is_modal())
+            })
+            .filter_map(&pane_in_slot)
+            .collect();
+        overlays.extend(
+            self.guarded_panes(preserve_guards)
+                .filter(|&id| {
+                    tab.overlay_placement_for(original_slot(id))
+                        .is_some_and(|placement| placement.is_modal())
+                })
+                .filter(|&id| pane_in_slot(original_slot(id)) == Some(id)),
+        );
+        overlays
+    }
+
+    /// Project the layout after the single-pane close and the guard parking done by teardown.
+    fn panes_transferred_at_teardown(
+        &self,
+        tab: &Tab,
+        excluded: Option<PaneId>,
+        revealed: Option<PaneId>,
+        preserve_guards: bool,
+    ) -> HashSet<PaneId> {
+        let original_slot = |id| {
+            if Some(id) == revealed {
+                excluded.unwrap_or(id)
+            } else {
+                id
+            }
+        };
+        let parked: HashSet<_> = self
+            .guarded_panes(preserve_guards)
+            .filter(|&id| {
+                Some(id) != excluded && tab.overlay_placement_for(original_slot(id)).is_none()
+            })
+            .map(|id| tab.pane_owner_for_extraction(id))
+            .filter(|id| {
+                tab.has_pane_with_pid(id) && tab.multipane_info(original_slot(*id)).is_none()
+            })
+            .collect();
+        let pane_in_slot = |id| {
+            let pane = if Some(id) == excluded { revealed? } else { id };
+            (!parked.contains(&pane)).then_some(pane)
+        };
+        let mut transferred: HashSet<_> = self
+            .overlays_to_transfer(tab, preserve_guards, original_slot, pane_in_slot)
+            .into_iter()
+            .flat_map(|id| {
+                tab.multipane_info(original_slot(id))
+                    .map(|container| container.children.map(Some))
+                    .unwrap_or([Some(original_slot(id)), None])
+                    .into_iter()
+                    .flatten()
+                    .filter_map(pane_in_slot)
+            })
+            .collect();
+        tab.include_overlay_dependents(&mut transferred, |id| {
+            Some(id) != excluded && Some(id) != revealed && !parked.contains(&id)
+        });
+        transferred.extend(parked);
+        transferred
     }
 
     /// Settle tab lifetime after each instruction. Pending layouts are never destinations.
@@ -1313,12 +1455,9 @@ impl Screen {
         self.core.deferred_tab_closes.remove(&tab_id);
         self.warp.cancel_tab(tab_id);
         // Overlays keep their placement through the existing overlay relocation path.
-        if preserve_guards {
-            for (&plugin_id, notice) in &self.core.quit_notices {
-                let id = PaneId::Plugin(plugin_id);
-                if notice.guard && tab_to_close.overlay_placement_for(id).is_none() {
-                    tab_to_close.suppress_pane(id, None);
-                }
+        for id in self.guarded_panes(preserve_guards) {
+            if !tab_to_close.pane_is_overlay(id) {
+                tab_to_close.suppress_pane(id, None);
             }
         }
         let hidden_live: Vec<_> = tab_to_close
@@ -1345,44 +1484,21 @@ impl Screen {
         // Only when a tab survives: with none left the session is ending anyway (see the
         // `Render(None)` below), and an overlay extracted with nowhere to go would be a plugin
         // left running with no pane and nothing told about it.
-        let mut overlay_panes = match self.core.tabs.is_empty() {
-            true => vec![],
-            false => tab_to_close.extract_overlay_panes(),
+        let overlay_panes: Vec<_> = if self.core.tabs.is_empty() {
+            vec![]
+        } else {
+            self.overlays_to_transfer(&tab_to_close, preserve_guards, |id| id, Some)
+                .into_iter()
+                .filter_map(|id| tab_to_close.take_overlay_container(id))
+                .collect()
         };
-        if preserve_guards {
-            for (&plugin_id, notice) in &self.core.quit_notices {
-                let id = PaneId::Plugin(plugin_id);
-                if notice.guard
-                    && tab_to_close.pane_is_overlay(id)
-                    && let Some(container) = tab_to_close.take_overlay_container(id)
-                {
-                    overlay_panes.push(container);
-                }
-            }
-        }
-        // Close each chain whose stand-in stays in this tab. A hidden stand-in moves
-        // with every pane behind it, preserving their restoration links. With no
-        // destination left, every pane closes, including parked panes and overlays.
-        let mut suppressed_panes = tab_to_close.extract_suppressed_panes();
-        let mut closing: HashSet<_> = if self.core.tabs.is_empty() {
+        // With no destination left, every pane closes, including parked panes and overlays.
+        let closing: HashSet<_> = if self.core.tabs.is_empty() {
             pane_ids.iter().copied().collect()
         } else {
-            tab_to_close.get_all_pane_ids().into_iter().collect()
+            panes_closed_with_surviving_tab(&tab_to_close, None, None, &HashSet::new())
         };
-        loop {
-            let previous_count = closing.len();
-            for (id, suppressed) in &suppressed_panes {
-                if suppressed
-                    .restored_by
-                    .is_some_and(|stand_in| closing.contains(&stand_in.pane_id))
-                {
-                    closing.insert(*id);
-                }
-            }
-            if closing.len() == previous_count {
-                break;
-            }
-        }
+        let mut suppressed_panes = tab_to_close.extract_suppressed_panes();
         suppressed_panes.retain(|id, _| !closing.contains(id));
         pane_ids.retain(|id| closing.contains(id));
         let suppressed_respawns = suppressed_panes

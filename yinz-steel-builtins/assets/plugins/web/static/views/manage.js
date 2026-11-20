@@ -116,7 +116,10 @@ function StartSheet({ env, onClose, onLaunched }) {
     }
     const r = await env.api.post('/api/agent/launch', body);
     if (r.ok && (typeof r.data?.pane_id !== 'string' || typeof r.data.session !== 'string' || r.data.kind !== body.kind)) return { kind: 'malformed' };
-    if (r.ok) onLaunched({ ...r.data, body, expiresAt: Date.now() + 60000 });
+    if (r.ok) {
+      const expiresAt = body.kind === 'muse' ? null : Date.now() + 60000;
+      onLaunched({ ...r.data, body, expiresAt });
+    }
     return r;
   }
   function forget() {
@@ -158,6 +161,8 @@ function LaunchWait({ env, launched, data, onDone }) {
   const entry = useRef(window.history.state?.yinzIndex);
   const verifying = useRef(false);
   const candidate = useRef(null);
+  const { expiresAt } = launched;
+  const expired = () => expiresAt !== null && Date.now() >= expiresAt;
 
   function stop(message) {
     visit.abort();
@@ -165,9 +170,13 @@ function LaunchWait({ env, launched, data, onDone }) {
     if (message) env.toast(message);
   }
   useLayoutEffect(() => {
-    const timer = setTimeout(() => stop('Still waiting for the conversation. Reopen Start agent to check this launch.'),
-      launched.expiresAt - Date.now());
-    return () => { clearTimeout(timer); visit.abort(); };
+    const timer = expiresAt === null ? null : setTimeout(
+      () => stop('Still waiting for the conversation. Reopen Start agent to check this launch.'),
+      expiresAt - Date.now());
+    return () => {
+      if (timer !== null) clearTimeout(timer);
+      visit.abort();
+    };
   }, []);
 
   useLayoutEffect(() => {
@@ -176,14 +185,14 @@ function LaunchWait({ env, launched, data, onDone }) {
     const row = rows.length === 1 ? rows[0] : null;
     const agent = row && controlTarget(row, data.session);
     candidate.current = agent?.kind === launched.kind ? { agent, href: detailHash(cardDetail(row, data.session)) } : null;
-    if (!candidate.current || verifying.current || visit.signal.aborted || Date.now() >= launched.expiresAt) return;
+    if (!candidate.current || verifying.current || visit.signal.aborted || expired()) return;
     const href = candidate.current.href;
     verifying.current = true;
     env.api.post('/api/agent/launch-status', { submission_id: launched.body.submission_id, agent },
       { signal: visit.signal }).then((reply) => {
       verifying.current = false;
       if (visit.signal.aborted || window.history.state?.yinzIndex !== entry.current
-        || Date.now() >= launched.expiresAt || env.api.stale(reply)) return;
+        || expired() || env.api.stale(reply)) return;
       if (reply.code === 'target_changed') {
         stop(describeError(reply) + ' Reopen Start agent to check the saved launch.');
         return;
@@ -201,7 +210,9 @@ function LaunchWait({ env, launched, data, onDone }) {
   }, [data]);
 
   return html`<${Banner} tone="info" actions=${html`<button type="button" class="link-button" onClick=${() => stop()}>Dismiss</button>`}>
-    Waiting for ${launched.kind} in ${launched.pane_id} to report its conversation…<//>`;
+    ${launched.kind === 'muse'
+      ? `Send Muse its first prompt in the Yinz terminal ${launched.pane_id} (session ${launched.session}).`
+      : `Waiting for ${launched.kind} in ${launched.pane_id} to report its conversation…`}<//>`;
 }
 
 export function AgentLauncher({ env, data, refresh }) {

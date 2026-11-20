@@ -13,7 +13,6 @@ use crate::ui::damage::CellRect;
 use crate::ui::pane_contents_and_ui::frame_color;
 use crate::ui::pane_contents_and_ui::FrameColorState;
 use crate::ClientId;
-use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::time::Instant;
 use yinz_panes::pane::Pane;
@@ -63,34 +62,45 @@ impl Tab {
             self.overlay_panes.retain_tab_for(child);
         }
     }
-    pub fn take_overlay_container(&mut self, pane_id: PaneId) -> Option<OverlayTransfer> {
-        let container = self.overlay_panes.take_container(pane_id)?;
-        let mut members: HashSet<_> = container.pane_ids().collect();
-        let mut pane_tabs = BTreeMap::new();
+    /// Overlay transfer carries pane tabs and restoration chains along with the visible members.
+    pub fn include_overlay_dependents(
+        &self,
+        members: &mut HashSet<PaneId>,
+        follows_stand_in: impl Fn(PaneId) -> bool,
+    ) {
         loop {
             let previous = members.len();
-            let tab_ids: Vec<_> = members
+            let tab_members: Vec<_> = members
                 .iter()
                 .filter_map(|pane| self.pane_tabs_of(*pane))
+                .flat_map(|id| {
+                    self.pane_tabs[&id]
+                        .info
+                        .tabs
+                        .iter()
+                        .filter_map(|slot| slot.pane_id())
+                })
                 .collect();
-            for id in tab_ids {
-                if let Some(tabs) = self.pane_tabs.remove(&id) {
-                    members.extend(tabs.info.tabs.iter().filter_map(|slot| slot.pane_id()));
-                    pane_tabs.insert(id, tabs);
-                }
-            }
-            for (id, pane) in &self.suppressed_panes {
-                if pane
-                    .restored_by
-                    .is_some_and(|stand_in| members.contains(&stand_in.pane_id))
-                {
-                    members.insert(*id);
-                }
-            }
+            members.extend(tab_members);
+            self.include_suppressed_behind(members, &follows_stand_in);
             if previous == members.len() {
                 break;
             }
         }
+    }
+
+    pub fn take_overlay_container(&mut self, pane_id: PaneId) -> Option<OverlayTransfer> {
+        let container = self.overlay_panes.take_container(pane_id)?;
+        let mut members: HashSet<_> = container.pane_ids().collect();
+        self.include_overlay_dependents(&mut members, |_| true);
+        let tab_ids: HashSet<_> = members
+            .iter()
+            .filter_map(|pane| self.pane_tabs_of(*pane))
+            .collect();
+        let pane_tabs = tab_ids
+            .into_iter()
+            .filter_map(|id| self.pane_tabs.remove(&id).map(|tabs| (id, tabs)))
+            .collect();
         let suppressed = self
             .suppressed_panes
             .extract_if(|id, _| members.contains(id))

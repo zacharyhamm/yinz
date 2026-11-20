@@ -191,7 +191,25 @@ pub(super) fn prepare_agent(
     data_access: &DataAccess,
     session_name: &SessionName,
 ) -> Result<PreparedAgent, AgentSpawnError> {
-    let (mut command, mut checkout) = yinz_runtime::agent::launch::plan(spec)?;
+    prepare_agent_with_plan(
+        spec,
+        source,
+        cwd,
+        data_access,
+        session_name,
+        yinz_runtime::agent::launch::plan,
+    )
+}
+
+pub(super) fn prepare_agent_with_plan(
+    spec: &AgentSpawnSpec,
+    source: PathBuf,
+    cwd: Option<PathBuf>,
+    data_access: &DataAccess,
+    session_name: &SessionName,
+    plan: impl Fn(&AgentSpawnSpec) -> Result<(CommandToRun, GitCheckout), String>,
+) -> Result<PreparedAgent, AgentSpawnError> {
+    let (mut command, mut checkout) = plan(spec)?;
     let bubblewrap = if spec.bubblewrap {
         if !command.target.is_local() {
             return Err("Bubblewrap cannot be combined with SSH".into());
@@ -269,7 +287,7 @@ pub(super) fn prepare_agent(
     };
     if prepared.reused_worktree && spec.reuse_prompt.is_some() {
         command = prepared
-            .agent_command(spec)
+            .agent_command(spec, plan)
             .map_err(|error| AgentSpawnError::failed(error, Some(resources.clone())))?;
         yinz_runtime::agent::pi::prepare_command(&mut command)
             .map_err(|error| AgentSpawnError::failed(error, Some(resources.clone())))?;
@@ -411,6 +429,7 @@ pub(super) fn spawn_agent_prepared_with_gate(
     opening_prompt: OpeningPromptPolicy,
     origin: Option<yinz_types::data::OriginatingPlugin>,
     title: Option<String>,
+    placeholder: Option<CommandToRun>,
     prepare: impl FnOnce(&mut AgentSpawnSpec) -> Result<PreparedAgent, AgentSpawnError>,
     before_start: impl FnOnce(
         &AgentLaunchResources,
@@ -428,7 +447,10 @@ pub(super) fn spawn_agent_prepared_with_gate(
     placement.validate()?;
     // Pure provider validation precedes allocating anything; Git and environment preparation
     // follow an acknowledged placeholder. A held command never executes a provider.
-    let (planned, _) = yinz_runtime::agent::launch::plan(&spec)?;
+    let planned = match placeholder {
+        Some(command) => command,
+        None => yinz_runtime::agent::launch::plan(&spec)?.0,
+    };
     let start_suppressed = matches!(placement, AgentPlacement::Suppressed(_));
     let destination = if matches!(placement, AgentPlacement::Automatic) {
         None
@@ -861,14 +883,18 @@ pub(super) struct PreparedCheckout {
 }
 
 impl PreparedCheckout {
-    pub(super) fn agent_command(&self, spec: &AgentSpawnSpec) -> Result<CommandToRun, String> {
+    pub(super) fn agent_command(
+        &self,
+        spec: &AgentSpawnSpec,
+        plan: impl FnOnce(&AgentSpawnSpec) -> Result<(CommandToRun, GitCheckout), String>,
+    ) -> Result<CommandToRun, String> {
         let mut spec = spec.clone();
         if self.reused_worktree
             && let Some(prompt) = spec.reuse_prompt.take()
         {
             spec.prompt = Some(prompt);
         }
-        yinz_runtime::agent::launch::plan(&spec).map(|(command, _)| command)
+        plan(&spec).map(|(command, _)| command)
     }
 }
 

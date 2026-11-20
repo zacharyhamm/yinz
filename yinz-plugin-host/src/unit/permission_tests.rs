@@ -2381,6 +2381,8 @@ fn a_worktree_that_already_exists_at_the_path_is_reused_as_it_stands() {
 
 #[test]
 fn triage_prompts_follow_each_actual_worktree_outcome() {
+    use yinz_runtime::agent::launch::plan;
+
     let first = repository();
     let second = repository();
     let mut spec = AgentSpawnSpec {
@@ -2393,7 +2395,7 @@ fn triage_prompts_follow_each_actual_worktree_outcome() {
         ..Default::default()
     };
     let prepare = |root: &std::path::Path, spec: &AgentSpawnSpec| {
-        let (_, checkout) = yinz_runtime::agent::launch::plan(spec).unwrap();
+        let (_, checkout) = plan(spec).unwrap();
         prepare_git_checkout_in(root.to_owned(), checkout, true, WorktreeGuard::Required).unwrap()
     };
     // A branch without a checkout is still a new worktree.
@@ -2401,7 +2403,7 @@ fn triage_prompts_follow_each_actual_worktree_outcome() {
     let new = prepare(first.path(), &spec);
     assert!(!new.reused_worktree);
     assert_eq!(
-        new.agent_command(&spec).unwrap().args.last().unwrap(),
+        new.agent_command(&spec, plan).unwrap().args.last().unwrap(),
         "triage issue 2180"
     );
     let reused = prepare(first.path(), &spec);
@@ -2409,11 +2411,21 @@ fn triage_prompts_follow_each_actual_worktree_outcome() {
     assert!(reused.reused_worktree);
     assert!(!other_new.reused_worktree);
     assert_eq!(
-        reused.agent_command(&spec).unwrap().args.last().unwrap(),
+        reused
+            .agent_command(&spec, plan)
+            .unwrap()
+            .args
+            .last()
+            .unwrap(),
         "resume issue 2180"
     );
     assert_eq!(
-        other_new.agent_command(&spec).unwrap().args.last().unwrap(),
+        other_new
+            .agent_command(&spec, plan)
+            .unwrap()
+            .args
+            .last()
+            .unwrap(),
         "triage issue 2180"
     );
     // Branch lookup at a different path is reuse too.
@@ -2422,12 +2434,22 @@ fn triage_prompts_follow_each_actual_worktree_outcome() {
     assert!(moved.reused_worktree);
     assert_eq!(moved.path, reused.path);
     assert_eq!(
-        moved.agent_command(&spec).unwrap().args.last().unwrap(),
+        moved
+            .agent_command(&spec, plan)
+            .unwrap()
+            .args
+            .last()
+            .unwrap(),
         "resume issue 2180"
     );
     spec.reuse_prompt = None;
     assert_eq!(
-        moved.agent_command(&spec).unwrap().args.last().unwrap(),
+        moved
+            .agent_command(&spec, plan)
+            .unwrap()
+            .args
+            .last()
+            .unwrap(),
         "triage issue 2180"
     );
 }

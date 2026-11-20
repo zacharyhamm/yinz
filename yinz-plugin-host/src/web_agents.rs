@@ -744,7 +744,11 @@ fn launch(
     senders: &ThreadSenders,
     data: &DataAccess,
 ) -> Result<Value> {
-    use super::agent_launch::{prepare_agent, OpeningPromptPolicy};
+    use super::{
+        agent_launch::{prepare_agent_with_plan, OpeningPromptPolicy},
+        launch_transaction::LaunchPreflight,
+    };
+    use yinz_runtime::agent::launch::OfferedProvider;
     use yinz_types::agent::{
         control::AgentPlacement,
         launch::{LaunchOutcome, LaunchRequest},
@@ -780,21 +784,30 @@ fn launch(
         data,
         OpeningPromptPolicy::Reject,
         None,
-        None,
-        || {
-            if !yinz_runtime::agent::launch::offered().contains(&kind) {
-                return Err("Choose an offered provider".into());
-            }
+        Some(kind.clone()),
+        |spec| {
+            let provider = OfferedProvider::resolve(&kind).ok_or("Choose an offered provider")?;
+            let (placeholder, _) = provider.plan(spec)?;
             let (_, cwd) = resolve()?;
             let original = CheckoutIdentity::open(&cwd)?;
-            Ok(Some(Box::new(move |spec| {
-                let (current, cwd) = resolve()?;
-                original.verify(&cwd)?;
-                *spec = current;
-                spec.env
-                    .insert(yinz_types::agent::AGENT_PANE_ENV.into(), "1".into());
-                prepare_agent(spec, cwd, None, data, &senders.session.current())
-            })))
+            Ok(LaunchPreflight {
+                placeholder: Some(placeholder),
+                prepare: Some(Box::new(move |spec| {
+                    let (current, cwd) = resolve()?;
+                    original.verify(&cwd)?;
+                    *spec = current;
+                    spec.env
+                        .insert(yinz_types::agent::AGENT_PANE_ENV.into(), "1".into());
+                    prepare_agent_with_plan(
+                        spec,
+                        cwd,
+                        None,
+                        data,
+                        &senders.session.current(),
+                        |spec| provider.plan(spec),
+                    )
+                })),
+            })
         },
     );
     let receipt = response

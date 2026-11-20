@@ -1202,6 +1202,7 @@ as JSON, with only the listed `*html` fields added.
 | `GET /api/prompts` | none | `prompts` | none |
 | `GET /api/agent/launch-choices` | optional `project` | `launch_choices` | none |
 | `POST /api/agent/launch` | `submission_id`, `kind`, `project`, `checkout` | `launch` | none |
+| `POST /api/agent/launch-status` | `submission_id`, `agent` | `launch_status` | none |
 | `POST /api/agent/destinations` | `agent` | `destinations` | none |
 | `POST /api/agent/move` | `agent`, `destination` | `move` | none |
 | `POST /api/agent/close` | `agent` | `close` | none |
@@ -1211,6 +1212,14 @@ as JSON, with only the listed `*html` fields added.
 | `POST /api/agent/term` | `agent`, optional `after` cursor | `terminal` | none |
 | `POST /api/agent/term/input` | `agent`, `data` (base64 keyboard bytes, `{"mouse":"<base64>"}` for mouse reports, or a key such as `{"bare_key":"Enter","key_modifiers":["Shift"]}`) | `terminal_input` | none |
 | `POST /api/agent/keys` | `agent`, `keys` (1–8 native key names) | `keys` | none |
+
+After launch, poll `GET /api/agents` for a complete local `AgentRef` whose row
+matches the receipt's `session`, `pane_id` and provider (`kind`). Send
+`{submission_id, agent}` to `POST /api/agent/launch-status` using the original
+submission ID. Open the conversation only after verification returns the
+expected `{session, pane_id, agent}`. A stale receipt or changed target returns
+HTTP `409` with `target_changed`. To recover, resend the saved body to
+`POST /api/agent/launch` with the same submission ID.
 
 Prompt, keys and screen return the native `{response:AgentResponse}` with
 HTTP `200` for every outcome, including `timed_out`, `target_changed` and

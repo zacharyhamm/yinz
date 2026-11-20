@@ -532,7 +532,11 @@ fn web_agents_call(
 }
 /// Owner-scoped retained history the native views read back. Its session ID matches the live
 /// identity `report_codex_session_start` reports.
-fn seed_retained_run(dir: &Path) -> agent_proto::agents::AgentRun {
+fn seed_retained_run(
+    dir: &Path,
+    session_name: &str,
+    pane_id: u32,
+) -> agent_proto::agents::AgentRun {
     use agent_proto::{
         agents::{rows, AgentRun, RunEntry, RunEntryKind, RunOutcome},
         store,
@@ -546,8 +550,8 @@ fn seed_retained_run(dir: &Path) -> agent_proto::agents::AgentRun {
     }
     let run = AgentRun {
         id: "codex:web-native".into(),
-        pane_id: 1,
-        yinz_session_name: "retained-session".into(),
+        pane_id,
+        yinz_session_name: session_name.into(),
         host_id: yinz_runtime::host_identity::host_id(),
         origin_run_id: None,
         previous_run_id: Some("previous".into()),
@@ -636,7 +640,7 @@ fn web_agents_configured_steel_native_list_history_guarded_screen_and_detached_f
     yinz_integration_tests::test_env::init();
     let dir = private_data();
     set(dir.path());
-    let run = seed_retained_run(dir.path());
+    let run = seed_retained_run(dir.path(), "retained-session", 1);
     let plugin_dir = tempfile::tempdir().unwrap();
     let source = plugin_dir.path().join("web-agents.scm");
     std::fs::write(&source, WEB_AGENTS_HANDLER).unwrap();
@@ -898,7 +902,7 @@ fn web_builtin_production_http() {
     yinz_integration_tests::test_env::init();
     let dir = private_data();
     set(dir.path());
-    let run = seed_retained_run(dir.path());
+    let run = seed_retained_run(dir.path(), "retained-session", 1);
     let records = Records::new(dir.path().to_owned());
     let mut session = TestRunner::new(TERMINAL_SIZE)
         .with_data_dir(dir.path().to_owned())
@@ -1381,6 +1385,7 @@ fn web_builtin_production_http() {
 
 #[test]
 fn web_builtin_manage_agent_routes() {
+    use agent_proto::{projects, store};
     use serde_json::json;
     use yinz_integration_tests::test_env::write_git_repository;
 
@@ -1400,16 +1405,14 @@ fn web_builtin_manage_agent_routes() {
     git(&["worktree", "add", "--detach", detached.to_str().unwrap()]);
     let dir = private_data();
     set(dir.path());
-    let run = seed_retained_run(dir.path());
-    let mut project =
-        agent_proto::projects::validate("web-project", root.to_str().unwrap()).unwrap();
+    let mut project = projects::validate("web-project", root.to_str().unwrap()).unwrap();
     project.worktree_dir = Some("branches".into());
-    yinz_storage::data_access::DataAccess::sqlite(dir.path())
-        .plugin_data()
-        .apply(
-            agent_proto::store::SHARED,
-            &[agent_proto::projects::to_mutation(&project)],
-        )
+    let data = yinz_storage::data_access::DataAccess::sqlite(dir.path());
+    data.plugin_data()
+        .define_entity(store::SHARED, "test", &store::project_def(), false)
+        .unwrap();
+    data.plugin_data()
+        .apply(store::SHARED, &[projects::to_mutation(&project)])
         .unwrap();
     let records = Records::new(dir.path().to_owned());
     let mut session = TestRunner::new(TERMINAL_SIZE)
@@ -1453,6 +1456,11 @@ fn web_builtin_manage_agent_routes() {
     assert_eq!(
         launched["pane_id"],
         yinz_types::pane_id::PaneId::Terminal(agent.terminal_id()).to_string()
+    );
+    let run = seed_retained_run(
+        dir.path(),
+        session.session_name(),
+        agent.terminal_id().get(),
     );
     assert_eq!(agent.run_command().cwd, Some(detached.clone()));
     assert_eq!(
@@ -1505,6 +1513,16 @@ fn web_builtin_manage_agent_routes() {
         .find(|a| a["pane_id"] == launched["pane_id"])
         .unwrap();
     let reference = &row["ref"];
+    assert_eq!(row["run"], run.id, "{row}");
+    let history = |agent: Option<&str>| {
+        let mut params = vec![("run", run.id.as_str())];
+        params.extend(agent.map(|id| ("agent", id)));
+        call_ok(addr, "GET", &query("/api/history", &params), &token, "")
+    };
+    let live_history = history(Some(row["id"].as_str().unwrap()));
+    assert_eq!(live_history["run"], run.id, "{live_history}");
+    assert_eq!(&live_history["live"]["ref"], reference, "{live_history}");
+    assert_eq!(live_history["events"][0]["markdown"], run.entries[0].text);
     let target = json!({"agent":reference}).to_string();
     let status = |submission_id: &str, agent: &serde_json::Value| {
         call(
@@ -1557,22 +1575,14 @@ fn web_builtin_manage_agent_routes() {
         .as_array()
         .unwrap()
         .iter()
-        .all(|a| &a["ref"] != reference));
+        .all(|a| a["current_session"] != true || a["pane_id"] != launched["pane_id"]));
     assert_eq!(
         call(addr, "POST", "/api/agent/close", Some(&token), &target).error_code(409),
         "target_changed"
     );
-    let history = call_ok(
-        addr,
-        "GET",
-        &query("/api/history", &[("run", &run.id)]),
-        &token,
-        "",
-    );
-    assert_eq!(
-        history["events"][0]["markdown"],
-        "Native web retained conversation"
-    );
+    let archived = history(None);
+    assert_eq!(archived["run"], run.id, "{archived}");
+    assert_eq!(archived["events"][0]["markdown"], run.entries[0].text);
     session.quit();
 }
 

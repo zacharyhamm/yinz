@@ -307,6 +307,7 @@ function exactKeys(value, keys) {
     && Object.keys(value).length === keys.length && keys.every((k) => Object.hasOwn(value, k));
 }
 const validRef = (a) => exactKeys(a, ['id', 'kind', 'session_id']) && ['id', 'kind', 'session_id'].every((k) => typeof a[k] === 'string' && a[k].trim());
+const launchPanes = new Map([['codex', '7'], ['muse', 'terminal_7']]);
 
 function agentRoute(fx, entry) {
   const { path: p, body } = entry;
@@ -315,7 +316,7 @@ function agentRoute(fx, entry) {
     return [400, { error: { code: 'invalid', message: 'Invalid request body' } }];
   };
   if (p === '/api/agent/launch-choices' && entry.method === 'GET') {
-    return [200, { server_instance: fx.launchInstance, providers: ['codex'], projects: ['Review'], worktrees: entry.query.has('project')
+    return [200, { server_instance: fx.launchInstance, providers: [...launchPanes.keys()], projects: ['Review'], worktrees: entry.query.has('project')
       ? [{ path: '/review', branch: null }] : [] }];
   }
   if (entry.method !== 'POST') return [405, { error: { code: 'method_not_allowed' } }];
@@ -324,8 +325,9 @@ function agentRoute(fx, entry) {
     if (!body.submission_id.startsWith(fx.launchInstance + '.')) {
       return [503, { error: { code: 'unavailable', message: 'Launch outcome unknown after restart.' } }];
     }
-    if (body?.kind !== 'codex' || body.project !== 'Review' || body.checkout?.path !== '/review') return invalid('checkout');
-    return [200, { session: 'browser-check', pane_id: '7', kind: 'codex' }];
+    const paneId = launchPanes.get(body.kind);
+    if (!paneId || body.project !== 'Review' || body.checkout?.path !== '/review') return invalid('checkout');
+    return [200, { session: 'browser-check', pane_id: paneId, kind: body.kind }];
   }
   if (p === '/api/agent/launch-status') {
     if (!exactKeys(body, ['submission_id', 'agent']) || !validRef(body.agent)) return invalid('launch identity');
@@ -333,7 +335,7 @@ function agentRoute(fx, entry) {
     if (!original || !body.submission_id.startsWith(fx.launchInstance + '.')) {
       return [409, { error: { code: 'target_changed', message: 'The server restarted after this launch.' } }];
     }
-    const agent = agents(fx).agents.find((a) => a.current_session && a.pane_id === '7'
+    const agent = agents(fx).agents.find((a) => a.current_session && a.pane_id === launchPanes.get(original.kind)
       && a.ref.id === body.agent.id && a.ref.session_id === body.agent.session_id && a.ref.kind === original.kind);
     if (!agent) return [409, { error: { code: 'target_changed', message: 'The original agent changed.' } }];
     return [200, { session: agent.session, pane_id: agent.pane_id, agent: agent.ref }];
@@ -2559,6 +2561,56 @@ async function manageLaunchWait(open, mode) {
   check(!hashOf(page).startsWith('#/a/') && (mode === 'leave' || fx.count('/api/history') === 0), 'unverified conversation opened');
 }
 
+async function manageMuseLaunch(open) {
+  const { page, fx, context } = await open({ viewport: { width: 320, height: 640 }, clock: true });
+  const launch = '/api/agent/launch';
+  const verification = '/api/agent/launch-status';
+  const key = 'yinz.web.v1.pending-launch';
+  const savedLaunch = () => page.evaluate((key) => sessionStorage.getItem(key), key);
+  const muse = { id: AGENT_ID, kind: 'muse', session_id: 'muse-conversation' };
+  const pane = launchPanes.get('muse');
+  fx.rows = [row(fx, AGENT_ID, 'idle', {
+    title: 'Muse', provider: 'muse', pane_id: pane, ref: { ...muse, session_id: '' },
+    run: null, can_prompt: false,
+  })];
+  await openList(page);
+  const list = groupRoute('browser-check', 0);
+  await until('Muse agent group route', () => hashOf(page) === list);
+  const banner = page.locator('.banner');
+  const guidance = banner.getByText(`Send Muse its first prompt in the Yinz terminal ${pane} (session browser-check).`, { exact: true });
+  const sheet = page.locator('#sheet-start');
+  await page.locator('#start-agent').click();
+  await sheet.getByLabel('Provider').selectOption('muse');
+  await sheet.getByLabel('Project').selectOption('Review');
+  await sheet.getByLabel('Worktree').selectOption('/review');
+  await sheet.getByRole('button', { name: 'Start agent', exact: true }).click();
+  await guidance.waitFor();
+  const saved = await savedLaunch();
+  check(saved && fx.count(verification) === 0, 'incomplete Muse identity started verification or lost the receipt');
+
+  await banner.getByRole('button', { name: 'Dismiss' }).click();
+  check(await savedLaunch() === saved, 'dismissing Muse guidance lost the receipt');
+  await page.locator('#start-agent').click();
+  await sheet.getByRole('button', { name: 'Check launch' }).click();
+  await guidance.waitFor();
+  check(fx.count(launch) === 2 && fx.bodies(launch).every((body) => JSON.stringify(body) === saved),
+    'checking Muse did not reuse the original submission');
+  await context.clock.fastForward(60001);
+  check(await guidance.isVisible() && await savedLaunch() === saved && fx.count(verification) === 0,
+    'Muse guidance expired or checked an incomplete identity');
+
+  await holdResponse(page, verification);
+  fx.rows = [row(fx, AGENT_ID, 'idle', { title: 'Muse', provider: 'muse', pane_id: pane, ref: muse })];
+  await waitForHeldResponse(page);
+  const [request] = fx.bodies(verification);
+  check(fx.count(verification) === 1 && request.submission_id === JSON.parse(saved).submission_id
+    && JSON.stringify(request.agent) === JSON.stringify(muse), 'verification used a different Muse launch or identity');
+  check(hashOf(page) === list && await savedLaunch() === saved, 'Muse opened or cleared the receipt before verification');
+  await releaseResponse(page);
+  await until('verified Muse conversation opens', () => hashOf(page) === detailHash() && exists(page, '#overflow-button'));
+  check(await savedLaunch() === null, 'verified Muse handoff kept the receipt');
+}
+
 async function manageLateClose(open) {
   const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
   const other = 'live:dev:8';
@@ -3762,6 +3814,7 @@ async function main() {
   for (const mode of ['restart', 'dismiss', 'expiry', 'leave', 'candidate']) {
     await scenario(`Agents start, move and close on a phone: launch ${mode}`, (open) => manageLaunchWait(open, mode));
   }
+  await scenario('Agents start, move and close on a phone: Muse first prompt', manageMuseLaunch);
   await scenario('Agents start, move and close on a phone: late close', manageLateClose);
   await scenario('Agents peer desktop Focus response and controls', peerDesktopFocus);
   await scenario('Agents scoped peer retry through cache loss', scopedPeerRetry);
