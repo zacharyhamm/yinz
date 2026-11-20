@@ -34,3 +34,32 @@ fn process_exit_observation_recognizes_unreaped_children() {
     assert!(child.wait().unwrap().success());
     assert!(has_exited(child.id()).unwrap());
 }
+
+#[test]
+fn a_zombie_reaped_between_probes_is_observed_exited() {
+    let probes = std::cell::Cell::new(0);
+    let present = || {
+        probes.set(probes.get() + 1);
+        Ok(probes.get() == 1)
+    };
+    assert!(observe_exit(present, || None).unwrap());
+    assert_eq!(probes.get(), 2);
+}
+
+#[test]
+fn an_unreadable_process_that_remains_present_is_not_observed_exited() {
+    assert!(!observe_exit(|| Ok(true), || None).unwrap());
+    assert!(!observe_exit(|| Ok(true), || Some(false)).unwrap());
+    assert!(observe_exit(|| Ok(true), || Some(true)).unwrap());
+    assert!(observe_exit(|| Ok(false), || unreachable!()).unwrap());
+}
+
+#[test]
+fn zombie_and_reaping_processes_are_terminated() {
+    use sysinfo::ProcessStatus;
+    assert!(is_terminated(ProcessStatus::Zombie));
+    assert!(is_terminated(ProcessStatus::Dead));
+    assert!(!is_terminated(ProcessStatus::Run));
+    assert!(!is_terminated(ProcessStatus::Sleep));
+    assert!(!is_terminated(ProcessStatus::UninterruptibleDiskSleep));
+}
