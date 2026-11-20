@@ -588,7 +588,7 @@ export function DetailView({ env, route }) {
     ${manage && sheet?.type === 'move' && sameTarget(sheet.agent, currentRef) ? html`<${MoveSheet} env=${env} live=${live} agent=${sheet.agent}
       onClose=${() => setSheet(null)} onMoved=${() => { setSheet(null); refreshTarget(); env.toast('Agent moved.'); }} />` : null}
     ${manage && sheet?.type === 'close' && sameTarget(sheet.agent, currentRef) ? html`<${CloseSheet} env=${env} live=${live} agent=${sheet.agent}
-      onClose=${() => setSheet(null)} onClosed=${() => env.replaceHash('#/')} />` : null}
+      onClose=${() => setSheet(null)} onClosed=${() => { if (!visit.signal.aborted) env.replaceHash('#/'); }} />` : null}
     ${actions && sheet?.type === 'interrupt' ? html`<${ConfirmSheet} id="sheet-interrupt-confirm" title="Interrupt the agent?" danger=${true}
       message="This sends a single Esc key to the agent's terminal. It is not retried automatically."
       confirmLabel="Send Esc" confirmId="action-interrupt-confirm" onClose=${() => setSheet(null)} onConfirm=${interrupt} />` : null}

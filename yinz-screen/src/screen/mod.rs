@@ -816,6 +816,8 @@ struct ScreenCore {
     connected_clients: Rc<RefCell<AttachedClients>>,
     /// The indices of this [`Screen`]'s active [`Tab`]s.
     active_tab_ids: BTreeMap<ClientId, TabId>,
+    /// Focus before a web move or close, until tab settlement lands the client.
+    focus_before_web_mutation: HashMap<ClientId, Option<PaneId>>,
     client_sizes: HashMap<ClientId, Size>,
     /// Last sequence on a legacy attachment that toggled back to ANSI.
     paused_legacy_sequences: HashMap<ClientId, u64>,
@@ -1594,6 +1596,7 @@ impl Screen {
                 style,
                 connected_clients: Rc::new(RefCell::new(AttachedClients::default())),
                 active_tab_ids: BTreeMap::new(),
+                focus_before_web_mutation: HashMap::new(),
                 client_sizes: HashMap::new(),
                 paused_legacy_sequences: HashMap::new(),
                 retired_native_clients: HashMap::new(),
@@ -2260,12 +2263,13 @@ impl Screen {
                     .with_context(err_context)?;
             }
 
-            let client_departed = self.core.departed_before_layout.contains(&client_id);
             let source_tab = self.core.active_tab_ids.get(&client_id).copied();
-            let mut transition = (should_change_client_focus && !client_departed)
+            let layout_without_client = self.core.departed_before_layout.contains(&client_id)
+                || (tab.background_layout && source_tab.is_none());
+            let mut transition = (should_change_client_focus && !layout_without_client)
                 .then(|| self.begin_tab_transition(client_id, tab_id));
 
-            if !client_departed && !self.core.active_tab_ids.contains_key(&client_id) {
+            if !layout_without_client && !self.core.active_tab_ids.contains_key(&client_id) {
                 self.core.connected_clients.borrow_mut().insert(client_id);
                 self.show_toasts_held_for_the_first_client()
                     .with_context(err_context)?;
@@ -2286,6 +2290,7 @@ impl Screen {
                         client_id,
                         blocking_terminal.take(),
                     )?;
+                    tab.background_layout = false;
                     // The layout now owns its panes. Notification or reflow failures must not
                     // send them through rejected-layout cleanup and destroy a committed tab.
                     if let (Some(slots), Some(relationships)) = (
@@ -2336,12 +2341,12 @@ impl Screen {
                 resized.non_fatal();
                 tab.set_force_render();
             }
-            if client_departed && let Some(tab) = self.core.tabs.get_mut(&tab_id) {
+            if layout_without_client && let Some(tab) = self.core.tabs.get_mut(&tab_id) {
                 tab.remove_client_pane_state(client_id);
                 tab.remove_client(client_id);
             }
             let mut retired_source = None;
-            if !client_departed && !self.core.active_tab_ids.contains_key(&client_id) {
+            if !layout_without_client && !self.core.active_tab_ids.contains_key(&client_id) {
                 // Capture the departed source before the layout provisionally connects this id.
                 self.register_client_transaction(client_id, departed, None, false)
                     .map(|source| retired_source = source)

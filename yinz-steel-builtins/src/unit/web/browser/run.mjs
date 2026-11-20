@@ -104,6 +104,7 @@ class Fixture {
     this.gone = false;
     this.retarget = false;
     this.prompt = 'submitted';
+    this.launchInstance = 'browser-instance';
     this.revokeOnPrompt = false;
     this.screenTick = 0;
     this.rows = null; // optional successful list payload, including [] for the empty state
@@ -314,14 +315,28 @@ function agentRoute(fx, entry) {
     return [400, { error: { code: 'invalid', message: 'Invalid request body' } }];
   };
   if (p === '/api/agent/launch-choices' && entry.method === 'GET') {
-    return [200, { server_instance: 'browser-instance', providers: ['codex'], projects: ['Review'], worktrees: entry.query.has('project')
+    return [200, { server_instance: fx.launchInstance, providers: ['codex'], projects: ['Review'], worktrees: entry.query.has('project')
       ? [{ path: '/review', branch: null }] : [] }];
   }
   if (entry.method !== 'POST') return [405, { error: { code: 'method_not_allowed' } }];
   if (p === '/api/agent/launch') {
-    if (!/^browser-instance\.[0-9a-f]{32}$/.test(body?.submission_id)) return invalid('submission id');
+    if (!/^browser-instance(?:-new)?\.[0-9a-f]{32}$/.test(body?.submission_id)) return invalid('submission id');
+    if (!body.submission_id.startsWith(fx.launchInstance + '.')) {
+      return [503, { error: { code: 'unavailable', message: 'Launch outcome unknown after restart.' } }];
+    }
     if (body?.kind !== 'codex' || body.project !== 'Review' || body.checkout?.path !== '/review') return invalid('checkout');
     return [200, { session: 'browser-check', pane_id: '7', kind: 'codex' }];
+  }
+  if (p === '/api/agent/launch-status') {
+    if (!exactKeys(body, ['submission_id', 'agent']) || !validRef(body.agent)) return invalid('launch identity');
+    const original = fx.bodies('/api/agent/launch').find((launch) => launch.submission_id === body.submission_id);
+    if (!original || !body.submission_id.startsWith(fx.launchInstance + '.')) {
+      return [409, { error: { code: 'target_changed', message: 'The server restarted after this launch.' } }];
+    }
+    const agent = agents(fx).agents.find((a) => a.current_session && a.pane_id === '7'
+      && a.ref.id === body.agent.id && a.ref.session_id === body.agent.session_id && a.ref.kind === original.kind);
+    if (!agent) return [409, { error: { code: 'target_changed', message: 'The original agent changed.' } }];
+    return [200, { session: agent.session, pane_id: agent.pane_id, agent: agent.ref }];
   }
   if (p === '/api/agent/destinations') {
     if (!validRef(body?.agent)) return invalid('agent');
@@ -337,8 +352,8 @@ function agentRoute(fx, entry) {
   }
   if (p === '/api/agent/close') {
     if (!validRef(body?.agent)) return invalid('agent');
-    fx.rows = [];
-    fx.gone = true;
+    fx.rows = agents(fx).agents.filter((a) => a.ref.id !== body.agent.id);
+    fx.gone = fx.rows.length === 0;
     return [200, { ok: true }];
   }
   if (p === '/api/agent/prompt') {
@@ -481,7 +496,16 @@ const INIT = `(() => {
     const close = () => { if (open) { open = false; window.__yinzOpen -= 1; } };
     return original(input, init).then((res) => {
       const text = res.text.bind(res);
-      res.text = () => text().finally(close);
+      res.text = async () => {
+        try {
+          const body = await text();
+          if (window.__yinzHoldResponse === path) {
+            window.__yinzHoldResponse = null;
+            await new Promise((resolve) => { window.__yinzReleaseResponse = resolve; });
+          }
+          return body;
+        } finally { close(); }
+      };
       if (res.status === 204) close();
       return res;
     }, (e) => { close(); throw e; });
@@ -2359,19 +2383,77 @@ async function manageAgent(open) {
   await submitStart.click();
   await textUntil(page, '#sheet-start [role=alert]', 'Cannot reach', 'uncertain launch');
   const key = 'yinz.web.v1.pending-launch';
-  const saved = await page.evaluate((k) => JSON.parse(sessionStorage.getItem(k)), key);
+  const savedLaunch = () => page.evaluate((k) => JSON.parse(sessionStorage.getItem(k)), key);
+  const saved = await savedLaunch();
+  fx.launchInstance = 'browser-instance-new';
   await page.reload();
   await page.click('#start-agent');
-  await start.getByRole('button', { name: 'Check launch' }).click();
-  await until('pending launch is cleared', () => page.evaluate((k) => sessionStorage.getItem(k) === null, key));
-  const attempts = fx.log.filter((r) => r.path === '/api/agent/launch');
-  check(attempts.length === 2 && attempts.every((r) => r.body.submission_id === saved.submission_id),
+  const checkLaunch = start.getByRole('button', { name: 'Check launch' });
+  const forget = start.getByRole('button', { name: 'Forget launch' });
+  fx.fail.set('/api/agent/launch', { mode: 'hold', times: 1 });
+  await checkLaunch.click();
+  await until('launch check in flight', () => fx.held.length === 1);
+  check(await forget.isDisabled(), 'could forget a launch during a check');
+  fx.releaseHeld();
+  await textUntil(page, '#sheet-start [role=alert]', 'Cannot reach', 'interrupted check');
+  await checkLaunch.click();
+  await textUntil(page, '#sheet-start [role=alert]', 'unknown after restart', 'retired launch');
+  const attempts = fx.bodies('/api/agent/launch');
+  check(attempts.length === 3 && attempts.every((body) => JSON.stringify(body) === JSON.stringify(saved)),
+    'checking a retired launch changed the saved submission');
+  const posts = () => fx.log.filter((r) => r.method === 'POST').length;
+  const beforeForget = posts();
+  const confirmation = page.getByRole('dialog', { name: 'Forget launch?' });
+  await forget.click();
+  await confirmation.getByText('The original agent may already be running. Starting again could create a second agent.', { exact: true }).waitFor();
+  await confirmation.getByRole('button', { name: 'Cancel' }).click();
+  await checkLaunch.waitFor();
+  await page.reload();
+  await page.click('#start-agent');
+  check(JSON.stringify(await savedLaunch()) === JSON.stringify(saved), 'cancelling lost the saved launch');
+  // Make the first removal fail while keeping storage readable.
+  await page.evaluate((key) => {
+    const remove = Storage.prototype.removeItem;
+    Storage.prototype.removeItem = function (item) {
+      if (this === sessionStorage && item === key) {
+        Storage.prototype.removeItem = remove;
+        throw new DOMException('Storage denied', 'SecurityError');
+      }
+      return remove.call(this, item);
+    };
+  }, key);
+  await forget.click();
+  await confirmation.getByRole('button', { name: 'Forget launch' }).click();
+  await textUntil(page, '#sheet-start [role=alert]', 'Could not remove', 'failed forget keeps recovery available');
+  check(await checkLaunch.isEnabled() && (await savedLaunch()).submission_id === saved.submission_id, 'failed removal lost recovery');
+  const choicesBefore = fx.count('/api/agent/launch-choices', 'GET');
+  await forget.click();
+  await confirmation.getByRole('button', { name: 'Forget launch' }).click();
+  await until('forgotten launch gives way to refreshed choices', async () =>
+    fx.count('/api/agent/launch-choices', 'GET') > choicesBefore && await start.getByLabel('Provider').isVisible());
+  check(await savedLaunch() === null && posts() === beforeForget, 'forgetting must only clear local storage');
+  await start.getByLabel('Provider').selectOption('codex');
+  await start.getByLabel('Project').selectOption('Review');
+  await start.getByLabel('Worktree').selectOption({ label: 'Detached HEAD · /review' });
+  fx.fail.set('/api/agent/launch', { mode: 'abort', times: 1 });
+  await submitStart.click();
+  await textUntil(page, '#sheet-start [role=alert]', 'Cannot reach', 'fresh launch needs recovery');
+  const fresh = await savedLaunch();
+  check(fresh.submission_id.startsWith(fx.launchInstance + '.') && fresh.submission_id.split('.')[1] !== saved.submission_id.split('.')[1],
+    'the next explicit launch must use the current instance and a fresh ID');
+  await checkLaunch.click();
+  const freshAttempts = fx.bodies('/api/agent/launch').slice(attempts.length);
+  check(freshAttempts.length === 2 && freshAttempts.every((body) => body.submission_id === fresh.submission_id),
     'recovering a launch must preserve its submission ID');
   await textUntil(page, '.banner', 'Waiting for codex', 'launch awaiting identity');
+  check(JSON.stringify(await savedLaunch()) === JSON.stringify(fresh), 'waiting lost the submitted request');
   fx.live = { title: 'Phone agent', location: { group: { id: 0, name: 'Default' }, tab: { id: 1, name: 'Shell' } } };
   fx.rows = [row(fx, AGENT_ID, 'idle', fx.live)];
   await page.click('#list-refresh');
   await until('launched agent opens', () => exists(page, '#overflow-button'));
+  check(await savedLaunch() === null, 'verified handoff kept the saved launch');
+  check(fx.bodies('/api/agent/launch-status').some((body) => body.submission_id === fresh.submission_id
+    && body.agent.session_id === REF7.session_id), 'handoff did not verify the saved launch and live identity');
   const opened = hashOf(page);
   await page.click('#overflow-button');
   malformed('/api/agent/destinations', {});
@@ -2403,6 +2485,104 @@ async function manageAgent(open) {
   }
   await textUntil(page, '#list-empty', 'No agents', 'returned to refreshed list');
   check(fx.count('/api/agent/close') === 1, 'sent multiple close requests');
+}
+
+async function holdResponse(page, path) {
+  await page.evaluate((path) => { window.__yinzHoldResponse = path; }, path);
+}
+
+async function waitForHeldResponse(page) {
+  await until('successful response held before delivery', () => page.evaluate(() => !!window.__yinzReleaseResponse));
+}
+
+async function releaseResponse(page) {
+  await page.evaluate(() => { window.__yinzReleaseResponse(); delete window.__yinzReleaseResponse; });
+  await nextFrame(page);
+}
+
+async function manageLaunchWait(open, mode) {
+  const { page, fx, context } = await open({ viewport: { width: 320, height: 640 }, clock: mode === 'expiry' });
+  fx.rows = [];
+  await openApp(page, '#/');
+  await page.click('#start-agent');
+  const sheet = page.locator('#sheet-start');
+  await sheet.getByLabel('Provider').selectOption('codex');
+  await sheet.getByLabel('Project').selectOption('Review');
+  await sheet.getByLabel('Worktree').selectOption('/review');
+  await sheet.getByRole('button', { name: 'Start agent', exact: true }).click();
+  await textUntil(page, '.banner', 'Waiting for codex', 'waiting for conversation');
+  const key = 'yinz.web.v1.pending-launch';
+  const saved = await page.evaluate((key) => sessionStorage.getItem(key), key);
+  const verification = '/api/agent/launch-status';
+  if (mode === 'expiry') {
+    await context.clock.fastForward(60001);
+    await page.locator('#start-agent').waitFor();
+  } else if (mode === 'restart') {
+    fx.launchInstance = 'browser-instance-new';
+    fx.retarget = true;
+  } else {
+    await holdResponse(page, verification);
+  }
+  fx.rows = [row(fx, AGENT_ID, 'idle')];
+  await page.click('#list-refresh');
+  await page.locator(cardSelector(AGENT_ID)).waitFor();
+  if (mode === 'leave') {
+    await waitForHeldResponse(page);
+    await page.locator(cardSelector(AGENT_ID) + ' .agent-open-area').click();
+    await page.locator('#overflow-button').waitFor();
+    await page.evaluate(() => history.back());
+    await page.locator('#start-agent').waitFor();
+    await releaseResponse(page);
+  } else if (mode === 'candidate') {
+    await waitForHeldResponse(page);
+    fx.rows = [];
+    await page.click('#list-refresh');
+    await page.locator('#list-empty').waitFor();
+    await releaseResponse(page);
+    await page.locator('.banner').getByRole('button', { name: 'Dismiss' }).click();
+  } else if (mode === 'dismiss') {
+    await waitForHeldResponse(page);
+    fx.rows = [row(fx, AGENT_ID, 'idle', { title: 'Updated while verifying' })];
+    await page.click('#list-refresh');
+    await textUntil(page, '.agent-card', 'Updated while verifying', 'another list poll during verification');
+    await page.locator('.banner').getByRole('button', { name: 'Dismiss' }).click();
+    await releaseResponse(page);
+  } else if (mode === 'restart') {
+    await textUntil(page, '#toast', 'server restarted', 'replacement instance rejected');
+  }
+  await page.click('#start-agent');
+  await sheet.getByRole('button', { name: 'Check launch' }).waitFor();
+  check(await sheet.getByRole('button', { name: 'Forget launch' }).isVisible(), 'forget missing after wait');
+  check(saved && await page.evaluate((key) => sessionStorage.getItem(key), key) === saved, 'saved launch changed');
+  check(fx.count('/api/agent/launch') === 1 && fx.count(verification) === (mode === 'expiry' ? 0 : 1),
+    'unexpected launch or concurrent verification');
+  check(!hashOf(page).startsWith('#/a/') && (mode === 'leave' || fx.count('/api/history') === 0), 'unverified conversation opened');
+}
+
+async function manageLateClose(open) {
+  const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
+  const other = 'live:dev:8';
+  fx.rows = [row(fx, AGENT_ID, 'idle'), row(fx, other, 'idle')];
+  await openList(page);
+  const list = hashOf(page);
+  await page.locator(cardSelector(AGENT_ID) + ' .agent-open-area').click();
+  await page.click('#overflow-button');
+  await page.click('#action-close');
+  await holdResponse(page, '/api/agent/close');
+  await page.locator('#sheet-close-agent').getByRole('button', { name: 'Close agent', exact: true }).click();
+  await waitForHeldResponse(page);
+  await page.evaluate(() => history.back());
+  await page.locator(cardSelector(other) + ' .agent-open-area').click();
+  await textUntil(page, '#timeline', 'Stored run-8', 'second conversation opened');
+  const opened = hashOf(page);
+  const entry = await page.evaluate(() => history.state.yinzIndex);
+  await releaseResponse(page);
+  check(hashOf(page) === opened && await page.evaluate(() => history.state.yinzIndex) === entry, 'late close replaced the detail entry');
+  check(fx.count('/api/agent/close') === 1, 'close was resent');
+  await page.evaluate(() => history.back());
+  await until('back to the originating list', () => hashOf(page) === list);
+  await page.evaluate(() => history.forward());
+  await textUntil(page, '#timeline', 'Stored run-8', 'second conversation retained in history');
 }
 
 async function peerDesktopFocus(open) {
@@ -3579,6 +3759,10 @@ async function main() {
   await scenario('Agents peer focus across republication: quick key', (open) => peerFocusAcrossRepublication(open, '.quick-key[data-key="1"]'));
   await scenario('Agents peer Detail routing and draft isolation', scopedPeerDetails);
   await scenario('Agents start, move and close on a phone', manageAgent);
+  for (const mode of ['restart', 'dismiss', 'expiry', 'leave', 'candidate']) {
+    await scenario(`Agents start, move and close on a phone: launch ${mode}`, (open) => manageLaunchWait(open, mode));
+  }
+  await scenario('Agents start, move and close on a phone: late close', manageLateClose);
   await scenario('Agents peer desktop Focus response and controls', peerDesktopFocus);
   await scenario('Agents scoped peer retry through cache loss', scopedPeerRetry);
   await scenario('Agents scoped draft recovery after first lookup failure', scopedPeerInitialLookupFailure);

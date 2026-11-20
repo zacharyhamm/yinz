@@ -328,9 +328,16 @@ plugin configuration or secrets.
   a registered project, and a checkout by branch and path. A detached checkout
   appears as **Detached HEAD**. **Create new worktree** asks for a branch and
   uses the same directory and base as the command palette. Yinz places the pane
-  in the serving session and opens its detail when the provider reports a live
-  conversation. If the response is lost, reopen **Start agent** in the same
-  browser tab and choose **Check launch** to recover the original submission.
+  in the serving session. The Agents page waits up to 60 seconds for the provider
+  to report a conversation. It checks the launch receipt and live agent identity
+  before opening the conversation. Choose **Dismiss** or leave the page to stop waiting.
+  If the response is lost, the wait expires, or the server or worker changes,
+  reopen **Start agent** in the same browser tab. **Check launch** uses the
+  saved submission to recover the outcome and can start another 60-second wait.
+  If the outcome stays unknown after a restart, check the agent list before
+  starting another agent. The original may already be running. **Forget launch**
+  asks for confirmation before clearing the saved submission and refreshing
+  the choices. **Cancel** keeps it available.
 - In a serving-session agent's **More actions** menu, **Move agent** shows its
   location and lets you choose a group and tab by name and ID. You can also
   create a tab in an existing group, or create a group and move into its first

@@ -1,5 +1,5 @@
 use super::*;
-use crate::screen::thread_main::apply_queued_agent_report;
+use crate::screen::thread_main::{apply_queued_agent_report, process_instruction, EventLoopState};
 use std::time::{Duration, Instant};
 use yinz_types::agent::control::{
     AgentOutcome, AgentRequest, AgentResponse, NotReadyReason, WebTerminalInput,
@@ -16774,19 +16774,214 @@ fn web_tab_destination(screen: &Screen, tab: TabId) -> yinz_bus::web::MoveDestin
     }
 }
 
+fn dispatch_web_mutation(
+    screen: &mut Screen,
+    state: &mut EventLoopState,
+    agent: yinz_bus::web::WebAgentRef,
+    action: yinz_bus::web::WebManageAction,
+) {
+    let (reply, result) = channels::bounded(1);
+    assert!(process_instruction(
+        screen,
+        state,
+        ScreenInstruction::WebManageAgent {
+            agent,
+            action,
+            client: CLIENT,
+            deadline: Instant::now() + Duration::from_secs(5),
+            reply,
+        }
+    )
+    .unwrap()
+    .is_continue());
+    result.recv().unwrap().unwrap();
+}
+
+fn apply_web_move_layout(
+    screen: &mut Screen,
+    state: &mut EventLoopState,
+    plugins: &Receiver<(PluginInstruction, ErrorContext)>,
+) -> TabId {
+    let (layout, floating, tab, focus, client) = plugins
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            PluginInstruction::NewTab(
+                _,
+                _,
+                Some(layout),
+                floating,
+                tab,
+                _,
+                _,
+                focus,
+                client,
+                _,
+            ) => Some((layout, floating, tab, focus, client)),
+            _ => None,
+        })
+        .unwrap();
+    assert!(process_instruction(
+        screen,
+        state,
+        ScreenInstruction::ApplyLayout(
+            layout,
+            floating.unwrap_or_default(),
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            tab,
+            focus,
+            client,
+            None,
+            None,
+        )
+    )
+    .unwrap()
+    .is_continue());
+    tab
+}
+
+#[test]
+fn web_agents_close_checks_for_hidden_terminals_during_settlement() {
+    use yinz_bus::web::{WebFocusError, WebManageAction};
+
+    for hidden_in_source in [true, false] {
+        let (mut screen, _, _writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        let agent = web_agents_reference(&web_agents_snapshot(&mut screen)[0]);
+        let original = PaneId::Terminal(TerminalId::new(1));
+        let hidden = if hidden_in_source {
+            original
+        } else {
+            screen.close_pane_explicitly(original, None);
+            new_tab(&mut screen, 8, TabId::new(1));
+            PaneId::Terminal(TerminalId::new(8))
+        };
+        screen
+            .tab_containing_pane_mut(hidden)
+            .unwrap()
+            .suppress_pane(hidden, None);
+        screen.settle_tabs().unwrap();
+        let (tx, pty) = channels::unbounded();
+        screen.core.bus.senders.to_pty = Some(SenderWithContext::new(tx));
+        for tab in screen.core.tabs.values_mut() {
+            tab.senders.to_pty = screen.core.bus.senders.to_pty.clone();
+        }
+        assert!(
+            matches!(manage_web_agent(&mut screen, &agent, WebManageAction::Close),
+            Err(WebFocusError::Unavailable(message)) if message.contains("other panes"))
+        );
+        screen.settle_tabs().unwrap();
+        assert!(screen.tab_containing_pane(PANE).is_some());
+        assert!(screen.get_pane_info(hidden).unwrap().is_suppressed);
+        assert!(!pty.try_iter().any(|(instruction, _)| matches!(
+            instruction,
+            PtyInstruction::ClosePane(..) | PtyInstruction::CloseTab(..)
+        )));
+
+        new_tab(&mut screen, 9, TabId::new(2));
+        manage_web_agent(&mut screen, &agent, WebManageAction::Close).unwrap();
+        screen.settle_tabs().unwrap();
+        assert!(screen.tab_containing_pane(PANE).is_none());
+        assert!(screen.get_pane_info(hidden).unwrap().is_suppressed);
+    }
+}
+
+#[test]
+fn web_agents_close_allows_a_lone_agent_to_end_the_session() {
+    let (mut screen, _, _writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    let agent = web_agents_reference(&web_agents_snapshot(&mut screen)[0]);
+    screen.close_pane_explicitly(PaneId::Terminal(TerminalId::new(1)), None);
+    manage_web_agent(&mut screen, &agent, yinz_bus::web::WebManageAction::Close).unwrap();
+    screen.settle_tabs().unwrap();
+    assert!(screen.core.tabs.is_empty());
+}
+
+#[test]
+fn web_agents_background_move_layout_preserves_client_membership() {
+    use yinz_bus::web::{MoveDestination, WebFocusError, WebManageAction};
+
+    for destination in [
+        MoveDestination::NewTab {
+            group: 0,
+            name: None,
+        },
+        MoveDestination::NewGroup {
+            name: None,
+            tab_name: None,
+        },
+    ] {
+        for detach in [Some("before request"), Some("before layout"), None] {
+            let (mut screen, _, _writes) = setup("codex");
+            report(&mut screen, hook("SessionStart"));
+            let agent = web_agents_reference(&web_agents_snapshot(&mut screen)[0]);
+            let shell = PaneId::Terminal(TerminalId::new(1));
+            screen
+                .focus_pane_with_id(shell, false, false, CLIENT)
+                .unwrap();
+            if detach == Some("before request") {
+                screen.remove_client(CLIENT).unwrap();
+            }
+            let plugins = super::agent_placement::plugin_capture(&mut screen);
+            manage_web_agent(
+                &mut screen,
+                &agent,
+                WebManageAction::Move(destination.clone()),
+            )
+            .unwrap();
+            if detach == Some("before layout") {
+                screen.remove_client(CLIENT).unwrap();
+            }
+            let tab = apply_web_move_layout(&mut screen, &mut EventLoopState::default(), &plugins);
+            assert!(!screen.core.tabs[&tab].is_pending());
+            assert_eq!(screen.tab_id_containing_pane(PANE), Some(tab));
+            assert!(screen.core.tabs[&tab].has_no_connected_clients());
+            if detach.is_some() {
+                assert!(screen.core.active_tab_ids.is_empty());
+                assert!(screen.core.connected_clients.borrow().is_empty());
+                let (tx, rx) = channels::bounded(1);
+                screen.web_focus_agent(
+                    agent,
+                    screen.core.session_name.clone(),
+                    None,
+                    Instant::now() + Duration::from_secs(5),
+                    tx,
+                );
+                assert_eq!(rx.recv().unwrap(), Err(WebFocusError::NoTerminal));
+            } else {
+                assert_eq!(screen.active_pane_id(CLIENT), Some(shell));
+            }
+        }
+    }
+}
+
 #[test]
 fn web_agents_move_and_close_restore_nested_key_routing_for_the_affected_client() {
     use yinz_bus::screen::GuestModalOutcome;
     use yinz_bus::web::WebManageAction;
 
-    for close in [false, true] {
+    for (close, empty_source) in [(false, false), (true, false), (false, true), (true, true)] {
         let (mut screen, _, _writes) = setup("codex");
         report(&mut screen, hook("SessionStart"));
         let agent = web_agents_reference(&web_agents_snapshot(&mut screen)[0]);
+        // The stationary client once descended into the agent. Closing that guest must
+        // not reset this client's current route when the stored choice is removed.
+        screen.handle_nested_session_message_from_pane(PANE, guest_announce_message());
+        screen.handle_guest_modal_choice(CLIENT, PANE, GuestModalOutcome::Descend);
+        assert!(screen.nested.dimmed_clients.contains(&CLIENT));
+        let guest_id = if empty_source {
+            screen.close_pane_explicitly(PaneId::Terminal(TerminalId::new(1)), None);
+            new_tab(&mut screen, 9, TabId::new(2));
+            TerminalId::new(9)
+        } else {
+            TerminalId::new(1)
+        };
         let target = TabId::new(1);
         new_tab(&mut screen, 8, target);
         let viewer = ClientId::new(2);
-        let guest = PaneId::Terminal(TerminalId::new(1));
+        let guest = PaneId::Terminal(guest_id);
         screen.add_client(viewer).unwrap();
         screen
             .focus_pane_with_id(guest, false, false, viewer)
@@ -16803,26 +16998,117 @@ fn web_agents_move_and_close_restore_nested_key_routing_for_the_affected_client(
         let other_focus = PaneId::Terminal(TerminalId::new(8));
         assert_eq!(screen.active_pane_id(CLIENT), Some(other_focus));
 
+        let tab = screen.tab_containing_pane_mut(guest).unwrap();
+        tab.handle_pty_bytes(guest_id, b"line\r\n".repeat(60))
+            .unwrap();
+        tab.get_pane_with_id_mut(guest)
+            .unwrap()
+            .scroll_up(5, Some(viewer));
+        let mode = screen.base_input_mode();
+        screen.core.mode_info.entry(viewer).or_default().mode = mode;
         let server = screen_wired_to_server(&mut screen);
         let action = if close {
             WebManageAction::Close
         } else {
             WebManageAction::Move(web_tab_destination(&screen, target))
         };
-        manage_web_agent(&mut screen, &agent, action).unwrap();
+        dispatch_web_mutation(&mut screen, &mut EventLoopState::default(), agent, action);
         assert_eq!(screen.active_pane_id(CLIENT), Some(other_focus));
         assert_eq!(screen.active_pane_id(viewer), Some(guest));
-        let updates: Vec<_> = server
-            .try_iter()
-            .filter_map(|(instruction, _)| match instruction {
+        assert_eq!(screen.core.tabs.contains_key(&TabId::new(0)), !empty_source);
+        let mut routes = Vec::new();
+        let mut modes = Vec::new();
+        for (instruction, _) in server.try_iter() {
+            match instruction {
                 ServerInstruction::KeyPassthroughChanged(client, old, new, route, _, _) => {
-                    Some((client, old, new, route))
+                    routes.push((client, old, new, route));
                 },
-                _ => None,
-            })
-            .collect();
-        assert_eq!(updates, [(viewer, PANE, guest, true)]);
+                ServerInstruction::ChangeMode(client, mode, _) => modes.push((client, mode)),
+                _ => {},
+            }
+        }
+        assert_eq!(routes, [(viewer, PANE, guest, true)]);
+        assert_eq!(modes, [(viewer, InputMode::Scroll)]);
         assert!(screen.nested.dimmed_clients.contains(&viewer));
+    }
+}
+
+#[test]
+fn web_agents_close_waits_for_the_viewers_destination_or_detach() {
+    for detach in [false, true] {
+        let (mut screen, _, _writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        let agent = web_agents_reference(&web_agents_snapshot(&mut screen)[0]);
+        screen.close_pane_explicitly(PaneId::Terminal(TerminalId::new(1)), None);
+        let destination = TabId::new(1);
+        screen
+            .new_tab(destination, (vec![], vec![]), None, Some(CLIENT))
+            .unwrap();
+        screen.core.mode_info.entry(CLIENT).or_default().mode = InputMode::Scroll;
+        let base = screen.base_input_mode();
+        let server = screen_wired_to_server(&mut screen);
+        let mut state = EventLoopState::default();
+        dispatch_web_mutation(
+            &mut screen,
+            &mut state,
+            agent,
+            yinz_bus::web::WebManageAction::Close,
+        );
+        assert_eq!(screen.active_pane_id(CLIENT), None);
+        assert!(!server.try_iter().any(|(event, _)| matches!(
+            event,
+            ServerInstruction::KeyPassthroughChanged(..) | ServerInstruction::ChangeMode(..)
+        )));
+        if detach {
+            assert!(process_instruction(
+                &mut screen,
+                &mut state,
+                ScreenInstruction::RemoveClient(CLIENT)
+            )
+            .unwrap()
+            .is_continue());
+        }
+        let terminal = TerminalId::new(9);
+        assert!(process_instruction(
+            &mut screen,
+            &mut state,
+            ScreenInstruction::ApplyLayout(
+                TiledPaneLayout::default(),
+                vec![],
+                vec![(terminal, None)],
+                vec![],
+                vec![],
+                HashMap::new(),
+                destination,
+                false,
+                CLIENT,
+                None,
+                None,
+            )
+        )
+        .unwrap()
+        .is_continue());
+        let destination_pane = PaneId::Terminal(terminal);
+        let mut routes = Vec::new();
+        let mut modes = Vec::new();
+        for (event, _) in server.try_iter() {
+            match event {
+                ServerInstruction::KeyPassthroughChanged(client, from, to, route, _, _) => {
+                    routes.push((client, from, to, route))
+                },
+                ServerInstruction::ChangeMode(client, mode, _) => modes.push((client, mode)),
+                _ => {},
+            }
+        }
+        if detach {
+            assert_eq!(screen.active_pane_id(CLIENT), None);
+            assert!(routes.is_empty());
+            assert!(modes.is_empty());
+        } else {
+            assert_eq!(screen.active_pane_id(CLIENT), Some(destination_pane));
+            assert_eq!(routes, [(CLIENT, PANE, destination_pane, false)]);
+            assert_eq!(modes, [(CLIENT, base)]);
+        }
     }
 }
 
@@ -16830,38 +17116,55 @@ fn web_agents_move_and_close_restore_nested_key_routing_for_the_affected_client(
 fn web_agents_move_restores_the_pane_replaced_by_an_in_place_agent() {
     use yinz_bus::web::WebManageAction;
 
-    let original = PaneId::Terminal(TerminalId::new(1));
-    let (mut screen, _, _writes) = setup_with_placement(
-        "codex",
-        PaneTarget::Local,
-        Size { cols: 80, rows: 24 },
-        NewPanePlacement::InPlace {
-            pane_id_to_replace: Some(original),
-            close_replaced_pane: false,
-            borderless: None,
-        },
-    );
-    report(&mut screen, hook("SessionStart"));
-    let agent = web_agents_reference(&web_agents_snapshot(&mut screen)[0]);
-    let source = TabId::new(0);
-    let target = TabId::new(1);
-    let slot = screen.core.tabs[&source]
-        .get_pane_with_id(PANE)
-        .unwrap()
-        .current_geom();
-    assert!(screen.get_pane_info(original).unwrap().is_suppressed);
-    new_tab(&mut screen, 8, target);
-    let destination = web_tab_destination(&screen, target);
-    manage_web_agent(&mut screen, &agent, WebManageAction::Move(destination)).unwrap();
-    assert_eq!(screen.tab_id_containing_pane(PANE), Some(target));
-    let restored = |screen: &Screen| {
-        let tab = &screen.core.tabs[&source];
-        assert!(tab.has_non_suppressed_pane_with_pid(&original));
-        assert_eq!(tab.get_pane_with_id(original).unwrap().current_geom(), slot);
-    };
-    restored(&screen);
-    manage_web_agent(&mut screen, &agent, WebManageAction::Close).unwrap();
-    restored(&screen);
+    for with_editor in [true, false] {
+        let original = PaneId::Terminal(TerminalId::new(1));
+        let (mut screen, _, _writes) = setup_with_placement(
+            "codex",
+            PaneTarget::Local,
+            Size { cols: 80, rows: 24 },
+            NewPanePlacement::InPlace {
+                pane_id_to_replace: Some(original),
+                close_replaced_pane: false,
+                borderless: None,
+            },
+        );
+        report(&mut screen, hook("SessionStart"));
+        let agent = web_agents_reference(&web_agents_snapshot(&mut screen)[0]);
+        let source = TabId::new(0);
+        let target = TabId::new(1);
+        let slot = screen.core.tabs[&source]
+            .get_pane_with_id(PANE)
+            .unwrap()
+            .current_geom();
+        assert!(screen.get_pane_info(original).unwrap().is_suppressed);
+        let editor = PaneId::Terminal(TerminalId::new(99));
+        if with_editor {
+            screen
+                .tab_containing_pane_mut(PANE)
+                .unwrap()
+                .replace_pane_with_editor_pane(editor, PANE)
+                .unwrap();
+        }
+        new_tab(&mut screen, 8, target);
+        let destination = web_tab_destination(&screen, target);
+        manage_web_agent(&mut screen, &agent, WebManageAction::Move(destination)).unwrap();
+        assert_eq!(screen.tab_id_containing_pane(PANE), Some(target));
+        if with_editor {
+            let tab = screen.core.tabs.get_mut(&source).unwrap();
+            assert!(tab.has_non_suppressed_pane_with_pid(&editor));
+            assert_eq!(tab.stands_in_for_a_pane(editor), Some(original));
+            tab.close_pane(editor, false, None);
+            assert_eq!(screen.tab_id_containing_pane(PANE), Some(target));
+        }
+        let restored = |screen: &Screen| {
+            let tab = &screen.core.tabs[&source];
+            assert!(tab.has_non_suppressed_pane_with_pid(&original));
+            assert_eq!(tab.get_pane_with_id(original).unwrap().current_geom(), slot);
+        };
+        restored(&screen);
+        manage_web_agent(&mut screen, &agent, WebManageAction::Close).unwrap();
+        restored(&screen);
+    }
 }
 
 #[test]
@@ -16961,6 +17264,100 @@ fn web_agents_move_inactive_floating_pane_tab_with_its_owner() {
         super::agent_placement::new_tabs_asked_for(&plugins),
         vec![(new_tab, false, vec![invoked])]
     );
+}
+
+#[test]
+fn web_agents_move_carries_the_inactive_terminals_queued_respawn() {
+    use crate::tab::ExtractedPanePlacement;
+    use yinz_bus::web::{MoveDestination, WebManageAction};
+
+    for (create, refuse) in [(false, false), (true, false), (false, true)] {
+        let (mut screen, _, _writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        let agent = web_agents_reference(&web_agents_snapshot(&mut screen)[0]);
+        let source = screen.tab_id_containing_pane(PANE).unwrap();
+        let target = TabId::new(1);
+        let plugins = super::agent_placement::plugin_capture(&mut screen);
+        let (tx, pty) = channels::unbounded();
+        screen.core.bus.senders.to_pty = Some(SenderWithContext::new(tx));
+        let senders = screen.core.bus.senders.clone();
+        let tab = screen.core.tabs.get_mut(&source).unwrap();
+        tab.senders = senders;
+        let overview = mount_agent_overview(tab).pane_id;
+        assert_ne!(overview, PANE);
+        let replacement = RunCommand {
+            command: "/usr/bin/true".into(),
+            ..Default::default()
+        };
+        let mut state = EventLoopState::default();
+        screen.run_command_in_pane_with_id(TerminalId::new(7), replacement.clone(), true);
+        let landed = if create {
+            dispatch_web_mutation(
+                &mut screen,
+                &mut state,
+                agent,
+                WebManageAction::Move(MoveDestination::NewTab {
+                    group: 0,
+                    name: None,
+                }),
+            );
+            apply_web_move_layout(&mut screen, &mut state, &plugins)
+        } else {
+            new_tab(&mut screen, 8, target);
+            if refuse {
+                super::break_and_move_panes::fill_tab(
+                    &mut screen,
+                    target,
+                    ExtractedPanePlacement::Tiled,
+                );
+                // Exercise the actual return-to-source path below the web capacity preflight.
+                let outcome = screen
+                    .break_multiple_panes_to_tab_with_id(vec![overview], target, false, CLIENT)
+                    .unwrap();
+                assert_eq!(outcome.returned_to_source, [overview]);
+                source
+            } else {
+                let destination = web_tab_destination(&screen, target);
+                dispatch_web_mutation(
+                    &mut screen,
+                    &mut state,
+                    agent,
+                    WebManageAction::Move(destination),
+                );
+                target
+            }
+        };
+        assert_eq!(screen.tab_id_containing_pane(PANE), Some(landed));
+        assert!(
+            screen.core.tabs[&landed]
+                .get_pane_info(PANE)
+                .unwrap()
+                .is_suppressed
+        );
+        assert!(!pty
+            .try_iter()
+            .any(|(instruction, _)| matches!(instruction, PtyInstruction::ReRunCommandInPane(..))));
+        assert!(process_instruction(
+            &mut screen,
+            &mut state,
+            ScreenInstruction::HoldPane(PANE, Some(0), RunCommand::default())
+        )
+        .unwrap()
+        .is_continue());
+        let respawns: Vec<_> = pty
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                PtyInstruction::ReRunCommandInPane(id, command, _) => Some((id, command)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(respawns, [(PANE, replacement)]);
+        assert!(screen
+            .core
+            .tabs
+            .values_mut()
+            .all(|tab| tab.take_pending_respawn(PANE).is_none()));
+    }
 }
 
 #[test]

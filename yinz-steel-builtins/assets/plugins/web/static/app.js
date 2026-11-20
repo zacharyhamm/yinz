@@ -152,7 +152,7 @@ function App({ initialNotice }) {
   };
   const key = route.view === 'detail' ? `${route.bind ? 'a' : 'r'}:${route.id}:${route.bind ? (route.run ? 'run' : 'none') : route.run}` : 'list';
   return html`<div class="app">
-    ${route.view === 'detail' ? html`<${DetailView} key=${key} env=${env} route=${route} />` : html`<${ListView} env=${env} groupKey=${route.groupKey} navigation=${route.navigation} />`}
+    ${route.view === 'detail' ? html`<${DetailView} key=${key} env=${env} route=${route} />` : html`<${ListView} env=${env} entry=${lastEntry} groupKey=${route.groupKey} navigation=${route.navigation} />`}
     <div class=${cx('toast', toast && 'toast-visible')} id="toast" role="status" aria-live="polite">${toast ? toast.text : ''}</div>
   </div>`;
 }

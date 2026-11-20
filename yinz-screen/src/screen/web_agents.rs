@@ -184,7 +184,9 @@ impl Screen {
                 }));
             },
             WebManageAction::Close => {
-                if !self.core.tabs[&source].explicit_close_is_single_pane(pane) {
+                if !self.core.tabs[&source].explicit_close_is_single_pane(pane)
+                    || self.settlement_after_close_risks_other_terminals(source, pane)
+                {
                     return Err(WebFocusError::Unavailable(
                         "Closing this agent would also close other panes.".into(),
                     ));
@@ -193,29 +195,46 @@ impl Screen {
             },
             WebManageAction::Move(destination) => Some(destination),
         };
-        let previous_focus: Vec<_> = self
-            .core
-            .active_tab_ids
-            .keys()
-            .filter(|client| !self.core.watcher_clients.contains_key(client))
-            .map(|&client| (client, self.active_pane_id(client)))
-            .collect();
+        for &client in self.core.connected_clients.borrow().iter() {
+            if !self.core.watcher_clients.contains_key(&client) {
+                let previous = self.active_pane_id(client);
+                self.core
+                    .focus_before_web_mutation
+                    .entry(client)
+                    .or_insert(previous);
+            }
+        }
         if let Some(destination) = destination {
             self.web_move_agent(pane, source, destination, client)?;
         } else {
             self.close_pane_explicitly(pane, None);
             self.log_and_report_session_state().map_err(web_failed)?;
         }
-        for (client, previous) in previous_focus {
-            if let (Some(old), Some(new)) = (previous, self.active_pane_id(client))
-                && old != new
-            {
-                self.report_key_passthrough_state(client, old, new);
-            }
-            self.sync_scroll_mode_on_focus(client).map_err(web_failed)?;
-        }
         self.render().map_err(web_failed)?;
         Ok(None)
+    }
+
+    pub(super) fn reconcile_web_focus_after_settlement(&mut self) {
+        for (client, previous) in std::mem::take(&mut self.core.focus_before_web_mutation) {
+            let Ok(tab) = self.get_active_tab(client) else {
+                continue;
+            };
+            if tab.is_pending()
+                || self.core.deferred_tab_closes.contains(&tab.id)
+                || (!tab.has_selectable_panes() && self.has_pending_tabs())
+            {
+                self.core.focus_before_web_mutation.insert(client, previous);
+                continue;
+            }
+            if let Some(current) = tab.get_active_pane_id(client)
+                && (previous != Some(current)
+                    || self.nested.dimmed_clients.contains(&client)
+                        != self.should_route_keys_to_pane(client, current))
+            {
+                self.report_key_passthrough_state(client, previous.unwrap_or(current), current);
+            }
+            self.sync_scroll_mode_on_focus(client).non_fatal();
+        }
     }
 
     fn web_move_agent(
@@ -289,6 +308,12 @@ impl Screen {
                 let tab = self
                     .new_tab_for_adopted_pane(invoked, client, false)
                     .map_err(web_failed)?;
+                self.core
+                    .tabs
+                    .get_mut(&tab)
+                    .context("missing web move destination")
+                    .map_err(web_failed)?
+                    .background_layout = true;
                 if new_group {
                     self.start_tab_group(group, tab, group_name.filter(|s| !s.trim().is_empty()));
                 } else {

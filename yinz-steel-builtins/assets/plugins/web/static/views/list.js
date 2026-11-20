@@ -3,7 +3,7 @@ import { describeError, freshnessText } from '../api.js';
 import { html, useState, useEffect, useLayoutEffect, useRef, usePoller, useNow, ServerHtml, RowBadges, stateLabel, QuickKeys, Banner, Freshness, responseText, cx } from './ui.js';
 import { Sheet, ConfirmSheet } from './sheets.js';
 import { cardDetail, controlTarget, detailHash, groupHash, isScopedPeer, validGroupId } from '../app-route.js';
-import { StartSheet } from './manage.js';
+import { AgentLauncher } from './manage.js';
 import { Notifications } from './notifications.js';
 
 function nonblank(value) {
@@ -162,10 +162,8 @@ function AgentCard({ row, session, href, identity, env, onKeys, onNext, busy }) 
   </li>`;
 }
 
-export function ListView({ env, groupKey, navigation }) {
+export function ListView({ env, groupKey, navigation, entry }) {
   const now = useNow(1000);
-  const [start, setStart] = useState(false);
-  const [launched, setLaunched] = useState(null);
   const [menu, setMenu] = useState(false);
   const [picker, setPicker] = useState(false);
   const [confirmAll, setConfirmAll] = useState(false);
@@ -182,15 +180,6 @@ export function ListView({ env, groupKey, navigation }) {
   const data = state && state.data;
   const hasData = !!data;
   const agents = data ? data.agents.filter((a) => a && typeof a.id === 'string') : [];
-  useEffect(() => {
-    if (!launched || data?.session !== launched.session) return;
-    const row = data.agents.find((row) => row.current_session === true && row.pane_id === launched.pane_id
-      && controlTarget(row, data.session)?.kind === launched.kind);
-    if (row) {
-      setLaunched(null);
-      env.pushHash(detailHash(cardDetail(row, data.session)));
-    }
-  }, [data, launched]);
   const waiting = data && data.counts && Number.isInteger(data.counts.waiting) ? data.counts.waiting : agents.filter((a) => a.state === 'waiting').length;
   const groups = groupAgents(agents);
   const markers = sessionMarkers(groups);
@@ -370,14 +359,9 @@ export function ListView({ env, groupKey, navigation }) {
       ${state && state.error && ['offline', 'retrying', 'error'].includes(state.status) ? html`<${Banner} id="banner-offline" tone="warn">${freshnessText(state, now)}<//>` : null}
       ${!data && (!state || state.loading) ? html`<p class="empty">Loading agents…</p>` : null}
       ${data && !selected ? html`<p class="empty" id="list-empty">${groupKey === undefined ? 'No agents are running.' : 'No agents in this group.'}</p>` : null}
-      ${launched ? html`<${Banner} tone="info" actions=${html`<button type="button" class="link-button" onClick=${() => setLaunched(null)}>Dismiss</button>`}>
-        Waiting for ${launched.kind} in ${launched.pane_id} to report its conversation…<//>`
-        : html`<button type="button" class="button" id="start-agent" aria-haspopup="dialog" onClick=${() => setStart(true)}>Start agent</button>`}
+      <${AgentLauncher} key=${entry} env=${env} data=${data} refresh=${refresh} />
       ${selected ? renderGroup(selected) : null}
     </main>
-    ${start ? html`<${StartSheet} env=${env} onClose=${() => setStart(false)} onLaunched=${(agent) => {
-      setStart(false); setLaunched(agent); refresh();
-    }} />` : null}
     ${picker ? html`<${Sheet} id="sheet-groups" title="Switch group" onClose=${() => setPicker(false)} fallbackFocusRef=${main}>
       <nav class="group-links" aria-label="Tab groups">
         ${groups.map((group) => html`<a key=${group.key} class="button group-link" href=${groupHash(group.key)}

@@ -360,6 +360,9 @@ impl Screen {
     // default, Locked under unlock-first), so a client in another mode (Pane, Tab, Search,
     // ...) is never pulled out of it.
     pub(super) fn sync_scroll_mode_on_focus(&mut self, client_id: ClientId) -> Result<()> {
+        if self.core.focus_before_web_mutation.contains_key(&client_id) {
+            return Ok(());
+        }
         let default_mode = self.base_input_mode();
         if default_mode == InputMode::Scroll {
             return Ok(());

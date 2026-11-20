@@ -311,6 +311,8 @@ pub struct Tab {
     pub agent_tab_incarnation: String,
     pub agent_tab_lifetime: std::sync::Arc<()>,
     pub agent_tab_cleanup_allowed: bool,
+    /// The initial layout serves a background web move and cannot attach its requester.
+    pub background_layout: bool,
     /// Keep an empty default layout alive until its reserved agent pane arrives.
     pub agent_tab_waiting_for_pane: bool,
     /// Set by the screen when it opens this tab for an agent pane that arrives only after the
@@ -680,6 +682,7 @@ impl Tab {
             agent_tab_incarnation: yinz_bus::agent_launch::new_incarnation(),
             agent_tab_lifetime: std::sync::Arc::new(()),
             agent_tab_cleanup_allowed: false,
+            background_layout: false,
             agent_tab_waiting_for_pane: false,
             agent_layout_slot_expected: false,
             reserved_layout_slot: false,
@@ -2562,6 +2565,25 @@ impl Tab {
                 .and_then(|id| self.suppressed_panes.get(&id))
                 .is_some_and(|suppressed| suppressed.pane.selectable())
     }
+    /// The single-pane close guard also allows a stand-in whose slot is lent.
+    pub fn has_selectable_panes_after_single_close(&self, id: PaneId) -> bool {
+        if let Some(lender) = self
+            .stands_in_for_a_pane(id)
+            .and_then(|subject| self.suppressed_panes.get(&subject))
+        {
+            // Restoring the lender keeps the slot, including its overlay retention policy.
+            // No stack sibling is promoted in this case.
+            return self.selectable_pane_ids().any(|pane| pane != id)
+                || (lender.pane.selectable()
+                    && (!self.pane_is_overlay(id)
+                        || self
+                            .overlay_panes
+                            .selectable_tab_content_pane_ids()
+                            .any(|pane| pane == id)));
+        }
+        self.has_selectable_panes_except(id)
+    }
+
     fn selectable_pane_ids(&self) -> impl Iterator<Item = PaneId> + '_ {
         self.tiled_panes
             .get_panes()
@@ -2578,8 +2600,13 @@ impl Tab {
     /// Whether a terminal in this tab - shown or hidden - is still running. Hidden terminals
     /// retain their tab while another usable tab remains, but do not keep the session alive.
     pub fn has_live_terminal(&self) -> bool {
+        self.has_live_terminal_except(None)
+    }
+
+    pub fn has_live_terminal_except(&self, excluded: Option<PaneId>) -> bool {
         self.get_all_pane_ids().iter().any(|id| {
-            matches!(id, PaneId::Terminal(_))
+            Some(*id) != excluded
+                && matches!(id, PaneId::Terminal(_))
                 && self
                     .get_pane_with_id(*id)
                     .is_some_and(|pane| !pane.exited())

@@ -27,6 +27,12 @@ pub(super) struct TabTransition {
     pub old_focus: Vec<(ClientId, Option<PaneId>)>,
 }
 
+struct TabSettlement {
+    usable: Vec<TabId>,
+    another_destination: bool,
+    doomed: Vec<TabId>,
+}
+
 pub(super) enum TabSwitchPaneFocus {
     GroupMove(PaneId),
     Notification {
@@ -1019,6 +1025,69 @@ impl Screen {
         self.switch_active_tab_name(name, client_id)
     }
 
+    fn tab_settlement(&self, closing: Option<(TabId, PaneId)>) -> TabSettlement {
+        let excluded = |tab: &Tab| {
+            closing
+                .filter(|(id, _)| *id == tab.id)
+                .map(|(_, pane)| pane)
+        };
+        let selectable = |tab: &Tab| match excluded(tab) {
+            Some(pane) => tab.has_selectable_panes_after_single_close(pane),
+            None => tab.has_selectable_panes(),
+        };
+        let usable: Vec<TabId> = self
+            .core
+            .tabs
+            .values()
+            .filter(|tab| {
+                !tab.is_pending()
+                    && selectable(tab)
+                    && !self.core.deferred_tab_closes.contains(&tab.id)
+            })
+            .map(|tab| tab.id)
+            .collect();
+        let another_destination = usable
+            .iter()
+            .any(|id| Some(*id) != self.core.replacement_tab);
+        let doomed: Vec<TabId> = self
+            .core
+            .tabs
+            .values()
+            .filter(|tab| {
+                !tab.is_pending()
+                    && (self.core.deferred_tab_closes.contains(&tab.id)
+                        || (!tab.agent_tab_waiting_for_pane
+                            && !selectable(tab)
+                            && (!tab.has_live_terminal_except(excluded(tab))
+                                || usable.is_empty()
+                                || (self.core.replacement_pending && !another_destination))))
+            })
+            .map(|tab| tab.id)
+            .collect();
+        TabSettlement {
+            usable,
+            another_destination,
+            doomed,
+        }
+    }
+
+    /// Background requests must also account for hidden work that settlement could reap.
+    pub(super) fn settlement_after_close_risks_other_terminals(
+        &self,
+        source: TabId,
+        pane: PaneId,
+    ) -> bool {
+        self.tab_settlement(Some((source, pane)))
+            .doomed
+            .into_iter()
+            .any(|tab| {
+                self.core.tabs[&tab]
+                    .get_all_pane_ids()
+                    .into_iter()
+                    .any(|id| id != pane && matches!(id, PaneId::Terminal(_)))
+            })
+    }
+
     /// Settle tab lifetime after each instruction. Pending layouts are never destinations.
     /// Hidden-only tabs survive beside a usable tab; only quit guards require a replacement.
     /// Keep replacement identity after loading so natural exits hold instead of respawning.
@@ -1032,38 +1101,14 @@ impl Screen {
                 tab.ensure_selectable_focus(*client).context(err_context)?;
             }
         }
-        let usable: Vec<TabId> = self
-            .core
-            .tabs
-            .values()
-            .filter(|tab| {
-                !tab.is_pending()
-                    && tab.has_selectable_panes()
-                    && !self.core.deferred_tab_closes.contains(&tab.id)
-            })
-            .map(|tab| tab.id)
-            .collect();
+        let TabSettlement {
+            usable,
+            another_destination,
+            doomed,
+        } = self.tab_settlement(None);
         if usable.is_empty() && self.warp.in_flight_pane_warps > 0 {
             return Ok(());
         }
-        let another_destination = usable
-            .iter()
-            .any(|id| Some(*id) != self.core.replacement_tab);
-        let doomed: Vec<TabId> = self
-            .core
-            .tabs
-            .values()
-            .filter(|tab| {
-                !tab.is_pending()
-                    && (self.core.deferred_tab_closes.contains(&tab.id)
-                        || (!tab.agent_tab_waiting_for_pane
-                            && !tab.has_selectable_panes()
-                            && (!tab.has_live_terminal()
-                                || usable.is_empty()
-                                || (self.core.replacement_pending && !another_destination))))
-            })
-            .map(|tab| tab.id)
-            .collect();
         // Relocate clients from retained hidden-work tabs. Teardown uses tab history for closing tabs.
         if let Some(destination) = usable.first().copied() {
             let stranded: Vec<_> = self

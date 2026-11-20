@@ -1,7 +1,9 @@
 // Management sheets keep the submitted agent reference and destination incarnation pinned.
-import { html, useEffect, useRef, useState } from './ui.js';
+import { Banner, html, useEffect, useLayoutEffect, useRef, useState } from './ui.js';
 import { describeError } from '../api.js';
-import { Sheet } from './sheets.js';
+import { cardDetail, controlTarget, detailHash } from '../app-route.js';
+import { sameTarget } from '../submission.js';
+import { ConfirmSheet, Sheet } from './sheets.js';
 
 function validDestinations(data) {
   const id = (value) => Number.isSafeInteger(value) && value >= 0;
@@ -82,8 +84,10 @@ function savedLaunch(storage) {
   return null;
 }
 
-export function StartSheet({ env, onClose, onLaunched }) {
+function StartSheet({ env, onClose, onLaunched }) {
   const [pending, setPending] = useState(() => savedLaunch(env.session));
+  const [confirmForget, setConfirmForget] = useState(false);
+  const [forgetError, setForgetError] = useState('');
   const [provider, setProvider] = useState('');
   const [project, setProject] = useState('');
   const [checkout, setCheckout] = useState('');
@@ -99,6 +103,7 @@ export function StartSheet({ env, onClose, onLaunched }) {
   const ready = choices?.ok && providers.includes(provider) && projects.includes(project)
     && (create ? !!branch.trim() : trees.some((w) => w.path === checkout));
   async function launch() {
+    setForgetError('');
     let body = pending;
     if (!body) {
       const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -111,15 +116,25 @@ export function StartSheet({ env, onClose, onLaunched }) {
     }
     const r = await env.api.post('/api/agent/launch', body);
     if (r.ok && (typeof r.data?.pane_id !== 'string' || typeof r.data.session !== 'string' || r.data.kind !== body.kind)) return { kind: 'malformed' };
-    if (r.ok || ['invalid', 'launch_failed', 'launch_conflict'].includes(r.code)) {
-      env.session.remove(pendingLaunchKey);
-      setPending(null);
-    }
-    if (r.ok) onLaunched(r.data);
+    if (r.ok) onLaunched({ ...r.data, body, expiresAt: Date.now() + 60000 });
     return r;
   }
+  function forget() {
+    if (!env.session.remove(pendingLaunchKey).ok) {
+      setForgetError('Could not remove the saved launch from this browser tab.');
+      return;
+    }
+    setForgetError('');
+    setPending(null);
+    retry();
+  }
+  if (confirmForget) return html`<${ConfirmSheet} id="sheet-forget-launch" title="Forget launch?"
+    message="The original agent may already be running. Starting again could create a second agent."
+    confirmLabel="Forget launch" danger onConfirm=${forget} onClose=${() => setConfirmForget(false)} />`;
   if (pending) return html`<${ActionForm} id="sheet-start" title="Start agent" label="Check launch" submit=${launch} onClose=${onClose}>
     <p>${pending.kind} in ${pending.project} · ${pending.checkout.branch ?? pending.checkout.path}</p>
+    <button type="button" class="link-button" onClick=${() => setConfirmForget(true)}>Forget launch</button>
+    ${forgetError ? html`<p role="alert">${forgetError}</p>` : null}
   <//>`;
   return html`<${ActionForm} id="sheet-start" title="Start agent" label="Start agent" disabled=${!ready} submit=${launch} onClose=${onClose}>
     <label>Provider<select required value=${provider} onChange=${(e) => setProvider(e.target.value)}>
@@ -136,6 +151,67 @@ export function StartSheet({ env, onClose, onLaunched }) {
     ${create ? html`<label>Branch name<input required value=${branch} onInput=${(e) => setBranch(e.target.value)} /></label>` : null}
     <${LoadStatus} reply=${choices} retry=${retry} />
   <//>`;
+}
+
+function LaunchWait({ env, launched, data, onDone }) {
+  const [visit] = useState(() => new AbortController());
+  const entry = useRef(window.history.state?.yinzIndex);
+  const verifying = useRef(false);
+  const candidate = useRef(null);
+
+  function stop(message) {
+    visit.abort();
+    onDone();
+    if (message) env.toast(message);
+  }
+  useLayoutEffect(() => {
+    const timer = setTimeout(() => stop('Still waiting for the conversation. Reopen Start agent to check this launch.'),
+      launched.expiresAt - Date.now());
+    return () => { clearTimeout(timer); visit.abort(); };
+  }, []);
+
+  useLayoutEffect(() => {
+    const rows = data?.session === launched.session ? data.agents.filter((row) =>
+      row?.current_session === true && row.session === launched.session && row.pane_id === launched.pane_id) : [];
+    const row = rows.length === 1 ? rows[0] : null;
+    const agent = row && controlTarget(row, data.session);
+    candidate.current = agent?.kind === launched.kind ? { agent, href: detailHash(cardDetail(row, data.session)) } : null;
+    if (!candidate.current || verifying.current || visit.signal.aborted || Date.now() >= launched.expiresAt) return;
+    const href = candidate.current.href;
+    verifying.current = true;
+    env.api.post('/api/agent/launch-status', { submission_id: launched.body.submission_id, agent },
+      { signal: visit.signal }).then((reply) => {
+      verifying.current = false;
+      if (visit.signal.aborted || window.history.state?.yinzIndex !== entry.current
+        || Date.now() >= launched.expiresAt || env.api.stale(reply)) return;
+      if (reply.code === 'target_changed') {
+        stop(describeError(reply) + ' Reopen Start agent to check the saved launch.');
+        return;
+      }
+      if (!reply.ok || reply.data?.session !== launched.session || reply.data.pane_id !== launched.pane_id
+        || !sameTarget(reply.data.agent, agent) || !sameTarget(agent, candidate.current?.agent)
+        || href !== candidate.current.href) return;
+      if (!env.session.remove(pendingLaunchKey).ok) {
+        stop('Could not remove the saved launch from this browser tab.');
+        return;
+      }
+      stop();
+      env.pushHash(href);
+    });
+  }, [data]);
+
+  return html`<${Banner} tone="info" actions=${html`<button type="button" class="link-button" onClick=${() => stop()}>Dismiss</button>`}>
+    Waiting for ${launched.kind} in ${launched.pane_id} to report its conversation…<//>`;
+}
+
+export function AgentLauncher({ env, data, refresh }) {
+  const [start, setStart] = useState(false);
+  const [launched, setLaunched] = useState(null);
+  if (launched) return html`<${LaunchWait} env=${env} launched=${launched} data=${data} onDone=${() => setLaunched(null)} />`;
+  return html`<button type="button" class="button" id="start-agent" aria-haspopup="dialog" onClick=${() => setStart(true)}>Start agent</button>
+    ${start ? html`<${StartSheet} env=${env} onClose=${() => setStart(false)} onLaunched=${(launch) => {
+      setStart(false); setLaunched(launch); refresh();
+    }} />` : null}`;
 }
 
 function named(item) {

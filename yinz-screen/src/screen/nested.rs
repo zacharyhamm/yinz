@@ -414,6 +414,11 @@ impl Screen {
             }
         }
         for client_id in affected_clients {
+            // A web close can remove a guest this client visited long before its current
+            // pane. Settlement will publish the route for the pane the client actually sees.
+            if self.core.focus_before_web_mutation.contains_key(&client_id) {
+                continue;
+            }
             self.set_client_dimmed(client_id, false, None);
             let _ = self
                 .core
@@ -517,6 +522,9 @@ impl Screen {
         new_pane_id: PaneId,
         entered_from_direction: Option<Direction>,
     ) {
+        if self.core.focus_before_web_mutation.contains_key(&client_id) {
+            return;
+        }
         let should_route = self.should_route_keys_to_pane(client_id, new_pane_id);
         let guest_pane_id = if should_route {
             Some(new_pane_id)

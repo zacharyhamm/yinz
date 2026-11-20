@@ -587,6 +587,53 @@ fn palette_projects_worktrees_creation_and_exact_external_detached_reuse() {
 }
 
 #[test]
+fn web_agent_launch_offers_the_primary_worktree_with_separate_git_metadata() {
+    use super::super::{launch_transaction::tests::Host, web_agents};
+    use serde_json::json;
+
+    let (repo, data) = repository();
+    let primary = repo.path().canonicalize().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    let parent = external.path().canonicalize().unwrap();
+    let metadata = parent.join("metadata");
+    let linked = parent.join("linked");
+    git(
+        &primary,
+        &["init", "--separate-git-dir", metadata.to_str().unwrap()],
+    );
+    git(
+        &primary,
+        &["worktree", "add", "-b", "topic", linked.to_str().unwrap()],
+    );
+    let host = Host::new(false, true, false);
+    let request = |body: serde_json::Value| {
+        web_agents::handle(&body.to_string(), ClientId::new(1), &host.senders, &data)
+    };
+    let choices = request(json!({"op":"launch_choices", "project":"project"}));
+    assert_eq!(
+        choices["ok"]["worktrees"],
+        json!([
+            {"path":primary, "branch":"main"}, {"path":linked, "branch":"topic"}
+        ])
+    );
+    let instance = choices["ok"]["server_instance"].as_str().unwrap();
+    let launch = |id: &str, path: &Path| {
+        request(json!({
+            "op":"launch", "submission_id":format!("{instance}.{id}"), "kind":"codex",
+            "project":"project", "checkout":{"type":"existing","path":path}
+        }))
+    };
+    assert_eq!(launch("primary", &primary)["ok"]["kind"], "codex");
+    assert_eq!(launch("metadata", &metadata)["error"]["code"], "invalid");
+    fs::rename(&linked, parent.join("old")).unwrap();
+    git(&parent, &["init", "linked"]);
+    assert_eq!(launch("stale", &linked)["error"]["code"], "invalid");
+    let commands = host.commands.lock();
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].cwd.as_ref(), Some(&primary));
+}
+
+#[test]
 fn web_agent_launch_creates_the_first_worktree_for_a_bare_repository() {
     use super::super::{launch_transaction::tests::Host, web_agents};
     use serde_json::json;
@@ -615,6 +662,11 @@ fn web_agent_launch_creates_the_first_worktree_for_a_bare_repository() {
         .join("custom-checkouts/topic")
         .canonicalize()
         .unwrap();
+    let choices = request(json!({"op":"launch_choices", "project":"bare"}));
+    assert_eq!(
+        choices["ok"]["worktrees"],
+        json!([{"path":path, "branch":"topic"}])
+    );
     let commands = host.commands.lock();
     assert_eq!(commands.len(), 1);
     assert_eq!(commands[0].cwd.as_ref(), Some(&path));

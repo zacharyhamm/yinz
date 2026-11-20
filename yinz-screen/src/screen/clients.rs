@@ -237,6 +237,7 @@ impl Screen {
         client_id: ClientId,
         clean_panes: bool,
     ) -> Result<()> {
+        self.core.focus_before_web_mutation.remove(&client_id);
         self.notices.clear_return_target(client_id);
         let err_context = || format!("failed to remove client {client_id}");
         // `and` evaluates every cleanup step while retaining the first error.

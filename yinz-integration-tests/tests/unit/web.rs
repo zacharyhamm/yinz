@@ -1506,6 +1506,36 @@ fn web_builtin_manage_agent_routes() {
         .unwrap();
     let reference = &row["ref"];
     let target = json!({"agent":reference}).to_string();
+    let status = |submission_id: &str, agent: &serde_json::Value| {
+        call(
+            addr,
+            "POST",
+            "/api/agent/launch-status",
+            Some(&token),
+            &json!({"submission_id":submission_id, "agent":agent}).to_string(),
+        )
+    };
+    let launch_id = format!("{instance}.first");
+    let verified = status(&launch_id, reference);
+    assert_eq!(verified.status, 200);
+    assert_eq!(
+        verified.json(),
+        json!({"session":launched["session"],"pane_id":launched["pane_id"],"agent":reference})
+    );
+    assert_eq!(
+        status("retired.first", reference).error_code(409),
+        "target_changed"
+    );
+    assert_eq!(
+        status(&format!("{instance}.second"), reference).error_code(409),
+        "target_changed"
+    );
+    let mut replacement = reference.clone();
+    replacement["session_id"] = json!("replacement");
+    assert_eq!(
+        status(&launch_id, &replacement).error_code(409),
+        "target_changed"
+    );
     let inventory = call_ok(addr, "POST", "/api/agent/destinations", &token, &target);
     assert_eq!(inventory["current_tab"], row["location"]["tab"]["id"]);
     let moved = call_ok(addr, "POST", "/api/agent/move", &token,

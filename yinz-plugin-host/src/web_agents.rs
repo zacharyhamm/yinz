@@ -41,6 +41,10 @@ enum Operation {
         project: String,
         checkout: Checkout,
     },
+    LaunchStatus {
+        submission_id: String,
+        agent: WebAgentRef,
+    },
     Destinations {
         agent: WebAgentRef,
     },
@@ -290,6 +294,14 @@ impl Operation {
                     Checkout::New { branch } => identifier(branch)?,
                     _ => {},
                 }
+            },
+            Self::LaunchStatus {
+                submission_id,
+                agent,
+            } => {
+                yinz_types::agent::control::validate_submission_id(submission_id)
+                    .map_err(invalid)?;
+                agent_ref(agent)?;
             },
             Self::Move { agent, destination } => {
                 agent_ref(agent)?;
@@ -823,6 +835,58 @@ fn launch(
     }
 }
 
+fn launch_status(
+    id: &str,
+    agent: &WebAgentRef,
+    senders: &ThreadSenders,
+    data: &DataAccess,
+) -> Result<Value> {
+    use yinz_types::agent::launch::{LaunchOutcome, WorkerDisposition};
+
+    let instance = yinz_bus::agent_launch::server_instance();
+    if !id.starts_with(&format!("{instance}.")) {
+        return Err(error(
+            "target_changed",
+            "The server restarted after this launch.",
+        ));
+    }
+    let live = target(senders, agent)?;
+    let changed = || {
+        error(
+            "target_changed",
+            "The original launched agent is no longer available.",
+        )
+    };
+    let session = senders.session.current();
+    let yinz_types::pane_id::PaneId::Terminal(terminal) = live.pane.id else {
+        return Err(changed());
+    };
+    if !live.current_session
+        || live.session != session
+        || senders
+            .launches
+            .gate(terminal)
+            .is_none_or(|gate| gate.launch_id != id)
+    {
+        return Err(changed());
+    }
+    // Observe after the live snapshot so a worker superseded during that read fails verification.
+    let receipt = super::launch_transaction::status(id, senders, data)
+        .launch
+        .ok_or_else(changed)?;
+    if receipt.server_instance != instance
+        || receipt.launch_id != id
+        || receipt.outcome != LaunchOutcome::Started
+        || receipt.disposition != WorkerDisposition::Available
+        || receipt
+            .spawned
+            .is_none_or(|spawned| spawned.pane_id != live.pane.id)
+    {
+        return Err(changed());
+    }
+    Ok(json!({"session":session, "pane_id":live.pane.id.to_string(), "agent":agent}))
+}
+
 // Keep the original Git directory open across reservation. Even if the entire
 // project is replaced at the same pathname its inode cannot be recycled.
 struct CheckoutIdentity(std::fs::File);
@@ -879,7 +943,7 @@ fn execute(
                 super::agent_launch::available_worktrees(std::path::Path::new(&project.root))
                     .map_err(invalid)?
                     .into_iter()
-                    .map(|w| json!({"path":w.path,"branch":w.branch}))
+                    .filter_map(|w| Some(json!({"path":w.path.to_str()?, "branch":w.branch})))
                     .collect()
             } else {
                 Vec::new()
@@ -902,6 +966,10 @@ fn execute(
             senders,
             data,
         ),
+        Operation::LaunchStatus {
+            submission_id,
+            agent,
+        } => launch_status(&submission_id, &agent, senders, data),
         Operation::Destinations { agent } => {
             manage(agent, WebManageAction::Destinations, client, senders)
         },

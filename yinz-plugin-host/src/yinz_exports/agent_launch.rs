@@ -6,6 +6,7 @@ use super::write_response;
 use crate::plugin_map::PluginEnv;
 use prost::Message;
 use std::collections::BTreeMap;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Duration;
@@ -1268,12 +1269,7 @@ pub(super) fn linked_worktree(folder: &std::path::Path) -> Result<bool, String> 
 /// The repository's primary worktree — the checkout a relative worktree path is
 /// resolved against.
 ///
-/// `git rev-parse --show-toplevel` answers the *caller's* worktree, which is the
-/// wrong anchor for `git worktree add`. `git worktree list --porcelain` always
-/// lists the primary worktree first and answers its real checkout path. Taking the
-/// parent of `--git-common-dir` instead would assume the common directory is a
-/// `.git` sitting inside its checkout, which `--separate-git-dir` and `$GIT_DIR`
-/// both break.
+/// For bare repositories the first entry is the repository itself.
 pub(super) fn primary_worktree(root: &std::path::Path) -> Result<PathBuf, String> {
     worktrees(root)?
         .into_iter()
@@ -1287,6 +1283,7 @@ pub(super) fn primary_worktree(root: &std::path::Path) -> Result<PathBuf, String
 /// `branch` is `None` for a detached head and for the bare entry a bare
 /// repository lists first - neither can be reused for a branch request.
 pub(super) struct Worktree {
+    bare: bool,
     pub(super) path: PathBuf,
     pub(super) branch: Option<String>,
 }
@@ -1296,7 +1293,7 @@ pub(super) struct Worktree {
 pub(super) fn available_worktrees(root: &Path) -> Result<Vec<Worktree>, String> {
     Ok(worktrees(root)?
         .into_iter()
-        .filter(|w| w.path.join(".git").exists())
+        .filter(|w| !w.bare && w.path.join(".git").exists())
         .collect())
 }
 
@@ -1306,50 +1303,73 @@ pub(super) fn selected_worktree(root: &Path, path: &Path) -> Result<PathBuf, Str
         .find(|w| same_path(&w.path, path))
         .ok_or("Selected worktree no longer belongs to this project")?;
     // A stale admin entry can point at a directory since occupied by a different repository.
-    if !same_path(&primary_worktree(root)?, &primary_worktree(&selected.path)?) {
+    if git_path(root, "--git-common-dir")? != git_path(&selected.path, "--git-common-dir")?
+        || !same_path(
+            &git_path(&selected.path, "--show-toplevel")?,
+            &selected.path,
+        )
+    {
         return Err("Selected checkout now belongs to another repository".into());
     }
     Ok(selected.path)
 }
 
-/// Every checkout of the repository, primary first.
-///
-/// One `git worktree list --porcelain` for all three questions asked of it
-/// (which folder anchors a relative path, is this folder already a worktree, who
-/// holds this branch), so a request costs one process rather than three.
-pub(super) fn worktrees(root: &std::path::Path) -> Result<Vec<Worktree>, String> {
+fn git_path(root: &Path, option: &str) -> Result<PathBuf, String> {
     let output = process::Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["worktree", "list", "--porcelain"])
+        .args(["rev-parse", "--path-format=absolute", option])
+        .output()
+        .map_err(|error| format!("failed to run git: {error}"))?;
+    if !output.status.success() {
+        return Err(git_error(option, &output.stderr));
+    }
+    let path = output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout);
+    Path::new(std::ffi::OsStr::from_bytes(path))
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve Git path for {option}: {error}"))
+}
+
+/// Every checkout of the repository, primary first.
+pub(super) fn worktrees(root: &Path) -> Result<Vec<Worktree>, String> {
+    let output = process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["worktree", "list", "--porcelain", "-z"])
         .output()
         .map_err(|error| format!("failed to run git: {error}"))?;
     if !output.status.success() {
         return Err(git_error("list the worktrees", &output.stderr));
     }
-    Ok(parse_worktrees(&String::from_utf8_lossy(&output.stdout)))
+    let mut entries = parse_worktrees(&output.stdout);
+    if let Some(primary) = entries.first_mut()
+        && !primary.bare
+        && git_path(root, "--git-dir")? == git_path(root, "--git-common-dir")?
+        && let Ok(toplevel) = git_path(root, "--show-toplevel")
+    {
+        // With --separate-git-dir, the first porcelain path names the metadata.
+        // Only the primary checkout can supply its own working directory.
+        primary.path = toplevel;
+    }
+    Ok(entries)
 }
 
-/// Porcelain blocks, one per checkout, separated by blank lines: a `worktree`
-/// line opens each and `branch refs/heads/<name>` follows it unless the checkout
-/// is detached or bare.
-pub(super) fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
-    let mut worktrees: Vec<Worktree> = vec![];
-    for line in porcelain.lines() {
-        if let Some(path) = line.strip_prefix("worktree ") {
-            if !path.is_empty() {
-                worktrees.push(Worktree {
-                    path: PathBuf::from(path),
-                    branch: None,
-                });
+/// NUL-terminated porcelain fields keep spaces and newlines in paths intact.
+pub(super) fn parse_worktrees(porcelain: &[u8]) -> Vec<Worktree> {
+    let mut worktrees = Vec::new();
+    for field in porcelain.split(|&byte| byte == 0) {
+        if let Some(path) = field.strip_prefix(b"worktree ") {
+            worktrees.push(Worktree {
+                path: std::ffi::OsStr::from_bytes(path).into(),
+                branch: None,
+                bare: false,
+            });
+        } else if let Some(worktree) = worktrees.last_mut() {
+            if let Some(branch) = field.strip_prefix(b"branch refs/heads/") {
+                worktree.branch = Some(String::from_utf8_lossy(branch).into_owned());
+            } else if field == b"bare" {
+                worktree.bare = true;
             }
-        } else if let Some(reference) = line.strip_prefix("branch ")
-            && let Some(worktree) = worktrees.last_mut()
-        {
-            worktree.branch = reference
-                .strip_prefix("refs/heads/")
-                .filter(|branch| !branch.is_empty())
-                .map(str::to_owned);
         }
     }
     worktrees

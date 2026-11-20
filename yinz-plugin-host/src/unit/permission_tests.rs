@@ -2729,9 +2729,9 @@ fn only_a_linked_checkout_is_a_linked_worktree() {
 #[test]
 fn the_porcelain_listing_reads_a_path_and_a_branch_per_checkout() {
     let worktrees = parse_worktrees(
-        "worktree /work/repo\nHEAD abcd\nbranch refs/heads/main\n\
-         \nworktree /work/repo/.worktrees/topic\nHEAD ef01\nbranch refs/heads/topic\n\
-         \nworktree /work/detached\nHEAD 2345\ndetached\n",
+        b"worktree /work/repo\0HEAD abcd\0branch refs/heads/main\0\
+         \0worktree /work/repo/.worktrees/topic\0HEAD ef01\0branch refs/heads/topic\0\
+         \0worktree /work/detached\0HEAD 2345\0detached\0",
     );
     let read: Vec<_> = worktrees
         .iter()

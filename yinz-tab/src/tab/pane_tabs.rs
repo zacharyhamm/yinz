@@ -20,6 +20,7 @@ pub(super) struct PaneTabs {
 pub(super) struct PaneTabsCarry {
     pub(super) tabs: PaneTabs,
     pub(super) children: SuppressedPanes,
+    respawns: HashMap<PaneId, (RunCommand, bool)>,
 }
 
 pub(super) fn take_carry(pane: &mut Box<dyn Pane>) -> Option<PaneTabsCarry> {
@@ -44,6 +45,7 @@ impl Tab {
         if let Some(transfer) = take_carry(pane) {
             self.pane_tabs.insert(transfer.tabs.info.id, transfer.tabs);
             self.suppressed_panes.extend(transfer.children);
+            self.pending_command_respawns.extend(transfer.respawns);
         }
     }
 
@@ -52,14 +54,22 @@ impl Tab {
             .pane_tabs_of(pane.pid())
             .and_then(|id| self.pane_tabs.remove(&id))
         {
-            let children = tabs
+            let children: SuppressedPanes = tabs
                 .info
                 .tabs
                 .iter()
                 .filter_map(PaneTabInfo::pane_id)
                 .filter_map(|id| self.suppressed_panes.remove(&id).map(|child| (id, child)))
                 .collect();
-            pane.set_pane_tabs_transfer(PaneTabsTransfer::new(PaneTabsCarry { tabs, children }));
+            let respawns = children
+                .keys()
+                .filter_map(|id| self.take_pending_respawn(*id).map(|entry| (*id, entry)))
+                .collect();
+            pane.set_pane_tabs_transfer(PaneTabsTransfer::new(PaneTabsCarry {
+                tabs,
+                children,
+                respawns,
+            }));
         }
     }
 

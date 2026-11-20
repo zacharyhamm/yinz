@@ -283,6 +283,7 @@ pub(super) fn process_instruction(
         .settle_tabs()
         .context("failed to settle tabs after instruction")
         .non_fatal();
+    screen.reconcile_web_focus_after_settlement();
     screen.revalidate_launches();
     screen.confirm_terminal_placements(&mut state.terminal_placements, &state.pending)?;
     if !screen.migration_blocks_normal_work() {

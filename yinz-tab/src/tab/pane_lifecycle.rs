@@ -110,17 +110,7 @@ impl Tab {
         // A suppressed intermediate owns no layout slot. Its predecessors inherit the
         // complete surviving restoration link, or stay parked if it had no successor.
         if !ignore_suppressed_panes && let Some(mut removed) = self.suppressed_panes.remove(&id) {
-            let successor = removed
-                .restored_by
-                .filter(|stand_in| self.has_pane_with_pid(&stand_in.pane_id));
-            for predecessor in self.suppressed_panes.values_mut() {
-                if predecessor
-                    .restored_by
-                    .is_some_and(|stand_in| stand_in.pane_id == id)
-                {
-                    predecessor.restored_by = successor;
-                }
-            }
+            self.reconnect_restoration_chain(id, removed.restored_by);
             if let Some(exit_status) = exit_status {
                 removed.pane.update_exit_status(exit_status);
             }
@@ -186,6 +176,18 @@ impl Tab {
             self.repair_focus_after_pane_removal();
         }
     }
+    fn reconnect_restoration_chain(&mut self, id: PaneId, successor: Option<super::StandIn>) {
+        let successor = successor.filter(|stand_in| self.has_pane_with_pid(&stand_in.pane_id));
+        for predecessor in self.suppressed_panes.values_mut() {
+            if predecessor
+                .restored_by
+                .is_some_and(|stand_in| stand_in.pane_id == id)
+            {
+                predecessor.restored_by = successor;
+            }
+        }
+    }
+
     /// Take a pane out of this tab's layout. A pane that comes back to this tab keeps its scroll
     /// position and the output queued behind it; one leaving the tab goes through
     /// [`Self::extract_pane_leaving_tab`].
@@ -234,7 +236,12 @@ impl Tab {
                 self.flush_pending_vte_events(pid).non_fatal();
             }
         }
-        self.extract_pane(id, dont_swap_if_suppressed)
+        let restoration = self.suppressed_panes.get(&id).map(|pane| pane.restored_by);
+        let pane = self.extract_pane(id, dont_swap_if_suppressed)?;
+        if let Some(successor) = restoration {
+            self.reconnect_restoration_chain(id, successor);
+        }
+        Some(pane)
     }
 
     fn extract_pane_inner(

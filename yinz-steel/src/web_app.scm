@@ -81,6 +81,8 @@
     value %web-app-bad))
 (define %web-app-submission
   (%web-app-keep (lambda (value) (and (string? value) (regex-match? (regex "^[A-Za-z0-9._-]{1,64}$") value)))))
+(define %web-app-launch-id
+  (%web-app-keep (lambda (v) (and (string? v) (regex-match? (regex "^[A-Za-z0-9._-]{1,128}$") v)))))
 (define %web-app-prompt
   (%web-app-keep (lambda (value) (and (%web-app-text? value 32768 (list #\newline #\tab)) (not (%web-app-blank? value))))))
 (define %web-app-lines (%web-app-keep (lambda (value) (%web-app-integer? value 1 200))))
@@ -307,8 +309,11 @@
   (%web-app-get "/api/agent/launch-choices" "launch_choices" (hash "project" %web-app-identity) %web-app-same %web-app-same)
   (%web-app-post "/api/agent/launch" "launch"
     (hash "kind" %web-app-identity "project" %web-app-identity "checkout" (%web-app-keep hash?)
-      "submission_id" (%web-app-keep (lambda (v) (and (string? v) (regex-match? (regex "^[A-Za-z0-9._-]{1,128}$") v)))))
+      "submission_id" %web-app-launch-id)
     (%web-app-require "kind" "project" "checkout" "submission_id") %web-app-same)
+  (%web-app-post "/api/agent/launch-status" "launch_status"
+    (hash "submission_id" %web-app-launch-id "agent" %web-app-agent-ref)
+    (%web-app-require "submission_id" "agent") %web-app-same)
   (%web-app-post "/api/agent/destinations" "destinations" (hash "agent" %web-app-agent-ref)
     (%web-app-require "agent") %web-app-same)
   (%web-app-post "/api/agent/move" "move" (hash "agent" %web-app-agent-ref "destination" (%web-app-keep hash?))
