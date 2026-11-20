@@ -1655,7 +1655,7 @@ fn only_tabs_opened_for_an_agent_hold_a_layout_slot() {
     let mut screen = screen_with_default_layout(false);
     let plugins = plugin_capture(&mut screen);
     let tab_id = screen
-        .new_tab_for_adopted_pane(Some(run("claude")), CLIENT, false)
+        .new_tab_for_adopted_pane(Some(run("claude")), CLIENT, false, true)
         .unwrap();
     assert!(!screen.core.tabs[&tab_id].agent_layout_slot_expected);
     let asked = layouts_asked_for(&plugins).remove(0);

@@ -16,6 +16,7 @@ use yinz_types::pane_id::PaneId;
 impl Screen {
     pub(super) fn web_live_agents(&mut self, reply: crossbeam::channel::Sender<Vec<WebLiveAgent>>) {
         let instance = self.core.instance_id.to_string();
+        let names = self.plugin_tab_names();
         let mut local_groups = HashMap::new();
         let agents =
             self.live_agents_with_tabs()
@@ -64,7 +65,7 @@ impl Screen {
                         tab_group_session: tab_group_session.clone(),
                         tab_group,
                         local_tab: match tab {
-                            LiveAgentTab::Local(id) => self.web_tab(id),
+                            LiveAgentTab::Local(id) => self.web_tab(id, &names),
                             _ => None,
                         },
                         current_session,
@@ -107,11 +108,11 @@ impl Screen {
             .non_fatal();
     }
 
-    fn web_tab(&self, id: TabId) -> Option<WebTab> {
+    fn web_tab(&self, id: TabId, names: &HashMap<TabId, String>) -> Option<WebTab> {
         let tab = self.core.tabs.get(&id)?;
         Some(WebTab {
             id,
-            name: tab.name.clone(),
+            name: names.get(&id)?.clone(),
             incarnation: tab.agent_tab_incarnation.clone(),
         })
     }
@@ -152,8 +153,15 @@ impl Screen {
                 "Agent request expired. Refresh and try again.".into(),
             ));
         }
+        if !matches!(action, WebManageAction::Destinations) && self.core.tabs[&source].is_pending()
+        {
+            return Err(WebFocusError::Unavailable(
+                "Source tab is still loading.".into(),
+            ));
+        }
         let destination = match action {
             WebManageAction::Destinations => {
+                let names = self.plugin_tab_names();
                 let current_group = *self
                     .core
                     .tab_group_ids
@@ -171,7 +179,7 @@ impl Screen {
                                 .group_tabs(id)
                                 .into_iter()
                                 .filter(|id| self.web_move_destination_tab(*id).is_some())
-                                .filter_map(|id| self.web_tab(id))
+                                .filter_map(|id| self.web_tab(id, &names))
                                 .collect(),
                         })
                     })
@@ -193,7 +201,17 @@ impl Screen {
                 }
                 None
             },
-            WebManageAction::Move(destination) => Some(destination),
+            WebManageAction::Move(destination) => {
+                let owner = self.core.tabs[&source].pane_owner_for_extraction(pane);
+                if !matches!(destination, MoveDestination::Tab { tab, .. } if tab == source)
+                    && self.settlement_after_move_risks_source_panes(source, owner)
+                {
+                    return Err(WebFocusError::Unavailable(
+                        "Moving this agent would also close other panes.".into(),
+                    ));
+                }
+                Some(destination)
+            },
         };
         for &client in self.core.connected_clients.borrow().iter() {
             if !self.core.watcher_clients.contains_key(&client) {
@@ -263,11 +281,6 @@ impl Screen {
             )
         };
         let source_tab = &self.core.tabs[&source];
-        if source_tab.is_pending() {
-            return Err(WebFocusError::Unavailable(
-                "Source tab is still loading.".into(),
-            ));
-        }
         let owner = source_tab.pane_owner_for_extraction(pane);
         let placement = source_tab.placement_for_extraction(owner);
         let restore_source = source_tab.stands_in_for_a_pane(owner).is_some();
@@ -319,7 +332,13 @@ impl Screen {
                     .invoked_with()
                     .clone();
                 let tab = self
-                    .new_tab_for_adopted_pane(invoked, client, false)
+                    .new_tab_for_adopted_pane(
+                        invoked,
+                        client,
+                        false,
+                        !source_tab.pane_is_overlay(owner)
+                            || (!restore_source && source_tab.overlay_provides_tab_content(owner)),
+                    )
                     .map_err(web_failed)?;
                 self.core
                     .tabs

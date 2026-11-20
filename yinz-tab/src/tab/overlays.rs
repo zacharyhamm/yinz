@@ -23,6 +23,7 @@ use yinz_types::geometry::FloatingPaneCoordinates;
 use yinz_types::pane_size::Dimension;
 use yinz_types::pane_size::Offset;
 use yinz_types::pane_size::PaneGeom;
+use yinz_types::pane_tabs::PaneTabsId;
 use yinz_types::position::Position;
 
 impl Tab {
@@ -67,24 +68,27 @@ impl Tab {
         &self,
         members: &mut HashSet<PaneId>,
         follows_stand_in: impl Fn(PaneId) -> bool,
-    ) {
+    ) -> HashSet<PaneTabsId> {
+        let mut expanded = HashSet::new();
         loop {
             let previous = members.len();
-            let tab_members: Vec<_> = members
-                .iter()
-                .filter_map(|pane| self.pane_tabs_of(*pane))
-                .flat_map(|id| {
-                    self.pane_tabs[&id]
-                        .info
-                        .tabs
-                        .iter()
-                        .filter_map(|slot| slot.pane_id())
-                })
-                .collect();
-            members.extend(tab_members);
+            for (id, tabs) in &self.pane_tabs {
+                if !expanded.contains(id)
+                    && (members.contains(&tabs.info.pane_id)
+                        || tabs
+                            .info
+                            .tabs
+                            .iter()
+                            .filter_map(|slot| slot.pane_id())
+                            .any(|pane| members.contains(&pane)))
+                {
+                    expanded.insert(*id);
+                    members.extend(tabs.info.tabs.iter().filter_map(|slot| slot.pane_id()));
+                }
+            }
             self.include_suppressed_behind(members, &follows_stand_in);
             if previous == members.len() {
-                break;
+                return expanded;
             }
         }
     }
@@ -92,11 +96,7 @@ impl Tab {
     pub fn take_overlay_container(&mut self, pane_id: PaneId) -> Option<OverlayTransfer> {
         let container = self.overlay_panes.take_container(pane_id)?;
         let mut members: HashSet<_> = container.pane_ids().collect();
-        self.include_overlay_dependents(&mut members, |_| true);
-        let tab_ids: HashSet<_> = members
-            .iter()
-            .filter_map(|pane| self.pane_tabs_of(*pane))
-            .collect();
+        let tab_ids = self.include_overlay_dependents(&mut members, |_| true);
         let pane_tabs = tab_ids
             .into_iter()
             .filter_map(|id| self.pane_tabs.remove(&id).map(|tabs| (id, tabs)))

@@ -387,6 +387,60 @@ fn pane_tabs_overlay_moves_hidden_children_and_closes_during_loading() {
     assert!(receiver.try_iter().any(|(instruction, _)| matches!(instruction, PluginInstruction::Unload(id) if id == PluginId::new(101))));
 }
 
+#[test]
+fn pane_tabs_overlay_moves_loaded_slots_behind_stand_ins() {
+    use yinz_bus::pty::ReplacedPane;
+    let client = ClientId::new(1);
+    let (mut tab, _plugins) =
+        create_new_tab_with_plugin_receiver(Size { cols: 80, rows: 24 }, ModeInfo::default());
+    let [first, second, middle, top] =
+        [100, 101, 102, 103].map(|n| PaneId::Plugin(PluginId::new(n)));
+    tab.new_pane(
+        first,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+        Some(client),
+        None,
+    )
+    .unwrap();
+    let info = tab.mount_pane_tabs(first, layout(), 0, client).unwrap();
+    tab.select_pane_tab(info.id, 1, client).unwrap();
+    let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "yinz:fixture-plugin-for-tests",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
+    tab.pane_tab_loaded(info.id, 1, 1, Ok((PluginId::new(101), run)))
+        .unwrap();
+    for (subject, stand_in) in [(second, middle), (middle, top)] {
+        tab.suppress_pane_and_replace_with_pid(
+            subject,
+            stand_in,
+            ReplacedPane::Suppress,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    }
+    let transfer = tab.take_overlay_container(top).unwrap();
+    let mut destination = create_new_tab(Size { cols: 80, rows: 24 }, ModeInfo::default());
+    destination.accept_overlay_container(transfer);
+    assert_eq!(destination.pane_tabs_of(first), Some(info.id));
+    for pane in [first, second, middle, top] {
+        assert!(!tab.has_pane_with_pid(&pane));
+        assert!(destination.has_pane_with_pid(&pane));
+    }
+    assert_eq!(destination.stands_in_for_a_pane(top), Some(middle));
+    destination.close_pane(top, false, None);
+    assert_eq!(destination.stands_in_for_a_pane(middle), Some(second));
+}
+
 /// Removing one multipane member is not for pane tabs: the container stays in its slot, and its
 /// shown child still closes through `close_pane` to a blank slot that keeps the container's place.
 #[test]

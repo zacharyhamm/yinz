@@ -2588,6 +2588,36 @@ impl Tab {
                 .and_then(|id| self.suppressed_panes.get(&id))
                 .is_some_and(|suppressed| suppressed.pane.selectable())
     }
+    /// A whole overlay travels with its restoration chains. Other extractions carry
+    /// only the owner and its loaded pane tabs, restoring any lender in the source.
+    pub fn members_for_agent_move(&self, owner: PaneId) -> HashSet<PaneId> {
+        let mut members = HashSet::from([owner]);
+        if self.pane_is_overlay(owner) && self.stands_in_for_a_pane(owner).is_none() {
+            members.extend(self.overlay_panes.members(&owner));
+            self.include_overlay_dependents(&mut members, |_| true);
+        } else if let Some(id) = self.pane_tabs_of(owner) {
+            members.extend(
+                self.pane_tabs[&id]
+                    .info
+                    .tabs
+                    .iter()
+                    .filter_map(|slot| slot.pane_id()),
+            );
+        }
+        members
+    }
+
+    pub fn overlay_provides_tab_content(&self, owner: PaneId) -> bool {
+        self.overlay_panes
+            .members(&owner)
+            .into_iter()
+            .any(|member| {
+                self.overlay_panes
+                    .selectable_tab_content_pane_ids()
+                    .any(|pane| pane == member)
+            })
+    }
+
     /// The single-pane close guard also allows a stand-in whose slot is lent.
     pub fn has_selectable_panes_after_single_close(&self, id: PaneId) -> bool {
         if let Some(lender) = self
@@ -2629,12 +2659,12 @@ impl Tab {
     /// Whether a terminal in this tab - shown or hidden - is still running. Hidden terminals
     /// retain their tab while another usable tab remains, but do not keep the session alive.
     pub fn has_live_terminal(&self) -> bool {
-        self.has_live_terminal_except(None)
+        self.has_live_terminal_except(|_| false)
     }
 
-    pub fn has_live_terminal_except(&self, excluded: Option<PaneId>) -> bool {
+    pub fn has_live_terminal_except(&self, excluded: impl Fn(PaneId) -> bool) -> bool {
         self.get_all_pane_ids().iter().any(|id| {
-            Some(*id) != excluded
+            !excluded(*id)
                 && matches!(id, PaneId::Terminal(_))
                 && self
                     .get_pane_with_id(*id)

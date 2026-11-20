@@ -1539,7 +1539,7 @@ impl Screen {
             ),
             WarpPlacement::NewTab => {
                 let tab_index =
-                    self.new_tab_for_adopted_pane(invoked_with.clone(), client_id, true)?;
+                    self.new_tab_for_adopted_pane(invoked_with.clone(), client_id, true, true)?;
                 (
                     NewPanePlacement::Tiled {
                         direction: None,
@@ -1715,9 +1715,8 @@ impl Screen {
     /// spawned agent pane gets when no tab has room for it (`agent_placement`), which is why
     /// the caller says whether the client follows the pane there.
     ///
-    /// `ignore_run_instruction` is the load-bearing part: without it the new tab's
-    /// layout template also spawns a default shell, and the user gets two panes
-    /// where they asked for one.
+    /// When the incoming pane occupies a layout slot, suppress the duplicate template run.
+    /// An overlay that leaves the tab without selectable content needs the template shell.
     ///
     /// The client is seated in the tab only when it follows the pane there, as the
     /// `NewTab` arm in `thread_main` does: `apply_layout` moves the client out of its
@@ -1728,6 +1727,7 @@ impl Screen {
         invoked_with: Option<Run>,
         client_id: ClientId,
         should_change_focus_to_new_tab: bool,
+        occupies_layout_slot: bool,
     ) -> Result<TabId> {
         let err_context = || "failed to open a tab for an adopted pane".to_string();
         let default_layout = self.core.default_layout.clone();
@@ -1740,7 +1740,9 @@ impl Screen {
         self.new_tab(tab_index, swap_layouts, None, client_for_tab)?;
         self.assign_tab_group(tab_index, Some(client_id));
         let (mut tiled_panes_layout, floating_panes_layout) = default_layout.new_tab();
-        tiled_panes_layout.ignore_run_instruction(invoked_with);
+        if occupies_layout_slot {
+            tiled_panes_layout.ignore_run_instruction(invoked_with);
+        }
         if let Some(tab) = self.core.tabs.get_mut(&tab_index) {
             tab.agent_tab_cleanup_allowed = !should_change_focus_to_new_tab;
         }

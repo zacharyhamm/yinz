@@ -251,7 +251,7 @@ impl Screen {
             Some(tab_id) => (tab_id, wants_focus.then_some(client_id)),
             None => {
                 let made = self
-                    .new_tab_for_adopted_pane(invoked_with.cloned(), client_id, wants_focus)
+                    .new_tab_for_adopted_pane(invoked_with.cloned(), client_id, wants_focus, true)
                     .context(
                         "failed to open a tab for an agent pane; it goes where it was asked for",
                     );
@@ -381,7 +381,7 @@ impl Screen {
             },
             AgentPlacement::NewTab(name) => {
                 let id = self
-                    .new_tab_for_adopted_pane(invoked_with, client_id, false)
+                    .new_tab_for_adopted_pane(invoked_with, client_id, false, true)
                     .map_err(|error| format!("cannot create agent tab: {error:#}"))?;
                 if let Some(tab) = self.core.tabs.get_mut(&id) {
                     tab.agent_tab_waiting_for_pane = true;

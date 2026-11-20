@@ -168,9 +168,10 @@ export function ListView({ env, groupKey, navigation, entry }) {
   const [picker, setPicker] = useState(false);
   const [confirmAll, setConfirmAll] = useState(false);
   const [busyKeys, setBusyKeys] = useState({});
+  const [waitingForLaunch, setWaitingForLaunch] = useState(false);
   const [state, refresh] = usePoller({
     key: 'agents',
-    intervalMs: env.config.poll.list_ms,
+    intervalMs: waitingForLaunch ? Math.min(1000, env.config.poll.list_ms) : env.config.poll.list_ms,
     env,
     run: async ({ signal }) => {
       const r = await env.api.get('/api/agents', { signal });
@@ -359,7 +360,7 @@ export function ListView({ env, groupKey, navigation, entry }) {
       ${state && state.error && ['offline', 'retrying', 'error'].includes(state.status) ? html`<${Banner} id="banner-offline" tone="warn">${freshnessText(state, now)}<//>` : null}
       ${!data && (!state || state.loading) ? html`<p class="empty">Loading agents…</p>` : null}
       ${data && !selected ? html`<p class="empty" id="list-empty">${groupKey === undefined ? 'No agents are running.' : 'No agents in this group.'}</p>` : null}
-      <${AgentLauncher} key=${entry} env=${env} data=${data} refresh=${refresh} />
+      <${AgentLauncher} key=${entry} env=${env} data=${data} refresh=${refresh} setWaiting=${setWaitingForLaunch} />
       ${selected ? renderGroup(selected) : null}
     </main>
     ${picker ? html`<${Sheet} id="sheet-groups" title="Switch group" onClose=${() => setPicker(false)} fallbackFocusRef=${main}>

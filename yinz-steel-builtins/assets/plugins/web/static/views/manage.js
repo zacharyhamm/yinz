@@ -156,7 +156,7 @@ function StartSheet({ env, onClose, onLaunched }) {
   <//>`;
 }
 
-function LaunchWait({ env, launched, data, onDone }) {
+function LaunchWait({ env, launched, data, onDone, setWaiting }) {
   const [visit] = useState(() => new AbortController());
   const entry = useRef(window.history.state?.yinzIndex);
   const verifying = useRef(false);
@@ -170,10 +170,12 @@ function LaunchWait({ env, launched, data, onDone }) {
     if (message) env.toast(message);
   }
   useLayoutEffect(() => {
+    setWaiting(expiresAt !== null);
     const timer = expiresAt === null ? null : setTimeout(
       () => stop('Still waiting for the conversation. Reopen Start agent to check this launch.'),
       expiresAt - Date.now());
     return () => {
+      setWaiting(false);
       if (timer !== null) clearTimeout(timer);
       visit.abort();
     };
@@ -215,10 +217,10 @@ function LaunchWait({ env, launched, data, onDone }) {
       : `Waiting for ${launched.kind} in ${launched.pane_id} to report its conversation…`}<//>`;
 }
 
-export function AgentLauncher({ env, data, refresh }) {
+export function AgentLauncher({ env, data, refresh, setWaiting }) {
   const [start, setStart] = useState(false);
   const [launched, setLaunched] = useState(null);
-  if (launched) return html`<${LaunchWait} env=${env} launched=${launched} data=${data} onDone=${() => setLaunched(null)} />`;
+  if (launched) return html`<${LaunchWait} env=${env} launched=${launched} setWaiting=${setWaiting} data=${data} onDone=${() => setLaunched(null)} />`;
   return html`<button type="button" class="button" id="start-agent" aria-haspopup="dialog" onClick=${() => setStart(true)}>Start agent</button>
     ${start ? html`<${StartSheet} env=${env} onClose=${() => setStart(false)} onLaunched=${(launch) => {
       setStart(false); setLaunched(launch); refresh();

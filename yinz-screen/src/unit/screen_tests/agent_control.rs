@@ -16820,13 +16820,19 @@ fn apply_web_move_layout(
             _ => None,
         })
         .unwrap();
+    let terminals = layout
+        .extract_run_instructions()
+        .iter()
+        .enumerate()
+        .map(|(index, _)| (TerminalId::new(100 + index as u32), None))
+        .collect();
     assert!(process_instruction(
         screen,
         state,
         ScreenInstruction::ApplyLayout(
             layout,
             floating.unwrap_or_default(),
-            vec![],
+            terminals,
             vec![],
             vec![],
             HashMap::new(),
@@ -16971,6 +16977,24 @@ fn web_agents_close_protects_plugin_panes_that_teardown_would_close() {
     tab.set_pane_selectable(plugin, false);
     assert!(!screen.get_pane_info(plugin).unwrap().is_suppressed);
     assert_close_rejected(&mut screen);
+    for target in [
+        web_tab_destination(&screen, destination),
+        yinz_bus::web::MoveDestination::NewGroup {
+            name: None,
+            tab_name: None,
+        },
+    ] {
+        assert!(
+            matches!(manage_web_agent(&mut screen, &agent, WebManageAction::Move(target)),
+            Err(WebFocusError::Unavailable(message)) if message.contains("other panes"))
+        );
+        screen.settle_tabs().unwrap();
+        assert_eq!(screen.core.tabs.len(), 2);
+        assert_eq!(screen.core.tab_groups.len(), 1);
+        assert_eq!(screen.tab_id_containing_pane(plugin), Some(TabId::new(0)));
+        assert_eq!(screen.tab_id_containing_pane(PANE), Some(TabId::new(0)));
+        assert_no_plugin_closes(&plugins, &[plugin]);
+    }
 
     screen
         .tab_containing_pane_mut(plugin)
@@ -17091,6 +17115,42 @@ fn web_agents_close_respects_overlay_lenders_and_their_restoration_chains() {
             assert!(tab.has_pane_with_pid(&subject));
         }
         assert_no_plugin_closes(&plugins, &[lender, subject]);
+    }
+}
+
+#[test]
+fn web_agents_new_tab_keeps_a_shell_under_an_overlay() {
+    use yinz_bus::web::{MoveDestination, WebManageAction};
+    for target in [
+        MoveDestination::NewTab {
+            group: 0,
+            name: None,
+        },
+        MoveDestination::NewGroup {
+            name: None,
+            tab_name: None,
+        },
+    ] {
+        let (mut screen, _, _) = setup_with_placement(
+            "codex",
+            PaneTarget::Local,
+            Size { cols: 80, rows: 24 },
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+        );
+        report(&mut screen, hook("SessionStart"));
+        let agent = web_agents_reference(&web_agents_snapshot(&mut screen)[0]);
+        let plugins = super::agent_placement::plugin_capture(&mut screen);
+        manage_web_agent(&mut screen, &agent, WebManageAction::Move(target)).unwrap();
+        let destination =
+            apply_web_move_layout(&mut screen, &mut EventLoopState::default(), &plugins);
+        let shell = PaneId::Terminal(TerminalId::new(100));
+        assert_eq!(screen.tab_id_containing_pane(shell), Some(destination));
+        screen
+            .focus_pane_with_id(shell, false, false, CLIENT)
+            .unwrap();
+        screen.settle_tabs().unwrap();
+        assert_eq!(screen.core.active_tab_ids[&CLIENT], destination);
+        assert!(screen.core.tabs[&destination].pane_is_overlay(PANE));
     }
 }
 
@@ -17684,10 +17744,27 @@ fn web_agents_manage_moves_same_pane_without_switching_clients_and_refuses_stale
     new_tab(&mut screen, 8, same_group);
     new_tab(&mut screen, 9, other_group);
     screen.start_tab_group(1, other_group, Some("Default".into()));
+    screen
+        .core
+        .tab_projects
+        .insert(original, "Web project".into());
     let focused = screen.core.active_tab_ids.clone();
     let inventory = manage_web_agent(&mut screen, &agent, WebManageAction::Destinations)
         .unwrap()
         .unwrap();
+    let names = screen.plugin_tab_names();
+    assert_ne!(names[&original], screen.core.tabs[&original].name);
+    for tab in inventory.groups.iter().flat_map(|group| &group.tabs) {
+        assert_eq!(tab.name, names[&tab.id]);
+    }
+    assert_eq!(
+        web_agents_snapshot(&mut screen)[0]
+            .local_tab
+            .as_ref()
+            .unwrap()
+            .name,
+        names[&original]
+    );
     assert_eq!(inventory.current_tab, original);
     assert_eq!(inventory.groups.len(), 2);
     let tab_destination = |group: usize, tab: usize| {
@@ -17780,6 +17857,14 @@ fn web_agents_manage_moves_same_pane_without_switching_clients_and_refuses_stale
         web_agents_reference(&web_agents_snapshot(&mut screen)[0]),
         agent
     );
+    assert!(
+        matches!(manage_web_agent(&mut screen, &agent, WebManageAction::Close),
+        Err(WebFocusError::Unavailable(message)) if message.contains("still loading"))
+    );
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .finish_pending_layout();
     manage_web_agent(&mut screen, &agent, WebManageAction::Close).unwrap();
     assert!(screen.tab_containing_pane(PANE).is_none());
 }

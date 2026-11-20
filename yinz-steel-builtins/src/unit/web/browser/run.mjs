@@ -2357,6 +2357,18 @@ async function assertPeerRecovery(page, texts) {
   check(await page.locator('#tab-term').isDisabled(), 'an unverified peer allowed Screen');
 }
 
+async function useSlowListPolling(page) {
+  await page.addInitScript(() => {
+    document.addEventListener('readystatechange', () => {
+      const node = document.getElementById('yinz-config');
+      if (document.readyState === 'interactive' && node) {
+        const config = JSON.parse(node.textContent);
+        node.textContent = JSON.stringify({ ...config, poll: { ...config.poll, list_ms: 600000 } });
+      }
+    });
+  });
+}
+
 async function manageAgent(open) {
   const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
   const malformed = (path, body) => fx.fail.set(path, { mode: 'reply', status: 200, times: 1, body });
@@ -2366,6 +2378,7 @@ async function manageAgent(open) {
     check(await submit.isDisabled(), 'malformed inventory enabled submission');
     await sheet.getByRole('button', { name: 'Retry', exact: true }).click();
   };
+  await useSlowListPolling(page);
   fx.rows = [];
   await openApp(page, '#/');
   await textUntil(page, '#list-empty', 'No agents', 'empty list');
@@ -2449,9 +2462,10 @@ async function manageAgent(open) {
     'recovering a launch must preserve its submission ID');
   await textUntil(page, '.banner', 'Waiting for codex', 'launch awaiting identity');
   check(JSON.stringify(await savedLaunch()) === JSON.stringify(fresh), 'waiting lost the submitted request');
+  const emptyReads = fx.count('/api/agents');
+  await until('another automatic poll while the conversation is missing', () => fx.count('/api/agents') > emptyReads);
   fx.live = { title: 'Phone agent', location: { group: { id: 0, name: 'Default' }, tab: { id: 1, name: 'Shell' } } };
   fx.rows = [row(fx, AGENT_ID, 'idle', fx.live)];
-  await page.click('#list-refresh');
   await until('launched agent opens', () => exists(page, '#overflow-button'));
   check(await savedLaunch() === null, 'verified handoff kept the saved launch');
   check(fx.bodies('/api/agent/launch-status').some((body) => body.submission_id === fresh.submission_id
@@ -2504,6 +2518,7 @@ async function releaseResponse(page) {
 
 async function manageLaunchWait(open, mode) {
   const { page, fx, context } = await open({ viewport: { width: 320, height: 640 }, clock: mode === 'expiry' });
+  if (mode === 'expiry') await useSlowListPolling(page);
   fx.rows = [];
   await openApp(page, '#/');
   await page.click('#start-agent');
@@ -2528,6 +2543,12 @@ async function manageLaunchWait(open, mode) {
   fx.rows = [row(fx, AGENT_ID, 'idle')];
   await page.click('#list-refresh');
   await page.locator(cardSelector(AGENT_ID)).waitFor();
+  if (mode === 'expiry') {
+    const reads = fx.count('/api/agents');
+    await context.clock.fastForward(10000);
+    await nextFrame(page);
+    check(fx.count('/api/agents') === reads, 'launch polling continued after expiry');
+  }
   if (mode === 'leave') {
     await waitForHeldResponse(page);
     await page.locator(cardSelector(AGENT_ID) + ' .agent-open-area').click();

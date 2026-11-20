@@ -1060,15 +1060,18 @@ impl Screen {
         self.switch_active_tab_name(name, client_id)
     }
 
-    fn tab_settlement(&self, closing: Option<(TabId, PaneId)>) -> TabSettlement {
-        let excluded = |tab: &Tab| {
-            closing
-                .filter(|(id, _)| *id == tab.id)
-                .map(|(_, pane)| pane)
-        };
-        let selectable = |tab: &Tab| match excluded(tab) {
-            Some(pane) => tab.has_selectable_panes_after_single_close(pane),
+    fn tab_settlement(
+        &self,
+        projected: Option<(TabId, PaneId, &HashSet<PaneId>)>,
+    ) -> TabSettlement {
+        let projection = |tab: &Tab| projected.filter(|(id, _, _)| *id == tab.id);
+        let selectable = |tab: &Tab| match projection(tab) {
+            Some((_, owner, _)) => tab.has_selectable_panes_after_single_close(owner),
             None => tab.has_selectable_panes(),
+        };
+        let has_live_terminal = |tab: &Tab| match projection(tab) {
+            Some((_, _, leaving)) => tab.has_live_terminal_except(|id| leaving.contains(&id)),
+            None => tab.has_live_terminal(),
         };
         let usable: Vec<TabId> = self
             .core
@@ -1093,7 +1096,7 @@ impl Screen {
                     && (self.core.deferred_tab_closes.contains(&tab.id)
                         || (!tab.agent_tab_waiting_for_pane
                             && !selectable(tab)
-                            && (!tab.has_live_terminal_except(excluded(tab))
+                            && (!has_live_terminal(tab)
                                 || usable.is_empty()
                                 || (self.core.replacement_pending && !another_destination))))
             })
@@ -1112,37 +1115,63 @@ impl Screen {
         source: TabId,
         pane: PaneId,
     ) -> bool {
-        let TabSettlement { usable, doomed, .. } = self.tab_settlement(Some((source, pane)));
+        self.settlement_risks_other_panes(source, pane, &HashSet::from([pane]), false)
+    }
+
+    pub(super) fn settlement_after_move_risks_source_panes(
+        &self,
+        source: TabId,
+        owner: PaneId,
+    ) -> bool {
+        let leaving = self.core.tabs[&source].members_for_agent_move(owner);
+        self.settlement_risks_other_panes(source, owner, &leaving, true)
+    }
+
+    fn settlement_risks_other_panes(
+        &self,
+        source: TabId,
+        pane: PaneId,
+        leaving: &HashSet<PaneId>,
+        source_only: bool,
+    ) -> bool {
+        let TabSettlement { usable, doomed, .. } =
+            self.tab_settlement(Some((source, pane, leaving)));
         // A pending layout or a replacement that has yet to open cannot guarantee a destination.
         let has_destination = self
             .core
             .tabs
             .values()
             .any(|tab| !tab.is_pending() && !doomed.contains(&tab.id));
-        doomed.into_iter().any(|id| {
-            let tab = &self.core.tabs[&id];
-            let panes = tab.get_all_pane_ids();
-            if panes
-                .iter()
-                .any(|id| *id != pane && matches!(id, PaneId::Terminal(_)))
-            {
-                return true;
-            }
-            let plugins_to_protect = || {
-                panes.iter().copied().filter(|id| {
-                    *id != pane && matches!(id, PaneId::Plugin(_)) && !is_layout_chrome(tab, *id)
-                })
-            };
-            if !has_destination {
-                return plugins_to_protect().next().is_some();
-            }
-            let excluded = (source == id).then_some(pane);
-            let revealed = excluded.and_then(|pane| tab.pane_revealed_by_single_close(pane));
-            let transferred =
-                self.panes_transferred_at_teardown(tab, excluded, revealed, !usable.is_empty());
-            let closing = panes_closed_with_surviving_tab(tab, excluded, revealed, &transferred);
-            plugins_to_protect().any(|id| closing.contains(&id))
-        })
+        doomed
+            .into_iter()
+            .filter(|id| !source_only || *id == source)
+            .any(|id| {
+                let tab = &self.core.tabs[&id];
+                let panes = tab.get_all_pane_ids();
+                if panes
+                    .iter()
+                    .any(|id| !leaving.contains(id) && matches!(id, PaneId::Terminal(_)))
+                {
+                    return true;
+                }
+                let plugins_to_protect = || {
+                    panes.iter().copied().filter(|id| {
+                        !leaving.contains(id)
+                            && matches!(id, PaneId::Plugin(_))
+                            && !is_layout_chrome(tab, *id)
+                    })
+                };
+                if !has_destination {
+                    return plugins_to_protect().next().is_some();
+                }
+                let excluded = (source == id).then_some(pane);
+                let revealed = excluded.and_then(|pane| tab.pane_revealed_by_single_close(pane));
+                let transferred =
+                    self.panes_transferred_at_teardown(tab, excluded, revealed, !usable.is_empty());
+                let closing =
+                    panes_closed_with_surviving_tab(tab, excluded, revealed, &transferred);
+                plugins_to_protect().any(|id| closing.contains(&id))
+            })
     }
 
     fn guarded_panes(&self, preserve_guards: bool) -> impl Iterator<Item = PaneId> + '_ {
