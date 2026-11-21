@@ -1705,6 +1705,7 @@ fn recreate_source(store: &mut Store) -> Result<Connection> {
         ensure_process_dead(identity)?;
     }
     release_cold_snapshot(store)?;
+    forget_agent_tracking(store)?;
     let server_host = store
         .journal
         .participants
@@ -1809,14 +1810,16 @@ fn release_cold_snapshot(store: &Store) -> Result<()> {
     for (_, owner) in &mut snapshot.ownership {
         *owner = MigrationOwnership::Released;
     }
-    forget_agent_tracking(&mut snapshot);
     journal::atomic_json(&store.journal.snapshot, &snapshot)
 }
 
-/// Agent hooks reach no server while neither the dead source nor a replacement listens, so a
-/// cold restoration cannot trust lifecycle tracking captured before that gap. Only a live
-/// handoff carries it; a cold restoration waits for fresh hooks, like any restart.
-fn forget_agent_tracking(snapshot: &mut yinz_types::session_migration::SessionMigrationSnapshot) {
+/// The source acknowledges and replays every hook while it owns the public session name.
+/// Once it is dead or has given that name up, hooks reach another server or none, so the
+/// snapshot's tracking may predate a transition. The restored source then waits for fresh
+/// hooks, like any restart. This includes Codex's transferred input, which would otherwise
+/// mark the composer consumed again.
+fn forget_agent_tracking(store: &Store) -> Result<()> {
+    let mut snapshot = read_recovery_snapshot(&store.journal.snapshot)?;
     for tab in &mut snapshot.tabs {
         for pane in tab
             .payload
@@ -1825,8 +1828,10 @@ fn forget_agent_tracking(snapshot: &mut yinz_types::session_migration::SessionMi
             .chain(tab.payload.floating_panes.iter_mut())
         {
             pane.agent_tracking = None;
+            pane.agent_input = None;
         }
     }
+    journal::atomic_json(&store.journal.snapshot, &snapshot)
 }
 
 fn query_identity(
@@ -2547,6 +2552,12 @@ fn recover(
             snapshot.phase != yinz_types::session_migration::MigrationPhase::Prepared
         });
         if released && !store.journal.source_restored {
+            let current: Inventory =
+                serde_json::from_value(source.request(&operation, Command::Inventory)?)
+                    .context("inspect source endpoint before restoration")?;
+            if current.session != original {
+                forget_agent_tracking(store)?;
+            }
             source.request(
                 &operation,
                 Command::AdoptMigration {

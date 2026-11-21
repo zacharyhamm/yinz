@@ -1231,9 +1231,9 @@ fn replacement_applies_agent_reports_deferred_until_finish() {
     new_tab(&mut screen, 1, TabId::new(0));
     // A hook reaches the replacement once it owns the session name, before Finish.
     let pane = PaneId::Terminal(TerminalId::new(1));
-    let report = AgentReport {
-        report_id: "00000000-0000-4000-8000-000000000003".into(),
-        pane_id: pane,
+    let report = |id: &str, pane_id| AgentReport {
+        report_id: format!("00000000-0000-4000-8000-00000000000{id}"),
+        pane_id,
         state: AgentReportState::Unchanged,
         event: None,
         trace: false,
@@ -1242,7 +1242,7 @@ fn replacement_applies_agent_reports_deferred_until_finish() {
     };
     assert!(screen
         .defer_for_migration(ScreenInstruction::AgentReport(
-            report,
+            report("3", pane),
             std::time::Instant::now()
         ))
         .is_none());
@@ -1254,6 +1254,21 @@ fn replacement_applies_agent_reports_deferred_until_finish() {
         operation: operation.clone(),
         reply,
     });
+    // While plugins load, a newer hook for that pane must queue behind the deferred one,
+    // or the older transition would replay over it. Other panes' hooks apply at once.
+    assert!(screen
+        .defer_for_migration(ScreenInstruction::AgentReport(
+            report("4", pane),
+            std::time::Instant::now()
+        ))
+        .is_none());
+    let other = PaneId::Terminal(TerminalId::new(2));
+    assert!(screen
+        .defer_for_migration(ScreenInstruction::AgentReport(
+            report("5", other),
+            std::time::Instant::now()
+        ))
+        .is_some());
     plugins
         .try_iter()
         .find_map(|(instruction, _)| match instruction {
@@ -1275,10 +1290,13 @@ fn replacement_applies_agent_reports_deferred_until_finish() {
         .unwrap()
         .unwrap();
     let mut retained = std::iter::from_fn(|| screen.next_migration_event());
-    assert!(matches!(
-        retained.next(),
-        Some(ScreenInstruction::AgentReport(report, _)) if report.pane_id == pane
-    ));
+    for id in ["3", "4"] {
+        assert!(matches!(
+            retained.next(),
+            Some(ScreenInstruction::AgentReport(report, _))
+                if report.pane_id == pane && report.report_id.ends_with(id)
+        ));
+    }
     assert!(
         retained.next().is_none(),
         "other deferred structural events stay discarded"

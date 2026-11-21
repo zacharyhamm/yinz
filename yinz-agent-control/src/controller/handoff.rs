@@ -115,7 +115,25 @@ impl super::AgentController {
         host: &impl AgentHost,
         pane: PaneId,
     ) -> Option<AgentTrackingHandoff> {
-        self.agent_tracking_snapshot(host, pane, self.partial_agent_input(pane))
+        let mut tracking =
+            self.agent_tracking_snapshot(host, pane, self.partial_agent_input(pane))?;
+        // No request carries over to resolve an unresolved submission, so the replacement
+        // records it as warp does when it finishes the source's requests.
+        for submission in tracking
+            .submissions
+            .iter_mut()
+            .filter(|submission| submission.result.is_none())
+        {
+            submission.result = Some(SubmissionResult {
+                outcome: AgentOutcome::TargetChanged,
+                message: Some(
+                    "Observation ended by a live session update; the task's completion was not verified."
+                        .into(),
+                ),
+                background: false,
+            });
+        }
+        Some(tracking)
     }
 
     fn partial_agent_input(&self, pane: PaneId) -> bool {

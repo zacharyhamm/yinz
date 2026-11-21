@@ -63,17 +63,31 @@ fn cold_release_discards_destination_mappings_and_preserves_terminal_state() {
     let tracked = yinz_types::data::WarpedPane {
         agent: Some(idle_codex()),
         agent_tracking: Some(idle_codex_tracking()),
+        agent_input: Some(yinz_types::data::WarpedAgentInput {
+            kind: "codex".into(),
+            conversation: "conversation".into(),
+            consumed: true,
+        }),
         ..Default::default()
     };
     snapshot.tabs[0].payload.tiled_panes = vec![tracked.clone()];
     snapshot.tabs[0].payload.floating_panes = vec![tracked];
     journal::atomic_json(&store.journal.snapshot, &snapshot).unwrap();
     release_cold_snapshot(&store).unwrap();
+    // A live source that kept the public name replayed every hook, so tracking stays.
     let released = read_recovery_snapshot(&store.journal.snapshot).unwrap();
+    let payload = &released.tabs[0].payload;
+    for pane in payload.tiled_panes.iter().chain(&payload.floating_panes) {
+        assert_eq!(pane.agent_tracking, Some(idle_codex_tracking()));
+        assert!(pane.agent_input.is_some());
+    }
     // Hooks reached no server while the source was dead; only fresh hooks restore readiness.
+    forget_agent_tracking(&store).unwrap();
+    let released = read_recovery_snapshot(&store.journal.snapshot).unwrap();
     let payload = &released.tabs[0].payload;
     for pane in payload.tiled_panes.iter().chain(&payload.floating_panes) {
         assert!(pane.agent_tracking.is_none());
+        assert!(pane.agent_input.is_none());
         assert_eq!(pane.agent, Some(idle_codex()));
     }
     let expected = &mut snapshot.tabs[0].payload;
@@ -83,6 +97,7 @@ fn cold_release_discards_destination_mappings_and_preserves_terminal_state() {
         .chain(expected.floating_panes.iter_mut())
     {
         pane.agent_tracking = None;
+        pane.agent_input = None;
     }
     assert_eq!(released.phase, MigrationPhase::Released);
     assert_eq!(released.mapping, SessionMigrationMap::default());

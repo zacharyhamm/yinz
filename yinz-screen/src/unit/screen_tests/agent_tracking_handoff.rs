@@ -1958,6 +1958,10 @@ fn live_update_carries_idle_lifecycle_so_the_agent_stays_promptable() {
         "only the agent pane carries tracking"
     );
 
+    assert!(
+        migrated_pane(&snapshot).agent_input.is_some(),
+        "Codex's transferred input travels with its tracking"
+    );
     let destination = adopt_live_update(&snapshot);
     assert!(reported_lifecycle(&destination, "codex", "conversation"));
     let status = destination.agent_status_for_test();
@@ -1974,6 +1978,10 @@ fn live_update_drops_lifecycle_after_a_deferred_source_hook() {
         let snapshot = release_for_live_update(&mut source, deferred);
         let pane = migrated_pane(&snapshot);
         assert!(pane.agent_tracking.is_none(), "{deferred:?}");
+        assert!(
+            pane.agent_input.is_none(),
+            "transferred input must not mark the composer consumed: {deferred:?}"
+        );
         assert!(pane.agent.is_some(), "identity still travels: {deferred:?}");
 
         let destination = adopt_live_update(&snapshot);
@@ -2018,4 +2026,42 @@ fn live_update_lifecycle_requires_the_same_kind_and_conversation() {
             "{mismatch}"
         );
     }
+}
+
+#[test]
+fn live_update_resolves_a_submission_still_pending_at_capture() {
+    let (mut source, _, writes) = setup_tracking("codex");
+    report(&mut source, hook("SessionStart"));
+    let mut request = prompt(true);
+    if let AgentRequest::Prompt { submission_id, .. } = &mut request {
+        *submission_id = Some("update-request".into());
+    }
+    source.agent_control_with_clear(request, CLIENT, &writes);
+    finish_paste(&writes);
+    report(&mut source, hook("UserPromptSubmit"));
+    let snapshot = release_for_live_update(&mut source, DeferredReport::None);
+    // No request carries over to resolve it, so the replacement must not wait forever.
+    let submission = &tracked_pane(&snapshot).unwrap().submissions[0];
+    assert_eq!(submission.id, "update-request");
+    assert_eq!(
+        submission.result.as_ref().unwrap().outcome,
+        AgentOutcome::TargetChanged
+    );
+
+    let mut destination = adopt_live_update(&snapshot);
+    let (reply, result) = std::sync::mpsc::channel();
+    destination.agent_control_at(
+        AgentRequest::WaitTurn {
+            pane_id: PANE,
+            expected_session_id: Some("conversation".into()),
+            submission_id: "update-request".into(),
+            timeout_ms: 30_000,
+        },
+        crate::screen::agent_control::Reply::Host(reply),
+        Instant::now(),
+    );
+    assert_eq!(
+        result.try_recv().unwrap().outcome,
+        AgentOutcome::TargetChanged
+    );
 }

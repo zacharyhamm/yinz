@@ -1412,6 +1412,17 @@ impl super::MigrationController {
         // before the readiness acknowledgement; old deferred source events
         // remain separate and are discarded when commit completes.
         if matches!(state.stage, Stage::Finishing | Stage::Repairing) {
+            // Deferred agent reports replay only after plugins resume. A newer report for the
+            // same pane must queue behind them, or the older transition would overwrite it.
+            if let ScreenInstruction::AgentReport(report, _) = &event
+                && self.migration_deferred.iter().any(|deferred| {
+                    matches!(deferred, ScreenInstruction::AgentReport(queued, _)
+                        if queued.pane_id == report.pane_id)
+                })
+            {
+                self.migration_deferred.push_back(event);
+                return None;
+            }
             return Some(event);
         }
         let allowed = matches!(
@@ -1497,7 +1508,12 @@ fn forget_unapplied_agent_tracking(
             .iter_mut()
             .chain(tab.payload.floating_panes.iter_mut());
         for ((id, _), pane) in tab.terminal_states.iter().zip(panes) {
-            if reported.contains(id) && pane.agent_tracking.take().is_some() {
+            if !reported.contains(id) {
+                continue;
+            }
+            // Codex's transferred input would otherwise mark the composer consumed again.
+            let input = pane.agent_input.take().is_some();
+            if pane.agent_tracking.take().is_some() || input {
                 log::debug!(
                     "update {}: discarded agent tracking pane={id:?} reason=deferred_report",
                     snapshot.operation

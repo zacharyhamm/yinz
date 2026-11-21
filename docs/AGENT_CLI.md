@@ -554,9 +554,14 @@ pane still runs that agent kind and conversation. An idle agent therefore stays
 promptable without a fresh hook. Hooks that the replacement receives before
 the update finishes apply after it finishes. The source defers hooks while it
 prepares and releases its panes, and those hooks never reach the replacement.
-The source therefore omits tracking for each pane with a deferred hook, and the
-replacement waits for a fresh hook. A cold recovery from an interrupted
-update's snapshot, a restart or a resurrection carries no lifecycle tracking.
+The source therefore omits tracking and Codex's transferred input for each pane
+with a deferred hook, and the replacement waits for a fresh hook. A prompt
+submission that is still unresolved when the source captures it is recorded as
+`TargetChanged`, as warp does. A rollback keeps tracking only while the source
+still holds the public session name, because it then receives and replays
+every hook. A rollback after the source gave up that name, a cold recovery
+after the source died, a restart or a resurrection carries no lifecycle
+tracking.
 
 For a suspected false `Waiting` state, collect the permission request's
 `permission_mode` and `approvals_reviewer`, then the following tool-progress
