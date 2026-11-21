@@ -119,6 +119,10 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
   padding: calc(2px + var(--top-chrome)) calc(8px + var(--safe-right)) 2px calc(8px + var(--safe-left));
 }
 #list-header { position: sticky; top: 0; z-index: 5; }
+@media (display-mode: standalone) {
+  /* WebKit can extend a sticky header's solid color into the status bar. */
+  #detail-header { position: sticky; top: 0; z-index: 5; }
+}
 #switch-group { font-size: 14px; padding-inline: 4px; }
 .header-row { display: flex; align-items: center; gap: 4px; min-height: var(--tap); }
 .header-title { font-size: 18px; font-weight: 700; flex: 1; min-width: 0; overflow-wrap: anywhere; }
