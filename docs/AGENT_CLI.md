@@ -547,6 +547,17 @@ terminal input was consumed. Never infer readiness from a saved `Reported` recor
 Codex's managed launcher can verify hooks and announce an idle selected
 conversation before the first turn. Failed verification leaves it untracked.
 
+A live session update keeps each pane's process, so it carries lifecycle and
+submission tracking as warp does. The replacement server restores tracking only
+when it was captured from the live source server for the same pane, and the
+pane still runs that agent kind and conversation. An idle agent therefore stays
+promptable without a fresh hook. Hooks that the replacement receives before
+the update finishes apply after it finishes. The source defers hooks while it
+prepares and releases its panes, and those hooks never reach the replacement.
+The source therefore omits tracking for each pane with a deferred hook, and the
+replacement waits for a fresh hook. A cold recovery from an interrupted
+update's snapshot, a restart or a resurrection carries no lifecycle tracking.
+
 For a suspected false `Waiting` state, collect the permission request's
 `permission_mode` and `approvals_reviewer`, then the following tool-progress
 events. The Codex reporter already reads a missing reviewer from the matching

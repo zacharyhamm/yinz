@@ -1792,3 +1792,230 @@ fn restored_claude_observation_starts_for_pane_and_tab_adoption_without_tracking
         );
     }
 }
+
+/// When an acknowledged hook waits in the source's migration queue.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DeferredReport {
+    None,
+    BeforeCapture,
+    BeforeRelease,
+}
+
+/// Drive the source half of a live update and return its released snapshot.
+fn release_for_live_update(
+    source: &mut Screen,
+    deferred: DeferredReport,
+) -> yinz_types::session_migration::SessionMigrationSnapshot {
+    use yinz_bus::migration::{self, ScreenRequest};
+    use yinz_types::internal_ids::SupervisorId;
+    use yinz_types::session_migration::MigrationPhase;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("session.json");
+    let operation = uuid::Uuid::new_v4().to_string();
+    let (to_pty, _pty) = channels::unbounded();
+    source.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    let (reply, released) = crossbeam::channel::bounded(1);
+    source.session_migration(ScreenRequest::Release {
+        operation: operation.clone(),
+        snapshot: path.clone(),
+        client: CLIENT,
+        deadline: Instant::now() + yinz_test_support::default_timeout(),
+        reply,
+    });
+    let defer = |source: &mut Screen| {
+        let report = AgentReport {
+            report_id: "00000000-0000-4000-8000-000000000002".into(),
+            pane_id: PANE,
+            state: AgentReportState::Unchanged,
+            event: None,
+            trace: false,
+            process_id: ProcessId::new(42),
+            kind: "codex".into(),
+        };
+        assert!(
+            source
+                .defer_for_migration(ScreenInstruction::AgentReport(report, Instant::now()))
+                .is_none(),
+            "the source must defer hooks during an update"
+        );
+    };
+    if deferred == DeferredReport::BeforeCapture {
+        defer(source);
+    }
+    let address = |id: TerminalId| {
+        ReleasedPane::Local(ReleasedPtyHost {
+            host_id: SupervisorId::new(format!("supervisor-{id:?}")),
+            host_pid: ProcessId::new(42),
+            control_socket: Some(directory.path().join(format!("{id:?}.sock"))),
+        })
+    };
+    let terminals = [TerminalId::new(1), TerminalId::new(7)];
+    source.session_migration(ScreenRequest::InputDrained {
+        operation: operation.clone(),
+        result: Ok(terminals.iter().map(|id| (*id, address(*id))).collect()),
+    });
+    let captured = migration::load_snapshot(&path, &operation).unwrap();
+    assert_eq!(captured.phase, MigrationPhase::Releasing);
+    assert_eq!(
+        tracked_pane(&captured).is_some(),
+        deferred != DeferredReport::BeforeCapture,
+        "{deferred:?}"
+    );
+    if deferred == DeferredReport::BeforeRelease {
+        defer(source);
+    }
+    source.session_migration(ScreenRequest::Released {
+        operation,
+        results: terminals
+            .iter()
+            .map(|id| {
+                (
+                    *id,
+                    Ok(yinz_bus::warp::ReleasedPaneForWarp {
+                        pane: address(*id),
+                        run_command: RunCommand::default(),
+                    }),
+                )
+            })
+            .collect(),
+    });
+    let snapshot = released
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.phase, MigrationPhase::Released);
+    // A destination reads the durable copy, which must match the acknowledged one.
+    assert_eq!(
+        serde_json::to_value(
+            &migration::load_snapshot(&path, &snapshot.operation)
+                .unwrap()
+                .tabs
+        )
+        .unwrap(),
+        serde_json::to_value(&snapshot.tabs).unwrap()
+    );
+    snapshot
+}
+
+/// The migrated pane for `PANE`, located by its recorded source identity.
+fn migrated_pane(
+    snapshot: &yinz_types::session_migration::SessionMigrationSnapshot,
+) -> &WarpedPane {
+    snapshot
+        .tabs
+        .iter()
+        .find_map(|tab| {
+            tab.terminal_states
+                .iter()
+                .zip(
+                    tab.payload
+                        .tiled_panes
+                        .iter()
+                        .chain(&tab.payload.floating_panes),
+                )
+                .find_map(|((id, _), pane)| (*id == PANE).then_some(pane))
+        })
+        .expect("the agent pane is migrated")
+}
+
+fn tracked_pane(
+    snapshot: &yinz_types::session_migration::SessionMigrationSnapshot,
+) -> Option<&yinz_types::agent::tracking::AgentTrackingHandoff> {
+    migrated_pane(snapshot).agent_tracking.as_ref()
+}
+
+fn adopt_live_update(snapshot: &yinz_types::session_migration::SessionMigrationSnapshot) -> Screen {
+    let pane = migrated_pane(snapshot).clone();
+    let (mut destination, _, _) = setup_tracking("codex");
+    destination
+        .agents
+        .stage_transfer_identity(PANE, (pane.agent, pane.agent_tracking));
+    assert!(destination.restore_staged_transfer_state(PANE));
+    destination
+}
+
+#[test]
+fn live_update_carries_idle_lifecycle_so_the_agent_stays_promptable() {
+    let (mut source, _, _) = setup("codex");
+    report(&mut source, hook("SessionStart"));
+    assert!(source.agent_status_for_test().ready);
+    let expected = source.capture_agent_tracking(PANE).unwrap();
+    let snapshot = release_for_live_update(&mut source, DeferredReport::None);
+    assert_eq!(
+        tracked_pane(&snapshot).unwrap().lifecycle,
+        expected.lifecycle
+    );
+    assert!(
+        snapshot.tabs.iter().all(|tab| tab
+            .payload
+            .tiled_panes
+            .iter()
+            .chain(&tab.payload.floating_panes)
+            .filter(|pane| pane.agent_tracking.is_some())
+            .count()
+            <= 1),
+        "only the agent pane carries tracking"
+    );
+
+    let destination = adopt_live_update(&snapshot);
+    assert!(reported_lifecycle(&destination, "codex", "conversation"));
+    let status = destination.agent_status_for_test();
+    assert!(status.prompt_supported, "{status:?}");
+    assert!(status.readiness.unwrap().failures().is_empty());
+    assert!(status.ready);
+}
+
+#[test]
+fn live_update_drops_lifecycle_after_a_deferred_source_hook() {
+    for deferred in [DeferredReport::BeforeCapture, DeferredReport::BeforeRelease] {
+        let (mut source, _, _) = setup("codex");
+        report(&mut source, hook("SessionStart"));
+        let snapshot = release_for_live_update(&mut source, deferred);
+        let pane = migrated_pane(&snapshot);
+        assert!(pane.agent_tracking.is_none(), "{deferred:?}");
+        assert!(pane.agent.is_some(), "identity still travels: {deferred:?}");
+
+        let destination = adopt_live_update(&snapshot);
+        let status = destination.agent_status_for_test();
+        assert!(!status.prompt_supported, "{deferred:?}");
+        assert_eq!(
+            status.readiness.unwrap().failures(),
+            vec!["lifecycle_missing"],
+            "{deferred:?}"
+        );
+    }
+}
+
+#[test]
+fn live_update_lifecycle_requires_the_same_kind_and_conversation() {
+    for mismatch in ["conversation", "kind"] {
+        let (mut source, _, _) = setup("codex");
+        report(&mut source, hook("SessionStart"));
+        let mut snapshot = release_for_live_update(&mut source, DeferredReport::None);
+        let payload = &mut snapshot.tabs[0].payload;
+        let pane = payload
+            .tiled_panes
+            .iter_mut()
+            .chain(payload.floating_panes.iter_mut())
+            .find(|pane| pane.agent_tracking.is_some())
+            .unwrap();
+        let lifecycle = pane
+            .agent_tracking
+            .as_mut()
+            .unwrap()
+            .lifecycle
+            .as_mut()
+            .unwrap();
+        match mismatch {
+            "conversation" => lifecycle.conversation = "other".into(),
+            _ => lifecycle.kind = "claude".into(),
+        }
+        let destination = adopt_live_update(&snapshot);
+        assert!(
+            !reported_lifecycle(&destination, "codex", "conversation")
+                && !destination.agent_status_for_test().prompt_supported,
+            "{mismatch}"
+        );
+    }
+}

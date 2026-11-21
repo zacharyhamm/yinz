@@ -1184,3 +1184,103 @@ fn migration_preflights_wait_or_refuse_each_outstanding_transfer() {
         }
     }
 }
+
+#[test]
+fn replacement_applies_agent_reports_deferred_until_finish() {
+    use yinz_types::agent::report::{AgentReport, AgentReportState};
+    use yinz_types::session_migration::{SessionMigrationSnapshot, SESSION_MIGRATION_FORMAT};
+    let mut original = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut original, 1, TabId::new(0));
+    let (inventory, _, _, _) = original.migration_inventory(ClientId::new(1)).unwrap();
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("snapshot.json");
+    let operation = operation();
+    let snapshot = SessionMigrationSnapshot {
+        format: SESSION_MIGRATION_FORMAT,
+        operation: operation.clone(),
+        inventory,
+        phase: MigrationPhase::Released,
+        tabs: vec![],
+        mapping: Default::default(),
+        errors: vec![],
+        ownership: vec![],
+    };
+    migration::save_snapshot(&path, &snapshot).unwrap();
+    let (sender, _pty): ChannelWithContext<PtyInstruction> = channels::unbounded();
+    screen.core.bus.senders.to_pty = Some(SenderWithContext::new(sender));
+    let (sender, plugins): ChannelWithContext<PluginInstruction> = channels::unbounded();
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    let (sender, screen_events): ChannelWithContext<ScreenInstruction> = channels::unbounded();
+    screen.core.bus.senders.to_screen = Some(SenderWithContext::new(sender));
+    let (reply, adopted) = crossbeam::channel::bounded(1);
+    screen.session_migration(ScreenRequest::Adopt {
+        operation: operation.clone(),
+        snapshot: path,
+        client: ClientId::new(1),
+        reply,
+    });
+    screen.session_migration(ScreenRequest::TabReplayed {
+        operation: operation.clone(),
+        tab: TabId::new(0),
+    });
+    adopted
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap()
+        .unwrap();
+    new_tab(&mut screen, 1, TabId::new(0));
+    // A hook reaches the replacement once it owns the session name, before Finish.
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    let report = AgentReport {
+        report_id: "00000000-0000-4000-8000-000000000003".into(),
+        pane_id: pane,
+        state: AgentReportState::Unchanged,
+        event: None,
+        trace: false,
+        process_id: ProcessId::new(42),
+        kind: "codex".into(),
+    };
+    assert!(screen
+        .defer_for_migration(ScreenInstruction::AgentReport(
+            report,
+            std::time::Instant::now()
+        ))
+        .is_none());
+    assert!(screen
+        .defer_for_migration(ScreenInstruction::SwitchTabNext(ClientId::new(1), None))
+        .is_none());
+    let (reply, finished) = crossbeam::channel::bounded(1);
+    screen.session_migration(ScreenRequest::Finish {
+        operation: operation.clone(),
+        reply,
+    });
+    plugins
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            PluginInstruction::ResumeAfterUpdate { reply, .. } => Some(reply),
+            _ => None,
+        })
+        .expect("Finish must request plugin readiness")
+        .send(Ok(()))
+        .unwrap();
+    let (ScreenInstruction::SessionMigration(result), _) = screen_events
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap()
+    else {
+        panic!("expected plugin readiness result");
+    };
+    screen.session_migration(result);
+    finished
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap()
+        .unwrap();
+    let mut retained = std::iter::from_fn(|| screen.next_migration_event());
+    assert!(matches!(
+        retained.next(),
+        Some(ScreenInstruction::AgentReport(report, _)) if report.pane_id == pane
+    ));
+    assert!(
+        retained.next().is_none(),
+        "other deferred structural events stay discarded"
+    );
+}

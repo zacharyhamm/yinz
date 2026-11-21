@@ -13,7 +13,7 @@ fn cold_release_discards_destination_mappings_and_preserves_terminal_state() {
     let tab = TabId::new(1);
     let terminal = PaneId::Terminal(TerminalId::new(1));
     let plugin = PaneId::Plugin(PluginId::new(2));
-    let snapshot = SessionMigrationSnapshot {
+    let mut snapshot = SessionMigrationSnapshot {
         format: SESSION_MIGRATION_FORMAT,
         operation: store.journal.operation.clone(),
         inventory: SessionMigrationInventory {
@@ -60,9 +60,30 @@ fn cold_release_discards_destination_mappings_and_preserves_terminal_state() {
             },
         )],
     };
+    let tracked = yinz_types::data::WarpedPane {
+        agent: Some(idle_codex()),
+        agent_tracking: Some(idle_codex_tracking()),
+        ..Default::default()
+    };
+    snapshot.tabs[0].payload.tiled_panes = vec![tracked.clone()];
+    snapshot.tabs[0].payload.floating_panes = vec![tracked];
     journal::atomic_json(&store.journal.snapshot, &snapshot).unwrap();
     release_cold_snapshot(&store).unwrap();
     let released = read_recovery_snapshot(&store.journal.snapshot).unwrap();
+    // Hooks reached no server while the source was dead; only fresh hooks restore readiness.
+    let payload = &released.tabs[0].payload;
+    for pane in payload.tiled_panes.iter().chain(&payload.floating_panes) {
+        assert!(pane.agent_tracking.is_none());
+        assert_eq!(pane.agent, Some(idle_codex()));
+    }
+    let expected = &mut snapshot.tabs[0].payload;
+    for pane in expected
+        .tiled_panes
+        .iter_mut()
+        .chain(expected.floating_panes.iter_mut())
+    {
+        pane.agent_tracking = None;
+    }
     assert_eq!(released.phase, MigrationPhase::Released);
     assert_eq!(released.mapping, SessionMigrationMap::default());
     assert!(released.errors.is_empty());
@@ -75,6 +96,50 @@ fn cold_release_discards_destination_mappings_and_preserves_terminal_state() {
         serde_json::to_value(&snapshot.tabs).unwrap()
     );
     assert_eq!(released.inventory, snapshot.inventory);
+}
+
+fn idle_codex() -> yinz_types::agent::AgentInfo {
+    yinz_types::agent::AgentInfo {
+        kind: "codex".into(),
+        state: yinz_types::agent::AgentState::Idle,
+        source: yinz_types::agent::AgentSource::Reported,
+        detail: None,
+        waiting_on: None,
+        wait_needs_a_person: false,
+        cwd: None,
+        session_id: Some("conversation".into()),
+        run_id: None,
+    }
+}
+
+fn idle_codex_tracking() -> yinz_types::agent::tracking::AgentTrackingHandoff {
+    use yinz_types::agent::tracking::{AgentTrackingHandoff, LifecycleState};
+    AgentTrackingHandoff {
+        agent: idle_codex(),
+        input_revision: 0,
+        input_consumed: Some(true),
+        lifecycle: Some(LifecycleState {
+            kind: "codex".into(),
+            conversation: "conversation".into(),
+            claude: Default::default(),
+            input_revision: Some(0),
+            ended_turn: None,
+            closeout_turn: None,
+            claude_prompt_id: None,
+            claude_confirmation: None,
+            claude_previous_prompt_id: None,
+            agy_confirmation: None,
+            claude_background: None,
+            claude_notifications: Default::default(),
+            last_message: None,
+        }),
+        dialog_input: None,
+        worker_waits: None,
+        permission_wait: None,
+        launch: None,
+        submissions: Default::default(),
+        events: Default::default(),
+    }
 }
 
 #[test]

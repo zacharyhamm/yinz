@@ -1809,7 +1809,24 @@ fn release_cold_snapshot(store: &Store) -> Result<()> {
     for (_, owner) in &mut snapshot.ownership {
         *owner = MigrationOwnership::Released;
     }
+    forget_agent_tracking(&mut snapshot);
     journal::atomic_json(&store.journal.snapshot, &snapshot)
+}
+
+/// Agent hooks reach no server while neither the dead source nor a replacement listens, so a
+/// cold restoration cannot trust lifecycle tracking captured before that gap. Only a live
+/// handoff carries it; a cold restoration waits for fresh hooks, like any restart.
+fn forget_agent_tracking(snapshot: &mut yinz_types::session_migration::SessionMigrationSnapshot) {
+    for tab in &mut snapshot.tabs {
+        for pane in tab
+            .payload
+            .tiled_panes
+            .iter_mut()
+            .chain(tab.payload.floating_panes.iter_mut())
+        {
+            pane.agent_tracking = None;
+        }
+    }
 }
 
 fn query_identity(

@@ -1,7 +1,11 @@
 //! Whole-session migration. The source keeps both its screen thread and its
 //! recovery snapshot until ownership has been acknowledged by the destination.
 use super::{PreparedTabWarp, Screen};
-use std::{collections::HashMap, path::PathBuf, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    time::Instant,
+};
 use yinz_bus::{
     migration::{self, PtyRequest, Reply, ScreenRequest},
     pty::PtyInstruction,
@@ -40,7 +44,7 @@ pub(super) struct MigrationState {
     adoption_reply: Option<Reply<SessionMigrationMap>>,
     finish_replies: Vec<Reply<()>>,
     pending_tabs: HashMap<TabId, MigrationTab>,
-    replay_tabs: std::collections::HashSet<TabId>,
+    replay_tabs: HashSet<TabId>,
     pending_host_drain: Option<Vec<(TerminalId, crate::os_input_output::ReleasedPane)>>,
 }
 
@@ -956,10 +960,13 @@ impl Screen {
                     // Process exit notifications may have arrived while readers
                     // were paused. Preserve those, mapping source IDs on rollback;
                     // stale structural callbacks must not target reused IDs.
+                    // Agent reports are kept too: the hook was acknowledged, and carried
+                    // lifecycle tracking would otherwise miss the transition it reported.
                     self.transfer.migration_deferred.retain_mut(|event| {
                         let id = match event {
                             ScreenInstruction::HoldPane(id, ..)
                             | ScreenInstruction::ClosePane(id, ..) => id,
+                            ScreenInstruction::AgentReport(report, _) => &mut report.pane_id,
                             _ => return false,
                         };
                         if source {
@@ -1467,6 +1474,39 @@ impl super::MigrationController {
     }
 }
 
+/// A deferred report is acknowledged to its hook but never reaches a destination. Its pane's
+/// captured tracking predates that report, so the destination must wait for a fresh hook.
+fn forget_unapplied_agent_tracking(
+    snapshot: &mut yinz_types::session_migration::SessionMigrationSnapshot,
+    deferred: &std::collections::VecDeque<ScreenInstruction>,
+) {
+    let reported: HashSet<PaneId> = deferred
+        .iter()
+        .filter_map(|event| match event {
+            ScreenInstruction::AgentReport(report, _) => Some(report.pane_id),
+            _ => None,
+        })
+        .collect();
+    if reported.is_empty() {
+        return;
+    }
+    for tab in &mut snapshot.tabs {
+        let panes = tab
+            .payload
+            .tiled_panes
+            .iter_mut()
+            .chain(tab.payload.floating_panes.iter_mut());
+        for ((id, _), pane) in tab.terminal_states.iter().zip(panes) {
+            if reported.contains(id) && pane.agent_tracking.take().is_some() {
+                log::debug!(
+                    "update {}: discarded agent tracking pane={id:?} reason=deferred_report",
+                    snapshot.operation
+                );
+            }
+        }
+    }
+}
+
 fn resume_migration_plugins(senders: &yinz_bus::thread_bus::ThreadSenders, operation: &str) {
     let (reply, _) = std::sync::mpsc::channel();
     senders
@@ -1550,6 +1590,8 @@ impl super::MigrationController {
             Ok(document) => {
                 state.snapshot = document;
                 state.snapshot.errors.clear();
+                // This is the source's last write before a destination may adopt.
+                forget_unapplied_agent_tracking(&mut state.snapshot, &self.migration_deferred);
             },
             Err(error) => {
                 state.snapshot.errors =
@@ -1769,6 +1811,7 @@ impl super::ScreenCore {
                     .and_then(|tab| tab.get_pane_with_id(*pane_id))
                     .and_then(|p| p.agent_info().cloned()),
                 agent_input: agents.warped_agent_input(self, *pane_id),
+                agent_tracking: agents.migration_agent_tracking(self, *pane_id),
                 ..Default::default()
             })
         };
@@ -1901,6 +1944,7 @@ impl super::MigrationController {
                 .iter()
                 .map(|(id, tab)| core.migration_tab_snapshot(agents, *id, tab, &addresses))
                 .collect::<Result<_>>()?;
+            forget_unapplied_agent_tracking(&mut state.snapshot, &self.migration_deferred);
             state.snapshot.phase = MigrationPhase::Releasing;
             state.snapshot.ownership = addresses
                 .keys()

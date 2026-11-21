@@ -80,14 +80,10 @@ impl super::AgentController {
         host: &impl AgentHost,
         pane: PaneId,
     ) -> Option<AgentTrackingHandoff> {
-        let agent = host.pane_info(pane)?.agent?;
+        host.pane_info(pane)?.agent?;
         // Finish requests while the source pane still exists, so retained results and replies
         // describe the original target. A partially delivered prompt must remain unconsumed.
-        let partial = self.agent_draft_clears.contains_key(&pane)
-            || self.agent_clear_inputs.contains_key(&pane)
-            || self.agent_controls.iter().any(|p| {
-                p.pane == pane && (p.delivery.is_some() || p.enter_at.is_some() || p.clear)
-            });
+        let partial = self.partial_agent_input(pane);
         let mut keep = Vec::new();
         for pending in std::mem::take(&mut self.agent_controls) {
             if pending.pane == pane {
@@ -108,6 +104,35 @@ impl super::AgentController {
                 );
             }
         }
+        self.agent_tracking_snapshot(host, pane, partial)
+    }
+
+    /// Live update keeps the pane and its process, so the source's lifecycle observations
+    /// carry over. Unlike warp, pending requests are left to the source rather than finished
+    /// here; a partially delivered prompt still leaves the carried input unconsumed.
+    pub fn migration_agent_tracking(
+        &self,
+        host: &impl AgentHost,
+        pane: PaneId,
+    ) -> Option<AgentTrackingHandoff> {
+        self.agent_tracking_snapshot(host, pane, self.partial_agent_input(pane))
+    }
+
+    fn partial_agent_input(&self, pane: PaneId) -> bool {
+        self.agent_draft_clears.contains_key(&pane)
+            || self.agent_clear_inputs.contains_key(&pane)
+            || self.agent_controls.iter().any(|p| {
+                p.pane == pane && (p.delivery.is_some() || p.enter_at.is_some() || p.clear)
+            })
+    }
+
+    fn agent_tracking_snapshot(
+        &self,
+        host: &impl AgentHost,
+        pane: PaneId,
+        partial: bool,
+    ) -> Option<AgentTrackingHandoff> {
+        let agent = host.pane_info(pane)?.agent?;
         let mut lifecycle = self.agent_lifecycle.get(&pane).map(Lifecycle::handoff);
         if partial && let Some(lifecycle) = &mut lifecycle {
             lifecycle.input_revision = None;
