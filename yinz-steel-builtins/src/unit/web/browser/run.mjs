@@ -1741,12 +1741,7 @@ async function cachedAgentList(open) {
   const message = FILLER.repeat(3).slice(0, 300);
   fx.fail.set('/api/agents', { mode: 'reply', times: Infinity, status: 503,
     body: { error: { code: 'busy', message } } });
-  await textUntil(page, '#list-freshness', message, 'long retry message after list poll');
-  const status = await page.locator('#list-header .header-status').boundingBox();
-  for (const id of ['#list-refresh', '#list-next-waiting']) {
-    const action = await page.locator(id).boundingBox();
-    check(action && action.y >= status.y + status.height, `${id} crowds the stale status`);
-  }
+  await textUntil(page, '#banner-offline', message, 'long retry message after list poll');
   const href = await link.getAttribute('href');
   await link.click();
   await until('cached card opens', () => hashOf(page) === href);
@@ -1787,7 +1782,7 @@ async function compactAgentList(open, width, scheme) {
       clamp: rs.webkitLineClamp,
     };
   }, reference);
-  if (width >= 390) check(metrics.header <= 96, `Agents header too tall: ${metrics.header}px at ${width}px`);
+  check(metrics.header <= 56, `Agents header too tall: ${metrics.header}px at ${width}px`);
   check(metrics.titleColour !== metrics.replyColour, 'task and response colours are identical');
   check(metrics.titleContrast >= 4.5 && metrics.replyContrast >= 4.5, `low text contrast: ${JSON.stringify(metrics)}`);
   check(metrics.titleSize === '16px' && metrics.replySize === '14px', 'unexpected title/reply typography');
@@ -1814,11 +1809,11 @@ async function compactAgentList(open, width, scheme) {
   await switchGroup(page, 'browser-check', 0);
 
   // Keyboard focus must remain visible and Enter must activate the card itself.
-  await page.focus('#list-refresh');
-  await page.keyboard.press('Tab');
-  check(await activeId(page) === 'list-next-waiting', 'waiting shortcut missing from tab order');
-  await page.keyboard.press('Tab');
-  check(await activeId(page) === 'start-agent', 'Start agent missing from tab order');
+  await page.focus('#list-next-waiting');
+  for (const id of ['start-agent', 'switch-group', 'list-refresh', 'menu-button']) {
+    await page.keyboard.press('Tab');
+    check(await activeId(page) === id, `${id} missing from tab order`);
+  }
   await page.keyboard.press('Tab');
   check(await page.evaluate(() => document.activeElement.matches('.agent-open-area') && parseFloat(getComputedStyle(document.activeElement).outlineWidth) >= 2), 'card keyboard focus indication missing');
   await page.keyboard.press('Enter');
@@ -2400,6 +2395,11 @@ async function manageAgent(open) {
   fx.rows = [];
   await openApp(page, '#/');
   await textUntil(page, '#list-empty', 'No agents', 'empty list');
+  const add = page.locator('#list-header').getByRole('button', { name: 'Start agent', exact: true });
+  check(await add.innerText() === '+', 'header launch button must display +');
+  await add.click();
+  await page.locator('#sheet-start').getByRole('button', { name: 'Cancel' }).click();
+  check(await activeId(page) === 'start-agent', 'cancel did not return focus to the header');
   malformed('/api/agent/launch-choices', {});
   await page.click('#start-agent');
   const start = page.locator('#sheet-start');
@@ -2534,6 +2534,44 @@ async function releaseResponse(page) {
   await nextFrame(page);
 }
 
+async function manageLateLaunch(open, returnToOrigin) {
+  const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
+  await useSlowListPolling(page);
+  const first = row(fx, 'live:dev:8', 'idle');
+  const second = row(fx, 'live:dev:9', 'idle', { tab_group: { id: 1, name: 'Review' } });
+  fx.rows = [first, second];
+  await openList(page);
+  await switchGroup(page, 'browser-check', 1);
+  await page.click('#start-agent');
+  const sheet = page.locator('#sheet-start');
+  await sheet.getByLabel('Provider').selectOption('codex');
+  await sheet.getByLabel('Project').selectOption('Review');
+  await sheet.getByLabel('Worktree').selectOption('/review');
+  await holdResponse(page, '/api/agent/launch');
+  await sheet.getByRole('button', { name: 'Start agent', exact: true }).click();
+  await waitForHeldResponse(page);
+  await page.evaluate(() => history.back());
+  await page.locator(cardSelector(first.id)).waitFor();
+  const checkLaunch = sheet.getByRole('button', { name: 'Check launch' });
+  if (returnToOrigin) {
+    await page.evaluate(() => history.forward());
+    await page.locator(cardSelector(second.id)).waitFor();
+  } else {
+    await page.click('#start-agent');
+    await checkLaunch.waitFor();
+  }
+  const reads = () => page.evaluate(() => window.__yinzFetches.filter((r) => r.p === '/api/agents').length);
+  const before = await reads();
+  await releaseResponse(page);
+  check(await reads() === before, 'abandoned launch refreshed the list');
+  check(!(await exists(page, '#main .banner')), 'abandoned launch opened a wait banner');
+  if (returnToOrigin) await page.click('#start-agent');
+  await checkLaunch.waitFor();
+  const [submitted] = fx.bodies('/api/agent/launch');
+  check(await page.evaluate(() => sessionStorage.getItem('yinz.web.v1.pending-launch')) === JSON.stringify(submitted),
+    'abandoned launch lost the original submission');
+}
+
 async function manageLaunchWait(open, mode) {
   const { page, fx, context } = await open({ viewport: { width: 320, height: 640 }, clock: mode === 'expiry' });
   if (mode === 'expiry') await useSlowListPolling(page);
@@ -2611,23 +2649,44 @@ async function manageMuseLaunch(open) {
   fx.rows = [row(fx, AGENT_ID, 'idle', {
     title: 'Muse', provider: 'muse', pane_id: pane, ref: { ...muse, session_id: '' },
     run: null, can_prompt: false,
-  })];
+  }), ...Array.from({ length: 16 }, (_, i) => row(fx, `live:dev:${30 + i}`, 'idle'))];
   await openList(page);
   const list = groupRoute('browser-check', 0);
   await until('Muse agent group route', () => hashOf(page) === list);
   const banner = page.locator('.banner');
   const guidance = banner.getByText(`Send Muse its first prompt in the Yinz terminal ${pane} (session browser-check).`, { exact: true });
   const sheet = page.locator('#sheet-start');
+  async function scrollDownList() {
+    const top = await page.evaluate(() => {
+      window.scrollTo({ top: 800, behavior: 'instant' });
+      return window.scrollY;
+    });
+    check(Math.abs(top - 800) <= 1, 'long list did not reach the requested scroll position');
+    return top;
+  }
+  await scrollDownList();
   await page.locator('#start-agent').click();
   await sheet.getByLabel('Provider').selectOption('muse');
   await sheet.getByLabel('Project').selectOption('Review');
   await sheet.getByLabel('Worktree').selectOption('/review');
   await sheet.getByRole('button', { name: 'Start agent', exact: true }).click();
   await guidance.waitFor();
+  check(await banner.evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    return document.activeElement === el && rect.top >= document.getElementById('list-header').getBoundingClientRect().bottom - 1
+      && rect.bottom <= innerHeight + 1;
+  }), 'launch banner did not receive focus or fit below the header');
+  await page.keyboard.press('Tab');
+  const dismiss = banner.getByRole('button', { name: 'Dismiss' });
+  check(await dismiss.evaluate((el) => el === document.activeElement), 'Tab did not reach Dismiss from the instructions');
+  const readingPosition = await scrollDownList();
+  fx.rows[1] = row(fx, fx.rows[1].id, 'idle', { title: 'Polled card' });
+  await textUntil(page, cardSelector(fx.rows[1].id), 'Polled card', 'list polled after the launch');
+  check(await page.evaluate(() => scrollY) === readingPosition, 'a later poll moved the list');
   const saved = await savedLaunch();
   check(saved && fx.count(verification) === 0, 'incomplete Muse identity started verification or lost the receipt');
 
-  await banner.getByRole('button', { name: 'Dismiss' }).click();
+  await page.keyboard.press('Enter');
   check(await savedLaunch() === saved, 'dismissing Muse guidance lost the receipt');
   await page.locator('#start-agent').click();
   await sheet.getByRole('button', { name: 'Check launch' }).click();
@@ -3596,7 +3655,6 @@ async function hiddenForeground(open) {
     await idle(page);
   }
   check((await fetchCount(page, '/api/')) === hiddenAt, 'requests were made while hidden');
-  await until('paused freshness', async () => ((await textOf(page, '#list-freshness')) || '').startsWith('Paused'));
   const visibleAt = await hide(false);
   await until('immediate refresh on foreground', async () => (await fetchCount(page, '/api/')) === visibleAt + 1, 5000);
   await idle(page);
@@ -3895,6 +3953,8 @@ async function main() {
   await scenario('Agents peer focus across republication: quick key', (open) => peerFocusAcrossRepublication(open, '.quick-key[data-key="1"]'));
   await scenario('Agents peer Detail routing and draft isolation', scopedPeerDetails);
   await scenario('Agents start, move and close on a phone', manageAgent);
+  await scenario('Agents start, move and close on a phone: late launch with new sheet', (open) => manageLateLaunch(open, false));
+  await scenario('Agents start, move and close on a phone: late launch after Forward', (open) => manageLateLaunch(open, true));
   for (const mode of ['restart', 'dismiss', 'expiry', 'leave', 'candidate']) {
     await scenario(`Agents start, move and close on a phone: launch ${mode}`, (open) => manageLaunchWait(open, mode));
   }

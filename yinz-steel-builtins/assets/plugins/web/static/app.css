@@ -123,16 +123,16 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
   /* WebKit can extend a sticky header's solid color into the status bar. */
   #detail-header { position: sticky; top: 0; z-index: 5; }
 }
-#switch-group { font-size: 14px; padding-inline: 4px; }
 .header-row { display: flex; align-items: center; gap: 4px; min-height: var(--tap); }
 .header-title { font-size: 18px; font-weight: 700; flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .header-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
 .header-html { min-width: 0; overflow-wrap: anywhere; }
-.header-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; font-size: 14px; color: var(--muted); padding: 0 2px; }
-.header-status { flex: 1 1 7rem; min-width: 0; display: flex; flex-wrap: wrap; gap: 0 8px; overflow-wrap: anywhere; }
-#list-header .header-status:has(.freshness-stale) { flex-basis: 100%; }
-.next-waiting { padding-inline: 8px; }
-.need-count { color: var(--waiting); }
+.need-count { color: var(--waiting); font-size: 14px; font-weight: 600; padding-inline: 2px; }
+@media (max-width: 359px) {
+  #list-header .header-row { gap: 1px; }
+  #list-header .header-title { min-width: max-content; }
+}
+#list-header .icon-button { display: grid; place-items: center; }
 .freshness-stale { color: var(--danger); font-weight: 600; }
 
 /* Banners and toast */

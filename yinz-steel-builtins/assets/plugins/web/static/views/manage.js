@@ -84,7 +84,9 @@ function savedLaunch(storage) {
   return null;
 }
 
-function StartSheet({ env, onClose, onLaunched }) {
+export function StartSheet({ env, onClose, onLaunched }) {
+  const mounted = useRef(true);
+  useLayoutEffect(() => () => { mounted.current = false; }, []);
   const [pending, setPending] = useState(() => savedLaunch(env.session));
   const [confirmForget, setConfirmForget] = useState(false);
   const [forgetError, setForgetError] = useState('');
@@ -115,6 +117,7 @@ function StartSheet({ env, onClose, onLaunched }) {
       setPending(body);
     }
     const r = await env.api.post('/api/agent/launch', body);
+    if (!mounted.current) return r;
     if (r.ok && (typeof r.data?.pane_id !== 'string' || typeof r.data.session !== 'string' || r.data.kind !== body.kind)) return { kind: 'malformed' };
     if (r.ok) {
       const expiresAt = body.kind === 'muse' ? null : Date.now() + 60000;
@@ -156,7 +159,7 @@ function StartSheet({ env, onClose, onLaunched }) {
   <//>`;
 }
 
-function LaunchWait({ env, launched, data, onDone, setWaiting }) {
+export function LaunchWait({ env, launched, data, onDone, setWaiting, bannerRef }) {
   const [visit] = useState(() => new AbortController());
   const entry = useRef(window.history.state?.yinzIndex);
   const verifying = useRef(false);
@@ -211,20 +214,10 @@ function LaunchWait({ env, launched, data, onDone, setWaiting }) {
     });
   }, [data]);
 
-  return html`<${Banner} tone="info" actions=${html`<button type="button" class="link-button" onClick=${() => stop()}>Dismiss</button>`}>
+  return html`<${Banner} focusRef=${bannerRef} tone="info" actions=${html`<button type="button" class="link-button" onClick=${() => stop()}>Dismiss</button>`}>
     ${launched.kind === 'muse'
       ? `Send Muse its first prompt in the Yinz terminal ${launched.pane_id} (session ${launched.session}).`
       : `Waiting for ${launched.kind} in ${launched.pane_id} to report its conversation…`}<//>`;
-}
-
-export function AgentLauncher({ env, data, refresh, setWaiting }) {
-  const [start, setStart] = useState(false);
-  const [launched, setLaunched] = useState(null);
-  if (launched) return html`<${LaunchWait} env=${env} launched=${launched} setWaiting=${setWaiting} data=${data} onDone=${() => setLaunched(null)} />`;
-  return html`<button type="button" class="button" id="start-agent" aria-haspopup="dialog" onClick=${() => setStart(true)}>Start agent</button>
-    ${start ? html`<${StartSheet} env=${env} onClose=${() => setStart(false)} onLaunched=${(launch) => {
-      setStart(false); setLaunched(launch); refresh();
-    }} />` : null}`;
 }
 
 function named(item) {

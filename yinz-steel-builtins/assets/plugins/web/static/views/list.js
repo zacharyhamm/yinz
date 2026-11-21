@@ -1,9 +1,9 @@
 // Agents pages: one session-scoped tab group at a time.
 import { describeError, freshnessText } from '../api.js';
-import { html, useState, useEffect, useLayoutEffect, useRef, usePoller, useNow, ServerHtml, RowBadges, stateLabel, QuickKeys, Banner, Freshness, responseText, cx } from './ui.js';
+import { html, useState, useEffect, useLayoutEffect, useRef, usePoller, useNow, ServerHtml, RowBadges, stateLabel, QuickKeys, Banner, responseText, cx } from './ui.js';
 import { Sheet, ConfirmSheet } from './sheets.js';
 import { cardDetail, controlTarget, detailHash, groupHash, isScopedPeer, validGroupId } from '../app-route.js';
-import { AgentLauncher } from './manage.js';
+import { StartSheet, LaunchWait } from './manage.js';
 import { Notifications } from './notifications.js';
 
 function nonblank(value) {
@@ -93,6 +93,12 @@ function revealOffset(control, header) {
   return rect.bottom > bottom + 1 ? rect.bottom - bottom : 0;
 }
 
+function focusAndReveal(control, header) {
+  control.focus({ preventScroll: true });
+  const offset = revealOffset(control, header);
+  if (offset) window.scrollBy({ top: offset, behavior: 'instant' });
+}
+
 function captureCardFocus(main, header) {
   const control = document.activeElement;
   const card = control?.closest('.agent-card');
@@ -168,6 +174,9 @@ export function ListView({ env, groupKey, navigation, entry }) {
   const [picker, setPicker] = useState(false);
   const [confirmAll, setConfirmAll] = useState(false);
   const [busyKeys, setBusyKeys] = useState({});
+  const [launcher, setLauncher] = useState(null);
+  const launch = launcher?.entry === entry ? launcher?.launch : null;
+  useLayoutEffect(() => setLauncher(null), [entry]);
   const [waitingForLaunch, setWaitingForLaunch] = useState(false);
   const [state, refresh] = usePoller({
     key: 'agents',
@@ -207,6 +216,10 @@ export function ListView({ env, groupKey, navigation, entry }) {
   const pageWaiting = waitingAgents.filter((agent) => agent.key === pageKey);
   const header = useRef(null);
   const main = useRef(null);
+  const launchBanner = useRef(null);
+  useLayoutEffect(() => {
+    if (launch) focusAndReveal(launchBanner.current, header.current);
+  }, [launch]);
   const previousJump = useRef(null);
   const pendingJump = useRef(null);
   const previousPage = useRef(pageKey);
@@ -292,9 +305,7 @@ export function ListView({ env, groupKey, navigation, entry }) {
     const links = main.current.querySelectorAll(`${CARD_SELECTOR}.card-waiting > a.agent-open-area`);
     const link = links[pageWaiting.indexOf(agent)];
     if (!link) return false;
-    link.focus({ preventScroll: true });
-    const offset = revealOffset(link, header.current);
-    if (offset) window.scrollBy({ top: offset, behavior: 'instant' });
+    focusAndReveal(link, header.current);
     return true;
   }
 
@@ -340,19 +351,24 @@ export function ListView({ env, groupKey, navigation, entry }) {
   return html`<div class="page list-page">
     <header class="app-header" id="list-header" ref=${header}>
       <div class="header-row">
-        <h1 class="header-title">Agents${waiting > 0 ? html` · <span class="need-count">${waiting} need you</span>` : null}</h1>
-        ${groups.length > (selected ? 1 : 0) ? html`<button type="button" class="link-button" id="switch-group"
-          aria-haspopup="dialog" onClick=${() => setPicker(true)}>Switch group</button>` : null}
+        <h1 class="header-title">Agents</h1>
+        ${waitingAgents.length ? html`<button type="button" class="link-button need-count" id="list-next-waiting"
+          title="Next waiting agent" aria-label=${`${waiting} need you. Next waiting agent`} onClick=${() => nextWaiting()}>${waiting} need you</button>`
+          : waiting > 0 ? html`<span class="need-count">${waiting} need you</span>` : null}
+        ${!launch ? html`<button type="button" class="icon-button" id="start-agent" aria-label="Start agent"
+          title="Start agent" aria-haspopup="dialog" onClick=${() => setLauncher({ entry })}>+</button>` : null}
+        ${groups.length > (selected ? 1 : 0) ? html`<button type="button" class="icon-button" id="switch-group"
+          aria-label="Switch group" title="Switch group" aria-haspopup="dialog" onClick=${() => setPicker(true)}>
+          <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round">
+            <rect x="3" y="8" width="14" height="12" rx="2"/><path d="M7 4h12a2 2 0 0 1 2 2v10"/>
+          </svg>
+        </button>` : null}
+        <button type="button" class="icon-button" id="list-refresh" aria-label="Refresh" title="Refresh" onClick=${() => refresh()}>
+          <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 4v6h-6M20 10a8 8 0 1 0 0 5"/>
+          </svg>
+        </button>
         <button type="button" class="icon-button" id="menu-button" aria-label="Menu" aria-haspopup="dialog" onClick=${() => setMenu(true)}>⋯</button>
-      </div>
-      <div class="header-sub">
-        <div class="header-status">
-          <${Freshness} id="list-freshness" state=${state} now=${now} />
-          ${data && typeof data.session === 'string' ? html`<span class="serving-session" id="list-session">Session ${data.session}</span>` : null}
-        </div>
-        <button type="button" class="link-button" id="list-refresh" onClick=${() => refresh()}>Refresh</button>
-        ${waitingAgents.length ? html`<button type="button" class="button next-waiting" id="list-next-waiting"
-          onClick=${() => nextWaiting()}>Next waiting agent</button>` : null}
       </div>
     </header>
     ${env.notice ? html`<${Banner} id="banner-notice" tone="info" actions=${html`<button type="button" class="link-button" onClick=${env.clearNotice}>Dismiss</button>`}>${env.notice}<//>` : null}
@@ -360,9 +376,12 @@ export function ListView({ env, groupKey, navigation, entry }) {
       ${state && state.error && ['offline', 'retrying', 'error'].includes(state.status) ? html`<${Banner} id="banner-offline" tone="warn">${freshnessText(state, now)}<//>` : null}
       ${!data && (!state || state.loading) ? html`<p class="empty">Loading agents…</p>` : null}
       ${data && !selected ? html`<p class="empty" id="list-empty">${groupKey === undefined ? 'No agents are running.' : 'No agents in this group.'}</p>` : null}
-      <${AgentLauncher} key=${entry} env=${env} data=${data} refresh=${refresh} setWaiting=${setWaitingForLaunch} />
+      ${launch ? html`<${LaunchWait} env=${env} launched=${launch} data=${data} bannerRef=${launchBanner}
+        setWaiting=${setWaitingForLaunch} onDone=${() => setLauncher(null)} />` : null}
       ${selected ? renderGroup(selected) : null}
     </main>
+    ${launcher && launcher.entry === entry && !launch ? html`<${StartSheet} env=${env} onClose=${() => setLauncher(null)}
+      onLaunched=${(launch) => { setLauncher({ entry, launch }); refresh(); }} />` : null}
     ${picker ? html`<${Sheet} id="sheet-groups" title="Switch group" onClose=${() => setPicker(false)} fallbackFocusRef=${main}>
       <nav class="group-links" aria-label="Tab groups">
         ${groups.map((group) => html`<a key=${group.key} class="button group-link" href=${groupHash(group.key)}

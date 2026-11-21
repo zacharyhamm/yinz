@@ -311,7 +311,7 @@ plugin configuration or secrets.
   checkpoint still contains an older name. Each card
   shows its state and any custom status text. The header's attention count
   includes all waiting agents in the snapshot, even when a hook hides some
-  cards. **Next waiting agent** focuses and reveals the next waiting card with
+  cards. Selecting the count focuses and reveals the next waiting card with
   an Open link in displayed order, wrapping back to the first. When multiple
   waiting cards are reachable, press Tab from a card's main Open link to reach
   its **Next waiting agent** button. Enter on the focused Open link opens the card.
@@ -321,10 +321,9 @@ plugin configuration or secrets.
   at most three lines. Blank replies take no space. Open the agent's timeline and
   message reader for longer content. Badges mark peer sessions, the
   desktop-focused agent and remote hosts. Waiting cards have quick keys and an
-  **Open** button. The header shows how long ago the list was updated and the
-  serving session. The menu has **Log out** and **Log out everywhere**, which
+  **Open** button. The header has icons for **Switch group** and **Refresh**. The menu has **Log out** and **Log out everywhere**, which
   asks for confirmation.
-- **Start agent** is available even when the list is empty. Choose a provider,
+- The **+** button in the Agents header opens **Start agent**, even when the list is empty. Choose a provider,
   a registered project, and a checkout by branch and path. A detached checkout
   appears as **Detached HEAD**. **Create new worktree** asks for a branch and
   uses the same directory and base as the command palette. Yinz places the pane

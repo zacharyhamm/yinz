@@ -61,8 +61,9 @@ export function usePoller({ key, run, intervalMs, enabled = true, env }) {
   return [state, refresh];
 }
 
-export function Banner({ id, tone = 'info', children, actions }) {
-  return html`<div id=${id} class=${cx('banner', `banner-${tone}`)} role=${tone === 'error' || tone === 'warn' ? 'alert' : 'status'}>
+export function Banner({ id, tone = 'info', children, actions, focusRef }) {
+  return html`<div id=${id} class=${cx('banner', `banner-${tone}`)} role=${tone === 'error' || tone === 'warn' ? 'alert' : 'status'}
+    ref=${focusRef} tabindex=${focusRef ? -1 : undefined}>
     <div class="banner-text">${children}</div>
     ${actions ? html`<div class="banner-actions">${actions}</div>` : null}
   </div>`;
