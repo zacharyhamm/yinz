@@ -112,11 +112,11 @@ def workflow():
         with condition(next_id, 101):
             error = get(reply, "error")
             with condition(error, 100):
-                code = get(error, "code")
-                with condition(code, 4, WFConditionalActionString="invalid_dictation"):  # is
-                    save(origin, token, cursor)
-                    speak("Run Talk to Yinz again and dictate a shorter replacement command.")
-                    action("exit")
+                for rejected in ("invalid_dictation", "body_too_large"):
+                    with condition(get(error, "code"), 4, WFConditionalActionString=rejected):
+                        save(origin, token, cursor)
+                        speak("Run Talk to Yinz again and dictate a shorter replacement command.")
+                        action("exit")
             speak("Yinz could not confirm the command. Run Talk to Yinz again to retry. If your sign-in expired, pair again.")
             action("exit")
         set_var("Request", next_id)

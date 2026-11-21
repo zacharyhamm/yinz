@@ -16,6 +16,8 @@ pub(super) struct Agent {
     pub project: String,
     pub branch: String,
     pub session: String,
+    #[serde(default)]
+    pub current_session: bool,
     pub state: Option<String>,
     pub run: Option<String>,
     pub pane_id: String,
@@ -243,6 +245,7 @@ pub(super) struct Dialogue {
     pub refinement: Option<(Action, Option<String>)>,
     pub reading: String,
     pub pending: Option<Pending>,
+    pub uncertain_launch: Option<Value>,
     pub launched: Option<Launch>,
     pub prepared: Option<Prepared>,
     pub next: Option<String>,
@@ -258,7 +261,6 @@ pub(super) struct Pending {
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Launch {
     pub id: String,
-    pub session: String,
     pub pane: String,
     pub kind: String,
 }

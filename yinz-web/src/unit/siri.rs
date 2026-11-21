@@ -19,6 +19,8 @@ struct Live {
     receipt: Value,
     lookup_unavailable: bool,
     launches: Vec<Value>,
+    stale_run: Option<String>,
+    launch_replaced: bool,
     launch_error: Option<(u16, &'static str)>,
 }
 
@@ -51,10 +53,12 @@ impl Backend for Fixture {
             "/api/agents" => json!({"agents":live.agents}),
             "/api/agent/assistant-reply" => {
                 let filter = &body["filter"];
-                if live
-                    .agents
-                    .iter()
-                    .any(|a| a["ref"] == body["agent"] && a["run"] == body["run"])
+                assert_eq!(filter["main_only"], true);
+                if live.stale_run.as_deref() != body["run"].as_str()
+                    && live
+                        .agents
+                        .iter()
+                        .any(|a| a["ref"] == body["agent"] && a["run"] == body["run"])
                 {
                     let reply = live.replies.iter().rev().find(|r| {
                         r["run"] == body["run"]
@@ -81,8 +85,11 @@ impl Backend for Fixture {
                 json!({"response":{"submission_id":body["submission_id"],"outcome":"submitted","turn_id":"our turn"}})
             },
             "/api/agent/submission-status" => {
-                assert_eq!(body["agent"], live.sends[0]["agent"]);
-                assert_eq!(body["submission_id"], live.sends[0]["submission_id"]);
+                assert_eq!(body["agent"], live.sends.last().unwrap()["agent"]);
+                assert_eq!(
+                    body["submission_id"],
+                    live.sends.last().unwrap()["submission_id"]
+                );
                 if live.lookup_unavailable {
                     return Box::pin(async { None });
                 }
@@ -101,6 +108,10 @@ impl Backend for Fixture {
                 } else {
                     json!({"pane_id":"1","session":"session-1"})
                 }
+            },
+            "/api/agent/launch-status" if live.launch_replaced => {
+                status = 409;
+                json!({"error":{"code":"target_changed"}})
             },
             "/api/agent/launch-status" => json!(true),
             path => panic!("unexpected Siri operation {path}"),
@@ -129,7 +140,7 @@ fn row(i: usize) -> Value {
     let id = format!("agent-{i}");
     json!({"ref":{"id":id,"kind":"claude","session_id":id},"run":id,"pane_id":i.to_string(),
         "title":"Fix login timeout","project":"swamp","branch":format!("mobile-login-{i}"),
-        "session":format!("session-{i}"),"state":"waiting","can_prompt":true})
+        "session":format!("session-{i}"),"current_session":i == 1,"state":"waiting","can_prompt":true})
 }
 
 struct Phone {
@@ -425,8 +436,8 @@ async fn siri_readback_only_lists_agents_until_the_run_is_known() {
                 assert_eq!(requests.next().unwrap().0, "/api/agents");
             }
         }
-        let correlated = json!({"after":after,"turn":"our turn"});
-        let latest = json!({"after":after});
+        let correlated = json!({"main_only":true,"after":after,"turn":"our turn"});
+        let latest = json!({"main_only":true,"after":after});
         // Two misses, the attributed reply on the third poll, then the follow-up command.
         for filter in [
             &correlated,
@@ -472,7 +483,7 @@ async fn siri_readback_requests_reselection_when_the_run_changes() {
     assert_eq!(path, "/api/agent/assistant-reply");
     assert_eq!(
         body,
-        &json!({"agent":row(1)["ref"],"run":"agent-1","filter":{"after":0,"turn":"our turn"}})
+        &json!({"agent":row(1)["ref"],"run":"agent-1","filter":{"main_only":true,"after":0,"turn":"our turn"}})
     );
 }
 
@@ -744,7 +755,12 @@ async fn siri_successful_launch_abandons_unmatched_send() {
         // A bare description used to resume the abandoned send here.
         phone.say("the one on mobile login 2").await;
         if !ready {
-            phone.backend.0.lock().unwrap().agents.push(row(1));
+            let mut renamed = row(1);
+            renamed["session"] = json!("renamed");
+            phone.backend.0.lock().unwrap().agents.push(renamed);
+            phone.backend.0.lock().unwrap().launch_replaced = true;
+            assert_eq!(phone.say("Show me that agent").await["speech"], CHANGED);
+            phone.backend.0.lock().unwrap().launch_replaced = false;
             assert!(phone.say("Show me that agent").await["path"]
                 .as_str()
                 .unwrap()
@@ -794,4 +810,100 @@ async fn siri_launch_retries_pending_and_finishes_terminal_failure() {
         live.launches[0]["submission_id"],
         live.launches[2]["submission_id"]
     );
+}
+
+#[tokio::test]
+async fn siri_abandons_unknown_launch_after_replaying_the_same_receipt() {
+    let mut phone = Phone::new();
+    let command = "Launch a new Claude agent in swamp";
+    phone.backend.0.lock().unwrap().launch_error = Some((503, "unavailable"));
+    assert_eq!(
+        phone.request("first", command).await.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    phone.backend.0.lock().unwrap().launch_error = Some((503, "launch_unknown"));
+    let prompt = phone.say(command).await;
+    assert_eq!(prompt["follow_up"], "yes");
+    assert_eq!(phone.send("first", command).await, prompt);
+    assert_eq!(phone.say("Check again.").await["speech"], CHECK_LAUNCH);
+    assert!(phone.say("Cancel").await["speech"]
+        .as_str()
+        .unwrap()
+        .contains("may still have launched"));
+    assert!(
+        phone.say("Select the agent on mobile login 2").await["speech"]
+            .as_str()
+            .unwrap()
+            .starts_with("Selected")
+    );
+    let live = phone.backend.0.lock().unwrap();
+    assert_eq!(live.launches.len(), 3);
+    assert!(live.launches.windows(2).all(|pair| pair[0] == pair[1]));
+}
+
+#[tokio::test]
+async fn siri_uncertain_send_retires_previous_reply() {
+    let mut phone = Phone::new();
+    phone.backend.0.lock().unwrap().reply_on_send = true;
+    assert_eq!(
+        phone
+            .say("Tell the agent on mobile login 1 to run tests")
+            .await["speech"],
+        "The requested tests passed."
+    );
+    phone.backend.0.lock().unwrap().lose_send_response = true;
+    phone.backend.0.lock().unwrap().receipt = json!({"outcome":"status_unavailable"});
+    let next = "Tell the agent on mobile login 2 to run tests";
+    assert_eq!(
+        phone.request(&phone.cursor, next).await.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert!(phone.say(next).await["speech"]
+        .as_str()
+        .unwrap()
+        .contains("uncertain"));
+    assert_eq!(
+        phone.say("Did it reply?").await["speech"],
+        "There is no pending Siri message."
+    );
+}
+
+#[tokio::test]
+async fn siri_phrase_search_keeps_matches_when_another_candidate_changes() {
+    let mut phone = Phone::new();
+    {
+        let mut live = phone.backend.0.lock().unwrap();
+        live.stale_run = Some("agent-2".into());
+        live.replies
+            .push(json!({"revision":1,"run":"agent-1","text":"needle"}));
+    }
+    assert!(phone.say("List agents mentioned needle").await["speech"]
+        .as_str()
+        .unwrap()
+        .contains("mobile-login-1"));
+}
+
+#[test]
+fn siri_credential_reset_recovers_corrupt_pairing_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    password::tests::ready(data);
+    for clear in [false, true] {
+        password::atomic_write(&data.join("web"), "siri.json", b"{").unwrap();
+        if clear {
+            assert!(password::clear(data).unwrap());
+            assert!(!data.join("web/siri.json").exists());
+            password::tests::ready(data);
+        } else {
+            password::revoke_sessions(data).unwrap();
+        }
+        let password::PasswordState::Ready(v) = password::read_state(data) else {
+            panic!("missing verifier")
+        };
+        let owner = sign_in(data, &v.verifier_id);
+        let code = store::configure(data, &owner.id, "listener", false)
+            .unwrap()
+            .unwrap();
+        assert!(store::redeem(data, "listener", &code).unwrap().is_some());
+    }
 }

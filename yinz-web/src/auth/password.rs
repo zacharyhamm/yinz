@@ -126,6 +126,7 @@ pub(crate) fn publish(dir: &Path, v: Verifier) -> Result<()> {
     // Invalidate and sync BEFORE publishing a new verifier. A failed publication cannot
     // leave old bearer sessions alongside a newly published verifier, even after a crash.
     remove(dir, "sessions.json")?;
+    remove(dir, "siri.json")?;
     sync_dir(dir)?;
     let stored = Stored {
         version: 1,
@@ -179,8 +180,9 @@ pub fn clear(data_dir: &Path) -> Result<bool> {
     let password = remove(&dir, "password")?;
     sync_dir(&dir)?;
     let sessions = remove(&dir, "sessions.json")?;
+    let siri = remove(&dir, "siri.json")?;
     sync_dir(&dir)?;
-    Ok(password || sessions)
+    Ok(password || sessions || siri)
 }
 
 fn parse(bytes: &[u8]) -> Result<Verifier> {

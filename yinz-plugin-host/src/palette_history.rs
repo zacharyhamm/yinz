@@ -111,6 +111,8 @@ pub(super) fn last_reply(
 #[derive(Default, Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReplyFilter {
+    #[serde(default)]
+    pub main_only: bool,
     pub query: Option<String>,
     pub revision: Option<i64>,
     pub after: Option<i64>,
@@ -146,6 +148,9 @@ pub(crate) fn assistant_reply(
         .select(["revision", "text"])
         .sort_by("revision", SortDir::Desc)
         .limit(1);
+    if filter.main_only || filter.turn.is_some() {
+        request = request.filter(Pred::is_null("worker_id"));
+    }
     if let Some(query) = &filter.query {
         request = request.filter(Pred::contains("text", query));
     }
@@ -156,9 +161,7 @@ pub(crate) fn assistant_reply(
         request = request.filter(Pred::gt("revision", after));
     }
     if let Some(turn) = &filter.turn {
-        request = request
-            .filter(Pred::eq("conversation_turn_id", turn.as_str()))
-            .filter(Pred::is_null("worker_id"));
+        request = request.filter(Pred::eq("conversation_turn_id", turn.as_str()));
     }
     let mut before = None;
     loop {

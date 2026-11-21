@@ -288,6 +288,7 @@ fn agent_view_timeout_cancel_malformed_and_send_failure_have_encoded_provenance(
         ("not_found", 404),
         ("target_changed", 409),
         ("paused", 503),
+        ("launch_unknown", 503),
         ("unavailable", 503),
         ("failed", 502),
         ("other", 502),

@@ -123,12 +123,15 @@ pub(crate) async fn handle(
 
 enum Failure {
     Spoken(String),
+    TargetChanged,
+    UnknownLaunch,
     Retry,
 }
 type Result<T> = std::result::Result<T, Failure>;
 fn spoken(text: &str) -> Failure {
     Failure::Spoken(text.into())
 }
+const CHECK_LAUNCH: &str = "The launch outcome is uncertain. Say “check again” or “cancel”.";
 const CHANGED: &str = "That conversation ended or changed. Please select an agent again.";
 struct Context<'a> {
     state: &'a State,
@@ -199,7 +202,10 @@ impl Context<'_> {
                         .unwrap_or("The agent launch failed."),
                 ))
             },
-            409 if body["error"]["code"] == "target_changed" => Err(spoken(CHANGED)),
+            503 if path == "/api/agent/launch" && body["error"]["code"] == "launch_unknown" => {
+                Err(Failure::UnknownLaunch)
+            },
+            409 if body["error"]["code"] == "target_changed" => Err(Failure::TargetChanged),
             400 | 403 | 404 | 409 | 422 => Err(spoken(
                 body["error"]["message"]
                     .as_str()
@@ -235,10 +241,11 @@ impl Context<'_> {
         current.hit.clone_from(&agent.hit);
         Ok(current)
     }
-    async fn reply(&self, agent: &Agent, filter: Value) -> Result<Option<Reply>> {
+    async fn reply(&self, agent: &Agent, mut filter: Value) -> Result<Option<Reply>> {
         let Some(run) = &agent.run else {
             return Ok(None);
         };
+        filter["main_only"] = json!(true);
         let response = self
             .api(
                 "/api/agent/assistant-reply",
@@ -275,8 +282,9 @@ impl Context<'_> {
         };
         let mut reply = match result {
             Ok(answer) => answer,
+            Err(Failure::TargetChanged) => answer(CHANGED, false),
             Err(Failure::Spoken(speech)) => answer(speech, false),
-            Err(Failure::Retry) => return unavailable(),
+            Err(Failure::Retry | Failure::UnknownLaunch) => return unavailable(),
         };
         let Ok(next) = password::random_id() else {
             return unavailable();
@@ -292,6 +300,19 @@ impl Context<'_> {
     }
 
     async fn interpret(&mut self, input: &str) -> Result<Value> {
+        if let Some(body) = self.phone.dialogue.uncertain_launch.take() {
+            if matches!(parse(input), Command::Cancel) {
+                return Ok(answer(
+                    "Stopped checking. The agent may still have launched.",
+                    false,
+                ));
+            }
+            if normalize(input) == "check again" {
+                return self.prepare(input, Mutation::Launch(body)).await;
+            }
+            self.phone.dialogue.uncertain_launch = Some(body);
+            return Ok(answer(CHECK_LAUNCH, true));
+        }
         match parse(input) {
             Command::Cancel => {
                 self.phone.dialogue.choice = None;
@@ -400,8 +421,10 @@ impl Context<'_> {
             .filter(matching_target(target))
         {
             if let Some(q) = phrase {
-                let Some(reply) = self.reply(&agent, json!({"query":q})).await? else {
-                    continue;
+                let reply = match self.reply(&agent, json!({"query":q})).await {
+                    Ok(Some(reply)) => reply,
+                    Ok(None) | Err(Failure::TargetChanged) => continue,
+                    Err(error) => return Err(error),
                 };
                 agent.hit = Some(Hit {
                     revision: reply.revision,
@@ -515,6 +538,7 @@ impl Context<'_> {
         }
     }
     async fn recover_send(&mut self, id: &str, agent: Agent, after: i64) -> Result<Value> {
+        self.phone.dialogue.pending = None;
         let result = self
             .api(
                 "/api/agent/submission-status",
@@ -575,6 +599,9 @@ impl Context<'_> {
         self.wait_for_reply().await
     }
     async fn prepare(&mut self, input: &str, action: Mutation) -> Result<Value> {
+        if matches!(action, Mutation::Send { .. }) {
+            self.phone.dialogue.pending = None;
+        }
         self.phone.dialogue.prepared = Some(Prepared {
             utterance: input.into(),
             action: action.clone(),
@@ -603,9 +630,16 @@ impl Context<'_> {
             },
             Mutation::Readback => self.wait_for_reply().await,
             Mutation::Launch(body) => {
-                let result = self
+                let result = match self
                     .api("/api/agent/launch", vec![], Some(body.clone()))
-                    .await?;
+                    .await
+                {
+                    Err(Failure::UnknownLaunch) => {
+                        self.phone.dialogue.uncertain_launch = Some(body);
+                        return Ok(answer(CHECK_LAUNCH, true));
+                    },
+                    result => result?,
+                };
                 self.phone.dialogue.selected = None;
                 self.phone.dialogue.choice = None;
                 self.phone.dialogue.refinement = None;
@@ -613,15 +647,14 @@ impl Context<'_> {
                     id: field(&body, "submission_id")?,
                     kind: field(&body, "kind")?,
                     pane: field(&result, "pane_id")?,
-                    session: field(&result, "session")?,
                 });
                 match self.bind_launch().await {
                     Ok(()) => Ok(answer("Agent launched and selected.", false)),
-                    Err(Failure::Spoken(msg)) => Ok(answer(msg, false)),
                     Err(Failure::Retry) => Ok(answer(
                         "The agent launched. Say “tell it” once it is ready.",
                         false,
                     )),
+                    Err(error) => Err(error),
                 }
             },
         }
@@ -695,7 +728,7 @@ impl Context<'_> {
             .agents()
             .await?
             .into_iter()
-            .find(|a| a.session == l.session && a.pane_id == l.pane && a.identity.kind == l.kind)
+            .find(|a| a.current_session && a.pane_id == l.pane && a.identity.kind == l.kind)
             .ok_or_else(|| {
                 spoken("The agent launched and is starting. If it asks for workspace approval, confirm in its pane, then try again.")
             })?;
@@ -732,7 +765,7 @@ impl Context<'_> {
         };
         match tokio::time::timeout(Duration::from_secs(10), wait).await {
             Ok(Ok(message)) => Ok(self.read(&message)),
-            Ok(Err(Failure::Spoken(message))) => Err(Failure::Spoken(message)),
+            Ok(Err(error @ (Failure::Spoken(_) | Failure::TargetChanged))) => Err(error),
             _ => match latest {
                 Some(message) => Ok(self.read(&message)),
                 None => Ok(answer(

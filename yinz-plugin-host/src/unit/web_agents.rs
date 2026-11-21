@@ -741,7 +741,7 @@ fn history_navigation_data() -> (tempfile::TempDir, DataAccess) {
             entries: revisions
                 .map(|revision| RunEntry {
                     worker_id: (id == "run" && revision > 180).then(|| "old-worker".into()),
-                    conversation_turn_id: None,
+                    conversation_turn_id: (id == "run" && revision >= 180).then(|| "turn".into()),
                     revision,
                     event_id: None,
                     kind: RunEntryKind::Message,
@@ -798,6 +798,36 @@ fn history_navigation_page(
         assert!(event["request"].get("agent").is_none());
     }
     page
+}
+
+#[test]
+fn siri_archive_reads_exclude_worker_messages() {
+    let (_dir, data) = history_navigation_data();
+    let source = palette::AgentRunSource {
+        id: "run".into(),
+        host_id: yinz_runtime::host_identity::host_id(),
+        session: "stored".into(),
+    };
+    for (filter, revision) in [
+        (json!({"main_only":true}), json!(180)),
+        (json!({"main_only":true,"turn":"turn"}), json!(180)),
+        (
+            json!({"main_only":true,"turn":"turn","after":180}),
+            Value::Null,
+        ),
+        (json!({"main_only":true,"after":180}), Value::Null),
+        (json!({"main_only":true,"after":179}), json!(180)),
+        (
+            json!({"main_only":true,"query":"needle run 220"}),
+            Value::Null,
+        ),
+        (json!({"main_only":true,"revision":220}), Value::Null),
+    ] {
+        let reply =
+            history::assistant_reply(&data, &source, &serde_json::from_value(filter).unwrap())
+                .unwrap();
+        assert_eq!(json!(reply)["revision"], revision);
+    }
 }
 
 #[test]

@@ -5,7 +5,7 @@ from scripts.siri.shortcut import workflow
 
 
 class DictationRecoveryTests(unittest.TestCase):
-    def test_missing_cursor_clears_only_invalid_dictation(self):
+    def test_missing_cursor_clears_pre_dispatch_rejections(self):
         actions = plistlib.loads(workflow())["WFWorkflowActions"]
         steps = [(a["WFWorkflowActionIdentifier"].removeprefix("is.workflow.actions."),
                   a["WFWorkflowActionParameters"]) for a in actions]
@@ -28,7 +28,10 @@ class DictationRecoveryTests(unittest.TestCase):
         missing_id, _ = branch(steps[command + 1:], reply, "request_id", 101)
         has_error, retry = branch(missing_id, reply, "error", 100)
         invalid, remainder = branch(has_error, missing_id[0][1], "code", 4, "invalid_dictation")
+        oversized, remainder = branch(remainder, missing_id[0][1], "code", 4, "body_too_large")
         self.assertEqual(remainder, [])
+        self.assertEqual([name for name, _ in oversized], [name for name, _ in invalid])
+        self.assertEqual(oversized[0][1]["WFItems"], invalid[0][1]["WFItems"])
         self.assertEqual([name for name, _ in retry], ["speaktext", "exit"])
         self.assertIn("retry", retry[0][1]["WFText"]["Value"]["string"])
         self.assertEqual([name for name, _ in invalid],

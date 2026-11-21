@@ -564,6 +564,8 @@ UTF-8 bytes, run the shortcut again and dictate a shorter command.
 - “Open a new Claude agent in a swamp worktree” creates a branch and selects the
   launched conversation for “tell it” follow-ups. Add “on branch mobile login”
   to use an existing checkout. A provider can ask for workspace approval in its pane.
+  If Siri reports an uncertain launch, say “check again” to check the same receipt
+  or “cancel” to stop checking. The agent may already have started.
 
 Keep the same server URL reachable from the phone. Shortcuts saves its scoped
 credential and pending request in its Shortcuts folder under the device name.

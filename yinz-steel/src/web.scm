@@ -200,4 +200,4 @@
   (cond ((equal? code "invalid") 400) ((equal? code "not_found") 404)
         ((member code '("target_changed" "launch_conflict")) 409)
         ((and (equal? code "unavailable") (equal? (%async-get decoded "op" #f) "focus") (equal? (%async-get decoded "origin" #f) "native")) 409)
-        ((member code '("paused" "unavailable")) 503) (else 502)))
+        ((member code '("paused" "unavailable" "launch_unknown")) 503) (else 502)))

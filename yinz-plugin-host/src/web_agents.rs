@@ -861,7 +861,8 @@ fn launch(
                 json!({"session":senders.session.current(), "pane_id":spawned.pane_id.to_string(), "kind":kind}),
             )
         },
-        LaunchOutcome::Pending | LaunchOutcome::Unknown => Err(error(
+        LaunchOutcome::Unknown => Err(error("launch_unknown", "Launch outcome is uncertain.")),
+        LaunchOutcome::Pending => Err(error(
             "unavailable",
             response
                 .message
