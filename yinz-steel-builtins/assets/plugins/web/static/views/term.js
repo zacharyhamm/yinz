@@ -24,6 +24,17 @@ function registerTerminalStyles() {
 
 const maxInputBytes = 16 * 1024;
 
+// The terminal palette in yinz-config/assets/themes/swamp.kdl.
+const swampTheme = {
+  foreground: '#d1d5db', background: '#0a0a0a',
+  black: '#0a0a0a', red: '#f87171', green: '#39dd14', yellow: '#fb923c',
+  blue: '#60a5fa', magenta: '#d946ef', cyan: '#00cccc', white: '#d1d5db',
+  brightBlack: '#6b7280', brightRed: '#fca5a5', brightGreen: '#39ff14', brightYellow: '#fbbf24',
+  brightBlue: '#93c5fd', brightMagenta: '#ff00ff', brightCyan: '#00ffff', brightWhite: '#ffffff',
+  cursor: '#39ff14', cursorAccent: '#0a0a0a',
+  selectionBackground: '#39ff14', selectionForeground: '#0a0a0a',
+};
+
 const terminalKeys = new Map([
   ['Enter', 'Enter'], ['Escape', 'Esc'], ['Tab', 'Tab'], ['Backspace', 'Backspace'],
   ['ArrowLeft', 'Left'], ['ArrowRight', 'Right'], ['ArrowUp', 'Up'], ['ArrowDown', 'Down'],
@@ -108,12 +119,17 @@ export function TermPanel({ env, target, onTargetGone }) {
 
   useLayoutEffect(() => {
     registerTerminalStyles();
-    const term = new Terminal({ scrollback: 2000, fontSize: 14, allowProposedApi: true, screenReaderMode: true });
+    const term = new Terminal({ scrollback: 2000, fontSize: 14, theme: swampTheme, allowProposedApi: true, screenReaderMode: true });
     useNativeCharacterWidths(term);
     const controller = new AbortController();
     const active = { term, cursor: null, replay: null, accepting: false, uncertain: false, queue: [], sending: false };
     session.current = active;
     term.open(host.current);
+    const fontFamily = getComputedStyle(host.current).fontFamily;
+    // Changing fontFamily remeasures xterm's cells. Fit observes the resulting grid size.
+    document.fonts.load(`${term.options.fontSize}px ${fontFamily}`).then(() => {
+      if (!controller.signal.aborted) term.options.fontFamily = fontFamily;
+    }, () => { /* Keep xterm's monospace fallback if the font is unavailable. */ });
 
     const layout = new CSSStyleSheet();
     document.adoptedStyleSheets.push(layout);
@@ -248,7 +264,7 @@ export function TermPanel({ env, target, onTargetGone }) {
         ${!ready && !error ? 'Connecting…' : null}
         <button class="link-button" type="button" onClick=${reconnect}>${warning ? 'Reconnect' : 'Refresh'}</button>
       </div>
-      ${error ? html`<${Banner} tone="warn">${error}<//>` : null}
+      ${error ? html`<${Banner} tone="error">${error}<//>` : null}
     </div>
     <div class="screen-scroll"><div class="term-stage" ref=${stage}><div class="term-host" ref=${host}></div></div></div>
     <div class="screen-keys" role="region" aria-label="Terminal quick keys" tabindex="0">

@@ -1,6 +1,6 @@
 # Vendored frontend libraries
 
-The builtin web app has no build step. These files are copied from npm registry
+The builtin web app has no build step. The JavaScript libraries come from npm registry
 tarballs whose integrity was verified against registry metadata (`dist.integrity`
 SHA-512 and `dist.shasum` SHA-1) before extraction. Only the files listed here are
 shipped. This record is installed with the builtins but not served (the asset
@@ -25,7 +25,7 @@ Preact and Preact hooks ESM builds plus htm's standalone core.
 
 ## Files
 
-| Shipped file | Source (path inside tarball) | Upstream SHA-256 | Shipped SHA-256 |
+| Shipped file | Source file | Upstream SHA-256 | Shipped SHA-256 |
 |---|---|---|---|
 | `preact.module.js` | preact: `package/dist/preact.module.js` | `c30e721ebfdc6e2ad4c18c14d2dfb82667829c8aec27de1207774e3fc16858a8` | `25a5df7e9f628a587743c4641a368737a3b218f28ef738ba0376a2d5bdfc948c` |
 | `hooks.module.js` | preact: `package/hooks/dist/hooks.module.js` | `a6ee626f2d01570592dd569a792e3f050154aa02890eead8c223fa3ed5aa3d5a` | `9e7eff58e0ae604583461eba1344da69a6894eab575eb591c635cc0d3f9ec57d` |
@@ -35,6 +35,22 @@ Preact and Preact hooks ESM builds plus htm's standalone core.
 | `xterm.mjs` | @xterm/xterm: `package/lib/xterm.mjs` | `b336ec65a086c056d4804b3d4c2347da5663d3f23c3f25be866467bd8857ad59` | `59ca5174aa9e0fd9485fb464a4564b9ff4a2afe26968a182ed4d63fc863b849b` |
 | `xterm.css` | @xterm/xterm: `package/css/xterm.css` | `854a7c0fb70e8b1a083c16797ab827299fb18744f5ad34f227b48337e33293c6` | `854a7c0fb70e8b1a083c16797ab827299fb18744f5ad34f227b48337e33293c6` |
 | `LICENSE-xterm.txt` | @xterm/xterm: `package/LICENSE` | `b569f629d00f2626a8100df2a1798210535621e42164dfd426a6fe5aac7b0ccd` | `b569f629d00f2626a8100df2a1798210535621e42164dfd426a6fe5aac7b0ccd` |
+| `TerminessNerdFontMono-Regular-latin.woff2` | Nerd Fonts 3.5.1: `TerminessNerdFontMono-Regular.ttf` | `1f0b30594e217a4771770dbdcae90ecbf1620b8b15429d01a23481865cce4de8` | `b4d0a5fb404040c75a9a6d902d6bc642b69e0798d4cd7c127df08cbba7ace0a7` |
+| `TerminessNerdFontMono-Regular-extended.woff2` | Nerd Fonts 3.5.1: `TerminessNerdFontMono-Regular.ttf` | `1f0b30594e217a4771770dbdcae90ecbf1620b8b15429d01a23481865cce4de8` | `ca23f0d5a640501b28aba1ab5d3e1d7613a4c31c00abf8819f29130e325a1ac2` |
+| `LICENSE-Nerd-Fonts.txt` | Glyph project notices (sources in file) | multiple | `0c52659ac298add701ef8e1853f0d68160e61586dc7f5d72a3690c3ad1afde52` |
+| `LICENSE-Terminess.txt` | Terminess: `LICENSE.txt` (SIL OFL 1.1) | `6a30ebc918d73e02c283f04099fb2cf97ddc15e1c8368960b3f1bbb7ee959ae4` | `15aed6aae8f1d81ddd8858a0dfe649b80b884fb5163166ff365ae445236008f9` |
+
+The regular face and its Terminus license come from Arch Linux's
+`ttf-terminus-nerd` 3.5.1-2 package. The Terminus license has LF line endings
+and trailing whitespace removed. `LICENSE-Nerd-Fonts.txt` credits the embedded
+glyph projects and includes their notices and sources.
+
+Generate the two WOFF2 files from the regular TTF with FontTools:
+
+```sh
+pyftsubset TerminessNerdFontMono-Regular.ttf --flavor=woff2 --unicodes=U+0000-00FF --output-file=TerminessNerdFontMono-Regular-latin.woff2
+pyftsubset TerminessNerdFontMono-Regular.ttf --flavor=woff2 --unicodes=U+0100-10FFFF --output-file=TerminessNerdFontMono-Regular-extended.woff2
+```
 
 ## Transformations
 

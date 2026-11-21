@@ -656,9 +656,24 @@ async function tokenStores(page) {
   }));
 }
 
+const latinFont = '/static/vendor/TerminessNerdFontMono-Regular-latin.woff2';
+const extendedFont = '/static/vendor/TerminessNerdFontMono-Regular-extended.woff2';
+
+async function waitForAppFont(page, range = 'U+0-FF') {
+  const status = await until(`Terminess subset ${range}`, () => page.evaluate((range) => {
+    const face = [...document.fonts].find((f) => f.family.includes('Terminess Nerd Font Mono')
+      && f.unicodeRange.toUpperCase() === range);
+    if (!face) return 'missing';
+    return ['loaded', 'error'].includes(face.status) && face.status;
+  }, range));
+  check(status === 'loaded', `Terminess subset ${range} is ${status}`);
+}
+
 async function waitLogin(page) {
   await until('the live /login page', () => pathOf(page) === '/login');
   await until('login.js to start', () => page.evaluate(() => document.title.startsWith('Sign in')));
+  // A fast sign-in can navigate away during the font request, which Firefox reports as a download error.
+  await waitForAppFont(page);
 }
 
 /** Non-keyboard sign-in helper (keyboard-only sign-in is its own scenario). */
@@ -677,6 +692,8 @@ async function openApp(page, hash, { remember = false } = {}) {
   await until('the sign-in page or authenticated app', async () =>
     pathOf(page) === '/login' || await exists(page, '#app .app'));
   if (pathOf(page) === '/login') await signIn(page, { remember });
+  await until('the authenticated app', () => exists(page, '#app .app'));
+  await waitForAppFont(page);
 }
 
 async function openDetail(page, hash = detailHash()) {
@@ -825,7 +842,8 @@ async function terminalFits(page, content = '2. No') {
   await until('native terminal grid fits the panel width', () => page.evaluate(() => {
     const grid = document.querySelector('.xterm-screen')?.getBoundingClientRect();
     const stage = document.querySelector('.term-stage')?.getBoundingClientRect();
-    return grid?.width > 0 && Math.abs(grid.left - stage.left) < 1 && Math.abs(grid.right - stage.right) < 1;
+    return grid?.width > 0 && getComputedStyle(document.querySelector('.xterm-rows')).fontFamily.includes('Terminess Nerd Font Mono')
+      && Math.abs(grid.left - stage.left) < 1 && Math.abs(grid.right - stage.right) < 1;
   }));
 }
 
@@ -3015,8 +3033,7 @@ async function agentListPollFocusOutsideCards(open) {
   check(await page.evaluate(() => document.activeElement === document.body), 'poll restored focus to hook content');
 }
 
-async function darkMode(open) {
-  const bg = {};
+async function swampAppearance(open) {
   // Playwright Firefox drops the context colorScheme when these COOP pages swap browsing
   // context groups, so the media emulation is reapplied (and verified) after each navigation.
   const emulate = async (page, scheme) => {
@@ -3025,19 +3042,36 @@ async function darkMode(open) {
     check(dark === (scheme === 'dark'), `could not emulate prefers-color-scheme: ${scheme}`);
   };
   for (const scheme of ['light', 'dark']) {
-    const { page } = await open({ colorScheme: scheme });
-    await page.goto(`${ORIGIN}/login`);
+    const width = scheme === 'light' ? 1024 : 390;
+    const { page } = await open({ colorScheme: scheme, viewport: { width, height: 844 } });
+    const fonts = [];
+    page.on('request', (r) => { if (r.resourceType() === 'font') fonts.push(r.url()); });
+    const [font] = await Promise.all([
+      page.waitForResponse((r) => r.url() === ORIGIN + latinFont, { timeout: 10000 }),
+      page.goto(`${ORIGIN}/login`),
+    ]);
     await waitLogin(page);
     await emulate(page, scheme);
-    const login = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    check(font.ok() && (await font.headerValue('content-type')) === 'font/woff2', 'login font response');
+    check((await font.body()).length < 10240, 'login font exceeds 10 KiB');
+    check(fonts.length === 1 && fonts[0] === ORIGIN + latinFont, 'cold login requested extra fonts');
+    check(await page.evaluate(() => getComputedStyle(document.body).backgroundColor === 'rgb(10, 10, 10)'),
+      `login canvas under ${scheme} preference`);
+    fs.mkdirSync(RESULTS_DIR, { recursive: true });
+    await page.screenshot({ path: path.join(RESULTS_DIR, `login-${width}.png`), mask: [page.locator('#password')] });
+    const glyph = page.locator('#login-status');
+    await glyph.evaluate((el) => { el.textContent = '\uea60'; }); // cod-add
+    await waitForAppFont(page, 'U+100-10FFFF');
+    check(fonts.includes(ORIGIN + extendedFont), 'Codicon did not request the extended subset');
     await signIn(page);
     await until('agent cards', () => exists(page, 'li.agent-card'));
     await emulate(page, scheme);
     const card = await page.evaluate(() => getComputedStyle(document.querySelector('li.agent-card')).backgroundColor);
-    bg[scheme] = { login, card };
+    check(card === 'rgb(26, 26, 26)', `card surface under ${scheme} preference`);
+    await page.evaluate((hash) => { location.hash = hash; }, detailHash('run-7', 'term'));
+    await terminalFits(page);
+    await page.screenshot({ path: path.join(RESULTS_DIR, `term-${width}.png`), mask: [page.locator('#composer-input')] });
   }
-  check(bg.light.login !== bg.dark.login, `dark mode did not change the login background (${bg.light.login})`);
-  check(bg.light.card !== bg.dark.card, `dark mode did not change the card background (${bg.light.card})`);
 }
 
 async function safeAreaManifest(open) {
@@ -3053,7 +3087,8 @@ async function safeAreaManifest(open) {
       parsed: [...document.styleSheets].some((s) => s.href && s.href.endsWith('/static/app.css') && s.cssRules.length > 20),
       href: link && link.getAttribute('href'),
       viewport: (document.querySelector('meta[name="viewport"]') || {}).content || '',
-      manifest: manifest && manifest.display === 'standalone' && Array.isArray(manifest.icons) && manifest.icons.length > 0,
+      manifest: manifest && manifest.background_color === '#0a0a0a' && manifest.theme_color === '#0a0a0a'
+        && manifest.display === 'standalone' && Array.isArray(manifest.icons) && manifest.icons.length > 0,
     };
   });
   check(r.css, 'app.css lacks env(safe-area-inset-*) for every edge');
@@ -3472,6 +3507,34 @@ async function cachedTimelineRevisit(open) {
     await exists(page, timelineEvent(46)) && await exists(page, '#timeline-earlier'));
 }
 
+async function delayedTimelineFont(open) {
+  const login = await open();
+  await openApp(login.page, '#/', { remember: true });
+  const storageState = await login.context.storageState();
+  for (const pinned of [false, true]) {
+    const { page } = await open({ storageState });
+    let held;
+    await page.route(ORIGIN + latinFont, (route) => { held = route; });
+    await page.goto(ORIGIN + '/' + detailHash(), { waitUntil: 'commit' });
+    await until('font request held and timeline populated', () => held && exists(page, '#timeline .event'));
+    await until('timeline initially pinned', async () => (await scrollState(page)).atBottom);
+    if (!pinned) {
+      await page.locator('#timeline').evaluate((el) => { el.scrollTop = el.scrollHeight / 2; });
+      await nextFrame(page);
+      check(!(await scrollState(page)).atBottom, 'could not scroll into history');
+    }
+    const anchor = await timelineAnchor(page);
+    const timeline = page.locator('#timeline');
+    const before = await timeline.evaluate((el) => el.scrollHeight);
+    await held.fallback();
+    await waitForAppFont(page);
+    await nextFrame(page);
+    check(await timeline.evaluate((el) => el.scrollHeight) !== before, 'font swap must rewrap the fixture');
+    if (pinned) check((await scrollState(page)).atBottom, 'font swap detached the timeline from the bottom');
+    else await sameAnchor(page, anchor, 'delayed font swap');
+  }
+}
+
 async function newMessages(open) {
   const { page, fx } = await open();
   await openDetail(page);
@@ -3858,7 +3921,7 @@ async function main() {
   for (const width of [320, 390]) for (const scheme of ['light', 'dark']) {
     await scenario(`detail safety ${width}px ${scheme}`, (open) => detailSafety(open, width, scheme));
   }
-  await scenario('dark mode changes computed backgrounds', darkMode);
+  await scenario('Swamp appearance and same-origin font in both system color schemes', swampAppearance);
   await scenario('safe-area CSS and manifest', safeAreaManifest);
   await scenario('sheet focus trap, Escape and focus restore; keys and interrupt', sheetsKeyboard);
   await scenario('keyboard composer and past prompts', composerKeyboard);
@@ -3868,6 +3931,7 @@ async function main() {
   await scenario('Timeline response spinner confirmation while hidden', hiddenTimelineConfirmation);
   await scenario('readers and prepend keeps the reading anchor', readerPrepend);
   await scenario('cached timeline renders while a reopened chat catches up', cachedTimelineRevisit);
+  await scenario('delayed font swap preserves timeline position', delayedTimelineFont);
   await scenario('new-message anchoring (pinned vs reading)', newMessages);
   await scenario('hidden document pauses polling; foreground refreshes immediately', hiddenForeground);
   await scenario('offline banner, backoff and Retry-After without request storms', offlineRetryAfter);

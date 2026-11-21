@@ -47,8 +47,11 @@ function useScrollLayout(ref, capture, restore, content, layoutKey, beforeResize
     beforeResize.current = measure;
     const observer = new ResizeObserver(correct);
     observer.observe(el);
+    // A font swap can rewrap the articles without resizing the viewport.
+    document.fonts.addEventListener('loadingdone', correct);
     return () => {
       observer.disconnect();
+      document.fonts.removeEventListener('loadingdone', correct);
       if (beforeResize.current === measure) beforeResize.current = null;
     };
   }, [correct, measure, present]);

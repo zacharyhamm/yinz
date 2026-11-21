@@ -40,7 +40,7 @@ function useChoices(key, load, validate) {
 function LoadStatus({ reply, retry }) {
   if (!reply) return html`<p role="status">Loading choices…</p>`;
   if (reply.ok) return null;
-  return html`<p role="alert">${describeError(reply)} <button type="button" class="link-button" onClick=${retry}>Retry</button></p>`;
+  return html`<p class="error-text" role="alert">${describeError(reply)} <button type="button" class="link-button" onClick=${retry}>Retry</button></p>`;
 }
 
 function ActionForm({ id, title, onClose, submit, label, disabled, danger, children }) {
@@ -65,7 +65,7 @@ function ActionForm({ id, title, onClose, submit, label, disabled, danger, child
   return html`<${Sheet} id=${id} title=${title} onClose=${dismiss}>
     <form class="agent-form" onSubmit=${onSubmit}>
       <fieldset disabled=${busy}>${children}</fieldset>
-      ${error ? html`<p role="alert">${error}</p>` : null}
+      ${error ? html`<p class="error-text" role="alert">${error}</p>` : null}
       <div class="form-actions"><button type="button" class="button" onClick=${dismiss} disabled=${busy}>Cancel</button>
         <button type="submit" class=${danger ? 'button button-danger' : 'button button-primary'} disabled=${disabled || busy}>${label}</button></div>
     </form>
@@ -137,7 +137,7 @@ function StartSheet({ env, onClose, onLaunched }) {
   if (pending) return html`<${ActionForm} id="sheet-start" title="Start agent" label="Check launch" submit=${launch} onClose=${onClose}>
     <p>${pending.kind} in ${pending.project} · ${pending.checkout.branch ?? pending.checkout.path}</p>
     <button type="button" class="link-button" onClick=${() => setConfirmForget(true)}>Forget launch</button>
-    ${forgetError ? html`<p role="alert">${forgetError}</p>` : null}
+    ${forgetError ? html`<p class="error-text" role="alert">${forgetError}</p>` : null}
   <//>`;
   return html`<${ActionForm} id="sheet-start" title="Start agent" label="Start agent" disabled=${!ready} submit=${launch} onClose=${onClose}>
     <label>Provider<select required value=${provider} onChange=${(e) => setProvider(e.target.value)}>

@@ -92,7 +92,7 @@
         (assert (string? body))
         (for-each (lambda (part) (assert (w-contains? body part) part))
           (list "<!doctype html>" "<meta charset=\"utf-8\">" "width=device-width, initial-scale=1, viewport-fit=cover"
-            "name=\"theme-color\"" "content=\"light dark\"" "href=\"/static/manifest.webmanifest\"" "href=\"/static/icon.svg\""
+            "content=\"#0a0a0a\" name=\"theme-color\"" "content=\"dark\" name=\"color-scheme\"" "href=\"/static/manifest.webmanifest\"" "href=\"/static/icon.svg\""
             "href=\"/static/app.css\" rel=\"stylesheet\"" "<title>&lt;/title&gt;&lt;script&gt;x&lt;/script&gt;</title>"
             "<noscript>" "id=\"yinz-config\"" "\\u003c/title\\u003e\\u003cscript\\u003ex\\u003c/script\\u003e"
             "\"list_ms\":3000" "\"tail_ms\":2000" "\"usage_ms\":60000" "\"screen_ms\":250"

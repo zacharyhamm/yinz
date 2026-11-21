@@ -498,9 +498,13 @@ fn vendored_libraries_match_their_recorded_provenance() {
     assert_eq!(
         recorded,
         [
+            "LICENSE-Nerd-Fonts.txt",
+            "LICENSE-Terminess.txt",
             "LICENSE-htm.txt",
             "LICENSE-preact.txt",
             "LICENSE-xterm.txt",
+            "TerminessNerdFontMono-Regular-extended.woff2",
+            "TerminessNerdFontMono-Regular-latin.woff2",
             "hooks.module.js",
             "htm.module.js",
             "preact.module.js",
