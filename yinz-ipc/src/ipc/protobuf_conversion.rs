@@ -321,6 +321,7 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
         };
 
         Ok(ProtoClientToServerMsg {
+            attachment_generation: None,
             message: Some(message),
         })
     }
@@ -738,6 +739,7 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
                 server_version,
                 server_host,
             } => server_to_client_msg::Message::Connected(ConnectedMsg {
+                attachment_generation: None,
                 native_render_revision,
                 warp_companions,
                 warp_held_terminals,
@@ -831,6 +833,7 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
         };
 
         ProtoServerToClientMsg {
+            attachment_generation: None,
             message: Some(message),
         }
     }

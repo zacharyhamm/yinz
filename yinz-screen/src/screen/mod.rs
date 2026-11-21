@@ -305,7 +305,7 @@ pub(crate) use active_tab_and_connected_client_id_with_first_tab_fallback;
 // a sensible timeout of 100ms)
 #[derive(Debug, Clone)]
 pub struct RenderBlocker {
-    blocking_plugins: HashMap<PluginId, Instant>,
+    blocking_plugins: HashMap<PluginId, (ClientId, Instant)>,
     #[cfg_attr(test, allow(dead_code))]
     timeout_ms: u64,
 }
@@ -318,8 +318,19 @@ impl RenderBlocker {
         }
     }
 
-    pub fn register_blocking_plugin(&mut self, plugin_id: PluginId) {
-        self.blocking_plugins.insert(plugin_id, Instant::now());
+    pub fn register_blocking_plugin(&mut self, plugin_id: PluginId, owner: ClientId) {
+        self.blocking_plugins
+            .insert(plugin_id, (owner, Instant::now()));
+    }
+
+    fn complete_render(&mut self, plugin_id: PluginId, recipient: ClientId) {
+        if self
+            .blocking_plugins
+            .get(&plugin_id)
+            .is_some_and(|(owner, _)| *owner == recipient)
+        {
+            self.blocking_plugins.remove(&plugin_id);
+        }
     }
 
     pub fn remove_blocking_plugin(&mut self, plugin_id: PluginId) {
@@ -343,7 +354,7 @@ impl RenderBlocker {
 
             self.blocking_plugins
                 .values()
-                .all(|&registered_at| now.duration_since(registered_at) >= timeout)
+                .all(|&(_, registered_at)| now.duration_since(registered_at) >= timeout)
         };
         if ret {
             self.blocking_plugins.clear();
@@ -2031,15 +2042,17 @@ impl Screen {
     ) -> Result<()> {
         let err_context = || format!("failed to create new tab for client {client_id:?}",);
 
-        let client_id = client_id.map(|client_id| {
-            if self.get_active_tab(client_id).is_ok() {
-                client_id
-            } else if let Some(first_client_id) = self.get_first_client_id() {
-                first_client_id
-            } else {
-                client_id
-            }
-        });
+        let client_id = client_id
+            .filter(|id| self.core.bus.senders.session.owns_attachment(*id))
+            .map(|client_id| {
+                if self.get_active_tab(client_id).is_ok() {
+                    client_id
+                } else if let Some(first_client_id) = self.get_first_client_id() {
+                    first_client_id
+                } else {
+                    client_id
+                }
+            });
 
         let tab_name = tab_name.unwrap_or_default();
 
@@ -2139,13 +2152,14 @@ impl Screen {
         client_id: ClientId,
         mut blocking_terminal: Option<(TerminalId, NotificationEnd)>,
     ) -> Result<Option<ClientId>> {
+        let requester_live = self.core.bus.senders.session.owns_attachment(client_id);
         let departed = self.departed_follow_source();
         let applied = (|| {
             if !self.core.tabs.contains_key(&tab_id) {
                 let message = format!("Tab with index {tab_id} not found. Cannot apply layout!");
                 return Err(anyhow!(message));
             }
-            let client_id = if self.get_active_tab(client_id).is_ok() {
+            let client_id = if !requester_live || self.get_active_tab(client_id).is_ok() {
                 client_id
             } else if let Some(first_client_id) = self.get_first_client_id() {
                 first_client_id
@@ -2264,7 +2278,8 @@ impl Screen {
             }
 
             let source_tab = self.core.active_tab_ids.get(&client_id).copied();
-            let layout_without_client = self.core.departed_before_layout.contains(&client_id)
+            let layout_without_client = !requester_live
+                || self.core.departed_before_layout.contains(&client_id)
                 || (tab.background_layout && source_tab.is_none());
             let mut transition = (should_change_client_focus && !layout_without_client)
                 .then(|| self.begin_tab_transition(client_id, tab_id));
@@ -4317,9 +4332,11 @@ impl Screen {
         }
     }
     fn accepts_plugin_output(&self, client_id: ClientId) -> bool {
-        self.core.connected_clients.borrow().contains(&client_id)
-            || self.core.client_sizes.contains_key(&client_id)
-            || self.core.followed_client_id == Some(client_id)
+        (self.core.bus.senders.session.owns_attachment(client_id)
+            && (self.core.connected_clients.borrow().contains(&client_id)
+                || self.core.client_sizes.contains_key(&client_id)))
+            || (self.core.followed_client_id == Some(client_id)
+                && !self.core.watcher_clients.is_empty())
     }
 
     fn handle_plugin_render_assets(
@@ -4331,7 +4348,9 @@ impl Screen {
         for mut plugin_render_asset in plugin_render_assets {
             let plugin_id = plugin_render_asset.plugin_id;
             let client_id = plugin_render_asset.client_id;
-            self.core.render_blocker.remove_blocking_plugin(plugin_id);
+            self.core
+                .render_blocker
+                .complete_render(plugin_id, client_id);
             if !self.accepts_plugin_output(client_id) {
                 continue;
             }
@@ -4569,6 +4588,12 @@ impl Screen {
             .keys()
             .filter(|other_client_id| {
                 *other_client_id != client_id
+                    && self
+                        .core
+                        .bus
+                        .senders
+                        .session
+                        .owns_attachment(**other_client_id)
                     && !self.core.watcher_clients.contains_key(other_client_id)
             })
             .any(|other_client_id| {

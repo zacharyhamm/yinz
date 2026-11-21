@@ -732,7 +732,11 @@ pub trait Pane {
     fn get_bell_notification(&self) -> bool {
         false
     }
-    fn add_red_pane_frame_color_override(&mut self, _error_text: Option<String>);
+    fn add_red_pane_frame_color_override(
+        &mut self,
+        _error_text: Option<String>,
+        _owner: Option<ClientId>,
+    );
     fn add_highlight_pane_frame_color_override(
         &mut self,
         _text: Option<String>,

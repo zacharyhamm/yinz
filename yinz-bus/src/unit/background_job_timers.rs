@@ -7,6 +7,7 @@ struct Worker {
     runtime: Arc<tokio::runtime::Runtime>,
     jobs: Option<SenderWithContext<BackgroundJob>>,
     thread: Option<std::thread::JoinHandle<Result<()>>>,
+    server: Receiver<(ServerInstruction, ErrorContext)>,
     screen: Receiver<(ScreenInstruction, ErrorContext)>,
     pty: Receiver<(PtyInstruction, ErrorContext)>,
     plugin: Receiver<(PluginInstruction, ErrorContext)>,
@@ -23,6 +24,7 @@ impl Worker {
         );
         let (jobs, receiver) = unbounded();
         let (screen, screen_rx) = unbounded();
+        let (server, server_rx) = unbounded();
         let (pty, pty_rx) = unbounded();
         let (plugin, plugin_rx) = unbounded();
         let bus = Bus::new(
@@ -30,13 +32,14 @@ impl Worker {
             Some(&SenderWithContext::new(screen)),
             Some(&SenderWithContext::new(pty)),
             Some(&SenderWithContext::new(plugin)),
-            None,
+            Some(&SenderWithContext::new(server)),
             None,
             None,
             None,
         );
         let worker_runtime = runtime.clone();
         let thread = std::thread::spawn(move || {
+            let _clock = worker_runtime.enter();
             background_jobs_with_runtime(bus, Some(ElapsedSeconds::new(1)), true, &worker_runtime)
         });
         let worker = Self {
@@ -44,6 +47,7 @@ impl Worker {
             jobs: Some(SenderWithContext::new(jobs)),
             thread: Some(thread),
             screen: screen_rx,
+            server: server_rx,
             pty: pty_rx,
             plugin: plugin_rx,
         };
@@ -129,12 +133,12 @@ fn stopping_one_pane_keeps_the_other_batch_timers() {
     worker.send(BackgroundJob::StopFlashPaneBell(vec![A]));
     assert!(matches!(
         worker.screen_events().as_slice(),
-        [ScreenInstruction::ClearPaneFrameColorOverride(panes)] if panes == &[A]
+        [ScreenInstruction::ClearPaneFrameColorOverride(None, panes)] if panes == &[A]
     ));
     worker.advance(HALF_FLASH);
     assert!(matches!(
         worker.screen_events().as_slice(),
-        [ScreenInstruction::ClearPaneFrameColorOverride(panes)] if panes == &[B]
+        [ScreenInstruction::ClearPaneFrameColorOverride(None, panes)] if panes == &[B]
     ));
 }
 
@@ -152,12 +156,12 @@ fn overlapping_batches_only_clear_panes_they_still_own() {
     worker.advance(HALF_FLASH);
     assert!(matches!(
         worker.screen_events().as_slice(),
-        [ScreenInstruction::ClearPaneFrameColorOverride(panes)] if panes == &[A]
+        [ScreenInstruction::ClearPaneFrameColorOverride(None, panes)] if panes == &[A]
     ));
     worker.advance(HALF_FLASH);
     assert!(matches!(
         worker.screen_events().as_slice(),
-        [ScreenInstruction::ClearPaneFrameColorOverride(panes)] if panes == &[B, C]
+        [ScreenInstruction::ClearPaneFrameColorOverride(None, panes)] if panes == &[B, C]
     ));
 }
 
@@ -176,7 +180,7 @@ fn repeated_pane_flashes_last_until_the_latest_timer() {
     worker.advance(HALF_FLASH);
     assert!(matches!(
         worker.screen_events().as_slice(),
-        [ScreenInstruction::ClearPaneFrameColorOverride(panes)] if panes == &[A]
+        [ScreenInstruction::ClearPaneFrameColorOverride(None, panes)] if panes == &[A]
     ));
 }
 
@@ -215,7 +219,7 @@ fn stopped_flashes_cannot_restart_when_their_timer_first_runs() {
         worker.screen_events().as_slice(),
         [ScreenInstruction::FlashPaneFrameColor(started),
          ScreenInstruction::SetTabBellFlash(TAB, true),
-         ScreenInstruction::ClearPaneFrameColorOverride(stopped),
+         ScreenInstruction::ClearPaneFrameColorOverride(None, stopped),
          ScreenInstruction::SetTabBellFlash(TAB, false)]
             if started == &[A] && stopped == &[A]
     ));
@@ -274,4 +278,29 @@ fn shutdown_cancels_flashes_animation_pings_and_palette_on_both_paths() {
         assert!(worker.screen_events().is_empty());
         assert_eq!(worker.runtime.metrics().num_alive_tasks(), 0);
     }
+}
+
+#[test]
+fn attachment_generation_hover_timeouts_have_independent_deadlines() {
+    use yinz_types::render_negotiation::AttachmentGeneration;
+    let worker = Worker::new();
+    let old = ClientId::for_attachment(1, AttachmentGeneration([1; 16]));
+    let new = ClientId::for_attachment(1, AttachmentGeneration([2; 16]));
+    let clears = || {
+        worker
+            .server
+            .try_iter()
+            .filter_map(|(op, _)| match op {
+                ServerInstruction::ClearMouseHelpText(client) => Some(client),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    worker.send(BackgroundJob::ClearHelpText { client_id: old });
+    worker.advance(HELP_TEXT_DEBOUNCE_DURATION / 2);
+    worker.send(BackgroundJob::ClearHelpText { client_id: new });
+    worker.advance(HELP_TEXT_DEBOUNCE_DURATION / 2 + 1);
+    assert_eq!(clears(), vec![old]);
+    worker.advance(HELP_TEXT_DEBOUNCE_DURATION / 2);
+    assert_eq!(clears(), vec![new]);
 }

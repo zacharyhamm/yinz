@@ -1426,6 +1426,7 @@ impl Tab {
             if let Some(active_pane_id) = self.tiled_panes.get_active_pane_id(client_id) {
                 self.senders
                     .send_to_background_jobs(BackgroundJob::DisplayPaneError(
+                        None,
                         vec![active_pane_id],
                         "CAN'T SPLIT!".into(),
                     ))
@@ -1502,6 +1503,7 @@ impl Tab {
             if let Some(active_pane_id) = self.tiled_panes.get_active_pane_id(client_id) {
                 self.senders
                     .send_to_background_jobs(BackgroundJob::DisplayPaneError(
+                        None,
                         vec![active_pane_id],
                         "CAN'T SPLIT!".into(),
                     ))

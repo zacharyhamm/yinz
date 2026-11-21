@@ -172,7 +172,7 @@ impl ClientLoop<'_, '_> {
                     .recv()
                     .expect("failed to receive app instruction on channel")
             };
-            let next = match next {
+            let (next, origin) = match next {
                 (ClientInstruction::FromServer(generation, instruction), context) => {
                     if self
                         .recovery
@@ -184,9 +184,9 @@ impl ClientLoop<'_, '_> {
                         }
                         continue;
                     }
-                    (*instruction, context)
+                    ((*instruction, context), Some(generation))
                 },
-                next => next,
+                next => (next, None),
             };
             if self
                 .screensaver
@@ -199,7 +199,12 @@ impl ClientLoop<'_, '_> {
             }
             if waiting_for_splash.is_some() && matches!(next.0, ClientInstruction::Render(_)) {
                 // Frames may be incremental; keep every frame and its budget reservation.
-                deferred.push_back(next);
+                let (instruction, context) = next;
+                let instruction = match origin {
+                    Some(origin) => ClientInstruction::FromServer(origin, Box::new(instruction)),
+                    None => instruction,
+                };
+                deferred.push_back((instruction, context));
                 continue;
             }
             let (client_instruction, mut err_ctx) = next;
@@ -224,7 +229,8 @@ impl ClientLoop<'_, '_> {
                     started_at.elapsed()
                 );
             }
-            let should_exit = self.handle(client_instruction, &mut outcome, &mut slow_warnings);
+            let should_exit =
+                self.handle(client_instruction, origin, &mut outcome, &mut slow_warnings);
             if first_render_bytes.is_some() {
                 let result = if outcome.exit_status != 0 {
                     "error"
@@ -266,6 +272,10 @@ impl ClientLoop<'_, '_> {
         }
 
         for (instruction, _) in deferred {
+            let instruction = match instruction {
+                ClientInstruction::FromServer(_, inner) => *inner,
+                instruction => instruction,
+            };
             if let ClientInstruction::Render(output) = instruction {
                 self.render_budget.release(output.len()).non_fatal();
             }
@@ -349,6 +359,7 @@ impl ClientLoop<'_, '_> {
     fn handle(
         &mut self,
         instruction: ClientInstruction,
+        origin: Option<u64>,
         outcome: &mut ClientOutcome,
         slow_warnings: &mut SlowWarnings,
     ) -> bool {
@@ -395,18 +406,8 @@ impl ClientLoop<'_, '_> {
                 }
             },
             ClientInstruction::SessionRequest(request) => {
-                use yinz_types::session_destination::{
-                    ClientReply, ClientRequest, Reply, SwitchRequest,
-                };
-                let (result, prepared) =
-                    if let ClientRequest::Switch(SwitchRequest::Commit(id)) = &request.request {
-                        match self.sessions.commit(id) {
-                            Ok(prepared) => (Ok(ClientReply::Complete), Some(prepared)),
-                            Err(error) => (Err(error), None),
-                        }
-                    } else {
-                        self.sessions.handle(request.request, self.os_input)
-                    };
+                use yinz_types::session_destination::Reply;
+                let (result, prepared) = self.sessions.dispatch(request.request, self.os_input);
                 if !request.token.is_empty() {
                     self.os_input
                         .send_to_server(ClientToServerMsg::SessionReply(Reply {
@@ -503,7 +504,7 @@ impl ClientLoop<'_, '_> {
                 token,
                 query_bytes,
                 resolve_async,
-            } => self.forward_query_to_host(token, query_bytes, resolve_async),
+            } => self.forward_query_to_host(origin, token, query_bytes, resolve_async),
             ClientInstruction::EmitNestedSessionFrame(payload_bytes) => {
                 // Only a client whose host has answered is nested; anywhere
                 // else the frame would land in a terminal that ignores it.
@@ -518,7 +519,7 @@ impl ClientLoop<'_, '_> {
             // error context they add to the trace.
             ClientInstruction::SetMouseMode(enabled) => {
                 self.send_input_control
-                    .send(InputInstruction::SetMouseMode(enabled))
+                    .send(InputInstruction::SetMouseMode(enabled).with_server_generation(origin))
                     .context("updating mouse mode")
                     .non_fatal();
             },
@@ -556,7 +557,13 @@ impl ClientLoop<'_, '_> {
 
     /// Forward a query to the host terminal and arrange for its reply to
     /// find its way back to the server.
-    fn forward_query_to_host(&self, token: u32, query_bytes: Vec<u8>, resolve_async: bool) {
+    fn forward_query_to_host(
+        &self,
+        origin: Option<u64>,
+        token: u32,
+        query_bytes: Vec<u8>,
+        resolve_async: bool,
+    ) {
         let kind = if resolve_async {
             ForwardKind::Clipboard
         } else {
@@ -570,6 +577,11 @@ impl ClientLoop<'_, '_> {
         //    got to run. Hand that slot over instead of clobbering it.
         let stale_forward = {
             let mut parser = self.stdin_ansi_parser.lock().unwrap();
+            if parser.forward_generation != origin {
+                parser.take_active(ForwardKind::Barrier);
+                parser.take_active(ForwardKind::Clipboard);
+                parser.forward_generation = origin;
+            }
             let stale_forward = parser.take_active(kind);
             parser.open(kind, token);
             stale_forward
@@ -584,12 +596,13 @@ impl ClientLoop<'_, '_> {
                 stale_reply_bytes.len(),
             );
             // Fails only once the input thread has exited, when nobody awaits the reply.
-            let _ =
-                self.send_input_control
-                    .send(InputInstruction::ForwardedReplyFromHostComplete {
-                        token: stale_token,
-                        reply_bytes: stale_reply_bytes,
-                    });
+            let _ = self.send_input_control.send(
+                InputInstruction::ForwardedReplyFromHostComplete {
+                    token: stale_token,
+                    reply_bytes: stale_reply_bytes,
+                }
+                .with_server_generation(origin),
+            );
         }
 
         // 2. Arm a per-forward deadline on the dedicated runtime. When it
@@ -608,8 +621,10 @@ impl ClientLoop<'_, '_> {
             token,
             kind.timeout(),
             move |token, reply_bytes| {
-                let _ = sender_for_timer
-                    .send(InputInstruction::ForwardedReplyFromHostComplete { token, reply_bytes });
+                let _ = sender_for_timer.send(
+                    InputInstruction::ForwardedReplyFromHostComplete { token, reply_bytes }
+                        .with_server_generation(origin),
+                );
             },
         );
 

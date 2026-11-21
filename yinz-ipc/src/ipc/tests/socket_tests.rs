@@ -1555,3 +1555,102 @@ async fn malformed_kill_replies_do_not_confirm_completion() {
         assert!(client.await.unwrap().is_err());
     }
 }
+
+#[test]
+fn attachment_generation_admits_the_envelope_before_decoding_the_client_payload() {
+    use crate::ipc::{ProtoClientToServerMsg, ProtoServerToClientMsg};
+    use prost::Message;
+    use yinz_types::render_negotiation::{AttachmentGeneration, Offer, Request};
+
+    let owner = AttachmentGeneration([1; 16]);
+    let (_guard, name) = new_ipc();
+    let listener = bind_listener(&name);
+    let mut peer = connect_stream(&name);
+    let mut rx = IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
+    rx.bind_server_attachment(owner).unwrap();
+    let mut tx = rx.get_sender::<ServerToClientMsg>().unwrap();
+    let connected = ProtoServerToClientMsg::decode(&[0x22, 2, 0x48, 1][..]).unwrap();
+    tx.send_server_msg(connected.try_into().unwrap()).unwrap();
+    let mut offer = ProtoClientToServerMsg::try_from(ClientToServerMsg::NativeRenderRequest(
+        Request::Offer(Offer::reader(None)),
+    ))
+    .unwrap();
+    offer.attachment_generation = Some(owner.0.to_vec());
+    write_raw_client_frame(&mut peer, &offer.encode_to_vec());
+    assert!(matches!(
+        rx.recv_attachment_request(None).unwrap(),
+        IpcRecv::Msg(ClientToServerMsg::NativeRenderRequest(Request::Offer(_)), _)
+    ));
+
+    // A valid extent containing an incomplete nested varint. Inspect both field orders.
+    let invalid_ack = [0xda, 2, 1, 0x80];
+    let foreign = [&[0xf2, 2, 16][..], &[2; 16]].concat();
+    for bytes in [
+        [&foreign[..], &invalid_ack].concat(),
+        [&invalid_ack[..], &foreign].concat(),
+        invalid_ack.to_vec(),
+    ] {
+        write_raw_client_frame(&mut peer, &bytes);
+    }
+    let mut ack =
+        ProtoClientToServerMsg::try_from(ClientToServerMsg::RenderFrameAck { seq: 1 }).unwrap();
+    ack.attachment_generation = Some(owner.0.to_vec());
+    write_raw_client_frame(&mut peer, &ack.encode_to_vec());
+    assert!(matches!(
+        rx.recv_attachment_request(None).unwrap(),
+        IpcRecv::Msg(ClientToServerMsg::RenderFrameAck { seq: 1 }, _)
+    ));
+    let matching = [&[0xf2, 2, 16][..], &owner.0].concat();
+    // Incomplete or ambiguous outer fields cannot earn a foreign-packet skip.
+    for malformed in [
+        [&matching[..], &invalid_ack].concat(),
+        [&foreign[..], &matching, &invalid_ack].concat(),
+        [&foreign[..], &invalid_ack, &invalid_ack].concat(),
+        [&foreign[..], &[0xda, 2, 4, 0x80]].concat(),
+        [&foreign[..], &[0xd8, 2, 1]].concat(),
+    ] {
+        write_raw_client_frame(&mut peer, &malformed);
+        assert!(matches!(
+            rx.recv_attachment_request(None).unwrap(),
+            IpcRecv::Malformed
+        ));
+    }
+    let with_unknown = [ack.encode_to_vec(), vec![0xb2, 6, 2, 0xff, 0x80]].concat();
+    write_raw_client_frame(&mut peer, &with_unknown);
+    assert!(matches!(
+        rx.recv_attachment_request(None).unwrap(),
+        IpcRecv::Msg(ClientToServerMsg::RenderFrameAck { seq: 1 }, _)
+    ));
+}
+
+#[test]
+fn attachment_generation_invalid_offer_and_withdraw_diverge() {
+    use yinz_types::render_negotiation::AttachmentGeneration;
+    for echo in [vec![], vec![0; 15]] {
+        let tag = [&[0xf2, 2, echo.len() as u8][..], &echo].concat();
+        for (arms, rejected) in [
+            (&[0x0a, 0][..], true),  // Offer
+            (&[0x12, 0][..], false), // Withdraw
+            (&[0x0a, 0, 0x12, 0][..], false),
+            (&[0x0a, 2][..], false),
+            (&[][..], false),
+        ] {
+            let request = [&[0xea, 2, arms.len() as u8][..], arms].concat();
+            for body in [[&tag[..], &request].concat(), [&request[..], &tag].concat()] {
+                let (_guard, name) = new_ipc();
+                let listener = bind_listener(&name);
+                let mut peer = connect_stream(&name);
+                let mut rx =
+                    IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
+                rx.bind_server_attachment(AttachmentGeneration([1; 16]))
+                    .unwrap();
+                write_raw_client_frame(&mut peer, &body);
+                match rx.recv_attachment_request(None) {
+                    Err(_) => assert!(rejected),
+                    Ok(IpcRecv::Malformed) => assert!(!rejected),
+                    _ => panic!("accepted an invalid negotiation envelope"),
+                }
+            }
+        }
+    }
+}

@@ -83,6 +83,7 @@ pub fn route_action(
             false,
             Some(ActionCompletionResult {
                 confirmed: true,
+                switch_source_retained: false,
                 agent_tab: None,
                 exit_status: None,
                 affected_pane_id: None,
@@ -2217,6 +2218,11 @@ pub fn route_action(
         },
     }
     let mut result = wait_for_action_completion(completion_rx, &action_name, wait_forever);
+    // A retained source keeps reading keys while its destination stages a repaint.
+    // A CLI socket targeting that source still completes its own request.
+    if result.switch_source_retained && cli_client_id.is_none_or(|caller| caller == client_id) {
+        should_break = false;
+    }
     completion::report_action_completion(
         &mut result,
         &action_name,

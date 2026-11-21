@@ -91,6 +91,15 @@ fn steel_worker_permission_grant_retains_the_parents_run_commands_grant() {
 
 #[test]
 fn steel_parent_and_two_workers_share_one_permission_fifo_and_keep_callback_clients() {
+    check_permission_fifo(false);
+}
+
+#[test]
+fn named_worker_job_and_permission_fifo_preserve_attachment_on_reuse() {
+    check_permission_fifo(true);
+}
+
+fn check_permission_fifo(reuse: bool) {
     for second_status in [PermissionStatus::Granted, PermissionStatus::Denied] {
         let (to_proxy, outgoing): ChannelWithContext<PluginInstruction> = channels::unbounded();
         let to_proxy = SenderWithContext::new(to_proxy);
@@ -110,10 +119,14 @@ fn steel_parent_and_two_workers_share_one_permission_fifo_and_keep_callback_clie
   (yinz-catch (yinz-then result (lambda (_) (settled "granted")))
     (lambda (_) (settled "denied"))))
 (yinz-register-workers (hash
-  "first" (lambda (name payload) (request "first" "ChangeApplicationState"))
+  "first" (lambda (name payload) (if (equal? name "probe")
+    (yinz-post-plugin "observed" "probe") (request "first" "ChangeApplicationState")))
   "second" (lambda (name payload) (request "second" "ReadFiles"))))
 (define (load config) (yinz-command (hash "Subscribe" '("Key" "CustomMessage"))))
-(define (update event) (when (hash-contains? event "Key") (request "parent" "RunCommands")))
+(define (update event)
+  (when (hash-contains? event "Key") (request "parent" "RunCommands"))
+  (when (and (hash-contains? event "CustomMessage") (equal? (car (hash-ref event "CustomMessage")) "probe"))
+    (yinz-post-worker "first" "probe" "")))
 (define (render rows columns) state)
 "#,
             None,
@@ -158,7 +171,14 @@ fn steel_parent_and_two_workers_share_one_permission_fifo_and_keep_callback_clie
         load_forwarded.wait_until("startup replay forwarded", default_timeout(), |forwarded| {
             forwarded.then_some(())
         });
-        let other = ClientId::new(2);
+        let other = if reuse {
+            ClientId::for_attachment(
+                2,
+                yinz_types::render_negotiation::AttachmentGeneration([1; 16]),
+            )
+        } else {
+            ClientId::new(2)
+        };
         harness
             .sender
             .send(PluginInstruction::AddClient(other))
@@ -183,9 +203,24 @@ fn steel_parent_and_two_workers_share_one_permission_fifo_and_keep_callback_clie
                     .then_some(())
             },
         );
+        let replacement = ClientId::for_attachment(
+            2,
+            yinz_types::render_negotiation::AttachmentGeneration([2; 16]),
+        );
+        if reuse {
+            // The three outstanding permission requests already belong to the old worker jobs.
+            harness
+                .sender
+                .send(PluginInstruction::RemoveClient(other))
+                .unwrap();
+            harness
+                .sender
+                .send(PluginInstruction::AddClient(replacement))
+                .unwrap();
+        }
         let settled = |count| {
             messages.wait_until(
-                "only the answered requester completes",
+                &format!("answered permission requester {count} completes"),
                 default_timeout(),
                 |messages| {
                     let settled: Vec<_> = messages
@@ -243,6 +278,22 @@ fn steel_parent_and_two_workers_share_one_permission_fifo_and_keep_callback_clie
                 ("second:granted:2".into(), other)
             ]
         );
+        if reuse {
+            harness
+                .sender
+                .send(PluginInstruction::Update(vec![(
+                    Some(PLUGIN),
+                    Some(replacement),
+                    Event::CustomMessage("probe".into(), String::new()),
+                )]))
+                .unwrap();
+            messages.wait_until("replacement worker job", default_timeout(), |messages| {
+                messages
+                    .iter()
+                    .any(|(name, _, actor)| name == "observed" && *actor == replacement)
+                    .then_some(())
+            });
+        }
         harness.finish();
         to_proxy.send(PluginInstruction::Exit).unwrap();
         proxy.join().unwrap();

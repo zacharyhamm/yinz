@@ -287,10 +287,7 @@ impl InputHandler {
                             control.cancel();
                         }
                         if !terminal_state
-                            && !matches!(
-                                instruction,
-                                InputInstruction::Exit | InputInstruction::SetMouseMode(_)
-                            )
+                            && !matches!(instruction, InputInstruction::Exit)
                             && (offline || stamp.is_some_and(|stamp| stamp.0 != current.0))
                         {
                             continue;

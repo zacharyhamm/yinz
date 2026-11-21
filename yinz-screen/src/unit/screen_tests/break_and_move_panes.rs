@@ -1751,7 +1751,7 @@ fn moving_a_pane_into_a_full_tab_leaves_it_in_its_own_tab() {
         assert_eq!(screen.core.active_tab_ids[&client_id], source);
         assert_eq!(screen.active_pane_id(client_id), Some(moved));
         assert!(drain_background_jobs(&watched.background_jobs).iter().any(
-            |job| matches!(job, BackgroundJob::DisplayPaneError(ids, _) if ids == &vec![moved])
+            |job| matches!(job, BackgroundJob::DisplayPaneError(None, ids, _) if ids == &vec![moved])
         ));
         for (instruction, _) in watched.pty.try_iter() {
             match instruction {

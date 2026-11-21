@@ -201,6 +201,7 @@ pub struct StdinAnsiParser {
     partial_buffer_limit: usize,
     /// Active forwarding slot: `Some` while a forwarded query is in
     /// flight, `None` otherwise.
+    pub(crate) forward_generation: Option<u64>,
     active_forward: Option<ForwardSlot>,
     active_clipboard_forward: Option<ClipboardForwardSlot>,
     /// Bytes of an OSC sequence whose terminator hasn't arrived yet.
@@ -231,6 +232,7 @@ impl StdinAnsiParser {
         StdinAnsiParser {
             inner: InputParser::new(),
             partial_buffer_limit: PARTIAL_BUFFER_CAP_BYTES,
+            forward_generation: None,
             active_forward: None,
             active_clipboard_forward: None,
             partial_osc: Vec::new(),

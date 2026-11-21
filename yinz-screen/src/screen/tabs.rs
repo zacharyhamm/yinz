@@ -1379,7 +1379,9 @@ impl Screen {
         switches: &mut HashSet<(TabId, ClientId)>,
     ) -> Result<()> {
         for (tab_id, client_id) in switches.drain() {
-            if let Some(position) = self.get_tab_position_by_id(tab_id) {
+            if self.core.bus.senders.session.owns_attachment(client_id)
+                && let Some(position) = self.get_tab_position_by_id(tab_id)
+            {
                 self.navigate_to_tab(position, None, true, client_id)?;
             }
         }

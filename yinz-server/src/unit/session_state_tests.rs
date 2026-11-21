@@ -129,28 +129,31 @@ fn interactive_clients_exclude_cli_connections_watchers_and_departed_clients() {
 fn client_ids_start_at_one_and_are_never_reused() {
     let mut session = SessionState::new();
     let first = session.new_client().unwrap();
-    assert_eq!(first, ClientId::new(1));
+    assert_eq!(first.get(), 1);
     let watcher = session.new_client().unwrap();
     session.convert_client_to_watcher(watcher);
     session.remove_client(first);
     session.remove_watcher(watcher);
     assert!(session.client_ids().is_empty());
-    assert_eq!(session.new_client(), Some(ClientId::new(3)));
+    assert_eq!(session.new_client().map(ClientId::get), Some(3));
 }
 
 #[test]
 fn a_session_that_has_used_every_client_id_refuses_more() {
     let mut session = SessionState::new();
     session.next_client_id = Some(u32::MAX - 1);
-    assert_eq!(session.new_client(), Some(ClientId::new(u32::MAX - 1)));
-    assert_eq!(session.new_client(), Some(ClientId::new(u32::MAX)));
+    assert_eq!(session.new_client().map(ClientId::get), Some(u32::MAX - 1));
+    assert_eq!(session.new_client().map(ClientId::get), Some(u32::MAX));
     assert_eq!(session.new_client(), None);
     assert_eq!(session.new_client(), None);
     let mut client_ids = session.client_ids();
     client_ids.sort_unstable();
     assert_eq!(
-        client_ids,
-        vec![ClientId::new(u32::MAX - 1), ClientId::new(u32::MAX)]
+        client_ids
+            .into_iter()
+            .map(ClientId::get)
+            .collect::<Vec<_>>(),
+        vec![u32::MAX - 1, u32::MAX]
     );
 }
 
@@ -256,7 +259,15 @@ fn remove_client_returns_empty_when_no_forwards_in_flight() {
 fn clear_forward_in_flight_removes_entry() {
     let mut s = with_client(crate::ClientId::new(1));
     s.mark_forward_in_flight(42, crate::ClientId::new(1));
-    s.clear_forward_in_flight(42);
+    assert!(!s.clear_forward_in_flight(42, ClientId::new(2)));
+    assert!(s.clear_forward_in_flight(42, ClientId::new(1)));
+    let old = s.new_client().unwrap();
+    s.next_client_id = Some(old.get());
+    let replacement = s.new_client().unwrap();
+    s.mark_forward_in_flight(42, replacement);
+    assert!(!s.clear_forward_in_flight(42, old));
+    assert!(s.remove_client(old).is_empty());
+    assert!(s.clear_forward_in_flight(42, replacement));
     // After clear, removing the client yields no stuck tokens.
     assert!(s.remove_client(crate::ClientId::new(1)).is_empty());
 }
@@ -275,4 +286,78 @@ fn disconnect_targets_exclude_origin_and_watchers_but_include_pipe_clients() {
     }
     assert_eq!(state.client_ids(), vec![origin]);
     assert_eq!(state.watcher_client_ids(), vec![ClientId::new(8)]);
+}
+
+#[test]
+fn attachment_generation_held_screen_output_cannot_ready_ansi_replacement() {
+    use interprocess::local_socket::traits::Listener;
+    use yinz_ipc::ipc::{ClientToServerMsg, IpcReceiverWithContext};
+    let state = Arc::new(RwLock::new(SessionState::new()));
+    let data = Arc::new(RwLock::new(None));
+    let mut os: Box<dyn ServerOsApi> = Box::new(yinz_server_os::get_server_os_input().unwrap());
+    let old = state.write().unwrap().new_client().unwrap();
+    let sibling = state.write().unwrap().new_client().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("destination.sock");
+    let listener = yinz_ipc::consts::ipc_bind(&path).unwrap();
+    let old_stream = yinz_ipc::consts::ipc_connect(&path).unwrap();
+    let _old_router = os.new_client(old, listener.accept().unwrap()).unwrap();
+    let mut sibling_reader = IpcReceiverWithContext::<ServerToClientMsg>::new(
+        yinz_ipc::consts::ipc_connect(&path).unwrap(),
+    );
+    sibling_reader
+        .set_recv_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    let _sibling_router = os.new_client(sibling, listener.accept().unwrap()).unwrap();
+    let held = ServerInstruction::Render(Some(HashMap::from([
+        (old, "old".into()),
+        (sibling, "sibling".into()),
+    ])));
+    let replacement = {
+        let mut state = state.write().unwrap();
+        state.next_client_id = Some(old.get());
+        state.new_client().unwrap()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let preparing =
+        std::thread::spawn(move || yinz_client::prepare_test_destination(&path, deadline));
+    let mut router = os
+        .new_client(replacement, listener.accept().unwrap())
+        .unwrap();
+    router
+        .set_recv_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    assert!(matches!(
+        router.recv_client_msg().msg(),
+        Some((ClientToServerMsg::AttachClient { .. }, _))
+    ));
+    let mut pending = HashMap::from([(replacement, std::time::Instant::now())]);
+    for instruction in [
+        held,
+        ServerInstruction::ClipboardUpdate(HashMap::from([(old, "old clipboard".into())])),
+        ServerInstruction::DesktopNotification(HashMap::from([(old, "old notification".into())])),
+        ServerInstruction::RepaintComplete(old),
+    ] {
+        publish_screen_output(instruction, &mut os, &state, &data, &mut pending).unwrap();
+    }
+    assert!(pending.contains_key(&replacement));
+    assert!(
+        matches!(sibling_reader.recv_server_msg().msg(), Some((ServerToClientMsg::Render { content }, _)) if content == "sibling")
+    );
+    publish_screen_output(
+        ServerInstruction::Render(Some(HashMap::from([(replacement, "replacement".into())]))),
+        &mut os,
+        &state,
+        &data,
+        &mut pending,
+    )
+    .unwrap();
+    assert!(pending.is_empty());
+    assert_eq!(
+        preparing.join().unwrap().unwrap(),
+        vec![ServerToClientMsg::Render {
+            content: "replacement".into()
+        }]
+    );
+    drop(old_stream);
 }

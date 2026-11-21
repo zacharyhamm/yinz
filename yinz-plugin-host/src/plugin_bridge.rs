@@ -845,6 +845,10 @@ impl PluginBridge {
         mut updates: Vec<(Option<PluginId>, Option<ClientId>, Event)>,
         shutdown_sender: Sender<()>,
     ) -> Result<()> {
+        updates.retain(|(_, client, event)| {
+            !matches!(event, Event::ModifiersHeld { .. })
+                || client.is_some_and(|owner| self.senders.session.owns_attachment(owner))
+        });
         // The screen owns pane state but has no plugin map. Fill the current session's
         // plugin identities here, before forwarding or caching its manifest.
         for (_, _, event) in &mut updates {
@@ -1399,6 +1403,11 @@ impl PluginBridge {
             move |senders, plugin_map, connected_clients| {
                 let mut plugin_map = plugin_map.lock().unwrap();
                 let connected_clients = connected_clients.lock().unwrap().clone();
+                if !connected_clients.contains(&new_owner)
+                    || !senders.session.owns_attachment(new_owner)
+                {
+                    return;
+                }
                 let mut rekeyed = false;
                 for owner in plugin_map.owner_client_ids_of_plugin_id(plugin_id) {
                     if !connected_clients.contains(&owner) {
@@ -1922,7 +1931,12 @@ impl PluginBridge {
             self.plugin_executor
                 .execute_for_plugin_tagged(plugin_id, "reconfigure", false, {
                     let configuration = self.plugin_configuration(owner);
-                    move |_senders, _plugin_map, _connected_clients| {
+                    move |senders, _plugin_map, _connected_clients| {
+                        if client_id != ClientId::NONE
+                            && !senders.session.owns_attachment(client_id)
+                        {
+                            return;
+                        }
                         configuration.apply_to(&mut running_plugin.lock().unwrap());
                     }
                 });
@@ -3027,6 +3041,13 @@ pub fn apply_events_to_plugin(
     // to a pipe wins, as it did when every event was its own job.
     let mut pipe_changes: HashMap<String, PipeStateChange> = HashMap::new();
     for (client_id, event) in events {
+        if matches!(
+            event,
+            Event::ModifiersHeld { .. } | Event::PermissionRequestResult(_)
+        ) && !senders.session.owns_attachment(*client_id)
+        {
+            continue;
+        }
         // host commands issued while handling this event act on behalf of the client it was
         // directed at (this only differs from the instance's owner for shared plugins)
         running_plugin.env_mut().client_id = *client_id;

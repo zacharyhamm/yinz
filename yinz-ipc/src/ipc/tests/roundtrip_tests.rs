@@ -6379,6 +6379,7 @@ fn signal_quit_capability_defaults_to_false_for_older_servers() {
     use prost::Message;
     for bytes in [&b""[..], &b"\x08\x01\x10\x01"[..]] {
         let message = WireMessage {
+            attachment_generation: None,
             message: Some(server_to_client_msg::Message::Connected(
                 ConnectedMsg::decode(bytes).unwrap(),
             )),

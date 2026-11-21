@@ -75,6 +75,51 @@ pub struct EvalOutput {
 #[derive(Clone)]
 struct Output(Arc<Mutex<Vec<u8>>>, usize, &'static str);
 
+/// A render may outlive its recipient while Scheme still retains a continuation.
+#[derive(Clone)]
+struct RenderBuffer(Arc<Mutex<Option<Output>>>);
+
+impl steel::rvals::Custom for RenderBuffer {}
+
+impl RenderBuffer {
+    fn close(&self) -> Option<Output> {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+    }
+}
+
+#[derive(Clone)]
+struct CallbackOutput {
+    diagnostic: Output,
+    render: Arc<Mutex<Option<RenderBuffer>>>,
+}
+
+impl Write for CallbackOutput {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let selection = self
+            .render
+            .lock()
+            .map_err(|_| io::Error::other("render selection poisoned"))?;
+        if let Some(buffer) = selection.as_ref() {
+            let mut buffer = buffer
+                .0
+                .lock()
+                .map_err(|_| io::Error::other("render buffer poisoned"))?;
+            match buffer.as_mut() {
+                Some(output) => output.write(bytes),
+                None => Ok(bytes.len()),
+            }
+        } else {
+            self.diagnostic.write(bytes)
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 impl Output {
     fn new(limit: usize, diagnostic: &'static str) -> Self {
         Self(Arc::new(Mutex::new(Vec::new())), limit, diagnostic)
@@ -205,7 +250,44 @@ impl Runtime {
                 to_scheme(&value.map(Value::from).unwrap_or(Value::Null)).map_err(scheme_error)
             });
         }
-        let port = SteelVal::new_dyn_writer_port(output.clone());
+        let selection = Arc::new(Mutex::new(None));
+        engine.register_fn("%render-buffer", || {
+            RenderBuffer(Arc::new(Mutex::new(Some(Output::new(
+                MAX_RENDER_BYTES,
+                "Steel render output exceeds 16 MiB",
+            )))))
+        });
+        engine.register_fn("%render-select", {
+            let selection = selection.clone();
+            move |buffer: RenderBuffer| {
+                *selection.lock().unwrap_or_else(|error| error.into_inner()) = Some(buffer)
+            }
+        });
+        engine.register_fn("%render-diagnostic", {
+            let selection = selection.clone();
+            move || *selection.lock().unwrap_or_else(|error| error.into_inner()) = None
+        });
+        engine.register_fn("%render-close", |buffer: RenderBuffer| {
+            buffer.close();
+        });
+        engine.register_fn(
+            "%render-text",
+            |buffer: RenderBuffer, text: String| -> steel::rvals::Result<String> {
+                let mut printed = match buffer.close() {
+                    Some(buffer) => Self::drain_output(&buffer).map_err(scheme_error)?,
+                    None => return Err(scheme_error("render has already closed")),
+                };
+                if printed.len().saturating_add(text.len()) > MAX_RENDER_BYTES {
+                    return Err(scheme_error("Steel render output exceeds 16 MiB"));
+                }
+                printed.push_str(&text);
+                Ok(printed)
+            },
+        );
+        let port = SteelVal::new_dyn_writer_port(CallbackOutput {
+            diagnostic: output.clone(),
+            render: selection,
+        });
         engine.register_value("yinz-output-port", port);
         engine.register_value("yinz-log-port", SteelVal::new_dyn_writer_port(logs.clone()));
         let host = Mutex::new(host);
@@ -692,15 +774,11 @@ impl Runtime {
                 columns.into_steelval().map_err(scheme_error)?,
             ],
         )?;
-        let mut output = self.take_output()?;
-        if let Some(SteelVal::StringV(text)) = result {
-            anyhow::ensure!(
-                output.len().saturating_add(text.len()) <= MAX_RENDER_BYTES,
-                "Steel render output exceeds 16 MiB"
-            );
-            output.push_str(text.as_str());
-        }
-        Ok(output)
+        // Callback output outside a render belongs to the normal diagnostic stream.
+        Ok(match result {
+            Some(SteelVal::StringV(text)) => text.to_string(),
+            _ => String::new(),
+        })
     }
 
     pub fn unload(&mut self) -> Result<()> {

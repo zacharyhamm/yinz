@@ -311,20 +311,28 @@ fn dispatch(
             Ok(serde_json::Value::Null)
         },
         Command::LegacyReconnect { client, target } => {
+            let client = senders
+                .session
+                .resolve_client(*client)
+                .context("update participant has disconnected")?;
             senders
                 .send_to_server(ServerInstruction::SwitchSession(
                     target.clone(),
-                    *client,
+                    client,
                     None,
                 ))
                 .context("reconnect legacy client")?;
             Ok(serde_json::Value::Null)
         },
         Command::Client { client, request } => {
+            let client = senders
+                .session
+                .resolve_client(*client)
+                .context("update participant has disconnected")?;
             let (reply, receive) = mpsc::channel();
             senders
                 .send_to_server(ServerInstruction::UpdateRequest {
-                    client: *client,
+                    client,
                     request: request.clone(),
                     reply,
                 })
@@ -336,8 +344,12 @@ fn dispatch(
             serde_json::to_value(result).context("encode participant reply")
         },
         Command::DisconnectUpdateClient { client } => {
+            let client = senders
+                .session
+                .resolve_client(*client)
+                .context("update participant has disconnected")?;
             senders
-                .send_to_server(ServerInstruction::DetachSession(vec![*client], None))
+                .send_to_server(ServerInstruction::DetachSession(vec![client], None))
                 .context("disconnect client without update support")?;
             Ok(serde_json::Value::Null)
         },

@@ -22,8 +22,7 @@ impl Screen {
         client_id: ClientId,
         mut pixel_dimensions: PixelDimensions,
     ) -> bool {
-        // Reports may precede the first client size. Their server route preserves ordering with
-        // final client removal, which clears these maps before the connection id can be reused.
+        // Reports may precede the first size. Screen dispatch admitted the reporting attachment.
         let previous_character_cell_size = *self.core.character_cell_size.borrow();
         let nonzero = |size: &SizeInPixels| size.width > 0 && size.height > 0;
         // Geometry comes from the host terminal. Unknown/invalid sizes must not replace a

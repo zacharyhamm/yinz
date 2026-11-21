@@ -39,6 +39,28 @@ impl NativeRenderState {
         self.media.retain(|(seq, _)| *seq <= high);
     }
 
+    /// Keep a large image available until the recipient consumes the referencing frame.
+    pub fn stage_image(&mut self, rgba: &[u8]) -> Option<std::path::PathBuf> {
+        if rgba.len() < 256 * 1024 || self.media.len() >= 32 {
+            return None;
+        }
+        let file = self.root.as_ref()?.write_image(rgba).ok()?;
+        let path = file.path();
+        self.media.push((self.seq, file));
+        Some(path)
+    }
+
+    pub fn acknowledge_recipient(
+        active: &mut HashMap<ClientId, Self>,
+        retired: &mut HashMap<ClientId, Self>,
+        owner: ClientId,
+        seq: u64,
+    ) {
+        if let Some(state) = active.get_mut(&owner).or_else(|| retired.get_mut(&owner)) {
+            state.acknowledge(seq);
+        }
+    }
+
     pub fn acknowledge(&mut self, seq: u64) {
         if seq <= self.seq {
             self.acknowledged = self.acknowledged.max(seq);
@@ -291,9 +313,7 @@ impl Output {
                         host_display_cleared: cleared,
                     },
                     &mut records,
-                    state.seq,
-                    &mut state.media,
-                    state.root.as_ref(),
+                    state,
                 )
                 .context("flatten native graphics")
                 .non_fatal();
@@ -492,9 +512,7 @@ fn wire_cell(
 fn flatten_kitty_frame(
     kitty_input: KittyFrameInput,
     out: &mut Vec<GraphicsRecord>,
-    seq: u64,
-    media: &mut Vec<(u64, MediaFile)>,
-    root: Option<&MediaRoot>,
+    state: &mut NativeRenderState,
 ) -> Result<()> {
     let KittyFrameInput {
         mut chunks_by_pane,
@@ -627,20 +645,11 @@ fn flatten_kitty_frame(
                     } else {
                         (image.width, image.height, image.displayed_rgba())
                     };
-                    // Keep large uploads out of the bounded IPC frame. The file stays alive
-                    // until this client acknowledges applying the frame that references it.
-                    let shared = if rgba.len() >= 256 * 1024 && media.len() < 32 {
-                        root.and_then(|root| root.write_image(rgba).ok())
-                            .map(|file| {
-                                let path = file.path().to_string_lossy().as_bytes().to_vec();
-                                media.push((seq, file));
-                                path
-                            })
-                    } else {
-                        None
-                    };
-                    let (medium, data) = match shared {
-                        Some(path) => (GraphicsMedium::SharedFile, path),
+                    let (medium, data) = match state.stage_image(rgba) {
+                        Some(path) => (
+                            GraphicsMedium::SharedFile,
+                            path.to_string_lossy().into_owned().into_bytes(),
+                        ),
                         None => (GraphicsMedium::Inline, rgba.to_vec()),
                     };
                     out.push(GraphicsRecord::Residency {

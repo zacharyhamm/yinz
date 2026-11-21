@@ -5,6 +5,7 @@ import "common_types.proto";
 
 message ClientToServerMsg {
   reserved 14, 15, 21, 26;
+  optional bytes attachment_generation = 46;
   oneof message {
     NativeRenderRequestMsg native_render_request = 45;
     StructuredRenderSupportMsg structured_render_support = 42;

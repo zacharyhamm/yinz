@@ -1180,6 +1180,50 @@ fn palette_theme_transaction_cancellation_and_failed_write_leave_state_unchanged
 }
 
 #[test]
+fn attachment_generation_queued_theme_save_checks_preview_owner() {
+    use yinz_types::render_negotiation::AttachmentGeneration;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.kdl"), "theme \"default\"\n").unwrap();
+    let base = loaded_theme_config(dir.path());
+    let (mut session, screen) = session(dir.path());
+    session
+        .session_configuration
+        .set_saved_configuration(base.clone());
+    let old = ClientId::for_attachment(1, AttachmentGeneration([1; 16]));
+    let new = ClientId::for_attachment(1, AttachmentGeneration([2; 16]));
+    let request = uuid::Uuid::new_v4();
+    let cancelled = Default::default();
+    session.senders.session.register_attachment(old);
+    session.senders.session.register_attachment(new);
+    session
+        .session_configuration
+        .set_client_runtime_configuration(new, base.clone());
+    let disk = Disk::read(None, Some(dir.path())).unwrap();
+    let revision = session.session_configuration.editor_revision(&disk);
+    for permanent in [false, true] {
+        assert!(session
+            .apply_palette_theme(old, request, "dracula", permanent, &cancelled)
+            .unwrap_err()
+            .contains("cancelled"));
+        assert_eq!(
+            session.session_configuration.editor_revision(&disk),
+            revision
+        );
+        assert!(!dir.path().join("config.d").exists());
+        assert!(screen.try_recv().is_err());
+    }
+    session
+        .apply_palette_theme(new, request, "dracula", true, &cancelled)
+        .unwrap();
+    assert_eq!(
+        loaded_theme_config(dir.path()).options.theme.as_deref(),
+        Some("dracula")
+    );
+    assert!(screen.try_iter().any(|(msg, _)| matches!(msg,
+        ScreenInstruction::PaletteThemeSaved { client, request: saved, result: Ok(()) } if client == new && saved == request)));
+}
+
+#[test]
 fn palette_theme_permanent_save_respects_later_layers_and_clears_theme_override() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("config.kdl"), "theme \"default\"\n").unwrap();

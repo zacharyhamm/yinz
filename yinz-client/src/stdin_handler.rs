@@ -154,9 +154,9 @@ pub(crate) fn stdin_loop(
                         // Strip + classify any host-reply sequences
                         // continuously. The residue is the byte stream
                         // the keyboard parser should see.
-                        let parse_output = {
+                        let (parse_output, forward_origin) = {
                             let mut p = stdin_ansi_parser.lock().unwrap();
-                            p.feed(&buf)
+                            (p.feed(&buf), p.forward_generation)
                         };
                         if !parse_output.replies.is_empty() {
                             let _ = send_input_instructions.send(
@@ -170,11 +170,12 @@ pub(crate) fn stdin_loop(
                             .into_iter()
                             .chain(parse_output.completed_clipboard_forward)
                         {
-                            let _ = send_input_instructions.send(
+                            let _ = send_input_instructions.sender.send(
                                 InputInstruction::ForwardedReplyFromHostComplete {
                                     token,
                                     reply_bytes,
-                                },
+                                }
+                                .with_server_generation(forward_origin),
                             );
                         }
                         for payload in parse_output.desktop_notifications {

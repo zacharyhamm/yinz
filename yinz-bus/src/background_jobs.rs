@@ -99,7 +99,7 @@ struct WebRequestStreamState {
     Debug, Clone, Eq, PartialEq, Hash, strum_macros::IntoStaticStr, strum_macros::VariantNames,
 )]
 pub enum BackgroundJob {
-    DisplayPaneError(Vec<PaneId>, String),
+    DisplayPaneError(Option<ClientId>, Vec<PaneId>, String),
     AnimatePluginLoading(PluginId),       // u32 - plugin_id
     StopPluginLoadingAnimation(PluginId), // u32 - plugin_id
     WatchCommandPaletteSessions(bool),
@@ -270,7 +270,7 @@ fn background_jobs_with_runtime(
     });
     let mut command_palette_sessions: Option<Arc<AtomicBool>> = None;
     let last_render_request: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
-    let pending_help_text_clear: Arc<Mutex<HashMap<ClientId, Instant>>> =
+    let pending_help_text_clear: Arc<Mutex<HashMap<ClientId, tokio::time::Instant>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let pending_command_output_flash_clear: Arc<Mutex<HashMap<PaneId, Instant>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -347,7 +347,7 @@ fn background_jobs_with_runtime(
         yinz_runtime::errors::add_call(&mut err_ctx, ContextType::BackgroundJob((&event).into()));
         let job = event.clone();
         match event {
-            BackgroundJob::DisplayPaneError(pane_ids, text) => {
+            BackgroundJob::DisplayPaneError(owner, pane_ids, text) => {
                 if job_already_running(job, &mut running_jobs) {
                     continue;
                 }
@@ -356,6 +356,7 @@ fn background_jobs_with_runtime(
                     async move {
                         let _ = senders.send_to_screen(
                             ScreenInstruction::AddRedPaneFrameColorOverride(
+                                owner,
                                 pane_ids.clone(),
                                 Some(text),
                             ),
@@ -365,7 +366,7 @@ fn background_jobs_with_runtime(
                         ))
                         .await;
                         let _ = senders.send_to_screen(
-                            ScreenInstruction::ClearPaneFrameColorOverride(pane_ids),
+                            ScreenInstruction::ClearPaneFrameColorOverride(owner, pane_ids),
                         );
                     }
                 });
@@ -772,7 +773,7 @@ fn background_jobs_with_runtime(
                         tokio::time::sleep(std::time::Duration::from_millis(FLASH_DURATION_MS))
                             .await;
                         let _ = senders.send_to_screen(
-                            ScreenInstruction::ClearPaneFrameColorOverride(pane_ids),
+                            ScreenInstruction::ClearPaneFrameColorOverride(None, pane_ids),
                         );
                     }
                 });
@@ -807,7 +808,7 @@ fn background_jobs_with_runtime(
             BackgroundJob::ClearHelpText { client_id } => {
                 let should_spawn = {
                     let mut pending = pending_help_text_clear.lock().unwrap();
-                    let current_time = Instant::now();
+                    let current_time = tokio::time::Instant::now();
                     let should_spawn = !pending.contains_key(&client_id);
                     pending.insert(client_id, current_time);
                     should_spawn
@@ -825,8 +826,8 @@ fn background_jobs_with_runtime(
                                     let mut pending = pending.lock().unwrap();
                                     match pending.get(&client_id) {
                                         Some(&last_motion_time) => {
-                                            let time_since_motion =
-                                                Instant::now().duration_since(last_motion_time);
+                                            let time_since_motion = tokio::time::Instant::now()
+                                                .duration_since(last_motion_time);
                                             if time_since_motion >= debounce_duration {
                                                 pending.remove(&client_id);
                                                 None
@@ -937,7 +938,7 @@ fn background_jobs_with_runtime(
                             .collect::<Vec<_>>();
                         if !pane_ids.is_empty() {
                             let _ = senders.send_to_screen(
-                                ScreenInstruction::ClearPaneFrameColorOverride(pane_ids),
+                                ScreenInstruction::ClearPaneFrameColorOverride(None, pane_ids),
                             );
                         }
                     }
@@ -951,7 +952,9 @@ fn background_jobs_with_runtime(
                 }
                 let _ = bus
                     .senders
-                    .send_to_screen(ScreenInstruction::ClearPaneFrameColorOverride(pane_ids));
+                    .send_to_screen(ScreenInstruction::ClearPaneFrameColorOverride(
+                        None, pane_ids,
+                    ));
             },
             BackgroundJob::FlashTabBell(tab_id) => {
                 let is_flashing = Arc::new(AtomicBool::new(true));

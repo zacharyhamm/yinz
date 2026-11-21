@@ -53,4 +53,5 @@ yinz-test-support = { path = "../yinz-test-support" }
 tokio = { workspace = true, features = ["sync", "test-util"] }
 
 [features]
+attachment-test-support = []
 unstable = []

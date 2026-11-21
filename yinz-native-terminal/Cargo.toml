@@ -42,3 +42,6 @@ fontdb = { version = "0.23", default-features = false, features = ["std", "fs", 
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[features]
+attachment-test-support = []

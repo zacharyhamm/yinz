@@ -1,5 +1,6 @@
 //! Canonical identities shared across crate boundaries.
 
+use crate::render_negotiation::AttachmentGeneration;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -79,12 +80,20 @@ impl fmt::Display for PluginId {
 /// fn for_client(_: ClientId) {}
 /// for_client(1_u32);
 /// ```
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-#[repr(transparent)]
-pub struct ClientId(u32);
+pub struct ClientId(u32, #[serde(skip)] Option<AttachmentGeneration>);
+
+impl fmt::Debug for ClientId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut value = f.debug_tuple("ClientId");
+        value.field(&self.0);
+        if let Some(generation) = self.1 {
+            value.field(&generation);
+        }
+        value.finish()
+    }
+}
 
 impl From<u32> for ClientId {
     fn from(value: u32) -> Self {
@@ -107,7 +116,14 @@ impl ClientId {
     pub const NONE: ClientId = ClientId::new(0);
 
     pub const fn new(value: u32) -> Self {
-        Self(value)
+        Self(value, None)
+    }
+    /// The server carries this pair through its queues. Public APIs serialize the number only.
+    pub const fn for_attachment(value: u32, generation: AttachmentGeneration) -> Self {
+        Self(value, Some(generation))
+    }
+    pub const fn generation(self) -> Option<AttachmentGeneration> {
+        self.1
     }
     pub const fn get(self) -> u32 {
         self.0

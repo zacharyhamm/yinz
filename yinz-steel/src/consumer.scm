@@ -76,7 +76,7 @@
     (set! timer (yinz-sleep timeout))
     (%async-observe timer
       (lambda (_) (yinz-reject! operation "LLM completion timed out"))
-      (lambda (failure) (yinz-reject! operation failure)) %async-client)
+      (lambda (failure) (yinz-reject! operation failure)) %async-actor)
     (when (yinz-pending? timer)
       (yinz-command (hash "MessageToPlugin"
         (hash "plugin_url" json-null "destination_plugin_id" destination "plugin_config" (hash)
@@ -142,7 +142,7 @@
                (not (and (integer? timeout) (exact? timeout) (<= 0 timeout 9007199254740991))))
       (error "timeoutMs must be a nonnegative integer"))
     (define id (%consumer-id "pick:"))
-    (define origin %async-client)
+    (define origin %async-actor)
     (define started #f)
     (define finished #f)
     (define timer #f)

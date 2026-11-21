@@ -963,14 +963,11 @@ impl Screen {
             self.complete_client_repaints(repainted)?;
         }
 
-        // Clear force render flag for all watchers after successful render
-        for watcher_state in self.core.watcher_clients.values_mut() {
-            watcher_state.clear_force_render();
-        }
         // What each watcher's delivered frame did to its cursor, for the next frame's cursor pass
         // to correct the tab's memo with when the cursor comes back into range.
         for (watcher_id, cursor_was_cropped) in cursor_was_cropped_for_watcher {
             if let Some(watcher_state) = self.core.watcher_clients.get_mut(&watcher_id) {
+                watcher_state.clear_force_render();
                 watcher_state.set_cursor_was_cropped(cursor_was_cropped);
             }
         }

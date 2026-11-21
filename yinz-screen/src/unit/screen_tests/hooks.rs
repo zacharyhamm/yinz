@@ -2098,3 +2098,94 @@ fn restart_dispatch_reply_order() {
         assert!(read_reply().is_none());
     }
 }
+
+#[test]
+fn attachment_generation_stale_focus_and_departure_preserve_agent_escape() {
+    use crate::screen::thread_main::{process_instruction, EventLoopState};
+    use yinz_types::render_negotiation::AttachmentGeneration;
+    let size = Size { cols: 80, rows: 24 };
+    let (mut screen, bytes, _server) =
+        create_new_screen_with_capture(size, true, true, true, false);
+    let (to_writer, writes) = channels::unbounded();
+    screen.core.bus.senders.to_pty_writer = Some(SenderWithContext::new(to_writer));
+    new_tab(&mut screen, 1, TabId::new(0));
+    let terminal = TerminalId::new(1);
+    let pane = PaneId::Terminal(terminal);
+    let old = ClientId::for_attachment(1, AttachmentGeneration([1; 16]));
+    let new = ClientId::for_attachment(1, AttachmentGeneration([2; 16]));
+    let owners = screen.core.bus.senders.session.clone();
+    screen.remove_client(ClientId::new(1)).unwrap();
+    owners.register_attachment(old);
+    screen.add_client(old).unwrap();
+    let loss = ScreenInstruction::HostTerminalFocusChanged(old, false);
+    let remove = ScreenInstruction::RemoveClient(old);
+    owners.register_attachment(new);
+    screen.add_client(new).unwrap();
+    screen.core.agent_double_escape = true;
+    let tab = screen.get_active_tab_mut(new).unwrap();
+    tab.agent_double_escape = true;
+    tab.handle_pty_bytes(terminal, b"\x1b[?1004h".to_vec())
+        .unwrap();
+    apply_pane_agent_report(
+        &mut screen,
+        pane,
+        Some(report(AgentState::Busy, Some("running"))),
+    )
+    .unwrap();
+    bytes.lock().unwrap().clear();
+    let escape = || {
+        ScreenInstruction::WriteCharacter(
+            Some(KeyWithModifier::new(BareKey::Esc)),
+            vec![27],
+            false,
+            new,
+            None,
+        )
+    };
+    let mut state = EventLoopState::default();
+    assert!(process_instruction(&mut screen, &mut state, escape())
+        .unwrap()
+        .is_continue());
+    bytes.lock().unwrap().clear();
+    for op in [loss, ScreenInstruction::ResetAgentEscape(old), remove] {
+        assert!(process_instruction(&mut screen, &mut state, op)
+            .unwrap()
+            .is_continue());
+    }
+    assert!(
+        bytes.lock().unwrap().is_empty(),
+        "late departure emitted terminal focus bytes"
+    );
+    assert!(process_instruction(&mut screen, &mut state, escape())
+        .unwrap()
+        .is_continue());
+    let escape_writes = || {
+        writes
+            .try_iter()
+            .filter_map(|(event, _)| match event {
+                yinz_bus::pty_writer::PtyWriteInstruction::Write(data, id, _) if id == terminal => {
+                    Some(data)
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(escape_writes(), vec![vec![27]]);
+    bytes.lock().unwrap().clear();
+    for op in [
+        ScreenInstruction::HostTerminalFocusChanged(new, false),
+        ScreenInstruction::HostTerminalFocusChanged(new, true),
+        escape(),
+        ScreenInstruction::ResetAgentEscape(new),
+        escape(),
+    ] {
+        assert!(process_instruction(&mut screen, &mut state, op)
+            .unwrap()
+            .is_continue());
+    }
+    assert_eq!(escape_writes(), Vec::<Vec<u8>>::new());
+    assert!(bytes.lock().unwrap()[&terminal].starts_with(b"\x1b[O\x1b[I"));
+    assert!(screen.core.tabs[&TabId::new(0)]
+        .pending_agent_escapes
+        .contains_key(&(new, pane)));
+}

@@ -56,7 +56,7 @@
       (lambda (pane) (yinz-resolve! operation
         (hash "message" json-null "hook" json-null "state" "Idle"
           "sessionId" (%async-get (hash-ref pane "agent") "session_id" json-null))))
-      (lambda (failure) (when (yinz-pending? operation) (yinz-reject! operation failure))) %async-client)
+      (lambda (failure) (when (yinz-pending? operation) (yinz-reject! operation failure))) %async-actor)
     (%agent-observe-state idle id "Idle" (hash "after" '("Busy" "Waiting")))))
 (define (yinz-agent-info pane)
   (define id (%pane-id pane)) (%agent-watch)
@@ -175,7 +175,7 @@
     (set! timer (yinz-sleep 40000))
     (%async-add-cleanup operation (%async-observe timer
       (lambda (_) (yinz-reject! operation (%agent-view-failure "unavailable" "agent view timed out" op "timeout")))
-      (lambda (_) (void)) %async-client))
+      (lambda (_) (void)) %async-actor))
     (unless (yinz-pending? timer) (yinz-reject! operation (%agent-view-failure "failed" "timer registration failed" op "sdk")))
     (when (yinz-pending? operation) (yinz-command (hash "AgentView" (hash "id" id "request" encoded)))))
   operation)

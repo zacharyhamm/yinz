@@ -640,6 +640,88 @@ fn unload_drains_replies_already_queued_for_its_generation() {
 }
 
 #[test]
+fn unload_mailbox_drains_replies_under_their_original_attachments() {
+    use yinz_bus::background_jobs::BackgroundJob;
+    use yinz_types::render_negotiation::AttachmentGeneration;
+    let old = crate::ClientId::for_attachment(2, AttachmentGeneration([1; 16]));
+    let replacement = crate::ClientId::for_attachment(2, AttachmentGeneration([2; 16]));
+    let (jobs, requests) = channels::unbounded();
+    let (notifications, _queued) = channels::unbounded();
+    let (screen, observed) = channels::unbounded();
+    let mut env = env();
+    env.client_id = old;
+    env.senders.to_screen = Some(SenderWithContext::new(screen));
+    env.set_permissions([PermissionType::RunCommands].into());
+    env.senders.to_background_jobs = Some(SenderWithContext::new(jobs));
+    env.senders.to_plugin = Some(SenderWithContext::new(notifications));
+    let senders = env.senders.clone();
+    senders.session.register_attachment(old);
+    let mut plugin = SteelPlugin::new(
+        r#"
+        (define finished (yinz-deferred))
+        (define count 0)
+        (define (update event)
+          (when (hash-contains? event "CustomMessage")
+            (yinz-then (yinz-run-command (hash "command" (list "/usr/bin/true")))
+              (lambda (reply)
+                (yinz-command (hash "ShowCursor" (list 2 3)))
+                (set! count (+ count 1))
+                (when (= count 2) (yinz-resolve! finished #t))))) #f)
+        (define (unload) finished)
+    "#,
+        Path::new("cleanup.scm"),
+        env,
+        Arc::default(),
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new(), true).unwrap();
+    for client in [old, replacement] {
+        senders.session.register_attachment(client);
+        plugin.env_mut().client_id = client;
+        plugin
+            .update(&Event::CustomMessage("start".into(), String::new()))
+            .unwrap();
+        let (id, generation, context) = loop {
+            if let BackgroundJob::RunCommand(
+                id,
+                actor,
+                _,
+                _,
+                _,
+                _,
+                context,
+                _,
+                _,
+                Some(generation),
+            ) = requests.recv_timeout(Duration::from_secs(10)).unwrap().0
+            {
+                assert_eq!(actor, client);
+                break (id, generation, context);
+            }
+        };
+        senders
+            .send_to_plugin(PluginInstruction::for_plugin_event(
+                id,
+                client,
+                Some(generation),
+                Event::RunCommandResult(Some(0), vec![], vec![], context),
+            ))
+            .unwrap();
+    }
+    plugin.dispose_with_cleanup(true);
+    let completed: Vec<_> = observed
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            yinz_bus::screen::ScreenInstruction::ShowPluginCursor(_, actor, Some((2, 3))) => {
+                Some(actor)
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(completed, [old, replacement]);
+}
+
+#[test]
 fn unload_deadline_bounds_both_pending_deferreds_and_guest_loops() {
     for body in ["(yinz-deferred)", "(let loop () (loop))"] {
         let mut plugin = plugin(&format!("(define (unload) {body})"));

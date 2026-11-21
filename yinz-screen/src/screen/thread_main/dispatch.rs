@@ -670,13 +670,13 @@ pub(super) fn dispatch(
                 screen.render()?;
             }
         },
-        ScreenInstruction::TerminalBackgroundColor(background_color_instruction) => {
+        ScreenInstruction::TerminalBackgroundColor(_, background_color_instruction) => {
             screen.update_terminal_background_color(background_color_instruction);
         },
-        ScreenInstruction::TerminalForegroundColor(background_color_instruction) => {
+        ScreenInstruction::TerminalForegroundColor(_, background_color_instruction) => {
             screen.update_terminal_foreground_color(background_color_instruction);
         },
-        ScreenInstruction::TerminalColorRegisters(color_registers) => {
+        ScreenInstruction::TerminalColorRegisters(_, color_registers) => {
             screen.update_terminal_color_registers(color_registers);
         },
         ScreenInstruction::SetKittyGraphicsSupport {
@@ -694,14 +694,12 @@ pub(super) fn dispatch(
             screen.negotiate_render(client, request)?
         },
         ScreenInstruction::RenderFrameAck { client_id, seq } => {
-            if let Some(state) = screen
-                .core
-                .native_render_clients
-                .get_mut(&client_id)
-                .or_else(|| screen.core.retired_native_clients.get_mut(&client_id))
-            {
-                state.acknowledge(seq);
-            }
+            yinz_terminal::output::NativeRenderState::acknowledge_recipient(
+                &mut screen.core.native_render_clients,
+                &mut screen.core.retired_native_clients,
+                client_id,
+                seq,
+            );
         },
         ScreenInstruction::SetSixelSupport {
             client_id,
@@ -753,7 +751,7 @@ pub(super) fn dispatch(
             // a render before yielding back to the screen loop.
             screen.render()?;
         },
-        ScreenInstruction::HostTerminalThemeChanged(mode) => {
+        ScreenInstruction::HostTerminalThemeChanged(_, mode) => {
             screen.update_host_terminal_theme_mode(mode)?;
         },
         ScreenInstruction::SetApplicationThemeConfig(config) => {
@@ -852,10 +850,10 @@ pub(super) fn dispatch(
         ScreenInstruction::SearchToggleWholeWord(client_id, _completion_tx) => {
             input::search_toggle_whole_word(screen, client_id)?
         },
-        ScreenInstruction::AddRedPaneFrameColorOverride(pane_ids, error_text) => {
+        ScreenInstruction::AddRedPaneFrameColorOverride(owner, pane_ids, error_text) => {
             for pane_id in pane_ids {
                 if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
-                    tab.add_red_pane_frame_color_override(pane_id, error_text.clone());
+                    tab.add_red_pane_frame_color_override(pane_id, error_text.clone(), owner);
                 }
             }
             screen.render()?;
@@ -866,10 +864,10 @@ pub(super) fn dispatch(
         ScreenInstruction::FlashPaneFrameColor(pane_ids) => {
             panes::flash_pane_frame_color(screen, pane_ids)?
         },
-        ScreenInstruction::ClearPaneFrameColorOverride(pane_ids) => {
+        ScreenInstruction::ClearPaneFrameColorOverride(owner, pane_ids) => {
             for pane_id in pane_ids {
                 if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
-                    tab.clear_pane_frame_color_override(pane_id, None);
+                    tab.clear_pane_frame_color_override(pane_id, owner);
                 }
             }
             screen.render()?;

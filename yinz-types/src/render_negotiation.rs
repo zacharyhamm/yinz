@@ -1,6 +1,10 @@
 //! Revision 1 of the per-attachment structured render handshake.
 use serde::{Deserialize, Serialize};
 
+/// Opaque identity of a single accepted socket, shared by both IPC directions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
+pub struct AttachmentGeneration(pub [u8; 16]);
+
 pub const REVISION: u32 = 1;
 pub const GEOMETRY: u32 = 1;
 pub const LINKS: u32 = 2;

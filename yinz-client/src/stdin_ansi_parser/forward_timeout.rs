@@ -57,9 +57,16 @@ pub fn schedule_timeout<F>(
 ) where
     F: FnOnce(u32, Vec<u8>) + Send + 'static,
 {
+    let origin = parser.lock().unwrap().forward_generation;
     runtime.spawn(async move {
         tokio::time::sleep(deadline).await;
-        let payload = parser.lock().unwrap().close_on_timeout(kind, token);
+        let payload = {
+            let mut parser = parser.lock().unwrap();
+            if parser.forward_generation != origin {
+                return;
+            }
+            parser.close_on_timeout(kind, token)
+        };
         if let Some((t, bytes)) = payload {
             on_timeout(t, bytes);
         }

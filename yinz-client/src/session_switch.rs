@@ -368,6 +368,21 @@ impl<'a> Sessions<'a> {
         }))
     }
 
+    pub fn dispatch(
+        &mut self,
+        request: ClientRequest,
+        os: &dyn ClientOsApi,
+    ) -> (Result<ClientReply>, Option<PreparedConnection>) {
+        if let ClientRequest::Switch(SwitchRequest::Commit(id)) = request {
+            match self.commit(&id) {
+                Ok(prepared) => (Ok(ClientReply::Complete), Some(prepared)),
+                Err(error) => (Err(error), None),
+            }
+        } else {
+            self.handle(request, os)
+        }
+    }
+
     pub fn handle(
         &mut self,
         request: ClientRequest,
@@ -767,6 +782,49 @@ pub(crate) fn attach_socket(
             _ => bail!("Destination disconnected during attachment"),
         }
     }
+}
+
+/// Exercise the ordinary destination handshake with a writer supplied by the server test.
+#[cfg(feature = "attachment-test-support")]
+pub fn prepare_test_destination(
+    socket: &std::path::Path,
+    deadline: Instant,
+) -> Result<Vec<ServerToClientMsg>> {
+    let mut prepared = attach_socket(
+        Destination::Local,
+        "destination".into(),
+        None,
+        socket,
+        CliAssets::default(),
+        &AtomicBool::new(false),
+        deadline,
+    )?;
+    Ok(prepared
+        .buffered
+        .drain(..)
+        .map(|(message, _)| message)
+        .collect())
+}
+
+/// Drive the ordinary session-request dispatcher against an isolated local socket directory.
+#[cfg(feature = "attachment-test-support")]
+pub fn with_test_session_requests(
+    root: &std::path::Path,
+    exercise: impl FnOnce(&mut dyn FnMut(ClientRequest) -> Result<ClientReply>),
+) -> Result<()> {
+    let args = yinz_cli::args::CliArgs {
+        config_dir: Some(root.to_owned()),
+        data_dir: Some(root.to_owned()),
+        ..Default::default()
+    };
+    let mut config = LocalConfig::default();
+    let mut sessions = Sessions::new(None, "source".into(), &args, &mut config);
+    let os = crate::os_input_output::get_cli_client_os_input().context("create fixture client")?;
+    exercise(&mut |request| {
+        let (reply, _handoff) = sessions.dispatch(request, &os);
+        reply
+    });
+    Ok(())
 }
 
 pub(crate) fn legacy_reconnect(

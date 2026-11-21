@@ -875,3 +875,68 @@ fn terminal_themes_follow_reload_switching_new_floating_and_hidden_panes() {
         );
     }
 }
+
+#[test]
+fn attachment_generation_late_theme_report_cannot_be_remembered_while_pinned() {
+    use crate::screen::thread_main::{process_instruction, EventLoopState};
+    use yinz_types::{
+        render_negotiation::AttachmentGeneration,
+        style::{HostTerminalThemeMode as Mode, ThemeHue},
+    };
+    let (mut screen, capture) =
+        create_new_screen_with_dark_and_light_themes(Size { cols: 80, rows: 20 });
+    let old = ClientId::for_attachment(2, AttachmentGeneration([1; 16]));
+    let new = ClientId::for_attachment(2, AttachmentGeneration([2; 16]));
+    let owners = screen.core.bus.senders.session.clone();
+    owners.register_attachment(CLIENT_1);
+    owners.register_attachment(old);
+    let held = ScreenInstruction::HostTerminalThemeChanged(old, Mode::Light);
+    owners.register_attachment(new);
+    let mut state = EventLoopState::default();
+    for pinned in [false, true] {
+        if pinned {
+            screen
+                .apply_configured_explicit_theme_hue(Some(ThemeHue::Light))
+                .unwrap();
+        }
+        capture.drain_plugin_events();
+        for op in [
+            ScreenInstruction::HostTerminalThemeChanged(new, Mode::Dark),
+            held.clone(),
+        ] {
+            assert!(process_instruction(&mut screen, &mut state, op)
+                .unwrap()
+                .is_continue());
+        }
+        let events: Vec<_> = capture
+            .drain_plugin_events()
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::HostTerminalThemeChanged(mode) => Some(mode),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(events, if pinned { vec![] } else { vec![Mode::Dark] });
+        assert_eq!(screen.core.last_host_reported_theme_mode, Some(Mode::Dark));
+        assert_eq!(
+            screen.core.host_terminal_theme_mode,
+            Some(if pinned { Mode::Light } else { Mode::Dark })
+        );
+    }
+    screen.apply_configured_explicit_theme_hue(None).unwrap();
+    assert_eq!(
+        screen.core.style.colors.text_unselected.background,
+        yinz_types::colors::PaletteColor::Rgb(TEST_DARK_BG)
+    );
+    assert!(process_instruction(
+        &mut screen,
+        &mut state,
+        ScreenInstruction::HostTerminalThemeChanged(CLIENT_1, Mode::Light)
+    )
+    .unwrap()
+    .is_continue());
+    assert_eq!(
+        screen.core.style.colors.text_unselected.background,
+        yinz_types::colors::PaletteColor::Rgb(TEST_LIGHT_BG)
+    );
+}

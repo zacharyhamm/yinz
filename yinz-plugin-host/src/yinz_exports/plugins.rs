@@ -429,7 +429,17 @@ pub(super) fn get_client_timezone(
     env: &mut PluginEnv,
     client_id: Option<yinz_types::internal_ids::ClientId>,
 ) -> Result<()> {
-    let timezone = client_timezone(env, client_id.unwrap_or(env.client_id))?;
+    let timezone = client_timezone(
+        env,
+        match client_id {
+            Some(address) => env
+                .senders
+                .session
+                .resolve_client(address)
+                .context("timezone client has disconnected")?,
+            None => env.client_id,
+        },
+    )?;
     let response = yinz_plugin_api::plugin_command::ProtobufGetClientTimezoneResponse {
         timezone: timezone.report().map(str::to_owned),
     };
@@ -445,7 +455,14 @@ pub(super) fn get_local_utc_offset(
     use chrono::{Local, Offset, TimeZone};
     let offset = match (client_id, timezone) {
         (Some(_), Some(_)) => return Err(anyhow!("client_id and timezone are mutually exclusive")),
-        (Some(client), None) => client_timezone(env, client)?.utc_offset(epoch_ms.get()),
+        (Some(client), None) => client_timezone(
+            env,
+            env.senders
+                .session
+                .resolve_client(client)
+                .context("timezone client has disconnected")?,
+        )?
+        .utc_offset(epoch_ms.get()),
         (None, Some(zone)) => yinz_runtime::client_time::ClientTimeZone::from_client(Some(&zone))
             .utc_offset(epoch_ms.get()),
         // Preserve the legacy server-local behavior, including the out-of-range fallback.

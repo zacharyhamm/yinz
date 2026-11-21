@@ -226,11 +226,15 @@ impl Screen {
             completion.set_exit_status(1);
             completion.set_error_message(message.clone());
         }
+        if !self.core.bus.senders.session.owns_attachment(client_id) {
+            return;
+        }
         if let Some(pane_id) = self.get_active_pane_id(&client_id) {
             self.core
                 .bus
                 .senders
                 .send_to_background_jobs(BackgroundJob::DisplayPaneError(
+                    Some(client_id),
                     vec![pane_id],
                     message.clone(),
                 ))
@@ -357,6 +361,8 @@ impl Screen {
                     .map(PaneId::Plugin),
             )
             .collect();
+        let should_change_focus_to_new_tab = should_change_focus_to_new_tab
+            && self.core.bus.senders.session.owns_attachment(client_id);
         let applied = self.apply_layout(
             layout,
             floating_panes_layout,
@@ -456,14 +462,9 @@ impl Screen {
                 self.switch_active_tab(tab_position, None, true, client_id)?;
             }
         } else if should_change_focus_to_new_tab && !layout_failed {
-            let client_id_to_switch = if self.core.active_tab_ids.contains_key(&client_id) {
-                Some(client_id)
-            } else {
-                self.core.active_tab_ids.keys().next().copied()
-            };
-            if let Some(client_id_to_switch) = client_id_to_switch {
-                pending.tab_switches.insert((tab_id, client_id_to_switch));
-            }
+            // The requester can depart before the final tab lands. Keep its original
+            // identity until replay, where navigation performs its usual live-client routing.
+            pending.tab_switches.insert((tab_id, client_id));
         }
 
         for pane_id in new_terminal_pane_ids {
@@ -492,7 +493,7 @@ impl Screen {
                 if plugin_exists {
                     self.core
                         .render_blocker
-                        .register_blocking_plugin(*plugin_id);
+                        .register_blocking_plugin(*plugin_id, client_id);
                     if let Some(pending_events) = pending.waiting_for_pane.remove(&pane_id) {
                         replay_pending_plugin_events(self, pending_events)?;
                     }

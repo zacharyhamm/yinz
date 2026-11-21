@@ -1607,10 +1607,13 @@ impl Pane for TerminalPane {
     fn get_bell_notification(&self) -> bool {
         self.has_bell_notification
     }
-    fn add_red_pane_frame_color_override(&mut self, error_text: Option<String>) {
-        // A command that failed is a fact about the pane, so every client sees it.
+    fn add_red_pane_frame_color_override(
+        &mut self,
+        error_text: Option<String>,
+        owner: Option<ClientId>,
+    ) {
         let override_ =
-            FrameColorOverride::new(self.style.colors.exit_code_error.base, error_text, None);
+            FrameColorOverride::new(self.style.colors.exit_code_error.base, error_text, owner);
         if FrameColorOverride::set_if_changed(&mut self.pane_frame_color_override, override_) {
             self.set_should_render(true);
         }
@@ -2077,7 +2080,7 @@ impl Pane for TerminalPane {
                 Ok(args) => args,
                 Err(message) => {
                     Err::<(), _>(anyhow!(message.clone())).non_fatal();
-                    self.add_red_pane_frame_color_override(Some(message));
+                    self.add_red_pane_frame_color_override(Some(message), None);
                     self.set_should_render(true);
                     return None;
                 },

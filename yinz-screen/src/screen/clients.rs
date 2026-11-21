@@ -77,7 +77,10 @@ impl Screen {
     pub(super) fn departed_follow_source(&self) -> Option<(ClientId, Option<TabId>)> {
         self.core
             .followed_client_id
-            .filter(|id| !self.core.connected_clients.borrow().contains(id))
+            .filter(|id| {
+                !self.core.connected_clients.borrow().contains(id)
+                    || !self.core.bus.senders.session.owns_attachment(*id)
+            })
             .map(|id| (id, self.core.departed_followed_tab_id))
     }
 
@@ -475,11 +478,10 @@ impl Screen {
     }
 
     pub(super) fn clear_disconnected_followed_client_state(&mut self) {
-        if let Some(client_id) = self
-            .core
-            .followed_client_id
-            .filter(|id| !self.core.connected_clients.borrow().contains(id))
-        {
+        if let Some(client_id) = self.core.followed_client_id.filter(|id| {
+            !self.core.connected_clients.borrow().contains(id)
+                || !self.core.bus.senders.session.owns_attachment(*id)
+        }) {
             for tab in self.core.tabs.values_mut() {
                 tab.remove_client_pane_state(client_id);
             }

@@ -2932,6 +2932,7 @@ impl Tab {
                     Some(YinzError::CantResizeFixedPanes { pane_ids }) => {
                         self.senders
                             .send_to_background_jobs(BackgroundJob::DisplayPaneError(
+                                None,
                                 pane_ids.clone(),
                                 "FIXED!".into(),
                             ))
@@ -3298,9 +3299,10 @@ impl Tab {
         &mut self,
         pane_id: PaneId,
         error_text: Option<String>,
+        owner: Option<ClientId>,
     ) {
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.add_red_pane_frame_color_override(error_text);
+            pane.add_red_pane_frame_color_override(error_text, owner);
         }
     }
     pub fn add_highlight_pane_frame_color_override(

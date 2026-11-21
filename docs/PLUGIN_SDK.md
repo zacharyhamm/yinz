@@ -238,10 +238,13 @@ Diagnostic output retains its 4 MiB limit. Worker and application transport limi
 All callbacks are optional. Use `(yinz-request-render)` after a state change that
 needs a new render. Outside `render`, output goes to the plugin log. `yinz-log`
 always writes to the log, including during rendering. During `render`, `display`, `write`, `newline`, and `displayln`
-write the pane's output.
+write to the frame for the attachment that started the render. A deferred callback
+can print while another viewer is rendering. Its printed text, return value and
+cursor stay with the original frame.
 
-Each client has at most one pending deferred render. During a resize or state
-change, the last accepted frame stays visible until a current render completes.
+Each attachment has at most one pending deferred render. A new attachment starts
+with an empty frame and cursor cache, even if it uses the same public client
+number. During a resize or state change, the last accepted frame stays visible until a current render completes.
 Results for obsolete dimensions or state are discarded and another render is
 requested.
 

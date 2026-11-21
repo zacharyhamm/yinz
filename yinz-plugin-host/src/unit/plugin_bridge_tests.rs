@@ -3041,8 +3041,11 @@ impl TestBridge {
     }
 
     fn context(&mut self, id: u32, client: u32, source: &str) -> LoadingContext {
+        self.attachment_context(id, ClientId::new(client), source)
+    }
+
+    fn attachment_context(&mut self, id: u32, client_id: ClientId, source: &str) -> LoadingContext {
         let plugin_id = PluginId::new(id);
-        let client_id = ClientId::new(client);
         self.bridge.cancel_token(plugin_id);
         self.bridge.plugin_executor.register_plugin(plugin_id);
         let path = self._dirs[0].path().join(format!("{id}.scm"));
@@ -6659,6 +6662,91 @@ fn background_permissions_preserve_each_requesting_client_including_cached_grant
 }
 
 #[test]
+fn attachment_generation_public_permission_result_preserves_requester() {
+    use yinz_types::render_negotiation::AttachmentGeneration;
+    for status in [PermissionStatus::Granted, PermissionStatus::Denied] {
+        let mut test = TestBridge::new();
+        let id = PluginId::new(1);
+        let shared = ClientId::for_attachment(1, AttachmentGeneration([1; 16]));
+        let old = ClientId::for_attachment(2, AttachmentGeneration([2; 16]));
+        let new = ClientId::for_attachment(2, AttachmentGeneration([3; 16]));
+        let owners = test.bridge.senders.session.clone();
+        owners.register_attachment(shared);
+        owners.register_attachment(old);
+        let mut context = test.context(
+            1,
+            1,
+            r#"
+            (yinz-declare-pane)
+            (define (update event)
+              (when (hash-contains? event "PermissionRequestResult")
+                (yinz-post-plugin "observed" "permission")) #f)
+        "#,
+        );
+        context.client_id = shared;
+        context
+            .plugin_config
+            .initial_userspace_configuration
+            .insert("shared", "true");
+        test.load(context).unwrap();
+        test.bridge.shared_plugin_ids.insert(id);
+        test.connect(&[shared, old]);
+        let instance = test.instance_id(id, shared);
+        let (shutdown, _) = tokio::sync::mpsc::channel(1);
+        let gate = test.hold_executor(id);
+        test.bridge
+            .request_permissions(
+                id,
+                instance,
+                old,
+                vec![PermissionType::RunCommands],
+                shutdown.clone(),
+            )
+            .unwrap();
+        let token = *test.bridge.permission_requests.keys().next().unwrap();
+        test.bridge
+            .answer_permissions(token, status, None, shutdown.clone())
+            .unwrap();
+        owners.register_attachment(new);
+        test.connect(&[shared, new]);
+        gate.send(()).unwrap();
+        test.settle(id);
+        let observations = |test: &TestBridge| {
+            test.receiver::<PluginInstruction>()
+                .try_iter()
+                .filter_map(|(msg, _)| match msg {
+                    PluginInstruction::PluginReply(
+                        _,
+                        client,
+                        _,
+                        Event::CustomMessage(name, _),
+                        _,
+                    ) if name == "observed" => Some(client),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(observations(&test).is_empty());
+        test.bridge
+            .request_permissions(
+                id,
+                instance,
+                new,
+                vec![PermissionType::ReadFiles],
+                shutdown.clone(),
+            )
+            .unwrap();
+        let token = *test.bridge.permission_requests.keys().next().unwrap();
+        test.bridge
+            .answer_permissions(token, status, None, shutdown)
+            .unwrap();
+        test.settle(id);
+        assert_eq!(observations(&test), [new]);
+        test.bridge.unload_plugin(id).unwrap();
+    }
+}
+
+#[test]
 fn background_permission_cancellation_replays_in_order_and_rechecks_pending_requests() {
     for another_request in [false, true] {
         let mut test = TestBridge::new();
@@ -10251,4 +10339,168 @@ fn web_startup_permission_selected_initializer_wait_freezes_deadline_and_grant_p
     assert_eq!(test.bridge.next_load_id, starts);
     assert_eq!(test.bridge.web.status().unwrap().attempts, 1);
     test.bridge.unload_plugin(id).unwrap();
+}
+
+#[test]
+fn attachment_generation_delayed_registration_and_cleanup_preserve_live_plugin() {
+    use yinz_types::render_negotiation::AttachmentGeneration;
+    let mut test = TestBridge::new();
+    let plugin = PluginId::new(1);
+    let a = ClientId::for_attachment(1, AttachmentGeneration([1; 16]));
+    let b = ClientId::for_attachment(1, AttachmentGeneration([2; 16]));
+    let c = ClientId::for_attachment(2, AttachmentGeneration([3; 16]));
+    let owners = test.bridge.senders.session.clone();
+    owners.register_attachment(a);
+    owners.register_attachment(c);
+    test.connect(&[a, c]);
+    let first = test.attachment_context(1, a, RECOVERABLE_SCHEME);
+    let initial_dir = first.plugin_own_data_dir.clone();
+    test.load(first).unwrap();
+    let sibling = test.attachment_context(1, c, RECOVERABLE_SCHEME);
+    let sibling_dir = sibling.plugin_own_data_dir.clone();
+    test.load(sibling).unwrap();
+    let sibling_instance = test.instance_id(plugin, c);
+    let gate = test.hold_executor(plugin);
+    owners.register_attachment(b);
+    test.bridge.add_client(b).unwrap();
+    let token = test.bridge.reserve_client(b);
+    test.bridge.base_modes.insert(b, InputMode::Locked);
+    test.bridge.add_client(a).unwrap();
+    test.bridge.remove_client(a);
+    gate.send(()).unwrap();
+    test.wait_for_executor(plugin);
+    assert!(!test.bridge.client_is_connected(&a));
+    assert!(test.bridge.client_is_connected(&b));
+    assert!(Arc::ptr_eq(&test.bridge.reserve_client(b), &token));
+    assert!(!token.load(Ordering::Acquire));
+    assert_eq!(test.bridge.base_modes[&b], InputMode::Locked);
+    assert!(!initial_dir.exists());
+    assert!(sibling_dir.exists());
+    assert_eq!(test.instance_id(plugin, c), sibling_instance);
+    assert!(test.bridge.plugin_map.lock().unwrap().contains(plugin, b));
+    test.bridge.remove_client(b);
+    test.wait_for_executor(plugin);
+    assert!(token.load(Ordering::Acquire));
+    assert!(!test.bridge.plugin_map.lock().unwrap().contains(plugin, b));
+    assert_eq!(test.instance_id(plugin, c), sibling_instance);
+}
+
+#[test]
+fn attachment_generation_shared_render_starts_empty_and_keeps_deferred_prints_and_cursor() {
+    use yinz_types::render_negotiation::AttachmentGeneration;
+    let mut test = TestBridge::new();
+    let plugin = PluginId::new(1);
+    let c = ClientId::for_attachment(2, AttachmentGeneration([3; 16]));
+    let a = ClientId::for_attachment(1, AttachmentGeneration([1; 16]));
+    let b = ClientId::for_attachment(1, AttachmentGeneration([2; 16]));
+    let owners = test.bridge.senders.session.clone();
+    owners.register_attachment(c);
+    owners.register_attachment(a);
+    test.connect(&[c, a]);
+    let mut context = test.attachment_context(1,c,r#"
+        (yinz-declare-pane)
+        (define runs 0)
+        (define gates (list (yinz-deferred) (yinz-deferred)))
+        (define loads 0)
+        (define old-done #f)
+        (define (load _) (set! loads (+ loads 1)))
+        (define (update event)
+          (when (and (hash? event) (hash-contains? event "CustomMessage"))
+            (yinz-resolve! (cadr gates) #t)) #f)
+        (define (render rows cols)
+          (cond ((= 2 (hash-ref (yinz-command "GetPluginIds") "client_id")) "other")
+                (else
+                  (set! runs (+ runs 1))
+                  (cond ((= runs 1) (yinz-command (hash "ShowCursor" '(1 1))) "old")
+                        ((= runs 2) (display "old-part")
+                         (yinz-then (car gates) (lambda (_)
+                           (display "-late") (set! old-done #t) (error "old render"))))
+                        (else
+                         (display "fresh")
+                         (yinz-resolve! (car gates) #t)
+                         (yinz-then (cadr gates) (lambda (_)
+                            (unless (and old-done (= loads 1)) (error "lost old continuation or reloaded"))
+                            (display "-late") (yinz-command (hash "ShowCursor" '(3 1))) "-done")))))))
+    "#);
+    context
+        .plugin_config
+        .initial_userspace_configuration
+        .insert("shared", "true");
+    test.load(context).unwrap();
+    test.bridge.shared_plugin_ids.insert(plugin);
+    let draw = |test: &TestBridge, actor, settle| {
+        let (send, recv) = std::sync::mpsc::channel();
+        test.bridge
+            .plugin_executor
+            .execute_for_plugin(plugin, move |_, map, _| {
+                let running = map
+                    .lock()
+                    .unwrap()
+                    .get_running_plugin(plugin, None)
+                    .unwrap();
+                let mut running = running.lock().unwrap();
+                if settle {
+                    running.env_mut().client_id = actor;
+                    running
+                        .update(&Event::CustomMessage("finish".into(), String::new()))
+                        .unwrap();
+                }
+                send.send(render_plugin_for_clients(plugin, &mut running, &[actor]).unwrap())
+                    .unwrap();
+            });
+        recv.recv_timeout(yinz_test_support::default_timeout())
+            .unwrap()
+    };
+    let cursor = |test: &TestBridge| {
+        test.receiver::<ScreenInstruction>()
+            .try_iter()
+            .filter_map(|(msg, _)| match msg {
+                ScreenInstruction::ShowPluginCursor(_, owner, position) => Some((owner, position)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let text = |assets: Vec<PluginRenderAsset>, owner| {
+        assert_eq!(assets[0].client_id, c);
+        assert_eq!(assets[0].bytes, b"other");
+        assert_eq!(assets[1].client_id, owner);
+        String::from_utf8(assets[1].bytes.clone()).unwrap()
+    };
+    assert_eq!(text(draw(&test, a, false), a), "old");
+    assert_eq!(cursor(&test), vec![(a, Some((1, 1)))]);
+    assert_eq!(text(draw(&test, a, false), a), "old");
+    assert_eq!(cursor(&test), vec![(a, Some((1, 1)))]);
+    owners.register_attachment(b);
+    test.bridge.add_client(b).unwrap();
+    test.wait_for_executor(plugin);
+    assert_eq!(text(draw(&test, b, false), b), "");
+    assert!(cursor(&test).is_empty());
+    let fresh = text(draw(&test, b, true), b);
+    assert_eq!(fresh, "fresh-late-done");
+    assert_eq!(cursor(&test), vec![(b, Some((3, 1)))]);
+    let mut grid = yinz_terminal::panes::grid::Grid::new(
+        5,
+        20,
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        false,
+        false,
+        true,
+        true,
+        false,
+    );
+    vte::Parser::new().advance(&mut grid, fresh.as_bytes());
+    assert_eq!(
+        grid.as_character_lines()[0]
+            .iter()
+            .map(|c| c.character)
+            .collect::<String>()
+            .trim_end(),
+        "fresh-late-done"
+    );
 }

@@ -594,6 +594,16 @@ input after applying its first repaint. A staged window promotes the destination
 after applying its first repaint. While waiting, the window answers host queries
 on the destination connection. A failed opening leaves the source window available.
 
+When both peers support attachment generations, the opening `Connected` also
+advertises a 16-byte generation. The viewer echoes it on its offer. The server
+tags the decision and subsequent messages, and the viewer tags its ACKs and
+input on that same connection. Reattaching to the same session starts a new
+generation. The viewer discards messages for a different generation before
+applying a frame, changing the window or answering a host query. During a
+switch, the destination confirms its first repaint on its own socket. If the
+destination fails, the source remains available. Peers that omit the optional
+generation continue to use the existing revision-1 exchange.
+
 | Client and server | Attachment behavior |
 |---|---|
 | ANSI client with either server | Ordinary ANSI render messages (server tag 1), including when other clients use native frames. |
@@ -666,7 +676,7 @@ Duplicate frames have no repeated side effects. Duplicate and stale ACKs are
 idempotent. Future ACKs cannot release files. A missing predecessor or failed
 consuming frame ends the stream at the last successfully applied sequence.
 Reattach for a fresh full repaint. ACKs never cross attachments. Implementations
-adding attachment generations, credit accounting or chunked transfers must
+adding credit accounting or chunked transfers must
 preserve these ownership and consumption rules.
 
 A revision-1 withdrawal stops production at the screen transition. The ordered

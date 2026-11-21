@@ -173,7 +173,19 @@ fn read_session(
     tx: mpsc::SyncSender<ServerToClientMsg>,
     wake: impl Fn() -> bool,
 ) {
-    while let Some((message, _)) = reader.recv_server_msg().msg() {
+    use yinz_ipc::ipc::{ExitReason, IpcRecv};
+    loop {
+        let message = match reader.recv_native_server_msg(None) {
+            IpcRecv::Msg(message, _) => message,
+            IpcRecv::Idle => continue,
+            IpcRecv::Eof => break,
+            IpcRecv::Malformed => {
+                let _ = tx.send(ServerToClientMsg::Exit {
+                    exit_reason: ExitReason::Error("Malformed native attachment message".into()),
+                });
+                break;
+            },
+        };
         if tx.send(message).is_err() || !wake() {
             return;
         }
@@ -2686,3 +2698,7 @@ fn paints_for(config: &Config, options: &Options) -> Paints {
 #[cfg(test)]
 #[path = "unit/window_tests.rs"]
 mod tests;
+
+#[cfg(feature = "attachment-test-support")]
+#[path = "unit/live_window.rs"]
+pub(crate) mod live_window;

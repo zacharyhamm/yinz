@@ -5,6 +5,7 @@ pub use yinz_bus::os_input_output;
 pub use yinz_panes::{pane, panes};
 pub use yinz_terminal::output;
 use yinz_types::internal_ids::TabPosition;
+use yinz_types::render_negotiation::AttachmentGeneration;
 use yinz_types::style::default_palette;
 
 pub use yinz_bus::background_jobs;
@@ -396,6 +397,12 @@ fn remove_client_and_flush_forwards(
     session_state: &Arc<RwLock<SessionState>>,
     session_data: &Arc<RwLock<Option<SessionMetaData>>>,
 ) -> Result<()> {
+    session_state
+        .read()
+        .to_anyhow()
+        .context("invalidate the departing attachment")?
+        .attachments
+        .retire_attachment(client_id);
     let _ = os_input.remove_client(client_id);
     let pipes: Vec<_> = session_state
         .read()
@@ -470,6 +477,23 @@ fn native_drain_deadline(
     nearest
 }
 
+fn route_native_ack(
+    client_id: ClientId,
+    seq: u64,
+    os: &dyn ServerOsApi,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+) -> Result<()> {
+    if os.accept_native_ack(client_id, seq) {
+        with_session(session_data, |session| {
+            session
+                .senders
+                .send_to_screen(ScreenInstruction::RenderFrameAck { client_id, seq })
+        })?
+        .transpose()?;
+    }
+    Ok(())
+}
+
 fn observe_native_refusal(
     client: ClientId,
     os_input: &dyn ServerOsApi,
@@ -487,6 +511,7 @@ fn observe_native_refusal(
         .write()
         .to_anyhow()
         .context("retire refused native viewer")?;
+    state.attachments.retire_attachment(client);
     let stuck_tokens = state.retire_interactive(client);
     drop(state);
     finish_retired_forwards(session_data, stuck_tokens)?;
@@ -648,6 +673,15 @@ fn retire_departing_client(
     session_state: &Arc<RwLock<SessionState>>,
     session_data: &Arc<RwLock<Option<SessionMetaData>>>,
 ) -> Result<bool> {
+    if !session_state
+        .read()
+        .to_anyhow()
+        .context("check departing attachment")?
+        .attachments
+        .owns_attachment(client_id)
+    {
+        return Ok(false);
+    }
     let exit_reason = match departure {
         Departure::Quit => ExitReason::Normal,
         // An error, so the client says why and exits non-zero.
@@ -753,20 +787,120 @@ macro_rules! send_to_client {
     }};
 }
 
+/// Screen batches may sit in the server inbox across a reconnect. Check each recipient
+/// independently so a retired attachment cannot consume the replacement's first-render marker.
+fn publish_screen_output(
+    instruction: ServerInstruction,
+    os_input: &mut Box<dyn ServerOsApi>,
+    session_state: &Arc<RwLock<SessionState>>,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+    first_render: &mut HashMap<ClientId, std::time::Instant>,
+) -> Result<()> {
+    let mut publish = |client: ClientId, message: ServerToClientMsg| -> Result<()> {
+        if !session_state
+            .read()
+            .to_anyhow()
+            .context("check screen output recipient")?
+            .attachments
+            .owns_attachment(client)
+        {
+            return Ok(());
+        }
+        let render = matches!(message, ServerToClientMsg::Render { .. });
+        if send_to_client!(client, *os_input, message, session_state, session_data)
+            && render
+            && let Some(started) = first_render.remove(&client)
+        {
+            log::info!(
+                "startup trace: server main client_id={client} first Render queued after {:?}",
+                started.elapsed()
+            );
+        }
+        Ok(())
+    };
+    match instruction {
+        ServerInstruction::Render(Some(batch)) => {
+            for (client, content) in batch {
+                publish(client, ServerToClientMsg::Render { content })?;
+            }
+        },
+        ServerInstruction::DesktopNotification(batch) => {
+            for (client, content) in batch {
+                publish(client, ServerToClientMsg::DesktopNotification { content })?;
+            }
+        },
+        ServerInstruction::ClipboardUpdate(batch) => {
+            for (client, content) in batch {
+                publish(client, ServerToClientMsg::ClipboardUpdate { content })?;
+            }
+        },
+        ServerInstruction::RepaintComplete(client) => {
+            publish(client, ServerToClientMsg::RepaintComplete)?
+        },
+        _ => unreachable!("expected client-directed screen output"),
+    }
+    Ok(())
+}
+
+fn dispatch_command_palette(
+    client_id: ClientId,
+    open: bool,
+    os_input: &mut Box<dyn ServerOsApi>,
+    session_state: &Arc<RwLock<SessionState>>,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+) -> Result<()> {
+    let cancel_requests = {
+        let state = session_state
+            .read()
+            .to_anyhow()
+            .context("read palette owner")?;
+        if !state.is_interactive(&client_id) {
+            return Ok(());
+        }
+        !open && state.supports_session_requests(&client_id)
+    };
+    if cancel_requests {
+        send_to_client!(
+            client_id,
+            *os_input,
+            ServerToClientMsg::SessionRequest(yinz_types::session_destination::Request {
+                token: String::new(),
+                request: yinz_types::session_destination::ClientRequest::CancelAll,
+            }),
+            session_state,
+            session_data
+        );
+    }
+    if is_attached(client_id, session_state)? {
+        with_session_mut(session_data, |session| {
+            session
+                .set_command_palette_open(client_id, open)
+                .non_fatal();
+        })?;
+    }
+    Ok(())
+}
+
 fn handoff_session_switch(
     client_id: ClientId,
     connect_to_session: yinz_types::data::SessionConnection,
     os_input: &mut Box<dyn ServerOsApi>,
     session_state: &Arc<RwLock<SessionState>>,
     session_data: &Arc<RwLock<Option<SessionMetaData>>>,
-) -> Result<()> {
-    let retain_source = session_state
-        .read()
-        .to_anyhow()
-        .context("read switch client capabilities")?
-        .update_client_assets
-        .get(&client_id)
-        .is_some_and(|assets| assets.retains_source_on_switch);
+) -> Result<bool> {
+    let retain_source = {
+        let state = session_state
+            .read()
+            .to_anyhow()
+            .context("read switch client capabilities")?;
+        if !state.attachments.owns_attachment(client_id) {
+            return Ok(false);
+        }
+        state
+            .update_client_assets
+            .get(&client_id)
+            .is_some_and(|assets| assets.retains_source_on_switch)
+    };
     let delivered = send_to_client!(
         client_id,
         *os_input,
@@ -777,7 +911,7 @@ fn handoff_session_switch(
     if delivered && !retain_source {
         remove_client!(client_id, *os_input, session_state, session_data);
     }
-    Ok(())
+    Ok(delivered && retain_source)
 }
 
 fn notify_config_file_updated(
@@ -895,9 +1029,10 @@ fn flush_pending_mouse_updates(
     Ok(())
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct SessionState {
     clients: HashSet<ClientId>,
+    attachments: envs::SessionState,
     /// The id the next connection gets, or `None` once `u32::MAX` has been handed out. Ids are
     /// never reused, so an instruction that names a departed connection can never act on a
     /// newer one.
@@ -928,6 +1063,7 @@ impl SessionState {
     pub fn new() -> Self {
         SessionState {
             clients: HashSet::new(),
+            attachments: Default::default(),
             next_client_id: Some(1),
             interactive_clients: HashSet::new(),
             pipes: HashMap::new(),
@@ -947,12 +1083,22 @@ impl SessionState {
     }
     /// Number a new connection, from 1 up. `None` once every id has been used: handing one out
     /// twice would let a departed connection's late instructions reach the new one.
-    pub fn new_client(&mut self) -> Option<ClientId> {
+    fn new_attachment(&mut self) -> Option<(ClientId, AttachmentGeneration)> {
         let id = self.next_client_id?;
         self.next_client_id = id.checked_add(1);
-        let client_id = ClientId::new(id);
+        let generation = AttachmentGeneration(*uuid::Uuid::new_v4().as_bytes());
+        let client_id = ClientId::for_attachment(id, generation);
+        if let Some(previous) = self.attachments.register_attachment(client_id) {
+            self.interactive_clients.remove(&previous);
+            self.session_request_clients.remove(&previous);
+            self.clear_last_active_client(previous);
+        }
         self.clients.insert(client_id);
-        Some(client_id)
+        Some((client_id, generation))
+    }
+    #[cfg(test)]
+    fn new_client(&mut self) -> Option<ClientId> {
+        self.new_attachment().map(|(client, _)| client)
     }
     pub fn associate_pipe_with_client(&mut self, pipe_id: String, client_id: ClientId) {
         self.pipes.insert(pipe_id, client_id);
@@ -964,6 +1110,7 @@ impl SessionState {
     /// `Screen`'s in-flight slot releases and any queued forwards
     /// can proceed.
     pub fn remove_client(&mut self, client_id: ClientId) -> Vec<u32> {
+        self.attachments.retire_attachment(client_id);
         self.clients.remove(&client_id);
         self.update_client_assets.remove(&client_id);
         self.resumed_updates.remove(&client_id);
@@ -989,11 +1136,16 @@ impl SessionState {
         self.clients.iter().copied().collect()
     }
     fn disconnect_targets(&self, initiating_client: ClientId) -> Vec<ClientId> {
+        if !self.attachments.owns_attachment(initiating_client) {
+            return Vec::new();
+        }
         let mut targets: Vec<_> = self
             .clients
             .iter()
             .copied()
-            .filter(|client| *client != initiating_client)
+            .filter(|client| {
+                *client != initiating_client && self.attachments.owns_attachment(*client)
+            })
             .collect();
         targets.sort_unstable();
         targets
@@ -1002,7 +1154,7 @@ impl SessionState {
         self.interactive_clients.iter().copied().collect()
     }
     fn is_interactive(&self, client_id: &ClientId) -> bool {
-        self.interactive_clients.contains(client_id)
+        self.interactive_clients.contains(client_id) && self.attachments.owns_attachment(*client_id)
     }
     fn has_interactive_clients(&self) -> bool {
         !self.interactive_clients.is_empty()
@@ -1026,10 +1178,13 @@ impl SessionState {
         self.watchers.contains(client_id)
     }
     pub fn remove_watcher(&mut self, client_id: ClientId) {
+        self.attachments.retire_attachment(client_id);
         self.watchers.remove(&client_id);
     }
     pub fn set_last_active_client(&mut self, client_id: ClientId) {
-        self.last_active_client = Some(client_id);
+        if self.attachments.owns_attachment(client_id) {
+            self.last_active_client = Some(client_id);
+        }
     }
     pub fn get_last_active_client(&self) -> Option<ClientId> {
         self.last_active_client
@@ -1044,7 +1199,7 @@ impl SessionState {
     ) -> ClientId {
         self.last_active_client
             .filter(|client| self.interactive_clients.contains(client))
-            .or(requested)
+            .or_else(|| requested.and_then(|address| self.attachments.resolve_client(address)))
             .or_else(|| self.interactive_clients.iter().min().copied())
             .unwrap_or(cli_client_id)
     }
@@ -1056,11 +1211,18 @@ impl SessionState {
     pub fn mark_forward_in_flight(&mut self, token: u32, client_id: ClientId) {
         self.forwards_in_flight.insert(token, client_id);
     }
-    pub fn clear_forward_in_flight(&mut self, token: u32) {
+    pub fn clear_forward_in_flight(&mut self, token: u32, owner: ClientId) -> bool {
+        if self.forwards_in_flight.get(&token) != Some(&owner) {
+            return false;
+        }
         self.forwards_in_flight.remove(&token);
+        true
     }
     /// Mark `client_id` attached, recording whether it can answer session requests.
     fn attach_interactive(&mut self, client_id: ClientId, supports_session_requests: bool) {
+        if !self.attachments.owns_attachment(client_id) {
+            return;
+        }
         self.interactive_clients.insert(client_id);
         if supports_session_requests {
             self.session_request_clients.insert(client_id);
@@ -1176,7 +1338,10 @@ pub fn start_server_impl(
     let (to_panic, panic_receiver): ChannelWithContext<ServerInstruction> = channels::unbounded();
     let to_panic = shutdown.sender(to_panic);
     let session_data: Arc<RwLock<Option<SessionMetaData>>> = Arc::new(RwLock::new(None));
-    let session_state = Arc::new(RwLock::new(SessionState::new()));
+    let session_state = Arc::new(RwLock::new(SessionState {
+        attachments: session_identity.clone(),
+        ..SessionState::new()
+    }));
     let mut first_opening_client = None;
     let mut startup_traces_waiting_for_first_render: HashMap<ClientId, std::time::Instant> =
         HashMap::new();
@@ -1225,8 +1390,8 @@ pub fn start_server_impl(
                                 drop(stream);
                                 continue;
                             }
-                            let Some(client_id) = (match session_state.write() {
-                                Ok(mut state) => state.new_client(),
+                            let Some((client_id, generation)) = (match session_state.write() {
+                                Ok(mut state) => state.new_attachment(),
                                 Err(error) => {
                                     let message = format!("stop listener after poisoned session state: {error}");
                                     drop(error);
@@ -1249,7 +1414,10 @@ pub fn start_server_impl(
                                 accepted_at.elapsed()
                             );
 
-                            let receiver = match os_input.new_client(client_id, stream) {
+                            let receiver = match os_input.new_client(client_id, stream).and_then(|receiver| {
+                                receiver.bind_server_attachment(generation)?;
+                                Ok(receiver)
+                            }) {
                                 Ok(receiver) => receiver,
                                 Err(err) => {
                                     // The same outcome as the refusal above, and
@@ -1414,6 +1582,18 @@ pub fn start_server_impl(
                 &mut err_ctx,
                 ContextType::IPCServer((&instruction).into()),
             );
+            if let ServerInstruction::FirstClientConnected(_, client)
+            | ServerInstruction::AttachClient(_, _, _, client)
+            | ServerInstruction::AttachWatcherClient(client, _)
+            | ServerInstruction::SwitchSession(_, client, _)
+            | ServerInstruction::DisconnectAllClientsExcept(client)
+            | ServerInstruction::OpeningLayoutFailed {
+                client_id: client, ..
+            } = &instruction
+                && !session_identity.owns_attachment(*client)
+            {
+                continue;
+            }
             match &instruction {
                 ServerInstruction::AttachClient(_, _, _, client_id) => log::info!(
                     "attach trace: server main loop received AttachClient client_id={client_id}"
@@ -2175,6 +2355,9 @@ pub fn start_server_impl(
                 },
                 ServerInstruction::DetachSession(client_ids, completion_tx) => {
                     for client_id in &client_ids {
+                        if !session_identity.owns_attachment(*client_id) {
+                            continue;
+                        }
                         let _ = os_input.send_to_client(
                             *client_id,
                             ServerToClientMsg::Exit {
@@ -2199,36 +2382,17 @@ pub fn start_server_impl(
                     }
                     drop(completion_tx); // cleanup is queued before the action completes
                 },
-                ServerInstruction::ClipboardUpdate(notifications) => {
-                    for (client_id, content) in notifications {
-                        send_to_client!(
-                            client_id,
-                            os_input,
-                            ServerToClientMsg::ClipboardUpdate { content },
-                            session_state,
-                            session_data
-                        );
-                    }
-                },
-                ServerInstruction::DesktopNotification(notifications) => {
-                    for (client_id, content) in notifications {
-                        send_to_client!(
-                            client_id,
-                            os_input,
-                            ServerToClientMsg::DesktopNotification { content },
-                            session_state,
-                            session_data
-                        );
-                    }
-                },
-                ServerInstruction::RepaintComplete(client_id) => {
-                    send_to_client!(
-                        client_id,
-                        os_input,
-                        ServerToClientMsg::RepaintComplete,
-                        session_state,
-                        session_data
-                    );
+                output @ (ServerInstruction::ClipboardUpdate(_)
+                | ServerInstruction::DesktopNotification(_)
+                | ServerInstruction::RepaintComplete(_)
+                | ServerInstruction::Render(Some(_))) => {
+                    publish_screen_output(
+                        output,
+                        &mut os_input,
+                        &session_state,
+                        &session_data,
+                        &mut startup_traces_waiting_for_first_render,
+                    )?;
                 },
                 ServerInstruction::NativeRenderRequest(client_id, request) => {
                     if session_state.read().to_anyhow()?.is_interactive(&client_id) {
@@ -2264,15 +2428,7 @@ pub fn start_server_impl(
                     );
                 },
                 ServerInstruction::NativeFrameAck(client_id, seq) => {
-                    if !os_input.accept_native_ack(client_id, seq) {
-                        continue;
-                    }
-                    with_session(&session_data, |session| {
-                        session
-                            .senders
-                            .send_to_screen(ScreenInstruction::RenderFrameAck { client_id, seq })
-                    })?
-                    .transpose()?;
+                    route_native_ack(client_id, seq, &*os_input, &session_data)?;
                 },
                 ServerInstruction::StructuredRenderSupport {
                     client_id,
@@ -2326,101 +2482,58 @@ pub fn start_server_impl(
                         }
                     }
                 },
-                ServerInstruction::Render(_) | ServerInstruction::OpeningLayoutFailed { .. } => {
-                    let (serialized_output, opening_failure) = match instruction {
-                        ServerInstruction::Render(output) => (output, None),
-                        ServerInstruction::OpeningLayoutFailed { client_id, cause } => {
-                            let failure = first_opening_client
-                                .filter(|(id, _)| *id == client_id)
-                                .map(|(_, grid)| {
-                                    (
-                                        client_id,
-                                        format!(
-                                    "Initial layout failed at {} columns by {} rows: {cause}",
-                                    grid.cols, grid.rows
-                                ),
-                                    )
-                                });
-                            (None, failure)
-                        },
-                        _ => unreachable!(),
+                ServerInstruction::Render(None) | ServerInstruction::OpeningLayoutFailed { .. } => {
+                    let opening_failure = match instruction {
+                        ServerInstruction::OpeningLayoutFailed { client_id, cause } =>
+                            first_opening_client.filter(|(id, _)| *id == client_id).map(|(_, grid)| (
+                                client_id,
+                                format!("Initial layout failed at {} columns by {} rows: {cause}", grid.cols, grid.rows)
+                            )),
+                        _ => None,
                     };
                     let client_ids = session_state
                         .read()
                         .to_anyhow()
                         .context("access server session state")?
                         .client_ids();
-                    // If `Some(_)`- unwrap it and forward it to the clients to render.
-                    // If `None`- Send an exit instruction. This is the case when a user closes the last Tab/Pane.
-                    if let Some(output) = &serialized_output {
-                        for (client_id, client_render_instruction) in output.iter() {
-                            let attach_started_at = startup_traces_waiting_for_first_render
-                                .get(client_id)
-                                .copied();
-                            if let Some(started_at) = attach_started_at {
-                                log::info!(
-                                "startup trace: server main client_id={client_id} received first Render bytes={} after {:?}; client queue begin",
-                                client_render_instruction.len(),
-                                started_at.elapsed()
-                            );
-                            }
-                            send_to_client!(
-                                *client_id,
-                                os_input,
-                                ServerToClientMsg::Render {
-                                    content: client_render_instruction.clone()
-                                },
-                                session_state,
-                                session_data
-                            );
-                            if let Some(started_at) = attach_started_at {
-                                log::info!(
-                                "startup trace: server main client_id={client_id} first Render queued after {:?}",
-                                started_at.elapsed()
-                            );
-                                startup_traces_waiting_for_first_render.remove(client_id);
-                            }
-                        }
-                    } else {
-                        // Keep IDs reserved for shutdown so plugin unload can finish.
-                        for client_id in client_ids {
-                            let exit_reason = match &opening_failure {
-                                Some((opening_client, message)) if *opening_client == client_id => {
-                                    ExitReason::Error(message.clone())
-                                },
-                                _ => ExitReason::Normal,
-                            };
-                            let _ = os_input
-                                .send_to_client(client_id, ServerToClientMsg::Exit { exit_reason });
-                            let _ = os_input.remove_client(client_id);
-                        }
-
-                        // Also disconnect all watchers
-                        let watcher_ids: Vec<ClientId> = session_state
-                            .read()
-                            .to_anyhow()
-                            .context("access server session state")?
-                            .watchers
-                            .iter()
-                            .copied()
-                            .collect();
-                        for watcher_id in watcher_ids {
-                            let _ = os_input.send_to_client(
-                                watcher_id,
-                                ServerToClientMsg::Exit {
-                                    exit_reason: ExitReason::Normal,
-                                },
-                            );
-                            let _ = os_input.remove_client(watcher_id);
-                        }
-                        if let Some(run) = &recovery_run {
-                            session_checkpoint
-                                .acknowledge_recovery(session_identity.current(), run)
-                                .non_fatal();
-                        }
-                        exit_reason = "the last pane closed";
-                        break;
+                    // Keep IDs reserved for shutdown so plugin unload can finish.
+                    for client_id in client_ids {
+                        let exit_reason = match &opening_failure {
+                            Some((opening_client, message)) if *opening_client == client_id => {
+                                ExitReason::Error(message.clone())
+                            },
+                            _ => ExitReason::Normal,
+                        };
+                        let _ = os_input
+                            .send_to_client(client_id, ServerToClientMsg::Exit { exit_reason });
+                        let _ = os_input.remove_client(client_id);
                     }
+
+                    // Also disconnect all watchers
+                    let watcher_ids: Vec<ClientId> = session_state
+                        .read()
+                        .to_anyhow()
+                        .context("access server session state")?
+                        .watchers
+                        .iter()
+                        .copied()
+                        .collect();
+                    for watcher_id in watcher_ids {
+                        let _ = os_input.send_to_client(
+                            watcher_id,
+                            ServerToClientMsg::Exit {
+                                exit_reason: ExitReason::Normal,
+                            },
+                        );
+                        let _ = os_input.remove_client(watcher_id);
+                    }
+                    if let Some(run) = &recovery_run {
+                        session_checkpoint
+                            .acknowledge_recovery(session_identity.current(), run)
+                            .non_fatal();
+                    }
+                    exit_reason = "the last pane closed";
+                    break;
                 },
                 ServerInstruction::Error(backtrace) => {
                     notify_shutdown_error(&mut os_input, &session_state, &backtrace);
@@ -2657,7 +2770,7 @@ pub fn start_server_impl(
                 ServerInstruction::SwitchSession(
                     mut connect_to_session,
                     client_id,
-                    completion_tx,
+                    mut completion_tx,
                 ) => {
                     let current_session_name = session_identity.current();
                     if connect_to_session.name.as_ref() == Some(&current_session_name) {
@@ -2678,14 +2791,16 @@ pub fn start_server_impl(
                             connect_to_session.apply_layout_dir(&layout_dir);
                         }
 
-                        handoff_session_switch(
+                        let retained = handoff_session_switch(
                             client_id,
                             connect_to_session,
                             &mut os_input,
                             &session_state,
                             &session_data,
                         )?;
-                        drop(completion_tx);
+                        if let Some(completion) = &mut completion_tx {
+                            completion.switch_source_retained = retained;
+                        }
                     }
                 },
                 ServerInstruction::AssociatePipeWithClient { pipe_id, client_id } => {
@@ -2706,38 +2821,13 @@ pub fn start_server_impl(
                     .non_fatal();
                 },
                 ServerInstruction::SetCommandPaletteOpen(client_id, open) => {
-                    if !open
-                        && session_state
-                            .read()
-                            .to_anyhow()
-                            .context("failed to read which clients take session requests")
-                            .to_log()
-                            .is_ok_and(|state| state.supports_session_requests(&client_id))
-                    {
-                        send_to_client!(
-                            client_id,
-                            os_input,
-                            ServerToClientMsg::SessionRequest(
-                                yinz_types::session_destination::Request {
-                                    token: String::new(),
-                                    request:
-                                        yinz_types::session_destination::ClientRequest::CancelAll,
-                                }
-                            ),
-                            session_state,
-                            session_data
-                        );
-                    }
-                    if is_attached(client_id, &session_state)
-                        .to_log()
-                        .unwrap_or(false)
-                    {
-                        with_session_mut(&session_data, |session| {
-                            session
-                                .set_command_palette_open(client_id, open)
-                                .non_fatal();
-                        })?;
-                    }
+                    dispatch_command_palette(
+                        client_id,
+                        open,
+                        &mut os_input,
+                        &session_state,
+                        &session_data,
+                    )?;
                 },
                 ServerInstruction::ResolveLockedEscape(client_id, token) => {
                     let mut guard = session_data

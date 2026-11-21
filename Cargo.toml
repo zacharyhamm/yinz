@@ -74,6 +74,7 @@ name = "agent_report"
 path = "src/tests/agent_report.rs"
 
 [dev-dependencies]
+yinz-native-terminal = { path = "yinz-native-terminal", features = ["attachment-test-support"] }
 prost = { workspace = true }
 sysinfo = { version = "0.39.5", default-features = false, features = ["system"] }
 yinz-bus = { path = "yinz-bus" }

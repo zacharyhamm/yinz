@@ -710,7 +710,9 @@ pub fn plugin_thread_main(
                 plugin_bridge.resize_plugin(pid, new_columns, new_rows, shutdown_send.clone())?;
             },
             PluginInstruction::ReserveClient(client_id) => {
-                plugin_bridge.reserve_client(client_id);
+                if bus.senders.session.owns_attachment(client_id) {
+                    plugin_bridge.reserve_client(client_id);
+                }
             },
             PluginInstruction::AddClient(client_id) => {
                 let started_at = std::time::Instant::now();
@@ -792,6 +794,7 @@ pub fn plugin_thread_main(
                 log::info!("startup: plugin NewTab tab={tab_id:?} client={client_id} begin");
                 // prefer connected clients so as to avoid opening plugins in the background for
                 // CLI clients unless no-one else is connected
+                let requester = client_id;
                 let client_id = if plugin_bridge.client_is_connected(&client_id) {
                     client_id
                 } else if let Some(first_client_id) = plugin_bridge.get_first_client_id() {
@@ -891,7 +894,7 @@ pub fn plugin_thread_main(
                     initial_panes,
                     block_on_first_terminal,
                     should_change_focus_to_new_tab,
-                    client_id,
+                    requester,
                     completion_tx,
                 )));
             },
@@ -906,6 +909,7 @@ pub fn plugin_thread_main(
                 completion_tx,
             ) => {
                 // 1. Prefer connected clients over CLI clients
+                let requester = client_id;
                 let client_id = if plugin_bridge.client_is_connected(&client_id) {
                     client_id
                 } else if let Some(first_client_id) = plugin_bridge.get_first_client_id() {
@@ -988,7 +992,7 @@ pub fn plugin_thread_main(
                     tab_layouts_with_plugin_ids,
                     retain_existing_terminal_panes,
                     retain_existing_plugin_panes,
-                    client_id,
+                    requester,
                     completion_tx,
                 )));
             },
@@ -1643,6 +1647,9 @@ pub fn plugin_thread_main(
                 context_menu: new_context_menu,
                 was_written_to_disk,
             } => {
+                if client_id != ClientId::NONE && !bus.senders.session.owns_attachment(client_id) {
+                    continue;
+                }
                 // Wholesale rather than merged: `Hooks` and `ContextMenu` are both "what the
                 // configuration says", and the config layer has already done the merging. A hook
                 // bound here that is not loaded is not a problem - `run_hook` loads on demand, and

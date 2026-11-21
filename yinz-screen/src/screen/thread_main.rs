@@ -235,6 +235,63 @@ pub(super) fn process_instruction(
     state: &mut EventLoopState,
     event: ScreenInstruction,
 ) -> Result<std::ops::ControlFlow<()>> {
+    // These reports can precede AddClient or wait behind it. Admit them against the
+    // listener's registry. ACK, seal and removal still address their retired owner.
+    let recipient = match &event {
+        ScreenInstruction::Reconfigure { client_id, .. } if *client_id != ClientId::NONE => {
+            Some(*client_id)
+        },
+        ScreenInstruction::PaletteThemeSaved { client, .. }
+        | ScreenInstruction::GoToTab(_, Some(client), _)
+        | ScreenInstruction::GoToTabName(_, _, _, Some(client), _)
+        | ScreenInstruction::GoToTabWithId(_, Some(client), _)
+        | ScreenInstruction::FocusPaneWithId(_, _, _, client, _)
+        | ScreenInstruction::ConfirmQuit(client, _)
+        | ScreenInstruction::SwitchTabNext(client, _)
+        | ScreenInstruction::SwitchTabPrev(client, _)
+        | ScreenInstruction::ToggleTab(client, _)
+        | ScreenInstruction::ChangeMode(_, _, client, _)
+        | ScreenInstruction::MouseEvent(_, client, _)
+        | ScreenInstruction::ResetAgentEscape(client)
+        | ScreenInstruction::WriteCharacter(_, _, _, client, _)
+        | ScreenInstruction::TextFromClient(_, client, _)
+        | ScreenInstruction::PasteFromClient(_, client, _)
+        | ScreenInstruction::AddRedPaneFrameColorOverride(Some(client), ..)
+        | ScreenInstruction::ClearPaneFrameColorOverride(Some(client), _)
+        | ScreenInstruction::AddClient(client, ..)
+        | ScreenInstruction::AddWatcherClient(client, _)
+        | ScreenInstruction::WatcherTerminalResize(client, _)
+        | ScreenInstruction::RecomputeTabSize(client, _)
+        | ScreenInstruction::RequestRepaint(client)
+        | ScreenInstruction::TerminalPixelDimensions(client, _)
+        | ScreenInstruction::TerminalForegroundColor(client, _)
+        | ScreenInstruction::TerminalBackgroundColor(client, _)
+        | ScreenInstruction::TerminalColorRegisters(client, _)
+        | ScreenInstruction::HostTerminalThemeChanged(client, _)
+        | ScreenInstruction::HostTerminalFocusChanged(client, _)
+        | ScreenInstruction::NativeRenderRequest(client, _)
+        | ScreenInstruction::ClearMouseHelpText(client)
+        | ScreenInstruction::DesktopNotificationResponse(_, client)
+        | ScreenInstruction::NestedSessionMessageFromHost {
+            client_id: client, ..
+        }
+        | ScreenInstruction::SetKittyGraphicsSupport {
+            client_id: client, ..
+        }
+        | ScreenInstruction::SetSixelSupport {
+            client_id: client, ..
+        }
+        | ScreenInstruction::SetSynchronizedOutputSupport {
+            client_id: client, ..
+        }
+        | ScreenInstruction::SetStructuredRenderSupport {
+            client_id: client, ..
+        } => Some(*client),
+        _ => None,
+    };
+    if recipient.is_some_and(|owner| !screen.core.bus.senders.session.owns_attachment(owner)) {
+        return Ok(std::ops::ControlFlow::Continue(()));
+    }
     // Tab and pane senders share this scope through placement confirmation.
     let _resize_cache = ResizeCache::new(screen.core.bus.senders.clone());
     if screen.core.agent_double_escape {

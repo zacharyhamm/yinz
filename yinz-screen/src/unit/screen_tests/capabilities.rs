@@ -1476,3 +1476,43 @@ fn watcher_sixel_change_repaints_and_removal_forgets_the_answer() {
         .borrow()
         .contains_key(&watcher));
 }
+
+#[test]
+fn attachment_generation_superseded_reports_cannot_override_shared_colors() {
+    use crate::screen::thread_main::{process_instruction, EventLoopState};
+    use yinz_types::{colors::PaletteColor, render_negotiation::AttachmentGeneration};
+    let (mut screen, _capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 24 });
+    new_tab(&mut screen, 1, TabId::new(0));
+    let owners = screen.core.bus.senders.session.clone();
+    owners.register_attachment(CLIENT_1);
+    let old = ClientId::for_attachment(2, AttachmentGeneration([1; 16]));
+    let new = ClientId::for_attachment(2, AttachmentGeneration([2; 16]));
+    let reports = |owner, color: &str| {
+        [
+            ScreenInstruction::TerminalForegroundColor(owner, color.into()),
+            ScreenInstruction::TerminalBackgroundColor(owner, color.into()),
+            ScreenInstruction::TerminalColorRegisters(owner, vec![(17, color.into())]),
+        ]
+    };
+    owners.register_attachment(old);
+    let delayed = reports(old, "rgb:aaaa/bbbb/cccc");
+    owners.register_attachment(new);
+    let mut state = EventLoopState::default();
+    for (owner, color, rgb) in [
+        (new, "rgb:1111/2222/3333", (17, 34, 51)),
+        (CLIENT_1, "rgb:4444/5555/6666", (68, 85, 102)),
+    ] {
+        for instruction in reports(owner, color).into_iter().chain(delayed.clone()) {
+            assert!(process_instruction(&mut screen, &mut state, instruction)
+                .unwrap()
+                .is_continue());
+        }
+        let palette = screen.core.terminal_emulator_colors.borrow();
+        assert_eq!(palette.fg, PaletteColor::Rgb(rgb));
+        assert_eq!(palette.bg, PaletteColor::Rgb(rgb));
+        assert_eq!(
+            screen.core.terminal_emulator_color_codes.borrow()[&17],
+            color
+        );
+    }
+}

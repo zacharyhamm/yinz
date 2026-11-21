@@ -151,7 +151,10 @@ fn departed_plugin_output_updates_watchers_and_always_releases_its_blocker() {
         (followed, "accepted-plugin"),
         (departed, "discarded-plugin"),
     ] {
-        screen.core.render_blocker.register_blocking_plugin(plugin);
+        screen
+            .core
+            .render_blocker
+            .register_blocking_plugin(plugin, client);
         assert!(screen
             .handle_plugin_render_assets(vec![PluginRenderAsset::new(
                 plugin,
@@ -539,7 +542,9 @@ fn changing_followed_client_restates_the_watchers_cursor() {
 
 #[test]
 fn watcher_crop_state_changes_only_for_a_delivered_stream() {
-    let followed = ClientId::new(1);
+    use yinz_types::render_negotiation::AttachmentGeneration;
+    let previous = ClientId::for_attachment(1, AttachmentGeneration([1; 16]));
+    let followed = ClientId::for_attachment(1, AttachmentGeneration([2; 16]));
     let watcher = ClientId::new(2);
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
     screen.add_watcher_client(watcher).unwrap();
@@ -551,20 +556,13 @@ fn watcher_crop_state_changes_only_for_a_delivered_stream() {
         .get_mut(&watcher)
         .unwrap()
         .set_cursor_was_cropped(true);
-    screen
-        .core
-        .watcher_clients
-        .get_mut(&watcher)
-        .unwrap()
-        .clear_force_render();
-
     let mut output = crate::output::Output::default();
-    // A stream for another client must not change the followed client's crop state.
-    output.add_post_vte_instruction_to_client(ClientId::new(3), "\x1b[?25l");
+    // The previous attachment's frame cannot consume the pending watcher repaint.
+    output.add_post_vte_instruction_to_client(previous, "\x1b[?25l");
     assert!(output.is_dirty());
     screen.render_watcher_output(&output, followed).unwrap();
     assert!(screen.core.watcher_clients[&watcher].cursor_was_cropped);
-    assert!(!screen.core.watcher_clients[&watcher].should_force_render());
+    assert!(screen.core.watcher_clients[&watcher].should_force_render());
     assert!(receiver.try_recv().is_err());
 
     // Cursor-only output delivers a stream and updates crop state without pane registration: a
@@ -960,7 +958,14 @@ fn failed_attach_preserves_retained_plugin_state_until_successful_commit() {
     let source = ClientId::new(1);
     let watcher = ClientId::new(2);
     let plugin = PLUGIN_2;
-    for returning in [source, ClientId::new(3)] {
+    for returning in [
+        source,
+        ClientId::new(3),
+        ClientId::for_attachment(
+            source.get(),
+            yinz_types::render_negotiation::AttachmentGeneration([2; 16]),
+        ),
+    ] {
         let (mut screen, _capture) = create_new_screen_with_theme_capture(size);
         new_tab(&mut screen, 1, TabId::new(0));
         new_tab(&mut screen, 2, TabId::new(1));
@@ -1252,7 +1257,14 @@ fn reattach_registers_plugins_before_updates_and_preserves_immediate_output() {
     use crate::screen::thread_main::PendingEvents;
     let size = Size { cols: 80, rows: 24 };
     let source = ClientId::new(1);
-    for returning in [source, ClientId::new(3)] {
+    for returning in [
+        source,
+        ClientId::new(3),
+        ClientId::for_attachment(
+            source.get(),
+            yinz_types::render_negotiation::AttachmentGeneration([2; 16]),
+        ),
+    ] {
         let (mut screen, capture) = create_new_screen_with_theme_capture(size);
         new_tab(&mut screen, 1, TabId::new(0));
         add_pane_to_tab(&mut screen, TabId::new(0), PaneId::Plugin(PLUGIN_2), false);
@@ -1352,7 +1364,14 @@ fn registration_preserves_reused_source_state_in_every_tab() {
     use crate::screen::thread_main::PendingEvents;
     let size = Size { cols: 80, rows: 24 };
     let source = ClientId::new(1);
-    for returning in [source, ClientId::new(3)] {
+    for returning in [
+        source,
+        ClientId::new(3),
+        ClientId::for_attachment(
+            source.get(),
+            yinz_types::render_negotiation::AttachmentGeneration([2; 16]),
+        ),
+    ] {
         for registration in ["direct", "attach", "layout"] {
             let (mut screen, capture) = create_new_screen_with_theme_capture(size);
             for id in 0..2 {
@@ -1497,7 +1516,14 @@ fn registration_preserves_reused_source_state_in_every_tab() {
 fn failed_layout_registration_preserves_departed_source_and_pending_output() {
     use crate::screen::thread_main::PendingEvents;
     let source = ClientId::new(1);
-    for returning in [source, ClientId::new(3)] {
+    for returning in [
+        source,
+        ClientId::new(3),
+        ClientId::for_attachment(
+            source.get(),
+            yinz_types::render_negotiation::AttachmentGeneration([2; 16]),
+        ),
+    ] {
         let (mut screen, _capture) =
             create_new_screen_with_theme_capture(Size { cols: 80, rows: 24 });
         new_tab(&mut screen, 1, TabId::new(0));
@@ -1929,4 +1955,52 @@ fn a_client_attaching_leaves_other_clients_plugin_content_intact() {
         "{attaching_view}"
     );
     assert!(!attaching_view.contains("Loading"), "{attaching_view}");
+}
+
+#[test]
+fn attachment_generation_late_asset_cannot_complete_the_replacements_blocker() {
+    use yinz_types::render_negotiation::AttachmentGeneration;
+    let (mut screen, _capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 24 });
+    new_tab(&mut screen, 1, TabId::new(0));
+    add_pane_to_tab(&mut screen, TabId::new(0), PaneId::Plugin(PLUGIN_2), false);
+    let old = ClientId::for_attachment(3, AttachmentGeneration([1; 16]));
+    let new = ClientId::for_attachment(3, AttachmentGeneration([2; 16]));
+    let owners = screen.core.bus.senders.session.clone();
+    owners.register_attachment(old);
+    screen.add_client(old).unwrap();
+    owners.register_attachment(new);
+    screen.add_client(new).unwrap();
+    screen
+        .core
+        .render_blocker
+        .register_blocking_plugin(PLUGIN_2, new);
+    for (owner, bytes) in [(old, "retired"), (new, "replacement")] {
+        screen
+            .handle_plugin_render_assets(vec![PluginRenderAsset::new(
+                PLUGIN_2,
+                owner,
+                bytes.as_bytes().to_vec(),
+            )])
+            .unwrap();
+        assert_eq!(
+            screen
+                .core
+                .render_blocker
+                .blocking_plugins
+                .contains_key(&PLUGIN_2),
+            owner == old
+        );
+        screen.show_plugin_cursor(PLUGIN_2, owner, Some((1, 1)));
+        let pane = screen.core.tabs[&TabId::new(0)]
+            .get_pane_with_id(PaneId::Plugin(PLUGIN_2))
+            .unwrap();
+        assert_eq!(pane.cursor_coordinates(Some(owner)).is_some(), owner == new);
+        assert_eq!(
+            pane.pane_contents(Some(owner), false, None)
+                .viewport
+                .concat()
+                .contains(bytes),
+            owner == new
+        );
+    }
 }

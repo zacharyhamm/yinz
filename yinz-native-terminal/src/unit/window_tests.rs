@@ -4942,3 +4942,127 @@ fn padding_app_origin_tracks_reload_scale_and_balance() {
     }
     assert_eq!(app.selection.range(), selection);
 }
+
+#[test]
+fn attachment_generation_foreign_connected_before_staged_decision() {
+    use interprocess::os::unix::uds_local_socket::Stream;
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    use yinz_ipc::ipc::{IpcReceiverWithContext, IpcSenderWithContext};
+    use yinz_types::render_negotiation::{AttachmentGeneration, Decision, Request};
+
+    // Capture the actual first packet of another connection, including its absent outer tag.
+    let (mut capture, announcing) = UnixStream::pair().unwrap();
+    let other = IpcReceiverWithContext::<ClientToServerMsg>::new(Stream::from(announcing).into());
+    other
+        .bind_server_attachment(AttachmentGeneration([1; 16]))
+        .unwrap();
+    other
+        .get_sender::<ServerToClientMsg>()
+        .unwrap()
+        .send_server_msg(advertisement(Some(1)))
+        .unwrap();
+    let mut length = [0; 4];
+    capture.read_exact(&mut length).unwrap();
+    let mut original = vec![0; u32::from_le_bytes(length) as usize];
+    capture.read_exact(&mut original).unwrap();
+
+    let mut app = switch_app(Default::default());
+    let (source, mut source_peer) = switch_peer();
+    app.sender = Some(source);
+    let (viewer, socket) = UnixStream::pair().unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let viewer = IpcSenderWithContext::new(Stream::from(viewer).into());
+    let reader = viewer.get_receiver().unwrap();
+    let destination = IpcReceiverWithContext::<ClientToServerMsg>::new(
+        Stream::from(socket.try_clone().unwrap()).into(),
+    );
+    destination
+        .bind_server_attachment(AttachmentGeneration([2; 16]))
+        .unwrap();
+    let server = destination.get_sender::<ServerToClientMsg>().unwrap();
+    let now = Instant::now();
+    let _ = stage_test_switch(
+        &mut app,
+        1,
+        now,
+        Ok((
+            "destination".into(),
+            AttachedSender(Arc::new(Mutex::new(viewer))),
+        )),
+    );
+    let pending = app.pending_switch.as_mut().unwrap();
+    pending.handshake = Default::default();
+    let (tx, messages) = mpsc::sync_channel(2);
+    pending.messages = messages;
+    let (wake, wakes) = mpsc::channel();
+    let mut destination = std::thread::scope(|threads| {
+        let mut destination = destination;
+        let mut socket = socket;
+        let mut server = server;
+        threads.spawn(move || read_session(reader, tx, || wake.send(()).is_ok()));
+        let poll = |app: &mut App| {
+            wakes.recv_timeout(Duration::from_secs(5)).unwrap();
+            app.receive_switch(1, Instant::now()).unwrap();
+        };
+        app.receive_switch(1, now).unwrap();
+        server.send_server_msg(advertisement(Some(1))).unwrap();
+        poll(&mut app);
+        let Some((ClientToServerMsg::NativeRenderRequest(Request::Offer(offer)), _)) =
+            destination.recv_attachment_request(None).unwrap().msg()
+        else {
+            panic!("missing destination offer")
+        };
+        socket.write_all(&length).unwrap();
+        socket.write_all(&original).unwrap();
+        for mut packet in [vec![0x32, 3, 0x0a, 1, 0xff], vec![0xa2, 2, 0]] {
+            packet.extend_from_slice(&[0xb2, 2, 16]);
+            packet.extend_from_slice(&[1; 16]);
+            socket
+                .write_all(&(packet.len() as u32).to_le_bytes())
+                .unwrap();
+            socket.write_all(&packet).unwrap();
+        }
+
+        server
+            .send_server_msg(ServerToClientMsg::NativeRenderResult(Decision::Selected(
+                offer.select(None).unwrap(),
+            )))
+            .unwrap();
+        poll(&mut app);
+        let mut frame = yinz_types::structured_render::FrameBuilder::new(18, 2, 1);
+        frame.set_full_repaint(true);
+        frame.push_row(
+            0,
+            0,
+            &[yinz_types::structured_render::WireCell {
+                ch: 'B' as u32,
+                ..yinz_types::structured_render::WireCell::BLANK
+            }],
+        );
+        server
+            .send_server_msg(ServerToClientMsg::RenderFrame {
+                frame: frame.finish(),
+            })
+            .unwrap();
+        poll(&mut app);
+        socket.shutdown(std::net::Shutdown::Write).unwrap();
+        destination
+    });
+    assert_eq!(app.connection_id, 1);
+    assert_eq!(app.state.screen().cell(0, 0).character(), 'B');
+    assert!(matches!(
+        destination.recv_attachment_request(None).unwrap().msg(),
+        Some((ClientToServerMsg::HostTerminalFocusChanged { .. }, _))
+    ));
+    assert!(matches!(
+        destination.recv_attachment_request(None).unwrap().msg(),
+        Some((ClientToServerMsg::RenderFrameAck { seq: 1 }, _))
+    ));
+    assert!(matches!(
+        source_peer.recv_client_msg().msg(),
+        Some((ClientToServerMsg::ClientExited, _))
+    ));
+}

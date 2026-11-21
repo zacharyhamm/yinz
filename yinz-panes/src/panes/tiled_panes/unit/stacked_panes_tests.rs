@@ -1234,7 +1234,11 @@ impl Pane for MockPane {
         unimplemented!()
     }
 
-    fn add_red_pane_frame_color_override(&mut self, _error_text: Option<String>) {
+    fn add_red_pane_frame_color_override(
+        &mut self,
+        _error_text: Option<String>,
+        _owner: Option<ClientId>,
+    ) {
         unimplemented!()
     }
     fn clear_pane_frame_color_override(&mut self, _client_id: Option<ClientId>) {

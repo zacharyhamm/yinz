@@ -41,6 +41,8 @@ libc = { workspace = true }
 nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "signal", "socket", "term", "uio", "user"] }
 
 [dev-dependencies]
+yinz-server-os = { path = "../yinz-server-os" }
+yinz-client = { path = "../yinz-client", features = ["attachment-test-support"] }
 yinz-steel-builtins = { path = "../yinz-steel-builtins" }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 criterion = { workspace = true }

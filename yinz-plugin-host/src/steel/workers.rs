@@ -63,6 +63,13 @@ pub(crate) fn run(
                 if reply.is_some_and(|reply| reply.claim().is_none()) {
                     continue;
                 }
+                if matches!(
+                    event,
+                    Event::PermissionRequestResult(_) | Event::ModifiersHeld { .. }
+                ) && !plugin.env().senders.session.owns_attachment(client)
+                {
+                    continue;
+                }
                 if crate::plugin_bridge::check_event_permission(plugin.env(), &event).0
                     == PermissionStatus::Granted
                 {

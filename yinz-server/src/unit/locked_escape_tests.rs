@@ -797,3 +797,126 @@ fn command_palette_disconnect_discards_restore_state_without_unlocking_other_cli
         InputMode::Locked
     );
 }
+
+#[test]
+fn queued_palette_close_preserves_replacement_mode_and_preparation() {
+    use crate::{
+        dispatch_command_palette, with_session, ServerOsApi, ServerToClientMsg, SessionState,
+    };
+    use interprocess::local_socket::traits::Listener;
+    use yinz_ipc::ipc::{ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext};
+    use yinz_types::session_destination::{
+        ClientReply, ClientRequest, Destination, Request, SwitchRequest, SwitchTarget,
+    };
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    unsafe {
+        std::env::set_var("YINZ_SOCKET_DIR", dir.path());
+        std::env::set_var("YINZ_TEST_CACHE_DIR", dir.path().join("cache"));
+        std::env::remove_var(yinz_process::pty_host::PANE_REF_ENV_KEY);
+    }
+    let sockets = &*yinz_runtime::consts::YINZ_SOCK_DIR;
+    std::fs::create_dir_all(sockets).unwrap();
+    let source_path = sockets.join("source");
+    let source = yinz_ipc::consts::ipc_bind(&source_path).unwrap();
+    let destination = yinz_ipc::consts::ipc_bind(&sockets.join("destination")).unwrap();
+    let mut os: Box<dyn ServerOsApi> = Box::new(yinz_server_os::get_server_os_input().unwrap());
+    let mut state = SessionState::new();
+    let old = state.new_client().unwrap();
+    state.attach_interactive(old, true);
+    state.next_client_id = Some(old.get());
+    let new = state.new_client().unwrap();
+    state.attach_interactive(new, true);
+    let state = Arc::new(RwLock::new(state));
+    let mut session = session();
+    session
+        .current_input_modes
+        .insert(new, InputMode::Notifications);
+    let data = Arc::new(RwLock::new(Some(session)));
+    let mut reader = IpcReceiverWithContext::<ServerToClientMsg>::new(
+        yinz_ipc::consts::ipc_connect(&source_path).unwrap(),
+    );
+    reader
+        .set_recv_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let _router = os.new_client(new, source.accept().unwrap()).unwrap();
+    yinz_client::with_test_session_requests(dir.path(), |dispatch| {
+        let mut receive = || match reader.recv_server_msg().msg().unwrap().0 {
+            ServerToClientMsg::SessionRequest(request) => request.request,
+            message => panic!("unexpected source message {message:?}"),
+        };
+        for id in ["commit", "cancel"] {
+            dispatch_command_palette(new, true, &mut os, &state, &data).unwrap();
+            let switch = |op| ClientRequest::Switch(op);
+            let prepare = switch(SwitchRequest::Prepare {
+                id: id.into(),
+                target: SwitchTarget {
+                    name: "destination".into(),
+                    destination: Destination::Local,
+                    saved: false,
+                },
+            });
+            assert_eq!(dispatch(prepare).unwrap(), ClientReply::Pending);
+            let mut dest =
+                IpcSenderWithContext::<ServerToClientMsg>::new(destination.accept().unwrap());
+            let mut dest_reader = dest.get_receiver::<ClientToServerMsg>().unwrap();
+            dest_reader
+                .set_recv_timeout(Some(Duration::from_secs(15)))
+                .unwrap();
+            assert!(matches!(
+                dest_reader.recv_client_msg().msg(),
+                Some((ClientToServerMsg::AttachClient { .. }, _))
+            ));
+            dest.send_server_msg(ServerToClientMsg::Render { content: id.into() })
+                .unwrap();
+
+            dispatch_command_palette(old, false, &mut os, &state, &data).unwrap();
+            with_session(&data, |session| {
+                assert_eq!(session.current_input_modes[&new], InputMode::Locked);
+                assert_eq!(
+                    session.command_palette_restore_modes[&new],
+                    InputMode::Notifications
+                );
+            })
+            .unwrap();
+            let status = switch(SwitchRequest::Status(id.into()));
+            // This message follows any cancellation on the same ordered source socket.
+            os.send_to_client(
+                new,
+                ServerToClientMsg::SessionRequest(Request {
+                    token: id.into(),
+                    request: status.clone(),
+                }),
+            )
+            .unwrap();
+            assert_eq!(receive(), status);
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            while dispatch(status.clone()).unwrap() == ClientReply::Pending {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            if id == "commit" {
+                assert_eq!(
+                    dispatch(switch(SwitchRequest::Commit(id.into()))).unwrap(),
+                    ClientReply::Complete
+                );
+            }
+            dispatch_command_palette(new, false, &mut os, &state, &data).unwrap();
+            let cancel = receive();
+            assert_eq!(cancel, ClientRequest::CancelAll);
+            assert_eq!(dispatch(cancel).unwrap(), ClientReply::Complete);
+            assert!(dispatch(status).is_err());
+            assert!(matches!(
+                dest_reader.recv_client_msg().msg(),
+                Some((ClientToServerMsg::ClientExited, _))
+            ));
+            with_session(&data, |session| {
+                assert_eq!(session.current_input_modes[&new], InputMode::Notifications);
+            })
+            .unwrap();
+        }
+    })
+    .unwrap();
+}

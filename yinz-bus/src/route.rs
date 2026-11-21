@@ -30,6 +30,8 @@ pub struct AgentTabPlacement {
 pub struct ActionCompletionResult {
     /// True only when the action owner acknowledged completion.
     pub confirmed: bool,
+    /// The switch reached its viewer and the source socket remains interactive.
+    pub switch_source_retained: bool,
     pub agent_tab: Option<AgentTabPlacement>,
     pub exit_status: Option<i32>,
     pub affected_pane_id: Option<PaneId>,
@@ -51,6 +53,7 @@ pub struct NotificationEnd {
     pub wait_for_agent_start: bool,
     pub launch: Option<std::sync::Arc<crate::agent_launch::LaunchGate>>,
     placement_pending: bool,
+    pub switch_source_retained: bool,
     pub agent_tab: Option<AgentTabPlacement>,
     pub created_tab_id: Option<TabId>,
     requires_input_barrier: bool,
@@ -91,6 +94,7 @@ impl Clone for NotificationEnd {
             wait_for_agent_start: self.wait_for_agent_start,
             launch: self.launch.clone(),
             placement_pending: self.placement_pending,
+            switch_source_retained: self.switch_source_retained,
             agent_tab: self.agent_tab.clone(),
             created_tab_id: self.created_tab_id,
             requires_input_barrier: self.requires_input_barrier,
@@ -112,6 +116,7 @@ impl NotificationEnd {
             wait_for_agent_start: false,
             launch: None,
             placement_pending: false,
+            switch_source_retained: false,
             agent_tab: None,
             created_tab_id: None,
             requires_input_barrier: false,
@@ -230,6 +235,7 @@ impl NotificationEnd {
             wait_for_agent_start: false,
             launch: None,
             placement_pending: false,
+            switch_source_retained: false,
             agent_tab: None,
             created_tab_id: None,
             requires_input_barrier: false,
@@ -311,6 +317,7 @@ impl Drop for NotificationEnd {
         }
         // Followers are fields, dropped after this body: each sends the copy it is given here.
         for follower in self.followers.iter_mut() {
+            follower.switch_source_retained = self.switch_source_retained;
             follower.agent_tab = self.agent_tab.clone();
             follower.created_tab_id = self.created_tab_id;
             follower.exit_status = self.exit_status;
@@ -322,6 +329,7 @@ impl Drop for NotificationEnd {
         if let Some(tx) = self.channel.take() {
             let result = ActionCompletionResult {
                 confirmed: true,
+                switch_source_retained: self.switch_source_retained,
                 agent_tab: self.agent_tab.clone(),
                 exit_status: self.exit_status,
                 affected_pane_id: self.affected_pane_id,

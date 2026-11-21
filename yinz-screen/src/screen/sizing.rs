@@ -26,6 +26,7 @@ impl Screen {
         let connected = self.core.connected_clients.borrow();
         connected
             .iter()
+            .filter(|client_id| self.core.bus.senders.session.owns_attachment(**client_id))
             .filter(|client_id| !self.core.watcher_clients.contains_key(client_id))
             .filter(|client_id| counts(client_id))
             .filter_map(|client_id| self.core.client_sizes.get(client_id).copied())

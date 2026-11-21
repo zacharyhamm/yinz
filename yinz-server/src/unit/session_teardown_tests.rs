@@ -446,9 +446,14 @@ fn late_instructions_for_a_departed_client_leave_nothing_behind() {
     let state = Arc::new(RwLock::new(SessionState::new()));
     let (departed, attached) = {
         let mut state = state.write().unwrap();
-        let clients = (state.new_client().unwrap(), state.new_client().unwrap());
-        state.interactive_clients.extend([clients.0, clients.1]);
-        clients
+        let departed = state.new_client().unwrap();
+        state.attach_interactive(departed, false);
+        state.next_client_id = Some(departed.get());
+        let attached = state.new_client().unwrap();
+        state.attach_interactive(attached, false);
+        assert!(state.disconnect_targets(departed).is_empty());
+        assert!(state.disconnect_targets(attached).is_empty());
+        (departed, attached)
     };
     for client in [departed, attached] {
         session

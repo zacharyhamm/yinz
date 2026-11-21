@@ -959,6 +959,8 @@ pub struct PluginEnv {
     /// that host commands act on the right client. Use `owner_client_id` for anything keyed in
     /// the `PluginMap`.
     pub client_id: ClientId,
+    /// Attachment contexts this supervised runtime received from its host.
+    pub(crate) issued_actors: HashSet<ClientId>,
     /// The client this instance is keyed under in the `PluginMap`. Equal to `client_id` for
     /// non-shared plugins.
     pub owner_client_id: ClientId,
@@ -1319,6 +1321,10 @@ impl RunningPlugin {
 
     pub fn plugin_web(&mut self, request: serde_json::Value) -> Result<bool> {
         self.runtime.web(request)
+    }
+
+    pub(crate) fn retire_render(&mut self, client: ClientId) -> Result<()> {
+        self.runtime.retire_render(client)
     }
 
     pub fn plugin_tick(&mut self) -> Result<bool> {

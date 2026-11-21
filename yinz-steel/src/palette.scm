@@ -65,7 +65,7 @@
              (let ((id (%palette-remember (hash-ref view "source") scope client)))
                (when (%palette-get view "onClose" #f)
                  (set! %palette-handles (hash-insert %palette-handles id
-                   (hash-insert (hash-insert (hash-ref %palette-handles id) "onRelease" (hash-ref view "onClose")) "origin" %async-client)))) id) 'json-null)))
+                   (hash-insert (hash-insert (hash-ref %palette-handles id) "onRelease" (hash-ref view "onClose")) "origin" %async-actor)))) id) 'json-null)))
     (else
      (define fields (map %palette-wire-field (hash-ref view "fields")))
      (define browse-actions
@@ -247,7 +247,7 @@
      (when (>= (length (hash-keys->list %palette-tasks)) 4096) (error "too many pending palette operations"))
      ;; Scope identity and the host callback origin are separate in offline runtimes.
      ;; scope, client, cancelled, closed, cancellation callbacks, finished, origin
-     (define task (vector scope client #f #f (hash) #f %async-client))
+     (define task (vector scope client #f #f (hash) #f %async-actor))
      (set! %palette-tasks (hash-insert %palette-tasks key task))
      (with-handler (lambda (failure) (%palette-task-finish task json-null failure discover?))
        (define root? (and discover? (not (%palette-present? (%palette-get message "source" json-null)))))
@@ -277,7 +277,7 @@
   (define registration (number->string %palette-next-handle))
   (define static? (list? actions))
   (define release (%async-retain "BeforeClose"))
-  (define client %async-client)
+  (define client %async-actor)
   (with-handler (lambda (failure) (release) (error (%async-error failure)))
     (%palette-command (hash "type" "register" "id" id "title" title
                          "registration" registration "staticActions" static?)))

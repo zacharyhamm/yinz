@@ -580,7 +580,7 @@ pub fn headless(mut connection: Connection, args: &TerminalArgs) -> Result<()> {
             break;
         }
         use yinz_ipc::ipc::IpcRecv;
-        let message = match connection.receiver.recv_server_msg_until(deadline) {
+        let message = match connection.receiver.recv_native_server_msg(Some(deadline)) {
             IpcRecv::Msg(message, _) => message,
             IpcRecv::Idle => continue,
             IpcRecv::Malformed => bail!(

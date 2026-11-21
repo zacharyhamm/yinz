@@ -579,6 +579,7 @@ impl Screen {
                         .senders
                         .send_to_background_jobs(
                             crate::background_jobs::BackgroundJob::DisplayPaneError(
+                                None,
                                 vec![pane],
                                 error.into(),
                             ),

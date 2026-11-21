@@ -1004,7 +1004,7 @@ fn failed_new_layout_reports_error_preserves_focus_and_keeps_adopted_terminals()
         }
         let active_pane = screen.get_active_pane_id(&client_id).unwrap();
         assert!(background_rx.try_iter().any(|(job, _)| matches!(job,
-            BackgroundJob::DisplayPaneError(ids, message)
+            BackgroundJob::DisplayPaneError(Some(_), ids, message)
                 if ids == vec![active_pane] && message.contains("Failed to apply layout"))));
         assert_eq!(receipt_rx.try_recv().unwrap().is_ok(), adopted);
         assert_eq!(screen.get_active_tab(client_id).unwrap().id, active);

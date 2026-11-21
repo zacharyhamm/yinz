@@ -686,3 +686,59 @@ fn web_sdk_worker_timer_failures_preserve_requests_and_imported_source_logs() {
         assert!(!response.to_string().contains("helper.scm"));
     }
 }
+
+#[test]
+fn shared_render_prints_only_the_recipient_continuations_bytes() {
+    let mut worker = super::WorkerRuntime::new(&binary(), Ok).unwrap();
+    worker
+        .eval(
+            r#"
+        (define gate (yinz-deferred))
+        (define retained-port yinz-output-port)
+        (define (render rows columns)
+          (if (= columns 5)
+              (begin (display "old")
+                     (yinz-then gate (lambda (_) (yinz-raw-display "-late" retained-port) "-return")))
+              (begin (yinz-raw-display "new" retained-port)
+                     (yinz-resolve! gate "go")
+                     "-return")))"#,
+        )
+        .unwrap();
+    let a = serde_json::json!({"id": 1, "generation": "A"});
+    let b = serde_json::json!({"id": 1, "generation": "B"});
+    worker.invoke("yinz-async-enter", vec![a.clone()]).unwrap();
+    assert_eq!(worker.render(1, 5).unwrap(), "");
+    worker.invoke("yinz-async-enter", vec![b]).unwrap();
+    assert_eq!(worker.render(1, 6).unwrap(), "new-return");
+    worker.invoke("yinz-async-enter", vec![a]).unwrap();
+    assert_eq!(worker.render(1, 5).unwrap(), "old-late-return");
+}
+
+#[test]
+fn attachment_generation_retired_render_failure_cannot_escape_into_new_recipient() {
+    let mut worker = super::WorkerRuntime::new(&binary(), Ok).unwrap();
+    worker
+        .eval(
+            r#"
+      (define gate (yinz-deferred))
+      (define late 0)
+      (define (render rows columns)
+        (cond ((= late 0)
+               (set! late 1)
+               (yinz-then gate (lambda (_) (set! late 2) (display "obsolete") (error "old error"))))
+              (else (display "fresh-") (yinz-resolve! gate #t) "frame")))"#,
+        )
+        .unwrap();
+    let old = serde_json::json!({"id": 4, "generation":"A"});
+    let new = serde_json::json!({"id": 4, "generation":"B"});
+    worker
+        .invoke("yinz-async-enter", vec![old.clone()])
+        .unwrap();
+    assert_eq!(worker.render(2, 5).unwrap(), "");
+    worker.invoke("yinz-async-retire", vec![old]).unwrap();
+    worker.invoke("yinz-async-enter", vec![new]).unwrap();
+    assert_eq!(worker.render(2, 5).unwrap(), "fresh-frame");
+    worker
+        .eval("(unless (= late 2) (error \"old callback did not settle\"))")
+        .unwrap();
+}

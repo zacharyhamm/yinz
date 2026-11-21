@@ -5,6 +5,7 @@ import "common_types.proto";
 
 message ServerToClientMsg {
   reserved 11, 17, 19;
+  optional bytes attachment_generation = 38;
   oneof message {
     NativeRenderResultMsg native_render_result = 36;
     RenderFrameMsg render_frame = 35;
@@ -66,6 +67,7 @@ message ConnectedMsg {
   string server_version = 7;
   string server_host = 8;
   optional uint32 native_render_revision = 9;
+  optional bytes attachment_generation = 10;
 }
 
 message LogMsg {

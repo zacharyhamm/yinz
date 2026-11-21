@@ -1734,9 +1734,27 @@ impl ClientTransport for ServerOsInputOutput {
             stream_fd,
         )
         .context("failed to start client writer")?;
-        // A sender this id replaces closes its queue as it drops, after the registry is released.
-        let replaced = self.lock_client_senders().insert(client_id, sender);
-        drop(replaced);
+        // A refused predecessor keeps its original read half and writer entry for its
+        // cumulative ACKs. Other superseded readers must wake and retire their own state.
+        let removed: Vec<_> = {
+            let mut senders = self.lock_client_senders();
+            let mut removed: Vec<_> = senders
+                .extract_if(|owner, sender| {
+                    owner.get() == client_id.get()
+                        && sender
+                            .queue
+                            .recover_state(sender.queue.state.lock())
+                            .drain
+                            .is_none()
+                })
+                .map(|(_, sender)| sender)
+                .collect();
+            removed.extend(senders.insert(client_id, sender));
+            removed
+        };
+        for sender in removed {
+            sender.shutdown_reads();
+        }
         Ok(receiver)
     }
     fn remove_client(&mut self, client_id: ClientId) -> Result<()> {

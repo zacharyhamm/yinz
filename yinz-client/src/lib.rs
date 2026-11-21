@@ -467,6 +467,14 @@ pub(crate) enum InputInstruction {
     ModifiersHeldChanged(BTreeSet<KeyModifier>),
     Exit,
 }
+impl InputInstruction {
+    fn with_server_generation(self, generation: Option<u64>) -> Self {
+        match generation {
+            Some(origin) => Self::FromGeneration((origin, true), Box::new(self)),
+            None => self,
+        }
+    }
+}
 
 /// Retains an optional startup cancellation guard until client signal handling takes over.
 #[allow(clippy::too_many_arguments)]
@@ -1202,5 +1210,7 @@ pub mod remote_recovery;
 pub mod remote_sessions;
 pub mod session_discovery;
 mod session_switch;
+#[cfg(feature = "attachment-test-support")]
+pub use session_switch::{prepare_test_destination, with_test_session_requests};
 
 pub use startup::native_first_message;

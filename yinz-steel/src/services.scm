@@ -16,7 +16,7 @@
                     (range (length arguments))))
   (define waiter #f)
   (define off (lambda () (void)))
-  (define origin %async-client)
+  (define origin %async-actor)
   (vector-set! operation 4 (lambda () (when waiter (yinz-cancel! waiter)) (off)))
   (set! waiter
     (yinz-wait-for-event (string-append command "Result")
@@ -91,7 +91,7 @@
   (define handle (yinz-deferred))
   (define scope (%async-owned-scope handle))
   (define pending #f)
-  (define origin %async-client)
+  (define origin %async-actor)
   (define release (lambda () (void)))
   (define (failure error)
     (when (yinz-pending? handle)
@@ -124,7 +124,7 @@
 
 (define (yinz-data-watch-callback namespace request callback . modes)
   (unless (procedure? callback) (error "watch callback must be a function"))
-  (define origin %async-client)
+  (define origin %async-actor)
   (define id #f)
   (define disposed #f)
   (define off

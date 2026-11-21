@@ -72,3 +72,6 @@ pub fn run_forwarded(
         window::run(args, opts, Some(connection))
     }
 }
+
+#[cfg(feature = "attachment-test-support")]
+pub use window::live_window::exercise_live_switch;

@@ -2183,3 +2183,37 @@ fn chunk_splitting_does_not_change_what_is_parsed(tc: hegel::TestCase) {
         bytes, splits
     );
 }
+
+#[test]
+fn attachment_generation_expired_timeout_preserves_reused_forward_token() {
+    let runtime = paused_runtime();
+    let parser = Arc::new(Mutex::new(StdinAnsiParser::new()));
+    {
+        let mut parser = parser.lock().unwrap();
+        parser.forward_generation = Some(1);
+        parser.open_forward(7);
+    }
+    let fired = Arc::new(Mutex::new(false));
+    let capture = fired.clone();
+    schedule_timeout(
+        runtime.handle(),
+        parser.clone(),
+        ForwardKind::Barrier,
+        7,
+        Duration::from_millis(500),
+        move |_, _| *capture.lock().unwrap() = true,
+    );
+    {
+        let mut parser = parser.lock().unwrap();
+        parser.take_active(ForwardKind::Barrier);
+        parser.forward_generation = Some(2);
+        parser.open_forward(7);
+    }
+    runtime.block_on(async {
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(600)).await;
+        tokio::task::yield_now().await;
+    });
+    assert!(!*fired.lock().unwrap());
+    assert_eq!(parser.lock().unwrap().active_forward_token(), Some(7));
+}

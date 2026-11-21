@@ -1224,3 +1224,250 @@ fn empty_and_retired_ipc_actions_count_toward_malformed_budget() {
     ] if error.contains("desynchronised"))
     );
 }
+
+/// Run both socket routers and writers through a forced numeric collision. Retain the
+/// real render states so an accepted ACK has an observable filesystem consequence.
+#[test]
+fn attachment_generation_refusal_and_replacement_have_independent_frame_one() {
+    use interprocess::{local_socket::traits::Listener, TryClone};
+    use yinz_bus::os_input_output::ClientTransport;
+    use yinz_ipc::ipc::IpcSenderWithContext;
+    use yinz_runtime::native_media::MediaRoot;
+    use yinz_terminal::output::NativeRenderState;
+    use yinz_types::{
+        render_negotiation::{Decision, Offer, Request},
+        structured_render::FrameBuilder,
+    };
+
+    fn next_native(
+        rx: &mut IpcReceiverWithContext<ServerToClientMsg>,
+    ) -> Option<ServerToClientMsg> {
+        let deadline = Instant::now() + ROUTER_TEST_TIMEOUT;
+        loop {
+            match rx.recv_native_server_msg(Some(deadline)).msg()?.0 {
+                ServerToClientMsg::UnblockInputThread => continue,
+                msg => return Some(msg),
+            }
+        }
+    }
+
+    for acknowledge_source in [false, true] {
+        let (session, threads) = paused_session();
+        let state = Arc::new(RwLock::new(SessionState {
+            attachments: session.senders.session.clone(),
+            ..SessionState::new()
+        }));
+        let data = Arc::new(RwLock::new(Some(session)));
+        let os = yinz_server_os::get_server_os_input().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("attachment.sock");
+        let listener = yinz_ipc::consts::ipc_bind(&socket).unwrap();
+        let next = || {
+            threads
+                .server_receiver
+                .recv_timeout(ROUTER_TEST_TIMEOUT)
+                .unwrap()
+                .0
+        };
+        let attach = || {
+            let id = {
+                let mut state = state.write().unwrap();
+                state.next_client_id = Some(1);
+                let id = state.new_client().unwrap();
+                state.attach_interactive(id, true);
+                id
+            };
+            let mut backend = os.clone();
+            let raw = yinz_ipc::consts::ipc_connect(&socket).unwrap();
+            let mut sender =
+                IpcSenderWithContext::<ClientToServerMsg>::new(raw.try_clone().unwrap());
+            let mut reader = sender.get_receiver::<ServerToClientMsg>().unwrap();
+            reader.set_recv_timeout(Some(ROUTER_TEST_TIMEOUT)).unwrap();
+            let receiver = backend.new_client(id, listener.accept().unwrap()).unwrap();
+            receiver
+                .bind_server_attachment(id.generation().unwrap())
+                .unwrap();
+            let router = thread::spawn({
+                let state = state.clone();
+                let data = data.clone();
+                let bus = threads.to_server.clone();
+                move || {
+                    route_thread_main(
+                        data,
+                        state,
+                        Box::new(backend),
+                        bus,
+                        receiver,
+                        id,
+                        ROUTER_TEST_TIMEOUT,
+                    )
+                }
+            });
+            os.send_to_client(
+                id,
+                ServerToClientMsg::Connected {
+                    native_render_revision: Some(1),
+                    warp_companions: false,
+                    warp_held_terminals: false,
+                    warp_agent_tracking: false,
+                    warp_terminal_state: 0,
+                    signal_quit: false,
+                    update_protocol: 0,
+                    server_version: String::new(),
+                    server_host: String::new(),
+                },
+            )
+            .unwrap();
+            assert!(matches!(
+                next_native(&mut reader),
+                Some(ServerToClientMsg::Connected { .. })
+            ));
+            sender
+                .send_client_msg(ClientToServerMsg::NativeRenderRequest(Request::Offer(
+                    Offer::reader(None),
+                )))
+                .unwrap();
+            let ServerInstruction::NativeRenderRequest(owner, Request::Offer(offer)) = next()
+            else {
+                panic!("expected Offer")
+            };
+            assert_eq!(owner, id);
+            let agreement = offer.select(None).unwrap();
+            os.send_to_client(
+                id,
+                ServerToClientMsg::NativeRenderResult(Decision::Selected(agreement.clone())),
+            )
+            .unwrap();
+            assert!(matches!(
+                next_native(&mut reader),
+                Some(ServerToClientMsg::NativeRenderResult(Decision::Selected(_)))
+            ));
+            let mut render = NativeRenderState::negotiated(
+                agreement,
+                Some(MediaRoot::open(dir.path()).unwrap()),
+            );
+            render.seq = 1;
+            let path = render.stage_image(&vec![3; 256 * 1024]).unwrap();
+            let mut frame = FrameBuilder::new(1, 1, 1);
+            frame.set_full_repaint(true);
+            os.send_to_client(
+                id,
+                ServerToClientMsg::RenderFrame {
+                    frame: frame.finish(),
+                },
+            )
+            .unwrap();
+            let received = next_native(&mut reader);
+            assert!(
+                matches!(received, Some(ServerToClientMsg::RenderFrame { .. })),
+                "frame one: {received:?}"
+            );
+            (id, sender, reader, raw, router, render, path)
+        };
+        let (old, mut old_sender, mut old_reader, _raw, old_router, mut old_render, old_path) =
+            attach();
+        os.send_to_client(
+            old,
+            ServerToClientMsg::RenderFrame {
+                frame: Vec::with_capacity(64 * 1024 * 1024 + 1),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            next_native(&mut old_reader),
+            Some(ServerToClientMsg::Exit { .. })
+        ));
+        assert!(matches!(
+            old_reader.recv_native_server_msg(None),
+            IpcRecv::Eof
+        ));
+        let mut drains = HashMap::new();
+        crate::observe_native_refusal(old, &os, &state, &data, &mut drains).unwrap();
+        let ScreenInstruction::SealNativePrefix(owner, high) =
+            threads.screen_receiver.try_recv().unwrap().0
+        else {
+            panic!("missing seal")
+        };
+        assert_eq!((owner, high), (old, 1));
+        old_render.retain_prefix(high);
+        let mut retired = HashMap::from([(old, old_render)]);
+        let (new, mut sender, mut reader, mut wire, router, render, new_path) = attach();
+        let mut active = HashMap::from([(new, render)]);
+        assert_eq!(old.get(), new.get());
+        assert_ne!(old, new);
+        let before = os.native_drain(old).unwrap();
+        let ack = |expected, seq| {
+            assert!(
+                matches!(next(), ServerInstruction::NativeFrameAck(client, number) if client == expected && number == seq)
+            );
+            crate::route_native_ack(expected, seq, &os, &data).unwrap();
+        };
+        // Encoded RenderFrameAck(1), followed by A's full top-level generation on B.
+        let mut replay = vec![0xda, 2, 2, 8, 1, 0xf2, 2, 16];
+        replay.extend_from_slice(&old.generation().unwrap().0);
+        send_raw_action(&mut wire, &replay);
+        sender
+            .send_client_msg(ClientToServerMsg::RenderFrameAck { seq: 2 })
+            .unwrap();
+        ack(new, 2);
+        old_sender
+            .send_client_msg(ClientToServerMsg::RenderFrameAck { seq: 2 })
+            .unwrap();
+        ack(old, 2);
+        assert!(threads.screen_receiver.try_recv().is_err());
+        assert_eq!(os.native_drain(old), Some(before));
+        assert!(old_path.exists() && new_path.exists());
+        if acknowledge_source {
+            old_sender
+                .send_client_msg(ClientToServerMsg::RenderFrameAck { seq: 1 })
+                .unwrap();
+            ack(old, 1);
+            let ScreenInstruction::RenderFrameAck { client_id, seq } =
+                threads.screen_receiver.try_recv().unwrap().0
+            else {
+                panic!("missing A ACK")
+            };
+            NativeRenderState::acknowledge_recipient(&mut active, &mut retired, client_id, seq);
+            assert!(!old_path.exists() && new_path.exists());
+            old_sender
+                .send_client_msg(ClientToServerMsg::ClientExited)
+                .unwrap();
+        } else {
+            crate::native_drain_deadline(&mut drains, &os, before.1 + Duration::from_secs(31));
+        }
+        wait_for_router_remove(&threads, old);
+        old_router.join().unwrap().unwrap();
+        os.clone().remove_client(old).unwrap();
+        state.write().unwrap().remove_client(old);
+        retired.remove(&old);
+        assert!(!old_path.exists() && new_path.exists());
+        assert!(os.abort_native_drain(old, Some(before.1)));
+        sender
+            .send_client_msg(ClientToServerMsg::RenderFrameAck { seq: 1 })
+            .unwrap();
+        ack(new, 1);
+        let ScreenInstruction::RenderFrameAck { client_id, seq } =
+            threads.screen_receiver.try_recv().unwrap().0
+        else {
+            panic!("missing B ACK")
+        };
+        NativeRenderState::acknowledge_recipient(&mut active, &mut retired, client_id, seq);
+        assert!(!new_path.exists());
+        os.send_to_client(
+            new,
+            ServerToClientMsg::RenderFrame {
+                frame: FrameBuilder::new(1, 1, 2).finish(),
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            next_native(&mut reader),
+            Some(ServerToClientMsg::RenderFrame { .. })
+        ));
+        sender
+            .send_client_msg(ClientToServerMsg::ClientExited)
+            .unwrap();
+        wait_for_router_remove(&threads, new);
+        router.join().unwrap().unwrap();
+    }
+}

@@ -403,9 +403,9 @@ pub enum ScreenInstruction {
     RequestRepaint(ClientId),
     RecomputeTabSize(ClientId, Size),
     TerminalPixelDimensions(ClientId, PixelDimensions),
-    TerminalBackgroundColor(String),
-    TerminalForegroundColor(String),
-    TerminalColorRegisters(Vec<(usize, String)>),
+    TerminalBackgroundColor(ClientId, String),
+    TerminalForegroundColor(ClientId, String),
+    TerminalColorRegisters(ClientId, Vec<(usize, String)>),
     SetKittyGraphicsSupport {
         client_id: ClientId,
         supported: bool,
@@ -467,7 +467,7 @@ pub enum ScreenInstruction {
     /// is enabled). Triggers auto-theme switch (when configured), the
     /// `HostTerminalThemeChanged` plugin event, and per-pane DSR forwarding
     /// for panes that opted in via `CSI ? 2031 h`.
-    HostTerminalThemeChanged(HostTerminalThemeMode),
+    HostTerminalThemeChanged(ClientId, HostTerminalThemeMode),
     PaletteThemeSaved {
         client: ClientId,
         request: uuid::Uuid,
@@ -505,8 +505,8 @@ pub enum ScreenInstruction {
     SearchToggleCaseSensitivity(ClientId, Option<NotificationEnd>),
     SearchToggleWholeWord(ClientId, Option<NotificationEnd>),
     SearchToggleWrap(ClientId, Option<NotificationEnd>),
-    AddRedPaneFrameColorOverride(Vec<PaneId>, Option<String>), // Option<String> => optional error text
-    ClearPaneFrameColorOverride(Vec<PaneId>),
+    AddRedPaneFrameColorOverride(Option<ClientId>, Vec<PaneId>, Option<String>), // Option<String> => optional error text
+    ClearPaneFrameColorOverride(Option<ClientId>, Vec<PaneId>),
     SetTabBellFlash(TabId, bool), // tab_id, is_flashing
     /// The host terminal of `ClientId` gained (`true`) or lost (`false`) keyboard focus.
     HostTerminalFocusChanged(ClientId, bool),

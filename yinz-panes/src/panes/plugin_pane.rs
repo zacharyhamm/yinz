@@ -1185,10 +1185,13 @@ impl Pane for PluginPane {
     fn exclude_from_sync(&self) -> bool {
         self.exclude_from_sync
     }
-    fn add_red_pane_frame_color_override(&mut self, error_text: Option<String>) {
-        // A command that failed is a fact about the pane, so every client sees it.
+    fn add_red_pane_frame_color_override(
+        &mut self,
+        error_text: Option<String>,
+        owner: Option<ClientId>,
+    ) {
         let override_ =
-            FrameColorOverride::new(self.style.colors.exit_code_error.base, error_text, None);
+            FrameColorOverride::new(self.style.colors.exit_code_error.base, error_text, owner);
         if FrameColorOverride::set_if_changed(&mut self.pane_frame_color_override, override_) {
             self.set_should_render(true);
         }

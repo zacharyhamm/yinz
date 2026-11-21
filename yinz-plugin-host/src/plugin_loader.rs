@@ -490,7 +490,15 @@ impl PluginLoader {
     }
 
     fn script_client_disconnected(&self) -> bool {
-        !self.plugin_config.is_shared() && self.client_cancel.load(Ordering::Acquire)
+        !self.plugin_config.is_shared()
+            && (self.client_cancel.load(Ordering::Acquire)
+                || self
+                    .senders
+                    .session
+                    .resolve_client(ClientId::new(self.client_id.get()))
+                    .is_some_and(|current| {
+                        current.generation().is_some() && current != self.client_id
+                    }))
     }
 
     fn worker_env(&self, parent: &PluginEnv) -> PluginEnv {
@@ -523,6 +531,7 @@ impl PluginLoader {
         let background = self.panes.lock().unwrap().background(self.plugin_id);
         let surface = self.surface();
         PluginEnv {
+            issued_actors: Default::default(),
             web: self.web.clone(),
             web_pending: Default::default(),
             yinz_data_dir: self.yinz_data_dir.clone(),

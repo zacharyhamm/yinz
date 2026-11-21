@@ -150,7 +150,7 @@ fn a_client_cannot_clear_a_mark_raised_for_someone_else() {
 fn an_override_raised_for_nobody_in_particular_belongs_to_every_client() {
     let mut screen = screen_with_two_tabs();
     screen.with_pane(PaneId::Terminal(crate::TerminalId::new(2)), |pane| {
-        pane.add_red_pane_frame_color_override(Some("exited 1".to_owned()))
+        pane.add_red_pane_frame_color_override(Some("exited 1".to_owned()), None)
     });
 
     let (first, second) = screen

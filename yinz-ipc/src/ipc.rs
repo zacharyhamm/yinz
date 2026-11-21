@@ -7,6 +7,7 @@ use std::{
     fmt::{Display, Error, Formatter},
     io::{self, Read, Write},
     marker::PhantomData,
+    sync::{Arc, OnceLock},
     time::Instant,
 };
 use yinz_runtime::errors::prelude::*;
@@ -22,6 +23,7 @@ use yinz_types::keys::KeyModifier;
 use yinz_types::keys::KeyWithModifier;
 use yinz_types::pane_size::Size;
 use yinz_types::pane_size::SizeInPixels;
+use yinz_types::render_negotiation::{AttachmentGeneration, Request};
 use yinz_types::style::HostTerminalThemeMode;
 use yinz_types::style::Style;
 
@@ -30,6 +32,9 @@ use crate::client_server_contract::client_server_contract::{
     ClientToServerMsg as ProtoClientToServerMsg, ServerToClientMsg as ProtoServerToClientMsg,
 };
 use prost::Message;
+
+mod attachment_envelope;
+use attachment_envelope::{Direction, Envelope};
 
 mod enum_conversions;
 mod protobuf_conversion;
@@ -486,10 +491,36 @@ impl Display for ExitReason {
     }
 }
 
+#[derive(Debug)]
+pub struct InvalidOfferEcho;
+
+/// Negotiation metadata belongs to this socket and is shared only with its cloned halves.
+/// The two directions cross the decision boundary in FIFO order independently.
+#[derive(Default)]
+struct SocketNegotiation {
+    server_owner: OnceLock<AttachmentGeneration>,
+    advertised: std::sync::atomic::AtomicBool,
+    received_offer: OnceLock<bool>,
+    viewer_advertisement: OnceLock<Option<AttachmentGeneration>>,
+}
+
+fn generation(bytes: Option<&[u8]>) -> Result<Option<AttachmentGeneration>> {
+    bytes
+        .map(|bytes| {
+            bytes
+                .try_into()
+                .map(AttachmentGeneration)
+                .context("attachment generation must be 16 bytes")
+        })
+        .transpose()
+}
+
 /// Sends messages on a stream socket, along with an [`ErrorContext`].
 pub struct IpcSenderWithContext<T: Serialize> {
     sender: Box<dyn IpcStream>,
     closed: bool,
+    negotiation: Arc<SocketNegotiation>,
+    tags_required: bool,
     _phantom: PhantomData<T>,
 }
 
@@ -506,6 +537,8 @@ impl<T: Serialize> IpcSenderWithContext<T> {
         Self {
             sender,
             closed: false,
+            negotiation: Arc::default(),
+            tags_required: false,
             _phantom: PhantomData,
         }
     }
@@ -516,7 +549,7 @@ impl<T: Serialize> IpcSenderWithContext<T> {
     }
 
     pub fn send_client_msg(&mut self, msg: ClientToServerMsg) -> Result<()> {
-        let proto_msg: ProtoClientToServerMsg = msg.try_into()?;
+        let proto_msg = self.client_envelope(msg)?;
         self.send_message(&proto_msg)
     }
 
@@ -527,12 +560,54 @@ impl<T: Serialize> IpcSenderWithContext<T> {
         msg: ClientToServerMsg,
         deadline: Instant,
     ) -> Result<()> {
-        let proto_msg: ProtoClientToServerMsg = msg.try_into()?;
+        let proto_msg = self.client_envelope(msg)?;
         self.send_message_with_deadline(&proto_msg, Some(deadline))
     }
 
+    fn client_envelope(&mut self, msg: ClientToServerMsg) -> Result<ProtoClientToServerMsg> {
+        let offer = matches!(
+            &msg,
+            ClientToServerMsg::NativeRenderRequest(Request::Offer(_))
+        );
+        let mut envelope: ProtoClientToServerMsg = msg.try_into()?;
+        if let Some(Some(owner)) = self.negotiation.viewer_advertisement.get() {
+            self.tags_required |= offer;
+            if self.tags_required {
+                envelope.attachment_generation = Some(owner.0.to_vec());
+            }
+        }
+        Ok(envelope)
+    }
+
+    fn server_envelope(&mut self, msg: ServerToClientMsg) -> ProtoServerToClientMsg {
+        use crate::client_server_contract::client_server_contract::server_to_client_msg::Message;
+        let mut envelope: ProtoServerToClientMsg = msg.into();
+        if let Some(owner) = self.negotiation.server_owner.get() {
+            match &mut envelope.message {
+                Some(Message::Connected(connected))
+                    if connected.native_render_revision.is_some() =>
+                {
+                    connected.attachment_generation = Some(owner.0.to_vec());
+                    self.negotiation
+                        .advertised
+                        .store(true, std::sync::atomic::Ordering::Release);
+                },
+                Some(Message::NativeRenderResult(_))
+                    if self.negotiation.received_offer.get() == Some(&true) =>
+                {
+                    self.tags_required = true;
+                },
+                _ => {},
+            }
+            if self.tags_required {
+                envelope.attachment_generation = Some(owner.0.to_vec());
+            }
+        }
+        envelope
+    }
+
     pub fn send_server_msg(&mut self, msg: ServerToClientMsg) -> Result<()> {
-        let proto_msg: ProtoServerToClientMsg = msg.into();
+        let proto_msg = self.server_envelope(msg);
         self.send_message(&proto_msg)
     }
 
@@ -547,7 +622,7 @@ impl<T: Serialize> IpcSenderWithContext<T> {
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, "IPC sender is closed").into());
         }
         let limit = limit.min(MAX_IPC_FRAME_LEN);
-        let proto: ProtoServerToClientMsg = msg.into();
+        let proto = self.server_envelope(msg);
         let length = proto.encoded_len();
         if length > limit {
             return Err(NativeEnvelopeTooLarge { length, limit }.into());
@@ -600,7 +675,9 @@ impl<T: Serialize> IpcSenderWithContext<T> {
         F: for<'de> Deserialize<'de> + Serialize,
     {
         let socket = self.sender.try_clone_stream()?;
-        Ok(IpcReceiverWithContext::from_boxed(socket))
+        let mut receiver = IpcReceiverWithContext::from_boxed(socket);
+        receiver.negotiation = self.negotiation.clone();
+        Ok(receiver)
     }
 }
 
@@ -728,6 +805,8 @@ pub struct IpcReceiverWithContext<T> {
     receiver: io::BufReader<Box<dyn IpcStream>>,
     frame: IncomingFrame,
     closed: bool,
+    negotiation: Arc<SocketNegotiation>,
+    tags_required: bool,
     _phantom: PhantomData<T>,
 }
 
@@ -745,6 +824,8 @@ where
             receiver: io::BufReader::new(receiver),
             frame: IncomingFrame::default(),
             closed: false,
+            negotiation: Arc::default(),
+            tags_required: false,
             _phantom: PhantomData,
         }
     }
@@ -757,72 +838,176 @@ where
         self.receiver.get_ref().set_read_timeout(timeout)
     }
 
+    /// Assign the immutable server-side socket identity before dispatching its first request.
+    pub fn bind_server_attachment(&self, owner: AttachmentGeneration) -> Result<()> {
+        self.negotiation
+            .server_owner
+            .set(owner)
+            .map_err(|_| anyhow!("IPC attachment already bound"))
+    }
+
     pub fn recv_client_msg(&mut self) -> IpcRecv<ClientToServerMsg> {
-        if self.closed {
-            return IpcRecv::Eof;
-        }
-        match self
-            .frame
-            .read_message(|bytes| self.receiver.read(bytes), decode_client_message)
-        {
-            Ok(message) => IpcRecv::Msg(message, ErrorContext::default()),
-            Err(e) => {
-                let received = classify_read_error(e, "ClientToServerMsg");
-                self.closed = received.is_eof();
-                received
+        self.receive(
+            None,
+            |bytes| convert_client_message(decode_protobuf(bytes)?, bytes).map(Some),
+            "ClientToServerMsg",
+        )
+    }
+
+    /// The router handles an invalid Offer echo as a connection-local negotiation failure.
+    pub fn recv_attachment_request(
+        &mut self,
+        deadline: Option<Instant>,
+    ) -> Result<IpcRecv<ClientToServerMsg>, InvalidOfferEcho> {
+        let negotiation = self.negotiation.clone();
+        let mut invalid_echo = false;
+        let received = self.receive(
+            deadline,
+            |bytes| {
+                let Some(owner) = negotiation.server_owner.get() else {
+                    return convert_client_message(decode_protobuf(bytes)?, bytes).map(Some);
+                };
+                let envelope = Envelope::inspect(bytes, Direction::Client)?;
+                let tag = match generation(envelope.owner) {
+                    Ok(tag) => tag,
+                    Err(error) => {
+                        invalid_echo =
+                            negotiation.received_offer.get().is_none() && envelope.is_offer()?;
+                        return Err(error);
+                    },
+                };
+                if tag.is_some_and(|tag| tag != *owner)
+                    || (tag.is_none() && negotiation.received_offer.get() == Some(&true))
+                    || (tag.is_some()
+                        && !negotiation
+                            .advertised
+                            .load(std::sync::atomic::Ordering::Acquire))
+                {
+                    return Ok(None);
+                }
+                let msg = convert_client_message(decode_protobuf(bytes)?, bytes)?;
+                if matches!(
+                    &msg,
+                    ClientToServerMsg::NativeRenderRequest(Request::Offer(_))
+                ) {
+                    negotiation.received_offer.get_or_init(|| tag.is_some());
+                }
+                Ok(Some(msg))
             },
+            "ClientToServerMsg",
+        );
+        if invalid_echo {
+            Err(InvalidOfferEcho)
+        } else {
+            Ok(received)
         }
     }
 
     pub fn recv_server_msg(&mut self) -> IpcRecv<ServerToClientMsg> {
-        self.recv_server_msg_with_deadline(None)
+        self.recv_server_msg_with_deadline(None, false)
     }
 
     /// Receive until an absolute deadline, retaining any partial frame on expiry.
     /// This replaces the socket's read timeout; call `set_recv_timeout` to reset it afterwards.
     pub fn recv_server_msg_until(&mut self, deadline: Instant) -> IpcRecv<ServerToClientMsg> {
-        self.recv_server_msg_with_deadline(Some(deadline))
+        self.recv_server_msg_with_deadline(Some(deadline), false)
+    }
+
+    /// Read messages for one native viewer. This reader alone establishes its advertised
+    /// owner and consumes the decision boundary, even if it reads ahead of the window.
+    pub fn recv_native_server_msg(
+        &mut self,
+        deadline: Option<Instant>,
+    ) -> IpcRecv<ServerToClientMsg> {
+        self.recv_server_msg_with_deadline(deadline, true)
     }
 
     fn recv_server_msg_with_deadline(
         &mut self,
         deadline: Option<Instant>,
+        native: bool,
     ) -> IpcRecv<ServerToClientMsg> {
+        let negotiation = self.negotiation.clone();
+        let mut required = self.tags_required;
+        let received = self.receive(
+            deadline,
+            |bytes| {
+                if !native {
+                    return ProtoServerToClientMsg::decode(bytes)?.try_into().map(Some);
+                }
+                let envelope = Envelope::inspect(bytes, Direction::Server)?;
+                let expected = negotiation.viewer_advertisement.get().copied();
+                let owner = expected.flatten();
+                let tag = generation(envelope.owner)?;
+                let decision = envelope.kind == 36;
+                if tag.is_some() && tag != owner
+                    || tag.is_none() && (required || owner.is_some() && decision)
+                {
+                    return Ok(None);
+                }
+                let announcement = if envelope.kind == 4 {
+                    let advertised = envelope.advertised_generation()?;
+                    if expected.is_some() && advertised.is_some() && advertised != owner {
+                        return Ok(None);
+                    }
+                    Some(advertised)
+                } else {
+                    None
+                };
+                let msg = ProtoServerToClientMsg::decode(bytes)?.try_into()?;
+                if let Some(advertised) = announcement {
+                    negotiation.viewer_advertisement.get_or_init(|| advertised);
+                }
+                required |= decision && tag.is_some();
+                Ok(Some(msg))
+            },
+            "ServerToClientMsg",
+        );
+        self.tags_required = required;
+        received
+    }
+
+    fn receive<M>(
+        &mut self,
+        deadline: Option<Instant>,
+        mut decode: impl FnMut(&[u8]) -> Result<Option<M>>,
+        kind: &str,
+    ) -> IpcRecv<M> {
         if self.closed {
             return IpcRecv::Eof;
         }
-        match self.frame.read_message(
-            |bytes| {
-                if let Some(deadline) = deadline {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
-                        return Err(io::ErrorKind::TimedOut.into());
+        loop {
+            let result = self.frame.read_message(
+                |bytes| {
+                    if let Some(deadline) = deadline {
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        if remaining.is_zero() {
+                            return Err(io::ErrorKind::TimedOut.into());
+                        }
+                        self.receiver.get_ref().set_read_timeout(Some(remaining))?;
                     }
-                    self.receiver.get_ref().set_read_timeout(Some(remaining))?;
-                }
-                self.receiver.read(bytes)
-            },
-            decode_protobuf::<ProtoServerToClientMsg>,
-        ) {
-            Ok(proto_msg) => match proto_msg.try_into() {
-                Ok(rust_msg) => IpcRecv::Msg(rust_msg, ErrorContext::default()),
-                Err(e) => {
-                    warn!("Error converting protobuf to ServerToClientMsg: {:?}", e);
-                    IpcRecv::Malformed
+                    self.receiver.read(bytes)
                 },
-            },
-            Err(e) => {
-                let received = classify_read_error(e, "ServerToClientMsg");
-                self.closed = received.is_eof();
-                received
-            },
+                &mut decode,
+            );
+            match result {
+                Ok(Some(message)) => return IpcRecv::Msg(message, ErrorContext::default()),
+                Ok(None) => continue,
+                Err(error) => {
+                    let received = classify_read_error(error, kind);
+                    self.closed = received.is_eof();
+                    return received;
+                },
+            }
         }
     }
 
     /// Returns an [`IpcSenderWithContext`] with the same socket as this receiver.
     pub fn get_sender<F: Serialize>(&self) -> io::Result<IpcSenderWithContext<F>> {
         let socket = self.receiver.get_ref().try_clone_stream()?;
-        Ok(IpcSenderWithContext::from_boxed(socket))
+        let mut sender = IpcSenderWithContext::from_boxed(socket);
+        sender.negotiation = self.negotiation.clone();
+        Ok(sender)
     }
 }
 
@@ -850,10 +1035,12 @@ fn decode_protobuf<T: Message + Default>(bytes: &[u8]) -> Result<T> {
     T::decode(bytes).context("decode IPC frame")
 }
 
-fn decode_client_message(bytes: &[u8]) -> Result<ClientToServerMsg> {
+fn convert_client_message(
+    message: ProtoClientToServerMsg,
+    bytes: &[u8],
+) -> Result<ClientToServerMsg> {
     use crate::client_server_contract::client_server_contract::client_to_server_msg::Message::Action;
 
-    let message: ProtoClientToServerMsg = decode_protobuf(bytes)?;
     if matches!(&message.message, Some(Action(envelope))
         if envelope.action.as_ref().is_some_and(|action| action.action_type.is_none()))
         && is_retired_arrange_request(bytes)

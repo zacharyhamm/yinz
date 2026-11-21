@@ -1686,7 +1686,7 @@ fn move_pane_to_group_without_destination_or_room_preserves_pane_and_focus() {
             )
             .unwrap();
         assert!(errors.try_iter().any(|(job, _)| matches!(job,
-            BackgroundJob::DisplayPaneError(panes, message)
+            BackgroundJob::DisplayPaneError(None, panes, message)
                 if panes == vec![pane] && message == if no_other_group {
                     "No other tab groups to add pane to!"
                 } else { "Could not move pane to tab group!" }

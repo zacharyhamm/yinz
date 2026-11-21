@@ -111,6 +111,10 @@ fn server(fixture: &NativeFixture) -> UnixStream {
 }
 
 fn attach(fixture: &NativeFixture) -> UnixStream {
+    advertised_attachment(fixture).0
+}
+
+fn advertised_attachment(fixture: &NativeFixture) -> (UnixStream, Vec<u8>) {
     let mut stream = server(fixture);
     send(
         &mut stream,
@@ -127,13 +131,22 @@ fn attach(fixture: &NativeFixture) -> UnixStream {
         },
     );
     loop {
-        match server_message(&read_packet(&mut stream)) {
+        let packet = read_packet(&mut stream);
+        match server_message(&packet) {
             Server::Connected {
                 native_render_revision,
                 ..
             } => {
                 assert_eq!(native_render_revision, Some(1));
-                break;
+                let envelope = wire::ServerToClientMsg::decode(packet.as_slice()).unwrap();
+                let Some(wire::server_to_client_msg::Message::Connected(connected)) =
+                    envelope.message
+                else {
+                    unreachable!()
+                };
+                let owner = connected.attachment_generation.unwrap();
+                assert_eq!(owner.len(), 16);
+                return (stream, owner);
             },
             Server::RenderFrame { .. } | Server::NativeRenderResult(_) => {
                 panic!("native output before attachment advertisement")
@@ -141,7 +154,6 @@ fn attach(fixture: &NativeFixture) -> UnixStream {
             _ => {},
         }
     }
-    stream
 }
 
 fn text_viewer(fixture: &NativeFixture) -> UnixStream {
@@ -194,7 +206,11 @@ fn wait_text(stream: &mut UnixStream, marker: &str) {
 
 // Inspect and pass the original packet bytes in both directions. The first full frame is
 // consumed independently of the prefix that the barrier will hold.
-fn exchange(client: &mut UnixStream, server: &mut UnixStream, shared: bool) -> TerminalState {
+fn exchange(
+    client: &mut UnixStream,
+    server: &mut UnixStream,
+    shared: bool,
+) -> (TerminalState, Vec<u8>) {
     let opening = read_packet(client);
     let Client::AttachClient {
         cli_assets,
@@ -238,6 +254,11 @@ fn exchange(client: &mut UnixStream, server: &mut UnixStream, shared: bool) -> T
         }
     }
     let request = read_packet(client);
+    let generation = wire::ClientToServerMsg::decode(request.as_slice())
+        .unwrap()
+        .attachment_generation
+        .unwrap();
+    assert_eq!(generation.len(), 16);
     let Client::NativeRenderRequest(caps::Request::Offer(offer)) = client_message(&request) else {
         panic!("expected revision 1 offer")
     };
@@ -250,6 +271,18 @@ fn exchange(client: &mut UnixStream, server: &mut UnixStream, shared: bool) -> T
     loop {
         let packet = read_packet(server);
         let message = server_message(&packet);
+        if matches!(
+            message,
+            Server::NativeRenderResult(_) | Server::RenderFrame { .. }
+        ) {
+            assert_eq!(
+                wire::ServerToClientMsg::decode(packet.as_slice())
+                    .unwrap()
+                    .attachment_generation
+                    .as_ref(),
+                Some(&generation)
+            );
+        }
         write_packet(client, &packet);
         match message {
             Server::NativeRenderResult(caps::Decision::Selected(a)) => {
@@ -266,16 +299,23 @@ fn exchange(client: &mut UnixStream, server: &mut UnixStream, shared: bool) -> T
                 assert!(selected);
                 assert!(decode(&frame).unwrap().header().full_repaint());
                 let seq = state.apply_frame(&frame).unwrap().seq;
-                forward_ack(client, server, seq);
-                return state;
+                forward_ack(client, server, seq, &generation);
+                return (state, generation);
             },
             _ => {},
         }
     }
 }
 
-fn forward_ack(client: &mut UnixStream, server: &mut UnixStream, expected: u64) {
+fn forward_ack(client: &mut UnixStream, server: &mut UnixStream, expected: u64, generation: &[u8]) {
     let packet = read_packet(client);
+    assert_eq!(
+        wire::ClientToServerMsg::decode(packet.as_slice())
+            .unwrap()
+            .attachment_generation
+            .as_deref(),
+        Some(generation)
+    );
     assert_eq!(
         client_message(&packet),
         Client::RenderFrameAck { seq: expected }
@@ -319,7 +359,7 @@ pub(super) fn refusal() {
     drop((probe, upstream));
     let mut client = bounded(listener.accept().unwrap().0);
     let mut upstream = server(&fixture);
-    let mut state = exchange(&mut client, &mut upstream, true);
+    let (mut state, _) = exchange(&mut client, &mut upstream, true);
     let mut held = Vec::new();
     let mut leases = std::collections::BTreeMap::new();
     let mut colors = std::collections::HashMap::new();
@@ -479,7 +519,7 @@ fn render_negotiation_established_forward_uses_portable_pixels_and_terminal_asse
         )
     });
     let mut upstream = server(&fixture);
-    let mut state = exchange(&mut client, &mut upstream, false);
+    let (mut state, generation) = exchange(&mut client, &mut upstream, false);
     trigger(&fixture, "image-1");
     let image_id = loop {
         let packet = read_packet(&mut upstream);
@@ -487,7 +527,7 @@ fn render_negotiation_established_forward_uses_portable_pixels_and_terminal_asse
         write_packet(&mut client, &packet);
         if let Server::RenderFrame { frame } = message {
             let applied = state.apply_frame(&frame).unwrap();
-            forward_ack(&mut client, &mut upstream, applied.seq);
+            forward_ack(&mut client, &mut upstream, applied.seq, &generation);
             if let Some(id) = decode(&frame)
                 .unwrap()
                 .graphics()
@@ -511,13 +551,11 @@ fn render_negotiation_established_forward_uses_portable_pixels_and_terminal_asse
         .graphics()
         .placements()
         .any(|p| p.image_id == image_id));
-    write_packet(
-        &mut client,
-        &wire::ServerToClientMsg::from(Server::Exit {
-            exit_reason: ExitReason::NormalDetached,
-        })
-        .encode_to_vec(),
-    );
+    let mut exit = wire::ServerToClientMsg::from(Server::Exit {
+        exit_reason: ExitReason::NormalDetached,
+    });
+    exit.attachment_generation = Some(generation);
+    write_packet(&mut client, &exit.encode_to_vec());
     let closed = read_packet(&mut client);
     assert_eq!(client_message(&closed), Client::ClientExited);
     write_packet(&mut upstream, &closed);
@@ -540,10 +578,16 @@ fn render_negotiation_established_forward_uses_portable_pixels_and_terminal_asse
 }
 
 fn advertisement(revision: Option<u32>) -> Vec<u8> {
+    advertisement_with_generation(revision, None)
+}
+
+fn advertisement_with_generation(revision: Option<u32>, generation: Option<Vec<u8>>) -> Vec<u8> {
     wire::ServerToClientMsg {
+        attachment_generation: None,
         message: Some(wire::server_to_client_msg::Message::Connected(
             wire::ConnectedMsg {
                 native_render_revision: revision,
+                attachment_generation: generation,
                 ..Default::default()
             },
         )),
@@ -983,4 +1027,349 @@ fn wait_ansi_after_legacy(stream: &mut UnixStream, state: &mut TerminalState, ma
             _ => {},
         }
     }
+}
+
+#[test]
+fn attachment_generation_headless_reconnect_keeps_its_own_recording_and_ack() {
+    let fixture = NativeFixture::new();
+    let (proxy, listener) = scripted_listener(SESSION);
+    let capture = proxy.path().join("reconnect.frames");
+    let original = advertisement_with_generation(Some(1), Some(vec![0x11; 16]));
+    let previous_capture = proxy.path().join("original.frames");
+    let (old_child, mut old_peer) = scripted_attachment(
+        &fixture,
+        proxy.path(),
+        &listener,
+        SESSION,
+        &previous_capture,
+        "30",
+    );
+    write_packet(&mut old_peer, &original);
+    assert_eq!(
+        wire::ClientToServerMsg::decode(read_packet(&mut old_peer).as_slice())
+            .unwrap()
+            .attachment_generation,
+        Some(vec![0x11; 16])
+    );
+    let (child, mut peer) =
+        scripted_attachment(&fixture, proxy.path(), &listener, SESSION, &capture, "30");
+    let owner = vec![0x22; 16];
+    write_packet(
+        &mut peer,
+        &advertisement_with_generation(Some(1), Some(owner.clone())),
+    );
+    let request = wire::ClientToServerMsg::decode(read_packet(&mut peer).as_slice()).unwrap();
+    assert_eq!(request.attachment_generation.as_ref(), Some(&owner));
+    let Client::NativeRenderRequest(caps::Request::Offer(offer)) = request.try_into().unwrap()
+    else {
+        panic!("expected one offer on the replacement connection");
+    };
+    // The same damaged LogError fails on its owner and is skipped on the replacement.
+    let bad_log = [vec![0x32, 3, 0x0a, 1, 0xff, 0xb2, 2, 16], vec![0x11; 16]].concat();
+    write_packet(&mut old_peer, &bad_log);
+    let failed = old_child.wait_with_output().unwrap();
+    let reason = String::from_utf8_lossy(&failed.stderr);
+    assert!(
+        !failed.status.success()
+            && reason.contains("invalid IPC message")
+            && reason.contains(SESSION),
+        "{reason}"
+    );
+    write_packet(&mut peer, &original);
+    // Foreign packets have intact top-level extents but undecodable message bodies.
+    for mut packet in [vec![0x32, 3, 0x0a, 1, 0xff], vec![0xa2, 2, 0]] {
+        packet.extend_from_slice(&[0xb2, 2, 16]);
+        packet.extend_from_slice(&[0x11; 16]);
+        write_packet(&mut peer, &packet);
+    }
+    let send_current = |peer: &mut UnixStream, msg: Server| {
+        let mut wire = wire::ServerToClientMsg::from(msg);
+        wire.attachment_generation = Some(owner.clone());
+        write_packet(peer, &wire.encode_to_vec());
+    };
+    send_current(
+        &mut peer,
+        Server::NativeRenderResult(caps::Decision::Selected(offer.select(None).unwrap())),
+    );
+    let mut frame = yinz_types::structured_render::FrameBuilder::new(80, 24, 1);
+    frame.set_full_repaint(true);
+    let frame = frame.finish();
+    send_current(
+        &mut peer,
+        Server::RenderFrame {
+            frame: frame.clone(),
+        },
+    );
+    let ack = wire::ClientToServerMsg::decode(read_packet(&mut peer).as_slice()).unwrap();
+    assert_eq!(ack.attachment_generation.as_ref(), Some(&owner));
+    assert_eq!(
+        Client::try_from(ack).unwrap(),
+        Client::RenderFrameAck { seq: 1 }
+    );
+    send_current(
+        &mut peer,
+        Server::Exit {
+            exit_reason: ExitReason::NormalDetached,
+        },
+    );
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(capture).unwrap(),
+        [&(frame.len() as u32).to_le_bytes()[..], &frame].concat()
+    );
+}
+
+fn send_tagged(stream: &mut UnixStream, tag: &[u8], message: Client) {
+    let mut envelope = wire::ClientToServerMsg::try_from(message).unwrap();
+    envelope.attachment_generation = Some(tag.to_vec());
+    write_packet(stream, &envelope.encode_to_vec());
+}
+
+fn select_tagged(
+    stream: &mut UnixStream,
+    tag: &[u8],
+    offer: caps::Offer,
+    root: Option<Arc<MediaRoot>>,
+) -> TerminalState {
+    send_tagged(
+        stream,
+        tag,
+        Client::NativeRenderRequest(caps::Request::Offer(offer)),
+    );
+    let mut state = TerminalState::new(40, 120);
+    let mut selected = false;
+    loop {
+        let packet = wire::ServerToClientMsg::decode(read_packet(stream).as_slice()).unwrap();
+        let matching = packet.attachment_generation.as_deref() == Some(tag);
+        match Server::try_from(packet).unwrap() {
+            Server::NativeRenderResult(caps::Decision::Selected(agreement)) => {
+                assert!(matching && !selected);
+                state.negotiate(agreement, root.clone());
+                selected = true;
+            },
+            Server::RenderFrame { frame } => {
+                assert!(selected && matching && decode(&frame).unwrap().header().full_repaint());
+                let seq = state.apply_frame(&frame).unwrap().seq;
+                send_tagged(stream, tag, Client::RenderFrameAck { seq });
+                return state;
+            },
+            Server::NativeRenderResult(other) => panic!("unexpected opening decision {other:?}"),
+            Server::Exit { exit_reason } => panic!("unexpected exit {exit_reason:?}"),
+            _ => {},
+        }
+    }
+}
+
+#[test]
+fn attachment_generation_invalid_offer_and_withdraw_diverge() {
+    use yinz_runtime::native_media::Probe;
+    let fixture = start_server(1);
+    let mut second = text_viewer(&fixture);
+    let (mut healthy, owner) = advertised_attachment(&fixture);
+    let probe = Probe::create(&fixture.fixture.path().join("tmp")).unwrap();
+    let root = Arc::new(MediaRoot::open(Path::new(&probe.offer.root)).unwrap());
+    let mut state = select_tagged(
+        &mut healthy,
+        &owner,
+        caps::Offer::reader(Some(probe.offer.clone())),
+        Some(root),
+    );
+
+    for bytes in [0, 15] {
+        let (mut offender, _) = advertised_attachment(&fixture);
+        send_tagged(
+            &mut offender,
+            &vec![0; bytes],
+            Client::NativeRenderRequest(caps::Request::Offer(caps::Offer::reader(None))),
+        );
+        loop {
+            match server_message(&read_packet(&mut offender)) {
+                Server::Exit {
+                    exit_reason: ExitReason::Error(error),
+                } => {
+                    assert!(error.contains("attachment generation"));
+                    break;
+                },
+                Server::NativeRenderResult(_) | Server::RenderFrame { .. } => {
+                    panic!("invalid offer was admitted")
+                },
+                _ => {},
+            }
+        }
+        let (mut replacement, tag) = advertised_attachment(&fixture);
+        send_tagged(
+            &mut replacement,
+            &vec![0; bytes],
+            Client::NativeRenderRequest(caps::Request::Withdraw),
+        );
+        send_tagged(
+            &mut replacement,
+            &owner,
+            Client::NativeRenderRequest(caps::Request::Withdraw),
+        );
+        select_tagged(&mut replacement, &tag, caps::Offer::reader(None), None);
+    }
+
+    trigger(&fixture, "image-1");
+    let path = loop {
+        let packet = wire::ServerToClientMsg::decode(read_packet(&mut healthy).as_slice()).unwrap();
+        assert_eq!(packet.attachment_generation.as_ref(), Some(&owner));
+        if let Server::RenderFrame { frame } = Server::try_from(packet).unwrap() {
+            let seq = state.apply_frame(&frame).unwrap().seq;
+            let path =
+                decode(&frame)
+                    .unwrap()
+                    .graphics()
+                    .into_iter()
+                    .find_map(|record| match record {
+                        GraphicsRecord::Residency {
+                            medium: GraphicsMedium::SharedFile,
+                            data,
+                            ..
+                        } => Some(PathBuf::from(String::from_utf8(data).unwrap())),
+                        _ => None,
+                    });
+            if let Some(ref path) = path {
+                assert!(path.exists());
+            }
+            send_tagged(&mut healthy, &owner, Client::RenderFrameAck { seq });
+            if let Some(path) = path {
+                break path;
+            }
+        }
+    };
+    send_tagged(
+        &mut healthy,
+        &owner,
+        Client::NativeRenderRequest(caps::Request::Withdraw),
+    );
+    while !matches!(
+        server_message(&read_packet(&mut healthy)),
+        Server::NativeRenderResult(caps::Decision::Withdrawn(_))
+    ) {}
+    assert!(
+        !path.exists(),
+        "healthy viewer's cumulative ACK was consumed"
+    );
+    trigger(&fixture, "during");
+    wait_text(&mut second, "DURING-DRAIN");
+}
+
+#[test]
+fn attachment_generation_graphical_keybinding_keeps_source_until_promotion() {
+    let fixture = NativeFixture::new();
+    let root = fixture.fixture.path();
+    let config = fs::read_to_string(&fixture.config).unwrap();
+    fs::write(&fixture.config, format!("{config}\nkeybinds {{ normal {{ bind \"Ctrl Alt y\" {{ SwitchSession name=\"destination\"; }}; }}; }}\n")).unwrap();
+    let script = root.join("probe.py");
+    fs::write(&script, "import os, sys, tty\ntty.setraw(0)\nname = sys.argv[1]\nprint(name+'-ready', flush=True)\nwhile True:\n c=os.read(0,1)\n if not c: break\n print('\\r'+name+'-'+c.decode('ascii','replace'),flush=True)\n").unwrap();
+    for name in ["source", "destination"] {
+        fs::write(
+            &fixture.layout,
+            format!(
+                "layout {{ pane command=\"python3\" {{ args \"{}\" \"{name}\"; }}; }}",
+                script.display()
+            ),
+        )
+        .unwrap();
+        let capture = root.join(format!("{name}.frames"));
+        fixture.capture_until(
+            name,
+            &mut fixture.terminal(name, true, &capture),
+            &capture,
+            "pane ready",
+            |recording| {
+                recording
+                    .grid_and_marker(&format!("{name}-ready"))
+                    .is_some()
+            },
+        );
+    }
+    let mut driver = Command::new(std::env::current_exe().unwrap());
+    fixture.fixture.inherit(&mut driver);
+    let output = driver
+        .args([
+            "--exact",
+            "negotiation::live_graphical_driver",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("YINZ_SWITCH_FIXTURE", root)
+        .env("YINZ_SOCKET_DIR", fixture.fixture.socket_dir())
+        .env("HOME", root.join("home"))
+        .env("TMPDIR", root.join("tmp"))
+        .env("YINZ_TEST_CACHE_DIR", &fixture.cache)
+        .output()
+        .unwrap();
+    let ran_driver = String::from_utf8_lossy(&output.stdout).contains("1 passed");
+    assert_success(output);
+    assert!(ran_driver, "the graphical switch driver must run");
+
+    let mut ordinary = bounded(
+        UnixStream::connect(
+            fixture
+                .fixture
+                .socket_dir()
+                .join(&*yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR)
+                .join("source"),
+        )
+        .unwrap(),
+    );
+    send(
+        &mut ordinary,
+        Client::AttachClient {
+            cli_assets: CliAssets {
+                terminal_window_size: Size { rows: 24, cols: 80 },
+                ..Default::default()
+            },
+            tab_number_to_focus: None,
+            pane_to_focus: None,
+        },
+    );
+    while !matches!(
+        server_message(&read_packet(&mut ordinary)),
+        Server::Render { .. }
+    ) {}
+    fixture.action("source", &["switch-session", "destination"]);
+    loop {
+        if let Server::SwitchSession { connect_to_session } =
+            server_message(&read_packet(&mut ordinary))
+        {
+            assert_eq!(connect_to_session.name, Some("destination".into()));
+            break;
+        }
+    }
+    // The ordinary source must be retired by the server after it delivers the handoff.
+    ordinary.read_to_end(&mut Vec::new()).unwrap();
+}
+
+#[test]
+#[ignore = "driven under the real fixture's socket namespace"]
+fn live_graphical_driver() {
+    let root = PathBuf::from(std::env::var_os("YINZ_SWITCH_FIXTURE").unwrap());
+    let opts = yinz_cli::args::CliArgs {
+        config: Some(root.join("config.kdl")),
+        config_dir: Some(root.join("config-dir")),
+        data_dir: Some(root.join("data")),
+        ..Default::default()
+    };
+    yinz_native_terminal::exercise_live_switch(opts, || {
+        let output = Command::new(env!("CARGO_BIN_EXE_yinz"))
+            .args([
+                "--session",
+                "source",
+                "action",
+                "switch-session",
+                "destination",
+            ])
+            .output()
+            .unwrap();
+        assert_success(output);
+    })
+    .unwrap();
 }

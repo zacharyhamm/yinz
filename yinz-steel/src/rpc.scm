@@ -66,12 +66,12 @@
       (lambda ()
         (set! %rpc-calls (hash-remove %rpc-calls id))
         (when timer (yinz-cancel! timer))))
-    (set! %rpc-calls (hash-insert %rpc-calls id (vector operation destination on-progress %async-client)))
+    (set! %rpc-calls (hash-insert %rpc-calls id (vector operation destination on-progress %async-actor)))
     (when (hash-contains? options "timeoutMs")
       (set! timer (yinz-sleep (hash-ref options "timeoutMs")))
       (%async-observe timer
         (lambda (ignored) (yinz-reject! operation (string-append "RPC timed out: " name)))
-        (lambda (failure) (yinz-reject! operation failure)) %async-client))
+        (lambda (failure) (yinz-reject! operation failure)) %async-actor))
     (when (or (not timer) (yinz-pending? timer))
       (%rpc-send "yinz_rpc_call"
         (hash "version" 1 "call_id" id "name" name "payload" (%async-get options "payload" json-null))
@@ -104,7 +104,7 @@
   (define name (%async-get call "name" #f))
   (when (%rpc-name? name)
     (define id (hash-ref call "call_id"))
-    (define origin %async-client)
+    (define origin %async-actor)
     (define active #t)
     (define (progress value)
       (when active

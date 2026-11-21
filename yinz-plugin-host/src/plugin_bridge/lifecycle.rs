@@ -1464,6 +1464,9 @@ impl PluginBridge {
         result
     }
     pub fn add_client(&mut self, client_id: ClientId) -> Result<()> {
+        if !self.senders.session.owns_attachment(client_id) {
+            return Ok(());
+        }
         let started_at = std::time::Instant::now();
         log::info!(
             "attach trace: PluginBridge::add_client client_id={client_id} connected-client check begin"
@@ -1473,6 +1476,17 @@ impl PluginBridge {
                 "attach trace: PluginBridge::add_client client_id={client_id} already connected"
             );
             return Ok(());
+        }
+
+        let superseded = self
+            .connected_clients
+            .lock()
+            .unwrap()
+            .iter()
+            .copied()
+            .find(|owner| owner.get() == client_id.get() && *owner != client_id);
+        if let Some(superseded) = superseded {
+            self.remove_client(superseded);
         }
 
         // Registered before the client is listed as connected; see `remove_client`.
@@ -1740,6 +1754,25 @@ impl PluginBridge {
             let plugin_ids: Vec<_> = self.cancel_tokens.keys().copied().collect();
             for plugin_id in plugin_ids {
                 if self.shared_plugin_ids.contains(&plugin_id) {
+                    self.plugin_executor.execute_for_plugin_tagged(
+                        plugin_id,
+                        "retire render",
+                        false,
+                        move |_, map, clients| {
+                            if clients.lock().unwrap().contains(&client_id) {
+                                return;
+                            }
+                            let plugin = map.lock().unwrap().get_running_plugin(plugin_id, None);
+                            if let Some(plugin) = plugin {
+                                plugin
+                                    .lock()
+                                    .unwrap()
+                                    .retire_render(client_id)
+                                    .context("retire departing attachment's cached plugin frame")
+                                    .non_fatal();
+                            }
+                        },
+                    );
                     continue;
                 }
                 self.plugin_executor.execute_for_plugin_tagged(

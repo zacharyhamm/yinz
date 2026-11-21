@@ -481,6 +481,7 @@ impl Screen {
                 .bus
                 .senders
                 .send_to_background_jobs(BackgroundJob::DisplayPaneError(
+                    None,
                     vec![active_pane_id],
                     "No other tabs to add pane to!".into(),
                 ))
@@ -502,6 +503,7 @@ impl Screen {
             .bus
             .senders
             .send_to_background_jobs(BackgroundJob::DisplayPaneError(
+                None,
                 vec![pane_id],
                 "No room for this pane in that tab!".into(),
             ))

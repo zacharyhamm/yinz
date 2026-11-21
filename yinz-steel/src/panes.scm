@@ -15,7 +15,7 @@
   (define previous (vector-ref operation 4))
   (vector-set! operation 4 (lambda () (previous) (cleanup))))
 (define (%pane-listen operation type callback)
-  (define origin %async-client)
+  (define origin %async-actor)
   (define release
     (yinz-on-event type (lambda (payload)
       (when (yinz-pending? operation)
@@ -28,7 +28,7 @@
   (%async-observe timer
     (lambda (_) (with-handler failure (fire)))
     (lambda (message) (unless (equal? message "operation cancelled") (failure message)))
-    %async-client)
+    %async-actor)
   timer)
 (define (%pane-step value)
   (%pane-options value "pane step")
@@ -180,7 +180,7 @@
   (define pane #f) (define status "running") (define index 0) (define failed-step json-null)
   (define current #f) (define timer #f) (define ending #f) (define codes '())
   (define done (yinz-deferred))
-  (define origin %async-client)
+  (define origin %async-actor)
   (define (callback key arguments)
     (define callback-procedure (%pane-get options key #f))
     (when callback-procedure

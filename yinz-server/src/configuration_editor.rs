@@ -63,6 +63,9 @@ impl SessionMetaData {
         permanent: bool,
         cancelled: &std::sync::atomic::AtomicBool,
     ) -> Result<(), String> {
+        if !self.senders.session.owns_attachment(client) {
+            return Err("Theme selection was cancelled".into());
+        }
         let disk = Disk::read(self.config_file_path.as_deref(), self.config_dir.as_deref())?;
         let mut current = self.session_configuration.get_client_configuration(&client);
         // A dark/light pair in the session theme outranks the static theme, so saving a
@@ -294,21 +297,36 @@ impl SessionMetaData {
             &staged.editor_overrides,
         )?)
         .map_err(|e| format!("{e:#}"))?;
-        if let Some((fragment, underlay)) = pending_write {
-            Config::try_write_editor_fragment(&disk.overlay, &fragment, underlay, || {
-                if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
-                    return Err("Theme selection was cancelled".into());
-                }
-                let now = Disk::read(self.config_file_path.as_deref(), self.config_dir.as_deref())?;
-                if now != *disk {
-                    Err("Configuration changed on disk. Reload before saving.".into())
-                } else {
-                    Ok(())
-                }
-            })?;
+        let registry = self.senders.session.clone();
+        let commit = || -> Result<(), String> {
+            if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                return Err("Theme selection was cancelled".into());
+            }
+            if let Some((fragment, underlay)) = pending_write {
+                Config::try_write_editor_fragment(&disk.overlay, &fragment, underlay, || {
+                    if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                        return Err("Theme selection was cancelled".into());
+                    }
+                    let now =
+                        Disk::read(self.config_file_path.as_deref(), self.config_dir.as_deref())?;
+                    if now != *disk {
+                        Err("Configuration changed on disk. Reload before saving.".into())
+                    } else {
+                        Ok(())
+                    }
+                })?;
+            }
+            staged.refresh_effective_keybinds();
+            self.session_configuration = staged;
+            Ok(())
+        };
+        if let Some((client, _)) = theme_reply {
+            registry
+                .with_attachment(client, commit)
+                .ok_or("Theme selection was cancelled")??;
+        } else {
+            commit()?;
         }
-        staged.refresh_effective_keybinds();
-        self.session_configuration = staged;
         // The screen must hold the saved theme's baseline before the preview closes, so
         // closing it keeps that palette instead of the previous one.
         self.publish_application_theme();

@@ -3792,6 +3792,8 @@ impl ThemeHue {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientToServerMsg {
+    #[prost(bytes="vec", optional, tag="46")]
+    pub attachment_generation: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
     #[prost(oneof="client_to_server_msg::Message", tags="45, 42, 43, 40, 41, 38, 37, 33, 34, 36, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 35, 44, 11, 39, 12, 32, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29, 30, 31")]
     pub message: ::core::option::Option<client_to_server_msg::Message>,
 }
@@ -4184,6 +4186,8 @@ impl HostTerminalThemeIndication {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerToClientMsg {
+    #[prost(bytes="vec", optional, tag="38")]
+    pub attachment_generation: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
     #[prost(oneof="server_to_client_msg::Message", tags="36, 35, 34, 32, 33, 31, 30, 29, 28, 23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 26, 14, 15, 16, 18, 20, 21, 22, 27, 37")]
     pub message: ::core::option::Option<server_to_client_msg::Message>,
 }
@@ -4302,6 +4306,8 @@ pub struct ConnectedMsg {
     pub server_host: ::prost::alloc::string::String,
     #[prost(uint32, optional, tag="9")]
     pub native_render_revision: ::core::option::Option<u32>,
+    #[prost(bytes="vec", optional, tag="10")]
+    pub attachment_generation: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

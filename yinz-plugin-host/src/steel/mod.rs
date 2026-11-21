@@ -52,6 +52,16 @@ pub(crate) fn runtime_count() -> usize {
     RUNTIMES.with(|runtimes| runtimes.borrow().len())
 }
 
+// The SDK restores this private pair on each deferred callback. Guest APIs still see the number.
+fn actor_context(client: crate::ClientId) -> Value {
+    match client.generation() {
+        Some(generation) => serde_json::json!({
+            "id": client.get(), "generation": uuid::Uuid::from_bytes(generation.0),
+        }),
+        None => Value::from(client.get()),
+    }
+}
+
 type HostEnv = Arc<Mutex<Option<PluginEnv>>>;
 
 struct EnvScope<'a> {
@@ -86,6 +96,7 @@ pub struct SteelPlugin {
     client_cancel: Arc<AtomicBool>,
     repl_pipe: Option<String>,
     disposed: bool,
+    render_owners: std::collections::HashSet<crate::ClientId>,
     first_render_started: Option<Instant>,
 }
 
@@ -190,6 +201,7 @@ impl SteelPlugin {
             client_cancel,
             repl_pipe: None,
             disposed: false,
+            render_owners: Default::default(),
             first_render_started: Some(started),
         };
         if plugin
@@ -268,6 +280,9 @@ impl SteelPlugin {
             self.env().plugin_config.path.display()
         );
         let client = self.env().client_id;
+        if allow_host {
+            self.env_mut().issued_actors.insert(client);
+        }
         {
             let mut active = self
                 .active
@@ -286,6 +301,11 @@ impl SteelPlugin {
                     self.generation,
                 )
             });
+        let session = self.env().senders.session.clone();
+        let retired: Vec<_> = self
+            .render_owners
+            .extract_if(|owner| !session.owns_attachment(*owner))
+            .collect();
         let mut local_env = None;
         let env = if allow_host {
             &mut self.env
@@ -305,8 +325,11 @@ impl SteelPlugin {
             let runtime = runtimes
                 .get_mut(&self.generation)
                 .context("Steel runtime is no longer available")?;
+            for owner in retired {
+                runtime.invoke("yinz-async-retire", vec![actor_context(owner)])?;
+            }
             if allow_host {
-                runtime.invoke("yinz-async-enter", vec![serde_json::to_value(client)?])?;
+                runtime.invoke("yinz-async-enter", vec![actor_context(client)])?;
             }
             let result = call(runtime);
             let output = runtime.take_output();
@@ -451,7 +474,22 @@ impl SteelPlugin {
         self.with_runtime(true, |runtime| runtime.web(request))
     }
 
+    pub(crate) fn retire_render(&mut self, client: crate::ClientId) -> Result<()> {
+        if self.render_owners.remove(&client) {
+            self.with_runtime(false, |runtime| {
+                runtime.invoke("yinz-async-retire", vec![actor_context(client)])?;
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
     pub fn render(&mut self, rows: usize, columns: usize) -> Result<Vec<u8>> {
+        let client = self.env().client_id;
+        if !self.env().senders.session.owns_attachment(client) {
+            return Ok(Vec::new());
+        }
+        self.render_owners.insert(client);
         let started = Instant::now();
         let frame = self.with_runtime(true, |runtime| {
             runtime
@@ -502,6 +540,7 @@ impl SteelPlugin {
                     interrupt.interrupt();
                 }
             });
+            let cleanup_env = self.host.clone();
             self.with_runtime(true, |runtime| {
                 runtime.unload()?;
                 loop {
@@ -516,7 +555,16 @@ impl SteelPlugin {
                     if let Ok((client, event)) =
                         replies.recv_timeout(remaining.min(Duration::from_millis(10)))
                     {
-                        runtime.invoke("yinz-async-enter", vec![serde_json::to_value(client)?])?;
+                        if client.generation().is_some() {
+                            cleanup_env
+                                .lock()
+                                .to_anyhow()?
+                                .as_mut()
+                                .context("missing unload environment")?
+                                .issued_actors
+                                .insert(client);
+                        }
+                        runtime.invoke("yinz-async-enter", vec![actor_context(client)])?;
                         runtime.update(crate::event::event_to_json(&event)?)?;
                     }
                 }
@@ -591,6 +639,7 @@ fn dispatch(env: &mut PluginEnv, value: Value) -> Result<Value> {
         #[serde(deny_unknown_fields)]
         struct Command {
             client: yinz_types::internal_ids::ClientId,
+            generation: Option<uuid::Uuid>,
             command: Value,
             permission_id: Option<String>,
         }
@@ -600,7 +649,28 @@ fn dispatch(env: &mut PluginEnv, value: Value) -> Result<Value> {
         );
         let command: Command =
             serde_json::from_value(envelope.clone()).context("invalid Steel callback context")?;
-        let previous = std::mem::replace(&mut env.client_id, command.client);
+        let client = match command.generation {
+            Some(id) => {
+                let actor = crate::ClientId::for_attachment(
+                    command.client.get(),
+                    yinz_types::render_negotiation::AttachmentGeneration(*id.as_bytes()),
+                );
+                anyhow::ensure!(
+                    env.issued_actors.contains(&actor),
+                    "unknown Steel acting attachment"
+                );
+                actor
+            },
+            None => {
+                anyhow::ensure!(
+                    env.issued_actors.contains(&command.client)
+                        || (env.client_id.generation().is_none() && env.issued_actors.is_empty()),
+                    "missing Steel acting attachment"
+                );
+                command.client
+            },
+        };
+        let previous = std::mem::replace(&mut env.client_id, client);
         let result = dispatch_command(env, command.command, command.permission_id);
         env.client_id = previous;
         return result;

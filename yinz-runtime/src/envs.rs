@@ -1,8 +1,9 @@
 //! Uniformly operates YINZ* environment variables.
 use anyhow::Result;
+use std::collections::HashMap;
 use std::env::var;
 use std::sync::{Arc, RwLock};
-use yinz_types::internal_ids::SessionName;
+use yinz_types::internal_ids::{ClientId, SessionName};
 
 pub const YINZ_ENV_KEY: &str = "YINZ";
 pub fn get_yinz() -> Result<String> {
@@ -39,15 +40,76 @@ pub fn get_socket_dir() -> Result<String> {
 
 /// Mutable identity belongs to one server, never to the process environment.
 #[derive(Clone, Debug, Default)]
-pub struct SessionState(Arc<RwLock<SessionName>>);
+pub struct SessionState {
+    name: Arc<RwLock<SessionName>>,
+    // Standalone components can run without a socket registry.
+    attachments: Arc<RwLock<Option<HashMap<u32, ClientId>>>>,
+}
 
 impl SessionState {
     pub fn new(name: SessionName) -> Self {
-        Self(Arc::new(RwLock::new(name)))
+        Self {
+            name: Arc::new(RwLock::new(name)),
+            ..Default::default()
+        }
+    }
+
+    pub fn register_attachment(&self, owner: ClientId) -> Option<ClientId> {
+        self.attachments
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_or_insert_with(HashMap::new)
+            .insert(owner.get(), owner)
+    }
+
+    pub fn retire_attachment(&self, owner: ClientId) {
+        if let Some(owners) = self
+            .attachments
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_mut()
+            && owners.get(&owner.get()) == Some(&owner)
+        {
+            owners.remove(&owner.get());
+        }
+    }
+
+    /// Resolve a public numeric target once, at the originating command boundary.
+    pub fn resolve_client(&self, address: ClientId) -> Option<ClientId> {
+        let owners = self
+            .attachments
+            .read()
+            .unwrap_or_else(|error| error.into_inner());
+        match owners.as_ref() {
+            Some(owners) => owners
+                .get(&address.get())
+                .copied()
+                .filter(|current| address.generation().is_none() || *current == address),
+            None => Some(address),
+        }
+    }
+
+    pub fn owns_attachment(&self, owner: ClientId) -> bool {
+        self.resolve_client(owner) == Some(owner)
+    }
+
+    /// Hold admission through an owner's commit point. The closure must not reenter this registry.
+    pub fn with_attachment<T>(&self, owner: ClientId, commit: impl FnOnce() -> T) -> Option<T> {
+        let owners = self
+            .attachments
+            .read()
+            .unwrap_or_else(|error| error.into_inner());
+        if owners
+            .as_ref()
+            .is_some_and(|owners| owners.get(&owner.get()) != Some(&owner))
+        {
+            return None;
+        }
+        Some(commit())
     }
 
     pub fn current(&self) -> SessionName {
-        self.0
+        self.name
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -56,7 +118,7 @@ impl SessionState {
     pub fn set(&self, name: SessionName) {
         // Replacing a name cannot leave partially updated session data after a panic.
         *self
-            .0
+            .name
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = name;
     }

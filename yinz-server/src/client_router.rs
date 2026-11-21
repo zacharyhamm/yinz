@@ -335,8 +335,28 @@ pub(crate) fn route_thread_main(
         .set_recv_timeout(Some(first_message_timeout))
         .with_context(|| format!("failed to bound the first read from client {client_id}"))
         .non_fatal();
+    let opening_deadline = Instant::now() + first_message_timeout;
     'route_loop: loop {
-        match receiver.recv_client_msg() {
+        let received = match receiver
+            .recv_attachment_request((!received_first_message).then_some(opening_deadline))
+        {
+            Ok(received) => received,
+            Err(_) => {
+                os_input
+                    .send_to_client(
+                        client_id,
+                        ServerToClientMsg::Exit {
+                            exit_reason: ExitReason::Error(
+                                "Invalid attachment generation on native render offer".into(),
+                            ),
+                        },
+                    )
+                    .with_context(err_context)
+                    .non_fatal();
+                break 'route_loop;
+            },
+        };
+        match received {
             received @ (IpcRecv::Malformed
             | IpcRecv::Msg(ClientToServerMsg::RetiredArrangePanesByProject, _)) => {
                 consecutive_malformed_messages_received += 1;
@@ -402,6 +422,15 @@ pub(crate) fn route_thread_main(
                             _ => {},
                         }
                         return Ok(false);
+                    }
+                    if !session_state
+                        .read()
+                        .to_anyhow()
+                        .context("check routed attachment")?
+                        .attachments
+                        .owns_attachment(client_id)
+                    {
+                        return Ok(true);
                     }
                     let mut should_break = false;
                     let senders = session_data
@@ -825,7 +854,14 @@ pub(crate) fn route_thread_main(
                                 session_state.read().to_anyhow().context("access routed session state")?
                                     .cli_action_target(client_id, maybe_client_id)
                             } else {
-                                maybe_client_id.unwrap_or(client_id)
+                                match maybe_client_id {
+                                    None => client_id,
+                                    Some(address) => {
+                                        let state = session_state.read().to_anyhow().context("resolve addressed client")?;
+                                        let Some(target) = state.attachments.resolve_client(address) else { return Ok(false) };
+                                        target
+                                    },
+                                }
                             };
 
                             // A CLI copy is one action rather than a key's batch, so its own
@@ -963,6 +999,7 @@ pub(crate) fn route_thread_main(
                             send_to_screen_or_retry_queue!(
                                 senders,
                                 ScreenInstruction::TerminalBackgroundColor(
+                                    client_id,
                                     background_color_instruction.clone()
                                 ),
                                 instruction,
@@ -976,6 +1013,7 @@ pub(crate) fn route_thread_main(
                             send_to_screen_or_retry_queue!(
                                 senders,
                                 ScreenInstruction::TerminalForegroundColor(
+                                    client_id,
                                     foreground_color_instruction.clone()
                                 ),
                                 instruction,
@@ -989,6 +1027,7 @@ pub(crate) fn route_thread_main(
                             send_to_screen_or_retry_queue!(
                                 senders,
                                 ScreenInstruction::TerminalColorRegisters(
+                                    client_id,
                                     color_registers
                                         .iter()
                                         .map(|c| (c.index, c.color.clone()))
@@ -1068,6 +1107,9 @@ pub(crate) fn route_thread_main(
                             should_break = true;
                         },
                         ClientToServerMsg::DetachSession { client_ids } => {
+                            let state = session_state.read().to_anyhow().context("resolve detach targets")?;
+                            let client_ids = client_ids.into_iter().filter_map(|id| state.attachments.resolve_client(id)).collect();
+                            drop(state);
                             to_server.send(ServerInstruction::DetachSession(client_ids, None)).with_context(err_context).non_fatal();
                             should_break = true;
                         },
@@ -1091,8 +1133,16 @@ pub(crate) fn route_thread_main(
                             // first so a later disconnect of that
                             // client can't synthesize a spurious
                             // empty reply for the same token.
-                            session_state.write().to_anyhow().context("access routed session state")?
-                                .clear_forward_in_flight(token);
+                            if senders.is_none() {
+                                if let Some(queue) = retry_queue.as_mut() {
+                                    queue.push_back(instruction);
+                                }
+                                return Ok(false);
+                            }
+                            if !session_state.write().to_anyhow().context("claim forwarded query reply")?
+                                .clear_forward_in_flight(token, client_id) {
+                                return Ok(false);
+                            }
                             send_to_screen_or_retry_queue!(
                                 senders,
                                 ScreenInstruction::ForwardedReplyFromHost {
@@ -1106,7 +1156,7 @@ pub(crate) fn route_thread_main(
                         ClientToServerMsg::HostTerminalThemeChanged { mode } => {
                             send_to_screen_or_retry_queue!(
                                 senders,
-                                ScreenInstruction::HostTerminalThemeChanged(mode),
+                                ScreenInstruction::HostTerminalThemeChanged(client_id, mode),
                                 instruction,
                                 retry_queue
                             ).with_context(err_context).non_fatal();

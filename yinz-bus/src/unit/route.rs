@@ -64,6 +64,7 @@ fn test_notification_end_default_affected_tab_id_none() {
 fn test_action_completion_result_includes_tab_id() {
     let result = ActionCompletionResult {
         confirmed: true,
+        switch_source_retained: false,
         agent_tab: None,
         exit_status: None,
         affected_pane_id: None,

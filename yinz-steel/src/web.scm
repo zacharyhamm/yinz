@@ -121,7 +121,7 @@
           (define timer (yinz-sleep remaining))
           (vector-set! token 2 timer)
           (vector-set! token 4 (%async-observe timer (lambda (_) (%web-complete id token #f #f))
-            (lambda (_) (%web-complete id token #f #f)) %async-client))
+            (lambda (_) (%web-complete id token #f #f)) %async-actor))
           (if (not (yinz-pending? timer))
               (%web-complete id token (%web-failure "deadline timer registration failed"))
           (if (= remaining 0) (%web-complete id token #f #f)
@@ -133,7 +133,7 @@
               (if (yinz-deferred? result)
                   (vector-set! token 3 (%async-observe result
                     (lambda (response) (%web-complete id token response))
-                    (lambda (failure) (%web-complete id token (%web-failure failure))) %async-client))
+                    (lambda (failure) (%web-complete id token (%web-failure failure))) %async-actor))
                   (%web-complete id token result))))))))
   #f)
 (define (%web-close-all)

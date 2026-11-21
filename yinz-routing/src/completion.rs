@@ -14,6 +14,7 @@ pub(super) const ACTION_COMPLETION_TIMEOUT: Duration = Duration::from_secs(1);
 fn unconfirmed() -> ActionCompletionResult {
     ActionCompletionResult {
         confirmed: false,
+        switch_source_retained: false,
         agent_tab: None,
         exit_status: None,
         affected_pane_id: None,
