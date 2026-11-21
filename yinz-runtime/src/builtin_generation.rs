@@ -252,6 +252,7 @@ fn retained_source(root: &Path, path: &Path) -> bool {
                     | "png"
                     | "ico"
                     | "webmanifest"
+                    | "shortcut"
                     | "json"
                     | "woff2"
                     | "txt"

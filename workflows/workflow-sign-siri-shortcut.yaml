@@ -1,0 +1,17 @@
+id: 780c56ec-7f66-4afa-b1d9-c8c55ea71a0f
+name: sign-siri-shortcut
+description: Build Talk to Yinz and sign the distributable on the configured macOS host.
+vaults: [default]
+jobs:
+  - name: release
+    steps:
+      - name: sign
+        task:
+          type: behavior
+          behaviorType: command/shell
+          behaviorName: siri-shortcut-signer
+          methodName: execute
+          inputs:
+            run: python3 scripts/siri/sign.py
+            env:
+              SHORTCUT_SIGNING_HOST: ${{ vault.get(default, SIRI_SIGNING_HOST) }}

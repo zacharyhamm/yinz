@@ -4,6 +4,7 @@ import { html, useState, useEffect, useLayoutEffect, useRef, usePoller, useNow, 
 import { Sheet, ConfirmSheet } from './sheets.js';
 import { cardDetail, controlTarget, detailHash, groupHash, isScopedPeer, validGroupId } from '../app-route.js';
 import { StartSheet, LaunchWait } from './manage.js';
+import { SiriSetup } from './siri.js';
 import { Notifications } from './notifications.js';
 
 function nonblank(value) {
@@ -170,6 +171,7 @@ function AgentCard({ row, session, href, identity, env, onKeys, onNext, busy }) 
 
 export function ListView({ env, groupKey, navigation, entry }) {
   const now = useNow(1000);
+  const [siri, setSiri] = useState(false);
   const [menu, setMenu] = useState(false);
   const [picker, setPicker] = useState(false);
   const [confirmAll, setConfirmAll] = useState(false);
@@ -392,11 +394,13 @@ export function ListView({ env, groupKey, navigation, entry }) {
     <//>` : null}
     ${menu ? html`<${Sheet} id="sheet-menu" title="Menu" onClose=${() => setMenu(false)}>
       <div class="menu-list">
+        <button type="button" class="button menu-item" onClick=${() => { setMenu(false); setSiri(true); }}>Add to Siri</button>
         <${Notifications} push=${env.push} />
         <button type="button" class="button menu-item" id="logout" onClick=${() => { setMenu(false); env.logout(false); }}>Log out</button>
         <button type="button" class="button menu-item" id="logout-all" onClick=${() => { setMenu(false); setConfirmAll(true); }}>Log out everywhere</button>
       </div>
     <//>` : null}
+    ${siri ? html`<${SiriSetup} api=${env.api} onClose=${() => setSiri(false)} />` : null}
     ${confirmAll ? html`<${ConfirmSheet} id="sheet-logout-all" title="Log out everywhere?" danger=${true}
       message="Every signed-in device, including this one, will need the password again."
       confirmLabel="Log out everywhere" confirmId="logout-all-confirm" onClose=${() => setConfirmAll(false)} onConfirm=${() => env.logout(true)} />` : null}

@@ -305,6 +305,9 @@
       "before" (%web-app-json %web-app-cursor?) "tz" %web-app-zone)
     %web-app-tools %web-app-reader)
   (%web-app-get "/api/usage" "usage" (hash "agent" %web-app-identity) (%web-app-require "agent") %web-app-same)
+  (%web-app-post "/api/agent/assistant-reply" "assistant_reply"
+    (hash "agent" %web-app-agent-ref "run" %web-app-identity "filter" (%web-app-keep hash?))
+    (%web-app-require "agent" "run" "filter") %web-app-same)
   (%web-app-get "/api/prompts" "prompts" (hash) %web-app-same %web-app-same)
   (%web-app-get "/api/agent/launch-choices" "launch_choices" (hash "project" %web-app-identity) %web-app-same %web-app-same)
   (%web-app-post "/api/agent/launch" "launch"

@@ -13,6 +13,7 @@ pub(crate) type Body = Full<Bytes>;
 pub(crate) struct State {
     pub settings: WebSettings,
     pub auth: Arc<crate::auth::Auth>,
+    pub siri_commands: [tokio::sync::Mutex<()>; 16],
     pub request_id: std::sync::atomic::AtomicU64,
     pub io_work: Arc<tokio::sync::Semaphore>,
     pub backend: Arc<dyn Backend>,
@@ -21,7 +22,7 @@ pub(crate) struct State {
 
 // Admission waits are cancellable futures; a canceled running file operation retains its
 // permit until completion. Together with bounded flock waits this caps abandoned I/O work.
-async fn file_work<T: Send + 'static>(
+pub(crate) async fn file_work<T: Send + 'static>(
     state: &State,
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, ()> {
@@ -38,7 +39,7 @@ async fn file_work<T: Send + 'static>(
     .await
     .map_err(|_| ())
 }
-fn response(
+pub(crate) fn response(
     status: StatusCode,
     body: impl Into<Bytes>,
     content_type: &'static str,
@@ -52,7 +53,7 @@ fn response(
     );
     response
 }
-fn error(status: StatusCode, code: &str) -> Response<Body> {
+pub(crate) fn error(status: StatusCode, code: &str) -> Response<Body> {
     response(
         status,
         serde_json::json!({"error": {"code": code}}).to_string(),
@@ -65,7 +66,7 @@ fn retry(mut response: Response<Body>, seconds: u64) -> Response<Body> {
     }
     response
 }
-fn auth_response(r: crate::auth::AuthResponse) -> Response<Body> {
+pub(crate) fn auth_response(r: crate::auth::AuthResponse) -> Response<Body> {
     let mut out = if r.status == 204 {
         response(StatusCode::NO_CONTENT, Bytes::new(), "application/json")
     } else {
@@ -84,7 +85,7 @@ fn auth_response(r: crate::auth::AuthResponse) -> Response<Body> {
     }
     out
 }
-fn unauthenticated() -> Response<Body> {
+pub(crate) fn unauthenticated() -> Response<Body> {
     let mut r = error(StatusCode::UNAUTHORIZED, "unauthenticated");
     r.headers_mut()
         .insert("www-authenticate", HeaderValue::from_static("Bearer"));
@@ -243,7 +244,8 @@ async fn handle(
         return (error(StatusCode::BAD_REQUEST, "unexpected_body"), true);
     }
     let native = match normalized.path.as_str() {
-        "/api/login" | "/api/logout" | "/api/logout-all" => Some("POST"),
+        "/api/login" | "/api/logout" | "/api/logout-all" | "/api/siri/code"
+        | "/api/siri/revoke" | "/api/siri/pair" | "/api/siri/command" => Some("POST"),
         "/api/session" => Some("GET"),
         "/api/push" => Some(if post { "POST" } else { "GET" }),
         _ => None,
@@ -262,7 +264,11 @@ async fn handle(
             true,
         );
     }
-    let session = if normalized.path.starts_with("/api/") && normalized.path != "/api/login" {
+    let session = if normalized.path.starts_with("/api/")
+        && !matches!(
+            normalized.path.as_str(),
+            "/api/login" | "/api/siri/pair" | "/api/siri/command"
+        ) {
         let bearer = policy::single(&parts.headers, "authorization")
             .ok()
             .flatten()
@@ -344,6 +350,20 @@ async fn handle(
         return (
             retry(error(StatusCode::SERVICE_UNAVAILABLE, "no_password"), 1),
             true,
+        );
+    }
+    if normalized.path.starts_with("/api/siri/") {
+        return (
+            crate::siri::handle(
+                state,
+                &normalized.path,
+                session.as_ref(),
+                &parts.headers,
+                &bytes,
+                deadline_ms,
+            )
+            .await,
+            false,
         );
     }
     if normalized.path == "/api/login" {
@@ -557,6 +577,12 @@ async fn handle(
     response
         .headers_mut()
         .insert("cache-control", HeaderValue::from_static("no-cache"));
+    if normalized.path == "/static/talk-to-yinz.shortcut" {
+        response.headers_mut().insert(
+            "content-disposition",
+            HeaderValue::from_static(r#"attachment; filename="Talk to Yinz.shortcut""#),
+        );
+    }
     if normalized.path == "/static/sw.js" {
         response
             .headers_mut()

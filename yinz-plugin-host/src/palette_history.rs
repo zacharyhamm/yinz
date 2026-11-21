@@ -92,9 +92,43 @@ pub(super) fn last_reply(
     data: &DataAccess,
     source: &yinz_bus::command_palette::AgentRunSource,
 ) -> Result<Option<yinz_bus::command_palette::AgentReplyPreview>, String> {
-    use agent_proto::agents::rows;
-    use yinz_bus::command_palette::AgentReplyPreview;
+    let reply = assistant_reply(data, source, &ReplyFilter::default())?;
+    Ok(reply.map(|reply| {
+        let plain: String = reply
+            .text
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        let normalized = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut chars = normalized.chars();
+        yinz_bus::command_palette::AgentReplyPreview {
+            text: chars.by_ref().take(512).collect(),
+            truncated: chars.next().is_some(),
+        }
+    }))
+}
 
+#[derive(Default, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReplyFilter {
+    pub query: Option<String>,
+    pub revision: Option<i64>,
+    pub after: Option<i64>,
+    pub turn: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct AssistantReply {
+    revision: i64,
+    text: String,
+}
+
+pub(crate) fn assistant_reply(
+    data: &DataAccess,
+    source: &yinz_bus::command_palette::AgentRunSource,
+    filter: &ReplyFilter,
+) -> Result<Option<AssistantReply>, String> {
+    use agent_proto::agents::rows;
     let backend = Reader(data);
     let owned = FetchRequest::entity(rows::RUN_ENTITY)
         .filter(Pred::eq("uid", source.id.clone()))
@@ -105,13 +139,27 @@ pub(super) fn last_reply(
     if store::Backend::fetch(&backend, &owned)?.is_empty() {
         return Ok(None);
     }
-    let request = FetchRequest::entity(rows::ENTRY_ENTITY)
+    let mut request = FetchRequest::entity(rows::ENTRY_ENTITY)
         .filter(Pred::eq("run_id", source.id.clone()))
         .filter(store::host_or_legacy(&source.host_id))
         .filter(Pred::is_in("kind", ["message", "result"]))
         .select(["revision", "text"])
         .sort_by("revision", SortDir::Desc)
         .limit(1);
+    if let Some(query) = &filter.query {
+        request = request.filter(Pred::contains("text", query));
+    }
+    if let Some(revision) = filter.revision {
+        request = request.filter(Pred::eq("revision", revision));
+    }
+    if let Some(after) = filter.after {
+        request = request.filter(Pred::gt("revision", after));
+    }
+    if let Some(turn) = &filter.turn {
+        request = request
+            .filter(Pred::eq("conversation_turn_id", turn.as_str()))
+            .filter(Pred::is_null("worker_id"));
+    }
     let mut before = None;
     loop {
         let page = store::Backend::fetch(
@@ -125,22 +173,14 @@ pub(super) fn last_reply(
             return Ok(None);
         }
         for row in &page.rows {
-            if let Some(DataValue::Text(text)) = page.get(row, "text") {
-                // Bounded, literal single-line text crosses back to screen. Keep
-                // the source truncation flag even if it fits the terminal width.
-                let normalized = text
-                    .chars()
-                    .map(|ch| if ch.is_control() { ' ' } else { ch })
-                    .collect::<String>()
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                if !normalized.is_empty() {
-                    let mut chars = normalized.chars();
-                    let text = chars.by_ref().take(512).collect();
-                    let truncated = chars.next().is_some();
-                    return Ok(Some(AgentReplyPreview { text, truncated }));
-                }
+            if let (Some(DataValue::Text(text)), Some(DataValue::Int(revision))) =
+                (page.get(row, "text"), page.get(row, "revision"))
+                && text.chars().any(|c| !c.is_control() && !c.is_whitespace())
+            {
+                return Ok(Some(AssistantReply {
+                    revision: *revision,
+                    text: text.clone(),
+                }));
             }
         }
         before = page

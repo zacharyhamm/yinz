@@ -360,7 +360,7 @@ test('bootstrap config accepts only the whitelist', () => {
 
 // ---- static tree policy -------------------------------------------------------
 
-const SERVED = /\.(js|mjs|css|svg|png|ico|webmanifest|json|woff2|txt)$/;
+const SERVED = /\.(js|mjs|css|svg|png|ico|webmanifest|shortcut|json|woff2|txt)$/;
 
 function walk(dir, out = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {

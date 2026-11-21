@@ -31,6 +31,7 @@ fn mime(path: &Path) -> Option<&'static str> {
         "svg" => "image/svg+xml",
         "png" => "image/png",
         "ico" => "image/x-icon",
+        "shortcut" => "application/x-apple-shortcut",
         "webmanifest" => "application/manifest+json",
         "json" => "application/json",
         "woff2" => "font/woff2",

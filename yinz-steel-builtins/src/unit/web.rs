@@ -22,6 +22,7 @@ const SERVED_EXTENSIONS: &[&str] = &[
     "png",
     "ico",
     "webmanifest",
+    "shortcut",
     "json",
     "woff2",
     "txt",

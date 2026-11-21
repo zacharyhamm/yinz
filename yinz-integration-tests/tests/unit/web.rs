@@ -592,6 +592,15 @@ fn report_codex_session_start(
     session: &yinz_integration_tests::TestSession,
     terminal: &yinz_integration_tests::FakePtyHandle,
 ) {
+    report_session_start(session, terminal, "codex", "web-native");
+}
+
+fn report_session_start(
+    session: &yinz_integration_tests::TestSession,
+    terminal: &yinz_integration_tests::FakePtyHandle,
+    kind: &str,
+    conversation: &str,
+) {
     // Use the real report IPC contract; the in-process CLI action builder reads hook
     // JSON before the fake client's stdin exists.
     use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
@@ -602,7 +611,7 @@ fn report_codex_session_start(
     };
     let hook = HookEvent {
         hook_event_name: "SessionStart".into(),
-        session_id: "web-native".into(),
+        session_id: conversation.into(),
         source: Some("startup".into()),
         ..Default::default()
     };
@@ -618,19 +627,19 @@ fn report_codex_session_start(
         .send_client_msg(ClientToServerMsg::AgentReport(AgentReport {
             report_id: trace.report_id,
             pane_id: yinz_types::pane_id::PaneId::Terminal(terminal.terminal_id()),
-            state: match hook_outcome("codex", &hook) {
+            state: match hook_outcome(kind, &hook) {
                 HookOutcome::Reported(agent) => AgentReportState::Set(agent),
                 _ => panic!("session start"),
             },
             event: Some(AgentEvent::from_hook(
-                "codex",
+                kind,
                 terminal.terminal_id(),
                 &hook,
                 serde_json::to_string(&hook).unwrap(),
             )),
             trace: false,
             process_id: trace.process_id,
-            kind: "codex".into(),
+            kind: kind.into(),
         }))
         .unwrap();
     assert!(matches!(
@@ -1382,6 +1391,158 @@ fn web_builtin_production_http() {
     assert_eq!(
         call(addr, "GET", "/api/agents", Some(&token), "").status,
         200
+    );
+    session.quit();
+    records.empty();
+}
+
+#[test]
+fn web_builtin_siri_pair_search_and_launch_once() {
+    use agent_proto::{projects, store};
+    use serde_json::json;
+
+    let root = yinz_integration_tests::test_env::write_git_repository("siri-swamp", "trunk")
+        .canonicalize()
+        .unwrap();
+    let dir = private_data();
+    set(dir.path());
+    let mut project = projects::validate("swamp", root.to_str().unwrap()).unwrap();
+    project.worktree_dir = Some("branches".into());
+    let data = yinz_storage::data_access::DataAccess::sqlite(dir.path());
+    data.plugin_data()
+        .define_entity(store::SHARED, "test", &store::project_def(), false)
+        .unwrap();
+    data.plugin_data()
+        .apply(store::SHARED, &[projects::to_mutation(&project)])
+        .unwrap();
+    let records = Records::new(dir.path().to_owned());
+    let mut session = TestRunner::new(TERMINAL_SIZE)
+        .with_data_dir(dir.path().to_owned())
+        .with_config("web { enabled true; port 0; }")
+        .start();
+    let first = claim_first_terminal_and_wait_for_prompt(&session);
+    let addr = records.serving(session.session_name());
+    wait_public(addr, "/", r#"<div id="app"></div>"#);
+    let asset = fetch(addr, "GET", "/static/talk-to-yinz.shortcut", "");
+    assert_eq!(asset.status, 200);
+    assert_eq!(
+        asset.header("content-type"),
+        Some("application/x-apple-shortcut")
+    );
+    assert!(asset.body.starts_with(b"AEA1"));
+    let browser = login(addr);
+    let code = call_ok(addr, "POST", "/api/siri/code", &browser, "{}");
+    let paired = call(addr, "POST", "/api/siri/pair", None, &code.to_string());
+    assert_eq!(paired.status, 200);
+    let paired = paired.json();
+    let token = paired["token"].as_str().unwrap();
+    assert_eq!(
+        call(addr, "POST", "/api/siri/pair", None, &code.to_string()).status,
+        401
+    );
+    assert_eq!(
+        call(addr, "GET", "/api/agents", Some(token), "").status,
+        401
+    );
+    assert_eq!(
+        call(addr, "POST", "/api/siri/code", Some(token), "{}").status,
+        401
+    );
+    let command = |id: &str, text: &str| {
+        call_ok(
+            addr,
+            "POST",
+            "/api/siri/command",
+            token,
+            &json!({"request_id":id,"command":text}).to_string(),
+        )
+    };
+    let run = seed_retained_run(
+        dir.path(),
+        session.session_name(),
+        first.terminal_id().get(),
+    );
+    report_codex_session_start(&session, &first);
+    let mut entry = run.entries[0].clone();
+    entry.revision += 1;
+    entry.text = format!("{} session renewal", "word ".repeat(130));
+    let mut newest = entry.clone();
+    newest.revision += 1;
+    newest.text = "The latest reply is different".into();
+    data.plugin_data()
+        .apply(
+            store::SHARED,
+            &[entry, newest]
+                .map(|e| agent_proto::agents::rows::entry_mutation(&run.id, &run.host_id, &e)),
+        )
+        .unwrap();
+    let mut id = paired["request_id"].as_str().unwrap().to_owned();
+    let mut say = |text: &str| {
+        let reply = command(&id, text);
+        id = reply["request_id"].as_str().unwrap().into();
+        reply
+    };
+    let hit = say("Find the agent that mentioned session renewal");
+    assert!(
+        hit["speech"].as_str().unwrap().contains("session renewal"),
+        "{hit}"
+    );
+    let read = say("Read that match");
+    assert!(
+        read["speech"]
+            .as_str()
+            .unwrap()
+            .ends_with("session renewal"),
+        "{read}"
+    );
+    assert_eq!(
+        say("Read its latest reply")["speech"],
+        "The latest reply is different"
+    );
+    let miss = say("Find the unicorn agent in swamp");
+    assert!(miss["speech"]
+        .as_str()
+        .unwrap()
+        .contains("No live agents matched"));
+    let launch_id = miss["request_id"].as_str().unwrap();
+    let launch = "Open a new Claude agent in a swamp worktree";
+    let receipt = say(launch);
+    assert_eq!(command(launch_id, launch), receipt);
+    let claude = session.expect_pty_spawn();
+    let cwd = claude.run_command().cwd.unwrap();
+    assert_eq!(cwd.parent().unwrap(), root.join("branches"));
+    assert!(cwd
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("siri-"));
+    assert_eq!(std::fs::read_dir(root.join("branches")).unwrap().count(), 1);
+    report_session_start(&session, &claude, "claude", "siri-claude");
+    let open = say("Show me that agent");
+    assert!(
+        open["path"]
+            .as_str()
+            .is_some_and(|s| s.contains("tab=timeline")),
+        "{open}"
+    );
+    let list = call_ok(addr, "GET", "/api/agents", &browser, "");
+    let claudes: Vec<_> = list["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["ref"]["kind"] == "claude")
+        .collect();
+    assert_eq!(claudes.len(), 1);
+    assert_eq!(claudes[0]["ref"]["session_id"], "siri-claude");
+    assert_eq!(
+        say("What did it say?")["speech"],
+        "There is no recorded reply for this request."
+    );
+    call_ok(addr, "POST", "/api/siri/revoke", &browser, "{}");
+    assert_eq!(
+        call(addr, "POST", "/api/siri/command", Some(token), "{}").status,
+        401
     );
     session.quit();
     records.empty();

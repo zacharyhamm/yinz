@@ -17,6 +17,7 @@ pub mod push;
 mod request;
 pub mod server;
 mod service;
+mod siri;
 mod site;
 
 pub use server::{Backend, DispatchFuture, WebServer, WebSettings, WebStatus};

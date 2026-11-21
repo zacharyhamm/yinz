@@ -132,6 +132,7 @@ impl WebServer {
         let (status, receiver) = watch::channel(WebStatus::WaitingForPassword);
         let state = Arc::new(crate::service::State {
             auth,
+            siri_commands: Default::default(),
             request_id: std::sync::atomic::AtomicU64::new(1),
             io_work: Arc::new(tokio::sync::Semaphore::new(4)),
             settings,

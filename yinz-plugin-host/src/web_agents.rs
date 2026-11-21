@@ -86,6 +86,11 @@ enum Operation {
     Usage {
         agent: String,
     },
+    AssistantReply {
+        agent: WebAgentRef,
+        run: String,
+        filter: history::ReplyFilter,
+    },
     Prompts {},
     Prompt {
         agent: WebAgentRef,
@@ -269,6 +274,13 @@ impl Operation {
                     _ => return Err(invalid(
                         "tools requires either 1 to 30 revisions or a range with optional before",
                     )),
+                }
+            },
+            Self::AssistantReply { agent, run, filter } => {
+                agent_ref(agent)?;
+                identifier(run)?;
+                if filter.query.as_ref().is_some_and(|q| q.len() > 1024) {
+                    return Err(invalid("Search text too long"));
                 }
             },
             Self::Usage { agent } => identifier(agent)?,
@@ -1054,6 +1066,24 @@ fn execute(
                 json!({"session":senders.session.current(),"now_ms":agent_proto::agents::now_ms(),
                 "counts":{"waiting":count("waiting"),"busy":count("busy"),"idle":count("idle")},
                 "agents":agents}),
+            )
+        },
+        Operation::AssistantReply { agent, run, filter } => {
+            let live = target(senders, &agent)?;
+            let source = live
+                .label_source
+                .run
+                .as_ref()
+                .filter(|source| source.id == run)
+                .ok_or_else(|| {
+                    error(
+                        "target_changed",
+                        "The conversation changed. Select an agent again.",
+                    )
+                })?;
+            Ok(
+                json!({"reply": history::assistant_reply(data, source, &filter)
+                .map_err(|e| error("failed", e))?}),
             )
         },
         Operation::Prompts {} => Ok(

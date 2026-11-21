@@ -541,6 +541,50 @@ messages expire at the push service after one hour. Device notification settings
 and network availability can affect delivery. Actual Home Screen installation and
 Apple push delivery require verification on a physical iOS device.
 
+## Talk to Yinz with Siri
+
+In the signed-in Agents menu, open **Add to Siri**, install **Talk to Yinz**,
+and confirm the import in Shortcuts. Return to the menu, choose **Create pairing
+link**, then **Pair this phone**. The link works once and expires after five
+minutes. Say “Siri, Talk to Yinz,” then give a command.
+
+- “Find the waiting Claude agents in swamp” searches live conversations across
+  visible sessions. Use a task title, project, session, or branch to narrow the list.
+- “Find the agent that mentioned session renewal” searches recorded assistant
+  replies. Choose a result and say “read that match” or “read its latest reply.”
+- “Tell the login agent in swamp to run the tests” keeps the message while
+  you choose a match. Say “two” or “the one on mobile login.” Say “more” for
+  the next five choices.
+- “Did it reply?” checks the turn from your last send. “Continue” resumes a long
+  reading. “Show me that agent” opens the selected timeline.
+- “Open a new Claude agent in a swamp worktree” creates a branch and selects the
+  launched conversation for “tell it” follow-ups. Add “on branch mobile login”
+  to use an existing checkout. A provider can ask for workspace approval in its pane.
+
+Keep the same server URL reachable from the phone. Shortcuts saves its scoped
+credential and pending request in its Shortcuts folder under the device name.
+If two phones share that folder through iCloud, give them distinct device names
+before pairing so each uses its own credential and conversation selection.
+**Revoke Siri access** in the menu disconnects that pairing. Expiring or revoking
+the parent web sign-in also ends access. The server stores the credential hash
+and dialogue in its private web directory. Pair again after signing back in.
+
+### Signing the shortcut
+
+The signed asset ships with the builtin web app. After changing the actions in
+`scripts/siri/shortcut.py`, set `SIRI_SIGNING_HOST` in the local Swamp vault
+to the SSH alias of a Mac with Shortcuts. Run these commands from the worktree.
+
+```sh
+swamp vault put default SIRI_SIGNING_HOST
+swamp workflow validate sign-siri-shortcut
+swamp workflow run sign-siri-shortcut
+```
+
+The workflow sends the generic shortcut to the configured Mac, signs it for
+anyone, and replaces the bundled file after signing succeeds.
+[Apple’s Shortcuts signing guide](https://support.apple.com/guide/shortcuts-mac/run-shortcuts-from-the-command-line-apd455c82f02/mac)
+
 ## Local status and optional Serve diagnostics
 
 ```sh
