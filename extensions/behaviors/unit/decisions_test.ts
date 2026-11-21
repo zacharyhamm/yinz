@@ -4,12 +4,16 @@ import {
   resolveDecisionArgs,
 } from "../_lib/decisions.ts";
 import { type Handoff, HandoffSchema } from "../_lib/issue_driver.ts";
+import { nextStep } from "../_lib/handoff_next.ts";
 import {
   codeReviewFingerprint,
   createState,
+  deferredPlanFindings,
+  effectivePlanFindings,
   type Issue,
   type LifecycleState,
   reviewFingerprint,
+  rollbackState,
   StateSchema,
   transition,
 } from "../_lib/lifecycle.ts";
@@ -630,5 +634,258 @@ Deno.test("assertCurrentHandoff returns the exact current handoff", () => {
   equal(
     assertCurrentHandoff(current, state, handoffId, ["approve_plan"]),
     current,
+  );
+});
+
+/** A reviewed plan whose high findings the automatic revision did not settle. */
+function blockedPlanning(): LifecycleState {
+  let state = transition(createState(issue), "triage", {
+    classification: "bug",
+    summary: "Confirmed reproduction",
+  });
+  state = transition(state, "plan", plan);
+  return transition(state, "review_plan", {
+    planVersion: 1,
+    findings: [
+      {
+        id: "gap",
+        severity: "high",
+        description: "Caller bypasses validation",
+        requirement: "Validate every caller",
+        mechanism: "The legacy caller skips the new check",
+        evidence: ["src/lib.rs:42"],
+      },
+      {
+        id: "scope",
+        severity: "critical",
+        description: "Migration is unplanned",
+        requirement: "Existing records keep loading",
+        mechanism: "Old records fail to parse",
+        evidence: ["src/store.rs:7"],
+      },
+      { id: "naming", severity: "medium", description: "Unclear name" },
+    ],
+  });
+}
+const deferral = "Plan v1 is sufficient; defer gap and scope to code review";
+
+Deno.test("plan approval with unresolved blocking findings is refused by default", () => {
+  const state = blockedPlanning();
+  // A bare approval at the revision handoff names the explicit deferral it needs.
+  rejects(
+    () =>
+      resolve(
+        "approve",
+        { handoffId, request: "Implement it" },
+        state,
+        handoff(state, "authorize_plan_revision"),
+      ),
+    "--ignore review_plan/<id>",
+  );
+  // The transition refuses an approval without a deferral of every blocker.
+  rejects(
+    () =>
+      transition(state, "approve", { planVersion: 1, request: "Implement" }),
+    "Resolve high/critical findings first: gap, scope",
+  );
+  rejects(
+    () =>
+      transition(state, "approve", {
+        planVersion: 1,
+        request: deferral,
+        deferFindings: {
+          handoffId,
+          reviewFingerprint: reviewFingerprint(state),
+          findingIds: ["gap"],
+        },
+      }),
+    "Resolve high/critical findings first: scope",
+  );
+});
+
+Deno.test("deferring plan findings needs the user's explicit request and the exact handoff", () => {
+  const state = blockedPlanning();
+  const current = handoff(state, "authorize_plan_revision");
+  for (const request of [undefined, "", "   "]) {
+    rejects(
+      () =>
+        resolve(
+          "approve",
+          { handoffId, request, ignoreRemaining: true },
+          state,
+          current,
+        ),
+      "request",
+    );
+  }
+  // Legacy explicit inputs cannot defer findings: there is no handoff to bind.
+  rejects(
+    () =>
+      resolve(
+        "approve",
+        { planVersion: 1, request: deferral, ignore: ["gap", "scope"] },
+        state,
+        undefined,
+      ),
+    "requires handoffId",
+  );
+  const changed = structuredClone(state);
+  changed.planReview!.findings[0].description = "Changed after presentation";
+  for (
+    const stale of [
+      undefined,
+      handoff(state, "authorize_plan_revision", { status: "invalidated" }),
+      handoff(state, "authorize_plan_revision", { id: otherId }),
+      handoff(changed, "authorize_plan_revision"),
+      handoff(state, "address_review_findings"),
+    ]
+  ) {
+    rejects(
+      () =>
+        resolve(
+          "approve",
+          { handoffId, request: deferral, ignoreRemaining: true },
+          state,
+          stale,
+        ),
+      "stale",
+    );
+  }
+  rejects(
+    () =>
+      resolve(
+        "approve",
+        { handoffId, request: deferral, ignoreRemaining: true },
+        state,
+        handoff(state, "authorize_plan_revision", {
+          reviewFingerprint: "f".repeat(64),
+        }),
+      ),
+    "Plan review changed",
+  );
+  rejects(
+    () =>
+      resolve(
+        "approve",
+        { handoffId, planVersion: 2, request: deferral, ignoreRemaining: true },
+        state,
+        current,
+      ),
+    "stale",
+  );
+  // A deferral bound to another review fingerprint is refused by the transition too.
+  rejects(
+    () =>
+      transition(state, "approve", {
+        planVersion: 1,
+        request: deferral,
+        deferFindings: {
+          handoffId,
+          reviewFingerprint: "f".repeat(64),
+          findingIds: ["gap", "scope"],
+        },
+      }),
+    "stale",
+  );
+  for (const ignore of [["unknown", "gap", "scope"], ["gap", "gap", "scope"]]) {
+    rejects(
+      () =>
+        transition(
+          state,
+          "approve",
+          resolve(
+            "approve",
+            { handoffId, request: deferral, ignore },
+            state,
+            current,
+          ),
+        ),
+      ignore.includes("unknown")
+        ? "Unknown or resolved plan finding"
+        : "unique",
+    );
+  }
+});
+
+Deno.test("the user can approve a plan despite findings, which stay unresolved and visible", () => {
+  const state = blockedPlanning();
+  const current = handoff(state, "authorize_plan_revision");
+  const guidance = nextStep(current, state);
+  assert(guidance.includes(`approve --handoff ${handoffId}`), guidance);
+  assert(guidance.includes("review_plan/gap, review_plan/scope"), guidance);
+  const args = resolve(
+    "approve",
+    { handoffId, request: deferral, ignore: ["naming"], ignoreRemaining: true },
+    state,
+    current,
+  );
+  equal(args, {
+    planVersion: 1,
+    request: deferral,
+    deferFindings: {
+      handoffId,
+      reviewFingerprint: reviewFingerprint(state),
+      findingIds: ["naming", "gap", "scope"],
+    },
+  });
+  const approved = transition(state, "approve", args);
+  equal(approved.phase, "approved");
+  // The original review and its effective findings are untouched.
+  equal(approved.planReview, state.planReview);
+  assert(effectivePlanFindings(approved).every((f) => !f.resolution));
+  const deferred = deferredPlanFindings(approved)!;
+  equal(deferred.handoffId, handoffId);
+  equal(deferred.reviewFingerprint, reviewFingerprint(state));
+  equal(deferred.findings, [
+    state.planReview!.findings[0],
+    state.planReview!.findings[1],
+    state.planReview!.findings[2],
+  ]);
+  equal(approved.approval!.request, deferral);
+  // The deferral is approval evidence: later stages keep it, and rolling back
+  // the approval revokes it together with the approval.
+  const implemented = transition(approved, "implement", {
+    worktree: "/tmp/issue-85",
+    branch: "issue-85",
+  });
+  equal(deferredPlanFindings(implemented), deferred);
+  const revoked = rollbackState(
+    implemented,
+    "approve",
+    "d6da10b0-c980-4b82-b920-640238095f1a",
+  );
+  equal(revoked.approval, undefined);
+  equal(revoked.planReview, state.planReview);
+});
+
+Deno.test("an approve_plan handoff also accepts an explicit deferral of remaining findings", () => {
+  const state = planning();
+  state.planReview!.findings = [
+    { id: "naming", severity: "medium", description: "Unclear name" },
+  ];
+  const clean = StateSchema.parse(state);
+  const current = handoff(clean, "approve_plan");
+  const args = resolve(
+    "approve",
+    { handoffId, request: deferral, ignore: ["naming"] },
+    clean,
+    current,
+  );
+  equal(
+    deferredPlanFindings(transition(clean, "approve", args))!.findings.map((
+      f,
+    ) => f.id),
+    ["naming"],
+  );
+  // Nothing blocks, so --ignore-remaining alone has nothing to defer.
+  rejects(
+    () =>
+      resolve(
+        "approve",
+        { handoffId, request: deferral, ignoreRemaining: true },
+        clean,
+        current,
+      ),
+    "no unresolved blocking plan findings",
   );
 });

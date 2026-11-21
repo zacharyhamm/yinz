@@ -30,6 +30,7 @@ import {
   HandoffSchema,
 } from "../_lib/issue_driver.ts";
 import { nextStep } from "../_lib/handoff_next.ts";
+import { resolveDecisionArgs } from "../_lib/decisions.ts";
 import { RECOVERY_DEADLINE_MS } from "../_lib/worker_recovery.ts";
 import {
   codeReviewFingerprint,
@@ -5739,6 +5740,105 @@ Deno.test("adjudication advances the driver without another submission or implem
   assert(effectivePlanFindings(presented)[0].resolution);
   equal(presented.approval, undefined);
   assert(result(h).presentation.includes("Inspected caller"));
+});
+
+Deno.test("a user decision that the plan is sufficient defers its findings and drive continues into implementation", async () => {
+  const h = harness();
+  h.controls.evidenceForRole = blockedPlanEvidence;
+  await h.drive.execute({ agent: options }, h.context);
+  const proposal = result(h);
+  equal(proposal.decision, "authorize_plan_revision");
+  assert(
+    proposal.presentation.includes(
+      "--ignore <review_plan/id> for each finding the user defers",
+    ),
+    proposal.presentation,
+  );
+  assert(proposal.presentation.includes("Blocking findings: review_plan/gap"));
+  const original = await loadState(h.context);
+  const read = () => HandoffSchema.parse(h.resources.get("handoff"));
+  // Repeated drive never approves on its own, and a bare approval is refused.
+  await h.drive.execute({}, h.context);
+  equal(result(h).id, proposal.id);
+  equal((await loadState(h.context)).phase, "planning");
+  const request =
+    "Plan v2 is good enough. Defer the caller gap to code review and implement it.";
+  let error: unknown;
+  try {
+    resolveDecisionArgs(
+      "approve",
+      { handoffId: proposal.id, request },
+      original,
+      read,
+    );
+  } catch (caught) {
+    error = caught;
+  }
+  assert(
+    error instanceof Error && error.message.includes("review_plan/gap"),
+    String(error),
+  );
+  const args = resolveDecisionArgs(
+    "approve",
+    { handoffId: proposal.id, request, ignoreRemaining: true },
+    original,
+    read,
+  );
+  await saveState(h.context, "approve", transition(original, "approve", args));
+  // Recording the decision invalidates the handoff it answered.
+  equal(read().status, "invalidated");
+  const approved = await loadState(h.context);
+  equal(approved.phase, "approved");
+  equal(approved.planReview, original.planReview);
+  assert(!effectivePlanFindings(approved)[0].resolution);
+  equal(approved.approval?.deferredFindings?.handoffId, proposal.id);
+  equal(
+    approved.approval?.deferredFindings?.reviewFingerprint,
+    proposal.reviewFingerprint,
+  );
+  equal(
+    approved.approval?.deferredFindings?.findings,
+    original.planReview!.findings,
+  );
+  h.resources.set(
+    "state",
+    transition(approved, "implement", {
+      worktree: "/repo/issue",
+      branch: "issue-85",
+    }),
+  );
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "authorize_merge");
+  equal(dispatchedRoles(h).slice(5), ["implement", "review_code", "review_ux"]);
+  // Each implementation worker sees the deferred finding as unresolved.
+  for (const call of h.calls.slice(5)) {
+    const task = taskOfCall(h, call);
+    const material = workerMaterial(h, task);
+    assert(
+      material.includes("deferring them to implementation review"),
+      task.role,
+    );
+    assert(material.includes("Caller can bypass validation"), task.role);
+    assert(
+      material.includes(
+        task.role === "implement"
+          ? "account for each deferred concern"
+          : "Revisit each deferred plan finding",
+      ),
+      task.role,
+    );
+  }
+  const merge = result(h).presentation;
+  assert(
+    merge.includes("Plan findings the user deferred at approval of plan 2"),
+    merge,
+  );
+  assert(merge.includes("- review_plan/gap (critical): Cover the caller"));
+  assert(
+    merge.includes(
+      "- gap: critical, unresolved (deferred by the user to implementation review)",
+    ),
+  );
 });
 
 Deno.test("revision and restart deliver exact feedback and cumulative context", async () => {

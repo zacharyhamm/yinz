@@ -1396,6 +1396,116 @@ Deno.test("decision methods bind to the current handoff and derive recorded valu
   }
 });
 
+Deno.test("plan finding deferral records through the behavior but never overrides operational prerequisites", async () => {
+  const repo = await tempRepo();
+  const previousPath = Deno.env.get("PATH");
+  try {
+    Deno.env.set("PATH", `${await stubAgenda(repo)}:${previousPath ?? ""}`);
+    let state = transition(
+      createState({ ...issue, digest: await digestIssue(issue) }),
+      "triage",
+      { classification: "bug", summary: "Confirmed reproduction" },
+    );
+    state = transition(state, "plan", {
+      summary: "Add a marker",
+      steps: [{ id: "marker", description: "Add marker", files: ["m.txt"] }],
+      testingStrategy: "Inspect the marker",
+      checks: [{
+        id: "contents",
+        command: ["grep", "-c", "marker", "m.txt"],
+        covers: ["marker"],
+      }],
+    });
+    state = transition(state, "review_plan", {
+      planVersion: 1,
+      findings: [{
+        id: "gap",
+        severity: "high",
+        description: "Caller bypasses validation",
+        requirement: "Validate every caller",
+        mechanism: "The legacy caller skips the new check",
+        evidence: ["m.txt:1"],
+      }],
+    });
+    const fixture = fakeContext(repo, state);
+    const handoffId = "e6da10b0-c980-4b82-b920-640238095f1a";
+    fixture.resources.set(
+      "handoff",
+      HandoffSchema.parse({
+        id: handoffId,
+        status: "current",
+        decision: "authorize_plan_revision",
+        reason: "Fixture",
+        createdAt: "2026-11-20T12:00:00.000Z",
+        state,
+        reviewFingerprint: reviewFingerprint(state),
+        planVersion: 1,
+        proposedPlanVersion: 2,
+        presentation: "Fixture",
+      }),
+    );
+    const decision = {
+      handoffId,
+      request: "Plan v1 is sufficient; defer gap to code review",
+      ignore: ["gap"],
+    };
+    // An incomplete rollback is an operational prerequisite, not a finding:
+    // even the user's explicit deferral cannot skip it.
+    fixture.resources.set("recovery", {
+      id: "f6da10b0-c980-4b82-b920-640238095f1a",
+      step: "plan",
+      request: "Replan",
+      createdAt: "2026-11-20T12:00:00.000Z",
+      status: "pending",
+      before: state,
+      next: state,
+    });
+    await rejects(
+      () => behavior.methods.approve.execute(decision, fixture.context),
+      "Rollback is incomplete",
+    );
+    equal(await loadState(fixture.context), state);
+    fixture.resources.delete("recovery");
+    // Without the deferral, the default gate still blocks.
+    await rejects(
+      () =>
+        behavior.methods.approve.execute(
+          { handoffId, request: decision.request },
+          fixture.context,
+        ),
+      "unresolved blocking findings",
+    );
+    await behavior.methods.approve.execute(decision, fixture.context);
+    const approved = await loadState(fixture.context);
+    equal(approved.phase, "approved");
+    equal(approved.planReview, state.planReview);
+    equal(approved.approval, {
+      planVersion: 1,
+      request: decision.request,
+      deferredFindings: {
+        handoffId,
+        reviewFingerprint: reviewFingerprint(state),
+        findings: state.planReview!.findings,
+      },
+    });
+    // The immutable event records the decision for audit.
+    const event = EventSchema.parse(
+      fixture.writes.findLast((w) => w.spec === "event")!.value,
+    );
+    equal(event.action, "approve");
+    equal(event.state.approval, approved.approval);
+    // The answered handoff is spent: replaying the decision is stale.
+    await rejects(
+      () => behavior.methods.approve.execute(decision, fixture.context),
+      "stale",
+    );
+  } finally {
+    if (previousPath === undefined) Deno.env.delete("PATH");
+    else Deno.env.set("PATH", previousPath);
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
 Deno.test("a failed merge gate is recorded with its log, survives repair and appears in the next receipt", async () => {
   const repo = await tempRepo();
   const saved = Object.fromEntries(

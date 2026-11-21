@@ -394,7 +394,7 @@ async function parentTaskWithIdentity(
 
 export const behavior = {
   type: "@yinz/issue-evidence",
-  version: "2026.11.20.1",
+  version: "2026.11.20.2",
   globalArguments: z.object({}).strict(),
   resources: {
     submission: {

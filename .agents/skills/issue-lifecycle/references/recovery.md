@@ -284,7 +284,9 @@ records.
 ## Review and verification failures
 
 Plan blockers use the skill's `authorize_plan_revision` route: supported
-adjudication or separately authorized targeted revision, never implied approval.
+adjudication, separately authorized targeted revision, or the user's own
+decision that the plan is sufficient (`approve --ignore review_plan/<id>` or
+`--ignore-remaining`), never implied approval.
 Medium or higher code findings yield `address_review_findings` before UX review
 runs; UX findings yield it after the single UX review. Low findings are
 follow-ups and never block. Present findings and ask which to repair or ignore;

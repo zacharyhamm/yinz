@@ -33,6 +33,7 @@ import {
   activeMergeFailure,
   activeReviewFix,
   codeReviewFingerprint,
+  deferredPlanFindings,
   describeMergeFailure,
   effectivePlanFindings,
   FindingSchema,
@@ -332,8 +333,21 @@ function present(
       ...(state.planReview && state.plan
         ? [
           "Alternatively, inspect cited code and adjudicate supported findings. Accepted unresolved high/critical risks still require user direction.",
+          "The user may instead decide this plan is sufficient: approving with --ignore defers the named findings, unresolved, to implementation review. Only the user's explicit direction can do this; pending workers, stale handoffs and invalid evidence still block.",
         ]
         : []),
+    );
+  }
+  const deferred = deferredPlanFindings(state);
+  if (deferred) {
+    lines.push(
+      `Plan findings the user deferred at approval of plan ${
+        state.approval!.planVersion
+      } (unresolved; implementation reviews revisit them):`,
+      ...deferred.findings.map((f) =>
+        `- review_plan/${f.id} (${f.severity}): ${f.description}`
+      ),
+      `Deferral request: ${state.approval!.request}`,
     );
   }
   if (handoff.decision === "address_review_findings") {
@@ -490,7 +504,11 @@ function present(
       "Effective current plan findings:",
       ...effectivePlanFindings(state).map((f) =>
         `- ${f.id}: ${f.severity}${
-          f.resolution ? `, resolved: ${f.resolution}` : ", unresolved"
+          f.resolution
+            ? `, resolved: ${f.resolution}`
+            : deferred?.findings.some((d) => d.id === f.id)
+            ? ", unresolved (deferred by the user to implementation review)"
+            : ", unresolved"
         }`
       ),
     );

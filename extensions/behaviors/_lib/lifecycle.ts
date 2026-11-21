@@ -211,9 +211,34 @@ const PlanningContextSchema = z.object({
   adjudications: z.array(AdjudicationSchema),
   acceptedDecisions: z.array(Text),
 }).strict();
+const PlanFindingIdsSchema = z.array(Text).min(1).refine(
+  (ids) => new Set(ids).size === ids.length,
+  "Deferred plan finding IDs must be unique",
+);
+/**
+ * The user's explicit decision that the plan is sufficient despite these
+ * unresolved findings, bound to the exact handoff and plan review it answered.
+ */
+const PlanDeferralInputSchema = z.object({
+  handoffId: z.uuid(),
+  reviewFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+  findingIds: PlanFindingIdsSchema,
+}).strict();
+const ApprovalInputSchema = z.object({
+  planVersion: z.number().int().positive(),
+  request: UserRequestSchema,
+  deferFindings: PlanDeferralInputSchema.optional(),
+}).strict();
 const ApprovalSchema = z.object({
   planVersion: z.number().int().positive(),
   request: UserRequestSchema,
+  // The deferred findings as they stood at approval. They remain unresolved:
+  // implementation reviewers revisit them against the committed change.
+  deferredFindings: z.object({
+    handoffId: z.uuid(),
+    reviewFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+    findings: FindingsSchema.refine((findings) => findings.length > 0),
+  }).strict().optional(),
 }).strict();
 const ImplementationSchema = z.object({
   worktree: Text,
@@ -1408,7 +1433,7 @@ export const ActionSchemas = {
   plan: PlanContentSchema,
   review_plan: PlanReviewSchema,
   adjudicate_plan: AdjudicationSchema,
-  approve: ApprovalSchema,
+  approve: ApprovalInputSchema,
   implement: ImplementationSchema.omit({ head: true }).strict(),
   review_code: CodeReviewSchema,
   review_ux: UxReviewSchema,
@@ -1464,17 +1489,20 @@ function requirePlan(state: LifecycleState, version?: number): Plan {
   return state.plan;
 }
 
-function requireResolved(findings: z.infer<typeof FindingsSchema>): void {
-  const unresolved = findings.filter((finding) =>
+/** Plan findings that block approval unless resolved or deferred by the user. */
+export function blockingPlanFindings(
+  findings: z.infer<typeof FindingsSchema>,
+) {
+  return findings.filter((finding) =>
     ["critical", "high"].includes(finding.severity) && !finding.resolution
   );
-  if (unresolved.length) {
-    throw new Error(
-      `Resolve high/critical findings first: ${
-        unresolved.map((f) => f.id).join(", ")
-      }`,
-    );
-  }
+}
+
+/** The current plan's deferred findings, when its approval recorded any. */
+export function deferredPlanFindings(state: LifecycleState) {
+  return state.approval?.planVersion === state.plan?.version
+    ? state.approval?.deferredFindings
+    : undefined;
 }
 
 /**
@@ -2074,8 +2102,46 @@ export function transition(
       ) {
         throw new Error("The current plan needs a review before approval");
       }
-      requireResolved(effectivePlanFindings(state));
-      state.approval = approval;
+      const findings = effectivePlanFindings(state);
+      const blocking = blockingPlanFindings(findings);
+      const { deferFindings, ...granted } = approval;
+      if (deferFindings) {
+        // Only an explicit user decision bound to this exact review defers findings.
+        if (deferFindings.reviewFingerprint !== reviewFingerprint(state)) {
+          throw new Error(
+            "Plan finding deferral must reference the current review fingerprint; the decision is stale",
+          );
+        }
+        for (const id of deferFindings.findingIds) {
+          if (!findings.some((f) => f.id === id && !f.resolution)) {
+            throw new Error(`Unknown or resolved plan finding ${id}`);
+          }
+        }
+      }
+      const undecided = blocking.filter((f) =>
+        !deferFindings?.findingIds.includes(f.id)
+      );
+      if (undecided.length) {
+        throw new Error(
+          `Resolve high/critical findings first: ${
+            undecided.map((f) => f.id).join(", ")
+          }. Only the user can decide the plan is sufficient anyway: approve --handoff <id> --request '<their direction>' with --ignore review_plan/<id> for each finding (or --ignore-remaining) defers them, unresolved, to implementation review`,
+        );
+      }
+      state.approval = {
+        ...granted,
+        ...(deferFindings
+          ? {
+            deferredFindings: {
+              handoffId: deferFindings.handoffId,
+              reviewFingerprint: deferFindings.reviewFingerprint,
+              findings: findings.filter((f) =>
+                deferFindings.findingIds.includes(f.id)
+              ),
+            },
+          }
+          : {}),
+      };
       state.phase = "approved";
       break;
     }

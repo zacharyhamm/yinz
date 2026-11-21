@@ -9,7 +9,9 @@ import re
 
 
 UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-FINDING = re.compile(r"^(review_code|review_ux)/(\S.*)$")
+FINDING = re.compile(r"^(review_code|review_ux|review_plan)/(\S.*)$")
+# Implementation review findings are decided by decide-review; plan findings by approve.
+FINDING_ROLES = {"decide-review": ("review_code", "review_ux"), "approve": ("review_plan",)}
 # The method input that carries --request for each command; drive maps it to revisionApproval.
 REQUEST_FIELDS = {
     "approve": "request", "decide-review": "request", "approve-review-fixes": "request",
@@ -31,10 +33,12 @@ class InputError(ValueError):
     """A flag cannot be mapped to the command's inputs."""
 
 
-def finding_ref(text):
+def finding_ref(text, command="decide-review"):
+    roles = FINDING_ROLES[command]
     match = FINDING.fullmatch(text.strip())
-    if not match:
-        raise InputError(f"finding reference {text!r} must be review_code/<id> or review_ux/<id>")
+    if not match or match.group(1) not in roles:
+        expected = " or ".join(f"{role}/<id>" for role in roles)
+        raise InputError(f"{command} finding reference {text!r} must be {expected}")
     return {"role": match.group(1), "findingId": match.group(2)}
 
 
@@ -88,12 +92,20 @@ def build_inputs(command, file_inputs, *, handoff=None, request=None, repair=(),
             put("--handoff", "handoffId", handoff)
         if request is not None:
             put("--request", REQUEST_FIELDS[command], request)
-    if (repair or ignore or ignore_remaining) and command != "decide-review":
-        raise InputError("--repair, --ignore and --ignore-remaining apply only to decide-review")
+    if repair and command != "decide-review":
+        raise InputError("--repair applies only to decide-review")
+    if (ignore or ignore_remaining) and command not in FINDING_ROLES:
+        raise InputError("--ignore and --ignore-remaining apply only to approve and decide-review")
+    if command == "approve" and (ignore or ignore_remaining) and not (
+            inputs.get("handoffId") and inputs.get("request")):
+        # Deferring plan findings is the user's decision on the exact presented handoff.
+        raise InputError("approve --ignore/--ignore-remaining needs --handoff and the user's --request")
     if repair:
         put("--repair", "repair", [finding_ref(ref) for ref in repair])
     if ignore:
-        put("--ignore", "ignore", [finding_ref(ref) for ref in ignore])
+        refs = [finding_ref(ref, command) for ref in ignore]
+        # Plan findings have one review, so approve takes bare finding IDs.
+        put("--ignore", "ignore", [ref["findingId"] for ref in refs] if command == "approve" else refs)
     if ignore_remaining:
         put("--ignore-remaining", "ignoreRemaining", True)
     if decision is not None:

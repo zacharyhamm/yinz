@@ -16,6 +16,7 @@ import { AgentKindSchema } from "./worker_selection.ts";
 import {
   activeReviewFix,
   codeReviewFingerprint,
+  deferredPlanFindings,
   describeMergeFailure,
   implementationReviewFingerprint,
   initialPlanning,
@@ -646,6 +647,11 @@ export function taskPrompt(
       ]
       : []),
     ...(role === "implement_review_fixes" ? [CHECK_POLICY_SUMMARY] : []),
+    ...deferredPlanFindingInstructions(
+      state,
+      role,
+      continuity?.scope?.kind === "delta",
+    ),
     ...(["review_plan", "review_code", "review_ux"].includes(role)
       ? [
         `Read ${join(references, "review.md")} and ${
@@ -678,6 +684,35 @@ export function taskPrompt(
       : JSON.stringify(state),
     ...(commit ? [`The commit being reviewed is ${commit}.`] : []),
   ].join("\n\n");
+}
+
+/**
+ * Plan findings the user deferred when approving the plan stay unresolved; the
+ * implementer accounts for them and full implementation reviews revisit them.
+ * A delta re-review reports only regressions of its repair diff, so the full
+ * review that preceded it has already revisited them.
+ */
+function deferredPlanFindingInstructions(
+  state: LifecycleState,
+  role: string,
+  delta: boolean,
+) {
+  const deferred = deferredPlanFindings(state);
+  if (
+    !deferred ||
+    !["implement", "review_code", "review_ux"].includes(role) ||
+    (delta && role !== "implement")
+  ) return [];
+  return [
+    `The user approved plan version ${
+      state.approval!.planVersion
+    } despite these unresolved plan review findings, deferring them to implementation review (planApproval.deferredFindings). They are not resolved and were not waived for implementation: ${
+      JSON.stringify(deferred.findings)
+    }`,
+    role === "implement"
+      ? "Implement the approved plan; account for each deferred concern where the plan allows, and state in your summary how the committed change bears on it. Do not expand scope beyond the approved plan to address one."
+      : "Revisit each deferred plan finding against the committed implementation. Report one that still applies to the delivered behavior as an ordinary finding with current source evidence and a severity justified by the implementation; a deferred concern the implementation settles needs no finding.",
+  ];
 }
 
 export async function childState(context: IssueAgentContext, task: Task) {

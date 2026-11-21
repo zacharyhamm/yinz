@@ -76,6 +76,29 @@ class BuildInputsTests(unittest.TestCase):
                 build_inputs("decide-review", {}, handoff=HANDOFF, request="r", repair=[ref])
         self.assertEqual(finding_ref("review_ux/x"), {"role": "review_ux", "findingId": "x"})
 
+    def test_approve_ignore_defers_plan_findings_on_the_presented_handoff(self):
+        request = "Plan v3 is sufficient; defer the high findings to code review"
+        self.assertEqual(build_inputs("approve", {}, handoff=HANDOFF, request=request,
+                                      ignore=["review_plan/gap", "review_plan/scope x"]),
+                         {"handoffId": HANDOFF, "request": request, "ignore": ["gap", "scope x"]})
+        self.assertEqual(build_inputs("approve", {}, handoff=HANDOFF, request=request, ignore_remaining=True),
+                         {"handoffId": HANDOFF, "request": request, "ignoreRemaining": True})
+        # The handoff and request may come from the input file instead.
+        self.assertEqual(build_inputs("approve", {"handoffId": HANDOFF, "request": request}, ignore_remaining=True),
+                         {"handoffId": HANDOFF, "request": request, "ignoreRemaining": True})
+        # Deferral is the user's decision on an exact handoff; neither may be missing.
+        for kwargs in ({"request": request}, {"handoff": HANDOFF}, {}):
+            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(InputError, "needs --handoff"):
+                build_inputs("approve", {}, ignore_remaining=True, **kwargs)
+        # Plan findings use review_plan; implementation review roles stay with decide-review.
+        for command, ref in (("approve", "review_code/a"), ("approve", "gap"),
+                             ("decide-review", "review_plan/gap")):
+            with self.subTest(command=command, ref=ref), self.assertRaisesRegex(InputError, "finding reference"):
+                build_inputs(command, {}, handoff=HANDOFF, request=request, ignore=[ref])
+        self.assertEqual(finding_ref("review_plan/gap", "approve"), {"role": "review_plan", "findingId": "gap"})
+        with self.assertRaisesRegex(InputError, "conflicts with ignore"):
+            build_inputs("approve", {"ignore": []}, handoff=HANDOFF, request=request, ignore=["review_plan/gap"])
+
     def test_blank_text_is_rejected(self):
         with self.assertRaisesRegex(InputError, "--request"):
             build_inputs("approve", {}, handoff=HANDOFF, request="  ")
@@ -102,6 +125,7 @@ class BuildInputsTests(unittest.TestCase):
             ("summarize", {"request": "done"}),
             ("approve", {"repair": ["review_code/a"]}),
             ("ready", {"ignore_remaining": True}),
+            ("adjudicate-plan", {"handoff": HANDOFF, "ignore": ["review_plan/gap"]}),
             ("approve", {"decision": "accept"}),
             ("approve", {"skip_ci_request": "Skip CI"}),
             ("decide-review", {"skip_ci_request": "Skip CI"}),

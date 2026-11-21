@@ -37,7 +37,12 @@ example decide-review on a legacy ready state, or resume-rollback to merge). A
 merge can hold the shared CI gate for hours: run ready, drive and merge in the
 background or with a long timeout, or pass --no-merge to ready or drive.
 Chained commands print progress on stderr and exactly one handoff JSON on
-stdout. drive --auto-repair --request TEXT records the user's standing
+stdout. approve --handoff ID --request TEXT --ignore review_plan/ID (or
+--ignore-remaining) records the user's decision that the plan is sufficient
+despite unresolved findings, at an approve_plan or authorize_plan_revision
+handoff; the findings stay unresolved for implementation review. Pending
+workers, stale handoffs, invalid evidence and failed checks are never ignorable.
+drive --auto-repair --request TEXT records the user's standing
 instruction to repair every blocking review finding of the current plan
 without asking; drive --no-auto-repair withdraws it. plan-review-fixes and
 approve-review-fixes only drain issues saved before repair planning was retired.
@@ -161,9 +166,12 @@ def main():
     parser.add_argument("--repair", action="append", default=[], metavar="ROLE/ID",
                         help="decide-review: a finding the user selected for repair (repeatable)")
     parser.add_argument("--ignore", action="append", default=[], metavar="ROLE/ID",
-                        help="decide-review: a finding the user chose to accept (repeatable)")
+                        help="decide-review: a finding (review_code/ID or review_ux/ID) the user chose to accept; "
+                             "approve: a plan finding (review_plan/ID) the user defers, unresolved, to "
+                             "implementation review (repeatable)")
     parser.add_argument("--ignore-remaining", action="store_true",
-                        help="decide-review: accept every outstanding finding not selected for repair")
+                        help="decide-review: accept every outstanding finding not selected for repair; "
+                             "approve: defer every remaining unresolved high/critical plan finding")
     parser.add_argument("--decision", choices=("accept", "decline"), help="closeout: the user's decision")
     parser.add_argument("--auto-repair", action="store_true",
                         help="drive: with --request, repair every blocking review finding of this plan "

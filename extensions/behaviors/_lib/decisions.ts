@@ -4,8 +4,10 @@ import {
   ActionSchemas,
   activeReviewFix,
   AdjudicationSchema,
+  blockingPlanFindings,
   blockingReviewFindings,
   codeReviewFingerprint,
+  effectivePlanFindings,
   type LifecycleState,
   reviewFingerprint,
   UserRequestSchema,
@@ -28,6 +30,9 @@ export const DecisionInputSchemas = {
     handoffId: HandoffId.optional(),
     planVersion: z.number().int().positive().optional(), // legacy
     request: UserRequestSchema,
+    // Plan finding IDs the user explicitly defers, unresolved, to implementation review.
+    ignore: z.array(z.string().trim().min(1)).default([]),
+    ignoreRemaining: z.boolean().default(false),
   }).strip(),
   adjudicate_plan: z.object({
     handoffId: HandoffId.optional(),
@@ -110,7 +115,13 @@ export function resolveDecisionArgs(
   switch (action) {
     case "approve": {
       const a = DecisionInputSchemas.approve.parse(raw);
+      const deferring = a.ignore.length > 0 || a.ignoreRemaining;
       if (!a.handoffId) {
+        if (deferring) {
+          throw new Error(
+            "Deferring plan findings requires handoffId: the user's decision binds to the exact presented handoff",
+          );
+        }
         if (a.planVersion === undefined) {
           throw new Error(
             "approve requires handoffId (or the legacy planVersion)",
@@ -118,14 +129,51 @@ export function resolveDecisionArgs(
         }
         return { planVersion: a.planVersion, request: a.request };
       }
-      const h = assertCurrentHandoff(readHandoff(), state, a.handoffId, [
-        "approve_plan",
-      ]);
+      const blocking = state.planReview
+        ? blockingPlanFindings(effectivePlanFindings(state))
+        : [];
+      // A user may decide a plan is sufficient at either plan handoff.
+      const h = assertCurrentHandoff(
+        readHandoff(),
+        state,
+        a.handoffId,
+        deferring || blocking.length
+          ? ["approve_plan", "authorize_plan_revision"]
+          : ["approve_plan"],
+      );
+      if (!deferring && blocking.length) {
+        throw new Error(
+          `Plan version ${h.planVersion} has unresolved blocking findings (${
+            blocking.map((f) => `review_plan/${f.id}`).join(", ")
+          }). Approving it anyway needs the user's explicit decision to defer them: add --ignore review_plan/<id> for each finding the user accepts (or --ignore-remaining), or authorize a revision instead`,
+        );
+      }
       const planVersion = derived("planVersion", a.planVersion, h.planVersion);
-      if (h.reviewFingerprint !== reviewFingerprint(state)) {
+      const fingerprint = reviewFingerprint(state);
+      if (h.reviewFingerprint !== fingerprint) {
         throw new Error("Plan review changed; the approval handoff is stale");
       }
-      return { planVersion, request: a.request };
+      if (!deferring) return { planVersion, request: a.request };
+      const findingIds = [...a.ignore];
+      if (a.ignoreRemaining) {
+        for (const f of blocking) {
+          if (!findingIds.includes(f.id)) findingIds.push(f.id);
+        }
+      }
+      if (!findingIds.length) {
+        throw new Error(
+          "--ignore-remaining found no unresolved blocking plan findings to defer; approve without it",
+        );
+      }
+      return {
+        planVersion,
+        request: a.request,
+        deferFindings: {
+          handoffId: h.id,
+          reviewFingerprint: fingerprint,
+          findingIds,
+        },
+      };
     }
     case "adjudicate_plan": {
       const a = DecisionInputSchemas.adjudicate_plan.parse(raw);

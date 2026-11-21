@@ -130,7 +130,7 @@ repair IDs and commits from that exact handoff and rejects it once stale.
 
 | Handoff decision | Controller action |
 | --- | --- |
-| `authorize_plan_revision` | Supported adjudication or authorization for one targeted revision, below. |
+| `authorize_plan_revision` | Supported adjudication, authorization for one targeted revision, or the user's decision that the plan is sufficient despite its findings, below. |
 | `approve_plan` | Present the reviewed plan and its checks; `approve --handoff <id> --request '<approval>'` records explicit approval and continues. Existing session authorization within scope suffices; ask only if absent. |
 | `prepare_worktree` | Only after accepted close-out cleanup or for a legacy issue: `implement --input-file <{worktree, branch}>` with a deliberately selected worktree; drive continues. |
 | `address_review_findings` | Present the current reviews' blocking findings (code only before UX review runs) and any follow-ups, and ask which to address. Record the actual direction with `decide-review --handoff <id> --request '<direction>'` plus `--repair`/`--ignore <role/id>` per finding (or `--ignore-remaining`); drive continues and selected repairs go straight to a repair worker. Never select or ignore findings on the user's behalf; only the user's own standing instruction enables `drive --auto-repair`. |
@@ -157,7 +157,27 @@ handoff's plan version and review fingerprint. Each disposition has `findingId`,
 source `evidence`, plus corrected lower `severity` for downgrade. Supported
 dispositions need no extra permission. Preserve original review; stale
 inputs/mutations during unresolved assignments are rejected. Accepted unresolved
-high/critical risk stays blocked for user direction. Drive then continues.
+high/critical risk stays blocked for user direction (below). Drive then continues.
+
+The user may always decide the plan is sufficient instead. Only on the user's
+own explicit direction (never the controller's judgment), run
+`approve --handoff <id> --request '<their words>' --ignore review_plan/<id>`
+for each unresolved finding they accept (`--ignore-remaining` for every
+remaining high/critical one) at the current `authorize_plan_revision` or
+`approve_plan` handoff. It binds that handoff, plan version and review
+fingerprint and records the findings, unresolved, in the approval as deferred:
+implementers account for them, full code and UX reviews revisit them, and later
+handoffs list them. Bare approval with blocking findings stays refused. The
+user's earlier explicit request for this plan and its findings (for example
+"defer those findings to code review, approve v3 and implement") suffices; ask
+only if absent.
+
+User agency covers discretionary findings only: plan findings via `approve
+--ignore`, implementation findings via `decide-review --ignore`, and remaining
+findings via merge sign-off with `ready`. It never waives operational
+prerequisites (unresolved workers or reservations, an incomplete rollback,
+stale handoffs or evidence, changed requirements, missing reviews, failed
+verification checks, or merge CI without its separate explicit waiver).
 
 For another revision, present the concrete handoff and obtain authorization for
 exactly one targeted revision. `drive --handoff <id> --request '<authorization>'`

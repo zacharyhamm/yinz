@@ -4,6 +4,8 @@
  */
 import {
   activeFollowUps,
+  blockingPlanFindings,
+  effectivePlanFindings,
   type LifecycleState,
   lifecycleSummary,
   pendingReviewFindings,
@@ -48,8 +50,20 @@ export function nextStep(h: {
   switch (h.decision) {
     case "approve_plan":
       return `Next: ${run} approve --handoff ${h.id} --request '<the explicit user approval of plan version ${h.planVersion} and its checks>' (records the approval; drive then continues to the next handoff)`;
-    case "authorize_plan_revision":
-      return `Next: ${run} drive --handoff ${h.id} --request '<the user authorization of exactly one targeted revision>'; or, needing no user input, ${run} adjudicate-plan --handoff ${h.id} --input-file <{"dispositions": [...]}> for evidence-supported dispositions (accepted unresolved high/critical risks still require user direction)`;
+    case "authorize_plan_revision": {
+      const blocking = state.planReview
+        ? blockingPlanFindings(effectivePlanFindings(state)).map((f) =>
+          `review_plan/${f.id}`
+        )
+        : [];
+      return `Next: ${run} drive --handoff ${h.id} --request '<the user authorization of exactly one targeted revision>'; or, needing no user input, ${run} adjudicate-plan --handoff ${h.id} --input-file <{"dispositions": [...]}> for evidence-supported dispositions${
+        blocking.length
+          ? `; or, only if the user decides plan version ${h.planVersion} is sufficient anyway, ${run} approve --handoff ${h.id} --request '<the explicit user approval and decision to defer these findings>' with --ignore <review_plan/id> for each finding the user defers (--ignore-remaining for all), which records them as unresolved for implementation review. Blocking findings: ${
+            blocking.join(", ")
+          }`
+          : ""
+      }`;
+    }
     case "prepare_worktree":
       if (state.closeout?.authorizedRequest) {
         return `Next: after the user deliberately selects a new worktree, ${run} implement ${worktreeInput}, then ${run} drive`;

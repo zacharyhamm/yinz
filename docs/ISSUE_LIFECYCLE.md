@@ -285,7 +285,8 @@ assignments invalidate them.
 Each human decision is one launcher command bound to the presented handoff id
 (`--handoff`, never filled automatically) and the user's actual words
 (`--request`/`--request-file`), plus `--repair`/`--ignore`/`--ignore-remaining`
-for review findings, `--auto-repair`/`--no-auto-repair` on `drive` and
+for review findings, `--ignore`/`--ignore-remaining` on `approve` for plan
+findings, `--auto-repair`/`--no-auto-repair` on `drive` and
 `--decision` for close-out. The behavior derives plan
 versions, fingerprints, repair IDs and commits from that exact current handoff
 and rejects a stale one. Decision commands and `implement`, `repair`, `refresh`,
@@ -338,8 +339,62 @@ review and requirements-generation changes. Stale adjudication and mutations
 during unresolved workers or saved reservations are rejected. Rollback retaining
 a review retains its applicable dispositions; removed or changed reviews cannot
 use them. Supported dispositions require source inspection and an explained
-judgment. Accepting unresolved high/critical risk is user direction and remains
-blocked, rather than becoming a resolution.
+judgment. Accepting unresolved high/critical risk is user direction, never a
+controller disposition, and never becomes a resolution.
+
+### User-directed plan approval
+
+The user can always decide that a reviewed plan is sufficient despite its
+findings. At the current `authorize_plan_revision` or `approve_plan` handoff,
+
+```sh
+scripts/issue-lifecycle --item <id> approve --handoff <handoff-id> \
+  --request '<the user's approval and decision to defer the findings>' \
+  --ignore review_plan/<finding-id> [--ignore review_plan/<finding-id> ...]
+# or --ignore-remaining for every unresolved high/critical plan finding
+```
+
+records that decision and continues with `drive`. The behavior derives the
+plan version and review fingerprint from the handoff, rejects a stale or
+mismatched one, and requires every unresolved high/critical finding to be
+resolved, adjudicated or named; `--ignore` may also name unresolved lower
+findings so reviewers see them. Bare `approve` with blocking findings is still
+refused, and its error names the findings and this decision. Legacy
+`{planVersion, request}` inputs cannot defer findings.
+
+The approval stores `deferredFindings`: the handoff id, review fingerprint and
+a copy of each deferred finding as it stood. The original plan review and
+dispositions are unchanged, so effective findings stay unresolved, and the
+lifecycle event snapshot keeps the decision for audit. While that approval is
+current, handoffs list the deferred findings and the user's request,
+implementation workers account for them within the approved plan, and full
+code and UX reviews revisit each one against the committed change and report
+one that still applies as an ordinary finding. Delta re-reviews only check
+their repair diff, so the full review before them carries that obligation.
+Rolling back to `approve` or earlier, or a new plan version, revokes the
+approval and its deferral together.
+
+This decision never comes from the controller's judgment, a repeated `drive`
+or an automatic revision; drive's single automatic revision still runs before
+the first `authorize_plan_revision` handoff.
+
+### User agency and operational prerequisites
+
+Review findings are discretionary: the user may accept any of them, with the
+decision bound to the presented handoff and recorded with the user's words.
+Plan findings are deferred with `approve --ignore`, implementation findings are
+ignored with `decide-review --ignore`/`--ignore-remaining`, and merge sign-off
+with `ready` accepts whatever remains for that commit. Accepted findings stay
+unresolved and visible; low implementation findings remain follow-ups.
+
+Operational prerequisites are not findings and no decision flag waives them:
+unresolved worker tasks or saved assignment reservations, an incomplete
+rollback, stale handoffs, evidence that fails validation or no longer matches
+the plan, commit or requirements, changed Agenda requirements, a missing plan
+review or current code and UX reviews, failed verification checks, and active
+merge failures. Resolve them through `drive`, recovery, `repair` or rollback.
+Full merge CI is skipped only with the separate explicit `--skip-ci-request`
+waiver, and plan approval or finding acceptance never authorizes merge.
 
 Optional `planningContext` retains feedback, accepted decisions, earlier
 plans/reviews, revision summaries and adjudications. History informs reasoning
@@ -454,7 +509,7 @@ branch names or abbreviations.
 | Plan review result | `planVersion`; `findings` with unique `id`, `severity`, `description`, optional `resolution`. Blockers require `requirement`, `mechanism`, nonempty source `evidence`; reopening requires `reopening: {rationale, evidence}` with new evidence. |
 | `start` | Optional `agent` override; launcher flag `--new-worktree` creates or adopts the canonical issue worktree. |
 | `adjudicate-plan` | `handoffId` of the current `authorize_plan_revision` or `approve_plan` handoff (plan version and review fingerprint are derived from it); nonempty `dispositions`: `findingId`, `disposition` (`resolved`, `rejected`, `downgraded`), `rationale`, nonempty `evidence`; lower corrected `severity` required only for downgrade. |
-| `approve` | `handoffId` of the current `approve_plan` handoff (plan version derived); `request`: actual user authorization and scope. |
+| `approve` | `handoffId` of the current `approve_plan` handoff (plan version derived); `request`: actual user authorization and scope. To approve despite findings, `ignore` (plan finding IDs, from `--ignore review_plan/<id>`) and/or `ignoreRemaining` (every unresolved high/critical finding) at the current `approve_plan` or `authorize_plan_revision` handoff; see [User-directed plan approval](#user-directed-plan-approval). |
 | `drive` | Optional `agent` and `control`; `revisionApproval: {handoffId, request}` from `--handoff` with `--request` authorizes one targeted revision; `autoRepair: {request}` from `--auto-repair --request` records a standing instruction to repair blocking review findings, and `autoRepair: {withdraw: true}` from `--no-auto-repair` withdraws it. |
 | `implement` | Normally run by `drive`. Explicitly, a deliberately selected absolute `worktree` and existing feature `branch`; omitted values default to the recorded worker worktree and its branch. |
 | Implementation result | `summary`; full `commit` of clean issue worktree. |
@@ -473,7 +528,8 @@ branch names or abbreviations.
 | `summarize` | `outcomeMet: true`; `summary`: original problem, delivered outcome and limits. |
 
 Finding severities are `low`, `medium`, `high`, `critical`. Unresolved high/critical
-plan findings block planning approval. Implementation review findings of medium
+plan findings block planning approval unless the user explicitly defers them.
+Implementation review findings of medium
 or higher severity require user direction; users may accept any of them for
 merge. Low implementation findings are follow-ups (`FOLLOW_UP_SEVERITIES`): they
 start no repair round. Empty findings mean a real review found none, never skipped
