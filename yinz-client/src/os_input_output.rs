@@ -89,6 +89,8 @@ pub struct ClientOsInputOutput {
     send_instructions_to_server: Arc<Mutex<Option<IpcSenderWithContext<ClientToServerMsg>>>>,
     receive_instructions_from_server: Arc<Mutex<Option<IpcReceiverWithContext<ServerToClientMsg>>>>,
     reading_from_stdin: Arc<Mutex<Option<Vec<u8>>>>,
+    terminal_input: TerminalInput,
+    stdin_stop: Option<Arc<std::io::PipeReader>>,
     connection_generation: Arc<std::sync::atomic::AtomicUsize>,
     generation: usize,
     // Pinned by the input handler for one event, so a racing replacement cannot receive it.
@@ -197,8 +199,36 @@ fn read_stdin_buffer(
     Ok(result)
 }
 
+/// Query state belongs to the physical terminal through successive session connections.
+#[derive(Clone, Default, Debug)]
+pub struct TerminalInput(Arc<Mutex<Option<crate::StdinAnsiParser>>>);
+
+impl TerminalInput {
+    pub(crate) fn attach(&self) -> Arc<Mutex<crate::StdinAnsiParser>> {
+        Arc::new(Mutex::new(
+            self.0
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or_else(crate::StdinAnsiParser::new),
+        ))
+    }
+
+    pub(crate) fn release(&self, parser: &Mutex<crate::StdinAnsiParser>) {
+        *self.0.lock().unwrap() = Some(parser.lock().unwrap().take_for_next_attachment());
+    }
+}
+
 /// Access to the process's standard streams.
 pub trait StdioAccess {
+    fn terminal_input(&self) -> TerminalInput {
+        TerminalInput::default()
+    }
+    /// Blocking stdin readers supply a wakeup so a committed switch can finish
+    /// parsing all consumed bytes before the next attachment takes the terminal.
+    fn stdin_read_waker(&mut self) -> io::Result<Box<dyn FnOnce() + Send>> {
+        Ok(Box::new(|| {}))
+    }
     /// Returns the writer that allows writing to standard output.
     fn get_stdout_writer(&self) -> Box<dyn io::Write>;
     /// Returns a writer that bounds stalls during terminal restoration.
@@ -518,6 +548,14 @@ impl TtyControl for ClientOsInputOutput {
 }
 
 impl StdioAccess for ClientOsInputOutput {
+    fn terminal_input(&self) -> TerminalInput {
+        self.terminal_input.clone()
+    }
+    fn stdin_read_waker(&mut self) -> io::Result<Box<dyn FnOnce() + Send>> {
+        let (reader, writer) = std::io::pipe()?;
+        self.stdin_stop = Some(Arc::new(reader));
+        Ok(Box::new(move || drop(writer)))
+    }
     fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
         self.read_stamped_stdin(None).map(|(bytes, _)| bytes)
     }
@@ -534,6 +572,24 @@ impl StdioAccess for ClientOsInputOutput {
             Some(buffered_bytes) => Ok(stamp_stdin_consumption(recovery, || buffered_bytes)),
             None => {
                 let stdin = std::io::stdin();
+                if let Some(stop) = &self.stdin_stop {
+                    use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+                    use std::os::fd::AsFd;
+                    let mut fds = [
+                        PollFd::new(stdin.as_fd(), PollFlags::POLLIN),
+                        PollFd::new(stop.as_fd(), PollFlags::POLLIN),
+                    ];
+                    loop {
+                        match poll(&mut fds, PollTimeout::NONE) {
+                            Err(nix::errno::Errno::EINTR) => continue,
+                            Err(_) => return Err("Failed to poll stdin"),
+                            Ok(_) => break,
+                        }
+                    }
+                    if fds[1].revents().is_some_and(|events| !events.is_empty()) {
+                        return Err("Session ended");
+                    }
+                }
                 let mut stdin = stdin.lock();
                 let (read_bytes, stamp) = read_stdin_buffer(&mut stdin, recovery)?;
 
@@ -845,6 +901,8 @@ pub fn get_client_os_input() -> Result<ClientOsInputOutput, std::io::Error> {
         send_instructions_to_server: Arc::new(Mutex::new(None)),
         receive_instructions_from_server: Arc::new(Mutex::new(None)),
         reading_from_stdin,
+        terminal_input: Default::default(),
+        stdin_stop: None,
         recovery: Arc::new(Mutex::new(None)),
         connection_generation: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         generation: 0,

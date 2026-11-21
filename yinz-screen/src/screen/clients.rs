@@ -107,6 +107,7 @@ impl Screen {
         self.remove_client_inner(client_id, true).non_fatal();
         if let Some((source, tab)) = departed {
             self.core.followed_client_id = Some(source);
+            self.publish_watched_source();
             self.core.departed_followed_tab_id = tab;
         }
     }
@@ -127,6 +128,7 @@ impl Screen {
             }
         }
         self.core.followed_client_id = Some(client_id);
+        self.publish_watched_source();
         self.core.departed_followed_tab_id = None;
         self.core.pane_subscriber_snapshots_dirty = true;
         for watcher in self.core.watcher_clients.values_mut() {
@@ -419,6 +421,14 @@ impl Screen {
             || self.core.watcher_clients.contains_key(&client_id)
     }
 
+    fn publish_watched_source(&self) {
+        let source = self
+            .core
+            .followed_client_id
+            .filter(|_| !self.core.watcher_clients.is_empty());
+        self.core.bus.senders.session.set_watched_source(source);
+    }
+
     pub fn add_watcher_client(&mut self, client_id: ClientId) -> Result<()> {
         self.notices.clear_return_target(client_id);
         // Initialize with a default size - will be updated when we receive the actual size
@@ -426,6 +436,7 @@ impl Screen {
         self.core
             .watcher_clients
             .insert(client_id, WatcherState::new(default_size));
+        self.publish_watched_source();
 
         self.active_tabs_changed();
         // Force a full render for the new watcher
@@ -438,6 +449,7 @@ impl Screen {
     pub fn remove_watcher_client(&mut self, client_id: ClientId) {
         self.notices.clear_return_target(client_id);
         self.core.watcher_clients.remove(&client_id);
+        self.publish_watched_source();
         self.core.sixel_probe_answers.remove(&client_id);
         if self
             .core
@@ -471,6 +483,7 @@ impl Screen {
             self.core.departed_followed_tab_id = None;
         }
         self.core.followed_client_id = Some(client_id);
+        self.publish_watched_source();
         for watcher in self.core.watcher_clients.values_mut() {
             watcher.set_force_render();
         }

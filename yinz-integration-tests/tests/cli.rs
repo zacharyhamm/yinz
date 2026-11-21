@@ -1140,3 +1140,46 @@ fn reconfigure_ligatures_stdin_reports_refusal_before_applying_sibling_changes()
         }
     }
 }
+
+#[test]
+fn watcher_sees_shared_plugin_repaint_after_last_interactive_client_detaches() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("watched.scm");
+    std::fs::write(
+        &path,
+        r#"
+(yinz-declare-pane)
+(define text "before departure")
+(define (load config) (yinz-wait-for-permissions '("ReadCliPipes")))
+(define (render rows cols) text)
+(define (pipe message)
+  (define payload (hash-ref message "payload"))
+  (when (string? payload) (set! text payload))
+  #t)
+"#,
+    )
+    .unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\ndisable_splash_screen true")
+        .with_layout(yinz_types::data::LayoutInfo::Stringified(format!(
+            "layout {{ pane; pane focus=true {{ plugin location=\"file:{}\" {{ shared true; }}; }}; }}",
+            path.display()
+        )))
+        .start();
+    yinz.wait_until("plugin asks to receive CLI pipes", |grid| {
+        grid.contains("Plugin permissions")
+    });
+    yinz.send_stdin(b"\t\r");
+    let watcher = yinz.attach_watcher(TERMINAL_SIZE);
+    watcher.wait_until("watcher sees the shared plugin", |grid| {
+        grid.contains("before departure")
+    });
+    yinz.detach_main_client();
+    let (status, output) = yinz.run_cli_action_reporting(cli_pipe(None, Some("after departure")));
+    assert_eq!(status, 0, "{output}");
+    watcher.wait_until("watcher sees the plugin's new content", |grid| {
+        grid.contains("after departure") && !grid.contains("before departure")
+    });
+    watcher.quit();
+    yinz.quit();
+}

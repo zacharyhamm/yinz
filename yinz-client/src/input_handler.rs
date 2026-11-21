@@ -595,10 +595,11 @@ impl InputHandler {
                     client_id,
                     is_cli_client: false,
                 });
-                if self
-                    .os_input
-                    .remote_recovery()
-                    .is_some_and(|control| !control.stamp().1)
+                if self.send_client_instructions.is_shutting_down()
+                    || self
+                        .os_input
+                        .remote_recovery()
+                        .is_some_and(|control| !control.stamp().1)
                 {
                     self.command_is_executing.unblock_input_thread();
                 }

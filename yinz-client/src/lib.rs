@@ -35,7 +35,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use yinz_runtime::errors::prelude::*;
 use yinz_runtime::logging::startup_stage;
@@ -57,7 +57,6 @@ use yinz_cli::args::CliArgs;
 use yinz_key_codec::vendored::termwiz::input::InputEvent;
 use yinz_runtime::channels;
 use yinz_runtime::channels::ChannelWithContext;
-use yinz_runtime::channels::SenderWithContext;
 use yinz_runtime::channels::Shutdown;
 use yinz_runtime::envs;
 use yinz_runtime::errors::ErrorInstruction;
@@ -77,6 +76,7 @@ pub(crate) enum ClientInstruction {
     Error(String),
     FromServer(u64, Box<ClientInstruction>),
     ServerReaderDrained(u64),
+    TerminalQueriesReady(Option<u64>),
     Render(String),
     ClipboardUpdate(String),
     DesktopNotification(String),
@@ -215,7 +215,8 @@ impl From<&ClientInstruction> for ClientContext {
                 ClientContext::Render
             },
             ClientInstruction::ConfigFileUpdated => ClientContext::ConfigFileUpdated,
-            ClientInstruction::ForwardQueryToHost { .. } => ClientContext::ForwardQueryToHost,
+            ClientInstruction::ForwardQueryToHost { .. }
+            | ClientInstruction::TerminalQueriesReady(_) => ClientContext::ForwardQueryToHost,
             ClientInstruction::EmitNestedSessionFrame(..) => ClientContext::EmitNestedSessionFrame,
         }
     }
@@ -496,6 +497,7 @@ pub fn start_client(
     let mut reconnect = is_a_reconnect;
     let mut prepared = None;
     let mut coordinated = false;
+    let terminal_input = os_input.terminal_input();
     // Update resumes already carry the effective local configuration. Reloading
     // it here could fail after a disk edit, before we use the captured state.
     let local_config = if is_a_reconnect || cli_args.update_source_client.is_some() {
@@ -548,6 +550,7 @@ pub fn start_client(
             reconnect,
             start_detached_and_exit,
             prepared.take(),
+            &terminal_input,
             coordinated,
             &mut local_config,
             cancellation.take(),
@@ -641,6 +644,7 @@ fn run_client(
     is_a_reconnect: bool,
     start_detached_and_exit: bool,
     mut prepared: Option<session_switch::PreparedConnection>,
+    terminal_input: &os_input_output::TerminalInput,
     coordinated: bool,
     local_config: &mut session_switch::LocalConfig,
     mut cancellation: Option<remote_sessions::StartupCancellation>,
@@ -838,7 +842,7 @@ fn run_client(
     let (send_input_instructions, receive_input_instructions): ChannelWithContext<
         InputInstruction,
     > = channels::bounded(50);
-    let send_input_instructions = SenderWithContext::new(send_input_instructions);
+    let send_input_instructions = client_shutdown.sender(send_input_instructions);
     // The client loop's way back to the input thread; unbounded so the two never wait on each
     // other. See `InputControlSender`.
     let (send_input_control, receive_input_control) = crate::input_handler::input_control_channel();
@@ -862,11 +866,14 @@ fn run_client(
     // Scoped to this attachment, shared only with its signal listener and event loop.
     let signal_quit_supported = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let on_force_close = config_options.on_force_close.unwrap_or_default();
-    let stdin_ansi_parser = Arc::new(Mutex::new(StdinAnsiParser::new()));
+    let mut stdin_os = os_input.clone();
 
     log::info!("startup trace: stage=client.workers event=begin");
     let workers_started = std::time::Instant::now();
     let signal_workers = (|| -> Result<_> {
+        let stop_stdin = stdin_os
+            .stdin_read_waker()
+            .context("prepare stdin reader wakeup")?;
         let (pixel_size_queries, query_thread) =
             crate::terminal_escapes::PixelSizeQueries::spawn({
                 let os_api = os_input.clone();
@@ -923,7 +930,7 @@ fn run_client(
             Ok(listener)
         });
         match listener {
-            Ok(listener) => Ok((listener, query_thread)),
+            Ok(listener) => Ok((listener, query_thread, stop_stdin)),
             Err(error) => {
                 crate::terminal_escapes::abandon_stalled_output();
                 query_thread
@@ -935,7 +942,7 @@ fn run_client(
             },
         }
     })();
-    let (signal_listener, query_thread) = match signal_workers {
+    let (signal_listener, query_thread, stop_stdin) = match signal_workers {
         Ok(workers) => workers,
         Err(error) => {
             crate::terminal_escapes::abandon_stalled_output();
@@ -971,16 +978,18 @@ fn run_client(
     if let Some(guard) = startup_signal_guard.take() {
         guard.disarm();
     }
-    let _stdin_thread = thread::Builder::new()
+    let stdin_ansi_parser = terminal_input.attach();
+    let stdin_thread = thread::Builder::new()
         .name("stdin_handler".to_string())
         .spawn({
-            let os_input = os_input.clone();
             let send_input_instructions = send_input_instructions.clone();
             let stdin_ansi_parser = stdin_ansi_parser.clone();
+            let client_sender = send_client_instructions.clone();
             move || {
                 stdin_loop(
-                    os_input,
+                    stdin_os,
                     send_input_instructions,
+                    client_sender,
                     stdin_ansi_parser,
                     explicitly_disable_kitty_keyboard_protocol,
                     support_kitty_graphics_protocol,
@@ -1105,12 +1114,21 @@ fn run_client(
 
     // A paused terminal must release the query worker before we join it.
     crate::terminal_escapes::abandon_stalled_output();
+    // Wake the idle byte reader and let stdin finish decoding every chunk it already
+    // consumed. Source timers and input receivers keep their original parser and channels.
+    stop_stdin();
+    let _ = send_input_control.send(InputInstruction::Exit);
+    command_is_executing.unblock_input_thread();
+    let stdin_stopped = stdin_thread
+        .context("start stdin handler")
+        .and_then(|thread| thread.join().map_err(|_| anyhow!("stdin handler panicked")));
+    terminal_input.release(&stdin_ansi_parser);
     let signals_stopped = signal_listener.stop();
     let queries_stopped = query_thread
         .join()
         .map_err(|_| anyhow!("pixel-size query worker panicked"))
         .and_then(|result| result);
-    for result in [signals_stopped, queries_stopped] {
+    for result in [signals_stopped, queries_stopped, stdin_stopped] {
         if let Err(error) = result.context("failed to stop client workers").to_log() {
             outcome.exit_msg = format!("Could not stop client workers: {error:#}");
             outcome.exit_status = 1;
@@ -1155,8 +1173,6 @@ fn run_client(
     }
 
     drop(sessions);
-    let _ = send_input_instructions.send(InputInstruction::Exit);
-
     outcome
 }
 

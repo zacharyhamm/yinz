@@ -1653,3 +1653,175 @@ exec sleep 60
         drop(group);
     }
 }
+
+#[test]
+fn committed_ansi_switch_drains_source_clipboard_before_destination_reply() {
+    use nix::fcntl::{fcntl, FcntlArg, FdFlag};
+    use std::io::{Read, Write};
+    use std::os::{fd::AsFd, unix::net::UnixListener};
+    use yinz_test_support::{default_timeout, Watched};
+
+    const CHILD: &str = "YINZ_TEST_COMMITTED_CLIPBOARD";
+    const DEST_QUERY: &[u8] = b"\x1b]52;p;?\x07";
+    if let Some(root) = std::env::var_os(CHILD) {
+        let os = crate::os_input_output::get_client_os_input().unwrap();
+        let args = yinz_cli::args::CliArgs {
+            config_dir: Some(root.into()),
+            ..Default::default()
+        };
+        let outcome = crate::start_client(
+            Box::new(os),
+            args,
+            Default::default(),
+            Default::default(),
+            crate::ClientInfo::Attach("source".into(), Default::default()),
+            None,
+            None,
+            true,
+            false,
+            None,
+        );
+        assert_eq!(outcome.exit_status, 0, "{}", outcome.exit_msg);
+        return;
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let sockets = root
+        .path()
+        .join(&*yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR);
+    std::fs::create_dir(&sockets).unwrap();
+    let source = UnixListener::bind(sockets.join("source")).unwrap();
+    let destination = UnixListener::bind(sockets.join("destination")).unwrap();
+    let pty = nix::pty::openpty(None, None).unwrap();
+    for fd in [&pty.master, &pty.slave] {
+        fcntl(fd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).unwrap();
+    }
+    let slave = std::fs::File::from(pty.slave);
+    let mut terminal = std::fs::File::from(pty.master);
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", std::thread::current().name().unwrap()])
+        .env(CHILD, root.path())
+        .env("YINZ_SOCKET_DIR", root.path())
+        .env("YINZ_TEST_CACHE_DIR", root.path())
+        .env_remove("YINZ_PANE_REF")
+        .stdin(slave.try_clone().unwrap())
+        .stdout(slave)
+        .spawn()
+        .unwrap();
+    let screen = Watched::new(Vec::new());
+    let captured = screen.clone();
+    let mut output = terminal.try_clone().unwrap();
+    let capture = std::thread::spawn(move || {
+        let mut buf = [0; 4096];
+        while let Ok(n @ 1..) = output.read(&mut buf) {
+            captured.lock().extend_from_slice(&buf[..n]);
+        }
+    });
+    let wait_for = |needle: &[u8]| {
+        screen.wait_until("terminal output", default_timeout(), |bytes| {
+            bytes
+                .windows(needle.len())
+                .any(|w| w == needle)
+                .then_some(())
+        })
+    };
+    let accept = |listener: UnixListener| {
+        let mut fds = [nix::poll::PollFd::new(
+            listener.as_fd(),
+            nix::poll::PollFlags::POLLIN,
+        )];
+        assert_eq!(
+            nix::poll::poll(&mut fds, 30000u16).unwrap(),
+            1,
+            "attachment missing"
+        );
+        let stream =
+            interprocess::local_socket::Stream::UdSocket(listener.accept().unwrap().0.into());
+        let tx = IpcSenderWithContext::<ServerToClientMsg>::new(stream);
+        let mut rx = tx.get_receiver::<ClientToServerMsg>().unwrap();
+        rx.set_recv_timeout(Some(default_timeout())).unwrap();
+        assert!(matches!(
+            rx.recv_client_msg(),
+            IpcRecv::Msg(ClientToServerMsg::AttachClient { .. }, _)
+        ));
+        (tx, rx)
+    };
+    let query = |token, bytes: &[u8]| ServerToClientMsg::ForwardQueryToHost {
+        token,
+        query_bytes: bytes.to_vec(),
+        resolve_async: true,
+    };
+    let (mut a, mut from_a) = accept(source);
+    a.send_server_msg(query(17, b"\x1b]52;c;?\x07")).unwrap();
+    wait_for(b"\x1b]52;c;?\x07");
+    let mut request = |command| {
+        a.send_server_msg(ServerToClientMsg::SessionRequest(Request {
+            token: "test".into(),
+            request: command,
+        }))
+        .unwrap();
+        loop {
+            match from_a.recv_client_msg() {
+                IpcRecv::Msg(ClientToServerMsg::SessionReply(reply), _) => {
+                    break reply.result.unwrap()
+                },
+                IpcRecv::Msg(_, _) => {},
+                _ => panic!("source stopped before answering session request"),
+            }
+        }
+    };
+    assert_eq!(
+        request(prepare_request(Destination::CurrentServer, "destination")),
+        ClientReply::Pending
+    );
+    let (mut b, mut from_b) = accept(destination);
+    b.send_server_msg(ServerToClientMsg::Render {
+        content: "destination ready".into(),
+    })
+    .unwrap();
+    let until = Instant::now() + default_timeout();
+    while request(ClientRequest::Switch(SwitchRequest::Status(
+        "switch".into(),
+    ))) == ClientReply::Pending
+    {
+        assert!(Instant::now() < until);
+    }
+    assert_eq!(
+        request(ClientRequest::Switch(SwitchRequest::Commit(
+            "switch".into()
+        ))),
+        ClientReply::Complete
+    );
+    drop(a);
+    drop(from_a);
+    b.send_server_msg(query(18, DEST_QUERY)).unwrap();
+    b.send_server_msg(ServerToClientMsg::Render {
+        content: "destination request received".into(),
+    })
+    .unwrap();
+    wait_for(b"destination request received");
+    assert!(!screen
+        .lock()
+        .windows(DEST_QUERY.len())
+        .any(|w| w == DEST_QUERY));
+    terminal.write_all(b"\x1b]52;c;b2xk\x07").unwrap();
+    wait_for(DEST_QUERY);
+    terminal.write_all(b"\x1b]52;p;bmV3\x07").unwrap();
+    loop {
+        match from_b.recv_client_msg() {
+            IpcRecv::Msg(ClientToServerMsg::ForwardedReplyFromHost { token, reply_bytes }, _) => {
+                assert_eq!(token, 18);
+                assert_eq!(reply_bytes, b"\x1b]52;p;bmV3\x1b\\");
+                break;
+            },
+            IpcRecv::Msg(_, _) => {},
+            _ => panic!("destination did not receive its clipboard reply"),
+        }
+    }
+    b.send_server_msg(ServerToClientMsg::Exit {
+        exit_reason: yinz_ipc::ipc::ExitReason::Normal,
+    })
+    .unwrap();
+    assert!(child.wait().unwrap().success());
+    capture.join().unwrap();
+}

@@ -2998,15 +2998,21 @@ pub fn render_plugin_for_clients(
     let mut clients_to_render = vec![owner_client_id];
     clients_to_render.extend(clients.iter().filter(|c| **c != owner_client_id));
 
+    if running_plugin.env().plugin_config.is_shared()
+        && let Some(source) = running_plugin.env().senders.session.watched_source()
+        && !clients_to_render.contains(&source)
+    {
+        clients_to_render.push(source);
+    }
+
     let mut plugin_render_assets = vec![];
     for client_id in clients_to_render {
-        // A watcher may still display this owner’s last viewport. Skipping a
-        // retired render must not publish an empty frame that clears it.
+        // A watcher still following a disconnected owner uses that exact viewport.
         if !running_plugin
             .env()
             .senders
             .session
-            .owns_attachment(client_id)
+            .has_render_recipient(client_id)
         {
             continue;
         }

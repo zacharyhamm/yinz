@@ -206,6 +206,10 @@ fn retained_plugin_state_is_released_when_unused_or_replaced() {
         screen.set_followed_client(followed).unwrap();
         screen.add_watcher_client(watcher).unwrap();
         screen.remove_client(followed).unwrap();
+        assert_eq!(
+            screen.core.bus.senders.session.watched_source(),
+            Some(followed)
+        );
         screen.show_plugin_cursor(plugin, followed, Some((1, 1)));
         assert!(screen.core.tabs[&TabId::new(0)]
             .get_pane_with_id(PaneId::Plugin(plugin))
@@ -219,6 +223,10 @@ fn retained_plugin_state_is_released_when_unused_or_replaced() {
             1 => screen.set_followed_client(ClientId::new(3)).unwrap(),
             _ => screen.add_client(ClientId::new(3)).unwrap(),
         }
+        assert_ne!(
+            screen.core.bus.senders.session.watched_source(),
+            Some(followed)
+        );
         assert_eq!(screen.core.departed_followed_tab_id, None);
         let pane = screen.core.tabs[&TabId::new(0)]
             .get_pane_with_id(PaneId::Plugin(plugin))

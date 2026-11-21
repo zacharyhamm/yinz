@@ -96,13 +96,6 @@ impl ClientLoop<'_, '_> {
             {
                 break;
             }
-            // Recovery already wakes this loop on READ_POLL. A physical reply
-            // can release a deferred query without producing a client instruction.
-            if let Some(recovery) = self.recovery.as_ref()
-                && recovery.control.can_write()
-            {
-                self.flush_terminal_queries(Some(recovery.control.stamp().0));
-            }
             let now = Instant::now();
             if let Some(splash) = &mut self.splash {
                 match splash.tick(self.os_input, self.synchronised_output, now) {
@@ -372,6 +365,15 @@ impl ClientLoop<'_, '_> {
     ) -> bool {
         match instruction {
             ClientInstruction::UserActivity => {},
+            ClientInstruction::TerminalQueriesReady(origin) => {
+                if self
+                    .recovery
+                    .as_ref()
+                    .is_none_or(|r| r.control.can_write() && Some(r.control.stamp().0) == origin)
+                {
+                    self.flush_terminal_queries(origin);
+                }
+            },
             ClientInstruction::RepaintComplete => {
                 if let Some(saver) = &mut self.screensaver {
                     saver.repaint_complete();
@@ -634,6 +636,8 @@ impl ClientLoop<'_, '_> {
     }
 
     fn flush_terminal_queries(&self, origin: Option<u64>) {
+        // Account for the write in physical stdout order, including the startup probe.
+        let mut writer = self.os_input.get_stdout_writer();
         let ready = {
             let mut parser = self.stdin_ansi_parser.lock().unwrap();
             if parser.forward_generation != origin {
@@ -642,7 +646,6 @@ impl ClientLoop<'_, '_> {
             parser.ready_terminal_queries()
         };
         for query in ready {
-            let mut writer = self.os_input.get_stdout_writer();
             let _ = writer.write_all(&query).and_then(|()| writer.flush());
         }
     }

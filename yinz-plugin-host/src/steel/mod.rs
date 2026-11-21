@@ -304,7 +304,7 @@ impl SteelPlugin {
         let session = self.env().senders.session.clone();
         let retired: Vec<_> = self
             .render_owners
-            .extract_if(|owner| !session.owns_attachment(*owner))
+            .extract_if(|owner| !session.has_render_recipient(*owner))
             .collect();
         let mut local_env = None;
         let env = if allow_host {
@@ -475,7 +475,9 @@ impl SteelPlugin {
     }
 
     pub(crate) fn retire_render(&mut self, client: crate::ClientId) -> Result<()> {
-        if self.render_owners.remove(&client) {
+        if self.env().senders.session.watched_source() != Some(client)
+            && self.render_owners.remove(&client)
+        {
             self.with_runtime(false, |runtime| {
                 runtime.invoke("yinz-async-retire", vec![actor_context(client)])?;
                 Ok(())

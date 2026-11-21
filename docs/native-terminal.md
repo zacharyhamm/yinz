@@ -604,11 +604,12 @@ switch, the destination confirms its first repaint on its own socket. If the
 destination fails, the source remains available. Peers that omit the optional
 generation continue to use the existing revision-1 exchange.
 
-When an ANSI client recovers its server connection, the host terminal may still
-owe a reply to a query from the previous connection. The client waits for the
+When an ANSI client switches sessions or recovers its server connection, the
+host terminal may still owe a reply to the previous connection. The client waits for the
 old Primary DA barrier or OSC 52 clipboard reply before sending a new query
 of the same kind. A request that reaches its deadline while waiting uses the
-usual timeout fallback. The old reply cannot complete the new request.
+usual timeout fallback. Host theme, color and pixel-size reports still update
+the client while it waits.
 
 | Client and server | Attachment behavior |
 |---|---|

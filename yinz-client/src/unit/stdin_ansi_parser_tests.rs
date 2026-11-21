@@ -2294,3 +2294,108 @@ fn attachment_generation_timeout_cancels_the_unsent_recovery_query() {
         );
     }
 }
+
+#[test]
+fn recovered_terminal_drains_fragmented_query_replies_at_every_split() {
+    for (kind, old) in [
+        (ForwardKind::Clipboard, b"\x1b]52;c;b2xk\x07".as_slice()),
+        (ForwardKind::Clipboard, b"\x1b]52;c;b2xk\x1b\\"),
+        (ForwardKind::Barrier, b"\x1b[?62;1;6c"),
+        (ForwardKind::Barrier, b"\x1b[>0;276;0c"),
+        (ForwardKind::Barrier, b"\x1b[c"),
+    ] {
+        for split in 1..old.len() {
+            let mut parser = StdinAnsiParser::new();
+            parser.begin_forward_generation(Some(1));
+            parser.open(kind, 6);
+            parser.queue_terminal_query(kind, b"A".to_vec());
+            assert_eq!(parser.ready_terminal_queries().count(), 1);
+            parser.feed(&old[..split]);
+            parser.reset_for_recovery();
+            parser.begin_forward_generation(Some(2));
+            parser.open(kind, 7);
+            parser.queue_terminal_query(kind, b"B".to_vec());
+            assert_eq!(parser.ready_terminal_queries().count(), 0);
+            for byte in &old[split..] {
+                let result = parser.feed(std::slice::from_ref(byte));
+                assert!(
+                    result.completed_clipboard_forward.is_none()
+                        && result.completed_forward.is_none()
+                );
+                assert!(result.residue.is_empty(), "{old:?} split at {split}");
+                parser.reset_for_recovery();
+            }
+            assert_eq!(
+                parser.ready_terminal_queries().count(),
+                1,
+                "{old:?} split at {split}"
+            );
+            let (reply, expected) = match kind {
+                ForwardKind::Clipboard => (
+                    b"\x1b]52;c;bmV3\x1b\\".as_slice(),
+                    b"\x1b]52;c;bmV3\x1b\\".as_slice(),
+                ),
+                ForwardKind::Barrier => (
+                    b"\x1b[6;20;10t\x1b[?1c".as_slice(),
+                    b"\x1b[6;20;10t".as_slice(),
+                ),
+            };
+            let output = parser.feed(reply);
+            assert_eq!(
+                output
+                    .completed_clipboard_forward
+                    .or(output.completed_forward),
+                Some((7, expected.to_vec()))
+            );
+        }
+    }
+}
+
+#[test]
+fn recovered_terminal_keeps_live_observations_while_a_barrier_drains() {
+    let mut parser = StdinAnsiParser::new();
+    parser.begin_forward_generation(Some(1));
+    parser.open_forward(1);
+    parser.queue_terminal_query(ForwardKind::Barrier, b"A".to_vec());
+    assert_eq!(parser.ready_terminal_queries().count(), 1);
+    parser.begin_forward_generation(Some(2));
+    parser.open_forward(2);
+    parser.queue_terminal_query(ForwardKind::Barrier, b"B".to_vec());
+    let output = parser.feed(b"\x1b[?997;2n\x1b[6;20;10t\x1b]11;rgb:1/2/3\x07");
+    assert!(matches!(&output.replies[..], [
+        HostReply::HostTerminalThemeChanged(yinz_types::data::HostTerminalThemeMode::Light),
+        HostReply::PixelDimensions(pixels), HostReply::BackgroundColor(color)
+    ] if pixels.character_cell_size.as_ref().is_some_and(|size| size.height == 20 && size.width == 10) && color == "rgb:1/2/3"));
+    assert!(output.completed_forward.is_none() && output.residue.is_empty());
+    parser.feed(b"\x1b[?1c");
+    assert_eq!(parser.ready_terminal_queries().count(), 1);
+    assert_eq!(
+        parser.feed(b"\x1b[?1c").completed_forward,
+        Some((2, vec![]))
+    );
+}
+
+#[test]
+fn recovered_terminal_keeps_the_new_startup_probe_separate_from_a_pane_query() {
+    let mut source = StdinAnsiParser::new();
+    source.open_forward(1);
+    source.queue_terminal_query(ForwardKind::Barrier, b"A".to_vec());
+    assert_eq!(source.ready_terminal_queries().count(), 1);
+    let mut destination = source.take_for_next_attachment();
+    destination.startup_barrier_sent(None);
+    destination.open_forward(2);
+    destination.queue_terminal_query(ForwardKind::Barrier, b"B".to_vec());
+    let old = destination.feed(b"\x1b[4;10;10t\x1b[?1c");
+    assert!(old.completed_forward.is_none());
+    assert!(!destination.has_ready_terminal_query());
+    let startup = destination.feed(b"\x1b[4;20;20t\x1b[?1;4c");
+    assert!(startup.completed_forward.is_none());
+    assert!(matches!(
+        startup.replies.last(),
+        Some(HostReply::SixelSupport(true))
+    ));
+    assert_eq!(destination.ready_terminal_queries().count(), 1);
+    let own = b"\x1b[4;30;30t";
+    let output = destination.feed(&[own.as_slice(), b"\x1b[?1c"].concat());
+    assert_eq!(output.completed_forward, Some((2, own.to_vec())));
+}

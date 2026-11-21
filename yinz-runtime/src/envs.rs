@@ -42,6 +42,7 @@ pub fn get_socket_dir() -> Result<String> {
 #[derive(Clone, Debug, Default)]
 pub struct SessionState {
     name: Arc<RwLock<SessionName>>,
+    watched_source: Arc<RwLock<Option<ClientId>>>,
     // Standalone components can run without a socket registry.
     attachments: Arc<RwLock<Option<HashMap<u32, ClientId>>>>,
 }
@@ -91,6 +92,25 @@ impl SessionState {
 
     pub fn owns_attachment(&self, owner: ClientId) -> bool {
         self.resolve_client(owner) == Some(owner)
+    }
+
+    /// Screen owns the followed viewport, which can outlive its socket.
+    pub fn set_watched_source(&self, client: Option<ClientId>) {
+        *self
+            .watched_source
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = client;
+    }
+
+    pub fn watched_source(&self) -> Option<ClientId> {
+        *self
+            .watched_source
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn has_render_recipient(&self, client: ClientId) -> bool {
+        self.owns_attachment(client) || self.watched_source() == Some(client)
     }
 
     /// Hold admission through an owner's commit point. The closure must not reenter this registry.

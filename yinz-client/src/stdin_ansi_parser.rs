@@ -188,11 +188,11 @@ enum StartupKittyProbe {
     Resolved,
 }
 
-/// A paste crossing a recovery boundary must never reach the new keyboard parser.
-/// Keep only the matched marker length, even for arbitrarily long pastes.
-enum RecoveryPaste {
-    Opening(usize),
-    Closing(usize),
+/// Only retain framing for an unfinished paste or physical query at the attachment boundary.
+enum RecoveryPartial {
+    Prefix(Vec<u8>),
+    Paste(usize),
+    Clipboard { escaped: bool },
 }
 
 /// Physical terminal replies carry no server token. A timeout releases the
@@ -236,6 +236,8 @@ pub struct StdinAnsiParser {
     /// flight, `None` otherwise.
     pub(crate) forward_generation: Option<u64>,
     barriers: TerminalQueries,
+    // Number of earlier physical DAs still due before the startup probe's DA.
+    startup_barrier_after: Option<u64>,
     clipboards: TerminalQueries,
     active_forward: Option<ForwardSlot>,
     active_clipboard_forward: Option<ClipboardForwardSlot>,
@@ -247,7 +249,7 @@ pub struct StdinAnsiParser {
     partial_paste: Vec<u8>,
     nested_frame_extractor: nested_session::NestedFrameExtractor,
     in_bracketed_paste: bool,
-    recovery_paste: Option<RecoveryPaste>,
+    recovery_partial: Option<RecoveryPartial>,
     startup_kitty_probe: StartupKittyProbe,
     partial_apc: Vec<u8>,
 }
@@ -269,6 +271,7 @@ impl StdinAnsiParser {
             partial_buffer_limit: PARTIAL_BUFFER_CAP_BYTES,
             forward_generation: None,
             barriers: Default::default(),
+            startup_barrier_after: None,
             clipboards: Default::default(),
             active_forward: None,
             active_clipboard_forward: None,
@@ -277,10 +280,25 @@ impl StdinAnsiParser {
             partial_paste: Vec::new(),
             nested_frame_extractor: nested_session::NestedFrameExtractor::new(),
             in_bracketed_paste: false,
-            recovery_paste: None,
+            recovery_partial: None,
             startup_kitty_probe: StartupKittyProbe::NotSent,
             partial_apc: Vec::new(),
         }
+    }
+
+    pub(crate) fn take_for_next_attachment(&mut self) -> Self {
+        // Leave source timers with an empty parser, even when both local connections
+        // use the same token and neither has a remote recovery generation.
+        let mut next = std::mem::replace(self, Self::new());
+        next.barriers.retire();
+        next.clipboards.retire();
+        next.take_active_forward();
+        next.take_active_clipboard_forward();
+        next.forward_generation = None;
+        next.startup_barrier_after = None;
+        next.startup_kitty_probe = StartupKittyProbe::NotSent;
+        next.reset_for_recovery();
+        next
     }
 
     pub fn expect_kitty_probe_reply(&mut self) {
@@ -304,6 +322,7 @@ impl StdinAnsiParser {
 
     pub(crate) fn begin_forward_generation(&mut self, origin: Option<u64>) {
         if self.forward_generation != origin {
+            self.startup_barrier_after = None;
             self.barriers.retire();
             self.clipboards.retire();
             self.take_active_forward();
@@ -314,7 +333,19 @@ impl StdinAnsiParser {
 
     pub(crate) fn startup_barrier_sent(&mut self, origin: Option<u64>) {
         self.begin_forward_generation(origin);
+        self.startup_barrier_after = Some(self.barriers.outstanding);
+        // A new probe can already be on the terminal behind the source's query.
+        // Drain its batch too before writing the waiting pane query.
+        if self.barriers.retired != 0 {
+            self.barriers.retired += 1;
+        }
         self.barriers.outstanding += 1;
+    }
+
+    fn observe_barrier(&mut self) -> (bool, bool) {
+        let startup = self.startup_barrier_after == Some(0);
+        self.startup_barrier_after = self.startup_barrier_after.and_then(|n| n.checked_sub(1));
+        (self.barriers.observe_terminator(), startup)
     }
 
     pub(crate) fn queue_terminal_query(&mut self, kind: ForwardKind, mut bytes: Vec<u8>) {
@@ -323,6 +354,12 @@ impl StdinAnsiParser {
             ForwardKind::Barrier => self.barriers.waiting = Some(bytes),
             ForwardKind::Clipboard => self.clipboards.waiting = Some(bytes),
         }
+    }
+
+    pub(crate) fn has_ready_terminal_query(&self) -> bool {
+        [&self.barriers, &self.clipboards]
+            .iter()
+            .any(|queries| queries.retired == 0 && queries.waiting.is_some())
     }
 
     pub(crate) fn ready_terminal_queries(&mut self) -> impl Iterator<Item = Vec<u8>> + use<> {
@@ -463,8 +500,8 @@ impl StdinAnsiParser {
     /// residue bytes that were not part of any classified sequence — these
     /// are the bytes the caller should feed to the keyboard parser.
     pub fn feed(&mut self, bytes: &[u8]) -> ParseOutput {
-        let bytes = self.discard_recovery_paste(bytes);
         let mut out = ParseOutput::default();
+        let bytes = self.discard_recovery_partial(bytes, &mut out.replies);
         let (bytes, nested_frames) = self.nested_frame_extractor.extract(bytes);
         let bytes = &bytes[..];
         out.nested_frames = nested_frames;
@@ -510,11 +547,11 @@ impl StdinAnsiParser {
                         out.completed_clipboard_forward = Some((slot.token, bytes));
                         continue;
                     }
-                    if self.barriers.retired != 0 || self.barriers.waiting.is_some() {
-                        continue;
-                    }
                     if let Some(reply) = HostReply::from_osc_payload(&payload) {
                         out.replies.push(reply);
+                    }
+                    if self.barriers.retired != 0 || self.barriers.waiting.is_some() {
+                        continue;
                     }
                     if let Some(slot) = self.active_forward.as_mut() {
                         // Re-serialize so the pane's pty sees a legal OSC.
@@ -532,8 +569,8 @@ impl StdinAnsiParser {
                 } => {
                     match final_byte {
                         b'c' => {
-                            if self.barriers.observe_terminator() || self.barriers.waiting.is_some()
-                            {
+                            let (retired, startup) = self.observe_barrier();
+                            if !startup && (retired || self.barriers.waiting.is_some()) {
                                 continue;
                             }
                             // The graphics reply can arrive after this barrier. Report the
@@ -548,18 +585,18 @@ impl StdinAnsiParser {
                             }
                             // Primary-DA — the barrier. Close the slot and
                             // emit the completed forwarded reply if active.
-                            if let Some(slot) = self.active_forward.take() {
+                            if !startup && let Some(slot) = self.active_forward.take() {
                                 out.completed_forward = Some((slot.token, slot.reply_bytes));
                             }
                             // Primary-DA is NOT double-dispatched — it has
                             // no cached-state counterpart.
                         },
                         _ => {
-                            if self.barriers.retired != 0 || self.barriers.waiting.is_some() {
-                                continue;
-                            }
                             if let Some(reply) = HostReply::from_csi_report(&raw) {
                                 out.replies.push(reply);
+                            }
+                            if self.barriers.retired != 0 || self.barriers.waiting.is_some() {
+                                continue;
                             }
                             if let Some(slot) = self.active_forward.as_mut() {
                                 slot.reply_bytes.extend_from_slice(&raw);
@@ -679,43 +716,81 @@ impl StdinAnsiParser {
         self.in_bracketed_paste = false;
         let pending = self.finalize_force();
         self.inner = InputParser::new();
-        // Further transitions must not forget an already quarantined paste.
-        if self.recovery_paste.is_none() {
-            if in_paste {
+        if self.recovery_partial.is_none() && (in_paste || !pending.is_empty()) {
+            self.recovery_partial = if in_paste {
                 let matched = (1..PASTE_END_MARKER.len())
                     .rev()
                     .find(|&len| pending.ends_with(&PASTE_END_MARKER[..len]))
                     .unwrap_or(0);
-                self.recovery_paste = Some(RecoveryPaste::Closing(matched));
-            } else if !pending.is_empty() && PASTE_START_MARKER.starts_with(&pending) {
-                self.recovery_paste = Some(RecoveryPaste::Opening(pending.len()));
-            }
+                Some(RecoveryPartial::Paste(matched))
+            } else if self.clipboards.outstanding != 0 && pending.starts_with(b"\x1b]52;") {
+                Some(RecoveryPartial::Clipboard {
+                    escaped: pending.ends_with(b"\x1b"),
+                })
+            } else if self.is_recovery_prefix(&pending) {
+                Some(RecoveryPartial::Prefix(pending))
+            } else {
+                None
+            };
         }
     }
 
-    fn discard_recovery_paste<'a>(&mut self, bytes: &'a [u8]) -> &'a [u8] {
+    fn is_recovery_prefix(&self, bytes: &[u8]) -> bool {
+        PASTE_START_MARKER.starts_with(bytes)
+            || (self.clipboards.outstanding != 0 && b"\x1b]52;".starts_with(bytes))
+            || (self.barriers.outstanding != 0 && matches!(csi_status(bytes), SeqStatus::NeedMore))
+    }
+
+    fn discard_recovery_partial<'a>(
+        &mut self,
+        bytes: &'a [u8],
+        replies: &mut Vec<HostReply>,
+    ) -> &'a [u8] {
         for (i, &byte) in bytes.iter().enumerate() {
-            match self.recovery_paste.as_mut() {
+            match self.recovery_partial.take() {
                 None => return &bytes[i..],
-                Some(RecoveryPaste::Opening(matched)) => {
-                    if byte != PASTE_START_MARKER[*matched] {
-                        // The old prefix was not a paste. Only new bytes may become input.
-                        self.recovery_paste = None;
+                Some(RecoveryPartial::Prefix(mut prefix)) => {
+                    prefix.push(byte);
+                    self.recovery_partial = if prefix == PASTE_START_MARKER {
+                        Some(RecoveryPartial::Paste(0))
+                    } else if self.clipboards.outstanding != 0 && prefix == b"\x1b]52;" {
+                        Some(RecoveryPartial::Clipboard { escaped: false })
+                    } else if self.barriers.outstanding != 0
+                        && byte == b'c'
+                        && matches!(csi_status(&prefix), SeqStatus::Complete(_))
+                    {
+                        self.observe_barrier();
+                        None
+                    } else if matches!(csi_status(&prefix), SeqStatus::Complete(_))
+                        && let Some(report) = HostReply::from_csi_report(&prefix)
+                    {
+                        replies.push(report);
+                        None
+                    } else if self.is_recovery_prefix(&prefix) {
+                        Some(RecoveryPartial::Prefix(prefix))
+                    } else {
                         return &bytes[i..];
-                    }
-                    *matched += 1;
-                    if *matched == PASTE_START_MARKER.len() {
-                        self.recovery_paste = Some(RecoveryPaste::Closing(0));
+                    };
+                },
+                Some(RecoveryPartial::Clipboard { escaped }) => {
+                    if byte == 7 || (escaped && byte == b'\\') {
+                        self.clipboards.observe_terminator();
+                    } else if escaped {
+                        return &bytes[i..];
+                    } else {
+                        self.recovery_partial = Some(RecoveryPartial::Clipboard {
+                            escaped: byte == 0x1b,
+                        });
                     }
                 },
-                Some(RecoveryPaste::Closing(matched)) => {
-                    if byte == PASTE_END_MARKER[*matched] {
-                        *matched += 1;
-                        if *matched == PASTE_END_MARKER.len() {
-                            self.recovery_paste = None;
-                        }
+                Some(RecoveryPartial::Paste(matched)) => {
+                    let matched = if byte == PASTE_END_MARKER[matched] {
+                        matched + 1
                     } else {
-                        *matched = usize::from(byte == PASTE_END_MARKER[0]);
+                        usize::from(byte == PASTE_END_MARKER[0])
+                    };
+                    if matched != PASTE_END_MARKER.len() {
+                        self.recovery_partial = Some(RecoveryPartial::Paste(matched));
                     }
                 },
             }

@@ -40,6 +40,7 @@ impl StampedInput {
 pub(crate) fn stdin_loop(
     mut os_input: Box<dyn ClientOsApi>,
     send_input_instructions: SenderWithContext<InputInstruction>,
+    client_sender: SenderWithContext<crate::ClientInstruction>,
     stdin_ansi_parser: Arc<Mutex<StdinAnsiParser>>,
     explicitly_disable_kitty_keyboard_protocol: bool,
     support_kitty_graphics_protocol: bool,
@@ -58,6 +59,7 @@ pub(crate) fn stdin_loop(
     // a deadline, because it is the one whose absence is itself an answer.
     let mut kitty_probe_deadline: Option<Instant> = None;
     {
+        let mut stdout = os_input.get_stdout_writer();
         stdin_ansi_parser
             .lock()
             .unwrap()
@@ -66,7 +68,6 @@ pub(crate) fn stdin_loop(
         // `write_all` + `flush`, not `write`: the query holds no newline, and stdout is a
         // `LineWriter`, so a bare write would sit in the buffer until some other thread flushed
         // it - and a short write would cut a query in half mid-escape-sequence.
-        let mut stdout = os_input.get_stdout_writer();
         if let Err(e) = stdout
             .write_all(query_string.as_bytes())
             .and_then(|_| stdout.flush())
@@ -158,10 +159,19 @@ pub(crate) fn stdin_loop(
                         // Strip + classify any host-reply sequences
                         // continuously. The residue is the byte stream
                         // the keyboard parser should see.
-                        let (parse_output, forward_origin) = {
+                        let (parse_output, forward_origin, queries_ready) = {
                             let mut p = stdin_ansi_parser.lock().unwrap();
-                            (p.feed(&buf), p.forward_generation)
+                            (
+                                p.feed(&buf),
+                                p.forward_generation,
+                                p.has_ready_terminal_query(),
+                            )
                         };
+                        if queries_ready {
+                            let _ = client_sender.send(
+                                crate::ClientInstruction::TerminalQueriesReady(forward_origin),
+                            );
+                        }
                         if !parse_output.replies.is_empty() {
                             let _ = send_input_instructions.send(
                                 InputInstruction::AnsiStdinInstructions(parse_output.replies),

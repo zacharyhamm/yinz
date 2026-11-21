@@ -64,6 +64,7 @@ pub struct FakeClientOsApi {
     size: Arc<Mutex<Size>>,
     stdin_rx: crossbeam::channel::Receiver<Vec<u8>>,
     stdin_buffer: Arc<Mutex<Option<Vec<u8>>>>,
+    stdin_stop: Option<crossbeam::channel::Receiver<()>>,
     connection_generation: Arc<std::sync::atomic::AtomicUsize>,
     generation: usize,
     cli_stdin: Option<String>,
@@ -85,6 +86,7 @@ impl Clone for FakeClientOsApi {
             size: self.size.clone(),
             stdin_rx: self.stdin_rx.clone(),
             stdin_buffer: self.stdin_buffer.clone(),
+            stdin_stop: self.stdin_stop.clone(),
             connection_generation: self.connection_generation.clone(),
             generation: self.generation,
             cli_stdin: self.cli_stdin.clone(),
@@ -173,6 +175,7 @@ impl FakeClientOsApi {
             size: size.clone(),
             stdin_rx,
             stdin_buffer: Default::default(),
+            stdin_stop: None,
             connection_generation: Default::default(),
             generation: 0,
             cli_stdin: None,
@@ -234,6 +237,11 @@ impl TtyControl for FakeClientOsApi {
 }
 
 impl StdioAccess for FakeClientOsApi {
+    fn stdin_read_waker(&mut self) -> std::io::Result<Box<dyn FnOnce() + Send>> {
+        let (stop, stopped) = crossbeam::channel::bounded(0);
+        self.stdin_stop = Some(stopped);
+        Ok(Box::new(move || drop(stop)))
+    }
     fn get_stdout_writer(&self) -> Box<dyn std::io::Write> {
         self.client_screen.writer()
     }
@@ -252,6 +260,10 @@ impl StdioAccess for FakeClientOsApi {
         }
         let bytes = match pending.take() {
             Some(bytes) => bytes,
+            None if let Some(stop) = &self.stdin_stop => crossbeam::channel::select_biased! {
+                recv(stop) -> _ => return Err("Session ended"),
+                recv(self.stdin_rx) -> bytes => bytes.map_err(|_| "fake client stdin closed")?,
+            },
             None => self
                 .stdin_rx
                 .recv()
