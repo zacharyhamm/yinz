@@ -36,6 +36,7 @@ uuid = { workspace = true }
 unicode-width = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
+yinz-test-support = { path = "../yinz-test-support", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = { workspace = true }
@@ -53,5 +54,5 @@ yinz-test-support = { path = "../yinz-test-support" }
 tokio = { workspace = true, features = ["sync", "test-util"] }
 
 [features]
-attachment-test-support = []
+attachment-test-support = ["dep:yinz-test-support"]
 unstable = []

@@ -3000,6 +3000,16 @@ pub fn render_plugin_for_clients(
 
     let mut plugin_render_assets = vec![];
     for client_id in clients_to_render {
+        // A watcher may still display this owner’s last viewport. Skipping a
+        // retired render must not publish an empty frame that clears it.
+        if !running_plugin
+            .env()
+            .senders
+            .session
+            .owns_attachment(client_id)
+        {
+            continue;
+        }
         running_plugin.env_mut().client_id = client_id;
         let rendered_bytes = running_plugin
             .render(rows, columns)

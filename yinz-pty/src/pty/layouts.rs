@@ -26,7 +26,7 @@ struct PendingLayoutSpawn {
     layout: TiledPaneLayout,
     floating_panes_layout: Vec<FloatingPaneLayout>,
     default_shell: TerminalAction,
-    plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
+    plugin_ids: yinz_bus::plugins::LayoutPlugins,
     adopted_panes: Option<AdoptedTabTerminals>,
     run_instructions: Vec<Option<Run>>,
     floating_run_instructions: Vec<Option<Run>>,
@@ -173,7 +173,7 @@ impl Pty {
         layout: TiledPaneLayout,
         floating_panes_layout: Vec<FloatingPaneLayout>,
         default_shell: Option<TerminalAction>,
-        plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
+        plugin_ids: yinz_bus::plugins::LayoutPlugins,
         initial_panes: Option<Vec<CommandOrPlugin>>,
         tab_index: TabId,
         block_on_first_terminal: bool,
@@ -271,7 +271,7 @@ impl Pty {
             run_instructions,
             floating_run_instructions,
             &default_shell,
-            &plugin_ids,
+            plugin_ids.values().flatten().map(|(id, _)| *id),
         ) {
             Ok(panes) => panes,
             Err(error) => {
@@ -347,7 +347,8 @@ impl Pty {
             new_tab_pane_ids.len(),
             new_tab_floating_pane_ids.len()
         );
-        let plugin_ids_to_close: Vec<_> = plugin_ids.values().flatten().copied().collect();
+        let plugin_ids_to_close: Vec<_> =
+            plugin_ids.values().flatten().map(|(id, _)| *id).collect();
         if let Err(error) = self
             .bus
             .senders
@@ -488,7 +489,7 @@ impl Pty {
         tiled: Vec<Option<Run>>,
         floating: Vec<Option<Run>>,
         default_shell: &TerminalAction,
-        plugin_ids: &HashMap<RunPluginOrAlias, Vec<PluginId>>,
+        plugin_ids: impl Iterator<Item = PluginId>,
     ) -> Result<SpawnedLayoutPanes> {
         let mut panes = SpawnedLayoutPanes::default();
         for (instructions, is_floating) in [(tiled, false), (floating, true)] {
@@ -496,7 +497,7 @@ impl Pty {
                 self.spawn_layout_slots(instructions, default_shell, &mut panes, is_floating)
             {
                 self.abandon_layout(&panes);
-                self.discard_layout_plugins(plugin_ids.values().flatten().copied());
+                self.discard_layout_plugins(plugin_ids);
                 return Err(error);
             }
         }
@@ -701,7 +702,7 @@ impl Pty {
             run_instructions,
             floating_run_instructions,
             &default_shell,
-            &plugin_ids,
+            plugin_ids.values().flatten().copied(),
         )?;
         let (new_terminal_pids, new_floating_pane_pids) = panes.placement_ids();
         let tab_result = TabOverrideResult {

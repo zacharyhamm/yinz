@@ -1338,3 +1338,53 @@ fn replacement_applies_deferred_agent_reports(plugins_ready: bool) {
         "other deferred structural events stay discarded"
     );
 }
+
+#[test]
+fn attachment_generation_source_replay_restores_serialized_live_focus() {
+    use yinz_types::{
+        internal_ids::TabNumber, render_negotiation::AttachmentGeneration,
+        session_migration::SessionMigrationMap,
+    };
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, TabId::new(3));
+    new_tab(&mut screen, 2, TabId::new(7));
+    let a = ClientId::for_attachment(2, AttachmentGeneration([1; 16]));
+    let b = ClientId::for_attachment(3, AttachmentGeneration([2; 16]));
+    for (owner, number, mode) in [(a, 1, InputMode::Pane), (b, 2, InputMode::Locked)] {
+        screen.add_client(owner).unwrap();
+        screen.go_to_tab(TabNumber::new(number), owner).unwrap();
+        screen.change_mode(mode, None, owner).unwrap();
+    }
+    let (inventory, _, _, _) = screen.migration_inventory(a).unwrap();
+    let inventory = serde_json::from_slice(&serde_json::to_vec(&inventory).unwrap()).unwrap();
+    let mapping = SessionMigrationMap {
+        tabs: [3, 7].map(|id| (TabId::new(id), TabId::new(id))).to_vec(),
+        panes: [1, 2]
+            .map(|id| {
+                let pane = PaneId::Terminal(TerminalId::new(id));
+                (pane, pane)
+            })
+            .to_vec(),
+    };
+    for (owner, number) in [(a, 2), (b, 1)] {
+        screen.go_to_tab(TabNumber::new(number), owner).unwrap();
+        screen.change_mode(InputMode::Normal, None, owner).unwrap();
+    }
+    screen
+        .restore_migration_focus(&inventory, &mapping)
+        .unwrap();
+    for owner in [a, b] {
+        let saved = inventory
+            .clients
+            .iter()
+            .find(|focus| focus.source_attachment() == owner)
+            .unwrap();
+        assert_eq!(
+            screen.core.active_tab_ids.get(&owner),
+            saved.tab_id.as_ref()
+        );
+        assert_eq!(screen.get_active_pane_id(&owner), saved.pane_id);
+        assert_eq!(screen.core.mode_info[&owner].mode, saved.mode_info.mode);
+        assert_eq!(screen.core.tab_history[&owner], saved.tab_history);
+    }
+}

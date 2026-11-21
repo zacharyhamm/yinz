@@ -89,8 +89,12 @@ impl Harness {
     /// Lands a new tab whose layout holds a terminal beside a slot for `plugin`, the way
     /// `ApplyLayout` does.
     fn land_layout_with(&mut self, plugin: PluginId) {
+        self.land_layout_for(plugin, CLIENT);
+    }
+
+    fn land_layout_for(&mut self, plugin: PluginId, requester: ClientId) {
         self.screen
-            .new_tab(LAYOUT_TAB, (vec![], vec![]), None, Some(CLIENT))
+            .new_tab(LAYOUT_TAB, (vec![], vec![]), None, Some(requester))
             .unwrap();
         self.screen
             .land_layout(
@@ -99,10 +103,10 @@ impl Harness {
                 vec![(TerminalId::new(2), None)],
                 vec![],
                 vec![],
-                HashMap::from([(headless_run(), vec![plugin])]),
+                HashMap::from([(headless_run(), vec![(plugin, CLIENT)])]),
                 LAYOUT_TAB,
                 true,
-                CLIENT,
+                requester,
                 None,
                 None,
                 &mut self.pending,
@@ -2271,5 +2275,41 @@ fn successful_reload_refreshes_headless_locations_without_losing_alias_metadata(
             .screen
             .update_plugin_location(PLUGIN, resolved.location.clone());
         assert!(!harness.screen.core.paneless_plugins.contains_key(&PLUGIN));
+    }
+}
+
+#[test]
+fn attachment_generation_layout_lands_after_requester_departure() {
+    use yinz_types::render_negotiation::AttachmentGeneration;
+    let mut harness = Harness::new();
+    let old = ClientId::for_attachment(2, AttachmentGeneration([1; 16]));
+    let owners = harness.screen.core.bus.senders.session.clone();
+    owners.register_attachment(CLIENT);
+    owners.register_attachment(old);
+    harness.screen.add_client(old).unwrap();
+    owners.retire_attachment(old);
+    harness.screen.remove_client(old).unwrap();
+    let other = ClientId::new(3);
+    owners.register_attachment(other);
+    harness.screen.add_client(other).unwrap();
+    harness.land_layout_for(PLUGIN, old);
+    for client in [old, other, CLIENT] {
+        harness
+            .screen
+            .handle_plugin_render_assets(vec![PluginRenderAsset::new(
+                PLUGIN,
+                client,
+                b"ready".to_vec(),
+            )])
+            .unwrap();
+        assert_eq!(
+            harness
+                .screen
+                .core
+                .render_blocker
+                .blocking_plugins
+                .contains_key(&PLUGIN),
+            client != CLIENT
+        );
     }
 }

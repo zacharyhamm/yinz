@@ -10470,6 +10470,13 @@ fn attachment_generation_shared_render_starts_empty_and_keeps_deferred_prints_an
     assert_eq!(cursor(&test), vec![(a, Some((1, 1)))]);
     assert_eq!(text(draw(&test, a, false), a), "old");
     assert_eq!(cursor(&test), vec![(a, Some((1, 1)))]);
+    owners.retire_attachment(a);
+    // The retained viewport still contains "old". No asset for it may
+    // be emitted, while the other live recipient keeps rendering.
+    let retired = draw(&test, a, false);
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0].client_id, c);
+    assert_eq!(retired[0].bytes, b"other");
     owners.register_attachment(b);
     test.bridge.add_client(b).unwrap();
     test.wait_for_executor(plugin);
@@ -10478,6 +10485,14 @@ fn attachment_generation_shared_render_starts_empty_and_keeps_deferred_prints_an
     let fresh = text(draw(&test, b, true), b);
     assert_eq!(fresh, "fresh-late-done");
     assert_eq!(cursor(&test), vec![(b, Some((3, 1)))]);
+    // The map owner is always considered for a render, even when the
+    // last viewer has left and only a watcher of its viewport remains.
+    owners.retire_attachment(c);
+    assert!(draw(&test, c, false).is_empty());
+    let still_live = draw(&test, b, false);
+    assert_eq!(still_live.len(), 1);
+    assert_eq!(still_live[0].client_id, b);
+    assert_eq!(still_live[0].bytes, fresh.as_bytes());
     let mut grid = yinz_terminal::panes::grid::Grid::new(
         5,
         20,

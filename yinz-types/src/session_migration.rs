@@ -42,12 +42,23 @@ impl PreparationWork {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClientFocus {
     pub client_id: ClientId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_generation: Option<crate::render_negotiation::AttachmentGeneration>,
     pub tab_id: Option<TabId>,
     pub pane_id: Option<PaneId>,
     pub tab_history: Vec<TabId>,
     pub pane_history: Vec<PaneId>,
     pub mode_info: crate::data::ModeInfo,
     pub marked_panes: Vec<PaneId>,
+}
+
+impl ClientFocus {
+    /// Only meaningful when replaying in the original server instance.
+    pub fn source_attachment(&self) -> ClientId {
+        self.source_generation.map_or(self.client_id, |generation| {
+            ClientId::for_attachment(self.client_id.get(), generation)
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

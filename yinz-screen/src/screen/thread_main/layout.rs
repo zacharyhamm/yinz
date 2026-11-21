@@ -1,7 +1,5 @@
 use super::*;
-use std::collections::HashMap;
 use std::path::PathBuf;
-use yinz_bus::plugins::PluginId;
 use yinz_bus::route::NotificationEnd;
 use yinz_bus::screen::{HoldForCommand, TabOverrideResult};
 use yinz_bus::ClientId;
@@ -11,7 +9,6 @@ use yinz_types::geometry::ResizeStrategy;
 use yinz_types::input::command::RunCommand;
 use yinz_types::input::command::TerminalAction;
 use yinz_types::input::layout::FloatingPaneLayout;
-use yinz_types::input::layout::RunPluginOrAlias;
 use yinz_types::input::layout::TabLayoutInfo;
 use yinz_types::input::layout::TiledPaneLayout;
 use yinz_types::internal_ids::TabId;
@@ -71,7 +68,7 @@ pub(super) fn apply_layout(
     new_pane_pids: Vec<(TerminalId, HoldForCommand)>,
     new_floating_pane_pids: Vec<(TerminalId, HoldForCommand)>,
     adopted_terminals: Vec<(TerminalId, RunCommand, Option<AgentInfo>)>,
-    new_plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
+    new_plugin_ids: yinz_bus::plugins::LayoutPlugins,
     tab_id: TabId,
     should_change_focus_to_new_tab: bool,
     client_id: ClientId,

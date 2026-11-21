@@ -2217,3 +2217,80 @@ fn attachment_generation_expired_timeout_preserves_reused_forward_token() {
     assert!(!*fired.lock().unwrap());
     assert_eq!(parser.lock().unwrap().active_forward_token(), Some(7));
 }
+
+#[test]
+fn attachment_generation_late_physical_replies_are_drained_before_recovery_queries() {
+    for kind in [ForwardKind::Barrier, ForwardKind::Clipboard] {
+        for timed_out in [false, true] {
+            let mut parser = StdinAnsiParser::new();
+            parser.begin_forward_generation(Some(1));
+            parser.open(kind, 17);
+            parser.queue_terminal_query(kind, b"A".to_vec());
+            assert_eq!(parser.ready_terminal_queries().count(), 1);
+            if timed_out {
+                assert!(parser.close_on_timeout(kind, 17).is_some());
+            }
+            parser.begin_forward_generation(Some(2));
+            parser.open(kind, 18);
+            parser.queue_terminal_query(kind, b"B".to_vec());
+            assert_eq!(parser.ready_terminal_queries().count(), 0);
+            let (old, new) = match kind {
+                ForwardKind::Barrier => (
+                    b"\x1b[4;100;100t\x1b[?1c".as_slice(),
+                    b"\x1b[4;200;200t\x1b[?1c".as_slice(),
+                ),
+                ForwardKind::Clipboard => (
+                    b"\x1b]52;c;b2xk\x1b\\".as_slice(),
+                    b"\x1b]52;c;bmV3\x1b\\".as_slice(),
+                ),
+            };
+            let discarded = parser.feed(old);
+            assert!(
+                discarded.completed_forward.is_none()
+                    && discarded.completed_clipboard_forward.is_none()
+            );
+            let query = parser.ready_terminal_queries().collect::<Vec<_>>();
+            assert_eq!(
+                query,
+                vec![[b"B".as_slice(), kind.barrier_suffix()].concat()]
+            );
+            let reply = parser.feed(new);
+            let (token, bytes) = reply
+                .completed_forward
+                .or(reply.completed_clipboard_forward)
+                .unwrap();
+            assert_eq!(token, 18);
+            assert_eq!(bytes, new.strip_suffix(b"\x1b[?1c").unwrap_or(new));
+        }
+    }
+}
+
+#[test]
+fn attachment_generation_timeout_cancels_the_unsent_recovery_query() {
+    for kind in [ForwardKind::Barrier, ForwardKind::Clipboard] {
+        let mut parser = StdinAnsiParser::new();
+        parser.begin_forward_generation(Some(1));
+        parser.open(kind, 1);
+        parser.queue_terminal_query(kind, b"A".to_vec());
+        assert_eq!(parser.ready_terminal_queries().count(), 1);
+        parser.begin_forward_generation(Some(2));
+        parser.open(kind, 1);
+        parser.queue_terminal_query(kind, b"B".to_vec());
+        assert_eq!(parser.ready_terminal_queries().count(), 0);
+        assert_eq!(parser.close_on_timeout(kind, 1), Some((1, vec![])));
+
+        let late = match kind {
+            ForwardKind::Barrier => b"\x1b[?1c".as_slice(),
+            ForwardKind::Clipboard => b"\x1b]52;c;b2xk\x1b\\".as_slice(),
+        };
+        let output = parser.feed(late);
+        assert!(output.completed_forward.is_none() && output.completed_clipboard_forward.is_none());
+        assert_eq!(parser.ready_terminal_queries().count(), 0);
+        parser.open(kind, 2);
+        parser.queue_terminal_query(kind, b"C".to_vec());
+        assert_eq!(
+            parser.ready_terminal_queries().collect::<Vec<_>>(),
+            vec![[b"C".as_slice(), kind.barrier_suffix()].concat()]
+        );
+    }
+}

@@ -246,6 +246,8 @@ pub(super) fn process_instruction(
         | ScreenInstruction::GoToTabName(_, _, _, Some(client), _)
         | ScreenInstruction::GoToTabWithId(_, Some(client), _)
         | ScreenInstruction::FocusPaneWithId(_, _, _, client, _)
+        | ScreenInstruction::CloseFocusedPane(client, _)
+        | ScreenInstruction::ClearScreen(client, _)
         | ScreenInstruction::ConfirmQuit(client, _)
         | ScreenInstruction::SwitchTabNext(client, _)
         | ScreenInstruction::SwitchTabPrev(client, _)

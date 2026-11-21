@@ -534,6 +534,9 @@ pub enum HookFiring {
     Headless(HookPayload),
 }
 
+/// Plugin instances loaded for a new layout, paired with their first render recipient.
+pub type LayoutPlugins = std::collections::HashMap<RunPluginOrAlias, Vec<(PluginId, ClientId)>>;
+
 /// Runtime identity, independent of the client an instance is currently keyed under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PluginInstanceId(u64);

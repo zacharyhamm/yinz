@@ -2516,3 +2516,56 @@ fn detaching_while_replacement_loads_preserves_confirmation_for_next_client() {
     assert_eq!(screen.core.tabs.len(), 1);
     assert!(requested_tabs(&plugin_receiver).is_empty());
 }
+
+#[test]
+fn attachment_generation_retired_focus_commands_preserve_the_live_pane() {
+    use crate::screen::thread_main::{process_instruction, EventLoopState};
+    use yinz_types::render_negotiation::AttachmentGeneration;
+    let (mut screen, _receiver) = screen_with_a_single_pane();
+    let live = ClientId::new(1);
+    let old = ClientId::for_attachment(3, AttachmentGeneration([1; 16]));
+    let cli = ClientId::for_attachment(4, AttachmentGeneration([2; 16]));
+    let owners = screen.core.bus.senders.session.clone();
+    owners.register_attachment(live);
+    owners.register_attachment(old);
+    owners.register_attachment(cli);
+    owners.retire_attachment(old);
+    let mut state = EventLoopState::default();
+    let pane = screen.get_active_pane_id(&live).unwrap();
+    let tab = screen.core.tabs.get_mut(&TabId::new(1)).unwrap();
+    tab.handle_pty_bytes(TerminalId::new(1), b"still-running".to_vec())
+        .unwrap();
+    for instruction in [
+        ScreenInstruction::ClearScreen(old, None),
+        ScreenInstruction::CloseFocusedPane(old, None),
+    ] {
+        assert!(process_instruction(&mut screen, &mut state, instruction)
+            .unwrap()
+            .is_continue());
+    }
+    let contents = |screen: &Screen| {
+        screen.core.tabs[&TabId::new(1)]
+            .get_pane_with_id(pane)
+            .unwrap()
+            .pane_contents(Some(live), false, None)
+            .viewport
+            .concat()
+    };
+    assert!(contents(&screen).contains("still-running"));
+    assert!(process_instruction(
+        &mut screen,
+        &mut state,
+        ScreenInstruction::ClearScreen(cli, None)
+    )
+    .unwrap()
+    .is_continue());
+    assert!(!contents(&screen).contains("still-running"));
+    assert!(process_instruction(
+        &mut screen,
+        &mut state,
+        ScreenInstruction::CloseFocusedPane(cli, None)
+    )
+    .unwrap()
+    .is_continue());
+    assert!(screen.tab_containing_pane(pane).is_none());
+}

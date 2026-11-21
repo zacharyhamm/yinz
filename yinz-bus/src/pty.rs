@@ -345,11 +345,11 @@ pub enum PtyInstruction {
         Option<TerminalAction>,
         Option<TiledPaneLayout>,
         Vec<FloatingPaneLayout>,
-        TabId,                                    // tab_index
-        HashMap<RunPluginOrAlias, Vec<PluginId>>, // plugin_ids
-        Option<Vec<CommandOrPlugin>>,             // initial_panes
-        bool,                                     // block_on_first_terminal
-        bool,                                     // should change focus to new tab
+        TabId,                         // tab_index
+        crate::plugins::LayoutPlugins, // plugin_ids
+        Option<Vec<CommandOrPlugin>>,  // initial_panes
+        bool,                          // block_on_first_terminal
+        bool,                          // should change focus to new tab
         ClientId,
         Option<NotificationEnd>, // completion signal
     ), // the String is the tab name

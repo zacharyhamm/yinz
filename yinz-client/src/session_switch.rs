@@ -786,11 +786,12 @@ pub(crate) fn attach_socket(
 
 /// Exercise the ordinary destination handshake with a writer supplied by the server test.
 #[cfg(feature = "attachment-test-support")]
-pub fn prepare_test_destination(
+pub(crate) fn commit_test_destination(
+    sessions: &mut Sessions,
     socket: &std::path::Path,
     deadline: Instant,
-) -> Result<Vec<ServerToClientMsg>> {
-    let mut prepared = attach_socket(
+) -> Result<PreparedConnection> {
+    let prepared = attach_socket(
         Destination::Local,
         "destination".into(),
         None,
@@ -799,11 +800,13 @@ pub fn prepare_test_destination(
         &AtomicBool::new(false),
         deadline,
     )?;
-    Ok(prepared
-        .buffered
-        .drain(..)
-        .map(|(message, _)| message)
-        .collect())
+    sessions.preparation = Some(Preparation {
+        id: "destination".into(),
+        cancelled: Default::default(),
+        receiver: mpsc::channel().1,
+        result: Some(Ok(prepared)),
+    });
+    sessions.commit("destination")
 }
 
 /// Drive the ordinary session-request dispatcher against an isolated local socket directory.

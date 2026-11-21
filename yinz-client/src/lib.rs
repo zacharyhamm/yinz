@@ -1195,7 +1195,7 @@ pub fn start_server_detached(
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "attachment-test-support"))]
 mod test_support;
 #[cfg(test)]
 mod unit;
@@ -1211,6 +1211,8 @@ pub mod remote_sessions;
 pub mod session_discovery;
 mod session_switch;
 #[cfg(feature = "attachment-test-support")]
-pub use session_switch::{prepare_test_destination, with_test_session_requests};
+pub use client_loop::publication_fixture::exercise_test_destination;
+#[cfg(feature = "attachment-test-support")]
+pub use session_switch::with_test_session_requests;
 
 pub use startup::native_first_message;

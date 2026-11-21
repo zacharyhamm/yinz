@@ -1348,14 +1348,17 @@ fn shipped_default_layout() -> Layout {
     layout
 }
 
-fn ui_plugin_ids() -> HashMap<RunPluginOrAlias, Vec<yinz_types::internal_ids::PluginId>> {
+fn ui_plugin_ids() -> yinz_bus::plugins::LayoutPlugins {
     [("yinz:tab-bar", 1), ("yinz:status-bar", 2)]
         .into_iter()
         .map(|(url, id)| {
             let run =
                 yinz_runtime::plugin_location::run_plugin_or_alias_from_url(url, &None, None, None)
                     .unwrap();
-            (run, vec![yinz_types::internal_ids::PluginId::new(id)])
+            (
+                run,
+                vec![(yinz_types::internal_ids::PluginId::new(id), CLIENT)],
+            )
         })
         .collect()
 }

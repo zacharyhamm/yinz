@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use yinz_bus::screen::{HoldForCommand, TabOverrideResult};
 use yinz_types::agent::AgentInfo;
 use yinz_types::input::command::RunCommand;
-use yinz_types::input::layout::{FloatingPaneLayout, RunPluginOrAlias, TiledPaneLayout};
+use yinz_types::input::layout::{FloatingPaneLayout, TiledPaneLayout};
 use yinz_types::internal_ids::TerminalId;
 use yinz_types::pane_size::{Size, Viewport};
 
@@ -279,7 +279,7 @@ impl Screen {
         new_pane_pids: Vec<(TerminalId, HoldForCommand)>,
         new_floating_pane_pids: Vec<(TerminalId, HoldForCommand)>,
         adopted_terminals: Vec<(TerminalId, RunCommand, Option<AgentInfo>)>,
-        new_plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
+        loaded_plugins: yinz_bus::plugins::LayoutPlugins,
         tab_id: TabId,
         should_change_focus_to_new_tab: bool,
         client_id: ClientId,
@@ -291,6 +291,10 @@ impl Screen {
             "ScreenInstruction::ApplyLayout: applying layout for tab {}",
             tab_id
         );
+        let new_plugin_ids: HashMap<_, Vec<_>> = loaded_plugins
+            .iter()
+            .map(|(run, plugins)| (run.clone(), plugins.iter().map(|(id, _)| *id).collect()))
+            .collect();
         if completion_tx
             .as_ref()
             .and_then(|c| c.agent_tab.as_ref())
@@ -368,7 +372,7 @@ impl Screen {
             floating_panes_layout,
             new_pane_pids,
             new_floating_pane_pids,
-            new_plugin_ids.clone(),
+            new_plugin_ids,
             tab_id,
             should_change_focus_to_new_tab,
             client_id,
@@ -476,8 +480,8 @@ impl Screen {
         }
 
         let mut removed_plugin_panes = false;
-        for plugin_ids in new_plugin_ids.values() {
-            for plugin_id in plugin_ids {
+        for plugins in loaded_plugins.values() {
+            for (plugin_id, render_client) in plugins {
                 // The plugin declared no pane, or is gone, before its slot landed: the slot
                 // goes, and the first render must not wait for a plugin that never renders.
                 if self.plugin_has_no_pane(*plugin_id) {
@@ -491,9 +495,17 @@ impl Screen {
                     .values()
                     .any(|tab| tab.has_plugin(*plugin_id));
                 if plugin_exists {
-                    self.core
-                        .render_blocker
-                        .register_blocking_plugin(*plugin_id, client_id);
+                    if self
+                        .core
+                        .bus
+                        .senders
+                        .session
+                        .owns_attachment(*render_client)
+                    {
+                        self.core
+                            .render_blocker
+                            .register_blocking_plugin(*plugin_id, *render_client);
+                    }
                     if let Some(pending_events) = pending.waiting_for_pane.remove(&pane_id) {
                         replay_pending_plugin_events(self, pending_events)?;
                     }

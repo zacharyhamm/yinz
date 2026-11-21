@@ -246,6 +246,10 @@ impl Screen {
         // `and` evaluates every cleanup step while retaining the first error.
         let mut result = Ok(());
 
+        self.core
+            .render_blocker
+            .blocking_plugins
+            .retain(|_, (owner, _)| *owner != client_id);
         self.transfer.on_client_removed(client_id);
         self.notices.on_client_removed(client_id);
         // No force-render: the client is going, and the cells its menu occupied belong to a screen

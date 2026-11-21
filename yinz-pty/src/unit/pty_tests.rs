@@ -1717,7 +1717,10 @@ fn layout_handoffs_after_screen_shutdown_close_panes_without_starting_remote_com
                 layout,
                 floating_layouts,
                 default_shell,
-                plugin_ids,
+                plugin_ids
+                    .into_iter()
+                    .map(|(run, ids)| (run, ids.into_iter().map(|id| (id, CLIENT_1)).collect()))
+                    .collect(),
                 None,
                 TabId::new(0),
                 false,
@@ -1773,7 +1776,10 @@ fn a_failing_layout_closes_the_panes_it_already_spawned() {
         Some(TerminalAction::RunCommand(RunCommand::default())),
         HashMap::from([(
             RunPluginOrAlias::default(),
-            vec![PluginId::new(100), PluginId::new(101)],
+            vec![
+                (PluginId::new(100), CLIENT_1),
+                (PluginId::new(101), CLIENT_1),
+            ],
         )]),
         None,
         TabId::new(0),

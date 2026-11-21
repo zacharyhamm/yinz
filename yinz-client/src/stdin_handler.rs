@@ -58,6 +58,10 @@ pub(crate) fn stdin_loop(
     // a deadline, because it is the one whose absence is itself an answer.
     let mut kitty_probe_deadline: Option<Instant> = None;
     {
+        stdin_ansi_parser
+            .lock()
+            .unwrap()
+            .startup_barrier_sent(recovery.as_ref().map(|control| control.stamp().0));
         let query_string = build_startup_query_string(support_kitty_graphics_protocol);
         // `write_all` + `flush`, not `write`: the query holds no newline, and stdout is a
         // `LineWriter`, so a bare write would sit in the buffer until some other thread flushed

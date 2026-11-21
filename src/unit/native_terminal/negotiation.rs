@@ -1045,12 +1045,59 @@ fn attachment_generation_headless_reconnect_keeps_its_own_recording_and_ack() {
         "30",
     );
     write_packet(&mut old_peer, &original);
-    assert_eq!(
-        wire::ClientToServerMsg::decode(read_packet(&mut old_peer).as_slice())
-            .unwrap()
-            .attachment_generation,
-        Some(vec![0x11; 16])
+    let tagged = |owner: &[u8], message: Server| {
+        let mut wire = wire::ServerToClientMsg::from(message);
+        wire.attachment_generation = Some(owner.to_vec());
+        wire.encode_to_vec()
+    };
+    let render = |seq, clear| {
+        let mut frame = yinz_types::structured_render::FrameBuilder::new(80, 24, seq);
+        frame.set_full_repaint(seq == 1);
+        frame.set_clear(clear);
+        frame.finish()
+    };
+    let ack = |peer: &mut UnixStream, owner: &[u8], seq| {
+        let ack = wire::ClientToServerMsg::decode(read_packet(peer).as_slice()).unwrap();
+        assert_eq!(ack.attachment_generation.as_deref(), Some(owner));
+        assert_eq!(
+            Client::try_from(ack).unwrap(),
+            Client::RenderFrameAck { seq }
+        );
+    };
+    let a = [0x11; 16];
+    let request = wire::ClientToServerMsg::decode(read_packet(&mut old_peer).as_slice()).unwrap();
+    assert_eq!(request.attachment_generation.as_deref(), Some(a.as_slice()));
+    let Client::NativeRenderRequest(caps::Request::Offer(old_offer)) = request.try_into().unwrap()
+    else {
+        panic!("expected offer on original connection");
+    };
+    write_packet(
+        &mut old_peer,
+        &tagged(
+            &a,
+            Server::NativeRenderResult(caps::Decision::Selected(old_offer.select(None).unwrap())),
+        ),
     );
+    let old_first = render(1, true);
+    let old_second = render(2, true);
+    let replay = tagged(
+        &a,
+        Server::RenderFrame {
+            frame: old_second.clone(),
+        },
+    );
+    write_packet(
+        &mut old_peer,
+        &tagged(
+            &a,
+            Server::RenderFrame {
+                frame: old_first.clone(),
+            },
+        ),
+    );
+    ack(&mut old_peer, &a, 1);
+    write_packet(&mut old_peer, &replay);
+    ack(&mut old_peer, &a, 2);
     let (child, mut peer) =
         scripted_attachment(&fixture, proxy.path(), &listener, SESSION, &capture, "30");
     let owner = vec![0x22; 16];
@@ -1091,21 +1138,23 @@ fn attachment_generation_headless_reconnect_keeps_its_own_recording_and_ack() {
         &mut peer,
         Server::NativeRenderResult(caps::Decision::Selected(offer.select(None).unwrap())),
     );
-    let mut frame = yinz_types::structured_render::FrameBuilder::new(80, 24, 1);
-    frame.set_full_repaint(true);
-    let frame = frame.finish();
+    let frame = render(1, false);
     send_current(
         &mut peer,
         Server::RenderFrame {
             frame: frame.clone(),
         },
     );
-    let ack = wire::ClientToServerMsg::decode(read_packet(&mut peer).as_slice()).unwrap();
-    assert_eq!(ack.attachment_generation.as_ref(), Some(&owner));
-    assert_eq!(
-        Client::try_from(ack).unwrap(),
-        Client::RenderFrameAck { seq: 1 }
+    ack(&mut peer, &owner, 1);
+    write_packet(&mut peer, &replay);
+    let second = render(2, false);
+    send_current(
+        &mut peer,
+        Server::RenderFrame {
+            frame: second.clone(),
+        },
     );
+    ack(&mut peer, &owner, 2);
     send_current(
         &mut peer,
         Server::Exit {
@@ -1118,10 +1167,26 @@ fn attachment_generation_headless_reconnect_keeps_its_own_recording_and_ack() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    // Any extra ACK for the replay precedes this orderly exit on B's socket.
+    let exit = wire::ClientToServerMsg::decode(read_packet(&mut peer).as_slice()).unwrap();
+    assert_eq!(exit.attachment_generation.as_ref(), Some(&owner));
+    assert_eq!(Client::try_from(exit).unwrap(), Client::ClientExited);
+    let recording = |frames: &[Vec<u8>]| {
+        frames
+            .iter()
+            .flat_map(|frame| {
+                (frame.len() as u32)
+                    .to_le_bytes()
+                    .into_iter()
+                    .chain(frame.iter().copied())
+            })
+            .collect::<Vec<_>>()
+    };
     assert_eq!(
-        fs::read(capture).unwrap(),
-        [&(frame.len() as u32).to_le_bytes()[..], &frame].concat()
+        fs::read(previous_capture).unwrap(),
+        recording(&[old_first, old_second])
     );
+    assert_eq!(fs::read(capture).unwrap(), recording(&[frame, second]));
 }
 
 fn send_tagged(stream: &mut UnixStream, tag: &[u8], message: Client) {

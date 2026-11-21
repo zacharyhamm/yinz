@@ -195,6 +195,39 @@ enum RecoveryPaste {
     Closing(usize),
 }
 
+/// Physical terminal replies carry no server token. A timeout releases the
+/// logical request but cannot retract its write to the terminal. On recovery
+/// wait for those old terminators before emitting another query of this kind.
+#[derive(Default)]
+struct TerminalQueries {
+    outstanding: u64,
+    retired: u64,
+    waiting: Option<Vec<u8>>,
+}
+
+impl TerminalQueries {
+    fn retire(&mut self) {
+        self.retired = self.outstanding;
+        self.waiting = None;
+    }
+
+    fn observe_terminator(&mut self) -> bool {
+        self.outstanding = self.outstanding.saturating_sub(1);
+        let retired = self.retired != 0;
+        self.retired = self.retired.saturating_sub(1);
+        retired
+    }
+
+    fn take_ready(&mut self) -> Option<Vec<u8>> {
+        if self.retired != 0 {
+            return None;
+        }
+        let query = self.waiting.take()?;
+        self.outstanding = self.outstanding.saturating_add(1);
+        Some(query)
+    }
+}
+
 /// Continuous host-reply parser. Lives for the whole client session.
 pub struct StdinAnsiParser {
     inner: InputParser,
@@ -202,6 +235,8 @@ pub struct StdinAnsiParser {
     /// Active forwarding slot: `Some` while a forwarded query is in
     /// flight, `None` otherwise.
     pub(crate) forward_generation: Option<u64>,
+    barriers: TerminalQueries,
+    clipboards: TerminalQueries,
     active_forward: Option<ForwardSlot>,
     active_clipboard_forward: Option<ClipboardForwardSlot>,
     /// Bytes of an OSC sequence whose terminator hasn't arrived yet.
@@ -233,6 +268,8 @@ impl StdinAnsiParser {
             inner: InputParser::new(),
             partial_buffer_limit: PARTIAL_BUFFER_CAP_BYTES,
             forward_generation: None,
+            barriers: Default::default(),
+            clipboards: Default::default(),
             active_forward: None,
             active_clipboard_forward: None,
             partial_osc: Vec::new(),
@@ -263,6 +300,35 @@ impl StdinAnsiParser {
         }
         self.startup_kitty_probe = StartupKittyProbe::UnsupportedAwaitingReply;
         Some(HostReply::KittyGraphicsSupport(false))
+    }
+
+    pub(crate) fn begin_forward_generation(&mut self, origin: Option<u64>) {
+        if self.forward_generation != origin {
+            self.barriers.retire();
+            self.clipboards.retire();
+            self.take_active_forward();
+            self.take_active_clipboard_forward();
+            self.forward_generation = origin;
+        }
+    }
+
+    pub(crate) fn startup_barrier_sent(&mut self, origin: Option<u64>) {
+        self.begin_forward_generation(origin);
+        self.barriers.outstanding += 1;
+    }
+
+    pub(crate) fn queue_terminal_query(&mut self, kind: ForwardKind, mut bytes: Vec<u8>) {
+        bytes.extend_from_slice(kind.barrier_suffix());
+        match kind {
+            ForwardKind::Barrier => self.barriers.waiting = Some(bytes),
+            ForwardKind::Clipboard => self.clipboards.waiting = Some(bytes),
+        }
+    }
+
+    pub(crate) fn ready_terminal_queries(&mut self) -> impl Iterator<Item = Vec<u8>> + use<> {
+        [self.barriers.take_ready(), self.clipboards.take_ready()]
+            .into_iter()
+            .flatten()
     }
 
     /// Open a forwarding window for `token`. Subsequent reply events that
@@ -305,6 +371,7 @@ impl StdinAnsiParser {
     pub fn close_forward_on_timeout(&mut self, token: u32) -> Option<(u32, Vec<u8>)> {
         match &self.active_forward {
             Some(slot) if slot.token == token => {
+                self.barriers.waiting = None;
                 let slot = self.active_forward.take().unwrap();
                 Some((slot.token, slot.reply_bytes))
             },
@@ -317,6 +384,7 @@ impl StdinAnsiParser {
     /// accumulated. Used to hand a slot the server has already given up on
     /// over to the forward that replaced it, instead of clobbering it.
     pub fn take_active_forward(&mut self) -> Option<(u32, Vec<u8>)> {
+        self.barriers.waiting = None;
         self.active_forward
             .take()
             .map(|slot| (slot.token, slot.reply_bytes))
@@ -361,6 +429,7 @@ impl StdinAnsiParser {
     pub fn close_clipboard_forward_on_timeout(&mut self, token: u32) -> Option<(u32, Vec<u8>)> {
         match &self.active_clipboard_forward {
             Some(slot) if slot.token == token => {
+                self.clipboards.waiting = None;
                 let slot = self.active_clipboard_forward.take().unwrap();
                 Some((slot.token, Vec::new()))
             },
@@ -369,6 +438,7 @@ impl StdinAnsiParser {
     }
 
     pub fn take_active_clipboard_forward(&mut self) -> Option<(u32, Vec<u8>)> {
+        self.clipboards.waiting = None;
         self.active_clipboard_forward
             .take()
             .map(|slot| (slot.token, Vec::new()))
@@ -426,10 +496,12 @@ impl StdinAnsiParser {
                         // land in an open forwarding slot, where the pane
                         // that asked for some other reply would see it.
                         continue;
-                    } else if let Some(reply) = HostReply::from_osc_payload(&payload) {
-                        out.replies.push(reply);
+                    }
+                    if payload.starts_with(b"52;") && self.clipboards.observe_terminator() {
+                        continue;
                     }
                     if payload.starts_with(b"52;")
+                        && self.clipboards.waiting.is_none()
                         && let Some(slot) = self.active_clipboard_forward.take()
                     {
                         let mut bytes = b"\x1b]".to_vec();
@@ -437,6 +509,12 @@ impl StdinAnsiParser {
                         bytes.extend_from_slice(b"\x1b\\");
                         out.completed_clipboard_forward = Some((slot.token, bytes));
                         continue;
+                    }
+                    if self.barriers.retired != 0 || self.barriers.waiting.is_some() {
+                        continue;
+                    }
+                    if let Some(reply) = HostReply::from_osc_payload(&payload) {
+                        out.replies.push(reply);
                     }
                     if let Some(slot) = self.active_forward.as_mut() {
                         // Re-serialize so the pane's pty sees a legal OSC.
@@ -454,6 +532,10 @@ impl StdinAnsiParser {
                 } => {
                     match final_byte {
                         b'c' => {
+                            if self.barriers.observe_terminator() || self.barriers.waiting.is_some()
+                            {
+                                continue;
+                            }
                             // The graphics reply can arrive after this barrier. Report the
                             // provisional negative once, and keep waiting for that reply.
                             if self.startup_kitty_probe == StartupKittyProbe::AwaitingReply {
@@ -473,6 +555,9 @@ impl StdinAnsiParser {
                             // no cached-state counterpart.
                         },
                         _ => {
+                            if self.barriers.retired != 0 || self.barriers.waiting.is_some() {
+                                continue;
+                            }
                             if let Some(reply) = HostReply::from_csi_report(&raw) {
                                 out.replies.push(reply);
                             }
@@ -498,6 +583,7 @@ impl StdinAnsiParser {
                         && out.completed_clipboard_forward.is_none()
                         && let Some(slot) = self.active_clipboard_forward.take()
                     {
+                        self.clipboards.waiting = None;
                         out.completed_clipboard_forward = Some((slot.token, Vec::new()));
                     }
                 },

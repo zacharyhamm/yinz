@@ -358,7 +358,7 @@ pub enum ScreenInstruction {
         Vec<(TerminalId, HoldForCommand)>, // new pane pids
         Vec<(TerminalId, HoldForCommand)>, // new floating pane pids
         Vec<(TerminalId, RunCommand, Option<AgentInfo>)>, // all adopted terminals, including those without agents
-        HashMap<RunPluginOrAlias, Vec<PluginId>>,
+        crate::plugins::LayoutPlugins,
         TabId, // tab_id - stable identifier from NewTab instruction
         bool,  // should change focus to new tab
         ClientId,

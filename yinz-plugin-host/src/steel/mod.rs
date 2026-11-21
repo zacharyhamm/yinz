@@ -486,9 +486,6 @@ impl SteelPlugin {
 
     pub fn render(&mut self, rows: usize, columns: usize) -> Result<Vec<u8>> {
         let client = self.env().client_id;
-        if !self.env().senders.session.owns_attachment(client) {
-            return Ok(Vec::new());
-        }
         self.render_owners.insert(client);
         let started = Instant::now();
         let frame = self.with_runtime(true, |runtime| {

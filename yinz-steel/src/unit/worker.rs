@@ -742,3 +742,44 @@ fn attachment_generation_retired_render_failure_cannot_escape_into_new_recipient
         .eval("(unless (= late 2) (error \"old callback did not settle\"))")
         .unwrap();
 }
+
+#[test]
+fn attachment_generation_palette_disconnect_only_releases_its_actor() {
+    let mut worker = super::WorkerRuntime::new(&binary(), Ok).unwrap();
+    worker.eval(r#"
+       (define callbacks '())
+       (define (install label)
+         (define owner (%palette-owner))
+         (define scope (hash "opening" 1 "registration" "provider"))
+         (define handle (%palette-remember (lambda () label) scope owner))
+         (define task (vector scope owner #f #f (hash "cancel" (lambda () (set! callbacks (cons label callbacks)))) #f %async-actor))
+         (set! %palette-tasks (hash-insert %palette-tasks (%palette-task-key scope owner) task))
+         handle)
+       (define (remaining handle) (list (hash-contains? %palette-handles handle) callbacks))
+    "#).unwrap();
+    let a = serde_json::json!({"id": 2, "generation":"A"});
+    let b = serde_json::json!({"id": 2, "generation":"B"});
+    worker.invoke("yinz-async-enter", vec![a.clone()]).unwrap();
+    let old = worker
+        .invoke("install", vec![serde_json::json!("old")])
+        .unwrap();
+    worker.invoke("yinz-async-enter", vec![b]).unwrap();
+    let new = worker
+        .invoke("install", vec![serde_json::json!("new")])
+        .unwrap();
+    worker.invoke("yinz-async-enter", vec![a]).unwrap();
+    worker
+        .invoke(
+            "yinz-palette-message",
+            vec![serde_json::json!({"type":"disconnect"})],
+        )
+        .unwrap();
+    assert_eq!(
+        worker.invoke("remaining", vec![old]).unwrap(),
+        serde_json::json!([false, ["old"]])
+    );
+    assert_eq!(
+        worker.invoke("remaining", vec![new]).unwrap(),
+        serde_json::json!([true, ["old"]])
+    );
+}

@@ -660,7 +660,10 @@ impl MockScreen {
                 None,
             )
             .unwrap(),
-            vec![yinz_types::internal_ids::PluginId::new(1)],
+            vec![(
+                yinz_types::internal_ids::PluginId::new(1),
+                self.main_client_id,
+            )],
         );
         for i in 0..pane_count {
             pane_ids.push((TerminalId::new(i as u32), None));
@@ -766,7 +769,10 @@ impl MockScreen {
                 }),
                 ..Default::default()
             }),
-            vec![yinz_types::internal_ids::PluginId::new(1)],
+            vec![(
+                yinz_types::internal_ids::PluginId::new(1),
+                self.main_client_id,
+            )],
         );
         for i in 0..pane_count {
             pane_ids.push((TerminalId::new(i as u32), None));
@@ -872,7 +878,13 @@ impl MockScreen {
         };
         let pane_ids = vec![]; // no terminal panes
         let mut plugin_ids = HashMap::new();
-        plugin_ids.insert(run_plugin, plugin_pane_ids);
+        plugin_ids.insert(
+            run_plugin,
+            plugin_pane_ids
+                .into_iter()
+                .map(|id| (id, self.main_client_id))
+                .collect(),
+        );
         let default_shell = None;
         let tab_name = None;
         let tab_index = TabId::new(self.last_opened_tab_index.map(|l| l.get() + 1).unwrap_or(0));

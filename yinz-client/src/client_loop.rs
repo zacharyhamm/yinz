@@ -96,6 +96,13 @@ impl ClientLoop<'_, '_> {
             {
                 break;
             }
+            // Recovery already wakes this loop on READ_POLL. A physical reply
+            // can release a deferred query without producing a client instruction.
+            if let Some(recovery) = self.recovery.as_ref()
+                && recovery.control.can_write()
+            {
+                self.flush_terminal_queries(Some(recovery.control.stamp().0));
+            }
             let now = Instant::now();
             if let Some(splash) = &mut self.splash {
                 match splash.tick(self.os_input, self.synchronised_output, now) {
@@ -575,34 +582,30 @@ impl ClientLoop<'_, '_> {
         //    open: the server's backstop timeout can give up on the previous
         //    token and dispatch this one before this client's per-slot timer
         //    got to run. Hand that slot over instead of clobbering it.
-        let stale_forward = {
+        {
             let mut parser = self.stdin_ansi_parser.lock().unwrap();
-            if parser.forward_generation != origin {
-                parser.take_active(ForwardKind::Barrier);
-                parser.take_active(ForwardKind::Clipboard);
-                parser.forward_generation = origin;
-            }
+            parser.begin_forward_generation(origin);
             let stale_forward = parser.take_active(kind);
+            if let Some((stale_token, stale_reply_bytes)) = stale_forward {
+                log::warn!(
+                    "{} slot for token {} was still open when token {} was dispatched \
+                     ({} accumulated bytes); closing it out",
+                    kind.label(),
+                    stale_token,
+                    token,
+                    stale_reply_bytes.len(),
+                );
+                // Fails only once the input thread has exited, when nobody awaits the reply.
+                let _ = self.send_input_control.send(
+                    InputInstruction::ForwardedReplyFromHostComplete {
+                        token: stale_token,
+                        reply_bytes: stale_reply_bytes,
+                    }
+                    .with_server_generation(origin),
+                );
+            }
             parser.open(kind, token);
-            stale_forward
-        };
-        if let Some((stale_token, stale_reply_bytes)) = stale_forward {
-            log::warn!(
-                "{} slot for token {} was still open when token {} was dispatched \
-                 ({} accumulated bytes); closing it out",
-                kind.label(),
-                stale_token,
-                token,
-                stale_reply_bytes.len(),
-            );
-            // Fails only once the input thread has exited, when nobody awaits the reply.
-            let _ = self.send_input_control.send(
-                InputInstruction::ForwardedReplyFromHostComplete {
-                    token: stale_token,
-                    reply_bytes: stale_reply_bytes,
-                }
-                .with_server_generation(origin),
-            );
+            parser.queue_terminal_query(kind, query_bytes);
         }
 
         // 2. Arm a per-forward deadline on the dedicated runtime. When it
@@ -627,15 +630,24 @@ impl ClientLoop<'_, '_> {
                 );
             },
         );
+        self.flush_terminal_queries(origin);
+    }
 
-        // 3. Write the query, plus whatever provokes the closing reply, in a
-        //    single write_all. When that reply arrives it closes the window
-        //    parser-side, and the timer's eventual wake-up finds an empty
-        //    slot and no-ops.
-        let mut blob = query_bytes;
-        blob.extend_from_slice(kind.barrier_suffix());
-        let mut out = self.os_input.get_stdout_writer();
-        let _ = out.write_all(&blob);
-        let _ = out.flush();
+    fn flush_terminal_queries(&self, origin: Option<u64>) {
+        let ready = {
+            let mut parser = self.stdin_ansi_parser.lock().unwrap();
+            if parser.forward_generation != origin {
+                return;
+            }
+            parser.ready_terminal_queries()
+        };
+        for query in ready {
+            let mut writer = self.os_input.get_stdout_writer();
+            let _ = writer.write_all(&query).and_then(|()| writer.flush());
+        }
     }
 }
+
+#[cfg(feature = "attachment-test-support")]
+#[path = "unit/publication_destination.rs"]
+pub(crate) mod publication_fixture;

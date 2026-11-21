@@ -70,6 +70,10 @@
   (set! %async-next (+ %async-next 1))
   (number->string %async-next))
 (define %async-actor #f)
+;; Host calls decode a fresh actor map each time. Steel hashes maps in iteration
+;; order, so use the ordered identity fields for render-cache keys.
+(define (%async-frame-key actor)
+  (if (hash? actor) (list (hash-ref actor "id") (hash-ref actor "generation")) actor))
 (define (yinz-async-enter actor)
   (set! %async-actor actor)
   (set! %async-client (if (hash? actor) (hash-ref actor "id") actor))
@@ -277,7 +281,7 @@
       (unless %async-failure (set! %async-failure original))))
 (define (%async-fail failure) (%async-fail-in-scope %async-scope failure))
 (define (%async-check)
-  (define frame (%async-get %async-frames %async-actor #f))
+  (define frame (%async-get %async-frames (%async-frame-key %async-actor) #f))
   (when (and frame (vector-ref frame 5))
     (define failure (vector-ref frame 5))
     (vector-set! frame 5 #f)
@@ -434,17 +438,19 @@
   deferred)
 
 (define (yinz-async-retire actor)
-  (define frame (%async-get %async-frames actor #f))
+  (define key (%async-frame-key actor))
+  (define frame (%async-get %async-frames key #f))
   (when (and frame (vector-ref frame 3)) (%render-close (vector-ref frame 3)))
-  (set! %async-frames (hash-remove %async-frames actor))
+  (set! %async-frames (hash-remove %async-frames key))
   json-null)
 (define (%async-render hook arguments)
   (define actor %async-actor)
+  (define key (%async-frame-key actor))
   ;; [requested dimensions, accepted version, (text . cursor command), pending buffer, cacheable, pending error]
-  (define frame (%async-get %async-frames %async-actor #f))
+  (define frame (%async-get %async-frames key #f))
   (unless frame
     (set! frame (vector arguments -1 (cons "" #f) #f #f #f))
-    (set! %async-frames (hash-insert %async-frames %async-actor frame)))
+    (set! %async-frames (hash-insert %async-frames key frame)))
   (unless (equal? (vector-ref frame 0) arguments)
     (vector-set! frame 0 arguments)
     (vector-set! frame 1 -1))
@@ -454,7 +460,7 @@
     ;; #f means no cursor command; a command containing json-null explicitly hides it.
     (define buffer (%render-buffer))
     (define context (vector #f buffer actor))
-    (define (eligible?) (eq? (%async-get %async-frames actor #f) frame))
+    (define (eligible?) (eq? (%async-get %async-frames key #f) frame))
     (define (matches-request?)
       (and (eligible?) (= version %async-version) (equal? arguments (vector-ref frame 0))))
     (define (fail failure)

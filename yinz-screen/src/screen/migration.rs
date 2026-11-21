@@ -316,7 +316,8 @@ impl Screen {
             .borrow()
             .iter()
             .map(|id| ClientFocus {
-                client_id: *id,
+                client_id: ClientId::new(id.get()),
+                source_generation: id.generation(),
                 tab_id: self.core.active_tab_ids.get(id).copied(),
                 pane_id: self.get_active_pane_id(id),
                 tab_history: self.core.tab_history.get(id).cloned().unwrap_or_default(),
@@ -1301,9 +1302,9 @@ impl Screen {
                     .core
                     .connected_clients
                     .borrow()
-                    .contains(&focus.client_id)
+                    .contains(&focus.source_attachment())
             {
-                self.restore_migration_client(focus, focus.client_id, mapping)?;
+                self.restore_migration_client(focus, focus.source_attachment(), mapping)?;
             }
         }
         let mapped_tab = |id: TabId| {
@@ -1325,7 +1326,10 @@ impl Screen {
                 .copied()
                 .filter(|id| {
                     !restoring_source
-                        || !inventory.clients.iter().any(|focus| focus.client_id == *id)
+                        || !inventory
+                            .clients
+                            .iter()
+                            .any(|focus| focus.source_attachment() == *id)
                 })
                 .collect();
             let position = self

@@ -52,14 +52,21 @@ fn new_tab_distinguishes_default_empty_and_explicit_floating_layouts() {
                 None,
                 false,
                 false,
-                client_id,
+                ClientId::new(99),
                 None,
             ))
             .unwrap();
         let (instruction, _) = pty_receiver.recv_timeout(default_timeout()).unwrap();
-        let PtyInstruction::NewTab(_, _, _, resolved, _, plugin_ids, ..) = instruction else {
+        let PtyInstruction::NewTab(_, _, _, resolved, _, plugin_ids, _, _, _, requester, _) =
+            instruction
+        else {
             panic!("expected a resolved new tab, got {instruction:?}");
         };
+        assert_eq!(requester, ClientId::new(99));
+        assert!(plugin_ids
+            .values()
+            .flatten()
+            .all(|(_, recipient)| *recipient == client_id));
         // The handler requests plugins before handing commands to PTY. This also
         // proves an empty override keeps tiled chrome without starting a floating plugin.
         assert_eq!(resolved, expected);

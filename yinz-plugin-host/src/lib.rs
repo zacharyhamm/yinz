@@ -803,7 +803,7 @@ pub fn plugin_thread_main(
                     client_id
                 };
 
-                let mut plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>> = HashMap::new();
+                let mut plugin_ids = yinz_bus::plugins::LayoutPlugins::new();
                 tab_layout = tab_layout.or_else(|| Some(layout.new_tab().0));
                 let mut floating_panes_layout =
                     floating_panes_layout.unwrap_or_else(|| layout.new_tab().1);
@@ -870,12 +870,12 @@ pub fn plugin_thread_main(
                                 run: run_plugin_or_alias.clone(),
                             },
                         ) {
-                            Ok((plugin_id, _client_id)) => {
+                            Ok((plugin_id, render_client)) => {
                                 log::info!("startup: tab={tab_id:?} client={client_id} loaded plugin={plugin_id} at {:?}", startup_started.elapsed());
                                 plugin_ids
                                     .entry(run_plugin_or_alias.clone())
                                     .or_default()
-                                    .push(plugin_id);
+                                    .push((plugin_id, render_client));
                             },
                             Err(e) => {
                                 log::error!("Failed to load plugin: {}", e);

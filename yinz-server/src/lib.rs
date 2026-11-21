@@ -943,12 +943,10 @@ fn route_session_request(
     client: ClientId,
     request: yinz_types::session_destination::Request,
     reply: SessionReplySender,
-    pending: &mut PendingSessionRequests,
     mut os_input: &mut Box<dyn ServerOsApi>,
     session_state: &Arc<RwLock<SessionState>>,
     session_data: &Arc<RwLock<Option<SessionMetaData>>>,
 ) {
-    pending.retain(|_, (_, at)| at.elapsed() < SESSION_REQUEST_RETENTION);
     if session_data
         .read()
         .ok()
@@ -967,31 +965,40 @@ fn route_session_request(
         ));
         return;
     }
-    let refusal = match session_state.read() {
-        Ok(state) if !state.is_interactive(&client) => {
-            Some("The requesting client is no longer attached")
-        },
-        Ok(state) if !state.supports_session_requests(&client) => {
-            Some(yinz_types::session_destination::UNSUPPORTED_CLIENT)
-        },
-        Ok(_) => None,
-        Err(_) => Some("Cannot read which clients are attached"),
-    };
-    if let Some(refusal) = refusal {
-        let _ = reply.send(Err(refusal.to_owned()));
-        return;
+    let key = (client, request.token.clone());
+    {
+        let Ok(mut state) = session_state.write() else {
+            let _ = reply.send(Err("Cannot read which clients are attached".into()));
+            return;
+        };
+        if !state.is_interactive(&client) {
+            let _ = reply.send(Err("The requesting client is no longer attached".into()));
+            return;
+        }
+        if !state.supports_session_requests(&client) {
+            let _ = reply.send(Err(
+                yinz_types::session_destination::UNSUPPORTED_CLIENT.into()
+            ));
+            return;
+        }
+        state
+            .session_requests
+            .retain(|_, (_, at)| at.elapsed() < SESSION_REQUEST_RETENTION);
+        state
+            .session_requests
+            .insert(key.clone(), (reply, std::time::Instant::now()));
     }
-    pending.insert(
-        (client, request.token.clone()),
-        (reply, std::time::Instant::now()),
-    );
-    send_to_client!(
+    if !send_to_client!(
         client,
         os_input,
         ServerToClientMsg::SessionRequest(request),
         session_state,
         session_data
-    );
+    ) && let Ok(mut state) = session_state.write()
+        && let Some((sender, _)) = state.session_requests.remove(&key)
+    {
+        let _ = sender.send(Err("Could not deliver the session request".into()));
+    }
 }
 
 fn flush_pending_mouse_updates(
@@ -1051,6 +1058,7 @@ pub(crate) struct SessionState {
     /// Attached clients that advertised `CliAssets::supports_session_requests`. Older clients
     /// share the contract version but cannot decode `ServerToClientMsg::SessionRequest`.
     session_request_clients: HashSet<ClientId>,
+    session_requests: PendingSessionRequests,
     update_client_assets: HashMap<ClientId, CliAssets>,
     update_startup_assets: Option<CliAssets>,
     update_executable: Option<PathBuf>,
@@ -1071,6 +1079,7 @@ impl SessionState {
             last_active_client: None,
             forwards_in_flight: HashMap::new(),
             session_request_clients: HashSet::new(),
+            session_requests: HashMap::new(),
             update_client_assets: HashMap::new(),
             update_startup_assets: None,
             update_control_socket: None,
@@ -1090,7 +1099,7 @@ impl SessionState {
         let client_id = ClientId::for_attachment(id, generation);
         if let Some(previous) = self.attachments.register_attachment(client_id) {
             self.interactive_clients.remove(&previous);
-            self.session_request_clients.remove(&previous);
+            self.forget_session_requests(previous);
             self.clear_last_active_client(previous);
         }
         self.clients.insert(client_id);
@@ -1118,9 +1127,19 @@ impl SessionState {
         self.retire_interactive(client_id)
     }
 
+    fn forget_session_requests(&mut self, client: ClientId) {
+        self.session_request_clients.remove(&client);
+        self.session_requests.retain(|(owner, _), (sender, _)| {
+            if *owner == client {
+                let _ = sender.send(Err("The requesting client is no longer attached".into()));
+            }
+            *owner != client
+        });
+    }
+
     fn retire_interactive(&mut self, client_id: ClientId) -> Vec<u32> {
         self.interactive_clients.remove(&client_id);
-        self.session_request_clients.remove(&client_id);
+        self.forget_session_requests(client_id);
         self.clear_last_active_client(client_id);
         let stuck: Vec<u32> = self
             .forwards_in_flight
@@ -1171,7 +1190,7 @@ impl SessionState {
     pub fn convert_client_to_watcher(&mut self, client_id: ClientId) {
         self.clients.remove(&client_id);
         self.interactive_clients.remove(&client_id);
-        self.session_request_clients.remove(&client_id);
+        self.forget_session_requests(client_id);
         self.watchers.insert(client_id);
     }
     pub fn is_watcher(&self, client_id: &ClientId) -> bool {
@@ -1227,7 +1246,7 @@ impl SessionState {
         if supports_session_requests {
             self.session_request_clients.insert(client_id);
         } else {
-            self.session_request_clients.remove(&client_id);
+            self.forget_session_requests(client_id);
         }
     }
     fn supports_session_requests(&self, client_id: &ClientId) -> bool {
@@ -1514,7 +1533,6 @@ pub fn start_server_impl(
     let mut exit_reason = "server instruction channel closed";
     let mut starting_session = None;
     let mut kill_session = false;
-    let mut session_requests = PendingSessionRequests::new();
     let mut update_requests = update::PendingRequests::default();
     let mut kill_completion_client = None;
     let mut kill_progress_client = None;
@@ -2619,7 +2637,6 @@ pub fn start_server_impl(
                         client,
                         request,
                         reply,
-                        &mut session_requests,
                         &mut os_input,
                         &session_state,
                         &session_data,
@@ -2763,7 +2780,13 @@ pub fn start_server_impl(
                     update_requests.answer(client, reply);
                 },
                 ServerInstruction::SessionReply(client, reply) => {
-                    if let Some((sender, _)) = session_requests.remove(&(client, reply.token)) {
+                    if let Some((sender, _)) = session_state
+                        .write()
+                        .to_anyhow()
+                        .context("complete session request")?
+                        .session_requests
+                        .remove(&(client, reply.token))
+                    {
                         let _ = sender.send(reply.result);
                     }
                 },
@@ -3117,6 +3140,11 @@ pub fn start_server_impl(
                 .non_fatal();
         }
     };
+    if let Ok(mut state) = session_state.write() {
+        for (_, (sender, _)) in state.session_requests.drain() {
+            let _ = sender.send(Err("Session is shutting down".into()));
+        }
+    }
     log::info!("Server exiting: {exit_reason}");
     shutdown.begin();
     // No one drains this bounded channel now. Disconnect it before joining workers that
@@ -3803,3 +3831,7 @@ mod client_selection_tests;
 #[cfg(test)]
 #[path = "unit/session_request_tests.rs"]
 mod session_request_tests;
+
+#[cfg(test)]
+#[path = "unit/ansi_publication.rs"]
+mod ansi_publication;
