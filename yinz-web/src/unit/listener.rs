@@ -797,6 +797,52 @@ async fn login(addr: SocketAddr) -> String {
         .unwrap()
         .into()
 }
+
+#[tokio::test]
+async fn siri_pairing_follows_listener_through_rename_and_rejects_reused_name() {
+    fn json_body(reply: &str) -> serde_json::Value {
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        serde_json::from_str(reply.split_once("\r\n\r\n").unwrap().1).unwrap()
+    }
+    let (temp, backend) = fixture();
+    *backend.name.write().unwrap() = "original".into();
+    let runtime = tokio::runtime::Handle::current();
+    let first = WebServer::start(settings(temp.path()), backend.clone(), &runtime);
+    let addr = serving(&first).await;
+    let owner = login(addr).await;
+    let code = json_body(&api(addr, "POST", "/api/siri/code", Some(&owner), "{}").await);
+
+    *backend.name.write().unwrap() = "renamed".into();
+    let other = Arc::new(Fake::default());
+    *other.name.write().unwrap() = "original".into();
+    let second = WebServer::start(settings(temp.path()), other, &runtime);
+    let other_addr = serving(&second).await;
+    let pair = "/api/siri/pair";
+    assert!(api(other_addr, "POST", pair, None, &code.to_string())
+        .await
+        .starts_with("HTTP/1.1 401"));
+    let paired = json_body(&api(addr, "POST", pair, None, &code.to_string()).await);
+    let token = Some(paired["token"].as_str().unwrap());
+    let command = "/api/siri/command";
+    let first_command = r#"{"request_id":"first","command":"cancel"}"#;
+    let reply = json_body(&api(addr, "POST", command, token, first_command).await);
+    let next =
+        serde_json::json!({"request_id":reply["request_id"],"command":"continue"}).to_string();
+    *backend.name.write().unwrap() = "renamed again".into();
+    assert!(api(other_addr, "POST", command, token, &next)
+        .await
+        .starts_with("HTTP/1.1 401"));
+    let continued = json_body(&api(addr, "POST", command, token, &next).await);
+    assert_eq!(continued["speech"], "There is nothing more to read.");
+
+    json_body(&api(other_addr, "POST", "/api/siri/revoke", Some(&owner), "{}").await);
+    assert!(api(addr, "POST", command, token, &next)
+        .await
+        .starts_with("HTTP/1.1 401"));
+    stop(&second).await;
+    stop(&first).await;
+}
+
 #[tokio::test]
 async fn native_bearer_lifecycle_cross_server_revocation_takeover_and_dispatch_secrecy() {
     let (temp, backend) = fixture();

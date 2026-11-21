@@ -10,7 +10,9 @@ const MAX_BYTES: usize = 16 * 1024 * 1024;
 #[derive(Deserialize, Serialize)]
 struct Device {
     owner: String,
-    server: String,
+    // Legacy rows contain only a session name and cannot identify a listener.
+    #[serde(default)]
+    listener_instance: String,
     code: Option<(String, i64)>,
     token_hash: Option<String>,
     revision: u64,
@@ -46,7 +48,9 @@ fn access<T>(
         Err(e) => return Err(e).context("open Siri devices"),
     };
     let count = devices.len();
-    devices.retain(|d| sessions.iter().any(|s| s.id == d.owner && s.valid(now)));
+    devices.retain(|d| {
+        !d.listener_instance.is_empty() && sessions.iter().any(|s| s.id == d.owner && s.valid(now))
+    });
     let (result, changed) = f(&mut devices, &sessions, now)?;
     if changed || count != devices.len() {
         let bytes = serde_json::to_vec(&devices).context("encode Siri devices")?;
@@ -59,7 +63,7 @@ fn access<T>(
 pub(super) fn configure(
     data: &Path,
     owner: &str,
-    server: &str,
+    listener_instance: &str,
     revoke: bool,
 ) -> Result<Option<String>> {
     access(data, |devices, sessions, now| {
@@ -75,14 +79,14 @@ pub(super) fn configure(
         let pairing = Some((sessions::hash(&code), now + 5 * 60_000));
         if let Some(device) = devices
             .iter_mut()
-            .find(|d| d.owner == owner && d.server == server)
+            .find(|d| d.owner == owner && d.listener_instance == listener_instance)
         {
             device.code = pairing;
         } else {
             devices.retain(|d| d.owner != owner);
             devices.push(Device {
                 owner: owner.into(),
-                server: server.into(),
+                listener_instance: listener_instance.into(),
                 code: pairing,
                 token_hash: None,
                 revision: 0,
@@ -93,11 +97,11 @@ pub(super) fn configure(
     })
 }
 
-pub(super) fn redeem(data: &Path, server: &str, code: &str) -> Result<Option<String>> {
+pub(super) fn redeem(data: &Path, listener_instance: &str, code: &str) -> Result<Option<String>> {
     let hash = sessions::hash(code);
     access(data, |devices, _, now| {
         let Some(device) = devices.iter_mut().find(|d| {
-            d.server == server
+            d.listener_instance == listener_instance
                 && d.code
                     .as_ref()
                     .is_some_and(|(c, exp)| c == &hash && now < *exp)
@@ -118,11 +122,11 @@ pub(super) struct Phone {
     pub revision: u64,
     pub dialogue: Dialogue,
 }
-pub(super) fn load(data: &Path, server: &str, hash: &str) -> Result<Option<Phone>> {
+pub(super) fn load(data: &Path, listener_instance: &str, hash: &str) -> Result<Option<Phone>> {
     access(data, |devices, sessions, _| {
-        let device = devices
-            .iter()
-            .find(|d| d.server == server && d.token_hash.as_deref() == Some(hash));
+        let device = devices.iter().find(|d| {
+            d.listener_instance == listener_instance && d.token_hash.as_deref() == Some(hash)
+        });
         let phone = device.and_then(|d| {
             Some(Phone {
                 session: sessions.iter().find(|s| s.id == d.owner)?.info(),
@@ -136,7 +140,7 @@ pub(super) fn load(data: &Path, server: &str, hash: &str) -> Result<Option<Phone
 
 pub(super) fn save(
     data: &Path,
-    server: &str,
+    listener_instance: &str,
     hash: &str,
     revision: u64,
     dialogue: Dialogue,
@@ -144,7 +148,9 @@ pub(super) fn save(
     access(data, |devices, _, _| {
         let device = devices
             .iter_mut()
-            .find(|d| d.server == server && d.token_hash.as_deref() == Some(hash))
+            .find(|d| {
+                d.listener_instance == listener_instance && d.token_hash.as_deref() == Some(hash)
+            })
             .context("Siri pairing revoked")?;
         anyhow::ensure!(
             device.revision == revision,

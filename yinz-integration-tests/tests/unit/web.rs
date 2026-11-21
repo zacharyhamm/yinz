@@ -1349,6 +1349,17 @@ fn web_builtin_production_http() {
         .contains("cannot verify a live agent process"));
     assert!(terminal.stdin_bytes().is_empty());
 
+    let receipt = call_ok(
+        addr,
+        "POST",
+        "/api/agent/submission-status",
+        &token,
+        &json!({"agent": reference, "submission_id": "unknown"}).to_string(),
+    );
+    assert_eq!(receipt["response"]["outcome"], "status_unavailable");
+    assert_eq!(receipt["response"]["submission_id"], "unknown");
+    assert!(terminal.stdin_bytes().is_empty());
+
     // Native rejects a stale identity before any delivery: HTTP 409, not a 200 outcome.
     let mut stale = reference.clone();
     stale["session_id"] = json!("web-stale");

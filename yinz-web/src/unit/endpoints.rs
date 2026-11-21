@@ -1,19 +1,13 @@
 use super::*;
-use crate::auth::{AuthConfig, AuthError, Clock};
+use crate::auth::{AuthConfig, AuthError};
 use std::sync::atomic::AtomicI64;
-struct Time(AtomicI64);
-impl Clock for Time {
-    fn now_ms(&self) -> i64 {
-        self.0.load(Ordering::Acquire)
-    }
-}
 fn fixture() -> (tempfile::TempDir, Arc<Auth>) {
     let t = tempfile::tempdir().unwrap();
     password::tests::ready(t.path());
     let a = Arc::new(Auth::new(
         t.path().into(),
         AuthConfig::default(),
-        Arc::new(Time(AtomicI64::new(1000))),
+        Arc::new(AtomicI64::new(1000)),
     ));
     (t, a)
 }
@@ -39,7 +33,7 @@ async fn valid_login_session_logout_rotation_independent_state_and_secret_debug(
     let b = Auth::new(
         t.path().into(),
         AuthConfig::default(),
-        Arc::new(Time(AtomicI64::new(1000))),
+        Arc::new(AtomicI64::new(1000)),
     );
     assert!(b.authenticate(Some(token)).is_ok());
     assert_eq!(b.logout(&info).status, 204);

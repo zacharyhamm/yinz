@@ -36,6 +36,7 @@ fn unavailable() -> Response<Body> {
 
 pub(crate) async fn handle(
     state: &State,
+    listener_instance: &str,
     path: &str,
     session: Option<&SessionInfo>,
     headers: &HeaderMap,
@@ -43,7 +44,7 @@ pub(crate) async fn handle(
     deadline_ms: i64,
 ) -> Response<Body> {
     let dir = state.settings.data_dir.clone();
-    let server = state.backend.session_name();
+    let instance = listener_instance.to_owned();
     match path {
         "/api/siri/code" | "/api/siri/revoke" => {
             let Some(owner) = session.map(|s| s.id.clone()) else {
@@ -51,7 +52,7 @@ pub(crate) async fn handle(
             };
             let revoke = path.ends_with("/revoke");
             match file_work(state, move || {
-                store::configure(&dir, &owner, &server, revoke)
+                store::configure(&dir, &owner, &instance, revoke)
             })
             .await
             {
@@ -66,7 +67,7 @@ pub(crate) async fn handle(
             let Ok(pair) = serde_json::from_slice::<Pair>(bytes) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_pairing");
             };
-            match file_work(state, move || store::redeem(&dir, &server, &pair.code)).await {
+            match file_work(state, move || store::redeem(&dir, &instance, &pair.code)).await {
                 Ok(Ok(Some(token))) => json_response(json!({"token":token,"request_id":"first"})),
                 Ok(Ok(None)) => unauthenticated(),
                 _ => unavailable(),
@@ -81,13 +82,16 @@ pub(crate) async fn handle(
             else {
                 return unauthenticated();
             };
+            if let Err(limit) = state.auth.public() {
+                return super::service::auth_response(crate::auth::AuthResponse::limited(limit));
+            }
             let hash = sessions::hash(token);
             // A retry waits for the first request to publish its receipt. The durable
             // revision also fences requests racing revocation or a listener restart.
             let bucket = usize::from(hash.as_bytes()[0]) % state.siri_commands.len();
             let _command = state.siri_commands[bucket].lock().await;
             let key = hash.clone();
-            let phone = match file_work(state, move || store::load(&dir, &server, &key)).await {
+            let phone = match file_work(state, move || store::load(&dir, &instance, &key)).await {
                 Ok(Ok(Some(phone))) => phone,
                 Ok(Ok(None)) => return unauthenticated(),
                 _ => return unavailable(),
@@ -106,6 +110,7 @@ pub(crate) async fn handle(
             }
             let mut ctx = Context {
                 state,
+                listener_instance,
                 hash,
                 phone,
                 deadline_ms,
@@ -127,6 +132,7 @@ fn spoken(text: &str) -> Failure {
 const CHANGED: &str = "That conversation ended or changed. Please select an agent again.";
 struct Context<'a> {
     state: &'a State,
+    listener_instance: &'a str,
     hash: String,
     phone: store::Phone,
     deadline_ms: i64,
@@ -134,12 +140,12 @@ struct Context<'a> {
 impl Context<'_> {
     async fn save(&mut self) -> Result<()> {
         let dir = self.state.settings.data_dir.clone();
-        let server = self.state.backend.session_name();
+        let instance = self.listener_instance.to_owned();
         let hash = self.hash.clone();
         let rev = self.phone.revision;
         let dialogue = self.phone.dialogue.clone();
         file_work(self.state, move || {
-            store::save(&dir, &server, &hash, rev, dialogue)
+            store::save(&dir, &instance, &hash, rev, dialogue)
         })
         .await
         .ok()
@@ -186,6 +192,13 @@ impl Context<'_> {
         let body: Value = serde_json::from_str(&reply.body).map_err(|_| Failure::Retry)?;
         match reply.status {
             200 => Ok(body),
+            502 if path == "/api/agent/launch" && body["error"]["code"] == "launch_failed" => {
+                Err(spoken(
+                    body["error"]["message"]
+                        .as_str()
+                        .unwrap_or("The agent launch failed."),
+                ))
+            },
             409 if body["error"]["code"] == "target_changed" => Err(spoken(CHANGED)),
             400 | 403 | 404 | 409 | 422 => Err(spoken(
                 body["error"]["message"]
@@ -251,7 +264,12 @@ impl Context<'_> {
             return error(StatusCode::CONFLICT, "stale_siri_request");
         }
         let result = if let Some(prepared) = &d.prepared {
-            self.mutate(prepared.action.clone()).await
+            match prepared.action.clone() {
+                Mutation::Send {
+                    id, agent, after, ..
+                } => self.recover_send(&id, agent, after).await,
+                action => self.mutate(action).await,
+            }
         } else {
             self.interpret(&cmd.command).await
         };
@@ -345,7 +363,10 @@ impl Context<'_> {
                 }
                 let matches: Vec<_> = match ordinal(text) {
                     Some(i) => rows.get(i).into_iter().cloned().collect(),
-                    None => rows.iter().filter(|a| matches(a, text)).cloned().collect(),
+                    None => {
+                        let matches = matching_target(text);
+                        rows.iter().filter(|a| matches(a)).cloned().collect()
+                    },
                 };
                 if let [agent] = matches.as_slice() {
                     self.act(input, action, agent.clone()).await
@@ -376,7 +397,7 @@ impl Context<'_> {
             .agents()
             .await?
             .into_iter()
-            .filter(|a| matches(a, target))
+            .filter(matching_target(target))
         {
             if let Some(q) = phrase {
                 let Some(reply) = self.reply(&agent, json!({"query":q})).await? else {
@@ -493,6 +514,66 @@ impl Context<'_> {
             },
         }
     }
+    async fn recover_send(&mut self, id: &str, agent: Agent, after: i64) -> Result<Value> {
+        let result = self
+            .api(
+                "/api/agent/submission-status",
+                vec![],
+                Some(json!({"agent":agent.identity,"submission_id":id})),
+            )
+            .await?;
+        self.finish_send(id, agent, after, &result["response"], true)
+            .await
+    }
+    async fn finish_send(
+        &mut self,
+        id: &str,
+        agent: Agent,
+        after: i64,
+        r: &Value,
+        recovering: bool,
+    ) -> Result<Value> {
+        if r["submission_id"] != id {
+            return Err(if recovering {
+                spoken("Delivery is uncertain. Check the agent’s timeline.")
+            } else {
+                Failure::Retry
+            });
+        }
+        match r["outcome"].as_str() {
+            Some("submitted" | "command_sent") => {},
+            _ if recovering && r["acknowledged"] == true => {},
+            Some(
+                "target_changed" | "target_closed" | "not_agent" | "target_not_found"
+                | "target_exited",
+            ) => return Err(spoken(CHANGED)),
+            Some("rejected") if r["prompt_delivery"] != "started" => {
+                return Err(spoken(
+                    r["message"]
+                        .as_str()
+                        .unwrap_or("The agent declined the message."),
+                ))
+            },
+            _ if r["prompt_delivery"] == "not_sent" => {
+                return Err(spoken("Yinz could not deliver the message."))
+            },
+            _ => return Err(spoken("Delivery is uncertain. Check the agent’s timeline.")),
+        }
+        self.phone.dialogue.pending = Some(Pending {
+            agent,
+            after,
+            turn: r["turn_id"].as_str().map(str::to_owned),
+        });
+        let prepared = self
+            .phone
+            .dialogue
+            .prepared
+            .as_mut()
+            .ok_or(Failure::Retry)?;
+        prepared.action = Mutation::Readback;
+        self.save().await?;
+        self.wait_for_reply().await
+    }
     async fn prepare(&mut self, input: &str, action: Mutation) -> Result<Value> {
         self.phone.dialogue.prepared = Some(Prepared {
             utterance: input.into(),
@@ -517,42 +598,8 @@ impl Context<'_> {
                         Some(json!({"agent":agent.identity,"submission_id":id,"text":text})),
                     )
                     .await?;
-                let r = &result["response"];
-                if r["submission_id"] != id {
-                    return Err(Failure::Retry);
-                }
-                match r["outcome"].as_str() {
-                    Some("submitted" | "command_sent") => {},
-                    Some(
-                        "target_changed" | "target_closed" | "not_agent" | "target_not_found"
-                        | "target_exited",
-                    ) => return Err(spoken(CHANGED)),
-                    Some("rejected") if r["prompt_delivery"] != "started" => {
-                        return Err(spoken(
-                            r["message"]
-                                .as_str()
-                                .unwrap_or("The agent declined the message."),
-                        ))
-                    },
-                    _ if r["prompt_delivery"] == "not_sent" => {
-                        return Err(spoken("Yinz could not deliver the message."))
-                    },
-                    _ => return Err(spoken("Delivery is uncertain. Check the agent’s timeline.")),
-                }
-                self.phone.dialogue.pending = Some(Pending {
-                    agent,
-                    after,
-                    turn: r["turn_id"].as_str().map(str::to_owned),
-                });
-                let prepared = self
-                    .phone
-                    .dialogue
-                    .prepared
-                    .as_mut()
-                    .ok_or(Failure::Retry)?;
-                prepared.action = Mutation::Readback;
-                self.save().await?;
-                self.wait_for_reply().await
+                self.finish_send(&id, agent, after, &result["response"], false)
+                    .await
             },
             Mutation::Readback => self.wait_for_reply().await,
             Mutation::Launch(body) => {
@@ -561,6 +608,7 @@ impl Context<'_> {
                     .await?;
                 self.phone.dialogue.selected = None;
                 self.phone.dialogue.choice = None;
+                self.phone.dialogue.refinement = None;
                 self.phone.dialogue.launched = Some(Launch {
                     id: field(&body, "submission_id")?,
                     kind: field(&body, "kind")?,
@@ -665,6 +713,7 @@ impl Context<'_> {
         let mut latest = None;
         let wait = async {
             loop {
+                self.discover_pending_run().await?;
                 if let Some((message, correlated)) = self.pending_reply().await? {
                     if correlated
                         || self
@@ -693,6 +742,23 @@ impl Context<'_> {
             },
         }
     }
+    async fn discover_pending_run(&mut self) -> Result<bool> {
+        if let Some(pending) = &self.phone.dialogue.pending
+            && pending.agent.run.is_none()
+        {
+            let agent = self.current(&pending.agent).await?;
+            if agent.run.is_none() {
+                return Ok(false);
+            }
+            self.phone.dialogue.pending = Some(Pending {
+                agent,
+                after: pending.after,
+                turn: pending.turn.clone(),
+            });
+            return Ok(true);
+        }
+        Ok(false)
+    }
     async fn pending_reply(&self) -> Result<Option<(String, bool)>> {
         let p = self
             .phone
@@ -700,25 +766,26 @@ impl Context<'_> {
             .pending
             .as_ref()
             .ok_or_else(|| spoken("There is no pending Siri message."))?;
-        let agent = self.current(&p.agent).await?;
+        let agent = &p.agent;
         if let Some(turn) = &p.turn
             && let Some(r) = self
-                .reply(&agent, json!({"after":p.after,"turn":turn}))
+                .reply(agent, json!({"after":p.after,"turn":turn}))
                 .await?
         {
             return Ok(Some((r.text, true)));
         }
-        Ok(self
-            .reply(&agent, json!({"after":p.after}))
-            .await?
-            .map(|r| {
-                (
-                    format!("The latest message from {} is: {}", agent.title, r.text),
-                    false,
-                )
-            }))
+        Ok(self.reply(agent, json!({"after":p.after})).await?.map(|r| {
+            (
+                format!("The latest message from {} is: {}", agent.title, r.text),
+                false,
+            )
+        }))
     }
     async fn check_pending(&mut self) -> Result<Value> {
+        if self.discover_pending_run().await? {
+            // A failed reply lookup can be retried at this cursor. Keep it bound to this run.
+            self.save().await?;
+        }
         match self.pending_reply().await? {
             Some((text, _)) => Ok(self.read(&text)),
             None => Ok(answer("There is no new reply yet.", false)),

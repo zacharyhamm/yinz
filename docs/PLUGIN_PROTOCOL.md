@@ -1106,6 +1106,7 @@ except newline/tab. Submission IDs are 1–64 ASCII letters, digits, `.`, `_`, `
 Prompt delivery reuses `wait:false`, a 30000 ms timeout and the existing retry
 state machine. Keep the same submission ID after uncertain delivery; there is
 no automatic resubmission. A retained rejection remains a rejection on retry.
+The read-only `submission_status` operation looks up the ID on the guarded local or peer agent. An acknowledged receipt carries the turn ID when available. An unknown or expired ID returns `status_unavailable`, which leaves delivery uncertain.
 Keys are exactly `esc`, `enter`, `tab`, `up`, `down`, `left`, `right`, `backspace`,
 `y`, `n`, `1`–`9`. Screen output removes Unicode controls except newline/tab.
 No restart, interrupt, pane close or spawn action is exposed.

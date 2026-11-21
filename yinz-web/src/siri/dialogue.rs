@@ -143,27 +143,43 @@ pub(super) fn ordinal(s: &str) -> Option<usize> {
     }
 }
 
-/// Consume explicit location constraints in order. A spoken branch or project can span words.
-pub(super) fn matches(agent: &Agent, target: &str) -> bool {
+pub(super) fn matching_target(target: &str) -> impl Fn(&Agent) -> bool {
     let target = normalize(target);
-    let words: Vec<_> = target.split_whitespace().collect();
+    // OpenCode conversations can outlive the plugin that offers new launches.
+    let offered = yinz_runtime::agent::launch::offered();
+    let mut providers: Vec<_> = offered.iter().map(|p| normalize(p)).collect();
+    providers.push("opencode".into());
+    providers.retain(|name| !name.is_empty());
+    providers.sort_by_key(|name| std::cmp::Reverse(name.len()));
+    move |agent| matches(agent, &target, &providers)
+}
+
+/// Consume a whole normalized name, including names that span several spoken words.
+fn after_name<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let rest = text.strip_prefix(name)?;
+    if rest.is_empty() {
+        Some(rest)
+    } else {
+        rest.strip_prefix(' ')
+    }
+}
+
+fn matches(agent: &Agent, mut target: &str, providers: &[String]) -> bool {
     let title = normalize(&agent.title);
     let kind = normalize(&agent.identity.kind);
     let state = normalize(agent.state.as_deref().unwrap_or(""));
     let project = normalize(&agent.project);
     let session = normalize(&agent.session);
     let branch = normalize(&agent.branch);
-    let mut i = 0;
-    while i < words.len() {
-        let word = words[i];
-        i += 1;
+    while !target.is_empty() {
+        let (word, mut rest) = target.split_once(' ').unwrap_or((target, ""));
         let locations: &[&str] = match word {
-            "in" if words.get(i) == Some(&"session") => {
-                i += 1;
+            "in" if let Some(name) = after_name(rest, "session") => {
+                rest = name;
                 &[&session]
             },
-            "in" if words.get(i) == Some(&"project") => {
-                i += 1;
+            "in" if let Some(name) = after_name(rest, "project") => {
+                rest = name;
                 &[&project]
             },
             "in" => &[&project, &session],
@@ -171,8 +187,8 @@ pub(super) fn matches(agent: &Agent, target: &str) -> bool {
             "project" => &[&project],
             "provider" => &[&kind],
             "status" => &[&state],
-            "on" if words.get(i) == Some(&"branch") => {
-                i += 1;
+            "on" if let Some(name) = after_name(rest, "branch") => {
+                rest = name;
                 &[&branch]
             },
             "on" | "branch" => &[&branch],
@@ -180,24 +196,31 @@ pub(super) fn matches(agent: &Agent, target: &str) -> bool {
             _ => &[],
         };
         if !locations.is_empty() {
-            let consumed = locations
+            let Some(remaining) = locations
                 .iter()
-                .map(|s| s.split_whitespace().collect::<Vec<_>>())
-                .filter(|name| !name.is_empty() && words[i..].starts_with(name))
-                .map(|name| name.len())
-                .max();
-            let Some(count) = consumed else {
+                .filter(|name| !name.is_empty())
+                .filter_map(|name| after_name(rest, name))
+                .min_by_key(|s| s.len())
+            else {
                 return false;
             };
-            i += count;
+            target = remaining;
             continue;
         }
+        if let Some((provider, remaining)) = providers
+            .iter()
+            .find_map(|name| after_name(target, name).map(|remaining| (name, remaining)))
+        {
+            if provider != &kind {
+                return false;
+            }
+            target = remaining;
+            continue;
+        }
+        target = rest;
         match word {
             "a" | "an" | "all" | "the" | "that" | "agent" | "agents" | "one" | "it" | "and"
             | "which" | "who" => {},
-            "claude" | "codex" | "pi" | "muse" | "agy" | "opencode" if word != kind => {
-                return false
-            },
             "waiting" | "busy" | "idle" | "running"
                 if word != state && !(word == "running" && state == "busy") =>
             {
@@ -289,17 +312,31 @@ pub(super) fn choices(d: &Dialogue) -> String {
 }
 
 pub(super) fn reading(d: &mut Dialogue, text: &str) -> String {
-    let end = text.char_indices().nth(700).map_or(text.len(), |(i, _)| i);
-    if end == text.len() {
-        d.reading.clear();
-        return text.to_owned();
+    const CONTENT_LIMIT: usize = 700;
+    let mut paragraph = None;
+    let mut whitespace = None;
+    for (count, (offset, ch)) in text.char_indices().enumerate() {
+        if ch.is_whitespace() {
+            whitespace = Some(offset);
+            if text[offset..].starts_with("\n\n") {
+                paragraph = Some(offset);
+            }
+        }
+        if count == CONTENT_LIMIT {
+            let boundary = paragraph.or(whitespace).unwrap_or(offset);
+            let chunk = text[..boundary].trim_end();
+            let remaining = text[boundary..].trim_start();
+            if chunk.is_empty() {
+                return reading(d, remaining);
+            }
+            d.reading = remaining.into();
+            return if remaining.is_empty() {
+                chunk.to_owned()
+            } else {
+                format!("{chunk} Say continue to hear more.")
+            };
+        }
     }
-    let boundary = text[..end]
-        .rfind("\n\n")
-        .filter(|i| *i > 0)
-        .or_else(|| text[end..].find("\n\n").map(|i| end + i))
-        .or_else(|| text[..end].rfind(char::is_whitespace).filter(|i| *i > 0))
-        .unwrap_or(end);
-    d.reading = text[boundary..].trim_start().into();
-    format!("{} Say continue to hear more.", text[..boundary].trim_end())
+    d.reading.clear();
+    text.to_owned()
 }

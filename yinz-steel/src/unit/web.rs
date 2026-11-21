@@ -176,7 +176,7 @@ fn hooks_pass_next_arguments_republish_and_preserve_wrappers_on_default_change()
     );
     assert_eq!(h.commands.lock().unwrap().len(), commands);
     assert_eq!(h.value("same-routes"), true);
-    assert_eq!(h.value("route-count"), 38); // Each endpoint also registers a method fallback.
+    assert_eq!(h.value("route-count"), 42); // Each endpoint also registers a method fallback.
     assert_eq!(h.value("hooks"), h.value("hooks-again"));
 }
 

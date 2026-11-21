@@ -177,6 +177,9 @@ pub enum WebAgentAction {
     },
     /// Read-only check of the owning Screen, accepted only under WebPeerGuarded.
     VerifyFocus,
+    SubmissionStatus {
+        submission_id: String,
+    },
 }
 
 pub const WEB_KEYS: &[&str] = &[
@@ -246,6 +249,13 @@ pub fn peer_web_detail_id(instance: &str, pane: PaneId, agent: &AgentInfo) -> St
     format!("{PEER_DETAIL_PREFIX}v1:{hex}")
 }
 
+fn validate_web_submission_id(id: &str) -> Result<(), &'static str> {
+    if id.len() > 64 || validate_submission_id(id).is_err() {
+        return Err("submission ID must be 1 to 64 ASCII letters, digits, '.', '_' or '-'");
+    }
+    Ok(())
+}
+
 impl WebAgentAction {
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
@@ -261,13 +271,9 @@ impl WebAgentAction {
                 {
                     return Err("prompt must be nonblank, at most 32 KiB, and contain no controls except newline/tab");
                 }
-                if submission_id.len() > 64 || validate_submission_id(submission_id).is_err() {
-                    return Err(
-                        "submission ID must be 1 to 64 ASCII letters, digits, '.', '_' or '-'",
-                    );
-                }
-                Ok(())
+                validate_web_submission_id(submission_id)
             },
+            Self::SubmissionStatus { submission_id } => validate_web_submission_id(submission_id),
             Self::Terminal {
                 after: Some(cursor),
             } if cursor.len() > 64 => Err("invalid terminal cursor"),
@@ -286,7 +292,9 @@ impl WebAgentAction {
 
     pub fn submission_id(&self) -> Option<&str> {
         match self {
-            Self::Prompt { submission_id, .. } => Some(submission_id),
+            Self::Prompt { submission_id, .. } | Self::SubmissionStatus { submission_id } => {
+                Some(submission_id)
+            },
             _ => None,
         }
     }
@@ -296,6 +304,9 @@ impl WebAgentAction {
         Ok(match self {
             Self::Terminal { .. } | Self::TerminalInput { .. } => {
                 return Err("Terminal access requires an owning screen guard".into())
+            },
+            Self::SubmissionStatus { .. } => {
+                return Err("Submission lookup requires an owning screen guard".into())
             },
             Self::VerifyFocus => {
                 return Err("Focus verification requires a peer instance guard".into())

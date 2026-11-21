@@ -92,6 +92,10 @@ enum Operation {
         filter: history::ReplyFilter,
     },
     Prompts {},
+    SubmissionStatus {
+        agent: WebAgentRef,
+        submission_id: String,
+    },
     Prompt {
         agent: WebAgentRef,
         submission_id: String,
@@ -336,6 +340,17 @@ impl Operation {
             Self::Destinations { agent } | Self::Close { agent } | Self::Focus { agent } => {
                 agent_ref(agent)?
             },
+            Self::SubmissionStatus {
+                agent,
+                submission_id,
+            } => {
+                agent_ref(agent)?;
+                WebAgentAction::SubmissionStatus {
+                    submission_id: submission_id.clone(),
+                }
+                .validate()
+                .map_err(invalid)?;
+            },
             Self::Prompt {
                 agent,
                 submission_id,
@@ -527,6 +542,7 @@ fn control(
     data: &DataAccess,
 ) -> Result<Value> {
     let live = target(senders, &agent)?;
+    let lookup = matches!(action, WebAgentAction::SubmissionStatus { .. });
     let submission_id = action.submission_id().map(str::to_owned);
     let mut response = if live.current_session {
         let request = AgentRequest::WebGuarded {
@@ -560,6 +576,13 @@ fn control(
             response
         })
     };
+    // The owning screen stamps every reply. A host or IPC failure has no receipt.
+    if lookup && response.server_instance.is_none() {
+        return Err(error(
+            "unavailable",
+            "The owning session did not answer the submission lookup.",
+        ));
+    }
     if let Some(output) = &mut response.output {
         output.retain(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'));
     }
@@ -1139,6 +1162,16 @@ fn execute(
                 .map_err(web_error)?;
             Ok(json!(true))
         },
+        Operation::SubmissionStatus {
+            agent,
+            submission_id,
+        } => control(
+            agent,
+            WebAgentAction::SubmissionStatus { submission_id },
+            client,
+            senders,
+            data,
+        ),
         Operation::Prompt {
             agent,
             submission_id,

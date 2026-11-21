@@ -110,6 +110,13 @@ def workflow():
         reply = post(origin, "/api/siri/command", {"command": [pending], "request_id": [cursor]}, token)
         next_id = get(reply, "request_id")
         with condition(next_id, 101):
+            error = get(reply, "error")
+            with condition(error, 100):
+                code = get(error, "code")
+                with condition(code, 4, WFConditionalActionString="invalid_dictation"):  # is
+                    save(origin, token, cursor)
+                    speak("Run Talk to Yinz again and dictate a shorter replacement command.")
+                    action("exit")
             speak("Yinz could not confirm the command. Run Talk to Yinz again to retry. If your sign-in expired, pair again.")
             action("exit")
         set_var("Request", next_id)

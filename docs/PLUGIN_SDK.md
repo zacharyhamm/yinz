@@ -1207,6 +1207,7 @@ as JSON, with only the listed `*html` fields added.
 | `POST /api/agent/move` | `agent`, `destination` | `move` | none |
 | `POST /api/agent/close` | `agent` | `close` | none |
 | `POST /api/agent/prompt` | `agent`, `submission_id`, `text` | `prompt` | none |
+| `POST /api/agent/submission-status` | `agent`, `submission_id` | `submission_status` | none |
 | `POST /api/agent/focus` | `agent` | `focus` | none; replies `{"ok":true}` |
 | `POST /api/agent/screen` | `agent`, optional `lines` (1–200, default 80) | `screen` | `html` from the response's `output` |
 | `POST /api/agent/term` | `agent`, optional `after` cursor | `terminal` | none |

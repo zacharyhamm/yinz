@@ -19083,6 +19083,31 @@ fn web_agents_guarded_prompt_delivers_once_and_preserves_submission_identity() {
     let response = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(response.outcome, AgentOutcome::Submitted);
     assert_eq!(response.submission_id.as_deref(), Some("web-once"));
+    let lookup = WebAgentAction::SubmissionStatus {
+        submission_id: "web-once".into(),
+    };
+    for query in [
+        AgentRequest::WebGuarded {
+            pane_id: PANE,
+            expected_kind: "codex".into(),
+            expected_session_id: "conversation".into(),
+            action: lookup.clone(),
+        },
+        AgentRequest::WebPeerGuarded {
+            expected_instance: screen.core.instance_id.to_string(),
+            pane_id: PANE,
+            expected_kind: "codex".into(),
+            expected_session_id: "conversation".into(),
+            action: lookup,
+        },
+    ] {
+        screen.agent_control(query, CLIENT);
+        let receipt = replies(&messages, CLIENT).pop().unwrap();
+        assert!(receipt.acknowledged);
+        assert_eq!(receipt.submission_id, response.submission_id);
+        assert_eq!(receipt.turn_id, response.turn_id);
+        assert!(finish_paste(&writes).is_empty());
+    }
     screen.agent_control(request, CLIENT);
     let retry = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(retry.outcome, AgentOutcome::Rejected);

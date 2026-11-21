@@ -2,6 +2,12 @@ import { describeError } from '../api.js';
 import { html, useState } from './ui.js';
 import { Sheet } from './sheets.js';
 
+export function pairingLink(origin, code) {
+  const setup = JSON.stringify({ origin, code });
+  return 'shortcuts://run-shortcut?name=' + encodeURIComponent('Talk to Yinz')
+    + '&input=text&text=' + encodeURIComponent(setup);
+}
+
 export function SiriSetup({ api, onClose }) {
   const [link, setLink] = useState('');
   const [message, setMessage] = useState('');
@@ -14,9 +20,7 @@ export function SiriSetup({ api, onClose }) {
       const r = await api.post(revoke ? '/api/siri/revoke' : '/api/siri/code', {});
       if (!r.ok) { setMessage(describeError(r)); return; }
       if (revoke) { setMessage('Siri access revoked for this sign-in.'); return; }
-      const setup = JSON.stringify({ origin: location.origin, code: r.data.code });
-      const query = new URLSearchParams({ name: 'Talk to Yinz', input: 'text', text: setup });
-      setLink('shortcuts://run-shortcut?' + query);
+      setLink(pairingLink(location.origin, r.data.code));
     } finally { setBusy(false); }
   }
   return html`<${Sheet} id="sheet-siri" title="Add to Siri" onClose=${onClose}>

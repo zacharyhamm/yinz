@@ -12,6 +12,17 @@ const {
   describeError, normalizeConfig, saveReturn, takeReturn, logoutNotice, freshnessText,
 } = api;
 
+test('Siri pairing link resolves the installed shortcut and preserves its text input', async () => {
+  const { pairingLink } = await import(staticUrl('views/siri.js'));
+  const origin = 'https://phone.example:8443';
+  const code = 'pair+&%';
+  const link = pairingLink(origin, code);
+  assert.match(link, /[?]name=Talk%20to%20Yinz&/);
+  const query = new URL(link).searchParams;
+  assert.equal(query.get('input'), 'text');
+  assert.deepEqual(JSON.parse(query.get('text')), { origin, code });
+});
+
 test('group routes round trip session-scoped IDs and fallback buckets', () => {
   const session = ' dev  界🙂/?# ';
   const keys = [[session, 0], [session, 0xffffffff], ['peer', 0], [session, null], [null, null]];

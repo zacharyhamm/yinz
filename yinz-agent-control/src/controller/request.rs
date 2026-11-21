@@ -216,6 +216,26 @@ impl super::AgentController {
                     return None;
                 }
                 let lowered = match action {
+                    WebAgentAction::SubmissionStatus { submission_id } => {
+                        let mut response = AgentResponse::new(AgentOutcome::StatusUnavailable);
+                        if let Some(receipt) = self.submission(pane_id, &submission_id)
+                            && receipt.kind == expected_kind
+                            && receipt.conversation.as_deref() == Some(&expected_session_id)
+                        {
+                            response.acknowledged = receipt.acknowledged;
+                            response.turn_id.clone_from(&receipt.turn_id);
+                            response.prompt_delivery = receipt.prompt_delivery;
+                            if let Some(result) = &receipt.result {
+                                response.outcome = result.outcome;
+                                response.message.clone_from(&result.message);
+                            } else if receipt.acknowledged {
+                                response.outcome = AgentOutcome::Submitted;
+                            }
+                        }
+                        response.submission_id = Some(submission_id);
+                        self.agent_reply(host, &client, response);
+                        return None;
+                    },
                     WebAgentAction::Terminal { after } => {
                         self.expire_web_snapshots(host, now);
                         let mut response = AgentResponse::new(AgentOutcome::Ok);

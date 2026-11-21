@@ -526,12 +526,14 @@ fn web_agents_actions_reject_missing_and_stale_refs_without_routing() {
 #[test]
 fn web_agents_controls_keep_complete_guard_and_uncertain_submission_and_sanitize_reads() {
     let (_dir, data) = data();
-    for op in ["prompt", "screen", "keys", "focus"] {
+    for op in ["prompt", "submission_status", "screen", "keys", "focus"] {
         let agent = live("local", AgentState::Idle, true);
         let mut request =
             json!({"op":op,"agent":{"id":agent.id,"kind":"codex","session_id":"conversation"}});
         if op == "prompt" {
             request["text"] = json!("continue");
+        }
+        if matches!(op, "prompt" | "submission_status") {
             request["submission_id"] = json!("retry");
         }
         if op == "keys" {
@@ -581,6 +583,7 @@ fn web_agents_controls_keep_complete_guard_and_uncertain_submission_and_sanitize
                     assert_eq!(response["ok"]["response"]["outcome"], "timed_out");
                     assert_eq!(response["ok"]["response"]["submission_id"], "retry");
                 },
+                "submission_status" => assert_eq!(response["error"]["code"], "unavailable"),
                 "focus" => {
                     assert_eq!(response["error"]["code"], "unavailable");
                     assert_eq!(response["error"]["message"], "No terminal attached");

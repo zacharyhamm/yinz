@@ -356,6 +356,7 @@ async fn handle(
         return (
             crate::siri::handle(
                 state,
+                instance,
                 &normalized.path,
                 session.as_ref(),
                 &parts.headers,

@@ -17,6 +17,13 @@ pub trait Clock: Send + Sync + 'static {
     fn now_ms(&self) -> i64;
 }
 
+#[cfg(test)]
+impl Clock for std::sync::atomic::AtomicI64 {
+    fn now_ms(&self) -> i64 {
+        self.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
 /// The real clock.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemClock;

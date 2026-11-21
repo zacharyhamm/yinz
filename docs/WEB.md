@@ -548,6 +548,10 @@ and confirm the import in Shortcuts. Return to the menu, choose **Create pairing
 link**, then **Pair this phone**. The link works once and expires after five
 minutes. Say “Siri, Talk to Yinz,” then give a command.
 
+If you installed an earlier version, reinstall **Talk to Yinz** from **Add to
+Siri** to receive the dictation fix. When Yinz rejects a command over 8,192
+UTF-8 bytes, run the shortcut again and dictate a shorter command.
+
 - “Find the waiting Claude agents in swamp” searches live conversations across
   visible sessions. Use a task title, project, session, or branch to narrow the list.
 - “Find the agent that mentioned session renewal” searches recorded assistant
@@ -568,6 +572,11 @@ before pairing so each uses its own credential and conversation selection.
 **Revoke Siri access** in the menu disconnects that pairing. Expiring or revoking
 the parent web sign-in also ends access. The server stores the credential hash
 and dialogue in its private web directory. Pair again after signing back in.
+
+Pairing links and paired phones follow the web listener through a session
+rename. A new listener binding, including one created by a server restart,
+requires pairing again. If your phone was paired before the upgrade to
+listener-bound credentials, pair it once more after upgrading.
 
 ### Signing the shortcut
 

@@ -323,6 +323,9 @@
     (%web-app-require "agent" "destination") %web-app-same)
   (%web-app-post "/api/agent/close" "close" (hash "agent" %web-app-agent-ref)
     (%web-app-require "agent") %web-app-same)
+  (%web-app-post "/api/agent/submission-status" "submission_status"
+    (hash "agent" %web-app-agent-ref "submission_id" %web-app-submission)
+    (%web-app-require "agent" "submission_id") %web-app-same)
   (%web-app-post "/api/agent/prompt" "prompt"
     (hash "agent" %web-app-agent-ref "submission_id" %web-app-submission "text" %web-app-prompt)
     (%web-app-require "agent" "submission_id" "text") %web-app-same)
