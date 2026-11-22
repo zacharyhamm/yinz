@@ -2786,18 +2786,46 @@ fn retained_osc_dcs_and_legacy_alt_p_share_the_same_prefix() {
 
     let mut parser = interrupted_clipboard();
     queue_replacement_clipboard(&mut parser);
+    assert_eq!(parser.clipboard_drain_deadline(), None);
+    let started = std::time::Instant::now();
+    assert!(parser.feed(alt_p.as_bytes()).residue.is_empty());
+    let deadline = parser.clipboard_drain_deadline().unwrap();
+    assert!(deadline >= started + super::AMBIGUOUS_CLIPBOARD_DRAIN_TIMEOUT);
     // A keypress, the physical reply's BEL, and later typing in separate reads
     // still look exactly like a DCS containing BEL, a command and its data.
-    for input in [alt_p.as_bytes(), b"\x07", &typing] {
+    for input in [b"\x07".as_slice(), &typing] {
         let out = parser.feed(input);
         assert!(out.residue.is_empty() && out.completed_clipboard_forward.is_none());
         assert!(parser.finalize_force().is_empty() && !parser.has_ready_terminal_query());
+        assert_eq!(parser.clipboard_drain_deadline(), Some(deadline));
     }
     // In the DCS interpretation this ST closes the *inner* string. Paying the
     // debt at BEL or ST would expose the old clipboard bytes that follow.
     assert!(parser.feed(b"\x1b\\").residue.is_empty());
+    assert_eq!(parser.clipboard_drain_deadline(), Some(deadline));
     finish_retired_clipboard(&mut parser);
+    assert_eq!(parser.clipboard_drain_deadline(), None);
     assert_eq!(parser.feed(&typing).residue, typing);
+    let mut key = parser.feed(alt_p.as_bytes()).residue;
+    key.extend(parser.finalize_force());
+    assert_eq!(key, alt_p.as_bytes());
+    assert_eq!(parser.clipboard_drain_deadline(), None);
+}
+
+#[test]
+fn ambiguous_legacy_clipboard_deadline_follows_the_unfinished_physical_reply() {
+    let mut parser = interrupted_clipboard();
+    assert!(parser.feed(b"\x1bP").residue.is_empty());
+    let deadline = parser.clipboard_drain_deadline().unwrap();
+    let mut replacement = parser.take_for_next_attachment();
+    assert_eq!(parser.clipboard_drain_deadline(), None);
+    assert_eq!(replacement.clipboard_drain_deadline(), Some(deadline));
+    queue_replacement_clipboard(&mut replacement);
+    // End the first DCS, then receive another while the outer reply is open.
+    assert!(replacement.feed(b"\x1b\\\x1bP0q\x1b\\").residue.is_empty());
+    assert_eq!(replacement.clipboard_drain_deadline(), Some(deadline));
+    finish_retired_clipboard(&mut replacement);
+    assert_eq!(replacement.clipboard_drain_deadline(), None);
 }
 
 #[test]

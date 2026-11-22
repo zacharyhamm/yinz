@@ -77,6 +77,7 @@ pub(crate) enum ClientInstruction {
     FromServer(u64, Box<ClientInstruction>),
     ServerReaderDrained(u64),
     TerminalQueriesReady(Option<u64>),
+    ClipboardDrainTimedOut,
     Render(String),
     ClipboardUpdate(String),
     DesktopNotification(String),
@@ -191,7 +192,9 @@ impl From<ServerToClientMsg> for ClientInstruction {
 impl From<&ClientInstruction> for ClientContext {
     fn from(client_instruction: &ClientInstruction) -> Self {
         match *client_instruction {
-            ClientInstruction::Exit(_) => ClientContext::Exit,
+            ClientInstruction::Exit(_) | ClientInstruction::ClipboardDrainTimedOut => {
+                ClientContext::Exit
+            },
             ClientInstruction::Error(_) => ClientContext::Error,
             ClientInstruction::FromServer(_, ref instruction) => (&**instruction).into(),
             ClientInstruction::ServerReaderDrained(_) => ClientContext::UnblockInputThread,

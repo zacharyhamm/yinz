@@ -1656,6 +1656,15 @@ exec sleep 60
 
 #[test]
 fn committed_ansi_switch_drains_source_clipboard_before_destination_reply() {
+    exercise_switched_clipboard(false);
+}
+
+#[test]
+fn ambiguous_legacy_clipboard_timeout_detaches_and_restores_terminal() {
+    exercise_switched_clipboard(true);
+}
+
+fn exercise_switched_clipboard(ambiguous_key: bool) {
     use nix::fcntl::{fcntl, FcntlArg, FdFlag};
     use std::io::{Read, Write};
     use std::os::{fd::AsFd, unix::net::UnixListener};
@@ -1681,7 +1690,12 @@ fn committed_ansi_switch_drains_source_clipboard_before_destination_reply() {
             false,
             None,
         );
-        assert_eq!(outcome.exit_status, 0, "{}", outcome.exit_msg);
+        assert_eq!(
+            outcome.exit_status,
+            i32::from(ambiguous_key),
+            "{}",
+            outcome.exit_msg
+        );
         return;
     }
 
@@ -1697,6 +1711,7 @@ fn committed_ansi_switch_drains_source_clipboard_before_destination_reply() {
         fcntl(fd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).unwrap();
     }
     let slave = std::fs::File::from(pty.slave);
+    let original_termios = nix::sys::termios::tcgetattr(&slave).unwrap();
     let mut terminal = std::fs::File::from(pty.master);
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", std::thread::current().name().unwrap()])
@@ -1705,7 +1720,7 @@ fn committed_ansi_switch_drains_source_clipboard_before_destination_reply() {
         .env("YINZ_TEST_CACHE_DIR", root.path())
         .env_remove("YINZ_PANE_REF")
         .stdin(slave.try_clone().unwrap())
-        .stdout(slave)
+        .stdout(slave.try_clone().unwrap())
         .spawn()
         .unwrap();
     let screen = Watched::new(Vec::new());
@@ -1754,6 +1769,20 @@ fn committed_ansi_switch_drains_source_clipboard_before_destination_reply() {
     let (mut a, mut from_a) = accept(source);
     a.send_server_msg(query(17, b"\x1b]52;c;?\x07")).unwrap();
     wait_for(b"\x1b]52;c;?\x07");
+    if ambiguous_key {
+        // Start the reply on the source and observe its leading key before switching.
+        terminal.write_all(b"x\x1b]52;c;b2xk").unwrap();
+        loop {
+            match from_a.recv_client_msg() {
+                IpcRecv::Msg(ClientToServerMsg::Key { raw_bytes, .. }, _) => {
+                    assert_eq!(raw_bytes, b"x");
+                    break;
+                },
+                IpcRecv::Msg(_, _) => {},
+                _ => panic!("source did not read terminal input"),
+            }
+        }
+    }
     let mut request = |command| {
         a.send_server_msg(ServerToClientMsg::SessionRequest(Request {
             token: "test".into(),
@@ -1804,24 +1833,77 @@ fn committed_ansi_switch_drains_source_clipboard_before_destination_reply() {
         .lock()
         .windows(DEST_QUERY.len())
         .any(|w| w == DEST_QUERY));
-    terminal.write_all(b"\x1b]52;c;b2xk\x07").unwrap();
-    wait_for(DEST_QUERY);
-    terminal.write_all(b"\x1b]52;p;bmV3\x07").unwrap();
-    loop {
-        match from_b.recv_client_msg() {
-            IpcRecv::Msg(ClientToServerMsg::ForwardedReplyFromHost { token, reply_bytes }, _) => {
-                assert_eq!(token, 18);
-                assert_eq!(reply_bytes, b"\x1b]52;p;bmV3\x1b\\");
-                break;
-            },
-            IpcRecv::Msg(_, _) => {},
-            _ => panic!("destination did not receive its clipboard reply"),
+    if ambiguous_key {
+        use yinz_key_codec::vendored::termwiz::input::{
+            KeyCode, KeyCodeEncodeModes, KeyboardEncoding, Modifiers,
+        };
+        let modes = KeyCodeEncodeModes {
+            encoding: KeyboardEncoding::Xterm,
+            application_cursor_keys: false,
+            newline_mode: false,
+            modify_other_keys: None,
+        };
+        let key = KeyCode::Char('p')
+            .encode(Modifiers::ALT | Modifiers::SHIFT, modes, true)
+            .unwrap();
+        assert_eq!(key.as_bytes(), b"\x1bP");
+        assert!(!nix::sys::termios::tcgetattr(&slave)
+            .unwrap()
+            .local_flags
+            .contains(nix::sys::termios::LocalFlags::ICANON));
+        let started = Instant::now();
+        terminal.write_all(key.as_bytes()).unwrap();
+        terminal.write_all(b"\x07hello\r\x03").unwrap();
+        // Keep the peer open. The client must close it on its own deadline,
+        // without forwarding ambiguous input or requesting session shutdown.
+        loop {
+            match from_b.recv_client_msg() {
+                IpcRecv::Eof => break,
+                IpcRecv::Msg(
+                    ClientToServerMsg::TerminalResize { .. }
+                    | ClientToServerMsg::KittyGraphicsSupport { .. }
+                    | ClientToServerMsg::SynchronizedOutputSupport { .. },
+                    _,
+                ) => {},
+                IpcRecv::Msg(message, _) => panic!("unexpected destination message: {message:?}"),
+                _ => panic!("client did not close its attachment cleanly"),
+            }
         }
+        assert!(started.elapsed() >= crate::stdin_ansi_parser::AMBIGUOUS_CLIPBOARD_DRAIN_TIMEOUT);
+        wait_for(b"Reattach from a fresh terminal");
+        wait_for(crate::terminal_escapes::EXIT_ALTERNATE_SCREEN.as_bytes());
+        assert!(!screen
+            .lock()
+            .windows(DEST_QUERY.len())
+            .any(|w| w == DEST_QUERY));
+        assert_eq!(
+            nix::sys::termios::tcgetattr(&slave).unwrap(),
+            original_termios
+        );
+    } else {
+        terminal.write_all(b"\x1b]52;c;b2xk\x07").unwrap();
+        wait_for(DEST_QUERY);
+        terminal.write_all(b"\x1b]52;p;bmV3\x07").unwrap();
+        loop {
+            match from_b.recv_client_msg() {
+                IpcRecv::Msg(
+                    ClientToServerMsg::ForwardedReplyFromHost { token, reply_bytes },
+                    _,
+                ) => {
+                    assert_eq!(token, 18);
+                    assert_eq!(reply_bytes, b"\x1b]52;p;bmV3\x1b\\");
+                    break;
+                },
+                IpcRecv::Msg(_, _) => {},
+                _ => panic!("destination did not receive its clipboard reply"),
+            }
+        }
+        b.send_server_msg(ServerToClientMsg::Exit {
+            exit_reason: yinz_ipc::ipc::ExitReason::Normal,
+        })
+        .unwrap();
     }
-    b.send_server_msg(ServerToClientMsg::Exit {
-        exit_reason: yinz_ipc::ipc::ExitReason::Normal,
-    })
-    .unwrap();
+    drop(slave);
     assert!(child.wait().unwrap().success());
     capture.join().unwrap();
 }

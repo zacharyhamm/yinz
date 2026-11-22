@@ -24,6 +24,7 @@ use seq_scan::{
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::time::{Duration, Instant};
 use yinz_ipc::nested_session;
 use yinz_key_codec::vendored::termwiz::input::{InputEvent, InputParser};
 
@@ -59,7 +60,7 @@ impl SyncOutput {
 /// into `reply_bytes` until it sees a Primary-DA (`c`) reply, which acts
 /// as the serializing barrier. The timer that enforces the 500 ms
 /// deadline lives on the forward-timeout runtime and owns its own
-/// wall-clock — the parser itself is deadline-agnostic.
+/// wall-clock independently of stdin.
 #[derive(Debug, Clone)]
 pub struct ForwardSlot {
     pub token: u32,
@@ -73,6 +74,8 @@ pub struct ClipboardForwardSlot {
 
 pub const CLIENT_CLIPBOARD_FORWARD_TIMEOUT_MS: u64 = 30_000;
 pub const CLIENT_BARRIER_FORWARD_TIMEOUT_MS: u64 = 500;
+
+pub(crate) const AMBIGUOUS_CLIPBOARD_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How long the startup kitty-graphics probe waits before reporting "no graphics".
 ///
@@ -313,6 +316,9 @@ struct PartialOsc {
     fresh_at: usize,
     escape: Option<InputOrigin>,
     interruption: Interruption,
+    // ESC P may be a key or a DCS. Only the outer clipboard terminator
+    // resolves the ambiguity, even if an inner string has already ended.
+    clipboard_drain_deadline: Option<Instant>,
     kind: OscKind,
 }
 
@@ -329,6 +335,7 @@ impl PartialOsc {
             fresh_at: 0,
             escape,
             interruption: Interruption::None,
+            clipboard_drain_deadline: None,
             kind,
         };
         partial.mark_boundary(boundary);
@@ -559,6 +566,13 @@ impl StdinAnsiParser {
             recovery_partial: None,
             startup_kitty_probe: StartupKittyProbe::NotSent,
             partial_apc: Vec::new(),
+        }
+    }
+
+    pub(crate) fn clipboard_drain_deadline(&self) -> Option<Instant> {
+        match &self.recovery_partial {
+            Some(RecoveryPartial::Osc(osc)) => osc.clipboard_drain_deadline,
+            _ => None,
         }
     }
 

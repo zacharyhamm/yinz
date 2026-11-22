@@ -168,7 +168,7 @@ fn finalization_deadline_tracks_pending_input_and_preserves_the_reply_guard() {
 
 #[test]
 fn an_idle_loop_with_no_deadline_parks_forever() {
-    assert_eq!(next_wakeup(Instant::now(), None, None), None);
+    assert_eq!(next_wakeup(Instant::now(), [None, None]), None);
 }
 
 #[test]
@@ -176,8 +176,10 @@ fn a_nearer_probe_deadline_does_not_shorten_the_flush_window_it_only_wakes_earli
     let now = Instant::now();
     let wait = next_wakeup(
         now,
-        Some(now + LONE_ESC_FLUSH_INTERVAL),
-        Some(now + Duration::from_millis(5)),
+        [
+            Some(now + LONE_ESC_FLUSH_INTERVAL),
+            Some(now + Duration::from_millis(5)),
+        ],
     );
     // The wake-up is the probe's, and the caller checks `finalize_at` before draining, so
     // the escape window keeps its full 50ms.
@@ -189,8 +191,10 @@ fn a_distant_probe_deadline_leaves_the_flush_window_in_charge() {
     let now = Instant::now();
     let wait = next_wakeup(
         now,
-        Some(now + LONE_ESC_FLUSH_INTERVAL),
-        Some(now + Duration::from_secs(2)),
+        [
+            Some(now + LONE_ESC_FLUSH_INTERVAL),
+            Some(now + Duration::from_secs(2)),
+        ],
     );
     assert_eq!(wait, Some(LONE_ESC_FLUSH_INTERVAL));
 }
@@ -199,11 +203,11 @@ fn a_distant_probe_deadline_leaves_the_flush_window_in_charge() {
 fn each_deadline_is_used_on_its_own_when_the_other_is_absent() {
     let now = Instant::now();
     assert_eq!(
-        next_wakeup(now, Some(now + LONE_ESC_FLUSH_INTERVAL), None),
+        next_wakeup(now, [Some(now + LONE_ESC_FLUSH_INTERVAL), None]),
         Some(LONE_ESC_FLUSH_INTERVAL)
     );
     assert_eq!(
-        next_wakeup(now, None, Some(now + Duration::from_secs(2))),
+        next_wakeup(now, [None, Some(now + Duration::from_secs(2))]),
         Some(Duration::from_secs(2))
     );
 }
@@ -212,7 +216,7 @@ fn each_deadline_is_used_on_its_own_when_the_other_is_absent() {
 fn a_deadline_already_passed_wakes_immediately_rather_than_underflowing() {
     let now = Instant::now();
     let past = now - Duration::from_millis(10);
-    assert_eq!(next_wakeup(now, Some(past), None), Some(Duration::ZERO));
+    assert_eq!(next_wakeup(now, [Some(past), None]), Some(Duration::ZERO));
 }
 
 #[test]

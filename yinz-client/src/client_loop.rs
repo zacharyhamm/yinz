@@ -387,6 +387,14 @@ impl ClientLoop<'_, '_> {
             ClientInstruction::FromServer(_, _) => {
                 unreachable!("server generation is checked before dispatch")
             },
+            ClientInstruction::ClipboardDrainTimedOut => {
+                // Closing this socket wakes the reader for orderly teardown.
+                // The server removes the attachment on EOF and keeps the session.
+                self.os_input.disconnect_session_connection();
+                outcome.exit_status = 1;
+                outcome.exit_msg = "Detached because the terminal's clipboard reply could not be safely separated from keyboard input. Reattach from a fresh terminal.".into();
+                return true;
+            },
             ClientInstruction::Exit(reason) => {
                 self.os_input
                     .send_to_server(ClientToServerMsg::ClientExited);

@@ -2,7 +2,7 @@
 //!
 //! A forwarded query has to be released even if the host terminal never
 //! answers, or the server would wait on it forever. The deadline is driven
-//! here rather than by the parser, which is deliberately deadline-agnostic.
+//! here independently of the stdin reader.
 
 use crate::stdin_ansi_parser::{ForwardKind, StdinAnsiParser};
 use std::sync::{Arc, Mutex, OnceLock};

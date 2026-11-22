@@ -118,7 +118,14 @@ pub(crate) fn stdin_loop(
     // probe's deadline: waking for the probe must never cut this window short.
     let mut finalize_at: Option<Instant> = None;
     let mut reply_in_progress_since: Option<Instant> = None;
+    let mut clipboard_deadline = stdin_ansi_parser.lock().unwrap().clipboard_drain_deadline();
     'stdin: loop {
+        // Check even when stdin is continuously readable. Further bytes cannot
+        // extend the physical terminal's deadline across reads or handoffs.
+        if clipboard_deadline.is_some_and(|at| Instant::now() >= at) {
+            let _ = client_sender.send(crate::ClientInstruction::ClipboardDrainTimedOut);
+            break;
+        }
         if kitty_probe_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             kitty_probe_deadline = None;
             let timed_out = stdin_ansi_parser
@@ -136,7 +143,10 @@ pub(crate) fn stdin_loop(
         }
         // The loop would otherwise park in `recv()` forever on an idle client, and the probe's
         // deadline would never be looked at.
-        let wait = next_wakeup(Instant::now(), finalize_at, kitty_probe_deadline);
+        let wait = next_wakeup(
+            Instant::now(),
+            [finalize_at, kitty_probe_deadline, clipboard_deadline],
+        );
         let received = match wait {
             Some(wait) => stdin_rx.recv_timeout(wait),
             None => stdin_rx
@@ -164,11 +174,9 @@ pub(crate) fn stdin_loop(
                         // the keyboard parser should see.
                         let (parse_output, forward_origin, queries_ready) = {
                             let mut p = stdin_ansi_parser.lock().unwrap();
-                            (
-                                p.feed(&buf),
-                                p.forward_generation,
-                                p.has_ready_terminal_query(),
-                            )
+                            let output = p.feed(&buf);
+                            clipboard_deadline = p.clipboard_drain_deadline();
+                            (output, p.forward_generation, p.has_ready_terminal_query())
                         };
                         if queries_ready {
                             let _ = client_sender.send(
@@ -316,16 +324,12 @@ pub(crate) fn stdin_loop(
     }
 }
 
-/// The next moment the loop has to wake up for: whichever of the two pending deadlines comes
-/// first, or `None` when neither is set and the loop may park indefinitely. They are kept
-/// separate because they mean different things - the probe's deadline only needs looking at,
-/// while `finalize_at` is the moment a partial may be drained to the keyboard.
+/// Wake for the earliest deadline. Each owner decides what to do when its deadline expires.
 fn next_wakeup(
     now: Instant,
-    finalize_at: Option<Instant>,
-    kitty_probe_deadline: Option<Instant>,
+    deadlines: impl IntoIterator<Item = Option<Instant>>,
 ) -> Option<Duration> {
-    [finalize_at, kitty_probe_deadline]
+    deadlines
         .into_iter()
         .flatten()
         .min()

@@ -653,8 +653,10 @@ time out.
 On a legacy terminal, Alt+Shift+P can send the same bytes as the start of a
 device control string (DCS). If this happens during the clipboard drain, even
 a following BEL, Enter or Ctrl-C can belong to that string. The client waits
-for the string terminator and then the clipboard terminator. When the bytes
-actually came from the key, typing and clipboard requests can remain blocked.
+up to two seconds from the ambiguous prefix for the string terminator and
+then the clipboard terminator. If both arrive, typing and clipboard queries
+resume. Otherwise the client detaches, restores the terminal and displays a
+diagnostic. The session stays available to reattach from a fresh terminal.
 
 | Client and server | Attachment behavior |
 |---|---|

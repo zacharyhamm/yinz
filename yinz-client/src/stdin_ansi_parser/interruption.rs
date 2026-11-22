@@ -105,11 +105,18 @@ impl PartialOsc {
                             origin,
                         }
                     },
-                    b']' | b'P' | b'X' | b'^' | b'_' => Interruption::String {
-                        introducer: byte,
-                        payload: (origin != InputOrigin::Stale && matches!(byte, b']' | b'_'))
-                            .then(Vec::new),
-                        escape: false,
+                    b']' | b'P' | b'X' | b'^' | b'_' => {
+                        if byte == b'P' && matches!(self.kind, OscKind::RetiredClipboard(_)) {
+                            self.clipboard_drain_deadline.get_or_insert_with(|| {
+                                std::time::Instant::now() + super::AMBIGUOUS_CLIPBOARD_DRAIN_TIMEOUT
+                            });
+                        }
+                        Interruption::String {
+                            introducer: byte,
+                            payload: (origin != InputOrigin::Stale && matches!(byte, b']' | b'_'))
+                                .then(Vec::new),
+                            escape: false,
+                        }
                     },
                     _ => return false,
                 };
