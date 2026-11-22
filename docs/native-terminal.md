@@ -609,37 +609,43 @@ host terminal may still owe a reply to the previous connection. The client waits
 old Primary DA barrier or OSC 52 clipboard reply before sending a new query
 of the same kind. A request that reaches its deadline while waiting uses the
 usual timeout fallback. Host theme, color and pixel-size reports still update
-the client while it waits. If an RGB or hex color value arrives before the first
-repaint and its terminator comes later, typing such as `zoom` reaches the pane
-as soon as it cannot extend the value. The client applies the color when the
-terminator arrives. For example, if the client has received `#abc` and then
-reads `d` followed by BEL, it applies `#abc` and delivers `d` to the pane.
-If it has received `#abcd` before repaint and reads `e` followed by BEL,
-the pane receives only `e`. The earlier `d` falls outside the valid color.
-If `z` interrupts that same `#abcd` prefix and the terminal then sends `ef`
-and BEL, the client delivers `z` and applies `#abcdef`.
-A key such as `z` can also arrive between RGB channels while the client waits
-for the rest of the report. If the host resumes the interrupted RGB value and
-completes its final channel, the client holds Escape for the backslash that
-finishes the report. A separately pressed Escape at that point also waits for
-more input. Immediately after an interrupting key, Escape uses the normal
-keyboard deadline. A slow terminator there can send an extra Escape to the pane.
+the client while it waits.
 
-Hex digits can belong to either stream. For example, if `#abc` arrived before
-repaint, the bytes `defz` before BEL could mean the user typed the whole word,
-or the host extended the color to `#abcdef` and the user typed only `z`.
-The client delivers `defz` as typing in that case. While an RGB channel is
-incomplete, the client can instead consume typed digits as part of the color,
-even after a key such as `z` has reached the pane.
+When a color report crosses the first repaint, the terminal and the keyboard
+share one byte stream. The client gives digits that extend a legal RGB or hex
+color to the report. If the terminal sent `#abc` before repaint and then sends
+`def`, typing `z` before BEL applies `#abcdef` and delivers only `z`. Typing
+all of `defz` produces the same result. A digit beyond a legal hex width goes
+to the pane if it arrived after repaint. For example, `#abc` followed by `d`
+and BEL applies `#abc` and types `d`.
 
-If a clipboard reply starts before handoff and the terminal never finishes it,
-letters and digits typed afterward can look exactly like clipboard payload.
-The client discards those ambiguous bytes. Enter, Ctrl-C, and a complete arrow
-key end the unfinished sequence and reach the keyboard handler. Subsequent
-typing then follows the normal input path. If the terminal resumes the old
-clipboard reply after that interruption, its remaining bytes can also reach
-the focused pane as keystrokes. In that case the client can miss the old
-terminator and later clipboard queries can time out.
+A key that interrupts a complete value ends its color digits. With `#abc`
+followed by `z12` and BEL, the pane receives `z12`. An incomplete value can
+resume after a key. With `#abcd` followed by those same bytes, the pane
+receives `z` and the color becomes `#abcd12`. Digits can also be lost to an
+unfinished RGB channel. With `rgb:1111/` followed by `z12!` and BEL, the
+pane receives `z!` and the previous color stays in effect.
+
+While the color report is open, Escape can begin the terminal's two-byte
+string terminator (Escape followed by backslash). The client holds it across
+idle deadlines, even after Enter. A backslash finishes the report without
+sending a cancellation to the pane. A different next byte distinguishes the
+Escape from a terminator. A complete arrow key or encoded Escape can therefore
+be used while the report is open. Pressing Escape twice also distinguishes
+the first press, which reaches the pane on its usual deadline. A lone Escape
+pressed after the report ends uses that deadline as well.
+
+If a source clipboard reply is open at handoff, the client discards bytes
+that could belong to that reply until BEL or Escape followed by backslash.
+This includes letters typed on the replacement, even after Enter. Enter,
+Ctrl-C, spaces and complete arrow keys reach the keyboard handler while the
+client continues draining the old reply. A terminal string or bracketed paste
+can carry its own terminator. That terminator leaves the old query pending.
+Even inside the paste, bytes that could be old clipboard data are discarded.
+The old reply's own terminator releases the next waiting clipboard query, and
+typing after it works normally. If the terminal never sends the terminator,
+ambiguous typing continues to be discarded and waiting clipboard queries can
+time out.
 
 | Client and server | Attachment behavior |
 |---|---|

@@ -2456,29 +2456,33 @@ fn clipboard_idle_guard_preserves_physical_reply_across_handoff() {
 
 #[test]
 fn unfinished_clipboard_releases_interrupts_and_keeps_query_fenced() {
-    for keys in [
-        b"\r".as_slice(),
-        b"\x03",
-        b"\x1b[A",
-        b" hello",
-        b"\x03hello",
+    for (interrupt, keys) in [
+        (b"\r".as_slice(), b"\r".as_slice()),
+        (b"\x03", b"\x03"),
+        (b"\x1b[A", b"\x1b[A"),
+        (b"\x1b[1;5C", b"\x1b[1;5C"),
+        (b"\x1bOA", b"\x1bOA"),
+        (b" hello", b" "),
+        (b"\x03hello", b"\x03"),
+        (b";test?", b";?"),
+        (b"\x1b[27u", b"\x1b[27u"),
     ] {
-        for split in 0..=keys.len() {
+        for split in 0..=interrupt.len() {
             let mut parser = source_clipboard_partial(b"\x1b]52;c;b2xk");
             parser.input_stamp_changed(Some((1, true)), Some((2, true)));
             parser.begin_forward_generation(Some(2));
-            let mut typed = parser.feed(&keys[..split]).residue;
-            typed.extend(parser.feed(&keys[split..]).residue);
-            match parser.pending_partial() {
-                PendingPartial::None => {},
-                PendingPartial::ReplyInProgress => typed.extend(parser.finalize_force()),
-                _ => typed.extend(parser.finalize_fast_partial()),
-            }
-            assert_eq!(typed, keys, "split {split}");
+            let mut typed = parser.feed(&interrupt[..split]).residue;
+            typed.extend(parser.finalize_fast_partial());
+            typed.extend(parser.finalize_force());
+            typed.extend(parser.feed(&interrupt[split..]).residue);
+            assert_eq!(typed, keys, "{interrupt:?} split at {split}");
             assert_eq!(parser.pending_partial(), PendingPartial::None);
             parser.open_clipboard_forward(1);
             parser.queue_terminal_query(ForwardKind::Clipboard, b"B".to_vec());
             assert!(!parser.has_ready_terminal_query());
+            assert!(parser.feed(b"dGVzdA==").residue.is_empty());
+            assert!(parser.feed(b"\x07").residue.is_empty());
+            assert_eq!(parser.ready_terminal_queries().collect::<Vec<_>>(), [b"B"]);
         }
     }
 }
@@ -2496,6 +2500,88 @@ fn unfinished_clipboard_keeps_an_ambiguous_suffix_out_of_keyboard_input() {
     let late = parser.feed(b"\x07");
     assert!(late.completed_clipboard_forward.is_none() && late.residue.is_empty());
     assert_eq!(parser.ready_terminal_queries().collect::<Vec<_>>(), [b"B"]);
+}
+
+#[test]
+fn retired_clipboard_drains_after_enter_and_the_next_physical_query_completes() {
+    for end in [b"\x07".as_slice(), b"\x1b\\"] {
+        let tail = [b"dGVzdA==".as_slice(), end].concat();
+        for split in 0..=tail.len() {
+            let mut parser = source_clipboard_partial(b"\x1b]52;c;");
+            parser = parser.take_for_next_attachment();
+            parser.open_clipboard_forward(8);
+            parser.queue_terminal_query(ForwardKind::Clipboard, b"B".to_vec());
+            let enter = parser.feed(b"\r");
+            assert_eq!(enter.residue, b"\r");
+            assert_eq!(enter.completed_clipboard_forward, Some((8, vec![])));
+
+            parser.open_clipboard_forward(9);
+            parser.queue_terminal_query(ForwardKind::Clipboard, b"C".to_vec());
+            assert!(!parser.has_ready_terminal_query());
+            let first = parser.feed(&tail[..split]);
+            assert!(first.completed_clipboard_forward.is_none());
+            let mut typed = first.residue;
+            typed.extend(parser.finalize_fast_partial());
+            typed.extend(parser.finalize_force());
+            if split < tail.len() {
+                assert!(!parser.has_ready_terminal_query());
+            }
+            let rest = parser.feed(&tail[split..]);
+            typed.extend(rest.residue);
+            assert!(typed.is_empty(), "split {split}");
+            assert!(rest.completed_clipboard_forward.is_none());
+            assert_eq!(parser.ready_terminal_queries().collect::<Vec<_>>(), [b"C"]);
+            let own = b"\x1b]52;c;bmV3\x1b\\";
+            assert_eq!(
+                parser.feed(own).completed_clipboard_forward,
+                Some((9, own.to_vec()))
+            );
+            assert_eq!(parser.feed(b"test").residue, b"test");
+        }
+    }
+}
+
+#[test]
+fn retired_clipboard_ignores_terminators_inside_intervening_strings_and_paste() {
+    for (interrupt, keys, color) in [
+        (b"\x1b]11;#abcdef\x07".as_slice(), b"".as_slice(), true),
+        (b"\x1b]11;#abcdef\x1b\\", b"", true),
+        (b"\x1b]52;c;dGVzdA==\x07", b"", false),
+        (b"\x1b_Gi=31;OK\x1b\\", b"", false),
+        (
+            b"\x1b[200~!text\x07\x1b[201~",
+            b"\x1b[200~!\x07\x1b[201~",
+            false,
+        ),
+    ] {
+        let mut parser = source_clipboard_partial(b"\x1b]52;c;b2xk");
+        parser = parser.take_for_next_attachment();
+        assert_eq!(parser.feed(b"\r").residue, b"\r");
+        let mut typed = Vec::new();
+        let mut observations = Vec::new();
+        for byte in interrupt {
+            let out = parser.feed(std::slice::from_ref(byte));
+            typed.extend(out.residue);
+            observations.extend(out.replies);
+            assert!(out.completed_clipboard_forward.is_none());
+            typed.extend(parser.finalize_fast_partial());
+            typed.extend(parser.finalize_force());
+        }
+        assert_eq!(typed, keys);
+        if color {
+            assert!(
+                matches!(&observations[..], [HostReply::BackgroundColor(value)] if value == "#abcdef")
+            );
+        } else {
+            assert!(observations.is_empty());
+        }
+        parser.open_clipboard_forward(9);
+        parser.queue_terminal_query(ForwardKind::Clipboard, b"B".to_vec());
+        assert!(!parser.has_ready_terminal_query());
+        let out = parser.feed(b"dGVzdA==\x07");
+        assert!(out.residue.is_empty() && out.completed_clipboard_forward.is_none());
+        assert_eq!(parser.ready_terminal_queries().collect::<Vec<_>>(), [b"B"]);
+    }
 }
 
 #[test]
@@ -2625,16 +2711,30 @@ fn idle_guard_during_first_repaint_preserves_slow_host_reports() {
 
 #[test]
 fn first_repaint_delivers_typing_while_a_host_color_awaits_its_terminator() {
-    for (report, keys, terminator) in [
+    for (report, keys, terminator, color, typed_keys) in [
         (
             b"\x1b]11;rgb:1/2/3".as_slice(),
             b"zoom".as_slice(),
             b"\x07".as_slice(),
+            b"\x1b]11;rgb:1/2/3".as_slice(),
+            b"zoom".as_slice(),
         ),
-        (b"\x1b]10;rgb:ffff/a/12", b"fade away", b"\x1b\\"),
-        (b"\x1b]4;19;#abc", b"face zoom\r", b"\x07"),
+        (
+            b"\x1b]10;rgb:ffff/a/12",
+            b"fade away",
+            b"\x1b\\",
+            b"\x1b]10;rgb:ffff/a/12fa",
+            b"de away",
+        ),
+        (
+            b"\x1b]4;19;#abc",
+            b"face zoom\r",
+            b"\x07",
+            b"\x1b]4;19;#abcfac",
+            b"e zoom\r",
+        ),
     ] {
-        let complete = [report, terminator].concat();
+        let complete = [color, terminator].concat();
         let expected = StdinAnsiParser::new().feed(&complete).replies;
         for split in 0..=keys.len() {
             let mut parser = StdinAnsiParser::new();
@@ -2652,7 +2752,7 @@ fn first_repaint_delivers_typing_while_a_host_color_awaits_its_terminator() {
             typed.extend(parser.finalize_force());
             typed.extend(parser.feed(&keys[split..]).residue);
             typed.extend(parser.finalize_force());
-            assert_eq!(typed, keys, "split {split}");
+            assert_eq!(typed, typed_keys, "split {split}");
             let mut observed = Vec::new();
             for byte in terminator {
                 let out = parser.feed(std::slice::from_ref(byte));
@@ -2673,10 +2773,10 @@ fn first_repaint_keeps_keys_and_color_in_one_read_in_order() {
     assert!(parser.feed(b"\x1b]11;rgb:1/2/3").residue.is_empty());
     parser.input_stamp_changed(Some((2, false)), Some((2, true)));
     let out = parser.feed(b"fade zoom\x07!\x1b]10;rgb:a/b/c\x1b\\");
-    assert_eq!(out.residue, b"fade zoom!");
+    assert_eq!(out.residue, b"e zoom!");
     assert!(matches!(&out.replies[..], [
         HostReply::BackgroundColor(bg), HostReply::ForegroundColor(fg)
-    ] if bg == "rgb:1/2/3" && fg == "rgb:a/b/c"));
+    ] if bg == "rgb:1/2/3fad" && fg == "rgb:a/b/c"));
 }
 
 #[test]
@@ -2732,6 +2832,10 @@ fn repaint_color_interruption_replays_only_fresh_surplus_digits() {
 #[test]
 fn interrupted_hex_color_keeps_its_pre_repaint_digits_until_termination() {
     for (before, interrupt, continuation, expected_color, keys) in [
+        ("#abc", "defz", "", "#abcdef", "z!"),
+        ("#abc", "def0z", "", "#abcdef", "0z!"),
+        ("#abc", "z", "12", "#abc", "z12!"),
+        ("#abcd", "z", "12", "#abcd12", "z!"),
         ("#abcd", "z", "ef", "#abcdef", "z!"),
         ("#abcde", "z", "f", "#abcdef", "z!"),
         ("#abcd", "ez", "ef", "#abcdef", "ez!"),
@@ -2800,26 +2904,65 @@ fn repaint_color_resumed_body_keeps_a_slow_string_terminator_off_the_keyboard() 
 }
 
 #[test]
-fn repaint_color_interrupted_escape_uses_the_keyboard_deadline() {
-    for tail in [b"\\!".as_slice(), b"x\x07!"] {
-        let mut parser = StdinAnsiParser::new();
-        parser.feed(b"\x1b]11;rgb:1/2/3");
-        parser.input_stamp_changed(Some((2, false)), Some((2, true)));
-        assert_eq!(parser.feed(b"\r").residue, b"\r");
-        assert!(parser.feed(b"\x1b").residue.is_empty());
-        assert_eq!(parser.pending_partial(), PendingPartial::LoneEsc);
-        assert_eq!(parser.finalize_fast_partial(), b"\x1b");
-        assert_eq!(parser.pending_partial(), PendingPartial::None);
-        assert!(parser.finalize_fast_partial().is_empty());
-        let output = parser.feed(tail);
-        let keys = if tail.starts_with(b"x") {
-            &b"x!"[..]
-        } else {
-            b"!"
-        };
-        assert_eq!(output.residue, keys);
-        assert!(
-            matches!(&output.replies[..], [HostReply::BackgroundColor(value)] if value == "rgb:1/2/3")
-        );
+fn repaint_color_split_terminator_takes_precedence_over_the_escape_deadline() {
+    for (before, interrupt, keys, color) in [
+        ("rgb:1/2/3", "\r", "\r", "rgb:1/2/3"),
+        ("rgb:1/2/", "z3", "z", "rgb:1/2/3"),
+        ("#abcd", "zef", "z", "#abcdef"),
+    ] {
+        for (tail, tail_keys) in [
+            (b"\\!".as_slice(), b"!".as_slice()),
+            (b"x\x07!", b"\x1bx!"),
+            (b"[A\x07!", b"\x1b[A!"),
+            (b"[27u\x07!", b"\x1b[27u!"),
+        ] {
+            let mut parser = StdinAnsiParser::new();
+            parser.feed(format!("\x1b]11;{before}").as_bytes());
+            parser.input_stamp_changed(Some((2, false)), Some((2, true)));
+            assert_eq!(parser.feed(interrupt.as_bytes()).residue, keys.as_bytes());
+            assert!(parser.feed(b"\x1b").residue.is_empty());
+            assert_eq!(parser.pending_partial(), PendingPartial::None);
+            assert!(parser.finalize_fast_partial().is_empty());
+            assert!(parser.finalize_force().is_empty());
+            let output = parser.feed(tail);
+            assert_eq!(output.residue, tail_keys);
+            assert!(
+                matches!(&output.replies[..], [HostReply::BackgroundColor(value)] if value == color)
+            );
+            assert!(parser.feed(b"\x1b").residue.is_empty());
+            assert_eq!(parser.pending_partial(), PendingPartial::LoneEsc);
+            assert_eq!(parser.finalize_fast_partial(), b"\x1b");
+        }
     }
+}
+
+#[test]
+fn interrupted_incomplete_color_prefers_possible_host_digits_over_typing() {
+    let mut parser = StdinAnsiParser::new();
+    parser.feed(b"\x1b]11;rgb:1111/");
+    parser.input_stamp_changed(Some((2, false)), Some((2, true)));
+    let out = parser.feed(b"z12!\x07");
+    assert_eq!(out.residue, b"z!");
+    assert!(out.replies.is_empty());
+    assert_eq!(parser.feed(b"12").residue, b"12");
+}
+
+#[test]
+fn repaint_color_disambiguated_escape_uses_the_normal_keyboard_deadline() {
+    let mut parser = StdinAnsiParser::new();
+    parser.feed(b"\x1b]11;rgb:1/2/3");
+    parser.input_stamp_changed(Some((2, false)), Some((2, true)));
+    assert_eq!(parser.feed(b"\r\x1b").residue, b"\r");
+    assert!(parser.finalize_fast_partial().is_empty());
+    // The second ESC rules out the first as ST. Only the second can still
+    // belong to the color, so the first one gets its usual keyboard deadline.
+    assert!(parser.feed(b"\x1b").residue.is_empty());
+    assert_eq!(parser.pending_partial(), PendingPartial::LoneEsc);
+    assert_eq!(parser.finalize_fast_partial(), b"\x1b");
+    assert!(parser.finalize_fast_partial().is_empty());
+    let out = parser.feed(b"\\!");
+    assert_eq!(out.residue, b"!");
+    assert!(
+        matches!(&out.replies[..], [HostReply::BackgroundColor(value)] if value == "rgb:1/2/3")
+    );
 }
