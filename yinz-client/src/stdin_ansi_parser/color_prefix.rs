@@ -64,12 +64,18 @@ impl ColorPrefix {
     }
 
     pub(super) fn complete(self) -> bool {
-        matches!(
-            self,
+        self.digits_after_complete_value() == Some(0)
+    }
+
+    /// Trailing digits beyond the longest legal value, if one has been read.
+    pub(super) fn digits_after_complete_value(self) -> Option<usize> {
+        match self {
             Self::Rgb {
                 channel: 2,
-                digits: 1..
-            } | Self::Hex(3 | 6 | 9 | 12)
-        )
+                digits: 1..,
+            } => Some(0),
+            Self::Hex(n @ 3..) => Some(usize::from(n % 3)),
+            _ => None,
+        }
     }
 }

@@ -612,8 +612,16 @@ usual timeout fallback. Host theme, color and pixel-size reports still update
 the client while it waits. If an RGB or hex color value arrives before the first
 repaint and its terminator comes later, typing such as `zoom` reaches the pane
 as soon as it cannot extend the value. The client applies the color when the
-terminator arrives. Hex digits that still fit the value can be part of a slow
-color reply.
+terminator arrives. For example, if the client has received `#abc` and then
+reads `d` followed by BEL, it applies `#abc` and delivers `d` to the pane.
+A key such as `z` can also arrive between RGB channels while the client waits
+for the rest of the report. After typing interrupts a color reply, a standalone
+Escape uses the normal keyboard deadline.
+
+Hex digits can belong to either stream. For example, if `#abc` arrived before
+repaint, the bytes `defz` before BEL could mean the user typed the whole word,
+or the host extended the color to `#abcdef` and the user typed only `z`.
+The client delivers `defz` as typing in that case.
 
 If a clipboard reply starts before handoff and the terminal never finishes it,
 letters and digits typed afterward can look exactly like clipboard payload.

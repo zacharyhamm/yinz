@@ -2678,3 +2678,83 @@ fn first_repaint_keeps_keys_and_color_in_one_read_in_order() {
         HostReply::BackgroundColor(bg), HostReply::ForegroundColor(fg)
     ] if bg == "rgb:1/2/3" && fg == "rgb:a/b/c"));
 }
+
+#[test]
+fn repaint_color_terminator_releases_only_incomplete_hex_digits() {
+    for (before, after, color, keys) in [
+        ("#abc", "d", "#abc", "d"),
+        ("#abcdef", "01", "#abcdef", "01"),
+        ("#abc", "def0", "#abcdef", "0"),
+        ("#ab", "cdef", "#abcdef", ""),
+    ] {
+        for end in [b"\x07".as_slice(), b"\x1b\\"] {
+            let mut parser = StdinAnsiParser::new();
+            parser.feed(format!("\x1b]11;{before}").as_bytes());
+            parser.input_stamp_changed(Some((2, false)), Some((2, true)));
+            for byte in after.bytes() {
+                assert!(parser.feed(&[byte]).residue.is_empty());
+                assert!(parser.finalize_force().is_empty());
+            }
+            for byte in &end[..end.len() - 1] {
+                assert!(parser.feed(&[*byte]).residue.is_empty());
+                assert!(parser.finalize_force().is_empty());
+            }
+            let output = parser.feed(&[end[end.len() - 1], b'!']);
+            assert_eq!(output.residue, format!("{keys}!").as_bytes());
+            assert!(
+                matches!(&output.replies[..], [HostReply::BackgroundColor(value)] if value == color)
+            );
+        }
+    }
+}
+
+#[test]
+fn repaint_color_interleaved_key_preserves_the_unfinished_body() {
+    for (before, suffix, color, keys) in [
+        ("rgb:1111/", "z2222/3333", "rgb:1111/2222/3333", "z!"),
+        ("rgb:1/2/", "34f0z", "rgb:1/2/34f0", "z!"),
+        ("rgb:1/2/", "3zoomfade", "rgb:1/2/3", "zoomfade!"),
+    ] {
+        for end in [b"\x07".as_slice(), b"\x1b\\"] {
+            let tail = [suffix.as_bytes(), end, b"!"].concat();
+            for split in 0..=tail.len() {
+                let mut parser = StdinAnsiParser::new();
+                parser.feed(format!("\x1b]11;{before}").as_bytes());
+                parser.input_stamp_changed(Some((2, false)), Some((2, true)));
+                let mut output = parser.feed(&tail[..split]);
+                let rest = parser.feed(&tail[split..]);
+                output.residue.extend(rest.residue);
+                output.replies.extend(rest.replies);
+                assert_eq!(output.residue, keys.as_bytes(), "split {split}");
+                assert!(
+                    matches!(&output.replies[..], [HostReply::BackgroundColor(value)] if value == color)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn repaint_color_interrupted_escape_uses_the_keyboard_deadline() {
+    for tail in [b"\\!".as_slice(), b"x\x07!"] {
+        let mut parser = StdinAnsiParser::new();
+        parser.feed(b"\x1b]11;rgb:1/2/3");
+        parser.input_stamp_changed(Some((2, false)), Some((2, true)));
+        assert_eq!(parser.feed(b"\r").residue, b"\r");
+        assert!(parser.feed(b"\x1b").residue.is_empty());
+        assert_eq!(parser.pending_partial(), PendingPartial::LoneEsc);
+        assert_eq!(parser.finalize_fast_partial(), b"\x1b");
+        assert_eq!(parser.pending_partial(), PendingPartial::None);
+        assert!(parser.finalize_fast_partial().is_empty());
+        let output = parser.feed(tail);
+        let keys = if tail.starts_with(b"x") {
+            &b"x!"[..]
+        } else {
+            b"!"
+        };
+        assert_eq!(output.residue, keys);
+        assert!(
+            matches!(&output.replies[..], [HostReply::BackgroundColor(value)] if value == "rgb:1/2/3")
+        );
+    }
+}

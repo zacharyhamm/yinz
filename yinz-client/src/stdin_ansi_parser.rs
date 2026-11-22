@@ -210,31 +210,52 @@ enum InputBoundary {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
+enum ColorInput {
+    ReadingBody,
+    CompleteAtBoundary,
+    Interleaved,
+    AfterValue,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
 enum OscKind {
     HostColor {
         prefix: ColorPrefix,
-        complete_at_boundary: bool,
-    },
-    InterruptedColor {
-        complete: bool,
+        input: ColorInput,
     },
     Clipboard,
     RetiredClipboard,
 }
 
-/// Bytes before `fresh_at` already belonged to the terminal sequence. Only
-/// subsequent bytes can be keyboard input if the terminal abandons the reply.
+/// A possible ST introducer is kept separately from the report body. Only a
+/// fresh ESC can go to the keyboard. Once delivered, it may still complete ST.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum OscEscape {
+    None,
+    BeforeBoundary,
+    Fresh,
+    Delivered,
+}
+
 struct PartialOsc {
     bytes: Vec<u8>,
     fresh_at: usize,
+    escape: OscEscape,
     kind: OscKind,
 }
 
 impl PartialOsc {
-    fn new(bytes: Vec<u8>, kind: OscKind) -> Self {
+    fn new(mut bytes: Vec<u8>, kind: OscKind) -> Self {
+        let escape = if bytes.ends_with(b"\x1b") {
+            bytes.pop();
+            OscEscape::BeforeBoundary
+        } else {
+            OscEscape::None
+        };
         let mut partial = Self {
             bytes,
             fresh_at: 0,
+            escape,
             kind,
         };
         partial.mark_boundary();
@@ -245,38 +266,72 @@ impl PartialOsc {
         matches!(self.kind, OscKind::Clipboard | OscKind::RetiredClipboard)
     }
 
-    /// A complete color may be waiting only for BEL or ST while the user types.
-    /// Send distinguishable keys through normal input decoding and keep the
-    /// report for its real terminator. ESC is handled by the framing code.
+    fn complete_color_end(&self, prefix: ColorPrefix) -> Option<usize> {
+        let end = self.bytes.len() - prefix.digits_after_complete_value()?;
+        (end >= self.fresh_at).then_some(end)
+    }
+
     fn consume_color_byte(&mut self, byte: u8, keyboard: &mut Vec<u8>) -> bool {
-        match self.kind {
-            OscKind::HostColor {
-                prefix,
-                mut complete_at_boundary,
-            } => {
-                if let Some(next) = prefix.advance(byte) {
-                    self.bytes.push(byte);
-                    if !complete_at_boundary && next.complete() {
-                        complete_at_boundary = true;
-                        self.fresh_at = self.bytes.len();
-                    }
-                    self.kind = OscKind::HostColor {
-                        prefix: next,
-                        complete_at_boundary,
-                    };
-                } else {
-                    keyboard.extend_from_slice(&self.bytes[self.fresh_at..]);
-                    self.bytes.truncate(self.fresh_at);
-                    self.kind = OscKind::InterruptedColor {
-                        complete: complete_at_boundary,
-                    };
-                    keyboard.push(byte);
-                }
-            },
-            OscKind::InterruptedColor { .. } => keyboard.push(byte),
-            _ => return false,
+        let OscKind::HostColor { prefix, input } = self.kind else {
+            return false;
+        };
+        if input != ColorInput::AfterValue {
+            if let Some(next) = prefix.advance(byte) {
+                self.bytes.push(byte);
+                self.kind = OscKind::HostColor {
+                    prefix: next,
+                    input,
+                };
+                return true;
+            }
+            // Keep a word following a pre-repaint value together ("fade away").
+            // If the body was incomplete, a key can arrive between its channels.
+            // Continue reading valid digits even after that key has been delivered.
+            let rollback = if input == ColorInput::CompleteAtBoundary {
+                Some(self.fresh_at)
+            } else {
+                self.complete_color_end(prefix)
+            };
+            let input = if let Some(end) = rollback {
+                keyboard.extend_from_slice(&self.bytes[end..]);
+                self.bytes.truncate(end);
+                ColorInput::AfterValue
+            } else {
+                ColorInput::Interleaved
+            };
+            self.kind = OscKind::HostColor { prefix, input };
         }
+        keyboard.push(byte);
         true
+    }
+
+    /// Release digits that the terminator rules out as part of a hex color.
+    /// An interrupted body with no complete value cannot update the host color.
+    fn finish_body(&mut self, keyboard: &mut Vec<u8>) -> bool {
+        let OscKind::HostColor { prefix, input } = self.kind else {
+            return true;
+        };
+        if input == ColorInput::AfterValue {
+            return true;
+        }
+        if let Some(end) = self.complete_color_end(prefix) {
+            keyboard.extend_from_slice(&self.bytes[end..]);
+            self.bytes.truncate(end);
+            true
+        } else {
+            input != ColorInput::Interleaved
+        }
+    }
+
+    fn pending_interrupted_escape(&self) -> bool {
+        self.escape == OscEscape::Fresh
+            && matches!(
+                self.kind,
+                OscKind::HostColor {
+                    input: ColorInput::Interleaved | ColorInput::AfterValue,
+                    ..
+                }
+            )
     }
 
     fn accepts(&self, byte: u8) -> bool {
@@ -289,32 +344,39 @@ impl PartialOsc {
     }
 
     fn keyboard_suffix(&mut self) -> Vec<u8> {
-        // Base64 is ambiguous. Replay only a new escape that broke the clipboard
-        // sequence. Other OSCs use the ordinary fallback for a malformed reply.
-        let start = if self.is_clipboard() {
-            let fresh_escape = self.bytes[self.fresh_at..].ends_with(b"\x1b");
-            self.bytes.len() - usize::from(fresh_escape)
-        } else {
-            self.fresh_at
+        let start = match self.kind {
+            OscKind::HostColor {
+                input: ColorInput::CompleteAtBoundary,
+                ..
+            } => self.fresh_at,
+            OscKind::HostColor {
+                input: ColorInput::ReadingBody | ColorInput::Interleaved,
+                prefix,
+            } => self.complete_color_end(prefix).unwrap_or(self.bytes.len()),
+            _ => self.bytes.len(),
         };
-        self.bytes.split_off(start)
+        let mut keys = self.bytes.split_off(start);
+        if self.escape == OscEscape::Fresh {
+            keys.push(0x1b);
+        }
+        keys
     }
 
     fn mark_boundary(&mut self) {
-        // A retired reply needs only its identity and a possible first byte of ST.
-        if self.kind == OscKind::RetiredClipboard {
-            let escaped = self.bytes.ends_with(b"\x1b");
-            self.bytes.truncate(b"\x1b]52;".len());
-            if escaped {
-                self.bytes.push(0x1b);
-            }
+        if self.escape == OscEscape::Fresh {
+            self.escape = OscEscape::BeforeBoundary;
         }
-        if let OscKind::HostColor {
-            prefix,
-            complete_at_boundary,
-        } = &mut self.kind
+        if self.kind == OscKind::RetiredClipboard {
+            self.bytes.truncate(b"\x1b]52;".len());
+        }
+        if let OscKind::HostColor { prefix, input } = &mut self.kind
+            && *input != ColorInput::AfterValue
         {
-            *complete_at_boundary = prefix.complete();
+            *input = if prefix.complete() {
+                ColorInput::CompleteAtBoundary
+            } else {
+                ColorInput::ReadingBody
+            };
         }
         self.fresh_at = self.bytes.len();
     }
@@ -799,6 +861,11 @@ impl StdinAnsiParser {
                 _ => PendingPartial::ReplyInProgress,
             };
         }
+        if let Some(RecoveryPartial::Osc(osc)) = &self.recovery_partial
+            && osc.pending_interrupted_escape()
+        {
+            return PendingPartial::LoneEsc;
+        }
         if self.recovery_partial.is_some() {
             return PendingPartial::None;
         }
@@ -845,6 +912,13 @@ impl StdinAnsiParser {
             let keyboard = bytes[*fresh_at..].to_vec();
             *fresh_at = bytes.len();
             return keyboard;
+        }
+        if let Some(RecoveryPartial::Osc(osc)) = &mut self.recovery_partial
+            && osc.pending_interrupted_escape()
+        {
+            // Deliver Escape once. Its byte can still finish a split ST.
+            osc.escape = OscEscape::Delivered;
+            return vec![0x1b];
         }
         let pending = self.take_partial_bytes();
         if let Some(kind) = self.partial_osc_kind(&pending, InputBoundary::Idle) {
@@ -981,7 +1055,7 @@ impl StdinAnsiParser {
         let prefix = ColorPrefix::from_report(bytes, header);
         Some(OscKind::HostColor {
             prefix,
-            complete_at_boundary: prefix.complete(),
+            input: ColorInput::ReadingBody,
         })
     }
 
@@ -1054,13 +1128,18 @@ impl StdinAnsiParser {
                         };
                 },
                 Some(RecoveryPartial::Osc(mut osc)) => {
-                    let escaped = osc.bytes.ends_with(b"\x1b");
+                    if osc.escape == OscEscape::Delivered && byte != b'\\' {
+                        osc.escape = OscEscape::None;
+                    }
+                    let escaped = osc.escape != OscEscape::None;
                     if (!escaped && byte == 7) || (escaped && byte == b'\\') {
                         if osc.kind == OscKind::RetiredClipboard {
                             self.clipboards.observe_terminator();
-                        } else if !matches!(osc.kind, OscKind::InterruptedColor { complete: false })
-                        {
+                        } else if osc.finish_body(keyboard) {
                             // Classify the complete live OSC through the ordinary decoder.
+                            if escaped {
+                                osc.bytes.push(0x1b);
+                            }
                             osc.bytes.extend_from_slice(&bytes[i..]);
                             return Cow::Owned(osc.bytes);
                         }
@@ -1078,7 +1157,9 @@ impl StdinAnsiParser {
                         keyboard.extend_from_slice(&bytes[i..]);
                         return Cow::Owned(keyboard);
                     } else {
-                        if osc.kind != OscKind::RetiredClipboard || byte == 0x1b {
+                        if byte == 0x1b {
+                            osc.escape = OscEscape::Fresh;
+                        } else if osc.kind != OscKind::RetiredClipboard {
                             osc.bytes.push(byte);
                         }
                         self.recovery_partial = Some(RecoveryPartial::Osc(osc));
