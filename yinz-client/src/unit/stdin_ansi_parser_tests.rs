@@ -2721,26 +2721,83 @@ fn retained_osc_keeps_an_interrupted_pastes_terminators_across_repaint() {
 }
 
 #[test]
-fn retained_osc_dcs_and_legacy_alt_p_share_the_same_prefix() {
-    // Alt+P, clipboard BEL and subsequent typing are also a DCS introducer,
-    // an ignored BEL in its entry state, then a command and its data.
+fn unrelated_kitty_reply_leaves_replacement_probe_armed() {
     let mut parser = interrupted_clipboard();
-    parser.open_clipboard_forward(8);
-    parser.queue_terminal_query(ForwardKind::Clipboard, b"waiting".to_vec());
-    let ambiguous = parser.feed(b"\x1bP\x07hello\r\x03");
-    assert!(ambiguous.residue.is_empty() && ambiguous.completed_clipboard_forward.is_none());
-    assert!(parser.finalize_force().is_empty() && !parser.has_ready_terminal_query());
+    parser.expect_kitty_probe_reply();
+    queue_replacement_clipboard(&mut parser);
+    for unrelated in [
+        b"\x1b_Gi=310;OK\x1b\\".as_slice(),
+        b"\x1b_GI=31,p=31;OK\x1b\\",
+        b"\x1b_Gi=31,i=310;OK\x1b\\",
+        b"\x1b_Gi=7;ENOENT:i=31;OK\x1b\\",
+    ] {
+        let out = parser.feed(unrelated);
+        assert!(out.replies.is_empty() && out.residue.is_empty());
+        assert!(out.completed_clipboard_forward.is_none());
+        assert!(!parser.has_ready_terminal_query());
+    }
+    finish_retired_clipboard(&mut parser);
+    let own = parser.feed(b"\x1b_Gi=31;OK\x1b\\");
+    assert!(matches!(
+        &own.replies[..],
+        [HostReply::KittyGraphicsSupport(true)]
+    ));
+    assert!(own.residue.is_empty() && parser.resolve_kitty_probe_by_timeout().is_none());
+}
+
+#[test]
+fn kitty_probe_classifies_status_after_all_control_fields() {
+    for (reply, expected) in [
+        (b"\x1b_Gp=9,i=31,r=2;OK\x1b\\".as_slice(), true),
+        (b"\x1b_Gi=31;ENOENT:expected i=31;OK\x1b\\", false),
+    ] {
+        let mut parser = StdinAnsiParser::new();
+        parser.expect_kitty_probe_reply();
+        let out = parser.feed(reply);
+        assert!(matches!(&out.replies[..], [HostReply::KittyGraphicsSupport(s)] if *s == expected));
+        assert!(out.residue.is_empty() && parser.resolve_kitty_probe_by_timeout().is_none());
+    }
+}
+
+#[test]
+fn retained_osc_dcs_and_legacy_alt_p_share_the_same_prefix() {
+    use yinz_key_codec::vendored::termwiz::input::{
+        KeyCode, KeyCodeEncodeModes, KeyboardEncoding, Modifiers,
+    };
+
+    let legacy = KeyCodeEncodeModes {
+        encoding: KeyboardEncoding::Xterm,
+        application_cursor_keys: false,
+        newline_mode: false,
+        modify_other_keys: None,
+    };
+    let alt_p = KeyCode::Char('p')
+        .encode(Modifiers::ALT | Modifiers::SHIFT, legacy, true)
+        .unwrap();
+    let enter = KeyCode::Enter
+        .encode(Modifiers::NONE, legacy, true)
+        .unwrap();
+    let ctrl_c = KeyCode::Char('c')
+        .encode(Modifiers::CTRL, legacy, true)
+        .unwrap();
+    assert_eq!(alt_p.as_bytes(), b"\x1bP");
+    let typing = [b"hello", enter.as_bytes(), ctrl_c.as_bytes()].concat();
+    assert_eq!(typing, b"hello\r\x03");
+
+    let mut parser = interrupted_clipboard();
+    queue_replacement_clipboard(&mut parser);
+    // A keypress, the physical reply's BEL, and later typing in separate reads
+    // still look exactly like a DCS containing BEL, a command and its data.
+    for input in [alt_p.as_bytes(), b"\x07", &typing] {
+        let out = parser.feed(input);
+        assert!(out.residue.is_empty() && out.completed_clipboard_forward.is_none());
+        assert!(parser.finalize_force().is_empty() && !parser.has_ready_terminal_query());
+    }
     // In the DCS interpretation this ST closes the *inner* string. Paying the
     // debt at BEL or ST would expose the old clipboard bytes that follow.
     assert!(parser.feed(b"\x1b\\").residue.is_empty());
-    assert!(!parser.has_ready_terminal_query());
-    assert!(parser.feed(b"dGVzdA==").residue.is_empty());
-    assert!(parser.feed(b"\x07").residue.is_empty());
-    assert_eq!(
-        parser.ready_terminal_queries().collect::<Vec<_>>(),
-        [b"waiting"]
-    );
-    assert_eq!(parser.feed(b"hello\r\x03").residue, b"hello\r\x03");
+    finish_retired_clipboard(&mut parser);
+    assert_eq!(parser.feed(&typing).residue, typing);
 }
 
 #[test]

@@ -19,7 +19,7 @@ pub use seq_scan::PendingPartial;
 use color_prefix::ColorPrefix;
 use interruption::Interruption;
 use seq_scan::{
-    apc_status, contains_subslice, csi_status, marker_match, osc_status, MarkerMatch, SeqStatus,
+    apc_status, csi_status, marker_match, osc_status, MarkerMatch, SeqStatus,
     PARTIAL_BUFFER_CAP_BYTES, PASTE_END_MARKER, PASTE_START_MARKER,
 };
 use serde::{Deserialize, Serialize};
@@ -195,13 +195,19 @@ enum StartupKittyProbe {
 
 impl StartupKittyProbe {
     fn observe_reply(&mut self, payload: &[u8]) -> Option<HostReply> {
-        if !matches!(self, Self::AwaitingReply | Self::UnsupportedAwaitingReply)
-            || !payload.starts_with(b"G")
-            || !contains_subslice(payload, b"i=31")
-        {
+        if !matches!(self, Self::AwaitingReply | Self::UnsupportedAwaitingReply) {
             return None;
         }
-        let supported = contains_subslice(payload, b"i=31;OK");
+        let mut reply = payload.strip_prefix(b"G")?.splitn(2, |&b| b == b';');
+        let fields = reply.next()?;
+        let status = reply.next()?;
+        let mut image_ids = fields
+            .split(|&b| b == b',')
+            .filter_map(|field| field.strip_prefix(b"i="));
+        if image_ids.next() != Some(b"31") || image_ids.next().is_some() {
+            return None;
+        }
+        let supported = status == b"OK";
         // A late success upgrades the provisional negative. A late refusal
         // settles the probe without sending the same capability twice.
         let publish = supported || *self == Self::AwaitingReply;

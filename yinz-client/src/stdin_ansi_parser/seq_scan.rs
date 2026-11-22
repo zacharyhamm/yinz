@@ -115,10 +115,6 @@ pub(super) fn apc_status(buf: &[u8]) -> SeqStatus {
     SeqStatus::NeedMore
 }
 
-pub(super) fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|w| w == needle)
-}
-
 /// Walk a whitelisted CSI report starting at the head of `buf`.
 pub(super) fn csi_status(buf: &[u8]) -> SeqStatus {
     if buf.first() != Some(&0x1b) || buf.get(1) != Some(&b'[') {
