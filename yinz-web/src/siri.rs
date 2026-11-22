@@ -13,6 +13,7 @@ use http::{HeaderMap, Response, StatusCode};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{sync::atomic::Ordering, time::Duration};
+use yinz_runtime::errors::prelude::{Context as _, FatalError as _};
 use yinz_types::web::{WebAuth, WebMethod, WebReply, WebRequest, MAX_RESPONSE_BODY};
 
 #[derive(Deserialize)]
@@ -38,7 +39,9 @@ fn stored<T>(what: &str, result: std::result::Result<anyhow::Result<T>, ()>) -> 
     match result {
         Ok(Ok(value)) => Some(value),
         Ok(Err(error)) => {
-            log::warn!("Siri {what}: {error:#}");
+            Err::<(), _>(error)
+                .with_context(|| format!("Siri {what}"))
+                .non_fatal();
             None
         },
         Err(()) => None,
@@ -443,7 +446,11 @@ impl Context<'_> {
     ) -> Result<Value> {
         let mut rows = Vec::new();
         if phrase.is_some_and(|q| q.trim().is_empty()) {
-            return Ok(answer("What did the agent mention?", true));
+            // The next answer is not kept as a phrase, so ask for a complete command.
+            return Ok(answer(
+                "Say what the agent mentioned, for example “find the agent that mentioned tests.”",
+                false,
+            ));
         }
         for mut agent in self
             .agents()
@@ -482,13 +489,6 @@ impl Context<'_> {
                 ),
                 true,
             )),
-            [only] if matches!(action, Action::List) => Ok(answer(
-                format!(
-                    "One match. {}, {}, {}.",
-                    only.title, only.branch, only.session
-                ),
-                false,
-            )),
             [only] => {
                 let agent = only.clone();
                 self.act(input, action, agent).await
@@ -514,13 +514,18 @@ impl Context<'_> {
         d.launched = None;
         d.refinement = None;
         d.selected = Some(agent.clone());
+        let excerpt = agent.hit.as_ref().map(|h| h.excerpt.as_str()).unwrap_or("");
         match action {
-            Action::List | Action::Select => Ok(answer(
+            // A listed agent is selected too, so "it" names the agent the user just heard.
+            Action::List => Ok(answer(
                 format!(
-                    "Selected {}. {}",
-                    agent.title,
-                    agent.hit.as_ref().map(|h| h.excerpt.as_str()).unwrap_or("")
+                    "One match, selected. {}, {}, {}. {excerpt}",
+                    agent.title, agent.branch, agent.session
                 ),
+                false,
+            )),
+            Action::Select => Ok(answer(
+                format!("Selected {}. {excerpt}", agent.title),
                 false,
             )),
             Action::Latest | Action::Match => {
@@ -809,7 +814,15 @@ impl Context<'_> {
         };
         match tokio::time::timeout(Duration::from_secs(10), wait).await {
             Ok(Ok(message)) => Ok(self.read(&message)),
-            Ok(Err(error @ (Failure::Spoken(_) | Failure::TargetChanged))) => Err(error),
+            // The message was already delivered. Say so before the reason no reply can be read.
+            Ok(Err(Failure::Spoken(speech))) => Ok(answer(
+                format!("Message delivered, but no reply can be read. {speech}"),
+                false,
+            )),
+            Ok(Err(Failure::TargetChanged)) => Ok(answer(
+                format!("Message delivered, but no reply can be read. {CHANGED}"),
+                false,
+            )),
             _ => match latest {
                 Some(message) => Ok(self.read(&message)),
                 None => Ok(answer(

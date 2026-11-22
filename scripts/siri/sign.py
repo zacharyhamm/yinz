@@ -11,7 +11,7 @@ from shortcut import workflow
 def main():
     host = os.environ["SHORTCUT_SIGNING_HOST"]
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.@-]*", host):
-        raise ValueError("Expected an SSH host alias in SIRI_SIGNING_HOST")
+        raise ValueError("Expected an SSH host alias in SHORTCUT_SIGNING_HOST (vault SIRI_SIGNING_HOST)")
     remote = """
 set -eu
 dir=$(mktemp -d)

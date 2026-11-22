@@ -474,7 +474,7 @@ async fn siri_readback_requests_reselection_when_the_run_changes() {
         phone
             .say("Tell the agent on mobile login 1 to run tests")
             .await["speech"],
-        CHANGED
+        format!("Message delivered, but no reply can be read. {CHANGED}")
     );
     let live = phone.backend.0.lock().unwrap();
     let [(path, body)] = live.readback_requests() else {
@@ -553,11 +553,12 @@ async fn siri_delayed_reply_and_uncertain_attribution() {
 async fn siri_listing_and_refinement_keep_the_right_conversation() {
     let mut phone = Phone::new();
     phone.say("Find agents on mobile login 1").await;
-    phone.say("List agents on mobile login 2").await;
+    let listed = phone.say("List agents on mobile login 2").await;
+    assert!(listed["speech"].as_str().unwrap().contains("selected"));
     assert!(phone.say("Show me that agent").await["path"]
         .as_str()
         .unwrap()
-        .contains("agent-1"));
+        .contains("agent-2"));
     phone.say("Find the missing agent").await;
     let found = phone.say("on mobile login 4").await;
     assert!(found["speech"].as_str().unwrap().contains("Selected"));
@@ -565,6 +566,21 @@ async fn siri_listing_and_refinement_keep_the_right_conversation() {
         .as_str()
         .unwrap()
         .contains("agent-4"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn siri_single_list_match_becomes_the_pronoun_target() {
+    let mut phone = Phone::new();
+    phone.say("Find agents on mobile login 1").await;
+    phone.say("List agents on mobile login 2").await;
+    let sent = phone.say("Tell it to run the tests").await;
+    assert!(
+        sent["speech"].as_str().unwrap().contains("delivered"),
+        "{sent}"
+    );
+    let live = phone.backend.0.lock().unwrap();
+    assert_eq!(live.sends.len(), 1);
+    assert_eq!(live.sends[0]["agent"], row(2)["ref"]);
 }
 
 #[test]
