@@ -1656,15 +1656,22 @@ exec sleep 60
 
 #[test]
 fn committed_ansi_switch_drains_source_clipboard_before_destination_reply() {
-    exercise_switched_clipboard(false);
+    exercise_switched_clipboard(false, false);
 }
 
 #[test]
 fn ambiguous_legacy_clipboard_timeout_detaches_and_restores_terminal() {
-    exercise_switched_clipboard(true);
+    exercise_switched_clipboard(true, false);
 }
 
-fn exercise_switched_clipboard(ambiguous_key: bool) {
+#[test]
+fn ambiguous_legacy_clipboard_timeout_detaches_while_a_frame_waits_on_a_full_terminal() {
+    exercise_switched_clipboard(true, true);
+}
+
+/// `blocked_output` stops reading the terminal before the ambiguous key, so a large frame
+/// is still waiting on a full terminal when the clipboard deadline expires.
+fn exercise_switched_clipboard(ambiguous_key: bool, blocked_output: bool) {
     use nix::fcntl::{fcntl, FcntlArg, FdFlag};
     use std::io::{Read, Write};
     use std::os::{fd::AsFd, unix::net::UnixListener};
@@ -1726,10 +1733,19 @@ fn exercise_switched_clipboard(ambiguous_key: bool) {
     let screen = Watched::new(Vec::new());
     let captured = screen.clone();
     let mut output = terminal.try_clone().unwrap();
-    let capture = std::thread::spawn(move || {
-        let mut buf = [0; 4096];
-        while let Ok(n @ 1..) = output.read(&mut buf) {
-            captured.lock().extend_from_slice(&buf[..n]);
+    // Holding this stops the capture after its current read, so terminal output backs up.
+    let output_gate = std::sync::Arc::new(std::sync::Mutex::new(()));
+    let capture = std::thread::spawn({
+        let output_gate = output_gate.clone();
+        move || {
+            let mut buf = [0; 4096];
+            loop {
+                drop(output_gate.lock().unwrap());
+                match output.read(&mut buf) {
+                    Ok(n @ 1..) => captured.lock().extend_from_slice(&buf[..n]),
+                    _ => break,
+                }
+            }
         }
     });
     let wait_for = |needle: &[u8]| {
@@ -1851,6 +1867,16 @@ fn exercise_switched_clipboard(ambiguous_key: bool) {
             .unwrap()
             .local_flags
             .contains(nix::sys::termios::LocalFlags::ICANON));
+        let paused_output = blocked_output.then(|| {
+            let paused = output_gate.lock().unwrap();
+            // Far more than a pty buffers, so this frame's write cannot finish while the
+            // capture is paused.
+            b.send_server_msg(ServerToClientMsg::Render {
+                content: "x".repeat(1 << 20),
+            })
+            .unwrap();
+            paused
+        });
         let started = Instant::now();
         terminal.write_all(key.as_bytes()).unwrap();
         terminal.write_all(b"\x07hello\r\x03").unwrap();
@@ -1870,16 +1896,50 @@ fn exercise_switched_clipboard(ambiguous_key: bool) {
             }
         }
         assert!(started.elapsed() >= crate::stdin_ansi_parser::AMBIGUOUS_CLIPBOARD_DRAIN_TIMEOUT);
-        wait_for(b"Reattach from a fresh terminal");
-        wait_for(crate::terminal_escapes::EXIT_ALTERNATE_SCREEN.as_bytes());
+        // The rest of the clipboard reply is still in transit after the detach. It must
+        // not reach whatever reads this terminal next. A stopping stdin reader may take
+        // one more read, so send the remainder only after the first part is consumed.
+        terminal.write_all(b"c2Vj").unwrap();
+        let until = Instant::now() + default_timeout();
+        while rustix::io::ioctl_fionread(&slave).unwrap() != 0 {
+            assert!(
+                Instant::now() < until,
+                "nothing consumed the clipboard tail"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        terminal.write_all(b"cmV0\x07").unwrap();
+        // Restoration still waits for output, which is now released.
+        drop(paused_output);
+        if !blocked_output {
+            wait_for(b"Reattach from a fresh terminal");
+            wait_for(crate::terminal_escapes::EXIT_ALTERNATE_SCREEN.as_bytes());
+        }
+        assert!(child.wait().unwrap().success());
         assert!(!screen
             .lock()
             .windows(DEST_QUERY.len())
             .any(|w| w == DEST_QUERY));
+        // Field by field: XNU sets PENDIN when canonical mode returns. It is kernel
+        // status, not part of the restored settings.
+        let restored = nix::sys::termios::tcgetattr(&slave).unwrap();
+        assert_eq!(restored.input_flags, original_termios.input_flags);
+        assert_eq!(restored.output_flags, original_termios.output_flags);
+        assert_eq!(restored.control_flags, original_termios.control_flags);
         assert_eq!(
-            nix::sys::termios::tcgetattr(&slave).unwrap(),
-            original_termios
+            restored.local_flags - nix::sys::termios::LocalFlags::PENDIN,
+            original_termios.local_flags - nix::sys::termios::LocalFlags::PENDIN,
         );
+        assert_eq!(restored.control_chars, original_termios.control_chars);
+        // The next reader of the restored terminal sees only what is typed after it.
+        terminal.write_all(b"after\n").unwrap();
+        assert!(
+            crate::os_input_output::wait_until_readable(&slave, default_timeout()).unwrap(),
+            "restored terminal did not deliver the typed line"
+        );
+        let mut line = [0; 64];
+        let n = (&slave).read(&mut line).unwrap();
+        assert_eq!(&line[..n], b"after\n");
     } else {
         terminal.write_all(b"\x1b]52;c;b2xk\x07").unwrap();
         wait_for(DEST_QUERY);

@@ -1125,6 +1125,22 @@ fn run_client(
     let stdin_stopped = stdin_thread
         .context("start stdin handler")
         .and_then(|thread| thread.join().map_err(|_| anyhow!("stdin handler panicked")));
+    // An ambiguous clipboard reply that outlived its deadline may still be arriving.
+    // Stdin has stopped, so discard the tail here, while the terminal is still raw.
+    if stdin_ansi_parser
+        .lock()
+        .unwrap()
+        .clipboard_drain_deadline()
+        .is_some_and(|at| std::time::Instant::now() >= at)
+    {
+        os_input
+            .discard_terminal_input(
+                crate::stdin_ansi_parser::LATE_CLIPBOARD_QUIET,
+                crate::stdin_ansi_parser::LATE_CLIPBOARD_DISCARD_LIMIT,
+            )
+            .context("discard the rest of a timed-out clipboard reply")
+            .non_fatal();
+    }
     terminal_input.release(&stdin_ansi_parser);
     let signals_stopped = signal_listener.stop();
     let queries_stopped = query_thread

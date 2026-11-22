@@ -123,6 +123,10 @@ pub(crate) fn stdin_loop(
         // Check even when stdin is continuously readable. Further bytes cannot
         // extend the physical terminal's deadline across reads or handoffs.
         if clipboard_deadline.is_some_and(|at| Instant::now() >= at) {
+            // The client loop may be inside a frame write to a full terminal, and is the
+            // only reader of this instruction. Release that write first, as a quit signal
+            // does, so the bounded channel and the detach cannot wait on the terminal.
+            crate::terminal_escapes::abandon_stalled_output();
             let _ = client_sender.send(crate::ClientInstruction::ClipboardDrainTimedOut);
             break;
         }

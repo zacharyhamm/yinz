@@ -77,6 +77,14 @@ pub const CLIENT_BARRIER_FORWARD_TIMEOUT_MS: u64 = 500;
 
 pub(crate) const AMBIGUOUS_CLIPBOARD_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// After an ambiguous drain times out, the rest of the clipboard reply may still be in
+/// transit. The detached client keeps discarding terminal input until none arrives for
+/// this long, so the tail does not reach the program that gets the terminal back.
+pub(crate) const LATE_CLIPBOARD_QUIET: Duration = Duration::from_millis(500);
+
+/// Bounds that discard, so continuous typing cannot keep a detached client alive.
+pub(crate) const LATE_CLIPBOARD_DISCARD_LIMIT: Duration = Duration::from_secs(5);
+
 /// How long the startup kitty-graphics probe waits before reporting "no graphics".
 ///
 /// Longer than the barrier forward timeout on purpose: this deadline is crossed once per client

@@ -655,7 +655,12 @@ device control string (DCS). If this happens during the clipboard drain, even
 a following BEL, Enter or Ctrl-C can belong to that string. The client waits
 up to two seconds from the ambiguous prefix for the string terminator and
 then the clipboard terminator. If both arrive, typing and clipboard queries
-resume. Otherwise the client detaches, restores the terminal and displays a
+resume. Otherwise the client detaches, even while a frame is waiting on a
+full terminal. Before restoring the terminal, it discards terminal input until
+none arrives for half a second, for at most five seconds, then flushes the
+terminal's input queue. The rest of the clipboard reply therefore does not
+reach the shell that gets the terminal back. Keys typed during that interval
+are discarded as well. The client then restores the terminal and displays a
 diagnostic. The session stays available to reattach from a fresh terminal.
 
 | Client and server | Attachment behavior |

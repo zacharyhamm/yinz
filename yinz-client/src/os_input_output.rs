@@ -235,6 +235,12 @@ pub trait StdioAccess {
     fn get_stdout_writer_for_teardown(&self) -> Box<dyn io::Write> {
         self.get_stdout_writer()
     }
+    /// Discard terminal input until none arrives for `quiet`, for at most `limit`, then
+    /// flush what the terminal has queued. Called while the terminal is still raw, before
+    /// it is handed back, so late bytes are neither echoed nor read by the next program.
+    fn discard_terminal_input(&self, _quiet: time::Duration, _limit: time::Duration) -> Result<()> {
+        Ok(())
+    }
     /// Returns a BufReader that allows to read from STDIN line by line, also locks STDIN
     fn get_stdin_reader(&self) -> Box<dyn io::BufRead>;
     /// Returns the raw contents of standard input.
@@ -600,6 +606,12 @@ impl StdioAccess for ClientOsInputOutput {
 
     fn get_stdout_writer_for_teardown(&self) -> Box<dyn io::Write> {
         stdout_writer(true)
+    }
+
+    fn discard_terminal_input(&self, quiet: time::Duration, limit: time::Duration) -> Result<()> {
+        // Bytes a stopped reader left behind belong to the same stream.
+        drop(self.reading_from_stdin.lock().unwrap().take());
+        discard_terminal_input(quiet, limit)
     }
 
     fn get_stdin_reader(&self) -> Box<dyn io::BufRead> {
@@ -1023,6 +1035,77 @@ fn wait_for_stdin(
             Ok(_) if FdSetIter::new(&readable).any(|fd| fd == stop_fd) => return Ok(false),
             Ok(_) if FdSetIter::new(&readable).any(|fd| fd == stdin_fd) => return Ok(true),
             Ok(_) => continue,
+        }
+    }
+}
+
+/// Read and drop terminal input until it has been quiet for `quiet` or `limit` has passed,
+/// then flush the terminal's input queue.
+///
+/// Reads through a private non-blocking description of the tty, so a reader that stopped
+/// mid-read on the shared stdin cannot leave this one waiting for input that never comes.
+fn discard_terminal_input(quiet: time::Duration, limit: time::Duration) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let stdin = io::stdin();
+    if !stdin.is_terminal() {
+        return Ok(());
+    }
+    let path = nix::unistd::ttyname(&stdin).context("failed to name stdin's terminal")?;
+    let mut tty = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags((nix::fcntl::OFlag::O_NONBLOCK | nix::fcntl::OFlag::O_NOCTTY).bits())
+        .open(&path)
+        .with_context(|| format!("failed to reopen {} to discard input", path.display()))?;
+    let deadline = time::Instant::now() + limit;
+    let mut discarded = 0usize;
+    let mut buf = [0u8; 4096];
+    while let Some(left) = deadline
+        .checked_duration_since(time::Instant::now())
+        .filter(|left| !left.is_zero())
+    {
+        if !wait_until_readable(&tty, quiet.min(left))
+            .context("failed to wait for terminal input")?
+        {
+            break;
+        }
+        match tty.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => discarded += n,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+                ) => {},
+            Err(error) => return Err(error).context("failed to discard terminal input"),
+        }
+    }
+    nix::sys::termios::tcflush(&tty, nix::sys::termios::FlushArg::TCIFLUSH)
+        .context("failed to flush terminal input")?;
+    log::info!("discarded {discarded} bytes of terminal input before restoring the terminal");
+    Ok(())
+}
+
+/// Wait until `fd` has input, returning false if `timeout` passes. `select` supports macOS ttys.
+pub(crate) fn wait_until_readable(
+    fd: &impl std::os::fd::AsFd,
+    timeout: time::Duration,
+) -> io::Result<bool> {
+    use rustix::event::{fd_set_insert, fd_set_num_elements, select, FdSetElement, Timespec};
+    use std::os::fd::AsRawFd;
+    let raw = fd.as_fd().as_raw_fd();
+    let nfds = raw + 1;
+    let mut readable = vec![FdSetElement::default(); fd_set_num_elements(1, nfds)];
+    let deadline = time::Instant::now() + timeout;
+    loop {
+        let left = deadline.saturating_duration_since(time::Instant::now());
+        let timeout = Timespec::try_from(left).map_err(io::Error::other)?;
+        readable.fill(FdSetElement::default());
+        fd_set_insert(&mut readable, raw);
+        // SAFETY: `fd` keeps its descriptor open for the duration of select.
+        match unsafe { select(nfds, Some(&mut readable), None, None, Some(&timeout)) } {
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(error) => return Err(error.into()),
+            Ok(ready) => return Ok(ready > 0),
         }
     }
 }
