@@ -143,6 +143,11 @@ impl Auth {
         }
     }
 
+    /// The injected wall clock, for other expiries that tests control alongside sign-ins.
+    pub(crate) fn now_ms(&self) -> i64 {
+        self.clock.now_ms()
+    }
+
     #[cfg(test)]
     pub(crate) fn login_slots(&self) -> usize {
         self.admission.available_permits()

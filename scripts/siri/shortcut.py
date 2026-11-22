@@ -117,6 +117,12 @@ def workflow():
                         save(origin, token, cursor)
                         speak("Run Talk to Yinz again and dictate a shorter replacement command.")
                         action("exit")
+                # Nothing ran. Adopt the server's cursor and any command it is still finishing,
+                # so the next run completes that command or dictates anew instead of replaying.
+                with condition(get(error, "code"), 4, WFConditionalActionString="stale_siri_request"):
+                    save(origin, token, get(reply, "cursor"), get(reply, "pending"))
+                    speak("Yinz had moved on, so that command was not sent. Run Talk to Yinz again to continue.")
+                    action("exit")
             speak("Yinz could not confirm the command. Run Talk to Yinz again to retry. If your sign-in expired, pair again.")
             action("exit")
         set_var("Request", next_id)

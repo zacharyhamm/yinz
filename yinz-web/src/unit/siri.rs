@@ -797,11 +797,9 @@ async fn siri_launch_retries_pending_and_finishes_terminal_failure() {
     let reply = phone.say(command).await;
     assert_eq!(reply["speech"], "Launch did not finish.");
     assert_eq!(phone.send(&launch_cursor, command).await, reply);
-    phone.backend.0.lock().unwrap().reply_on_send = true;
-    assert_eq!(
-        phone.say("the one on mobile login 2").await["speech"],
-        "The requested tests passed."
-    );
+    // The launch answered the unmatched send's prompt, so a later description cannot resume it.
+    phone.say("the one on mobile login 2").await;
+    assert!(phone.backend.0.lock().unwrap().sends.is_empty());
     phone.backend.0.lock().unwrap().launch_error = Some((503, "unavailable"));
     assert_eq!(
         phone.request(&phone.cursor, command).await.status(),
@@ -956,4 +954,77 @@ fn siri_credential_reset_recovers_corrupt_pairing_store() {
             .unwrap();
         assert!(store::redeem(data, "listener", &code).unwrap().is_some());
     }
+}
+
+#[tokio::test]
+async fn siri_unmatched_send_resumes_only_from_the_prompt_answer() {
+    let clock = Arc::new(AtomicI64::new(SystemClock.now_ms()));
+    let unmatched = "Tell the unicorn agent to force push main";
+    let answer = "the one on mobile login 2";
+
+    let mut phone = Phone::with_clock(clock.clone());
+    phone.backend.0.lock().unwrap().reply_on_send = true;
+    phone.say(unmatched).await;
+    assert_eq!(
+        phone.say(answer).await["speech"],
+        "The requested tests passed."
+    );
+    assert_eq!(phone.backend.0.lock().unwrap().sends.len(), 1);
+
+    let mut phone = Phone::with_clock(clock.clone());
+    phone.say(unmatched).await;
+    assert_eq!(
+        phone.say("Did it reply?").await["speech"],
+        "There is no pending Siri message."
+    );
+    phone.say(answer).await;
+    assert!(phone.backend.0.lock().unwrap().sends.is_empty());
+
+    let mut phone = Phone::with_clock(clock.clone());
+    phone.say(unmatched).await;
+    clock.fetch_add(REFINEMENT_WINDOW_MS + 1, Ordering::Release);
+    phone.say(answer).await;
+    assert!(phone.backend.0.lock().unwrap().sends.is_empty());
+}
+
+async fn conflict(phone: &Phone, id: &str, command: &str) -> Value {
+    let response = phone.request(id, command).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
+}
+
+#[tokio::test]
+async fn siri_stale_request_resyncs_the_cursor_and_in_flight_command() {
+    let mut phone = Phone::new();
+    phone.say("Find agents on mobile login 1").await;
+    // A second run, or another phone sharing the file, raced at the consumed cursor.
+    let stale = conflict(&phone, "first", "Find agents on mobile login 2").await;
+    assert_eq!(stale["error"]["code"], "stale_siri_request");
+    assert_eq!(stale["cursor"], phone.cursor.as_str());
+    assert_eq!(stale["pending"], "");
+    assert!(stale.get("request_id").is_none());
+
+    let send = "Tell the agent on mobile login 1 to run tests";
+    {
+        let mut live = phone.backend.0.lock().unwrap();
+        live.lose_send_response = true;
+        live.lookup_unavailable = true;
+        live.reply_on_send = true;
+        live.receipt = json!({"outcome":"completed","acknowledged":true,"turn_id":"our turn"});
+    }
+    assert_eq!(
+        phone.request(&phone.cursor, send).await.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let stale = conflict(&phone, &phone.cursor, "Find agents on mobile login 2").await;
+    assert_eq!(stale["cursor"], phone.cursor.as_str());
+    assert_eq!(stale["pending"], send);
+
+    phone.backend.0.lock().unwrap().lookup_unavailable = false;
+    let pending = stale["pending"].as_str().unwrap().to_owned();
+    assert_eq!(
+        phone.say(&pending).await["speech"],
+        "The requested tests passed."
+    );
+    assert_eq!(phone.backend.0.lock().unwrap().sends.len(), 1);
 }

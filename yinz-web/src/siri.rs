@@ -148,6 +148,8 @@ fn spoken(text: &str) -> Failure {
 }
 const CHECK_LAUNCH: &str = "The launch outcome is uncertain. Say “check again” or “cancel”.";
 const CHANGED: &str = "That conversation ended or changed. Please select an agent again.";
+/// How long Siri waits for the answer that refines an unmatched search.
+const REFINEMENT_WINDOW_MS: i64 = 120_000;
 struct Context<'a> {
     state: &'a State,
     listener_instance: &'a str,
@@ -276,12 +278,21 @@ impl Context<'_> {
         {
             return json_response(reply.clone());
         }
-        if cmd.request_id != d.next.as_deref().unwrap_or("first")
+        let cursor = d.next.as_deref().unwrap_or("first");
+        if cmd.request_id != cursor
             || d.prepared
                 .as_ref()
                 .is_some_and(|p| p.utterance != cmd.command)
         {
-            return error(StatusCode::CONFLICT, "stale_siri_request");
+            // Nothing ran. Hand the phone the live cursor and any in-flight command so
+            // its next run finishes that command or dictates anew instead of replaying this one.
+            let pending = d.prepared.as_ref().map_or("", |p| p.utterance.as_str());
+            return response(
+                StatusCode::CONFLICT,
+                json!({"error":{"code":"stale_siri_request"},"cursor":cursor,"pending":pending})
+                    .to_string(),
+                "application/json",
+            );
         }
         let result = if let Some(prepared) = &d.prepared {
             match prepared.action.clone() {
@@ -313,6 +324,14 @@ impl Context<'_> {
     }
 
     async fn interpret(&mut self, input: &str) -> Result<Value> {
+        // An unmatched search can be refined only by the immediate, prompt answer to it.
+        // Any other command, or a late reply, abandons it, including a pending send's text.
+        let refinement = self
+            .phone
+            .dialogue
+            .refinement
+            .take()
+            .filter(|_| self.state.auth.now_ms() <= self.phone.dialogue.refinement_until_ms);
         if let Some(body) = self.phone.dialogue.uncertain_launch.take() {
             if matches!(parse(input), Command::Cancel) {
                 return Ok(answer(
@@ -330,7 +349,6 @@ impl Context<'_> {
             Command::Cancel => {
                 self.phone.dialogue.choice = None;
                 self.phone.dialogue.reading.clear();
-                self.phone.dialogue.refinement = None;
                 Ok(answer("Okay.", false))
             },
             Command::More => {
@@ -384,7 +402,7 @@ impl Context<'_> {
                 self.search(input, action, target, None).await
             },
             Command::Choice(text) => {
-                if let Some((action, phrase)) = self.phone.dialogue.refinement.take() {
+                if let Some((action, phrase)) = refinement {
                     return self.search(input, action, text, phrase.as_deref()).await;
                 }
                 let action = self.phone.dialogue.choice.clone().unwrap_or(Action::Select);
@@ -450,6 +468,7 @@ impl Context<'_> {
         d.refinement = rows
             .is_empty()
             .then(|| (action.clone(), phrase.map(str::to_owned)));
+        d.refinement_until_ms = self.state.auth.now_ms() + REFINEMENT_WINDOW_MS;
         d.results = rows;
         d.offset = 0;
         d.choice = None;

@@ -29,7 +29,20 @@ class DictationRecoveryTests(unittest.TestCase):
         has_error, retry = branch(missing_id, reply, "error", 100)
         invalid, remainder = branch(has_error, missing_id[0][1], "code", 4, "invalid_dictation")
         oversized, remainder = branch(remainder, missing_id[0][1], "code", 4, "body_too_large")
+        stale, remainder = branch(remainder, missing_id[0][1], "code", 4, "stale_siri_request")
         self.assertEqual(remainder, [])
+        self.assertEqual([name for name, _ in stale],
+                         ["getvalueforkey", "getvalueforkey", "dictionary", "gettext",
+                          "documentpicker.save", "speaktext", "exit"])
+        cursor, pending, resync = (p for _, p in stale[:3])
+        self.assertEqual((cursor["WFDictionaryKey"], pending["WFDictionaryKey"]), ("cursor", "pending"))
+        self.assertEqual(cursor["WFInput"]["Value"]["OutputUUID"], reply["UUID"])
+        self.assertEqual(pending["WFInput"]["Value"]["OutputUUID"], reply["UUID"])
+        resynced = {item["WFKey"]["Value"]["string"]: item["WFValue"]["Value"]["attachmentsByRange"]["{0, 1}"]
+                    for item in resync["WFItems"]["Value"]["WFDictionaryFieldValueItems"]
+                    if item["WFKey"]["Value"]["string"] in ("cursor", "pending")}
+        self.assertEqual(resynced["cursor"]["OutputUUID"], cursor["UUID"])
+        self.assertEqual(resynced["pending"]["OutputUUID"], pending["UUID"])
         self.assertEqual([name for name, _ in oversized], [name for name, _ in invalid])
         self.assertEqual(oversized[0][1]["WFItems"], invalid[0][1]["WFItems"])
         self.assertEqual([name for name, _ in retry], ["speaktext", "exit"])

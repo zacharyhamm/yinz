@@ -558,7 +558,8 @@ UTF-8 bytes, run the shortcut again and dictate a shorter command.
   replies. Choose a result and say “read that match” or “read its latest reply.”
 - “Tell the login agent in swamp to run the tests” keeps the message while
   you choose a match. Say “two” or “the one on mobile login.” Say “more” for
-  the next five choices.
+  the next five choices. If nothing matches, describe the agent in your very
+  next command, within two minutes. Any other command drops the message.
 - “Did it reply?” checks the turn from your last send. “Continue” resumes a long
   reading. “Show me that agent” opens the selected timeline.
 - “Open a new Claude agent in a swamp worktree” creates a branch and selects the
@@ -571,6 +572,9 @@ Keep the same server URL reachable from the phone. Shortcuts saves its scoped
 credential and pending request in its Shortcuts folder under the device name.
 If two phones share that folder through iCloud, give them distinct device names
 before pairing so each uses its own credential and conversation selection.
+If a run sends a command after Yinz has moved on, for example from an overlapping
+run, Siri says the command was not sent. The next run finishes any command Yinz
+was still handling, then asks for a new one.
 **Revoke Siri access** in the menu disconnects that pairing. Expiring or revoking
 the parent web sign-in also ends access. The server stores the credential hash
 and dialogue in its private web directory. Pair again after signing back in.

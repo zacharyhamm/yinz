@@ -243,6 +243,8 @@ pub(super) struct Dialogue {
     pub offset: usize,
     pub choice: Option<Action>,
     pub refinement: Option<(Action, Option<String>)>,
+    #[serde(default)]
+    pub refinement_until_ms: i64,
     pub reading: String,
     pub pending: Option<Pending>,
     pub uncertain_launch: Option<Value>,
