@@ -34,6 +34,7 @@ pub enum ScreenRequest {
         snapshot: PathBuf,
         client: ClientId,
         deadline: Instant,
+        forward_agent_reports: bool,
         reply: Reply<SessionMigrationSnapshot>,
     },
     ReadersPaused {
@@ -72,6 +73,20 @@ pub enum ScreenRequest {
     },
     Finish {
         operation: String,
+        reply: Reply<()>,
+    },
+    TakeAgentReports {
+        operation: String,
+        reply: Reply<Vec<yinz_types::agent::report::AgentReport>>,
+    },
+    /// Queued behind every report the router accepted before the seal.
+    AgentReportsSealed {
+        operation: String,
+        reply: Reply<Vec<yinz_types::agent::report::AgentReport>>,
+    },
+    ReplayAgentReports {
+        operation: String,
+        reports: Vec<yinz_types::agent::report::AgentReport>,
         reply: Reply<()>,
     },
     RestoreClient {
@@ -197,6 +212,7 @@ pub fn release_session(
     operation: &str,
     snapshot: &Path,
     client: ClientId,
+    forward_agent_reports: bool,
     timeout: Duration,
 ) -> Result<SessionMigrationSnapshot> {
     validate_operation(operation)?;
@@ -205,6 +221,7 @@ pub fn release_session(
         snapshot: snapshot.into(),
         client,
         deadline: Instant::now() + timeout,
+        forward_agent_reports,
         reply,
     })
 }
@@ -233,6 +250,30 @@ pub fn finish_session(senders: &ThreadSenders, operation: &str, timeout: Duratio
     request(senders, timeout, |reply| ScreenRequest::Finish {
         operation: operation.into(),
         reply,
+    })
+}
+pub fn take_agent_reports(
+    senders: &ThreadSenders,
+    operation: &str,
+    timeout: Duration,
+) -> Result<Vec<yinz_types::agent::report::AgentReport>> {
+    request(senders, timeout, |reply| ScreenRequest::TakeAgentReports {
+        operation: operation.into(),
+        reply,
+    })
+}
+pub fn replay_agent_reports(
+    senders: &ThreadSenders,
+    operation: &str,
+    reports: Vec<yinz_types::agent::report::AgentReport>,
+    timeout: Duration,
+) -> Result<()> {
+    request(senders, timeout, |reply| {
+        ScreenRequest::ReplayAgentReports {
+            operation: operation.into(),
+            reports,
+            reply,
+        }
     })
 }
 pub fn restore_client(

@@ -82,7 +82,7 @@ fn cold_release_discards_destination_mappings_and_preserves_terminal_state() {
         assert!(pane.agent_input.is_some());
     }
     // Hooks reached no server while the source was dead; only fresh hooks restore readiness.
-    forget_agent_tracking(&store).unwrap();
+    forget_agent_tracking(&store, true).unwrap();
     let released = read_recovery_snapshot(&store.journal.snapshot).unwrap();
     let payload = &released.tabs[0].payload;
     for pane in payload.tiled_panes.iter().chain(&payload.floating_panes) {

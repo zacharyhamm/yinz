@@ -283,7 +283,10 @@ fn test_client_messages() {
         session_update::Command::StartSource,
         session_update::Command::ReleaseMigration {
             snapshot: "/tmp/session snapshot.json".into(),
+            forward_agent_reports: true,
         },
+        session_update::Command::TakeAgentReports,
+        session_update::Command::ReplayAgentReports { reports: vec![] },
         session_update::Command::RestoreClients {
             clients: vec![session_update::Client {
                 id: ClientId::new(42),
@@ -5118,6 +5121,9 @@ fn test_server_messages() {
     });
     test_server_roundtrip!(ServerToClientMsg::AgentReportAccepted {
         report_id: "00000000-0000-4000-8000-000000000001".into(),
+    });
+    test_server_roundtrip!(ServerToClientMsg::AgentReportRetry {
+        report_id: "00000000-0000-4000-8000-000000000002".into(),
     });
     test_server_roundtrip!(ServerToClientMsg::Render {
         content: "Hello, World!".to_string(),

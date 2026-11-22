@@ -296,7 +296,12 @@ fn main() {
         } else {
             process_started
         };
-        let result = agent_report::run(*action.clone(), opts.session.clone(), started);
+        let result = agent_report::run(
+            *action.clone(),
+            opts.session.clone(),
+            opts.data_dir.as_deref(),
+            started,
+        );
         // Errors are recorded without echoing hook input or other sensitive arguments.
         remote_commands::exit(if result.is_ok() { 0 } else { 1 });
     }

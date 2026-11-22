@@ -964,6 +964,7 @@ impl MockScreen {
             senders: ThreadSenders {
                 launches: Default::default(),
                 session_update_quiesced: Default::default(),
+                agent_reports_sealed: Default::default(),
                 to_screen: Some(to_screen.clone()),
                 to_pty: Some(to_pty.clone()),
                 to_plugin: Some(to_plugin.clone()),

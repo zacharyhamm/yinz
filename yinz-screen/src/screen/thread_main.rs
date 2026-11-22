@@ -197,7 +197,9 @@ pub fn screen_thread_main(
         } else {
             None
         };
-        let (event, mut err_ctx) = if let Some(event) = screen.next_migration_event() {
+        let replayed = screen.next_migration_event();
+        let from_deferred = replayed.is_some();
+        let (event, mut err_ctx) = if let Some(event) = replayed {
             (event, yinz_runtime::errors::get_current_ctx())
         } else if let Some(timeout) = deadline {
             match screen.core.bus.recv_timeout(timeout) {
@@ -212,7 +214,12 @@ pub fn screen_thread_main(
                 .recv()
                 .context("failed to receive event on channel")?
         };
-        let Some(event) = screen.defer_for_migration(event) else {
+        let deferred = if from_deferred {
+            screen.defer_replayed_for_migration(event)
+        } else {
+            screen.defer_for_migration(event)
+        };
+        let Some(event) = deferred else {
             continue;
         };
         yinz_runtime::errors::add_call(&mut err_ctx, ContextType::Screen((&event).into()));

@@ -19,6 +19,7 @@ pub const ROUTE_ENV: &[&str] = &[
     crate::envs::SESSION_NAME_ENV_KEY,
     super::pi::PANE_TOKEN_ENV,
     crate::envs::SOCKET_DIR_ENV_KEY,
+    crate::envs::SESSION_DATA_DIR_ENV_KEY,
 ];
 
 /// The routing variables this process inherited from its pane.

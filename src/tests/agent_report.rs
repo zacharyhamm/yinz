@@ -13,24 +13,32 @@ use {
 };
 
 fn command(dir: &std::path::Path) -> Command {
+    reporter(dir, &[])
+}
+
+/// `global` holds options that precede the subcommand.
+fn reporter(dir: &std::path::Path, global: &[&std::ffi::OsStr]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_yinz"));
-    cmd.args([
-        "--session",
-        "report-test",
-        "action",
-        "agent-report",
-        "--pane-id",
-        "7",
-    ])
-    .env("YINZ_SOCKET_DIR", dir)
-    .env("TMPDIR", dir)
-    .env("HOME", dir)
-    .env("XDG_CONFIG_HOME", dir)
-    .env("YINZ_HOOK_TRACE", "1")
-    .env_remove("YINZ_PANE_REF")
-    .stdin(Stdio::piped())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped());
+    cmd.args(global)
+        .args([
+            "--session",
+            "report-test",
+            "action",
+            "agent-report",
+            "--pane-id",
+            "7",
+        ])
+        .env("YINZ_SOCKET_DIR", dir)
+        .env("TMPDIR", dir)
+        .env("HOME", dir)
+        .env("XDG_CONFIG_HOME", dir)
+        .env("YINZ_HOOK_TRACE", "1")
+        .env_remove("YINZ_PANE_REF")
+        // A test run inside a yinz pane must not consult that session's update journal.
+        .env_remove(yinz_runtime::envs::SESSION_DATA_DIR_ENV_KEY)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     cmd
 }
 
@@ -1693,4 +1701,144 @@ fn issue85_observer_ack_loss(interrupted: bool) {
     assert_eq!(hooks[1].prompt_id.as_deref(), Some("prompt"));
     assert_eq!(hooks[1].last_assistant_message.as_deref(), Some("DONE"));
     assert!(observer.0.wait().unwrap().success());
+}
+
+/// A reporter in an update's data directory: the coordinator's journal says whether the
+/// session name is moving between servers. An installed hook has no `--data-dir` and learns
+/// the directory from its pane's server instead.
+fn update_command(dir: &std::path::Path, from_pane: bool) -> Command {
+    let data_dir = dir.join("data");
+    let mut command = if from_pane {
+        let mut command = reporter(dir, &[]);
+        command.env(yinz_runtime::envs::SESSION_DATA_DIR_ENV_KEY, &data_dir);
+        command
+    } else {
+        reporter(dir, &["--data-dir".as_ref(), data_dir.as_os_str()])
+    };
+    command.arg("--hook-json");
+    command
+}
+
+/// Record an active update for the test session and return its journal path.
+fn active_update(dir: &std::path::Path) -> std::path::PathBuf {
+    let socket_dir = dir.join(&*yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR);
+    std::fs::create_dir_all(&socket_dir).unwrap();
+    let data_dir = dir.join("data");
+    let record =
+        yinz_runtime::session_update::record(&data_dir, &socket_dir.join("report-test")).unwrap();
+    let operation = uuid::Uuid::new_v4().to_string();
+    std::fs::create_dir_all(record.parent().unwrap().join(&operation)).unwrap();
+    std::fs::write(&record, serde_json::to_vec(&operation).unwrap()).unwrap();
+    record
+        .parent()
+        .unwrap()
+        .join(operation)
+        .join("journal.json")
+}
+
+#[test]
+fn reporter_resends_a_report_that_a_sealed_source_refused() {
+    warm_binary();
+    let dir = tempfile::tempdir().unwrap();
+    let listener = listener(dir.path());
+    let mut child = command(dir.path()).arg("--hook-json").spawn().unwrap();
+    write_event(&mut child, r#"{"hook_event_name":"Stop"}"#);
+    let mut ids = Vec::new();
+    for accept in [false, true] {
+        let mut receiver =
+            IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
+        let IpcRecv::Msg(ClientToServerMsg::AgentReport(report), _) = receiver.recv_client_msg()
+        else {
+            panic!("expected a dedicated report");
+        };
+        ids.push(report.report_id.clone());
+        let mut sender = receiver.get_sender::<ServerToClientMsg>().unwrap();
+        let report_id = report.report_id;
+        sender
+            .send_server_msg(if accept {
+                ServerToClientMsg::AgentReportAccepted { report_id }
+            } else {
+                ServerToClientMsg::AgentReportRetry { report_id }
+            })
+            .unwrap();
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(ids[0], ids[1], "the same report is sent again");
+    let log = diagnostics(dir.path());
+    assert!(
+        log.contains("stage=acknowledgement") && log.contains("outcome=retry"),
+        "{log}"
+    );
+}
+
+#[test]
+fn reporter_waits_for_the_session_name_only_while_an_update_moves_it() {
+    warm_binary();
+    for from_pane in [false, true] {
+        update_moves_the_session_name(from_pane);
+    }
+}
+
+fn update_moves_the_session_name(from_pane: bool) {
+    // No update: a missing session fails at once, without retrying.
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = update_command(dir.path(), from_pane).spawn().unwrap();
+    write_event(&mut child, r#"{"hook_event_name":"Stop"}"#);
+    assert!(!child.wait_with_output().unwrap().status.success());
+    assert!(!diagnostics(dir.path()).contains("outcome=retry"));
+
+    // The coordinator is moving the name. The journal is a FIFO, so opening it for writing
+    // waits until the reporter has failed to connect and checks the update; the endpoint
+    // then exists before the reporter can retry.
+    let dir = tempfile::tempdir().unwrap();
+    let journal = active_update(dir.path());
+    assert!(Command::new("mkfifo")
+        .arg(&journal)
+        .status()
+        .unwrap()
+        .success());
+    let mut child = update_command(dir.path(), from_pane).spawn().unwrap();
+    write_event(&mut child, r#"{"hook_event_name":"Stop"}"#);
+    // A blocking open would hang if the reporter never looks at this journal. A non-blocking
+    // one fails with ENXIO until the reporter opens it for reading. Poll, because the only
+    // other signal is the reporter exiting, and nothing can wait on both.
+    let mut writer = loop {
+        use std::os::unix::fs::OpenOptionsExt;
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(nix::libc::O_NONBLOCK)
+            .open(&journal)
+        {
+            Ok(writer) => break writer,
+            Err(error) if error.raw_os_error() == Some(nix::libc::ENXIO) => {
+                assert!(
+                    child.try_wait().unwrap().is_none(),
+                    "from_pane={from_pane}: the reporter failed without consulting the update journal"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            },
+            Err(error) => panic!("open the update journal: {error}"),
+        }
+    };
+    let listener = listener(dir.path());
+    writer.write_all(br#"{"phase":"Transfer"}"#).unwrap();
+    drop(writer);
+    let mut receiver = IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
+    let IpcRecv::Msg(ClientToServerMsg::AgentReport(report), _) = receiver.recv_client_msg() else {
+        panic!("expected a dedicated report");
+    };
+    receiver
+        .get_sender::<ServerToClientMsg>()
+        .unwrap()
+        .send_server_msg(ServerToClientMsg::AgentReportAccepted {
+            report_id: report.report_id,
+        })
+        .unwrap();
+    assert!(child.wait_with_output().unwrap().status.success());
+    let log = diagnostics(dir.path());
+    assert!(
+        log.contains("stage=connect") && log.contains("outcome=retry"),
+        "from_pane={from_pane}: {log}"
+    );
 }

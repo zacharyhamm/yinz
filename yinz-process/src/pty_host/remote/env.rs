@@ -78,6 +78,8 @@ pub const SCRUBBED_VARS: &[&str] = &[
     "YINZ_PANE_ID",
     super::super::PANE_REF_ENV_KEY,
     "YINZ_SOCKET_DIR",
+    // A path on the asking machine, and remote reporters never consult a journal.
+    yinz_runtime::envs::SESSION_DATA_DIR_ENV_KEY,
 ];
 
 /// OpenSSH's `_PATH_STDPATH` — what an ssh login gets before any profile runs.

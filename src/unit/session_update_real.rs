@@ -484,6 +484,7 @@ fn migration_with_web(rollback: bool, web: bool) {
             &operation,
             UpdateCommand::ReleaseMigration {
                 snapshot: snapshot.clone(),
+                forward_agent_reports: false,
             },
         )
         .unwrap();
@@ -634,6 +635,7 @@ fn live_update_retries_partial_source_readoption_after_transient_supervisor_fail
             &operation,
             UpdateCommand::ReleaseMigration {
                 snapshot: path.clone(),
+                forward_agent_reports: false,
             },
         )
         .unwrap();
@@ -723,6 +725,7 @@ fn live_update_preserves_sparse_terminal_identities_and_next_allocation() {
             &operation,
             UpdateCommand::ReleaseMigration {
                 snapshot: snapshot.clone(),
+                forward_agent_reports: false,
             },
         )
         .unwrap();
@@ -820,6 +823,7 @@ fn retired_source_duplicate_update_returns_the_original_active_operation() {
             &operation,
             UpdateCommand::ReleaseMigration {
                 snapshot: snapshot.clone(),
+                forward_agent_reports: false,
             },
         )
         .unwrap();
@@ -1016,6 +1020,7 @@ fn live_update_lays_out_adopted_tabs_for_the_replacement_screen() {
             &operation,
             UpdateCommand::ReleaseMigration {
                 snapshot: snapshot.clone(),
+                forward_agent_reports: false,
             },
         )
         .unwrap();
@@ -1149,6 +1154,7 @@ fn live_update_preserves_layout_defaults_for_new_tabs() {
             &operation,
             UpdateCommand::ReleaseMigration {
                 snapshot: snapshot.clone(),
+                forward_agent_reports: false,
             },
         )
         .unwrap();
@@ -1276,6 +1282,7 @@ fn live_update_carries_theme_directory_themes_to_the_replacement() {
             &operation,
             UpdateCommand::ReleaseMigration {
                 snapshot: snapshot.clone(),
+                forward_agent_reports: false,
             },
         )
         .unwrap();
@@ -1391,6 +1398,7 @@ fn fixture_unwind_stops_retired_source_private_destination_and_adopted_panes() {
             &operation,
             UpdateCommand::ReleaseMigration {
                 snapshot: snapshot.clone(),
+                forward_agent_reports: false,
             },
         )
         .unwrap();

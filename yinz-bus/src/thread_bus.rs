@@ -98,6 +98,10 @@ pub struct ThreadSenders {
     pub session: yinz_runtime::envs::SessionState,
     /// Reject actions while a session update is capturing or replacing state.
     pub session_update_quiesced: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Set once a released source hands its agent reports to the replacement. The router
+    /// holds this lock while it checks the flag and enqueues a report, so every report it
+    /// accepted is on the screen queue before the seal is observed set.
+    pub agent_reports_sealed: std::sync::Arc<std::sync::Mutex<bool>>,
     pub to_screen: Option<SenderWithContext<ScreenInstruction>>,
     pub to_pty: Option<SenderWithContext<PtyInstruction>>,
     pub to_plugin: Option<SenderWithContext<PluginInstruction>>,
@@ -434,6 +438,7 @@ impl<T> Bus<T> {
                 launches: Default::default(),
                 session: Default::default(),
                 session_update_quiesced: Default::default(),
+                agent_reports_sealed: Default::default(),
                 to_screen: to_screen.cloned(),
                 to_pty: to_pty.cloned(),
                 to_plugin: to_plugin.cloned(),
@@ -462,6 +467,7 @@ impl<T> Bus<T> {
                 launches: Default::default(),
                 session: Default::default(),
                 session_update_quiesced: Default::default(),
+                agent_reports_sealed: Default::default(),
                 to_screen: None,
                 to_pty: None,
                 to_plugin: None,

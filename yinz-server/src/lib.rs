@@ -3262,6 +3262,14 @@ fn init_session(
     log::info!("startup: host identity initialization starting");
     // Determine and initialize the data directory
     let data_dir = cli_assets.data_dir.unwrap_or_else(get_default_data_dir);
+    // Panes run in their own working directories, so a relative `--data-dir` is resolved
+    // here, against the server's. No pane exists yet, as for `set_pty_host_enabled` below.
+    os_input.set_session_data_dir(
+        std::path::absolute(&data_dir)
+            .context("resolve session data directory for panes")
+            .to_log()
+            .unwrap_or_else(|_| data_dir.clone()),
+    );
     // Before anything can write to the plugin data store: this is the one place that holds both
     // the data dir and the options the id is resolved from, and every later reader takes what is
     // cached here. See `yinz_runtime::host_identity`.
@@ -3324,6 +3332,7 @@ fn init_session(
         .as_ref()
         .map(|params| (params.site.clone(), params.application.clone()));
     let session_update_quiesced = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let agent_reports_sealed = Arc::new(std::sync::Mutex::new(false));
     let session = starting_session.insert(SessionMetaData {
         shutdown: shutdown.clone(),
         data_access: data_access.clone(),
@@ -3331,6 +3340,7 @@ fn init_session(
             launches: launches.clone(),
             session: session_identity.clone(),
             session_update_quiesced: session_update_quiesced.clone(),
+            agent_reports_sealed: agent_reports_sealed.clone(),
             to_screen: Some(to_screen.clone()),
             to_pty: Some(to_pty.clone()),
             to_plugin: Some(to_plugin.clone()),
@@ -3411,6 +3421,7 @@ fn init_session(
         screen_bus.senders.launches = launches.clone();
         screen_bus.senders.session = session_identity.clone();
         screen_bus.senders.session_update_quiesced = session_update_quiesced.clone();
+        screen_bus.senders.agent_reports_sealed = agent_reports_sealed.clone();
         screen_bus.senders.session_checkpoint = session_checkpoint.clone();
         screen_bus.senders.session_ownership = Some(Arc::downgrade(&ownership));
         let max_panes = cli_assets.max_panes;

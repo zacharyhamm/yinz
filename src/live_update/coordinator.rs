@@ -935,6 +935,8 @@ pub(super) fn execute_release(
     if store.journal.phase == Phase::Complete {
         return Ok(());
     }
+    // Whether the source carried agent lifecycle tracking and will hand over its reports.
+    let mut source_forwards = false;
     // Pause old plugin workers before replacing their installed sources. Every
     // installation has already staged and validated its generation at this point.
     let publication = (|| {
@@ -954,8 +956,10 @@ pub(super) fn execute_release(
             &operation,
             Command::ReleaseMigration {
                 snapshot: store.journal.snapshot.clone(),
+                forward_agent_reports: true,
             },
         )?;
+        source_forwards = released["agent_reports"].as_bool() == Some(true);
         let actual: yinz_types::session_migration::SessionMigrationInventory =
             serde_json::from_value(released["inventory"].clone())
                 .context("decode frozen migration inventory")?;
@@ -1020,6 +1024,13 @@ pub(super) fn execute_release(
                     .clone(),
             },
         )?;
+        let forward =
+            source_forwards && replacement_replays_agent_reports(store, &mut replacement)?;
+        if source_forwards && !forward {
+            // The source's deferred hooks would never reach this replacement.
+            forget_agent_tracking(store, false)
+                .context("omit agent tracking the replacement cannot use")?;
+        }
         let mapping = serde_json::from_value(replacement.request(
             &operation,
             Command::AdoptMigration {
@@ -1031,6 +1042,10 @@ pub(super) fn execute_release(
         store.save()?;
         let recovery_name = format!(".retired-{}", operation);
         source.rename(&operation, &recovery_name)?;
+        if forward {
+            forward_agent_reports(&operation, source, &mut replacement)
+                .context("hand the source's agent reports to the replacement")?;
+        }
         replacement.rename(&operation, &inventory.session)?;
         store.phase(Phase::Reconnect)?;
         store.journal.handoff_committed = true;
@@ -1705,7 +1720,7 @@ fn recreate_source(store: &mut Store) -> Result<Connection> {
         ensure_process_dead(identity)?;
     }
     release_cold_snapshot(store)?;
-    forget_agent_tracking(store)?;
+    forget_agent_tracking(store, true)?;
     let server_host = store
         .journal
         .participants
@@ -1818,7 +1833,10 @@ fn release_cold_snapshot(store: &Store) -> Result<()> {
 /// snapshot's tracking may predate a transition. The restored source then waits for fresh
 /// hooks, like any restart. This includes Codex's transferred input, which would otherwise
 /// mark the composer consumed again.
-fn forget_agent_tracking(store: &Store) -> Result<()> {
+///
+/// A replacement without report forwarding passes `include_input: false`: the snapshot then
+/// matches what a source without lifecycle carry-over would have written.
+fn forget_agent_tracking(store: &Store, include_input: bool) -> Result<()> {
     let mut snapshot = read_recovery_snapshot(&store.journal.snapshot)?;
     for tab in &mut snapshot.tabs {
         for pane in tab
@@ -1828,10 +1846,39 @@ fn forget_agent_tracking(store: &Store) -> Result<()> {
             .chain(tab.payload.floating_panes.iter_mut())
         {
             pane.agent_tracking = None;
-            pane.agent_input = None;
+            if include_input {
+                pane.agent_input = None;
+            }
         }
     }
     journal::atomic_json(&store.journal.snapshot, &snapshot)
+}
+
+fn replacement_replays_agent_reports(store: &Store, replacement: &mut Connection) -> Result<bool> {
+    let identity = replacement
+        .request(&store.journal.operation, Command::Identity)
+        .context("ask whether the replacement replays agent reports")?;
+    Ok(identity["agent_report_handoff"].as_bool() == Some(true))
+}
+
+/// The source has given up the session name, so no new hook reaches it. It seals against
+/// connections it already accepted, and the replacement queues the reports it acknowledged
+/// ahead of any it receives once it owns the name.
+fn forward_agent_reports(
+    operation: &str,
+    source: &mut Connection,
+    replacement: &mut Connection,
+) -> Result<()> {
+    let reports: Vec<yinz_types::agent::report::AgentReport> = serde_json::from_value(
+        source
+            .request(operation, Command::TakeAgentReports)
+            .context("take the source's agent reports")?,
+    )
+    .context("decode the source's agent reports")?;
+    replacement
+        .request(operation, Command::ReplayAgentReports { reports })
+        .context("queue the source's agent reports on the replacement")?;
+    Ok(())
 }
 
 fn query_identity(
@@ -2556,7 +2603,7 @@ fn recover(
                 serde_json::from_value(source.request(&operation, Command::Inventory)?)
                     .context("inspect source endpoint before restoration")?;
             if current.session != original {
-                forget_agent_tracking(store)?;
+                forget_agent_tracking(store, true)?;
             }
             source.request(
                 &operation,

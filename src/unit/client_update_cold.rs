@@ -57,6 +57,7 @@ fn cold_recovery_worker() {
             &request.operation,
             SessionCommand::ReleaseMigration {
                 snapshot: store.journal.snapshot.clone(),
+                forward_agent_reports: false,
             },
         )
         .unwrap();

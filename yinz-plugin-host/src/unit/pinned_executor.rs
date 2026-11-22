@@ -43,6 +43,7 @@ fn create_test_dependencies() -> JobDependencies {
         session_checkpoint: Default::default(),
         session_ownership: None,
         session_update_quiesced: Default::default(),
+        agent_reports_sealed: Default::default(),
         should_silently_fail: false,
     };
 

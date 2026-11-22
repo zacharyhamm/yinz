@@ -1487,6 +1487,10 @@ impl TerminalSupervision for ServerOsInputOutput {
         self.pty_backend.set_pty_host_enabled(enabled);
     }
     #[cfg(not(windows))]
+    fn set_session_data_dir(&self, dir: std::path::PathBuf) {
+        self.pty_backend.set_session_data_dir(dir);
+    }
+    #[cfg(not(windows))]
     fn begin_confirmed_pty_host_shutdown(&self) -> Result<()> {
         self.pty_backend.begin_confirmed_pty_host_shutdown()
     }

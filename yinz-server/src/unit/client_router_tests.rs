@@ -106,6 +106,51 @@ fn reports_are_accepted_while_consumers_are_paused_and_rejected_for_closed_queue
     }
 }
 
+#[test]
+fn a_sealed_source_asks_the_reporter_to_retry_without_queueing() {
+    use yinz_types::agent::report::{AgentReport, AgentReportState};
+    let (tx, rx) = yinz_runtime::channels::unbounded();
+    let senders = ThreadSenders {
+        to_screen: Some(yinz_runtime::channels::SenderWithContext::new(tx)),
+        ..Default::default()
+    };
+    let report = AgentReport {
+        report_id: "00000000-0000-4000-8000-000000000002".into(),
+        pane_id: yinz_types::data::PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(1)),
+        state: AgentReportState::Clear,
+        event: None,
+        trace: false,
+        process_id: yinz_types::internal_ids::ProcessId::new(42),
+        kind: "claude".into(),
+    };
+    for sealed in [true, false] {
+        *senders.agent_reports_sealed.lock().unwrap() = sealed;
+        let mut replies = Vec::new();
+        accept_agent_report(Some(&senders), report.clone(), |reply| {
+            replies.push(reply);
+            Ok(())
+        })
+        .unwrap();
+        let report_id = report.report_id.clone();
+        if sealed {
+            assert_eq!(
+                replies,
+                vec![ServerToClientMsg::AgentReportRetry { report_id }]
+            );
+            assert!(rx.try_recv().is_err(), "a sealed report must not be queued");
+        } else {
+            assert_eq!(
+                replies,
+                vec![ServerToClientMsg::AgentReportAccepted { report_id }]
+            );
+            assert!(matches!(
+                rx.try_recv().unwrap().0,
+                ScreenInstruction::AgentReport(received, _) if received == report
+            ));
+        }
+    }
+}
+
 fn modifiers(of: &[KeyModifier]) -> BTreeSet<KeyModifier> {
     of.iter().cloned().collect()
 }
@@ -219,6 +264,7 @@ fn paused_session() -> (SessionMetaData, PausedThreads) {
             session_checkpoint: Default::default(),
             session_ownership: None,
             session_update_quiesced: Default::default(),
+            agent_reports_sealed: Default::default(),
             should_silently_fail: true,
         },
         data_access: std::sync::Arc::new(yinz_storage::data_access::DataAccess::sqlite(

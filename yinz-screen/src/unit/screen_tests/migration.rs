@@ -134,6 +134,7 @@ fn releasing_the_last_tab_retains_source_server_and_durable_recovery_state() {
         snapshot: path.clone(),
         client: ClientId::new(1),
         deadline: std::time::Instant::now() + yinz_test_support::default_timeout(),
+        forward_agent_reports: false,
         reply,
     });
     assert!(screen.transfer.migration.is_some());
@@ -242,6 +243,7 @@ fn cancelling_preparation_releases_the_action_gate_and_rejects_late_barriers() {
         snapshot: directory.path().join("session.json"),
         client: ClientId::new(1),
         deadline: std::time::Instant::now() + yinz_test_support::default_timeout(),
+        forward_agent_reports: false,
         reply,
     });
     let (reply, result) = crossbeam::channel::bounded(1);
@@ -1139,6 +1141,7 @@ fn migration_preflights_wait_or_refuse_each_outstanding_transfer() {
                             deadline: std::time::Instant::now()
                                 + yinz_test_support::default_timeout(),
                             snapshot: path.clone(),
+                            forward_agent_reports: false,
                             reply,
                         });
                         if blocked {
@@ -1187,6 +1190,14 @@ fn migration_preflights_wait_or_refuse_each_outstanding_transfer() {
 
 #[test]
 fn replacement_applies_agent_reports_deferred_until_finish() {
+    // A plugin failure leaves the replacement repairing, with the deferred queue draining
+    // through the migration filter rather than after it.
+    for plugins_ready in [true, false] {
+        replacement_applies_deferred_agent_reports(plugins_ready);
+    }
+}
+
+fn replacement_applies_deferred_agent_reports(plugins_ready: bool) {
     use yinz_types::agent::report::{AgentReport, AgentReportState};
     use yinz_types::session_migration::{SessionMigrationSnapshot, SESSION_MIGRATION_FORMAT};
     let mut original = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
@@ -1249,6 +1260,18 @@ fn replacement_applies_agent_reports_deferred_until_finish() {
     assert!(screen
         .defer_for_migration(ScreenInstruction::SwitchTabNext(ClientId::new(1), None))
         .is_none());
+    // The source acknowledged these before the replacement owned the session name, so they
+    // replay ahead of the replacement's own report.
+    let (reply, replayed) = crossbeam::channel::bounded(1);
+    screen.session_migration(ScreenRequest::ReplayAgentReports {
+        operation: operation.clone(),
+        reports: vec![report("1", pane), report("2", pane)],
+        reply,
+    });
+    replayed
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap()
+        .unwrap();
     let (reply, finished) = crossbeam::channel::bounded(1);
     screen.session_migration(ScreenRequest::Finish {
         operation: operation.clone(),
@@ -1276,7 +1299,11 @@ fn replacement_applies_agent_reports_deferred_until_finish() {
             _ => None,
         })
         .expect("Finish must request plugin readiness")
-        .send(Ok(()))
+        .send(if plugins_ready {
+            Ok(())
+        } else {
+            Err("plugin failed to load".into())
+        })
         .unwrap();
     let (ScreenInstruction::SessionMigration(result), _) = screen_events
         .recv_timeout(yinz_test_support::default_timeout())
@@ -1285,12 +1312,21 @@ fn replacement_applies_agent_reports_deferred_until_finish() {
         panic!("expected plugin readiness result");
     };
     screen.session_migration(result);
-    finished
+    let finish = finished
         .recv_timeout(yinz_test_support::default_timeout())
-        .unwrap()
         .unwrap();
-    let mut retained = std::iter::from_fn(|| screen.next_migration_event());
-    for id in ["3", "4"] {
+    assert_eq!(finish.is_ok(), plugins_ready, "{finish:?}");
+    // The event loop passes each replayed event back through the migration filter. While
+    // repairing, a replayed report must apply in place rather than requeue behind the next.
+    let mut retained = std::iter::from_fn(|| {
+        let event = screen.next_migration_event()?;
+        Some(
+            screen
+                .defer_replayed_for_migration(event)
+                .expect("a replayed report applies in order"),
+        )
+    });
+    for id in ["1", "2", "3", "4"] {
         assert!(matches!(
             retained.next(),
             Some(ScreenInstruction::AgentReport(report, _))

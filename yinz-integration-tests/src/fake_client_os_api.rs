@@ -29,6 +29,7 @@ fn server_message_name(msg: &ServerToClientMsg) -> String {
         ServerToClientMsg::DataResponse { .. } => "DataResponse",
         ServerToClientMsg::PluginResponse { .. } => "PluginResponse",
         ServerToClientMsg::AgentReportAccepted { .. } => "AgentReportAccepted",
+        ServerToClientMsg::AgentReportRetry { .. } => "AgentReportRetry",
         ServerToClientMsg::KillSessionComplete { .. } => "KillSessionComplete",
         ServerToClientMsg::KillSessionProgress => "KillSessionProgress",
         ServerToClientMsg::Render { .. } => "Render",

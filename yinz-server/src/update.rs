@@ -218,6 +218,9 @@ fn dispatch(
                 .and_then(|assets| assets.update_target.clone()),
         )
         .context("encode server update operation")?;
+        // A replacement must queue reports taken from the source before it may restore
+        // the lifecycle tracking that the source carried; an older server omits this.
+        value["agent_report_handoff"] = serde_json::Value::Bool(true);
         return Ok(value);
     }
     if let Command::Inventory = request.command {
@@ -362,7 +365,10 @@ fn dispatch(
             )?;
             serde_json::to_value(value).context("encode session migration inventory")
         },
-        Command::ReleaseMigration { snapshot } => {
+        Command::ReleaseMigration {
+            snapshot,
+            forward_agent_reports,
+        } => {
             if !senders
                 .session_update_quiesced
                 .load(std::sync::atomic::Ordering::Acquire)
@@ -380,12 +386,15 @@ fn dispatch(
                 &request.operation,
                 snapshot,
                 client,
+                *forward_agent_reports,
                 Duration::from_secs(120),
             )?;
             // The complete terminal state stays in the private durable snapshot;
             // echoing it here would reintroduce the IPC frame limit we avoided.
+            // `agent_reports` confirms that this source carries lifecycle tracking and
+            // will hand over its agent reports; an older source omits it.
             Ok(
-                serde_json::json!({"format":value.format,"operation":value.operation,"phase":value.phase,"inventory":value.inventory}),
+                serde_json::json!({"format":value.format,"operation":value.operation,"phase":value.phase,"inventory":value.inventory,"agent_reports":*forward_agent_reports}),
             )
         },
         Command::AdoptMigration { snapshot } => {
@@ -412,6 +421,25 @@ fn dispatch(
                 &request.operation,
                 Duration::from_secs(90),
             )?;
+            Ok(serde_json::Value::Null)
+        },
+        Command::TakeAgentReports => {
+            let reports = yinz_bus::migration::take_agent_reports(
+                &senders,
+                &request.operation,
+                Duration::from_secs(30),
+            )
+            .context("take released agent reports")?;
+            serde_json::to_value(reports).context("encode released agent reports")
+        },
+        Command::ReplayAgentReports { reports } => {
+            yinz_bus::migration::replay_agent_reports(
+                &senders,
+                &request.operation,
+                reports.clone(),
+                Duration::from_secs(30),
+            )
+            .context("replay the source's agent reports")?;
             Ok(serde_json::Value::Null)
         },
         Command::Identity

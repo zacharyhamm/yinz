@@ -355,6 +355,7 @@ impl TestBridge {
             session_checkpoint: Default::default(),
             session_ownership: None,
             session_update_quiesced: Default::default(),
+            agent_reports_sealed: Default::default(),
             should_silently_fail: false,
         };
         let data_dir = tempdir().unwrap();

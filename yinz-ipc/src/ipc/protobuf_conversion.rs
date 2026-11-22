@@ -15,6 +15,7 @@ use {
     crate::client_server_contract::client_server_contract::ActionMsg,
     crate::client_server_contract::client_server_contract::AgentReportAcceptedMsg,
     crate::client_server_contract::client_server_contract::AgentReportMsg,
+    crate::client_server_contract::client_server_contract::AgentReportRetryMsg,
     crate::client_server_contract::client_server_contract::AttachClientMsg,
     crate::client_server_contract::client_server_contract::AttachWatcherClientMsg,
     crate::client_server_contract::client_server_contract::BackgroundColorMsg,
@@ -683,6 +684,9 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
                     report_id,
                 })
             },
+            ServerToClientMsg::AgentReportRetry { report_id } => {
+                server_to_client_msg::Message::AgentReportRetry(AgentReportRetryMsg { report_id })
+            },
             ServerToClientMsg::NativeRenderResult(decision) => {
                 use wire::native_render_result_msg::Result as Reply;
                 let result = match decision {
@@ -919,6 +923,11 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
             },
             Some(server_to_client_msg::Message::AgentReportAccepted(msg)) => {
                 Ok(ServerToClientMsg::AgentReportAccepted {
+                    report_id: msg.report_id,
+                })
+            },
+            Some(server_to_client_msg::Message::AgentReportRetry(msg)) => {
+                Ok(ServerToClientMsg::AgentReportRetry {
                     report_id: msg.report_id,
                 })
             },

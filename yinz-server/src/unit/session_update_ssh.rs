@@ -344,6 +344,7 @@ fn local_session_remote_pane_update_and_rollback_keep_pid_and_output() {
         &operation,
         Update::ReleaseMigration {
             snapshot: path.clone(),
+            forward_agent_reports: false,
         },
     );
     remote_exec(&["kill", "-USR1", &pid]);
@@ -422,6 +423,7 @@ fn ssh_client_remote_session_update_keeps_terminal_and_reconnects() {
         &operation,
         Update::ReleaseMigration {
             snapshot: path.clone(),
+            forward_agent_reports: false,
         },
     );
     remote_exec(&["kill", "-USR1", &pid]);

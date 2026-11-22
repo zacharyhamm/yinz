@@ -128,21 +128,39 @@ fn subscribe_to_events(
     Ok(())
 }
 
+/// Whether the screen queue took a report, or a released source sealed its reports for the
+/// replacement and the reporter must send it there instead.
+#[derive(Debug, PartialEq, Eq)]
+enum Enqueued {
+    Queued,
+    Sealed,
+}
+
 fn enqueue_agent_report(
     senders: Option<&ThreadSenders>,
     report: yinz_types::agent::report::AgentReport,
     accepted_at: std::time::Instant,
-) -> Result<()> {
+) -> Result<Enqueued> {
     yinz_runtime::agent::report::validate_report(&report)?;
+    let senders = senders.context("no session for report")?;
+    // Hold the seal across the enqueue, so a report accepted here precedes the screen's
+    // seal marker. The screen queue is unbounded, so the send cannot block.
+    let sealed = senders
+        .agent_reports_sealed
+        .lock()
+        .map_err(|_| anyhow!("agent report seal poisoned"))?;
+    if *sealed {
+        return Ok(Enqueued::Sealed);
+    }
     // Acknowledgement requires a successful enqueue, even during shutdown or when
     // test senders enable `should_silently_fail`.
     senders
-        .context("no session for report")?
         .to_screen
         .as_ref()
         .context("no screen queue for report")?
         .send_required(ScreenInstruction::AgentReport(report, accepted_at))
-        .map_err(|_| anyhow!("screen report queue closed"))
+        .map_err(|_| anyhow!("screen report queue closed"))?;
+    Ok(Enqueued::Queued)
 }
 
 fn accept_agent_report(
@@ -160,21 +178,21 @@ fn accept_agent_report(
     }
     let report_id = report.report_id.clone();
     let result = enqueue_agent_report(senders, report, accepted_at);
-    let message = if result.is_ok() {
-        ServerToClientMsg::AgentReportAccepted { report_id }
-    } else {
-        ServerToClientMsg::LogError {
+    let message = match &result {
+        Ok(Enqueued::Queued) => ServerToClientMsg::AgentReportAccepted { report_id },
+        Ok(Enqueued::Sealed) => ServerToClientMsg::AgentReportRetry { report_id },
+        Err(_) => ServerToClientMsg::LogError {
             lines: vec!["report queue unavailable".into()],
-        }
+        },
     };
     let reply_result = reply(message).context("reply to agent report");
     trace.record(
         "acceptance",
         accepted_at.elapsed(),
-        if result.is_ok() && reply_result.is_ok() {
-            "ok"
-        } else {
-            "error"
+        match (&result, &reply_result) {
+            (Ok(Enqueued::Queued), Ok(())) => "ok",
+            (Ok(Enqueued::Sealed), Ok(())) => "sealed",
+            _ => "error",
         },
     );
     reply_result

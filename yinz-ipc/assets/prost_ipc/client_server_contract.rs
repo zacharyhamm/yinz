@@ -4184,7 +4184,7 @@ impl HostTerminalThemeIndication {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerToClientMsg {
-    #[prost(oneof="server_to_client_msg::Message", tags="36, 35, 34, 32, 33, 31, 30, 29, 28, 23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 26, 14, 15, 16, 18, 20, 21, 22, 27")]
+    #[prost(oneof="server_to_client_msg::Message", tags="36, 35, 34, 32, 33, 31, 30, 29, 28, 23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 26, 14, 15, 16, 18, 20, 21, 22, 27, 37")]
     pub message: ::core::option::Option<server_to_client_msg::Message>,
 }
 /// Nested message and enum types in `ServerToClientMsg`.
@@ -4258,6 +4258,8 @@ pub mod server_to_client_msg {
         KillSessionComplete(super::KillSessionCompleteMsg),
         #[prost(message, tag="27")]
         KillSessionProgress(super::KillSessionProgressMsg),
+        #[prost(message, tag="37")]
+        AgentReportRetry(super::AgentReportRetryMsg),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -4396,6 +4398,12 @@ pub struct EmitNestedSessionFrameMsg {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AgentReportAcceptedMsg {
+    #[prost(string, tag="1")]
+    pub report_id: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AgentReportRetryMsg {
     #[prost(string, tag="1")]
     pub report_id: ::prost::alloc::string::String,
 }

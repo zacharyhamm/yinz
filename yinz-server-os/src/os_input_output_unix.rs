@@ -28,7 +28,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
     thread,
     time::Duration,
@@ -182,7 +182,7 @@ fn handle_openpty(
     quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     child_state_cb: Option<ChildStateCb>,
     terminal_id: TerminalId,
-    session_name: &yinz_types::internal_ids::SessionName,
+    child_env: &[(String, String)],
 ) -> Result<(OwnedFd, ProcessId)> {
     let err_context = |cmd: &RunCommand| {
         format!(
@@ -217,7 +217,7 @@ fn handle_openpty(
             .env_remove(crate::pty_host::remote::broker::PANE_TOKEN_ENV)
             // Structured launches set this again through their env wrapper.
             .env_remove("YINZ_CLAUDE_INLINE_HOOKS")
-            .envs(yinz_runtime::envs::child_session_env(session_name))
+            .envs(child_env.iter().map(|(name, value)| (name, value)))
             .env("YINZ_PANE_ID", format!("{}", terminal_id))
             .pre_exec(move || crate::pty_host::terminal::prepare_child(pid_secondary, false))
             .spawn()
@@ -249,7 +249,7 @@ fn handle_terminal(
     quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     child_state_cb: Option<ChildStateCb>,
     terminal_id: TerminalId,
-    session_name: &yinz_types::internal_ids::SessionName,
+    child_env: &[(String, String)],
     initial_size: Option<TerminalSize>,
 ) -> Result<(OwnedFd, ProcessId)> {
     let initial_size = initial_size.map(|size| Winsize {
@@ -270,7 +270,7 @@ fn handle_terminal(
         quit_cb,
         child_state_cb,
         terminal_id,
-        session_name,
+        child_env,
     )
 }
 
@@ -352,6 +352,9 @@ pub(crate) struct UnixPtyBackend {
     /// Told when a coding agent's hook in any remote pane reports an event.
     /// Registered once, like `child_state_cb`; handed to every remote reader.
     agent_report_cb: Arc<Mutex<Option<AgentReportCb>>>,
+    /// This server's absolute data directory, exported to every local pane so its hooks can
+    /// find the server's live update journal. Set once at session init.
+    session_data_dir: Arc<OnceLock<PathBuf>>,
 }
 
 /// Try to write as many bytes from `buf` as possible to `fd` without blocking.
@@ -409,6 +412,7 @@ impl UnixPtyBackend {
             shutdown_processes: Arc::new(Mutex::new(None)),
             child_state_cb: Arc::new(Mutex::new(None)),
             agent_report_cb: Arc::new(Mutex::new(None)),
+            session_data_dir: Arc::new(OnceLock::new()),
         })
     }
 
@@ -418,6 +422,32 @@ impl UnixPtyBackend {
 
     pub fn session_name(&self) -> yinz_types::internal_ids::SessionName {
         self.session_state.current()
+    }
+
+    /// Called once at session init, before any pane exists.
+    pub fn set_session_data_dir(&self, dir: PathBuf) {
+        if self.session_data_dir.set(dir).is_err() {
+            log::warn!("session data directory was already set; keeping the first");
+        }
+    }
+
+    /// Overrides for a local pane's inherited environment, under one read of the session name.
+    fn pane_env(
+        &self,
+        session_name: &yinz_types::internal_ids::SessionName,
+    ) -> Vec<(String, String)> {
+        let mut env: Vec<_> = yinz_runtime::envs::child_session_env(session_name).into();
+        // Always set, and empty when unknown, so a server running inside a pane never passes
+        // on the outer session's directory. Reporters ignore an empty value.
+        env.push((
+            yinz_runtime::envs::SESSION_DATA_DIR_ENV_KEY.to_owned(),
+            self.session_data_dir
+                .get()
+                .and_then(|dir| dir.to_str())
+                .unwrap_or_default()
+                .to_owned(),
+        ));
+        env
     }
 
     /// Called once at session init, when config is finally available. Env
@@ -565,7 +595,7 @@ impl UnixPtyBackend {
         }
         // One read, so a rename cannot label the supervisor and the pane's env differently.
         let session_name = self.session_name();
-        let env = yinz_runtime::envs::child_session_env(&session_name).into();
+        let env = self.pane_env(&session_name);
         pty_host_client::spawn(SpawnParams {
             host_bin,
             terminal_id,
@@ -673,7 +703,7 @@ impl UnixPtyBackend {
             quit_cb,
             self.child_state_cb(),
             terminal_id,
-            &self.session_name(),
+            &self.pane_env(&self.session_name()),
             initial_size,
         )?;
         let pid_primary = Arc::new(pid_primary);

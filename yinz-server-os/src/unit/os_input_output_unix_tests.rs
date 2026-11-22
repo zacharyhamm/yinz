@@ -37,7 +37,7 @@ fn failed_in_process_spawns_report_errors_and_close_the_pty() {
             Box::new(|_, _, _| panic!("a failed spawn cannot produce a child exit")),
             None,
             terminal_id,
-            &"test".into(),
+            &yinz_runtime::envs::child_session_env(&"test".into()),
         );
         let error = result.expect_err("a failed spawn must reach the caller");
         match (error.downcast_ref::<YinzError>(), expected_errno) {
@@ -117,7 +117,7 @@ fn in_process_pane_exit_reports_status_after_reaping_the_child() {
             }),
             None,
             terminal_id,
-            &"test".into(),
+            &yinz_runtime::envs::child_session_env(&"test".into()),
             None,
         )
         .unwrap();
@@ -254,12 +254,20 @@ fn both_local_pane_paths_use_current_session_without_mutating_parent_environment
         dir.path().join("sock").display(),
         exe.display().to_string().replace('\'', "'\"'\"'")
     ));
-    for detachable in [false, true] {
+    let data_dir = dir.path().join("data");
+    for (detachable, configured) in [(false, false), (false, true), (true, false), (true, true)] {
         let mut backend = UnixPtyBackend::with_termios(None).unwrap();
         let state = SessionState::new("before-rename".into());
         backend.set_session_state(state.clone());
         backend.host_bin = Some(supervisor.clone());
         backend.pty_host_enabled.store(detachable, Ordering::SeqCst);
+        // Unconfigured, a pane still gets an empty value rather than the server's own.
+        let expected_data_dir = if configured {
+            backend.set_session_data_dir(data_dir.clone());
+            data_dir.to_str().unwrap()
+        } else {
+            ""
+        };
         state.set("after-rename".into());
         for launch_override in [false, true] {
             let expected = if launch_override {
@@ -271,9 +279,12 @@ fn both_local_pane_paths_use_current_session_without_mutating_parent_environment
                 command: "/bin/sh".into(),
                 args: vec![
                     "-c".into(),
-                    "[ \"$YINZ\" = 0 ] && [ \"$YINZ_SESSION_NAME\" = \"$1\" ]".into(),
+                    "[ \"$YINZ\" = 0 ] && [ \"$YINZ_SESSION_NAME\" = \"$1\" ] \\
+                     && [ \"${YINZ_SESSION_DATA_DIR-unset}\" = \"$2\" ]"
+                        .into(),
                     "check-session".into(),
                     expected.into(),
+                    expected_data_dir.into(),
                 ],
                 ..Default::default()
             };
@@ -307,7 +318,7 @@ fn both_local_pane_paths_use_current_session_without_mutating_parent_environment
             assert_eq!(
                 status.unwrap(),
                 Some(0),
-                "detachable={detachable}, launch_override={launch_override}"
+                "detachable={detachable}, configured={configured}, launch_override={launch_override}"
             );
         }
     }

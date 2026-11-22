@@ -46,6 +46,9 @@ pub(super) struct MigrationState {
     pending_tabs: HashMap<TabId, MigrationTab>,
     replay_tabs: HashSet<TabId>,
     pending_host_drain: Option<Vec<(TerminalId, crate::os_input_output::ReleasedPane)>>,
+    /// The coordinator takes this source's unapplied agent reports for the replacement,
+    /// so the snapshot may carry lifecycle tracking.
+    forward_agent_reports: bool,
 }
 
 struct ReleaseCompletion {
@@ -184,6 +187,27 @@ impl Screen {
                 result: Ok(addresses),
             });
         }
+    }
+
+    /// Only a request for the active migration may unseal: a stale or mismatched one must not
+    /// reopen a source whose acknowledged reports the coordinator already handed over.
+    fn unseal_agent_reports(&self, operation: &str) {
+        if !self
+            .transfer
+            .migration
+            .as_ref()
+            .is_some_and(|state| state.operation == operation)
+        {
+            return;
+        }
+        self.core
+            .bus
+            .senders
+            .agent_reports_sealed
+            .lock()
+            .map(|mut sealed| *sealed = false)
+            .map_err(|_| anyhow!("agent report seal poisoned"))
+            .non_fatal();
     }
 
     pub(super) fn migration_blocks_normal_work(&self) -> bool {
@@ -349,7 +373,16 @@ impl Screen {
         &mut self,
         event: ScreenInstruction,
     ) -> Option<ScreenInstruction> {
-        self.transfer.defer_for_migration(event)
+        self.transfer.defer_for_migration(event, false)
+    }
+
+    /// An event popped from the deferred queue already holds its place in order, so it must
+    /// not queue behind later reports for its pane again.
+    pub(super) fn defer_replayed_for_migration(
+        &mut self,
+        event: ScreenInstruction,
+    ) -> Option<ScreenInstruction> {
+        self.transfer.defer_for_migration(event, true)
     }
 
     pub(super) fn next_migration_event(&mut self) -> Option<ScreenInstruction> {
@@ -434,6 +467,7 @@ impl Screen {
                 snapshot,
                 client,
                 deadline,
+                forward_agent_reports,
                 reply,
             } => {
                 let result: Result<()> = (|| {
@@ -476,6 +510,7 @@ impl Screen {
                         prepared,
                         held,
                         deadline,
+                        forward_agent_reports,
                         reply.clone(),
                     );
                     self.core
@@ -577,6 +612,8 @@ impl Screen {
                 client,
                 reply,
             } => {
+                // A source re-adopting its own snapshot owns the session's hooks again.
+                self.unseal_agent_reports(&operation);
                 let result: Result<()> = (|| {
                     let mut document = migration::load_snapshot(&snapshot, &operation)?;
                     if let Some(state) = self.transfer.migration.as_ref()
@@ -770,6 +807,7 @@ impl Screen {
                 }
             },
             ScreenRequest::Abort { operation, reply } => {
+                self.unseal_agent_reports(&operation);
                 self.transfer
                     .abort(&self.core.bus.senders, operation, reply)
             },
@@ -1015,6 +1053,82 @@ impl Screen {
                 for reply in replies {
                     let _ = reply.send(result.clone());
                 }
+            },
+            ScreenRequest::TakeAgentReports { operation, reply } => {
+                let result = (|| -> Result<()> {
+                    let state = self
+                        .transfer
+                        .migration
+                        .as_ref()
+                        .context("no migration is active")?;
+                    anyhow::ensure!(
+                        state.operation == operation
+                            && state.stage == Stage::Released
+                            && state.forward_agent_reports,
+                        "only a released source that carried agent tracking hands over its reports"
+                    );
+                    let senders = &self.core.bus.senders;
+                    *senders
+                        .agent_reports_sealed
+                        .lock()
+                        .map_err(|_| anyhow!("agent report seal poisoned"))? = true;
+                    // Every report the router accepted before the seal is already queued
+                    // ahead of this marker.
+                    senders
+                        .send_to_screen(ScreenInstruction::SessionMigration(
+                            ScreenRequest::AgentReportsSealed {
+                                operation,
+                                reply: reply.clone(),
+                            },
+                        ))
+                        .context("queue agent report handover")
+                })();
+                if let Err(error) = result {
+                    let _ = reply.send(Err(format!("{error:#}")));
+                }
+            },
+            ScreenRequest::AgentReportsSealed { operation, reply } => {
+                let result = match &self.transfer.migration {
+                    Some(state) if state.operation == operation && state.stage == Stage::Released => {
+                        // Clones: a rollback still replays these on this server.
+                        Ok(self
+                            .transfer
+                            .migration_deferred
+                            .iter()
+                            .filter_map(|event| match event {
+                                ScreenInstruction::AgentReport(report, _) => Some(report.clone()),
+                                _ => None,
+                            })
+                            .collect())
+                    },
+                    _ => Err("session migration left the released stage before its agent reports were handed over".into()),
+                };
+                let _ = reply.send(result);
+            },
+            ScreenRequest::ReplayAgentReports {
+                operation,
+                reports,
+                reply,
+            } => {
+                let result = match &self.transfer.migration {
+                    Some(state)
+                        if state.operation == operation && state.stage == Stage::Adopted =>
+                    {
+                        // The source accepted these before this server owned the session
+                        // name, so they precede anything this server deferred itself.
+                        let accepted_at = Instant::now();
+                        for report in reports.into_iter().rev() {
+                            self.transfer
+                                .migration_deferred
+                                .push_front(ScreenInstruction::AgentReport(report, accepted_at));
+                        }
+                        Ok(())
+                    },
+                    _ => Err(
+                        "only an adopted replacement can replay the source's agent reports".into(),
+                    ),
+                };
+                let _ = reply.send(result);
             },
             ScreenRequest::RestoreClient {
                 operation,
@@ -1399,6 +1513,7 @@ impl super::MigrationController {
     pub(super) fn defer_for_migration(
         &mut self,
         event: ScreenInstruction,
+        replayed: bool,
     ) -> Option<ScreenInstruction> {
         let Some(state) = &self.migration else {
             if self.preparing_migration.is_some() && !Self::preparation_admits(&event) {
@@ -1414,7 +1529,9 @@ impl super::MigrationController {
         if matches!(state.stage, Stage::Finishing | Stage::Repairing) {
             // Deferred agent reports replay only after plugins resume. A newer report for the
             // same pane must queue behind them, or the older transition would overwrite it.
-            if let ScreenInstruction::AgentReport(report, _) = &event
+            // A replayed report is already in order; requeueing it would invert or cycle them.
+            if !replayed
+                && let ScreenInstruction::AgentReport(report, _) = &event
                 && self.migration_deferred.iter().any(|deferred| {
                     matches!(deferred, ScreenInstruction::AgentReport(queued, _)
                         if queued.pane_id == report.pane_id)
@@ -1485,40 +1602,17 @@ impl super::MigrationController {
     }
 }
 
-/// A deferred report is acknowledged to its hook but never reaches a destination. Its pane's
-/// captured tracking predates that report, so the destination must wait for a fresh hook.
-fn forget_unapplied_agent_tracking(
-    snapshot: &mut yinz_types::session_migration::SessionMigrationSnapshot,
-    deferred: &std::collections::VecDeque<ScreenInstruction>,
-) {
-    let reported: HashSet<PaneId> = deferred
-        .iter()
-        .filter_map(|event| match event {
-            ScreenInstruction::AgentReport(report, _) => Some(report.pane_id),
-            _ => None,
-        })
-        .collect();
-    if reported.is_empty() {
-        return;
-    }
+/// Without a coordinator that forwards this source's acknowledged agent reports, a hook
+/// deferred here never reaches the destination, so captured tracking could predate it.
+fn omit_agent_tracking(snapshot: &mut SessionMigrationSnapshot) {
     for tab in &mut snapshot.tabs {
-        let panes = tab
+        for pane in tab
             .payload
             .tiled_panes
             .iter_mut()
-            .chain(tab.payload.floating_panes.iter_mut());
-        for ((id, _), pane) in tab.terminal_states.iter().zip(panes) {
-            if !reported.contains(id) {
-                continue;
-            }
-            // Codex's transferred input would otherwise mark the composer consumed again.
-            let input = pane.agent_input.take().is_some();
-            if pane.agent_tracking.take().is_some() || input {
-                log::debug!(
-                    "update {}: discarded agent tracking pane={id:?} reason=deferred_report",
-                    snapshot.operation
-                );
-            }
+            .chain(tab.payload.floating_panes.iter_mut())
+        {
+            pane.agent_tracking = None;
         }
     }
 }
@@ -1542,6 +1636,7 @@ impl super::MigrationController {
         prepared: Vec<(TabId, PreparedTabWarp)>,
         held: HashMap<TerminalId, HeldTerminal>,
         deadline: Instant,
+        forward_agent_reports: bool,
         reply: Reply<SessionMigrationSnapshot>,
     ) {
         self.preparing_migration = None;
@@ -1559,6 +1654,7 @@ impl super::MigrationController {
             pending_tabs: HashMap::new(),
             replay_tabs: Default::default(),
             pending_host_drain: None,
+            forward_agent_reports,
         });
     }
 
@@ -1582,6 +1678,7 @@ impl super::MigrationController {
             pending_tabs: HashMap::new(),
             replay_tabs: Default::default(),
             pending_host_drain: None,
+            forward_agent_reports: false,
         });
     }
 
@@ -1606,8 +1703,6 @@ impl super::MigrationController {
             Ok(document) => {
                 state.snapshot = document;
                 state.snapshot.errors.clear();
-                // This is the source's last write before a destination may adopt.
-                forget_unapplied_agent_tracking(&mut state.snapshot, &self.migration_deferred);
             },
             Err(error) => {
                 state.snapshot.errors =
@@ -1960,7 +2055,9 @@ impl super::MigrationController {
                 .iter()
                 .map(|(id, tab)| core.migration_tab_snapshot(agents, *id, tab, &addresses))
                 .collect::<Result<_>>()?;
-            forget_unapplied_agent_tracking(&mut state.snapshot, &self.migration_deferred);
+            if !state.forward_agent_reports {
+                omit_agent_tracking(&mut state.snapshot);
+            }
             state.snapshot.phase = MigrationPhase::Releasing;
             state.snapshot.ownership = addresses
                 .keys()

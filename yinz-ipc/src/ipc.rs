@@ -321,6 +321,11 @@ pub enum ServerToClientMsg {
     AgentReportAccepted {
         report_id: String,
     },
+    /// The session is handing its agent reports to a replacement server. The report was
+    /// not queued; the reporter should reconnect and send it again.
+    AgentReportRetry {
+        report_id: String,
+    },
     Render {
         content: String,
     },

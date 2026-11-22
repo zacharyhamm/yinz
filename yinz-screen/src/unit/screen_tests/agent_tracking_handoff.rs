@@ -1805,6 +1805,7 @@ enum DeferredReport {
 fn release_for_live_update(
     source: &mut Screen,
     deferred: DeferredReport,
+    forward: bool,
 ) -> yinz_types::session_migration::SessionMigrationSnapshot {
     use yinz_bus::migration::{self, ScreenRequest};
     use yinz_types::internal_ids::SupervisorId;
@@ -1821,6 +1822,7 @@ fn release_for_live_update(
         snapshot: path.clone(),
         client: CLIENT,
         deadline: Instant::now() + yinz_test_support::default_timeout(),
+        forward_agent_reports: forward,
         reply,
     });
     let defer = |source: &mut Screen| {
@@ -1857,11 +1859,8 @@ fn release_for_live_update(
     });
     let captured = migration::load_snapshot(&path, &operation).unwrap();
     assert_eq!(captured.phase, MigrationPhase::Releasing);
-    assert_eq!(
-        tracked_pane(&captured).is_some(),
-        deferred != DeferredReport::BeforeCapture,
-        "{deferred:?}"
-    );
+    // A deferred hook is forwarded to the replacement, so its pane's tracking still travels.
+    assert_eq!(tracked_pane(&captured).is_some(), forward, "{deferred:?}");
     if deferred == DeferredReport::BeforeRelease {
         defer(source);
     }
@@ -1941,7 +1940,7 @@ fn live_update_carries_idle_lifecycle_so_the_agent_stays_promptable() {
     report(&mut source, hook("SessionStart"));
     assert!(source.agent_status_for_test().ready);
     let expected = source.capture_agent_tracking(PANE).unwrap();
-    let snapshot = release_for_live_update(&mut source, DeferredReport::None);
+    let snapshot = release_for_live_update(&mut source, DeferredReport::None, true);
     assert_eq!(
         tracked_pane(&snapshot).unwrap().lifecycle,
         expected.lifecycle
@@ -1970,19 +1969,75 @@ fn live_update_carries_idle_lifecycle_so_the_agent_stays_promptable() {
     assert!(status.ready);
 }
 
+/// Take the source's agent reports as the coordinator does once the source gave up its name.
+fn take_agent_reports(source: &mut Screen, operation: &str) -> Result<Vec<AgentReport>, String> {
+    use yinz_bus::migration::ScreenRequest;
+    let (to_screen, queued): ChannelWithContext<ScreenInstruction> = channels::unbounded();
+    source.core.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    let (reply, taken) = crossbeam::channel::bounded(1);
+    source.session_migration(ScreenRequest::TakeAgentReports {
+        operation: operation.into(),
+        reply,
+    });
+    // The handover marker queues behind every report accepted before the seal.
+    if let Ok((ScreenInstruction::SessionMigration(marker), _)) = queued.try_recv() {
+        source.session_migration(marker);
+    }
+    taken
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap()
+}
+
+fn agent_reports_sealed(screen: &Screen) -> bool {
+    *screen.core.bus.senders.agent_reports_sealed.lock().unwrap()
+}
+
 #[test]
-fn live_update_drops_lifecycle_after_a_deferred_source_hook() {
+fn live_update_keeps_lifecycle_and_hands_over_deferred_source_hooks() {
     for deferred in [DeferredReport::BeforeCapture, DeferredReport::BeforeRelease] {
         let (mut source, _, _) = setup("codex");
         report(&mut source, hook("SessionStart"));
-        let snapshot = release_for_live_update(&mut source, deferred);
+        let snapshot = release_for_live_update(&mut source, deferred, true);
+        let pane = migrated_pane(&snapshot);
+        assert!(pane.agent_tracking.is_some(), "{deferred:?}");
+        assert!(pane.agent_input.is_some(), "{deferred:?}");
+
+        let taken = take_agent_reports(&mut source, &snapshot.operation).unwrap();
+        assert_eq!(
+            taken.iter().map(|r| r.pane_id).collect::<Vec<_>>(),
+            vec![PANE],
+            "{deferred:?}"
+        );
+        assert!(agent_reports_sealed(&source), "{deferred:?}");
+        // The source keeps its copy, so a rollback still replays the hook.
+        assert!(
+            source
+                .transfer
+                .migration_deferred
+                .iter()
+                .any(|event| matches!(event, ScreenInstruction::AgentReport(..))),
+            "{deferred:?}"
+        );
+
+        let destination = adopt_live_update(&snapshot);
+        assert!(destination.agent_status_for_test().ready, "{deferred:?}");
+    }
+}
+
+#[test]
+fn live_update_without_report_forwarding_carries_no_tracking() {
+    for deferred in [DeferredReport::None, DeferredReport::BeforeRelease] {
+        let (mut source, _, _) = setup("codex");
+        report(&mut source, hook("SessionStart"));
+        let snapshot = release_for_live_update(&mut source, deferred, false);
         let pane = migrated_pane(&snapshot);
         assert!(pane.agent_tracking.is_none(), "{deferred:?}");
-        assert!(
-            pane.agent_input.is_none(),
-            "transferred input must not mark the composer consumed: {deferred:?}"
-        );
         assert!(pane.agent.is_some(), "identity still travels: {deferred:?}");
+        assert!(
+            take_agent_reports(&mut source, &snapshot.operation).is_err(),
+            "an older coordinator never takes reports: {deferred:?}"
+        );
+        assert!(!agent_reports_sealed(&source), "{deferred:?}");
 
         let destination = adopt_live_update(&snapshot);
         let status = destination.agent_status_for_test();
@@ -1996,11 +2051,30 @@ fn live_update_drops_lifecycle_after_a_deferred_source_hook() {
 }
 
 #[test]
+fn live_update_rollback_unseals_agent_reports() {
+    use yinz_bus::migration::ScreenRequest;
+    let (mut source, _, _) = setup("codex");
+    report(&mut source, hook("SessionStart"));
+    let snapshot = release_for_live_update(&mut source, DeferredReport::BeforeRelease, true);
+    take_agent_reports(&mut source, &snapshot.operation).unwrap();
+    assert!(agent_reports_sealed(&source));
+    let (reply, _) = crossbeam::channel::bounded(1);
+    source.session_migration(ScreenRequest::Abort {
+        operation: snapshot.operation.clone(),
+        reply,
+    });
+    assert!(
+        !agent_reports_sealed(&source),
+        "a source taking back its session must accept hooks again"
+    );
+}
+
+#[test]
 fn live_update_lifecycle_requires_the_same_kind_and_conversation() {
     for mismatch in ["conversation", "kind"] {
         let (mut source, _, _) = setup("codex");
         report(&mut source, hook("SessionStart"));
-        let mut snapshot = release_for_live_update(&mut source, DeferredReport::None);
+        let mut snapshot = release_for_live_update(&mut source, DeferredReport::None, true);
         let payload = &mut snapshot.tabs[0].payload;
         let pane = payload
             .tiled_panes
@@ -2039,7 +2113,7 @@ fn live_update_resolves_a_submission_still_pending_at_capture() {
     source.agent_control_with_clear(request, CLIENT, &writes);
     finish_paste(&writes);
     report(&mut source, hook("UserPromptSubmit"));
-    let snapshot = release_for_live_update(&mut source, DeferredReport::None);
+    let snapshot = release_for_live_update(&mut source, DeferredReport::None, true);
     // No request carries over to resolve it, so the replacement must not wait forever.
     let submission = &tracked_pane(&snapshot).unwrap().submissions[0];
     assert_eq!(submission.id, "update-request");

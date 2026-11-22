@@ -46,12 +46,25 @@ pub enum Command {
     },
     ReleaseMigration {
         snapshot: PathBuf,
+        /// The coordinator hands the source's unapplied agent reports to the replacement
+        /// ([`Command::TakeAgentReports`]). Only then may the snapshot carry lifecycle
+        /// tracking; an older coordinator leaves this unset.
+        #[serde(default)]
+        forward_agent_reports: bool,
     },
     AdoptMigration {
         snapshot: PathBuf,
     },
     AbortMigration,
     FinishMigration,
+    /// Seal a released source against further agent reports and return the ones it
+    /// acknowledged but never applied, oldest first. The source keeps them for a rollback.
+    TakeAgentReports,
+    /// Queue reports taken from the source ahead of the replacement's own, to apply
+    /// after Finish.
+    ReplayAgentReports {
+        reports: Vec<crate::agent::report::AgentReport>,
+    },
     RenameSession {
         name: String,
     },

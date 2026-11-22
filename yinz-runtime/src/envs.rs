@@ -25,6 +25,13 @@ pub fn child_session_env(session_name: &SessionName) -> [(String, String); 2] {
     ]
 }
 
+/// The absolute data directory of the server that spawned this pane.
+///
+/// Read only to find that server's live update journal, which a hook installed without
+/// `--data-dir` could not otherwise locate. Never a general `--data-dir` default: a yinz
+/// started inside a pane would then silently share the outer session's database.
+pub const SESSION_DATA_DIR_ENV_KEY: &str = "YINZ_SESSION_DATA_DIR";
+
 pub const SOCKET_DIR_ENV_KEY: &str = "YINZ_SOCKET_DIR";
 pub fn get_socket_dir() -> Result<String> {
     Ok(var(SOCKET_DIR_ENV_KEY)?)

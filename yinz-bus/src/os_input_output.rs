@@ -201,6 +201,9 @@ pub trait TerminalSupervision: Send + Sync {
     /// arrives with the first client, long after the backend is built, so this is
     /// set once at session init. Defaulted so mock implementations are unaffected.
     fn set_pty_host_enabled(&self, _enabled: bool) {}
+    /// This server's absolute data directory, exported to local panes so their agent hooks
+    /// can find its live update journal. Set once at session init, before any pane exists.
+    fn set_session_data_dir(&self, _dir: PathBuf) {}
     /// Terminate every pty-host supervisor this server owns, on the way out.
     fn shutdown_pty_hosts(&self) {}
     fn begin_confirmed_pty_host_shutdown(&self) -> Result<()> {

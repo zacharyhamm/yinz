@@ -551,11 +551,14 @@ A live session update keeps each pane's process, so it carries lifecycle and
 submission tracking as warp does. The replacement server restores tracking only
 when it was captured from the live source server for the same pane, and the
 pane still runs that agent kind and conversation. An idle agent therefore stays
-promptable without a fresh hook. Hooks that the replacement receives before
-the update finishes apply after it finishes. The source defers hooks while it
-prepares and releases its panes, and those hooks never reach the replacement.
-The source therefore omits tracking and Codex's transferred input for each pane
-with a deferred hook, and the replacement waits for a fresh hook. A prompt
+promptable without a fresh hook. The source defers hooks while it prepares and
+releases its panes. Once it gives up the session name, it hands every hook it
+acknowledged to the replacement, then refuses later ones. The replacement
+applies those hooks, then its own, after the update finishes. A refused or
+unconnectable hook retries within its normal one-second deadline while the
+update moves the session name. Tracking travels only when the source, the
+coordinator and the replacement all support this handoff. Otherwise the
+replacement waits for a fresh hook, as after a restart. A prompt
 submission that is still unresolved when the source captures it is recorded as
 `TargetChanged`, as warp does. A rollback keeps tracking only while the source
 still holds the public session name, because it then receives and replays
