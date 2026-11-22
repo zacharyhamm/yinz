@@ -615,7 +615,10 @@ If a clipboard reply starts before handoff and the terminal never finishes it,
 letters and digits typed afterward can look exactly like clipboard payload.
 The client discards those ambiguous bytes. Enter, Ctrl-C, and a complete arrow
 key end the unfinished sequence and reach the keyboard handler. Subsequent
-typing then follows the normal input path.
+typing then follows the normal input path. If the terminal resumes the old
+clipboard reply after that interruption, its remaining bytes can also reach
+the focused pane as keystrokes. In that case the client can miss the old
+terminator and later clipboard queries can time out.
 
 | Client and server | Attachment behavior |
 |---|---|

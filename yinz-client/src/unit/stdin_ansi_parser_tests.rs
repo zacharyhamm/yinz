@@ -2533,3 +2533,89 @@ fn first_repaint_keeps_fragmented_host_observations_during_barrier_drain() {
         }
     }
 }
+
+#[test]
+fn idle_guard_within_retired_header_keeps_bytes_off_the_keyboard() {
+    for (kind, reply) in [
+        (ForwardKind::Clipboard, b"\x1b]52;c;b2xk\x07".as_slice()),
+        (ForwardKind::Clipboard, b"\x1b]52;c;b2xk\x1b\\"),
+        (ForwardKind::Barrier, b"\x1b[?62;1;6c"),
+    ] {
+        for split in 1..reply.len() {
+            let mut source = StdinAnsiParser::new();
+            source.open(kind, 1);
+            source.queue_terminal_query(kind, b"A".to_vec());
+            assert_eq!(source.ready_terminal_queries().count(), 1);
+            assert!(source.feed(&reply[..split]).residue.is_empty());
+            let mut destination = source.take_for_next_attachment();
+            destination.open(kind, 1);
+            destination.queue_terminal_query(kind, b"B".to_vec());
+            for byte in &reply[split..] {
+                assert!(!destination.has_ready_terminal_query());
+                let output = destination.feed(std::slice::from_ref(byte));
+                assert!(output.residue.is_empty());
+                assert!(output.completed_forward.is_none());
+                assert!(output.completed_clipboard_forward.is_none());
+                assert_eq!(destination.pending_partial(), PendingPartial::None);
+                assert!(destination.finalize_fast_partial().is_empty());
+                assert!(destination.finalize_force().is_empty());
+            }
+            assert_eq!(destination.ready_terminal_queries().count(), 1);
+            let own = destination.feed(reply);
+            assert_eq!(
+                own.completed_forward
+                    .or(own.completed_clipboard_forward)
+                    .unwrap()
+                    .0,
+                1
+            );
+            assert_eq!(destination.feed(b"k").residue, b"k");
+        }
+    }
+}
+
+#[test]
+fn idle_guard_during_first_repaint_preserves_slow_host_reports() {
+    for report in [
+        b"\x1b]11;rgb:1/2/3\x07".as_slice(),
+        b"\x1b]10;rgb:1/2/3\x1b\\",
+        b"\x1b]4;3;rgb:1/2/3\x07",
+        b"\x1b[?997;2n",
+        b"\x1b[6;20;10t",
+    ] {
+        let expected = StdinAnsiParser::new().feed(report).replies;
+        for split in 1..report.len() {
+            let mut parser = StdinAnsiParser::new();
+            parser.begin_forward_generation(Some(1));
+            parser.open_forward(1);
+            parser.queue_terminal_query(ForwardKind::Barrier, b"A".to_vec());
+            assert_eq!(parser.ready_terminal_queries().count(), 1);
+            parser.begin_forward_generation(Some(2));
+            parser.open_forward(2);
+            parser.queue_terminal_query(ForwardKind::Barrier, b"B".to_vec());
+            assert!(parser.feed(&report[..split]).residue.is_empty());
+            let flushed = parser.finalize_force();
+            if split > 2 {
+                assert!(flushed.is_empty(), "{report:?} at {split}");
+            }
+            parser.input_stamp_changed(Some((2, false)), Some((2, true)));
+            let mut observed = Vec::new();
+            for byte in &report[split..] {
+                let output = parser.feed(std::slice::from_ref(byte));
+                observed.extend(output.replies);
+                assert!(output.residue.is_empty() && output.completed_forward.is_none());
+                assert!(parser.finalize_force().is_empty(), "{report:?} at {split}");
+            }
+            assert_eq!(observed.len(), 1);
+            assert_eq!(format!("{observed:?}"), format!("{expected:?}"));
+            assert_eq!(parser.feed(b"k").residue, b"k");
+            assert!(!parser.has_ready_terminal_query());
+            assert!(parser.feed(b"\x1b[?1c").completed_forward.is_none());
+            assert_eq!(parser.ready_terminal_queries().count(), 1);
+            assert_eq!(
+                parser.feed(b"\x1b[?1c").completed_forward,
+                Some((2, vec![]))
+            );
+        }
+    }
+}

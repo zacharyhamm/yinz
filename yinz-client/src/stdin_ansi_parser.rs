@@ -721,22 +721,30 @@ impl StdinAnsiParser {
     }
 
     pub fn pending_partial(&self) -> PendingPartial {
-        let fresh = match &self.recovery_partial {
-            // A timer cannot distinguish a slow clipboard reply from unframed
-            // typing. Keep its payload off the keyboard until framing settles it.
-            Some(RecoveryPartial::Osc(osc)) if osc.is_clipboard() => return PendingPartial::None,
-            Some(RecoveryPartial::Osc(osc)) => Some(&osc.bytes[osc.fresh_at..]),
-            Some(RecoveryPartial::Prefix {
-                bytes, fresh_at, ..
-            }) => Some(&bytes[*fresh_at..]),
-            _ => None,
-        };
-        if let Some(fresh) = fresh {
-            return match fresh {
+        if let Some(RecoveryPartial::Prefix {
+            bytes,
+            fresh_at,
+            boundary,
+        }) = &self.recovery_partial
+        {
+            // An idle tick cannot distinguish a pause inside a physical reply
+            // from a key. Keep the usual keyboard deadline for unrelated input.
+            let retain = match boundary {
+                InputBoundary::Idle => self.barriers.retired != 0 || self.clipboards.retired != 0,
+                InputBoundary::Recovery => self.is_query_prefix(bytes),
+                InputBoundary::FirstRepaint => true,
+            };
+            if retain {
+                return PendingPartial::None;
+            }
+            return match &bytes[*fresh_at..] {
                 [] => PendingPartial::None,
                 [0x1b] => PendingPartial::LoneEsc,
                 _ => PendingPartial::ReplyInProgress,
             };
+        }
+        if self.recovery_partial.is_some() {
+            return PendingPartial::None;
         }
         if !self.partial_paste.is_empty() || !self.partial_apc.is_empty() {
             PendingPartial::ReplyInProgress
@@ -771,17 +779,8 @@ impl StdinAnsiParser {
     }
 
     pub fn finalize_force(&mut self) -> Vec<u8> {
-        // An idle timeout cannot end a paste: its closing marker may still be in flight.
-        if self.in_bracketed_paste {
+        if self.in_bracketed_paste || self.pending_partial() == PendingPartial::None {
             return Vec::new();
-        }
-        if let Some(RecoveryPartial::Osc(osc)) = &mut self.recovery_partial {
-            if osc.is_clipboard() {
-                return Vec::new();
-            }
-            let keyboard = osc.bytes[osc.fresh_at..].to_vec();
-            osc.mark_boundary();
-            return keyboard;
         }
         if let Some(RecoveryPartial::Prefix {
             bytes, fresh_at, ..
@@ -799,15 +798,26 @@ impl StdinAnsiParser {
             self.recovery_partial = Some(RecoveryPartial::Osc(PartialOsc::new(pending, kind)));
             return Vec::new();
         }
-        if !pending.is_empty() && self.is_query_prefix(&pending) {
+        if !pending.is_empty() && self.is_recovery_prefix(&pending, InputBoundary::Idle) {
             // An ambiguous Escape still reaches the keyboard on its usual timer.
             // Keep enough framing to recognize the physical reply if it follows.
             self.inner = InputParser::new();
+            let retired = if b"\x1b]52;".starts_with(&pending) {
+                self.clipboards.retired
+            } else {
+                self.barriers.retired
+            };
+            let keyboard = if pending.len() > 2 && retired != 0 {
+                Vec::new()
+            } else {
+                pending.clone()
+            };
             self.recovery_partial = Some(RecoveryPartial::Prefix {
-                fresh_at: pending.len(),
-                bytes: pending.clone(),
+                fresh_at: keyboard.len(),
+                bytes: pending,
                 boundary: InputBoundary::Idle,
             });
+            return keyboard;
         }
         pending
     }
@@ -908,9 +918,14 @@ impl StdinAnsiParser {
                 },
             );
         }
-        (boundary == InputBoundary::FirstRepaint
+        (self.preserves_host_observations(boundary)
             && HOST_COLOR_HEADERS.iter().any(|h| bytes.starts_with(h)))
         .then_some(OscKind::HostColor)
+    }
+
+    fn preserves_host_observations(&self, boundary: InputBoundary) -> bool {
+        boundary == InputBoundary::FirstRepaint
+            || (boundary == InputBoundary::Idle && self.barriers.retired != 0)
     }
 
     fn is_query_prefix(&self, bytes: &[u8]) -> bool {
@@ -923,7 +938,7 @@ impl StdinAnsiParser {
     fn is_recovery_prefix(&self, bytes: &[u8], boundary: InputBoundary) -> bool {
         self.is_query_prefix(bytes)
             || (boundary != InputBoundary::Idle && PASTE_START_MARKER.starts_with(bytes))
-            || (boundary == InputBoundary::FirstRepaint
+            || (self.preserves_host_observations(boundary)
                 && (HOST_COLOR_HEADERS.iter().any(|h| h.starts_with(bytes))
                     || matches!(csi_status(bytes), SeqStatus::NeedMore)))
     }
