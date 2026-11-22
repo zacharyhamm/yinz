@@ -85,6 +85,29 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
                 node
             ));
         }
+        if name == "padding_color" {
+            // Matched ASCII-case-insensitively like the pinned source; stored
+            // (and therefore serialized) in canonical lowercase.
+            let mode =
+                (plain_positional && node.ty().is_none() && node.entries()[0].ty().is_none())
+                    .then(|| node.entries()[0].value().as_string())
+                    .flatten()
+                    .map(str::to_ascii_lowercase)
+                    .filter(|mode| matches!(mode.as_str(), "background" | "extend"));
+            let Some(mode) = mode else {
+                return Err(kdl_parsing_error!(
+                    "terminal padding_color must be \"background\" or \"extend\"".to_owned(),
+                    node
+                ));
+            };
+            if object.insert(name.to_owned(), mode.into()).is_some() {
+                return Err(kdl_parsing_error!(
+                    "duplicate terminal setting padding_color".to_owned(),
+                    node
+                ));
+            }
+            continue;
+        }
         if !plain_positional {
             return Err(kdl_parsing_error!(
                 format!("terminal {} takes one plain value", node.name().value()),

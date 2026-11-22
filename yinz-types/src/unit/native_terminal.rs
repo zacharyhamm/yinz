@@ -364,3 +364,39 @@ fn padding_keys_serialize_independently() {
     );
     assert!(serde_json::from_str::<TerminalConfig>(r#"{"padding_x":1}"#).is_err());
 }
+
+#[test]
+fn padding_color_defaults_to_background_and_serializes_lowercase() {
+    assert_eq!(TerminalConfig::default().padding_color, None);
+    assert_eq!(
+        TerminalConfig::default().padding_color_mode(),
+        PaddingColor::Background
+    );
+    for (mode, spelling) in [
+        (PaddingColor::Background, "background"),
+        (PaddingColor::Extend, "extend"),
+    ] {
+        let config: TerminalConfig =
+            serde_json::from_value(serde_json::json!({"padding_color": spelling})).unwrap();
+        assert_eq!(config.padding_color, Some(mode));
+        assert_eq!(config.padding_color_mode(), mode);
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(value["padding_color"], spelling);
+        assert_eq!(
+            serde_json::from_value::<TerminalConfig>(value).unwrap(),
+            config
+        );
+    }
+    for value in [
+        serde_json::json!("mirror"),
+        serde_json::json!("Extend"),
+        serde_json::json!(true),
+        serde_json::json!(1),
+    ] {
+        assert!(
+            serde_json::from_value::<TerminalConfig>(serde_json::json!({"padding_color": value}))
+                .is_err(),
+            "{value}"
+        );
+    }
+}

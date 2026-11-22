@@ -148,6 +148,10 @@ fn documented_native_terminal_example_loads() {
     assert_eq!(config.terminal.padding_top, Some(2.0));
     assert_eq!(config.terminal.padding_left, Some(6.0));
     assert_eq!(config.terminal.padding_balance, Some(false));
+    assert_eq!(
+        config.terminal.padding_color,
+        Some(yinz_types::input::native_terminal::PaddingColor::Background)
+    );
     assert_eq!(config.terminal.font_family.as_deref(), Some("Iosevka Term"));
     assert_eq!(config.terminal.font_bold, config.terminal.font_family);
     assert_eq!(config.terminal.font_italic, config.terminal.font_family);
@@ -863,4 +867,90 @@ fn invalid_padding_values_name_the_setting_at_its_node() {
         crate::editor::validation_error(error).contains("padding_x"),
         "unknown spellings stay rejected"
     );
+}
+
+#[test]
+fn padding_color_validates_roundtrips_and_overlays() {
+    use yinz_types::input::native_terminal::PaddingColor;
+    let unset = Config::from_kdl("terminal { padding 2; }", None).unwrap();
+    assert_eq!(unset.terminal.padding_color, None);
+    assert!(!unset.to_string(false).unwrap().contains("padding_color"));
+    for (literal, mode, canonical) in [
+        ("\"background\"", PaddingColor::Background, "background"),
+        ("\"extend\"", PaddingColor::Extend, "extend"),
+        ("\"Extend\"", PaddingColor::Extend, "extend"),
+        ("\"BACKGROUND\"", PaddingColor::Background, "background"),
+    ] {
+        let config = Config::from_kdl(
+            &format!("terminal {{ padding_color {literal}; padding 2; }}"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.terminal.padding_color, Some(mode), "{literal}");
+        let text = config.to_string(false).unwrap();
+        assert!(
+            text.contains(&format!("padding_color \"{canonical}\"")),
+            "{literal}: {text}"
+        );
+        let roundtrip = Config::from_kdl(&text, None).unwrap();
+        assert_eq!(roundtrip.terminal, config.terminal);
+        let inherited = Config::from_kdl("terminal { opacity 0.5; }", Some(config)).unwrap();
+        assert_eq!(inherited.terminal.padding_color, Some(mode));
+        let other = match mode {
+            PaddingColor::Background => PaddingColor::Extend,
+            PaddingColor::Extend => PaddingColor::Background,
+        };
+        let other_literal = match other {
+            PaddingColor::Background => "background",
+            PaddingColor::Extend => "extend",
+        };
+        let overridden = Config::from_kdl(
+            &format!("terminal {{ padding_color \"{other_literal}\"; }}"),
+            Some(inherited),
+        )
+        .unwrap();
+        assert_eq!(overridden.terminal.padding_color, Some(other));
+        assert_eq!(overridden.terminal.padding, Some(2.0));
+        assert_eq!(overridden.terminal.opacity, Some(0.5));
+    }
+    for (bad, message) in [
+        ("padding_color \"mirror\"", None),
+        ("padding_color \"\"", None),
+        ("padding_color true", None),
+        ("padding_color 1", None),
+        ("padding_color null", None),
+        ("padding_color", None),
+        ("padding_color (s)\"extend\"", None),
+        ("(s)padding_color \"extend\"", None),
+        ("padding_color \"extend\" \"background\"", None),
+        ("padding_color value=\"extend\"", None),
+        ("padding_color \"extend\" {}", None),
+        (
+            "padding_color \"extend\"; padding_color \"extend\"",
+            Some("duplicate terminal setting padding_color"),
+        ),
+    ] {
+        let input = format!("terminal {{ padding 4; {bad}; opacity 0.5; }}");
+        let ConfigError::KdlError(error) = Config::from_kdl(&input, None).unwrap_err() else {
+            panic!("{input}: expected KdlError");
+        };
+        assert_eq!(
+            error.error_message,
+            message.unwrap_or("terminal padding_color must be \"background\" or \"extend\""),
+            "{input}"
+        );
+        let offset = error.offset.unwrap();
+        let len = error.len.unwrap();
+        let span = &input[offset..offset + len];
+        assert!(
+            span.contains("padding_color") && !span.starts_with("terminal"),
+            "{input}: span {span:?}"
+        );
+    }
+    // The duplicate is reported at the second node.
+    let input = "terminal { padding_color \"extend\"; padding_color \"background\"; }";
+    let ConfigError::KdlError(error) = Config::from_kdl(input, None).unwrap_err() else {
+        panic!("expected KdlError");
+    };
+    assert!(input[error.offset.unwrap()..].starts_with("padding_color \"background\""));
 }

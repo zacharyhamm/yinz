@@ -766,6 +766,7 @@ Config {
         padding_bottom: None,
         padding_left: None,
         padding_balance: None,
+        padding_color: None,
         opacity: None,
         blur: None,
         startup_mode: None,

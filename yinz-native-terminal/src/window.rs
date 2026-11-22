@@ -40,7 +40,7 @@ use yinz_ipc::ipc::{ClientToServerMsg, ExitReason, PixelDimensions, ServerToClie
 use yinz_runtime::errors::prelude::*;
 use yinz_types::data::SessionConnection;
 use yinz_types::input::actions::Action;
-use yinz_types::input::native_terminal::{StartupMode, TerminalConfig};
+use yinz_types::input::native_terminal::{PaddingColor, StartupMode, TerminalConfig};
 use yinz_types::input::options::Options;
 use yinz_types::mouse::{MouseEvent, MouseEventType};
 use yinz_types::pane_size::{Size, SizeInPixels};
@@ -577,6 +577,9 @@ pub(crate) fn apply_settings(
     comparison.initial_columns = next_settings.initial_columns;
     comparison.initial_rows = next_settings.initial_rows;
     comparison.cursor_trail = next_settings.cursor_trail;
+    // Padding is recomputed every frame; a mode change only needs the redraw
+    // that every reload schedules.
+    comparison.padding_color = next_settings.padding_color;
     if comparison != next_settings || *paints != next_paints {
         retained.mark_everything();
     }
@@ -1727,6 +1730,45 @@ impl App {
     fn padding_layout(&self) -> PaddingLayout {
         padding_layout(&self.settings, self.scale)
     }
+    /// The grid's transparency; padding uses the same value so the two agree.
+    fn transparency(&self) -> crate::render::scene::Transparency {
+        crate::render::scene::Transparency {
+            opacity: self.settings.opacity.unwrap_or(1.0),
+            mode: yinz_types::input::native_terminal::OpacityMode::Background,
+        }
+    }
+    /// Padding fill for one frame, from the drawn grid at `origin` inside a
+    /// `target`-sized surface (pinned source `draw.rs`). The right and bottom
+    /// margins include the partial-cell remainder and balancing offset.
+    /// Recomputed every frame, so content, resize and reloads apply at once.
+    fn padding_margins(
+        &self,
+        target: (u32, u32),
+        origin: (i32, i32),
+    ) -> Vec<crate::render::scene::Rect> {
+        match self.settings.padding_color_mode() {
+            PaddingColor::Background => Vec::new(),
+            PaddingColor::Extend => {
+                let grid = self.state.size();
+                let metrics = self.cache.metrics();
+                let grid_width = metrics.width.saturating_mul(grid.cols as u32);
+                let grid_height = metrics.height.saturating_mul(grid.rows as u32);
+                let (left, top) = (origin.0.max(0) as u32, origin.1.max(0) as u32);
+                crate::render::scene::padding_rects(
+                    &self.state,
+                    &self.paints,
+                    metrics,
+                    self.transparency(),
+                    Margins {
+                        left,
+                        top,
+                        right: target.0.saturating_sub(left.saturating_add(grid_width)),
+                        bottom: target.1.saturating_sub(top.saturating_add(grid_height)),
+                    },
+                )
+            },
+        }
+    }
     /// The grid's top-left pixel in a `window`-sized drawable. Drawing, the
     /// IME area, the window observation and pointer conversion all use this,
     /// so they cannot disagree. It derives the grid the same way
@@ -2133,11 +2175,7 @@ impl App {
         }
         let preedit = self.composition.shown();
         self.retained.set_selection(self.selection.range());
-        self.retained
-            .set_transparency(crate::render::scene::Transparency {
-                opacity: self.settings.opacity.unwrap_or(1.0),
-                mode: yinz_types::input::native_terminal::OpacityMode::Background,
-            });
+        self.retained.set_transparency(self.transparency());
         let cursor = self.cursor_options();
         let size = self.surfaces.as_ref().map(Surfaces::size);
         let Some(size) = refresh_drawable(
@@ -2156,6 +2194,7 @@ impl App {
             return Ok(());
         };
         let origin = self.content_origin(size);
+        let margins = self.padding_margins(size, origin);
         let notice = self.switch_overlay(size, origin);
         let trail_active = self.sample_cursor_trail(Instant::now(), preedit.as_ref());
         if let Some(surfaces) = &mut self.surfaces {
@@ -2165,6 +2204,7 @@ impl App {
                 size,
                 Frame {
                     origin,
+                    margins: &margins,
                     trail: trail_active.then_some(&self.trail_mesh),
                     notice: notice.as_ref(),
                     ..Default::default()

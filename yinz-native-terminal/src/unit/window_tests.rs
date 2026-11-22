@@ -5066,3 +5066,247 @@ fn attachment_generation_foreign_connected_before_staged_decision() {
         Some((ClientToServerMsg::ClientExited, _))
     ));
 }
+
+/// The colour drawn at grid-relative `(x, y)`, topmost rect first.
+fn padding_painted(rects: &[crate::render::scene::Rect], x: i32, y: i32) -> Option<[u8; 3]> {
+    rects
+        .iter()
+        .rev()
+        .find(|rect| {
+            x >= rect.x
+                && x < rect.x + rect.width as i32
+                && y >= rect.y
+                && y < rect.y + rect.height as i32
+        })
+        .map(|rect| rect.color)
+}
+
+#[test]
+#[cfg(unix)]
+fn extended_padding_margins_follow_mode_origin_remainder_and_transparency() {
+    use yinz_types::input::native_terminal::PaddingColor;
+    use yinz_types::structured_render::{WireColor, ATTR_REVERSE};
+
+    let mut app = switch_app(CliArgs::default());
+    app.settings.padding = Some(4.0);
+    app.settings.padding_left = Some(6.0);
+    app.settings.padding_top = Some(3.0);
+    app.settings.padding_balance = Some(true);
+    let grid = app.state.size();
+    let (rows, cols) = (grid.rows, grid.cols);
+    let metrics = app.cache.metrics();
+    let (w, h) = (metrics.width as i32, metrics.height as i32);
+    let window_for = |app: &App, extra: (u32, u32)| {
+        let layout = app.padding_layout();
+        (
+            layout.horizontal() + cols as u32 * metrics.width + extra.0,
+            layout.vertical() + rows as u32 * metrics.height + extra.1,
+        )
+    };
+    // Odd leftovers: balancing shifts the origin and leaves a partial-cell
+    // remainder on the right and bottom.
+    let window = window_for(&app, (5, 3));
+    let origin = app.content_origin(window);
+    let layout = app.padding_layout();
+    assert_eq!(
+        origin,
+        (
+            layout.margins.left as i32 + 2,
+            layout.margins.top as i32 + 1
+        )
+    );
+    let left = origin.0;
+    let top = origin.1;
+    let right = window.0 as i32 - left - cols as i32 * w;
+    let bottom = window.1 as i32 - top - rows as i32 * h;
+    assert!(right > layout.margins.right as i32 && bottom > layout.margins.bottom as i32);
+
+    // Empty content: default backgrounds leave an opaque window's padding clear.
+    app.settings.padding_color = Some(PaddingColor::Extend);
+    assert!(app.padding_margins(window, origin).is_empty());
+
+    let rgb = |[r, g, b]: [u8; 3]| WireColor::Rgb(r, g, b).pack();
+    let (red, green, blue, yellow) = ([200, 0, 0], [0, 200, 0], [0, 0, 200], [200, 200, 0]);
+    let clear = app.paints.background;
+    crate::testing::painter::Painter::apply(&mut app.state, |p| {
+        p.styled(0, 0, "a", |cell| cell.bg = rgb(red));
+        p.styled(0, 9, "r", |cell| cell.attrs |= ATTR_REVERSE);
+        p.styled(0, cols - 1, "g", |cell| cell.bg = rgb(green));
+        // An explicit background equal to the clear colour.
+        p.styled(1, 0, "c", |cell| cell.bg = rgb(clear));
+        p.styled(1, 5, "y", |cell| cell.bg = rgb(yellow));
+        p.styled(1, cols - 1, "b", |cell| cell.bg = rgb(blue));
+    });
+    assert!(app.selection.range().is_some());
+
+    for mode in [None, Some(PaddingColor::Background)] {
+        app.settings.padding_color = mode;
+        assert!(app.padding_margins(window, origin).is_empty(), "{mode:?}");
+    }
+
+    app.settings.padding_color = Some(PaddingColor::Extend);
+    let rects = app.padding_margins(window, origin);
+    let at = |x: i32, y: i32| padding_painted(&rects, x, y);
+    let (grid_w, grid_h) = (cols as i32 * w, rows as i32 * h);
+    // Left/right strips per row; the selection on row 0 does not extend.
+    assert_eq!(at(-1, 0), Some(red));
+    assert_eq!(at(-left, h - 1), Some(red));
+    assert_eq!(at(grid_w, 0), Some(green));
+    assert_eq!(at(grid_w + right - 1, h - 1), Some(green));
+    assert_eq!(at(grid_w, h), Some(blue));
+    assert_eq!(
+        at(-1, h),
+        None,
+        "explicit clear-colour edge in an opaque window"
+    );
+    // Top/bottom strips per column.
+    assert_eq!(at(0, -1), Some(red));
+    assert_eq!(at(w, -1), None, "default-background edge");
+    assert_eq!(
+        at(9 * w, -top),
+        Some(app.paints.foreground),
+        "reverse video"
+    );
+    assert_eq!(at(5 * w, grid_h + bottom - 1), Some(yellow));
+    assert_eq!(at(4 * w, grid_h), None);
+    // Corners use corner cells and reach the surface edges.
+    assert_eq!(at(-left, -top), Some(red));
+    assert_eq!(at(grid_w + right - 1, -top), Some(green));
+    assert_eq!(at(grid_w + right - 1, grid_h + bottom - 1), Some(blue));
+    assert_eq!(
+        at(-1, grid_h),
+        None,
+        "bottom-left corner from the clear cell"
+    );
+    // Nothing covers the grid or leaves the surface.
+    for rect in &rects {
+        let (x0, y0) = (rect.x, rect.y);
+        let (x1, y1) = (x0 + rect.width as i32, y0 + rect.height as i32);
+        assert!(x0 >= -left && y0 >= -top, "{rect:?}");
+        assert!(x1 <= grid_w + right && y1 <= grid_h + bottom, "{rect:?}");
+        assert!(
+            x1 <= 0 || x0 >= grid_w || y1 <= 0 || y0 >= grid_h,
+            "{rect:?}"
+        );
+    }
+
+    // See-through windows paint only explicit or reverse backgrounds, using
+    // the same transparency as the grid.
+    app.settings.opacity = Some(0.5);
+    assert_eq!(app.transparency().opacity, 0.5);
+    let see_through = app.padding_margins(window, origin);
+    assert_eq!(padding_painted(&see_through, -1, h), Some(clear));
+    assert_eq!(padding_painted(&see_through, -1, 0), Some(red));
+    assert_eq!(padding_painted(&see_through, w, -1), None);
+    assert_eq!(
+        padding_painted(&see_through, 9 * w, -1),
+        Some(app.paints.foreground)
+    );
+    app.settings.opacity = None;
+
+    // Each frame recomputes from current content, palette and size.
+    crate::testing::painter::Painter::apply(&mut app.state, |p| {
+        p.styled(0, 0, "a", |cell| cell.bg = rgb([10, 20, 30]));
+    });
+    assert_eq!(
+        padding_painted(&app.padding_margins(window, origin), -1, 0),
+        Some([10, 20, 30])
+    );
+    app.paints.foreground = [1, 2, 3];
+    assert_eq!(
+        padding_painted(&app.padding_margins(window, origin), 9 * w, -1),
+        Some([1, 2, 3])
+    );
+    let wider = window_for(&app, (5 + 2 * metrics.width - 1, 3));
+    let wider_origin = app.content_origin(wider);
+    assert_eq!(wider_origin.1, origin.1);
+    let wider_right = wider.0 as i32 - wider_origin.0 - grid_w;
+    assert!(wider_right > right);
+    let resized = app.padding_margins(wider, wider_origin);
+    assert_eq!(
+        padding_painted(&resized, grid_w + wider_right - 1, 0),
+        Some(green)
+    );
+    assert_eq!(padding_painted(&resized, grid_w + wider_right, 0), None);
+
+    // No margins: a surface exactly the grid's size paints nothing.
+    let exact = (grid_w as u32, grid_h as u32);
+    assert!(app.padding_margins(exact, (0, 0)).is_empty());
+}
+
+#[test]
+fn padding_color_reload_keeps_rows_fonts_and_geometry() {
+    use yinz_types::input::native_terminal::PaddingColor;
+
+    let mut settings = embedded_settings();
+    let mut paints = Paints::default();
+    let active = effective_font_options(&settings, 1.0, 1.0);
+    let mut cache = GlyphCache::new(active.stack(1.0).unwrap());
+    let mut retained = RetainedScene::new();
+    let state = crate::testing::painter::Painter::state(2, 8, |painter| painter.text(0, 0, "Ag"));
+    let refresh = |retained: &mut RetainedScene, cache: &mut GlyphCache, paints: &Paints| {
+        retained.refresh(
+            SceneInputs {
+                state: &state,
+                phase: BlinkPhase::On,
+                paints,
+                cursor: CursorOptions::default(),
+                hovered_link: None,
+                preedit: None,
+            },
+            cache,
+        );
+    };
+    refresh(&mut retained, &mut cache, &paints);
+    assert!(retained.rebuilt_everything());
+    let generation = cache.generation();
+    let before = retained.flatten();
+    let geometry =
+        Geometry::calculate(400, 200, padding_layout(&settings, 1.0), cache.metrics()).unwrap();
+    for mode in [
+        Some(PaddingColor::Extend),
+        Some(PaddingColor::Background),
+        None,
+    ] {
+        let next = TerminalConfig {
+            padding_color: mode,
+            ..settings.clone()
+        };
+        let requested = effective_font_options(&next, 1.0, 1.0);
+        assert!(matches!(
+            prepare_fonts(&active, &requested).unwrap(),
+            FontUpdate::Unchanged
+        ));
+        let next_paints = paints;
+        apply_settings(
+            &mut settings,
+            &mut paints,
+            &mut retained,
+            next.clone(),
+            next_paints,
+        );
+        refresh(&mut retained, &mut cache, &paints);
+        assert!(!retained.rebuilt_everything(), "{mode:?}");
+        assert_eq!(retained.flatten(), before, "{mode:?}");
+        assert_eq!(cache.generation(), generation);
+        assert_eq!(settings, next);
+        assert!(
+            Geometry::calculate(400, 200, padding_layout(&settings, 1.0), cache.metrics())
+                .unwrap()
+                .messages(Some(geometry))
+                .is_empty()
+        );
+    }
+    // Positive control: the comparison still runs for other inputs.
+    let next = TerminalConfig {
+        padding_color: Some(PaddingColor::Extend),
+        ..settings.clone()
+    };
+    let next_paints = Paints {
+        foreground: [12, 34, 56],
+        ..paints
+    };
+    apply_settings(&mut settings, &mut paints, &mut retained, next, next_paints);
+    refresh(&mut retained, &mut cache, &paints);
+    assert!(retained.rebuilt_everything());
+}

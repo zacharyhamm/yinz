@@ -30,6 +30,17 @@ pub enum StartupMode {
     Remember,
 }
 
+/// What the window padding shows. Unset means [`PaddingColor::Background`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaddingColor {
+    /// The window clear colour.
+    #[default]
+    Background,
+    /// Continues the background of the nearest edge cell on every side.
+    Extend,
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TerminalConfig {
@@ -63,6 +74,8 @@ pub struct TerminalConfig {
     pub padding_left: Option<f32>,
     /// Centers the grid in the space left after padding; unset means `false`.
     pub padding_balance: Option<bool>,
+    /// Padding paint mode; unset means [`PaddingColor::Background`].
+    pub padding_color: Option<PaddingColor>,
     pub opacity: Option<f32>,
     pub blur: Option<bool>,
     pub startup_mode: Option<StartupMode>,
@@ -102,6 +115,10 @@ impl TerminalConfig {
 
     pub fn padding_balance_enabled(&self) -> bool {
         self.padding_balance.unwrap_or(false)
+    }
+
+    pub fn padding_color_mode(&self) -> PaddingColor {
+        self.padding_color.unwrap_or_default()
     }
 }
 

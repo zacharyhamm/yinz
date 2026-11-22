@@ -51,6 +51,7 @@ terminal {
     padding_top 2.0
     padding_left 6.0
     padding_balance false
+    padding_color "background"
     opacity 1.0
     blur false
     cursor_style "block"
@@ -105,6 +106,29 @@ default (`false`) the grid starts at the top-left padding and every leftover
 pixel goes to the right and bottom. With balancing, half of each axis's
 leftover (rounded down) goes before the grid, and an odd pixel goes after it.
 `padding_balance` takes one plain boolean.
+
+`padding_color` chooses what the padding shows. `"background"` (the default when
+the key is omitted) leaves the padding as the window clear colour. `"extend"`
+continues the background of the nearest edge cell outward: each row's first and
+last cell colour the left and right strips, each column's first and last cell
+colour the top and bottom strips, and the four corners use the corner cells. The
+right and bottom strips include any partial-cell remainder and the balancing
+offset, so every pixel outside the grid is covered. In an opaque window only
+backgrounds that differ from the default background are painted. With `opacity`
+below 1, only cells with an explicit background or reverse video are painted, and
+default-background edges stay see-through like the grid. Selection, the cursor,
+IME preedit and link hover do not extend into the padding; the switch notice
+draws above it. Colours come from the session theme's effective palette and follow
+configuration and theme reloads (native theme adaptation is a separate issue).
+The padding is recomputed on every frame, so new content, scrolling, resizing,
+scale or zoom changes and reloads show on the next frame. The value is one plain
+string matched ASCII-case-insensitively, like the pinned source (`"Extend"` is
+accepted); serialization always writes lowercase. Other strings such as
+`"mirror"`, non-strings, type annotations, properties, children, extra arguments
+and repeated keys are errors that name both valid values (or the duplicate) and
+point at the node. Startup reads it from the configuration. Saved file and
+drop-in edits reload live and only redraw, without rebuilding fonts, rows or
+geometry; a later layer wins and omission inherits.
 
 `font_features` passes OpenType features to the shaper. It is one node with zero
 or more string arguments:
@@ -258,7 +282,7 @@ observation log all use that one origin. A pointer inside the padding maps to th
 nearest edge cell. Cursor/selection rectangles, hit testing, graphics and reported
 cell/text-area pixels all use these same cells. Text-area pixels exclude padding
 and unused edge pixels: they equal rows/columns times cell height/width.
-Padding colour and gestures inside the padding belong to separate issues.
+Gestures inside the padding belong to a separate issue.
 
 Font settings reload automatically with the session's configuration updates,
 including drop-ins. A `config.d` directory first created while the session is
@@ -267,7 +291,8 @@ running is discovered during the normal polling/debounce cycle.
 Changing `cell_width`, `line_height`, `baseline_offset`, `underline_offset`,
 `underline_thickness`, `ligatures`, `font_ligatures`, `font_features`, effective
 padding (`padding`, `padding_top`, `padding_right`, `padding_bottom`,
-`padding_left`) or `padding_balance` with `action reconfigure` requires
+`padding_left`), `padding_balance` or effective `padding_color` with `action
+reconfigure` requires
 `--write`, or an edit to the session's saved configuration/drop-in. An unsaved
 change to any effective value refuses the entire fragment, including sibling
 settings, for all requested clients, with save guidance. Equivalent values and
@@ -275,7 +300,8 @@ omissions remain valid runtime requests; explicit metric `1.0` equals omission
 when the effective value is already the default. For `font_features`, omission and
 a bare node are both no features and `"calt"` equals `"+calt"`; a reordered list
 counts as a change. Padding compares the resolved sides and balance, so
-`padding_left 4` with a current `padding 4` is equivalent. The refusal names the
+`padding_left 4` with a current `padding 4` is equivalent; `padding_color
+"background"` equals omission. The refusal names the
 key that caused each change: `padding` when the shorthand changed a side, or the
 side's own key. Before this change, unsaved padding was accepted but never
 reached native windows, which read padding only from files. An invalid fragment, with or without `--write`, is refused with

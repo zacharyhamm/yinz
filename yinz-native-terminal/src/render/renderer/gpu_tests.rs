@@ -2577,3 +2577,152 @@ fn cursor_trail_blends_gradient_in_cursor_color_and_clears_when_settled() {
         );
     });
 }
+
+#[test]
+fn extended_padding_pixels_follow_edge_cells_under_the_notice() {
+    use crate::emulation::color::Paints;
+    use crate::render::scene::{
+        notice_scene, padding_rects, BlinkPhase, CursorOptions, Margins, Notice, SceneInputs,
+        Transparency,
+    };
+    use crate::testing::painter::Painter;
+    use crate::text::font::FontOptions;
+    use yinz_types::input::native_terminal::OpacityMode;
+    use yinz_types::structured_render::WireColor;
+
+    with_renderer(|renderer| {
+        let (red, green, blue) = ([200, 0, 0], [0, 200, 0], [0, 0, 200]);
+        let rgb = |[r, g, b]: [u8; 3]| WireColor::Rgb(r, g, b).pack();
+        let state = Painter::state(2, 6, |p| {
+            p.styled(0, 0, " ", |cell| cell.bg = rgb(red));
+            p.styled(0, 5, " ", |cell| cell.bg = rgb(green));
+            p.styled(1, 5, " ", |cell| cell.bg = rgb(blue));
+        });
+        let paints = Paints::default();
+        let mut cache = fixture_cache(&FontOptions::default());
+        let metrics = cache.metrics();
+        let (w, h) = (metrics.width, metrics.height);
+        let target = (768, 384);
+        let origin = (13, 9);
+        let margins = Margins {
+            left: 13,
+            top: 9,
+            right: target.0 - 13 - 6 * w,
+            bottom: target.1 - 9 - 2 * h,
+        };
+        let mut retained = RetainedScene::new();
+        let draw = |renderer: &mut Renderer,
+                    retained: &mut RetainedScene,
+                    cache: &mut crate::render::atlas::GlyphCache,
+                    transparency: Transparency,
+                    notice: Option<&crate::render::scene::RowScene>| {
+            retained.set_transparency(transparency);
+            retained.refresh(
+                SceneInputs {
+                    state: &state,
+                    phase: BlinkPhase::On,
+                    paints: &paints,
+                    cursor: CursorOptions::default(),
+                    hovered_link: None,
+                    preedit: None,
+                },
+                cache,
+            );
+            let rects = padding_rects(&state, &paints, metrics, transparency, margins);
+            renderer.draw_retained(
+                retained,
+                cache.atlases(),
+                target,
+                Frame {
+                    origin,
+                    margins: &rects,
+                    notice,
+                    ..Default::default()
+                },
+            );
+            read_framebuffer(renderer)
+        };
+        let px = |pixels: &[u8], x: u32, y: u32| baseline_offset_atlas_retry_pixel(pixels, x, y);
+        let (row0, row1) = (9 + h / 2, 9 + h + h / 2);
+        let (col0, col2, col5) = (13 + w / 2, 13 + 2 * w + w / 2, 13 + 5 * w + w / 2);
+        let (far_x, far_y) = (target.0 - 1, target.1 - 1);
+
+        let opaque = draw(
+            renderer,
+            &mut retained,
+            &mut cache,
+            Transparency::OPAQUE,
+            None,
+        );
+        let with_alpha = |[r, g, b]: [u8; 3]| [r, g, b, 255];
+        let clear = with_alpha(paints.background);
+        assert_eq!(px(&opaque, col0, row0), with_alpha(red), "grid cell");
+        assert_eq!(px(&opaque, 5, row0), with_alpha(red), "left padding");
+        assert_eq!(px(&opaque, 0, 0), with_alpha(red), "top-left corner");
+        assert_eq!(px(&opaque, col0, 2), with_alpha(red), "top padding");
+        assert_eq!(px(&opaque, col5, 0), with_alpha(green), "top padding");
+        assert_eq!(
+            px(&opaque, far_x, row0),
+            with_alpha(green),
+            "right remainder"
+        );
+        assert_eq!(
+            px(&opaque, far_x, row1),
+            with_alpha(blue),
+            "right remainder"
+        );
+        assert_eq!(
+            px(&opaque, col5, far_y),
+            with_alpha(blue),
+            "bottom remainder"
+        );
+        assert_eq!(
+            px(&opaque, far_x, far_y),
+            with_alpha(blue),
+            "bottom-right corner"
+        );
+        assert_eq!(px(&opaque, 0, far_y), clear, "default edge stays clear");
+        assert_eq!(px(&opaque, col2, far_y), clear, "default edge stays clear");
+        assert_eq!(px(&opaque, 5, row1), clear, "default edge stays clear");
+
+        // See-through padding matches the grid: default edges keep the clear,
+        // explicit backgrounds paint exactly like their cells.
+        let see_through = Transparency {
+            opacity: 0.5,
+            mode: OpacityMode::Background,
+        };
+        let faded = draw(renderer, &mut retained, &mut cache, see_through, None);
+        let default_cell = px(&faded, col2, row1);
+        assert_eq!(px(&faded, 0, far_y), default_cell);
+        assert_eq!(px(&faded, 5, row1), default_cell);
+        let red_cell = px(&faded, col0, row0);
+        assert_ne!(red_cell, default_cell);
+        assert_eq!(px(&faded, 5, row0), red_cell);
+        assert_eq!(px(&faded, 0, 0), red_cell);
+
+        // A notice wider than the grid covers the right padding.
+        let notice = notice_scene(
+            Notice::Text("Could not switch to destination. Esc dismisses."),
+            &mut cache,
+            target,
+            origin,
+            Margins::default(),
+        );
+        let panel = notice.rects[0];
+        let probe = (13 + 6 * w + 3, (9 + panel.y + 1) as u32);
+        assert!(
+            (origin.0 + panel.x + panel.width as i32) as u32 > probe.0,
+            "{panel:?}"
+        );
+        assert_eq!(px(&opaque, probe.0, probe.1), with_alpha(green));
+        let shown = draw(
+            renderer,
+            &mut retained,
+            &mut cache,
+            Transparency::OPAQUE,
+            Some(&notice),
+        );
+        assert_eq!(px(&shown, probe.0, probe.1), [35, 29, 23, 255]);
+        assert_eq!(px(&shown, far_x, row1), with_alpha(blue));
+    });
+}

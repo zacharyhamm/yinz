@@ -136,9 +136,9 @@ Commands:
                                     cell_width, line_height, baseline_offset, underline_offset,
                                     underline_thickness, cursor_trail, ligatures/font_ligatures,
                                     font_features, padding (padding, padding_top, padding_right,
-                                    padding_bottom, padding_left) or padding_balance requires
-                                    --write or editing the saved configuration/drop-in for file
-                                    reload. An unsupported unsaved change refuses the entire
+                                    padding_bottom, padding_left), padding_balance or padding_color
+                                    requires --write or editing the saved configuration/drop-in for
+                                    file reload. An unsupported unsaved change refuses the entire
                                     fragment, including sibling settings. Omissions and equivalent
                                     values remain valid runtime requests. Underline values are
                                     compared with the session's effective saved files. Invalid

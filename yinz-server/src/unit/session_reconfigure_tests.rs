@@ -2300,6 +2300,22 @@ mod padding_reconfigure {
                     "padding 2; padding_right 1; padding_balance true;",
                     vec!["padding", "padding_right", "padding_balance"],
                 ),
+                ("", "padding_color \"extend\";", vec!["padding_color"]),
+                (
+                    "padding_color \"extend\";",
+                    "padding_color \"background\";",
+                    vec!["padding_color"],
+                ),
+                (
+                    "padding_color \"extend\";",
+                    "padding_color \"Background\";",
+                    vec!["padding_color"],
+                ),
+                (
+                    "",
+                    "padding 2; padding_color \"extend\";",
+                    vec!["padding", "padding_color"],
+                ),
             ] {
                 let fixture = with_current(&clients, current);
                 let before = fixture.snapshot();
@@ -2333,6 +2349,10 @@ mod padding_reconfigure {
                     "padding_left 2; padding_balance true;",
                 ),
                 ("padding 4; padding_left 6;", "padding 4;"),
+                ("", "padding_color \"background\";"),
+                ("padding_color \"extend\";", "padding_color \"extend\";"),
+                ("padding_color \"extend\";", "padding_color \"EXTEND\";"),
+                ("padding_color \"extend\";", "padding 0;"),
             ] {
                 for all in [true, false] {
                     let fixture = with_current(&clients, current);
@@ -2368,7 +2388,8 @@ mod padding_reconfigure {
     fn written_padding_changes_save_instead_of_unsaved_refusal() {
         for all in [true, false] {
             let fixture = with_current(&[CLIENT], "padding 4;");
-            let fragment = "terminal { padding_left 6; padding_balance true; }";
+            let fragment =
+                "terminal { padding_left 6; padding_balance true; padding_color \"extend\"; }";
             if all {
                 assert_eq!(fixture.all(fragment, true).exit_status, None);
             } else {
@@ -2379,6 +2400,10 @@ mod padding_reconfigure {
             let saved = Config::from_kdl(&std::fs::read_to_string(managed).unwrap(), None).unwrap();
             assert_eq!(saved.terminal.padding_left, Some(6.0));
             assert_eq!(saved.terminal.padding_balance, Some(true));
+            assert_eq!(
+                saved.terminal.padding_color,
+                Some(yinz_types::input::native_terminal::PaddingColor::Extend)
+            );
             assert_eq!(
                 std::fs::read_to_string(fixture.dir.path().join("config.kdl")).unwrap(),
                 "// unchanged main\n"

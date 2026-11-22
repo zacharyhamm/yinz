@@ -49,8 +49,9 @@ fn validate_unsaved_native_settings(
     Ok(())
 }
 
-/// Names the padding keys behind a change in effective padding. Native windows
-/// read padding only from files, so an unsaved change would be a silent no-op.
+/// Names the padding keys behind a change in effective padding or padding
+/// colour. Native windows read padding only from files, so an unsaved change
+/// would be a silent no-op.
 /// A changed side is named by its own key when that key differs, otherwise by
 /// the `padding` shorthand that produced it.
 fn changed_padding_settings(
@@ -95,6 +96,9 @@ fn changed_padding_settings(
     );
     if current.padding_balance_enabled() != requested.padding_balance_enabled() {
         changed.push("padding_balance");
+    }
+    if current.padding_color_mode() != requested.padding_color_mode() {
+        changed.push("padding_color");
     }
     changed
 }
