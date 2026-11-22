@@ -59,6 +59,8 @@ pub(crate) async fn handle(
 ) -> Response<Body> {
     let dir = state.settings.data_dir.clone();
     let instance = listener_instance.to_owned();
+    // Pairing expiry and sign-in validity follow the same clock as sign-ins.
+    let now = state.auth.now_ms();
     match path {
         "/api/siri/code" | "/api/siri/revoke" => {
             let Some(owner) = session.map(|s| s.id.clone()) else {
@@ -66,7 +68,7 @@ pub(crate) async fn handle(
             };
             let revoke = path.ends_with("/revoke");
             let result = file_work(state, move || {
-                store::configure(&dir, &owner, &instance, revoke)
+                store::configure(&dir, &owner, &instance, revoke, now)
             })
             .await;
             match stored("pairing setup", result) {
@@ -81,7 +83,10 @@ pub(crate) async fn handle(
             let Ok(pair) = serde_json::from_slice::<Pair>(bytes) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_pairing");
             };
-            let result = file_work(state, move || store::redeem(&dir, &instance, &pair.code)).await;
+            let result = file_work(state, move || {
+                store::redeem(&dir, &instance, &pair.code, now)
+            })
+            .await;
             match stored("pairing", result) {
                 Some(Some(token)) => json_response(json!({"token":token,"request_id":"first"})),
                 Some(None) => unauthenticated(),
@@ -108,7 +113,7 @@ pub(crate) async fn handle(
                 % state.siri_commands.len();
             let _command = state.siri_commands[bucket].lock().await;
             let key = hash.clone();
-            let result = file_work(state, move || store::load(&dir, &instance, &key)).await;
+            let result = file_work(state, move || store::load(&dir, &instance, &key, now)).await;
             let phone = match stored("credential lookup", result) {
                 Some(Some(phone)) => phone,
                 Some(None) => return unauthenticated(),
@@ -167,8 +172,9 @@ impl Context<'_> {
         let hash = self.hash.clone();
         let rev = self.phone.revision;
         let dialogue = self.phone.dialogue.clone();
+        let now = self.state.auth.now_ms();
         let result = file_work(self.state, move || {
-            store::save(&dir, &instance, &hash, rev, dialogue)
+            store::save(&dir, &instance, &hash, rev, dialogue, now)
         })
         .await;
         stored("dialogue checkpoint", result).ok_or(Failure::Retry)?;
@@ -313,7 +319,7 @@ impl Context<'_> {
             Err(Failure::Spoken(speech)) => answer(speech, false),
             Err(Failure::Retry | Failure::UnknownLaunch) => return unavailable(),
         };
-        let Ok(next) = password::random_id() else {
+        let Ok(next) = random_id("request cursor") else {
             return unavailable();
         };
         reply["request_id"] = json!(next);
@@ -425,6 +431,12 @@ impl Context<'_> {
                 };
                 if let [agent] = matches.as_slice() {
                     self.act(input, action, agent.clone()).await
+                } else if self.phone.dialogue.choice.is_none() {
+                    // No list is awaiting an answer, so this is an unrecognized command.
+                    Ok(answer(
+                        "Try find agents, tell an agent to do something, or open a new agent.",
+                        false,
+                    ))
                 } else {
                     Ok(answer(
                         format!(
@@ -560,7 +572,7 @@ impl Context<'_> {
                     .reply(&agent, json!({}))
                     .await?
                     .map_or(0, |r| r.revision);
-                let id = password::random_id().map_err(|_| Failure::Retry)?;
+                let id = random_id("submission ID")?;
                 self.prepare(
                     input,
                     Mutation::Send {
@@ -741,7 +753,7 @@ impl Context<'_> {
             },
             (found, _) => found?,
         };
-        let nonce = password::random_id().map_err(|_| Failure::Retry)?;
+        let nonce = random_id("launch nonce")?;
         let checkout = if let Some(branch) = branch {
             let c = self
                 .api(
@@ -889,6 +901,15 @@ struct Reply {
 }
 fn answer(speech: impl Into<String>, listen: bool) -> Value {
     json!({"speech":speech.into(),"follow_up":if listen { "yes" } else { "" }})
+}
+/// A fresh identifier. A randomness failure is logged, and the phone retries after a 503.
+fn random_id(what: &str) -> Result<String> {
+    password::random_id()
+        .with_context(|| format!("generate Siri {what}"))
+        .map_err(|error| {
+            Err::<(), _>(error).non_fatal();
+            Failure::Retry
+        })
 }
 fn field(v: &Value, key: &str) -> Result<String> {
     v[key].as_str().map(str::to_string).ok_or(Failure::Retry)

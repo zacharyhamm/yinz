@@ -167,13 +167,21 @@ impl Phone {
         let dir = tempfile::tempdir().unwrap();
         let verifier = password::tests::ready(dir.path());
         let info = sign_in(dir.path(), &verifier.verifier_id);
-        let code = store::configure(dir.path(), &info.id, "listener", false)
-            .unwrap()
-            .unwrap();
-        assert!(store::redeem(dir.path(), "another server", &code)
-            .unwrap()
-            .is_none());
-        let token = store::redeem(dir.path(), "listener", &code)
+        let code = store::configure(
+            dir.path(),
+            &info.id,
+            "listener",
+            false,
+            SystemClock.now_ms(),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            store::redeem(dir.path(), "another server", &code, SystemClock.now_ms())
+                .unwrap()
+                .is_none()
+        );
+        let token = store::redeem(dir.path(), "listener", &code, SystemClock.now_ms())
             .unwrap()
             .unwrap();
         let backend = Arc::new(Fixture::default());
@@ -230,10 +238,12 @@ fn siri_legacy_pairing_is_pruned_and_can_pair_again() {
     let owner = sign_in(data, &verifier.verifier_id);
     let legacy_owner = sign_in(data, &verifier.verifier_id);
     let instance = "0123456789abcdef0123456789abcdef";
-    let code = store::configure(data, &owner.id, instance, false)
+    let code = store::configure(data, &owner.id, instance, false, SystemClock.now_ms())
         .unwrap()
         .unwrap();
-    let token = store::redeem(data, instance, &code).unwrap().unwrap();
+    let token = store::redeem(data, instance, &code, SystemClock.now_ms())
+        .unwrap()
+        .unwrap();
     let path = data.join("web/siri.json");
     let read_rows =
         || serde_json::from_slice::<Vec<Value>>(&std::fs::read(&path).unwrap()).unwrap();
@@ -252,21 +262,41 @@ fn siri_legacy_pairing_is_pruned_and_can_pair_again() {
         &serde_json::to_vec(&mixed).unwrap(),
     )
     .unwrap();
-    assert!(store::redeem(data, instance, "legacy code")
-        .unwrap()
-        .is_none());
+    assert!(
+        store::redeem(data, instance, "legacy code", SystemClock.now_ms())
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(read_rows(), bound);
-    assert!(store::load(data, instance, &sessions::hash("legacy token"))
-        .unwrap()
-        .is_none());
-    let fresh = store::configure(data, &legacy_owner.id, instance, false)
+    assert!(store::load(
+        data,
+        instance,
+        &sessions::hash("legacy token"),
+        SystemClock.now_ms()
+    )
+    .unwrap()
+    .is_none());
+    let fresh = store::configure(
+        data,
+        &legacy_owner.id,
+        instance,
+        false,
+        SystemClock.now_ms(),
+    )
+    .unwrap()
+    .unwrap();
+    let repaired = store::redeem(data, instance, &fresh, SystemClock.now_ms())
         .unwrap()
         .unwrap();
-    let repaired = store::redeem(data, instance, &fresh).unwrap().unwrap();
     for (token, expected) in [(token, owner), (repaired, legacy_owner)] {
-        let phone = store::load(data, instance, &sessions::hash(&token))
-            .unwrap()
-            .unwrap();
+        let phone = store::load(
+            data,
+            instance,
+            &sessions::hash(&token),
+            SystemClock.now_ms(),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(phone.session.id, expected.id);
     }
 }
@@ -581,6 +611,18 @@ async fn siri_single_list_match_becomes_the_pronoun_target() {
     let live = phone.backend.0.lock().unwrap();
     assert_eq!(live.sends.len(), 1);
     assert_eq!(live.sends[0]["agent"], row(2)["ref"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn siri_unrecognized_command_after_a_selection_does_not_reoffer_the_list() {
+    let mut phone = Phone::new();
+    phone.say("Find agents on mobile login 1").await;
+    let reply = phone.say("what is the weather").await;
+    assert_eq!(
+        reply["speech"],
+        "Try find agents, tell an agent to do something, or open a new agent."
+    );
+    assert_eq!(reply["follow_up"], "");
 }
 
 #[test]
@@ -899,10 +941,12 @@ fn siri_undecodable_pairing_is_revoked_without_failing_others() {
     let verifier = password::tests::ready(data);
     let owner = sign_in(data, &verifier.verifier_id);
     let other = sign_in(data, &verifier.verifier_id);
-    let code = store::configure(data, &owner.id, "listener", false)
+    let code = store::configure(data, &owner.id, "listener", false, SystemClock.now_ms())
         .unwrap()
         .unwrap();
-    let token = store::redeem(data, "listener", &code).unwrap().unwrap();
+    let token = store::redeem(data, "listener", &code, SystemClock.now_ms())
+        .unwrap()
+        .unwrap();
     let path = data.join("web/siri.json");
     let mut rows: Vec<Value> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     let mut future = rows[0].clone();
@@ -916,20 +960,30 @@ fn siri_undecodable_pairing_is_revoked_without_failing_others() {
         &serde_json::to_vec(&rows).unwrap(),
     )
     .unwrap();
-    let phone = store::load(data, "listener", &sessions::hash(&token))
-        .unwrap()
-        .unwrap();
+    let phone = store::load(
+        data,
+        "listener",
+        &sessions::hash(&token),
+        SystemClock.now_ms(),
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(phone.session.id, owner.id);
-    assert!(
-        store::load(data, "listener", &sessions::hash("future token"))
-            .unwrap()
-            .is_none()
-    );
+    assert!(store::load(
+        data,
+        "listener",
+        &sessions::hash("future token"),
+        SystemClock.now_ms()
+    )
+    .unwrap()
+    .is_none());
     let rows: Vec<Value> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(rows.len(), 1);
-    assert!(store::configure(data, &other.id, "listener", false)
-        .unwrap()
-        .is_some());
+    assert!(
+        store::configure(data, &other.id, "listener", false, SystemClock.now_ms())
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -965,10 +1019,12 @@ fn siri_credential_reset_recovers_corrupt_pairing_store() {
             panic!("missing verifier")
         };
         let owner = sign_in(data, &v.verifier_id);
-        let code = store::configure(data, &owner.id, "listener", false)
+        let code = store::configure(data, &owner.id, "listener", false, SystemClock.now_ms())
             .unwrap()
             .unwrap();
-        assert!(store::redeem(data, "listener", &code).unwrap().is_some());
+        assert!(store::redeem(data, "listener", &code, SystemClock.now_ms())
+            .unwrap()
+            .is_some());
     }
 }
 

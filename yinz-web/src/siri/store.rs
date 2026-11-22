@@ -1,6 +1,6 @@
 //! Pairing, revocation and dialogue checkpoints share the web password lock with logout.
 use super::Dialogue;
-use crate::auth::{password, sessions, Clock, SessionInfo, SystemClock};
+use crate::auth::{password, sessions, SessionInfo};
 use serde::{Deserialize, Serialize};
 use std::{fs::OpenOptions, io::Read, os::unix::fs::OpenOptionsExt, path::Path};
 use yinz_runtime::errors::prelude::*;
@@ -21,6 +21,7 @@ struct Device {
 
 fn access<T>(
     data: &Path,
+    now: i64,
     f: impl FnOnce(&mut Vec<Device>, &[sessions::Row], i64) -> Result<(T, bool)>,
 ) -> Result<T> {
     let dir = password::private_dir(data).context("open Siri store directory")?;
@@ -28,7 +29,6 @@ fn access<T>(
     let password::PasswordState::Ready(verifier) = password::read_state(data) else {
         bail!("web sign-in unavailable")
     };
-    let now = SystemClock.now_ms();
     let sessions = sessions::read(data, &verifier.verifier_id)
         .context("read web sessions for Siri")?
         .sessions;
@@ -77,8 +77,9 @@ pub(super) fn configure(
     owner: &str,
     listener_instance: &str,
     revoke: bool,
+    now: i64,
 ) -> Result<Option<String>> {
-    access(data, |devices, sessions, now| {
+    access(data, now, |devices, sessions, now| {
         anyhow::ensure!(
             sessions.iter().any(|s| s.id == owner && s.valid(now)),
             "sign-in expired"
@@ -109,9 +110,14 @@ pub(super) fn configure(
     })
 }
 
-pub(super) fn redeem(data: &Path, listener_instance: &str, code: &str) -> Result<Option<String>> {
+pub(super) fn redeem(
+    data: &Path,
+    listener_instance: &str,
+    code: &str,
+    now: i64,
+) -> Result<Option<String>> {
     let hash = sessions::hash(code);
-    access(data, |devices, _, now| {
+    access(data, now, |devices, _, now| {
         let Some(device) = devices.iter_mut().find(|d| {
             d.listener_instance == listener_instance
                 && d.code
@@ -137,8 +143,13 @@ pub(super) struct Phone {
     pub revision: u64,
     pub dialogue: Dialogue,
 }
-pub(super) fn load(data: &Path, listener_instance: &str, hash: &str) -> Result<Option<Phone>> {
-    access(data, |devices, sessions, _| {
+pub(super) fn load(
+    data: &Path,
+    listener_instance: &str,
+    hash: &str,
+    now: i64,
+) -> Result<Option<Phone>> {
+    access(data, now, |devices, sessions, _| {
         let device = devices.iter().find(|d| {
             d.listener_instance == listener_instance && d.token_hash.as_deref() == Some(hash)
         });
@@ -159,8 +170,9 @@ pub(super) fn save(
     hash: &str,
     revision: u64,
     dialogue: Dialogue,
+    now: i64,
 ) -> Result<()> {
-    access(data, |devices, _, _| {
+    access(data, now, |devices, _, _| {
         let device = devices
             .iter_mut()
             .find(|d| {
