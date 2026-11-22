@@ -2399,3 +2399,137 @@ fn recovered_terminal_keeps_the_new_startup_probe_separate_from_a_pane_query() {
     let output = destination.feed(&[own.as_slice(), b"\x1b[?1c"].concat());
     assert_eq!(output.completed_forward, Some((2, own.to_vec())));
 }
+
+fn source_clipboard_partial(prefix: &[u8]) -> StdinAnsiParser {
+    let mut parser = StdinAnsiParser::new();
+    parser.begin_forward_generation(Some(1));
+    parser.open_clipboard_forward(7);
+    parser.queue_terminal_query(ForwardKind::Clipboard, b"A".to_vec());
+    assert_eq!(parser.ready_terminal_queries().count(), 1);
+    assert!(parser.feed(prefix).residue.is_empty());
+    parser
+}
+
+#[test]
+fn clipboard_idle_guard_preserves_physical_reply_across_handoff() {
+    for old in [b"\x1b]52;c;b2xk\x07".as_slice(), b"\x1b]52;c;b2xk\x1b\\"] {
+        for split in 1..old.len() {
+            for handoff in [false, true] {
+                let mut parser = source_clipboard_partial(&old[..split]);
+                let flushed = match parser.pending_partial() {
+                    PendingPartial::None => panic!("missing partial at {split}"),
+                    PendingPartial::ReplyInProgress => parser.finalize_force(),
+                    _ => parser.finalize_fast_partial(),
+                };
+                if split < b"\x1b]52;".len() {
+                    assert_eq!(flushed, &old[..split]);
+                } else {
+                    assert!(flushed.is_empty());
+                }
+                if handoff {
+                    parser = parser.take_for_next_attachment();
+                    parser.begin_forward_generation(Some(2));
+                    parser.open_clipboard_forward(7);
+                    parser.queue_terminal_query(ForwardKind::Clipboard, b"B".to_vec());
+                    assert!(!parser.has_ready_terminal_query());
+                }
+                let output = parser.feed(&old[split..]);
+                assert!(output.residue.is_empty());
+                if handoff {
+                    assert!(output.completed_clipboard_forward.is_none());
+                    assert_eq!(parser.ready_terminal_queries().collect::<Vec<_>>(), [b"B"]);
+                    let own = b"\x1b]52;c;bmV3\x1b\\";
+                    assert_eq!(
+                        parser.feed(own).completed_clipboard_forward,
+                        Some((7, own.to_vec()))
+                    );
+                } else {
+                    assert_eq!(
+                        output.completed_clipboard_forward,
+                        Some((7, b"\x1b]52;c;b2xk\x1b\\".to_vec()))
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn unfinished_clipboard_releases_interrupts_and_keeps_query_fenced() {
+    for keys in [
+        b"\r".as_slice(),
+        b"\x03",
+        b"\x1b[A",
+        b" hello",
+        b"\x03hello",
+    ] {
+        for split in 0..=keys.len() {
+            let mut parser = source_clipboard_partial(b"\x1b]52;c;b2xk");
+            parser.input_stamp_changed(Some((1, true)), Some((2, true)));
+            parser.begin_forward_generation(Some(2));
+            let mut typed = parser.feed(&keys[..split]).residue;
+            typed.extend(parser.feed(&keys[split..]).residue);
+            match parser.pending_partial() {
+                PendingPartial::None => {},
+                PendingPartial::ReplyInProgress => typed.extend(parser.finalize_force()),
+                _ => typed.extend(parser.finalize_fast_partial()),
+            }
+            assert_eq!(typed, keys, "split {split}");
+            assert_eq!(parser.pending_partial(), PendingPartial::None);
+            parser.open_clipboard_forward(1);
+            parser.queue_terminal_query(ForwardKind::Clipboard, b"B".to_vec());
+            assert!(!parser.has_ready_terminal_query());
+        }
+    }
+}
+
+#[test]
+fn unfinished_clipboard_keeps_an_ambiguous_suffix_out_of_keyboard_input() {
+    let mut parser = source_clipboard_partial(b"\x1b]52;c;");
+    parser = parser.take_for_next_attachment();
+    parser.open_clipboard_forward(8);
+    parser.queue_terminal_query(ForwardKind::Clipboard, b"B".to_vec());
+    // These bytes could equally be typing or the body of the retired answer.
+    assert!(parser.feed(b"test").residue.is_empty());
+    assert!(parser.finalize_force().is_empty());
+    assert!(!parser.has_ready_terminal_query());
+    let late = parser.feed(b"\x07");
+    assert!(late.completed_clipboard_forward.is_none() && late.residue.is_empty());
+    assert_eq!(parser.ready_terminal_queries().collect::<Vec<_>>(), [b"B"]);
+}
+
+#[test]
+fn first_repaint_keeps_fragmented_host_observations_during_barrier_drain() {
+    for report in [
+        b"\x1b]11;rgb:1/2/3\x07".as_slice(),
+        b"\x1b]10;rgb:1/2/3\x1b\\",
+        b"\x1b]4;3;rgb:1/2/3\x07",
+        b"\x1b[?997;2n",
+        b"\x1b[6;20;10t",
+    ] {
+        let expected = format!("{:?}", StdinAnsiParser::new().feed(report).replies);
+        for split in 1..report.len() {
+            let mut parser = StdinAnsiParser::new();
+            parser.begin_forward_generation(Some(1));
+            parser.open_forward(1);
+            parser.queue_terminal_query(ForwardKind::Barrier, b"A".to_vec());
+            assert_eq!(parser.ready_terminal_queries().count(), 1);
+            parser.begin_forward_generation(Some(2));
+            parser.open_forward(2);
+            parser.queue_terminal_query(ForwardKind::Barrier, b"B".to_vec());
+            assert!(parser.feed(&report[..split]).residue.is_empty());
+            parser.input_stamp_changed(Some((2, false)), Some((2, true)));
+            let output = parser.feed(&report[split..]);
+            assert_eq!(output.replies.len(), 1, "{report:?} at {split}");
+            assert_eq!(format!("{:?}", output.replies), expected);
+            assert!(output.residue.is_empty() && output.completed_forward.is_none());
+            assert!(!parser.has_ready_terminal_query());
+            assert!(parser.feed(b"\x1b[?1c").completed_forward.is_none());
+            assert_eq!(parser.ready_terminal_queries().count(), 1);
+            assert_eq!(
+                parser.feed(b"\x1b[?1c").completed_forward,
+                Some((2, vec![]))
+            );
+        }
+    }
+}

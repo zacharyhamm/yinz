@@ -148,7 +148,10 @@ pub(crate) fn stdin_loop(
                 match result {
                     Ok((buf, stamp)) => {
                         if send_input_instructions.stamp != stamp {
-                            stdin_ansi_parser.lock().unwrap().reset_for_recovery();
+                            stdin_ansi_parser
+                                .lock()
+                                .unwrap()
+                                .input_stamp_changed(send_input_instructions.stamp, stamp);
                             input_parser = InputParser::new();
                             termwiz_buffer.clear();
                             held_modifiers.clear();

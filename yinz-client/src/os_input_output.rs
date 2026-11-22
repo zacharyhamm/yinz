@@ -572,23 +572,15 @@ impl StdioAccess for ClientOsInputOutput {
             Some(buffered_bytes) => Ok(stamp_stdin_consumption(recovery, || buffered_bytes)),
             None => {
                 let stdin = std::io::stdin();
-                if let Some(stop) = &self.stdin_stop {
-                    use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
-                    use std::os::fd::AsFd;
-                    let mut fds = [
-                        PollFd::new(stdin.as_fd(), PollFlags::POLLIN),
-                        PollFd::new(stop.as_fd(), PollFlags::POLLIN),
-                    ];
-                    loop {
-                        match poll(&mut fds, PollTimeout::NONE) {
-                            Err(nix::errno::Errno::EINTR) => continue,
-                            Err(_) => return Err("Failed to poll stdin"),
-                            Ok(_) => break,
-                        }
-                    }
-                    if fds[1].revents().is_some_and(|events| !events.is_empty()) {
-                        return Err("Session ended");
-                    }
+                if let Some(stop) = &self.stdin_stop
+                    && !wait_for_stdin(&stdin, stop.as_ref()).map_err(|error| {
+                        Err::<(), _>(error)
+                            .context("wait for terminal stdin")
+                            .non_fatal();
+                        "Failed to wait for stdin"
+                    })?
+                {
+                    return Err("Session ended");
                 }
                 let mut stdin = stdin.lock();
                 let (read_bytes, stamp) = read_stdin_buffer(&mut stdin, recovery)?;
@@ -1003,6 +995,35 @@ impl Write for StdoutWriter {
 
     fn flush(&mut self) -> io::Result<()> {
         self.stdout.flush()
+    }
+}
+
+/// A closed stop pipe wakes an idle tty reader. Give it priority when both
+/// descriptors are readable so the next attachment can consume the input.
+fn wait_for_stdin(
+    stdin: &impl std::os::fd::AsFd,
+    stop: &impl std::os::fd::AsFd,
+) -> io::Result<bool> {
+    use rustix::event::{fd_set_insert, fd_set_num_elements, select, FdSetElement, FdSetIter};
+    use std::os::fd::AsRawFd;
+    let stdin_fd = stdin.as_fd().as_raw_fd();
+    let stop_fd = stop.as_fd().as_raw_fd();
+    // macOS ttys support select. Size the set for the actual stop pipe, which may
+    // have a high descriptor number in a client with many inherited descriptors.
+    let nfds = stdin_fd.max(stop_fd) + 1;
+    let mut readable = vec![FdSetElement::default(); fd_set_num_elements(2, nfds)];
+    loop {
+        readable.fill(FdSetElement::default());
+        fd_set_insert(&mut readable, stdin_fd);
+        fd_set_insert(&mut readable, stop_fd);
+        // SAFETY: stdin and stop keep both descriptors in the set open during select.
+        match unsafe { select(nfds, Some(&mut readable), None, None, None) } {
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(error) => return Err(error.into()),
+            Ok(_) if FdSetIter::new(&readable).any(|fd| fd == stop_fd) => return Ok(false),
+            Ok(_) if FdSetIter::new(&readable).any(|fd| fd == stdin_fd) => return Ok(true),
+            Ok(_) => continue,
+        }
     }
 }
 

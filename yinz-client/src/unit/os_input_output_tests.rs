@@ -1336,3 +1336,14 @@ fn remote_disconnect_does_not_wait_for_a_trickling_partial_frame() {
     );
     assert!(matches!(os.recv_from_server_generation(0), IpcRecv::Eof));
 }
+
+#[test]
+fn stdin_wait_prioritizes_stop_over_readable_tty() {
+    let pty = nix::pty::openpty(None, None).unwrap();
+    let mut master = std::fs::File::from(pty.master);
+    let (stop, writer) = std::io::pipe().unwrap();
+    master.write_all(b"keyboard\n").unwrap();
+    assert!(wait_for_stdin(&pty.slave, &stop).unwrap());
+    drop(writer);
+    assert!(!wait_for_stdin(&pty.slave, &stop).unwrap());
+}

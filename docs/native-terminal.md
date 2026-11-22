@@ -611,6 +611,12 @@ of the same kind. A request that reaches its deadline while waiting uses the
 usual timeout fallback. Host theme, color and pixel-size reports still update
 the client while it waits.
 
+If a clipboard reply starts before handoff and the terminal never finishes it,
+letters and digits typed afterward can look exactly like clipboard payload.
+The client discards those ambiguous bytes. Enter, Ctrl-C, and a complete arrow
+key end the unfinished sequence and reach the keyboard handler. Subsequent
+typing then follows the normal input path.
+
 | Client and server | Attachment behavior |
 |---|---|
 | ANSI client with either server | Ordinary ANSI render messages (server tag 1), including when other clients use native frames. |

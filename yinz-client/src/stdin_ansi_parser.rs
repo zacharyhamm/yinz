@@ -19,6 +19,7 @@ use seq_scan::{
     PARTIAL_BUFFER_CAP_BYTES, PASTE_END_MARKER, PASTE_START_MARKER,
 };
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use yinz_ipc::nested_session;
 use yinz_key_codec::vendored::termwiz::input::{InputEvent, InputParser};
 
@@ -188,12 +189,89 @@ enum StartupKittyProbe {
     Resolved,
 }
 
-/// Only retain framing for an unfinished paste or physical query at the attachment boundary.
+/// Input that may still complete a terminal sequence across a recovery boundary.
 enum RecoveryPartial {
-    Prefix(Vec<u8>),
+    Prefix {
+        bytes: Vec<u8>,
+        fresh_at: usize,
+        boundary: InputBoundary,
+    },
     Paste(usize),
-    Clipboard { escaped: bool },
+    Osc(PartialOsc),
 }
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum InputBoundary {
+    Idle,
+    FirstRepaint,
+    Recovery,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum OscKind {
+    HostColor,
+    Clipboard,
+    RetiredClipboard,
+}
+
+/// Bytes before `fresh_at` already belonged to the terminal sequence. Only
+/// subsequent bytes can be keyboard input if the terminal abandons the reply.
+struct PartialOsc {
+    bytes: Vec<u8>,
+    fresh_at: usize,
+    kind: OscKind,
+}
+
+impl PartialOsc {
+    fn new(bytes: Vec<u8>, kind: OscKind) -> Self {
+        let mut partial = Self {
+            bytes,
+            fresh_at: 0,
+            kind,
+        };
+        partial.mark_boundary();
+        partial
+    }
+
+    fn is_clipboard(&self) -> bool {
+        self.kind != OscKind::HostColor
+    }
+
+    fn accepts(&self, byte: u8) -> bool {
+        byte == 0x1b
+            || if self.is_clipboard() {
+                byte.is_ascii_alphanumeric() || b";+/=?".contains(&byte)
+            } else {
+                (0x20..=0x7e).contains(&byte)
+            }
+    }
+
+    fn keyboard_suffix(&mut self) -> Vec<u8> {
+        // Base64 is ambiguous. Replay only a new escape that broke the clipboard
+        // sequence. Other OSCs use the ordinary fallback for a malformed reply.
+        let start = if self.is_clipboard() {
+            let fresh_escape = self.bytes[self.fresh_at..].ends_with(b"\x1b");
+            self.bytes.len() - usize::from(fresh_escape)
+        } else {
+            self.fresh_at
+        };
+        self.bytes.split_off(start)
+    }
+
+    fn mark_boundary(&mut self) {
+        // A retired reply needs only its identity and a possible first byte of ST.
+        if self.kind == OscKind::RetiredClipboard {
+            let escaped = self.bytes.ends_with(b"\x1b");
+            self.bytes.truncate(b"\x1b]52;".len());
+            if escaped {
+                self.bytes.push(0x1b);
+            }
+        }
+        self.fresh_at = self.bytes.len();
+    }
+}
+
+const HOST_COLOR_HEADERS: [&[u8]; 3] = [b"\x1b]4;", b"\x1b]10;", b"\x1b]11;"];
 
 /// Physical terminal replies carry no server token. A timeout releases the
 /// logical request but cannot retract its write to the terminal. On recovery
@@ -501,8 +579,8 @@ impl StdinAnsiParser {
     /// are the bytes the caller should feed to the keyboard parser.
     pub fn feed(&mut self, bytes: &[u8]) -> ParseOutput {
         let mut out = ParseOutput::default();
-        let bytes = self.discard_recovery_partial(bytes, &mut out.replies);
-        let (bytes, nested_frames) = self.nested_frame_extractor.extract(bytes);
+        let bytes = self.resume_partial(bytes, &mut out.replies);
+        let (bytes, nested_frames) = self.nested_frame_extractor.extract(&bytes);
         let bytes = &bytes[..];
         out.nested_frames = nested_frames;
         let sanitized = self.extract_kitty_probe_reply(bytes, &mut out.replies);
@@ -638,15 +716,28 @@ impl StdinAnsiParser {
             self.inner = InputParser::new();
         }
         out.residue = residue;
-        out.has_partial_state = !self.partial_osc.is_empty()
-            || !self.partial_csi.is_empty()
-            || !self.partial_paste.is_empty()
-            || !self.nested_frame_extractor.partial_bytes().is_empty()
-            || !self.partial_apc.is_empty();
+        out.has_partial_state = self.pending_partial() != PendingPartial::None;
         out
     }
 
     pub fn pending_partial(&self) -> PendingPartial {
+        let fresh = match &self.recovery_partial {
+            // A timer cannot distinguish a slow clipboard reply from unframed
+            // typing. Keep its payload off the keyboard until framing settles it.
+            Some(RecoveryPartial::Osc(osc)) if osc.is_clipboard() => return PendingPartial::None,
+            Some(RecoveryPartial::Osc(osc)) => Some(&osc.bytes[osc.fresh_at..]),
+            Some(RecoveryPartial::Prefix {
+                bytes, fresh_at, ..
+            }) => Some(&bytes[*fresh_at..]),
+            _ => None,
+        };
+        if let Some(fresh) = fresh {
+            return match fresh {
+                [] => PendingPartial::None,
+                [0x1b] => PendingPartial::LoneEsc,
+                _ => PendingPartial::ReplyInProgress,
+            };
+        }
         if !self.partial_paste.is_empty() || !self.partial_apc.is_empty() {
             PendingPartial::ReplyInProgress
         } else if self.partial_csi.is_empty()
@@ -673,19 +764,8 @@ impl StdinAnsiParser {
     /// ESC or a bare `ESC [` / `ESC ]` introducer, from whichever buffer holds it.
     /// The nested-frame extractor keeps priority, as in `pending_partial`.
     pub fn finalize_fast_partial(&mut self) -> Vec<u8> {
-        if self.in_bracketed_paste {
-            return Vec::new();
-        }
         match self.pending_partial() {
-            PendingPartial::LoneEsc | PendingPartial::BareIntroducer => {
-                if !self.nested_frame_extractor.partial_bytes().is_empty() {
-                    self.nested_frame_extractor.take_partial()
-                } else if !self.partial_osc.is_empty() {
-                    std::mem::take(&mut self.partial_osc)
-                } else {
-                    std::mem::take(&mut self.partial_csi)
-                }
-            },
+            PendingPartial::LoneEsc | PendingPartial::BareIntroducer => self.finalize_force(),
             PendingPartial::None | PendingPartial::ReplyInProgress => Vec::new(),
         }
     }
@@ -695,6 +775,44 @@ impl StdinAnsiParser {
         if self.in_bracketed_paste {
             return Vec::new();
         }
+        if let Some(RecoveryPartial::Osc(osc)) = &mut self.recovery_partial {
+            if osc.is_clipboard() {
+                return Vec::new();
+            }
+            let keyboard = osc.bytes[osc.fresh_at..].to_vec();
+            osc.mark_boundary();
+            return keyboard;
+        }
+        if let Some(RecoveryPartial::Prefix {
+            bytes, fresh_at, ..
+        }) = &mut self.recovery_partial
+        {
+            let keyboard = bytes[*fresh_at..].to_vec();
+            *fresh_at = bytes.len();
+            return keyboard;
+        }
+        let pending = self.take_partial_bytes();
+        if let Some(kind) = self.partial_osc_kind(&pending, InputBoundary::Idle) {
+            // An idle tick does not retract the physical query. Preserve its
+            // reply for this owner, or just its framing if recovery intervenes.
+            self.inner = InputParser::new();
+            self.recovery_partial = Some(RecoveryPartial::Osc(PartialOsc::new(pending, kind)));
+            return Vec::new();
+        }
+        if !pending.is_empty() && self.is_query_prefix(&pending) {
+            // An ambiguous Escape still reaches the keyboard on its usual timer.
+            // Keep enough framing to recognize the physical reply if it follows.
+            self.inner = InputParser::new();
+            self.recovery_partial = Some(RecoveryPartial::Prefix {
+                fresh_at: pending.len(),
+                bytes: pending.clone(),
+                boundary: InputBoundary::Idle,
+            });
+        }
+        pending
+    }
+
+    fn take_partial_bytes(&mut self) -> Vec<u8> {
         let mut partial_nested_frame = self.nested_frame_extractor.take_partial();
         let mut out = Vec::with_capacity(
             self.partial_osc.len()
@@ -712,9 +830,52 @@ impl StdinAnsiParser {
     }
 
     pub(crate) fn reset_for_recovery(&mut self) {
+        self.reset_input(InputBoundary::Recovery);
+    }
+
+    /// Local host observations started while this generation was repainting
+    /// still describe the same terminal when its keyboard becomes eligible.
+    pub(crate) fn input_stamp_changed(
+        &mut self,
+        before: Option<(u64, bool)>,
+        after: Option<(u64, bool)>,
+    ) {
+        let same_repaint =
+            matches!((before, after), (Some((old, false)), Some((new, true))) if old == new);
+        self.reset_input(if same_repaint {
+            InputBoundary::FirstRepaint
+        } else {
+            InputBoundary::Recovery
+        });
+    }
+
+    fn reset_input(&mut self, boundary: InputBoundary) {
         let in_paste = self.in_bracketed_paste;
         self.in_bracketed_paste = false;
-        let pending = self.finalize_force();
+        let pending = self.take_partial_bytes();
+        match &mut self.recovery_partial {
+            Some(RecoveryPartial::Osc(osc)) if osc.is_clipboard() => {
+                if boundary == InputBoundary::Recovery || self.clipboards.retired != 0 {
+                    osc.kind = OscKind::RetiredClipboard;
+                }
+                osc.mark_boundary();
+            },
+            Some(RecoveryPartial::Osc(osc)) if boundary == InputBoundary::FirstRepaint => {
+                osc.mark_boundary()
+            },
+            Some(RecoveryPartial::Osc(_)) => self.recovery_partial = None,
+            Some(RecoveryPartial::Prefix {
+                bytes,
+                fresh_at,
+                boundary: previous,
+            }) => {
+                *fresh_at = bytes.len();
+                if *previous != InputBoundary::Recovery {
+                    *previous = boundary;
+                }
+            },
+            _ => {},
+        }
         self.inner = InputParser::new();
         if self.recovery_partial.is_none() && (in_paste || !pending.is_empty()) {
             self.recovery_partial = if in_paste {
@@ -723,64 +884,119 @@ impl StdinAnsiParser {
                     .find(|&len| pending.ends_with(&PASTE_END_MARKER[..len]))
                     .unwrap_or(0);
                 Some(RecoveryPartial::Paste(matched))
-            } else if self.clipboards.outstanding != 0 && pending.starts_with(b"\x1b]52;") {
-                Some(RecoveryPartial::Clipboard {
-                    escaped: pending.ends_with(b"\x1b"),
+            } else if let Some(kind) = self.partial_osc_kind(&pending, boundary) {
+                Some(RecoveryPartial::Osc(PartialOsc::new(pending, kind)))
+            } else if self.is_recovery_prefix(&pending, boundary) {
+                Some(RecoveryPartial::Prefix {
+                    fresh_at: pending.len(),
+                    bytes: pending,
+                    boundary,
                 })
-            } else if self.is_recovery_prefix(&pending) {
-                Some(RecoveryPartial::Prefix(pending))
             } else {
                 None
             };
         }
     }
 
-    fn is_recovery_prefix(&self, bytes: &[u8]) -> bool {
-        PASTE_START_MARKER.starts_with(bytes)
-            || (self.clipboards.outstanding != 0 && b"\x1b]52;".starts_with(bytes))
-            || (self.barriers.outstanding != 0 && matches!(csi_status(bytes), SeqStatus::NeedMore))
+    fn partial_osc_kind(&self, bytes: &[u8], boundary: InputBoundary) -> Option<OscKind> {
+        if self.clipboards.outstanding != 0 && bytes.starts_with(b"\x1b]52;") {
+            return Some(
+                if boundary == InputBoundary::Recovery || self.clipboards.retired != 0 {
+                    OscKind::RetiredClipboard
+                } else {
+                    OscKind::Clipboard
+                },
+            );
+        }
+        (boundary == InputBoundary::FirstRepaint
+            && HOST_COLOR_HEADERS.iter().any(|h| bytes.starts_with(h)))
+        .then_some(OscKind::HostColor)
     }
 
-    fn discard_recovery_partial<'a>(
+    fn is_query_prefix(&self, bytes: &[u8]) -> bool {
+        (self.clipboards.outstanding != 0 && b"\x1b]52;".starts_with(bytes))
+            || (self.barriers.outstanding != 0
+                && (b"\x1b[".starts_with(bytes)
+                    || matches!(csi_status(bytes), SeqStatus::NeedMore)))
+    }
+
+    fn is_recovery_prefix(&self, bytes: &[u8], boundary: InputBoundary) -> bool {
+        self.is_query_prefix(bytes)
+            || (boundary != InputBoundary::Idle && PASTE_START_MARKER.starts_with(bytes))
+            || (boundary == InputBoundary::FirstRepaint
+                && (HOST_COLOR_HEADERS.iter().any(|h| h.starts_with(bytes))
+                    || matches!(csi_status(bytes), SeqStatus::NeedMore)))
+    }
+
+    fn resume_partial<'a>(
         &mut self,
         bytes: &'a [u8],
         replies: &mut Vec<HostReply>,
-    ) -> &'a [u8] {
+    ) -> Cow<'a, [u8]> {
         for (i, &byte) in bytes.iter().enumerate() {
             match self.recovery_partial.take() {
-                None => return &bytes[i..],
-                Some(RecoveryPartial::Prefix(mut prefix)) => {
+                None => return Cow::Borrowed(&bytes[i..]),
+                Some(RecoveryPartial::Prefix {
+                    bytes: mut prefix,
+                    fresh_at,
+                    boundary,
+                }) => {
                     prefix.push(byte);
-                    self.recovery_partial = if prefix == PASTE_START_MARKER {
-                        Some(RecoveryPartial::Paste(0))
-                    } else if self.clipboards.outstanding != 0 && prefix == b"\x1b]52;" {
-                        Some(RecoveryPartial::Clipboard { escaped: false })
-                    } else if self.barriers.outstanding != 0
-                        && byte == b'c'
-                        && matches!(csi_status(&prefix), SeqStatus::Complete(_))
-                    {
-                        self.observe_barrier();
-                        None
-                    } else if matches!(csi_status(&prefix), SeqStatus::Complete(_))
-                        && let Some(report) = HostReply::from_csi_report(&prefix)
-                    {
-                        replies.push(report);
-                        None
-                    } else if self.is_recovery_prefix(&prefix) {
-                        Some(RecoveryPartial::Prefix(prefix))
-                    } else {
-                        return &bytes[i..];
-                    };
+                    self.recovery_partial =
+                        if boundary != InputBoundary::Idle && prefix == PASTE_START_MARKER {
+                            Some(RecoveryPartial::Paste(0))
+                        } else if let Some(kind) = self.partial_osc_kind(&prefix, boundary) {
+                            Some(RecoveryPartial::Osc(PartialOsc::new(prefix, kind)))
+                        } else if boundary != InputBoundary::Recovery
+                            && matches!(csi_status(&prefix), SeqStatus::Complete(_))
+                        {
+                            prefix.extend_from_slice(&bytes[i + 1..]);
+                            return Cow::Owned(prefix);
+                        } else if self.barriers.outstanding != 0
+                            && byte == b'c'
+                            && matches!(csi_status(&prefix), SeqStatus::Complete(_))
+                        {
+                            self.observe_barrier();
+                            None
+                        } else if matches!(csi_status(&prefix), SeqStatus::Complete(_))
+                            && let Some(report) = HostReply::from_csi_report(&prefix)
+                        {
+                            replies.push(report);
+                            None
+                        } else if self.is_recovery_prefix(&prefix, boundary) {
+                            Some(RecoveryPartial::Prefix {
+                                bytes: prefix,
+                                fresh_at,
+                                boundary,
+                            })
+                        } else {
+                            let mut keyboard = prefix.split_off(fresh_at);
+                            keyboard.extend_from_slice(&bytes[i + 1..]);
+                            return Cow::Owned(keyboard);
+                        };
                 },
-                Some(RecoveryPartial::Clipboard { escaped }) => {
-                    if byte == 7 || (escaped && byte == b'\\') {
-                        self.clipboards.observe_terminator();
-                    } else if escaped {
-                        return &bytes[i..];
+                Some(RecoveryPartial::Osc(mut osc)) => {
+                    let escaped = osc.bytes.ends_with(b"\x1b");
+                    if (!escaped && byte == 7) || (escaped && byte == b'\\') {
+                        if osc.kind == OscKind::RetiredClipboard {
+                            self.clipboards.observe_terminator();
+                        } else {
+                            // Classify the complete live OSC through the ordinary decoder.
+                            osc.bytes.extend_from_slice(&bytes[i..]);
+                            return Cow::Owned(osc.bytes);
+                        }
+                    } else if escaped
+                        || !osc.accepts(byte)
+                        || osc.bytes.len() >= self.partial_buffer_limit
+                    {
+                        let mut keyboard = osc.keyboard_suffix();
+                        keyboard.extend_from_slice(&bytes[i..]);
+                        return Cow::Owned(keyboard);
                     } else {
-                        self.recovery_partial = Some(RecoveryPartial::Clipboard {
-                            escaped: byte == 0x1b,
-                        });
+                        if osc.kind != OscKind::RetiredClipboard || byte == 0x1b {
+                            osc.bytes.push(byte);
+                        }
+                        self.recovery_partial = Some(RecoveryPartial::Osc(osc));
                     }
                 },
                 Some(RecoveryPartial::Paste(matched)) => {
@@ -795,7 +1011,7 @@ impl StdinAnsiParser {
                 },
             }
         }
-        &bytes[bytes.len()..]
+        Cow::Borrowed(&[])
     }
 
     fn extract_kitty_probe_reply(&mut self, bytes: &[u8], replies: &mut Vec<HostReply>) -> Vec<u8> {
