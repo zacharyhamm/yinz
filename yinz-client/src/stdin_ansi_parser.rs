@@ -212,7 +212,6 @@ enum InputBoundary {
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum ColorInput {
     ReadingBody,
-    CompleteAtBoundary,
     Interleaved,
     AfterValue,
 }
@@ -221,6 +220,7 @@ enum ColorInput {
 enum OscKind {
     HostColor {
         prefix: ColorPrefix,
+        boundary_prefix: ColorPrefix,
         input: ColorInput,
     },
     Clipboard,
@@ -277,7 +277,12 @@ impl PartialOsc {
     }
 
     fn consume_color_byte(&mut self, byte: u8, keyboard: &mut Vec<u8>) -> bool {
-        let OscKind::HostColor { prefix, input } = self.kind else {
+        let OscKind::HostColor {
+            mut prefix,
+            boundary_prefix,
+            mut input,
+        } = self.kind
+        else {
             return false;
         };
         if input != ColorInput::AfterValue {
@@ -285,6 +290,7 @@ impl PartialOsc {
                 self.bytes.push(byte);
                 self.kind = OscKind::HostColor {
                     prefix: next,
+                    boundary_prefix,
                     // Once the interrupted host value resumes and reaches a
                     // legal width, its ST can again arrive across an idle tick.
                     input: if input == ColorInput::Interleaved && next.complete() {
@@ -298,18 +304,30 @@ impl PartialOsc {
             // Keep a word following a pre-repaint value together ("fade away").
             // If the body was incomplete, a key can arrive between its channels.
             // Continue reading valid digits even after that key has been delivered.
-            let rollback = if input == ColorInput::CompleteAtBoundary {
+            let rollback = if boundary_prefix.complete() {
                 Some(self.fresh_at)
             } else {
                 self.complete_color_end(prefix)
             };
-            let input = if let Some(end) = rollback {
-                self.finish_color_at(end, keyboard);
-                ColorInput::AfterValue
-            } else {
-                ColorInput::Interleaved
+            input = match rollback {
+                // An intervening key cannot shorten the host prefix we had
+                // already read. It can still reach a legal width before BEL/ST.
+                Some(end) if end < self.fresh_at => {
+                    keyboard.extend(self.bytes.drain(self.fresh_at..));
+                    prefix = boundary_prefix;
+                    ColorInput::Interleaved
+                },
+                Some(end) => {
+                    self.finish_color_at(end, keyboard);
+                    ColorInput::AfterValue
+                },
+                None => ColorInput::Interleaved,
             };
-            self.kind = OscKind::HostColor { prefix, input };
+            self.kind = OscKind::HostColor {
+                prefix,
+                boundary_prefix,
+                input,
+            };
         }
         keyboard.push(byte);
         true
@@ -318,7 +336,7 @@ impl PartialOsc {
     /// Release digits that the terminator rules out as part of a hex color.
     /// An interrupted body with no complete value cannot update the host color.
     fn finish_body(&mut self, keyboard: &mut Vec<u8>) -> bool {
-        let OscKind::HostColor { prefix, input } = self.kind else {
+        let OscKind::HostColor { prefix, input, .. } = self.kind else {
             return true;
         };
         if input == ColorInput::AfterValue {
@@ -355,12 +373,14 @@ impl PartialOsc {
     fn keyboard_suffix(&mut self) -> Vec<u8> {
         let start = match self.kind {
             OscKind::HostColor {
-                input: ColorInput::CompleteAtBoundary,
+                boundary_prefix,
+                input: ColorInput::ReadingBody,
                 ..
-            } => self.fresh_at,
+            } if boundary_prefix.complete() => self.fresh_at,
             OscKind::HostColor {
                 input: ColorInput::ReadingBody | ColorInput::Interleaved,
                 prefix,
+                ..
             } => self
                 .complete_color_end(prefix)
                 .unwrap_or(self.bytes.len())
@@ -381,14 +401,15 @@ impl PartialOsc {
         if self.kind == OscKind::RetiredClipboard {
             self.bytes.truncate(b"\x1b]52;".len());
         }
-        if let OscKind::HostColor { prefix, input } = &mut self.kind
+        if let OscKind::HostColor {
+            prefix,
+            boundary_prefix,
+            input,
+        } = &mut self.kind
             && *input != ColorInput::AfterValue
         {
-            *input = if prefix.complete() {
-                ColorInput::CompleteAtBoundary
-            } else {
-                ColorInput::ReadingBody
-            };
+            *boundary_prefix = *prefix;
+            *input = ColorInput::ReadingBody;
         }
         self.fresh_at = self.bytes.len();
     }
@@ -1067,6 +1088,7 @@ impl StdinAnsiParser {
         let prefix = ColorPrefix::from_report(bytes, header);
         Some(OscKind::HostColor {
             prefix,
+            boundary_prefix: prefix,
             input: ColorInput::ReadingBody,
         })
     }

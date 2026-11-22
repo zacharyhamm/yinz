@@ -616,6 +616,8 @@ terminator arrives. For example, if the client has received `#abc` and then
 reads `d` followed by BEL, it applies `#abc` and delivers `d` to the pane.
 If it has received `#abcd` before repaint and reads `e` followed by BEL,
 the pane receives only `e`. The earlier `d` falls outside the valid color.
+If `z` interrupts that same `#abcd` prefix and the terminal then sends `ef`
+and BEL, the client delivers `z` and applies `#abcdef`.
 A key such as `z` can also arrive between RGB channels while the client waits
 for the rest of the report. If the host resumes the interrupted RGB value and
 completes its final channel, the client holds Escape for the backslash that

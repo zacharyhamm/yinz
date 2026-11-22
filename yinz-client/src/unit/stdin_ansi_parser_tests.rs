@@ -2730,6 +2730,34 @@ fn repaint_color_interruption_replays_only_fresh_surplus_digits() {
 }
 
 #[test]
+fn interrupted_hex_color_keeps_its_pre_repaint_digits_until_termination() {
+    for (before, interrupt, continuation, expected_color, keys) in [
+        ("#abcd", "z", "ef", "#abcdef", "z!"),
+        ("#abcde", "z", "f", "#abcdef", "z!"),
+        ("#abcd", "ez", "ef", "#abcdef", "ez!"),
+        ("#abcd", "z", "", "#abc", "z!"),
+        ("#abcdef0", "z", "12", "#abcdef012", "z!"),
+    ] {
+        for end in [b"\x07".as_slice(), b"\x1b\\"] {
+            let tail = [interrupt.as_bytes(), continuation.as_bytes(), end, b"!"].concat();
+            for split in 0..=tail.len() {
+                let mut parser = StdinAnsiParser::new();
+                parser.feed(format!("\x1b]11;{before}").as_bytes());
+                parser.input_stamp_changed(Some((2, false)), Some((2, true)));
+                let mut output = parser.feed(&tail[..split]);
+                let rest = parser.feed(&tail[split..]);
+                output.residue.extend(rest.residue);
+                output.replies.extend(rest.replies);
+                assert_eq!(output.residue, keys.as_bytes(), "{before}, split {split}");
+                assert!(matches!(&output.replies[..],
+                    [HostReply::BackgroundColor(color)] if color == expected_color
+                ));
+            }
+        }
+    }
+}
+
+#[test]
 fn repaint_color_interleaved_key_preserves_the_unfinished_body() {
     for (before, suffix, color, keys) in [
         ("rgb:1111/", "z2222/3333", "rgb:1111/2222/3333", "z!"),
